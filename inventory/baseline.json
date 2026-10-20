@@ -12,8 +12,10 @@
    "CURL_USE_LIBSSH2": "ON",
    "CURL_USE_OPENSSL": "ON",
    "CURL_ZSTD": "ON",
+   "DANTED": "/usr/bin/sockd",
    "ENABLE_ARES": "ON",
    "ENABLE_DEBUG": "ON",
+   "SFTPD": "/usr/libexec/openssh/sftp-server",
    "USE_ECH": "OFF",
    "USE_HTTPSRR": "ON",
    "USE_LIBIDN2": "ON",
@@ -63,9 +65,156 @@
    "UnixSockets",
    "zstd"
   ],
+  "library": {
+   "file": "libcurl-d.so.4.8.0",
+   "not-public": [
+    "curl_dbg_accept",
+    "curl_dbg_accept4",
+    "curl_dbg_calloc",
+    "curl_dbg_fclose",
+    "curl_dbg_fdopen",
+    "curl_dbg_fopen",
+    "curl_dbg_free",
+    "curl_dbg_freopen",
+    "curl_dbg_log",
+    "curl_dbg_malloc",
+    "curl_dbg_mark_sclose",
+    "curl_dbg_memdebug",
+    "curl_dbg_memlimit",
+    "curl_dbg_realloc",
+    "curl_dbg_sclose",
+    "curl_dbg_socket",
+    "curl_dbg_socketpair",
+    "curl_dbg_strdup",
+    "curl_easy_perform_ev"
+   ],
+   "public-missing": [],
+   "soname": "libcurl-d.so.4",
+   "symbols": [
+    "curl_dbg_accept",
+    "curl_dbg_accept4",
+    "curl_dbg_calloc",
+    "curl_dbg_fclose",
+    "curl_dbg_fdopen",
+    "curl_dbg_fopen",
+    "curl_dbg_free",
+    "curl_dbg_freopen",
+    "curl_dbg_log",
+    "curl_dbg_malloc",
+    "curl_dbg_mark_sclose",
+    "curl_dbg_memdebug",
+    "curl_dbg_memlimit",
+    "curl_dbg_realloc",
+    "curl_dbg_sclose",
+    "curl_dbg_socket",
+    "curl_dbg_socketpair",
+    "curl_dbg_strdup",
+    "curl_easy_cleanup",
+    "curl_easy_duphandle",
+    "curl_easy_escape",
+    "curl_easy_getinfo",
+    "curl_easy_header",
+    "curl_easy_init",
+    "curl_easy_nextheader",
+    "curl_easy_option_by_id",
+    "curl_easy_option_by_name",
+    "curl_easy_option_next",
+    "curl_easy_pause",
+    "curl_easy_perform",
+    "curl_easy_perform_ev",
+    "curl_easy_recv",
+    "curl_easy_reset",
+    "curl_easy_send",
+    "curl_easy_setopt",
+    "curl_easy_ssls_export",
+    "curl_easy_ssls_import",
+    "curl_easy_strerror",
+    "curl_easy_unescape",
+    "curl_easy_upkeep",
+    "curl_escape",
+    "curl_formadd",
+    "curl_formfree",
+    "curl_formget",
+    "curl_free",
+    "curl_getdate",
+    "curl_getenv",
+    "curl_global_cleanup",
+    "curl_global_init",
+    "curl_global_init_mem",
+    "curl_global_sslset",
+    "curl_global_trace",
+    "curl_maprintf",
+    "curl_mfprintf",
+    "curl_mime_addpart",
+    "curl_mime_data",
+    "curl_mime_data_cb",
+    "curl_mime_encoder",
+    "curl_mime_filedata",
+    "curl_mime_filename",
+    "curl_mime_free",
+    "curl_mime_headers",
+    "curl_mime_init",
+    "curl_mime_name",
+    "curl_mime_subparts",
+    "curl_mime_type",
+    "curl_mprintf",
+    "curl_msnprintf",
+    "curl_msprintf",
+    "curl_multi_add_handle",
+    "curl_multi_assign",
+    "curl_multi_cleanup",
+    "curl_multi_fdset",
+    "curl_multi_get_handles",
+    "curl_multi_get_offt",
+    "curl_multi_info_read",
+    "curl_multi_init",
+    "curl_multi_notify_disable",
+    "curl_multi_notify_enable",
+    "curl_multi_perform",
+    "curl_multi_poll",
+    "curl_multi_remove_handle",
+    "curl_multi_setopt",
+    "curl_multi_socket",
+    "curl_multi_socket_action",
+    "curl_multi_socket_all",
+    "curl_multi_strerror",
+    "curl_multi_timeout",
+    "curl_multi_wait",
+    "curl_multi_waitfds",
+    "curl_multi_wakeup",
+    "curl_mvaprintf",
+    "curl_mvfprintf",
+    "curl_mvprintf",
+    "curl_mvsnprintf",
+    "curl_mvsprintf",
+    "curl_pushheader_byname",
+    "curl_pushheader_bynum",
+    "curl_share_cleanup",
+    "curl_share_init",
+    "curl_share_setopt",
+    "curl_share_strerror",
+    "curl_slist_append",
+    "curl_slist_free_all",
+    "curl_strequal",
+    "curl_strnequal",
+    "curl_unescape",
+    "curl_url",
+    "curl_url_cleanup",
+    "curl_url_dup",
+    "curl_url_get",
+    "curl_url_set",
+    "curl_url_strerror",
+    "curl_version",
+    "curl_version_info",
+    "curl_ws_meta",
+    "curl_ws_recv",
+    "curl_ws_send",
+    "curl_ws_start_frame"
+   ]
+  },
   "measured": {
-   "finished": "2026-10-20T12:22:34Z",
-   "started": "2026-10-20T12:21:08Z"
+   "finished": "2026-10-20T12:36:14Z",
+   "started": "2026-10-20T12:34:08Z"
   },
   "protocols": [
    "dict",
@@ -96,6 +245,4011 @@
    "ws",
    "wss"
   ],
+  "pytest": {
+   "args": [
+    "-n",
+    "auto",
+    "-p",
+    "no:cacheprovider"
+   ],
+   "cases": {
+    "test_01_basic::test_01_01_http_get": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_02_https_get": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_03_h2_get": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_04_h2_unsupported": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_05_h3_get": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_06_timings[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_06_timings[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_06_timings[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_07_head[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_07_head[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_07_head[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_08_h2_upgrade": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_09_h2_prior_knowledge": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_10_te_strip": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_11_large_resp_headers[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_11_large_resp_headers[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_11_large_resp_headers[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_12_xlarge_resp_headers[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_12_xlarge_resp_headers[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_13_megalarge_resp_headers[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_13_megalarge_resp_headers[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_14_gigalarge_resp_headers[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_14_gigalarge_resp_headers[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_15_gigalarge_resp_headers[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_15_gigalarge_resp_headers[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_16_inv_req_get[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_16_inv_req_get[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_16_inv_req_get[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_17_TE[chunked]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_17_TE[gzip+q+x+trailers]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_17_TE[gzip+trailers]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_17_TE[gzip+x+chunks]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_17_TE[trailers]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_18_tls_reuse": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_19_plain_reuse": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_20_method_space[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_20_method_space[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_01_basic::test_01_20_method_space[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-0k-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-0k-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-0k-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-100k-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-100k-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-100k-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-10k-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-10k-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data-10k-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data.json-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data.json-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_01_download_1[data.json-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_02_download_2[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_02_download_2[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_02_download_2[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_03_download_sequential[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_03_download_sequential[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_03_download_sequential[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_04_download_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_04_download_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_04_download_parallel[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_05_download_many_sequential[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_05_download_many_sequential[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_05_download_many_sequential[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_06_download_many_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_06_download_many_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_07_download_reuse[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_07_download_reuse[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_07b_download_reuse[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_08_1MB_serial[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_08_1MB_serial[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_08_1MB_serial[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_09_1MB_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_09_1MB_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_10_10MB_serial[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_10_10MB_serial[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_10_10MB_serial[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_11_10MB_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_11_10MB_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_12_head_serial_https[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_12_head_serial_https[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_13_head_serial_h2c[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_14_not_found[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_14_not_found[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_15_fail_not_found[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_15_fail_not_found[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_20_h2_small_frames": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h2-0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h2-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h2-10240]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h2-640000]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h3-0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h3-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h3-10240]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[h3-640000]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[http/1.1-0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[http/1.1-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[http/1.1-10240]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_21_lib_serial[http/1.1-640000]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_22_lib_parallel_resume[h2-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_22_lib_parallel_resume[h3-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_22_lib_parallel_resume[http/1.1-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23a_lib_abort_paused[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23a_lib_abort_paused[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23a_lib_abort_paused[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23b_lib_abort_offset[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23b_lib_abort_offset[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23b_lib_abort_offset[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23c_lib_fail_offset[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23c_lib_fail_offset[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_23c_lib_fail_offset[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_24_speed_limit[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_24_speed_limit[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_24_speed_limit[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_25_h2_upgrade_x": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_26_session_shared_reuse[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_26_session_shared_reuse[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_26_session_shared_reuse[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27a_paused_no_cl[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27a_paused_no_cl[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27a_paused_no_cl[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27b_paused_no_cl[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27b_paused_no_cl[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27b_paused_no_cl[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27c_paused_no_cl[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27c_paused_no_cl[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_27c_paused_no_cl[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_28_get_compressed[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_28_get_compressed[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_28_get_compressed[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h2-0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h2-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h2-10240]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h2-640000]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h3-0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h3-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h3-10240]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[h3-640000]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[http/1.1-0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[http/1.1-102300]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[http/1.1-10240]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_29_h2_lib_serial[http/1.1-640000]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_30_parallel_prior_knowledge": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_31_parallel_upgrade": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_32_earlydata[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_32_earlydata[h3]": {
+     "message": "AssertionError: {0: 0, 1: -109}\nassert -109 == 109",
+     "outcome": "failed"
+    },
+    "test_02_download::test_02_32_earlydata[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[False-0-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[False-0-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[False-1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[False-1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[False-5-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[False-5-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[True-0-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[True-0-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[True-1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[True-1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[True-5-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_33_max_host_conns[True-5-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[False-0-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[False-0-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[False-1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[False-1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[False-5-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[False-5-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[True-0-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[True-0-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[True-1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[True-1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[True-5-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_34_max_total_conns[True-5-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_35_pause_bomb[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_35_pause_bomb[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_35_pause_bomb[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[1024-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[1024-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[1024-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[16384-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[16384-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[16384-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[32768-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[32768-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[32768-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[65536-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[65536-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[65536-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[81920-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[81920-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[81920-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[98304-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[98304-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_36_looong_urls[98304-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_02_download::test_02_37_pending_timeout": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_03_goaway::test_03_01_h2_goaway": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_03_goaway::test_03_03_h1_goaway": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_01_download_1[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_01_download_1[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_01_download_1[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_02_100_100_10[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_02_100_100_10[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_03_1000_10_1[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_03_1000_10_1[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_04_1000_10_1[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_04_stuttered::test_04_04_1000_10_1[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_01_partial_1[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_01_partial_1[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_01_partial_1[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_02_partial_20[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_02_partial_20[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_03_required": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_04_unclean_tls_shutdown[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_04_unclean_tls_shutdown[http/1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_04_unclean_tls_shutdown[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_05_failed_peer[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_05_failed_peer[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_06_retry_502": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_07_retry_502_parallel": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_08_retry_401": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_09_handshake_eof": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_05_errors::test_05_10_limits": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_01_h3_only": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_02_h3_only": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_03_h3_fallback_h2": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_04_h3_fallback_h1": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_05_h3_silent_fallback_h2": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_06_h3_stalled_fallback_h2": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_10_stats_success": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_11_stats_fail_verify": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_12_stats_fail_tcp": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_13_timers": {
+     "message": "system does not blackhole 0100::/64",
+     "outcome": "skipped"
+    },
+    "test_06_eyeballs::test_06_20_h2_altsvc_h3_fallback": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_21_as_follow_h3h1": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_22_as_ignore_h3h1": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_23_as_ignore_h2h3": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_24_h3_altsvc_h2_used": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_06_eyeballs::test_06_25_h3_connect_to": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_01_upload_1_small[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_01_upload_1_small[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_01_upload_1_small[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_02_upload_1_large[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_02_upload_1_large[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_02_upload_1_large[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_10_upload_sequential[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_10_upload_sequential[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_10_upload_sequential[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_11_upload_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_11_upload_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_12_upload_seq_large[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_12_upload_seq_large[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_12_upload_seq_large[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_13_upload_seq_large[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_13_upload_seq_large[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_13_upload_seq_large[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[1-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[123\\n456andsomething\\n\\n-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[123\\n456andsomething\\n\\n-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_14_upload_stdin[123\\n456andsomething\\n\\n-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_15_hx_put[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_15_hx_put[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_15_hx_put[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_16_hx_put_reuse[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_16_hx_put_reuse[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_16_hx_put_reuse[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_17_hx_post_reuse[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_17_hx_post_reuse[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_17_hx_post_reuse[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_20_upload_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_20_upload_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_21_upload_parallel_large[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_21_upload_parallel_large[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_22_upload_fail[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_22_upload_fail[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_30_put_100k[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_30_put_100k[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_30_put_100k[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_31_put_10m[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_31_put_10m[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_31_put_10m[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_32_issue_10591[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_32_issue_10591[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_32_issue_10591[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_33_issue_11157a": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_33_issue_11157b": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_34_issue_11194": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_35_h1_h2_upgrade_upload": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[h2-301]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[h2-302]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[h2-303]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[h3-301]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[h3-302]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[h3-303]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[http/1.1-301]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[http/1.1-302]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_36_upload_30x[http/1.1-303]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_37_upload_307[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_37_upload_307[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_37_upload_307[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_38_form_small[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_38_form_small[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_38_form_small[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_39_post_urlenc_small[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_39_post_urlenc_small[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_39_post_urlenc_small[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_40_post_urlenc_large[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_40_post_urlenc_large[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_40_post_urlenc_large[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_41_post_urlenc_small[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_41_post_urlenc_small[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_41_post_urlenc_small[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42a_upload_disconnect[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42a_upload_disconnect[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42a_upload_disconnect[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42b_upload_disconnect[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42b_upload_disconnect[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42b_upload_disconnect[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42c_upload_disconnect[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42c_upload_disconnect[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_42c_upload_disconnect[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_43_upload_denied[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_43_upload_denied[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_43_upload_denied[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[301-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[301-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[301-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[302-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[302-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[302-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[307-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[307-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[307-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[308-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[308-h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_44_put_redir[308-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_50_put_speed_limit[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_50_put_speed_limit[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_50_put_speed_limit[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_51_echo_speed_limit[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_51_echo_speed_limit[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_51_echo_speed_limit[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_60_upload_exp100[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_61_upload_exp100_timeout[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_62_upload_issue_15688[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_63_upload_exp100_paused[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_70_put_earlydata[h1-limited-body]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_70_put_earlydata[h1-medium-body]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_70_put_earlydata[h1-small-body]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_70_put_earlydata[h2-limited-body]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_70_put_earlydata[h2-medium-body]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_07_upload::test_07_70_put_earlydata[h3-limited-body]": {
+     "message": "AssertionError: {0: 0, 1: -65536}\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  URL: -n\n  [0-x] * !!! WARNING !!!\n  [0-x] * This is a debug build of libcurl, do not use in production.\n  [t-0] STARTED\n  [0-x] * [DNS] added on",
+     "outcome": "failed"
+    },
+    "test_07_upload::test_07_70_put_earlydata[h3-small-body]": {
+     "message": "AssertionError: {0: 0, 1: -1117}\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  URL: -n\n  [0-x] * !!! WARNING !!!\n  [0-x] * This is a debug build of libcurl, do not use in production.\n  [t-0] STARTED\n  [0-x] * [DNS] added one",
+     "outcome": "failed"
+    },
+    "test_08_caddy::test_08_01_download_1[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_01_download_1[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_01_download_1[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_02_download_1mb_sequential[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_02_download_1mb_sequential[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_02_download_1mb_sequential[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_03_download_1mb_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_03_download_1mb_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_03_download_1mb_parallel[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_04a_download_10mb_sequential[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_04a_download_10mb_sequential[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_04b_download_10mb_sequential[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_04b_download_10mb_sequential[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_05_download_1mb_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_05_download_1mb_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_05_download_1mb_parallel[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_06_post_parallel[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_06_post_parallel[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_06_post_parallel[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_07_put_large[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_07_put_large[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_07_put_large[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_08_earlydata[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_08_earlydata[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_08_caddy::test_08_08_earlydata[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_09_push::test_09_01_h2_early_hints": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_09_push::test_09_02_h2_push": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_01_proxy_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_down[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_down[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data-100k-5-True-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data-100k-5-True-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data-1m-2-True-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data-1m-2-True-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data.json-5-False-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data.json-5-False-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data.json-5-True-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_02_proxys_up[data.json-5-True-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_03_proxytunnel_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_04_proxy_https": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_05_proxytunnel_http[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_05_proxytunnel_http[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_06_proxytunnel_https[h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_06_proxytunnel_https[h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_06_proxytunnel_https[http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_06_proxytunnel_https[http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-100k-20-h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-100k-20-h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-100k-20-http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-100k-20-http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-1m-5-h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-1m-5-h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-1m-5-http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data-1m-5-http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data.json-100-h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data.json-100-h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data.json-100-http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_07_pts_down_small[data.json-100-http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-100k-20-h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-100k-20-h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-100k-20-http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-100k-20-http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-1m-5-h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-1m-5-h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-1m-5-http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data-1m-5-http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data.json-50-h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data.json-50-h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data.json-50-http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_08_upload_seq_large[data.json-50-http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_09_reuse_server[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_09_reuse_server[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_10_reuse_proxy[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_10_reuse_proxy[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_11_noreuse_proxy_https[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_11_noreuse_proxy_https[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_12_noreuse_proxy_http[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_12_noreuse_proxy_http[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_13_noreuse_https[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_13_noreuse_https[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_14_proxys_ip_addr[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_14_proxys_ip_addr[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_15_proxy_ip_addr": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_16_proxy_ip_addr": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_10_proxy::test_10_17_proxy_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_11_unix::test_11_01_unix_connect_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_11_unix::test_11_02_unix_connect_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_11_unix::test_11_03_unix_connect_quic": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_11_unix::test_11_04_unix_connect_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_12_reuse::test_12_01_h1_conn_close[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_12_reuse::test_12_02_h1_conn_timeout[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_12_reuse::test_12_03_no_reuse_after_partial[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_12_reuse::test_12_04_reuse_different_basic_credentials[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_12_reuse::test_12_05_no_reuse_different_host[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_12_reuse::test_12_06_reuse_same_host[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_01_proxy_no_auth": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_02_proxy_auth": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_03_proxys_no_auth": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_04_proxys_auth": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_05_tunnel_http_no_auth": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_06_tunnel_http_auth": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_07_tunnels_no_auth[h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_07_tunnels_no_auth[h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_07_tunnels_no_auth[http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_07_tunnels_no_auth[http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_08_tunnels_auth[h2-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_08_tunnels_auth[h2-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_08_tunnels_auth[http/1.1-h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_08_tunnels_auth[http/1.1-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_09_negotiate_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_13_proxy_auth::test_13_10_tunnels_mixed_auth": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_14_auth::test_14_01_digest_get_noauth[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_14_auth::test_14_01_digest_get_noauth[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_14_auth::test_14_01_digest_get_noauth[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_14_auth::test_14_02_digest_get_auth[h2]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_02_digest_get_auth[h3]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_02_digest_get_auth[http/1.1]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_03_digest_put_auth[h2]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_03_digest_put_auth[h3]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_03_digest_put_auth[http/1.1]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_04_digest_large_pw[h2]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_04_digest_large_pw[h3]": {
+     "message": "curl built without digest",
+     "outcome": "skipped"
+    },
+    "test_14_auth::test_14_05_basic_large_pw[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_14_auth::test_14_05_basic_large_pw[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_14_auth::test_14_06_basic_very_large_pw[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_14_auth::test_14_06_basic_very_large_pw[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_15_tracing::test_15_01_trace_defaults": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_15_tracing::test_15_02_trace_ids": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_15_tracing::test_15_03_trace_ids_time": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_15_tracing::test_15_04_trace_all": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_15_tracing::test_15_05_trace_all": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_01_info_download[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_01_info_download[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_01_info_download[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_02_info_302_download[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_02_info_302_download[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_02_info_302_download[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_03_info_upload[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_03_info_upload[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_03_info_upload[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_16_info::test_16_04_info_http_download[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_01_sslinfo_plain": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_02_sslinfo_reconnect[1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_02_sslinfo_reconnect[1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_03_trailing_dot[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_03_trailing_dot[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_03_trailing_dot[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_04_double_dot[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_04_double_dot[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_04_double_dot[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_bad_ip_addr[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_bad_ip_addr[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_bad_ip_addr[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_good_ip_addr[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_good_ip_addr[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_good_ip_addr[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_very_bad_ip_addr[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_very_bad_ip_addr[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_05_very_bad_ip_addr[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_06_localhost[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_06_localhost[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_06_localhost[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384+CHACHA20SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384+CHACHA20SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384+CHACHA20SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384+CHACHA20SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384+CHACHA20SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-AES128SHA384-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-CHACHA20SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-CHACHA20SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-CHACHA20SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-CHACHA20SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-CHACHA20SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-def-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-def-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-def-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-def-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2+3-def-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384+CHACHA20SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384+CHACHA20SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384+CHACHA20SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384+CHACHA20SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384+CHACHA20SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-AES128SHA384-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-CHACHA20SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-CHACHA20SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-CHACHA20SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-CHACHA20SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-CHACHA20SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-def-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-def-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-def-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-def-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.2-def-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384+CHACHA20SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384+CHACHA20SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384+CHACHA20SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384+CHACHA20SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384+CHACHA20SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-AES128SHA384-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-CHACHA20SHA256-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-CHACHA20SHA256-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-CHACHA20SHA256-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-CHACHA20SHA256-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-CHACHA20SHA256-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-def-AES128ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-def-AES256ish+CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-def-AES256ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-def-CHACHA20ish]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_07_ssl_ciphers[TLSv1.3-def-def]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_08_cert_status[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_08_cert_status[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_08_cert_status[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-none-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.0-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.2-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.2-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.2-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.2-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.2-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.3-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.3-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.3-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.3-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1-tlsv1.3-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-none-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.0-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.2-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.2-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.2-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.2-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.2-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.3-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.3-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.3-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.3-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.1-tlsv1.3-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-none-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-none-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-none-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-none-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-none-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.0-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.0-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.0-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.0-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.0-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.2-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.2-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.2-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.2-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.2-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.3-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.3-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.3-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.3-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.2-tlsv1.3-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-none-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-none-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-none-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-none-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-none-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.0-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.0-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.0-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.0-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.0-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.1-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.1-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.1-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.1-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.1-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.2-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.2-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.2-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.2-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.2-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.3-1.0]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.3-1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.3-1.2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.3-1.3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_09_ssl_min_max[TLSv1.3-tlsv1.3-none]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_10_h3_session_reuse": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_11_wrong_host[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_11_wrong_host[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_11_wrong_host[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_12_insecure[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_12_insecure[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_12_insecure[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_14_expired_cert[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_14_expired_cert[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_15_session_export": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_16_h3_ignore_ciphers12": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_17_h1_ignore_ciphers13": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[+nonsense]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[MAC-only-SHA256]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.2-normal-only]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.2-only]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.2-secure]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-MAC-only-AEAD]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-group-only-X25519]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-no-chacha]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-normal-only]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-normal]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-only-AES128]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-only-chacha]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[TLSv1.3-only]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[group-only-SECP192R1]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[nonsense]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[only-AES256]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_18_gnutls_priority[prio-empty]": {
+     "message": "curl not build with GnuTLS",
+     "outcome": "skipped"
+    },
+    "test_17_ssl_use::test_17_19_wrong_pin[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_19_wrong_pin[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_19_wrong_pin[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_20_correct_pin[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_20_correct_pin[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_20_correct_pin[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_21_capath_valid": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_22_capath_invalid": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_23_embedded_zero[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_23_embedded_zero[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_23_embedded_zero[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_24_embedded_zero_wildcard[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_24_embedded_zero_wildcard[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_17_ssl_use::test_17_24_embedded_zero_wildcard[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_18_methods::test_18_01_delete[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_18_methods::test_18_01_delete[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_18_methods::test_18_01_delete[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_18_methods::test_18_02_delete_h2_special": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '0 packets captured\\n', '134 packets received by filter\\n', '0 pack",
+     "outcome": "failed"
+    },
+    "test_19_shutdown::test_19_02_check_shutdown[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_02_check_shutdown[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_03_shutdown_by_server[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_04_shutdown_by_curl[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_05_event_shutdown_by_server[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_06_check_shutdown[h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_06_check_shutdown[h3]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_07_shutdown_by_curl[False-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_07_shutdown_by_curl[True-http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_19_shutdown::test_19_08_event_shutdown_watched[http/1.1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_01_basic": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_02_pingpong_small": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_03_pingpong_too_large": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_04_data_small[curl_ws_send+recv]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_04_data_small[multi_perform]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_05_data_med[curl_ws_send+recv]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_05_data_med[multi_perform]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_06_data_large[curl_ws_send+recv]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_06_data_large[multi_perform]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_07_data_large_small_recv[curl_ws_send+recv]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_07_data_large_small_recv[multi_perform]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_08_data_very_large[curl_ws_send+recv]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_08_data_very_large[multi_perform]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_09_data_empty[curl_ws_send+recv]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_09_data_empty[multi_perform]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_10_proxy_http": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_11_crazy_pings": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_12_pause_frames_small": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_13_pause_frames_large": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_20_websockets::test_20_14_write_err": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_01_resolv_invalid_one": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_02_resolv_invalid_serial[1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_02_resolv_invalid_serial[50]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_03_resolv_invalid_parallel[1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_03_resolv_invalid_parallel[50]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_04_resolv_inv_v6": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_05_resolv_single_thread": {
+     "message": "no threaded resolver",
+     "outcome": "skipped"
+    },
+    "test_21_resolve::test_21_06_dnsd_empty[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_06_dnsd_empty[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_07_dnsd_a[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_07_dnsd_a[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_08_dnsd_aaaa[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_08_dnsd_aaaa[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_09_dnsd_a_delay[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_09_dnsd_a_delay[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_10_dnsd_aaaa_delay[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_10_dnsd_aaaa_delay[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_11_resolv_transient_uncached": {
+     "message": "no threaded resolver",
+     "outcome": "skipped"
+    },
+    "test_21_resolve::test_21_12_resolv_negative_cached": {
+     "message": "no threaded resolver",
+     "outcome": "skipped"
+    },
+    "test_21_resolve::test_21_13_dnsd_nxdomain_cached[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_13_dnsd_nxdomain_cached[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_14_dnsd_servfail_uncached[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_14_dnsd_servfail_uncached[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_21_resolve::test_21_15_resolv_thread_start_fails": {
+     "message": "no threaded resolver",
+     "outcome": "skipped"
+    },
+    "test_21_resolve::test_21_16_dnsd_link_local": {
+     "message": "no threaded resolver",
+     "outcome": "skipped"
+    },
+    "test_21_resolve::test_21_17_dnsd_http_fails": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_01_httpsrr_h1[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_01_httpsrr_h1[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_02_httpsrr_h3[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_02_httpsrr_h3[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_03_httpsrr_h3[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_03_httpsrr_h3[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_04_httpsrr_wrong_target[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_04_httpsrr_wrong_target[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_05_httpsrr_no_default_alpn[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_05_httpsrr_no_default_alpn[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_06_httpsrr_proxy[DNS]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_22_httpsrr::test_22_06_httpsrr_proxy[DoH]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_23_ech::test_23_01_ech_no_config[false-None-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_01_ech_no_config[grease-sent GREASE-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_01_ech_no_config[hard-None-35]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_01_ech_no_config[true-not configured-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_02_ech_good_config[false-None-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_02_ech_good_config[grease-sent GREASE-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_02_ech_good_config[hard-succeeded-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_02_ech_good_config[true-succeeded-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_03_ech_bad_config[false-None-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_03_ech_bad_config[grease-sent GREASE-0]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_03_ech_bad_config[hard-rejected-101]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_03_ech_bad_config[true-rejected-101]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_04_ech_outer[hard-succeeded-innocent.invalid]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_04_ech_outer[true-succeeded-innocent.invalid]": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_05_ech_conn_ech_reuse": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_06_ech_conn_ech_config_reuse": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_23_ech::test_23_07_ech_conn_ech_pub_reuse": {
+     "message": "no openssl cmd ECH support",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[False-True-None]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[True-False-None]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[True-False-interror]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[True-False-revoked]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[True-False-trylater]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[True-False-unauth]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[True-False-unknown]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_24_ocsp::test_24_01_verify_status[True-True-valid]": {
+     "message": "no modern openssl available",
+     "outcome": "skipped"
+    },
+    "test_30_vsftpd::test_30_01_list_dir": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_02_download_1[data-0k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_02_download_1[data-10m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_02_download_1[data-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_02_download_1[data-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_03_download_10_serial[data-0k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_03_download_10_serial[data-10m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_03_download_10_serial[data-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_03_download_10_serial[data-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_04_download_10_parallel[data-0k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_04_download_10_parallel[data-10m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_04_download_10_parallel[data-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_04_download_10_parallel[data-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_05_upload_1[upload-0k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_05_upload_1[upload-100k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_05_upload_1[upload-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_05_upload_1[upload-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_06_shutdown_download": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_07_shutdown_upload": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_08_active_download": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_09_active_up_file": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_10_active_up_ascii": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_11_download_non_existing": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_12_upload_eprt": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_30_vsftpd::test_30_13_wildcard": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_01_list_dir": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_02_download_1[data-10m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_02_download_1[data-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_02_download_1[data-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_03_download_10_serial[data-10m-2-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_03_download_10_serial[data-1k-10-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_03_download_10_serial[data-1m-5-False]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_03_download_10_serial[data-1m-5-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_04_download_10_parallel[data-10m-2-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_04_download_10_parallel[data-1k-10-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_04_download_10_parallel[data-1m-5-False]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_04_download_10_parallel[data-1m-5-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_05_upload_1[upload-100k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_05_upload_1[upload-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_05_upload_1[upload-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_06_shutdown_download": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_07_shutdown_upload": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_08_active_download": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_08_upload_ascii": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_09_active_upload": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_10_upload_stdin[0-bytes]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_10_upload_stdin[10-bytes]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_11_download_non_existing": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_12_upload_eprt": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_31_vsftpds::test_31_13_starttls_reuse": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_01_list_dir": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_02_download_1[data-10m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_02_download_1[data-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_02_download_1[data-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_03_download_10_serial[data-10m-2-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_03_download_10_serial[data-1k-10-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_03_download_10_serial[data-1m-5-False]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_03_download_10_serial[data-1m-5-True]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_03b_ftp_compat_ftps": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_04_download_10_parallel[data-10m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_04_download_10_parallel[data-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_04_download_10_parallel[data-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_05_upload_1[upload-100k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_05_upload_1[upload-1k]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_05_upload_1[upload-1m]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_06_shutdown_download": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_07_shutdown_upload": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_08_active_download": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_08_upload_ascii": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_09_active_upload": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_10_upload_stdin[0-bytes]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_10_upload_stdin[10-bytes]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_11_download_non_existing": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_32_ftps_vsftpd::test_32_12_upload_eprt": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_01_socks_http[socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_01_socks_http[socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02_socks_https[h2-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02_socks_https[h2-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02_socks_https[h3-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02_socks_https[h3-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02_socks_https[http/1.1-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02_socks_https[http/1.1-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02b_socks_https_proxy[h2-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02b_socks_https_proxy[h2-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02b_socks_https_proxy[http/1.1-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_02b_socks_https_proxy[http/1.1-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_03_dl_serial[h2-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_03_dl_serial[h2-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_03_dl_serial[http/1.1-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_03_dl_serial[http/1.1-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_04_ul_serial[h2-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_04_ul_serial[h2-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_04_ul_serial[http/1.1-socks4]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_40_socks::test_40_04_ul_serial[http/1.1-socks5]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_01_insecure": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_02_unknown_hosts": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_03_known_hosts": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_04_unauth_user": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_10_dl_single": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_11_dl_serial": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_12_dl_parallel": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_20_ul_single": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_21_ul_serial": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_50_scp::test_50_22_ul_parallel": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_01_insecure": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_02_unknown_hosts": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_03_known_hosts": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_04_unauth_user": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_10_dl_single": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_11_dl_serial": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_12_dl_parallel": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_13_dl_reuse": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_14_dl_no_reuse": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_20_ul_single": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_21_ul_serial": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_51_sftp::test_51_22_ul_parallel": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_60_h3_proxy::test_60_01_connect_tunnel[h1_over_h3_proxytunnel]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_01_connect_tunnel[h2_over_h3_proxytunnel]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h1_proxytunnel]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h2_proxytunnel]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_01_connect_tunnel[h3_over_h3_proxytunnel]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h1_over_h3_proxytunnel]": {
+     "message": "h2o_proxy not available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h2_over_h3_proxytunnel]": {
+     "message": "h2o_proxy not available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h3_over_h1_proxytunnel]": {
+     "message": "h2o_proxy not available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_02_connect_tunnel_fail[fail_h3_over_h3_proxytunnel]": {
+     "message": "h2o_proxy not available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_03_h3_target_auto_connect_udp[proxy_h1]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_60_h3_proxy::test_60_03_h3_target_auto_connect_udp[proxy_h2]": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_60_h3_proxy::test_60_04_guard_proxy_http3_unsupported": {
+     "message": "curl has h3 proxy support",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_05_graceful_shutdown": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_06_proxy_drop_mid_transfer": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_07_large_download": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_08_large_upload": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_09_parallel_downloads": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_10_proxy_basic_auth": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_11_connection_reuse": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_12_quic_session_resumption": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-10m-10485760]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1400-1400]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_13_udp_tunnel_payload_sizes[download-1m-1048576]": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_14_udp_tunnel_capsule_absent": {
+     "message": null,
+     "outcome": "passed"
+    },
+    "test_60_h3_proxy::test_60_16_h2_uses_connect_tcp_not_udp": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_17_happy_eyeballs_filter_present": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    },
+    "test_60_h3_proxy::test_60_18_happy_eyeballs_ipv4_all_proto": {
+     "message": "no h2o available",
+     "outcome": "skipped"
+    }
+   },
+   "counts": {
+    "failed": 4,
+    "passed": 913,
+    "skipped": 80
+   },
+   "exit-status": 1,
+   "functions-without-cases": []
+  },
   "results": {
    "1": {
     "result": "ok"

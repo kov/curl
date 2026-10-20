@@ -2,7 +2,7 @@
 
 # C reference baseline
 
-What the C build in `build/c` does on the C test suite: the floor the rewrite is scored against. Measured 2026-10-20T12:21:08Z to 2026-10-20T12:22:34Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
+What the C build in `build/c` does on the C test suite: the floor the rewrite is scored against. Measured 2026-10-20T12:34:08Z to 2026-10-20T12:36:14Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
 
 ```
 curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.22.1 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
@@ -18,6 +18,10 @@ Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HT
 | ok | 2107 |
 | failed | 0 |
 | skipped | 39 |
+
+## Built library
+
+`libcurl-d.so.4.8.0`, soname `libcurl-d.so.4`, 119 defined dynamic symbols. Public functions missing: none. Exported but not public (`inventory/abi.md` lists the source definitions): `curl_dbg_accept`, `curl_dbg_accept4`, `curl_dbg_calloc`, `curl_dbg_fclose`, `curl_dbg_fdopen`, `curl_dbg_fopen`, `curl_dbg_free`, `curl_dbg_freopen`, `curl_dbg_log`, `curl_dbg_malloc`, `curl_dbg_mark_sclose`, `curl_dbg_memdebug`, `curl_dbg_memlimit`, `curl_dbg_realloc`, `curl_dbg_sclose`, `curl_dbg_socket`, `curl_dbg_socketpair`, `curl_dbg_strdup`, `curl_easy_perform_ev`.
 
 ## Failed
 
@@ -41,3 +45,36 @@ None.
 | curl has IPv6 support | test requires a feature to be absent | 1 | 1454 |
 | curl has c-ares support | test requires a feature to be absent | 1 | 506 |
 | curl has proxy support | test requires a feature to be absent | 1 | 375 |
+
+## pytest suite (tests/http)
+
+| outcome | cases |
+|---|---|
+| failed | 4 |
+| passed | 913 |
+| skipped | 80 |
+
+### Not passed
+
+| case | outcome | message |
+|---|---|---|
+| test_02_download::test_02_32_earlydata[h3] | failed | AssertionError: {0: 0, 1: -109} assert -109 == 109 |
+| test_07_upload::test_07_70_put_earlydata[h3-limited-body] | failed | AssertionError: {0: 0, 1: -65536}   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   URL: -n   [0-x] * !!! WARNING !!!   [0-x] * This is a debug build of libcurl, do not use in production.   [t-0] STARTED   [0-x] * [DNS] added on |
+| test_07_upload::test_07_70_put_earlydata[h3-small-body] | failed | AssertionError: {0: 0, 1: -1117}   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   URL: -n   [0-x] * !!! WARNING !!!   [0-x] * This is a debug build of libcurl, do not use in production.   [t-0] STARTED   [0-x] * [DNS] added one |
+| test_19_shutdown::test_19_01_check_tcp_rst[http/1.1] | failed | AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\n', 'tcpdump: verbose output suppressed, use -v[v]...&#32;for full protocol decode\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\n', '0 packets captured\n', '134 packets received by filter\n', '0 pack |
+
+### Skip reasons
+
+| reason | cases |
+|---|---|
+| no h2o available | 19 |
+| curl not build with GnuTLS | 17 |
+| no openssl cmd ECH support | 17 |
+| curl built without digest | 8 |
+| no modern openssl available | 8 |
+| no threaded resolver | 5 |
+| h2o_proxy not available | 4 |
+| system does not blackhole 0100::/64 | 1 |
+| curl has h3 proxy support | 1 |
+
+Test functions with no case in the report (collected away): none.

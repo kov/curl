@@ -45,23 +45,24 @@ the tests gated on those features skip instead of running.
 
 ## Reference build
 
-The C oracle is built in `build/c`, with every backend and feature this machine can provide.
-Its test results are recorded by the inventory's `baseline` section.
+The C oracle is built in `build/c` by `inventory/measure/baseline.py --run`. Its `CMAKE_ARGS`
+holds the exact configuration, and its results are the inventory's `baseline` section. The build
+uses every backend and feature this machine can provide:
 
-| setting | value |
-|---|---|
-| build | CMake + Ninja, `CMAKE_BUILD_TYPE=Debug`, `ENABLE_DEBUG=ON` |
-| TLS | OpenSSL |
-| HTTP/2, HTTP/3 | nghttp2; ngtcp2 + nghttp3 (OpenSSL QUIC API) |
-| SSH | libssh2 |
-| resolver | c-ares |
-| compression | zlib, brotli, zstd |
-| other | libidn2, libpsl, GSS-API (MIT krb5), OpenLDAP |
-| opt-in | `CURL_ENABLE_NTLM`, and the experimental `USE_HTTPSRR`, `USE_SSLS_EXPORT`, `CURL_DISABLE_HTTPSIG=OFF`, `USE_PROXY_HTTP3` |
-| test run | `runtests.pl -a -n -j8` from `build/c/tests` (valgrind off) |
-| not buildable here | ECH (the system OpenSSL has no ECH support), quiche, Rustls, Apple fast UDP |
+- a debug build (`ENABLE_DEBUG`), so the `Debug` and `TrackMemory` test gates are open;
+- OpenSSL for TLS;
+- nghttp2 for HTTP/2, and ngtcp2 + nghttp3 for HTTP/3;
+- libssh2 for SSH and c-ares for name resolution;
+- zlib, brotli, zstd, libidn2, libpsl, GSS-API (MIT krb5) and OpenLDAP;
+- the opt-in NTLM, and the experimental HTTPS RR, SSL session export, HTTP message signatures
+  and HTTP/3 proxy.
 
-Not covered by this build:
+These cannot be built here:
+
+- ECH, because the system OpenSSL lacks it;
+- quiche, Rustls and Apple fast UDP.
+
+These are not covered by this build:
 
 - the other TLS backends (GnuTLS, mbedTLS, wolfSSL, Rustls);
 - libssh;

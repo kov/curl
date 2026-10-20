@@ -13,11 +13,13 @@ configuration changes.
 """
 
 import json
+import os
 import pathlib
 import re
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "gen"))
 import common
@@ -46,8 +48,15 @@ CMAKE_ARGS = {
     "CURL_DISABLE_HTTPSIG": "OFF",
     "USE_PROXY_HTTP3": "ON",
     "USE_ECH": "OFF",
+    # Test servers for the tests/http pytest suite, where CMake does not
+    # look on Fedora: dante's daemon is sockd, sftp-server is under openssh.
+    "DANTED": "/usr/bin/sockd",
+    "SFTPD": "/usr/libexec/openssh/sftp-server",
 }
 RUNTESTS_ARGS = ["-a", "-n", "-j8"]
+# As the curl-pytest CMake target, plus a machine-readable report.
+PYTEST_ARGS = ["-n", "auto", "-p", "no:cacheprovider"]
+VENV = BUILD / "pytest-venv"
 
 
 def run():
@@ -65,10 +74,26 @@ def run():
         r = subprocess.run(["perl", str(ROOT / "tests/runtests.pl"),
                             *RUNTESTS_ARGS], cwd=BUILD / "tests",
                            stdout=log, stderr=subprocess.STDOUT, check=False)
+    if not (VENV / "bin/pytest").exists():
+        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
+        subprocess.run([str(VENV / "bin/pip"), "install", "-q", "-r",
+                        str(ROOT / "tests/http/requirements.txt")],
+                       check=True)
+    # The test servers run as `#!/usr/bin/env python3` and need the venv's
+    # modules, so the venv goes first on PATH, as if activated.
+    env = {**os.environ,
+           "PATH": f"{VENV / 'bin'}:{os.environ.get('PATH', '')}"}
+    with (RESULTS / "pytest.log").open("w") as log:
+        p = subprocess.run([str(VENV / "bin/pytest"), *PYTEST_ARGS,
+                            f"--junitxml={RESULTS / 'pytest.xml'}",
+                            str(ROOT / "tests/http")], cwd=BUILD / "tests",
+                           env=env, stdout=log, stderr=subprocess.STDOUT,
+                           check=False)
     finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     (RESULTS / "run.json").write_text(json.dumps({
         "c-commit": commit, "started": started, "finished": finished,
-        "exit-status": r.returncode, "runtests-args": RUNTESTS_ARGS},
+        "exit-status": r.returncode, "runtests-args": RUNTESTS_ARGS,
+        "pytest-exit-status": p.returncode, "pytest-args": PYTEST_ARGS},
         indent=1) + "\n")
 
 
@@ -132,6 +157,65 @@ def parse_log(log, all_tests, disabled):
     return ran, failed, {n: reason[n] for n in skipped}, failures
 
 
+def parse_pytest(report, log, files):
+    """
+    Return per-case outcomes from pytest's JUnit report.
+
+    Checked against the summary line pytest printed, and against the test
+    functions the tests inventory found in tests/http.
+    """
+    cases = {}
+    for tc in ET.parse(report).getroot().iter("testcase"):
+        module = next((p for p in tc.get("classname").split(".")
+                       if re.match(r"^test_\d+", p)), None)
+        check(module is not None, f"no module in {tc.get('classname')}")
+        case = f"{module}::{tc.get('name')}"
+        check(case not in cases, f"duplicate pytest case {case}")
+        outcome, message = "passed", None
+        for kind in ("failure", "error", "skipped"):
+            el = tc.find(kind)
+            if el is not None:
+                outcome = {"failure": "failed", "error": "error",
+                           "skipped": "skipped"}[kind]
+                message = (el.get("message") or "").strip()[:300]
+                break
+        cases[case] = {"outcome": outcome, "message": message}
+    m = re.search(r"^=+ (.*) in [\d.]+s.* =+$", log, re.MULTILINE)
+    check(m is not None, "no pytest summary line")
+    summary = {}
+    for n, what in re.findall(r"(\d+) (\w+)", m.group(1)):
+        summary[{"errors": "error", "error": "error"}.get(what, what)] = \
+            int(n)
+    counts = {}
+    for c in cases.values():
+        counts[c["outcome"]] = counts.get(c["outcome"], 0) + 1
+    check(counts == summary,
+          f"JUnit outcomes {counts} differ from pytest's summary {summary}")
+    known = set()
+    for f in files:
+        module = pathlib.Path(f["file"]).stem
+        names = [t["name"] for c in f["classes"] for t in c["tests"]]
+        names += [t["name"] for t in f.get("functions", [])]
+        known |= {f"{module}::{n}" for n in names}
+    ran = {c.split("[")[0] for c in cases}
+    check(ran <= known, f"cases for unknown functions: {sorted(ran - known)}")
+    return cases, sorted(known - ran)
+
+
+def exports():
+    """Return the built library's soname and defined dynamic symbols."""
+    libs = sorted(BUILD.glob("lib/libcurl*.so.*.*.*"))
+    check(len(libs) == 1, f"expected one built libcurl, found {libs}")
+    dyn = subprocess.run(["readelf", "-d", str(libs[0])], check=True,
+                         capture_output=True, text=True).stdout
+    soname = re.search(r"Library soname: \[(.*?)\]", dyn).group(1)
+    nm = subprocess.run(["nm", "-D", "--defined-only", str(libs[0])],
+                        check=True, capture_output=True, text=True).stdout
+    symbols = sorted(line.split()[-1] for line in nm.splitlines())
+    check("curl_easy_init" in symbols, "nm output has no curl_easy_init")
+    return {"file": libs[0].name, "soname": soname, "symbols": symbols}
+
+
 def classify(why):
     if why == "configured as DISABLED":
         return "disabled"
@@ -167,6 +251,24 @@ def main():
                        log, re.MULTILINE | re.DOTALL)
     check(system is not None, "no System characteristics block")
 
+    pytest_cases, pytest_uncollected = parse_pytest(
+        RESULTS / "pytest.xml",
+        (RESULTS / "pytest.log").read_text(errors="replace"),
+        tests["pytest"]["files"])
+    pytest_counts = {}
+    for c in pytest_cases.values():
+        pytest_counts[c["outcome"]] = pytest_counts.get(c["outcome"], 0) + 1
+    skip_reasons = {}
+    for c in pytest_cases.values():
+        if c["outcome"] == "skipped":
+            skip_reasons[c["message"]] = skip_reasons.get(c["message"], 0) + 1
+
+    lib = exports()
+    abi = json.loads((common.INVENTORY / "abi.json").read_text())["data"]
+    public = {f["name"] for f in abi["functions"]}
+    lib["not-public"] = sorted(set(lib["symbols"]) - public)
+    lib["public-missing"] = sorted(public - set(lib["symbols"]))
+
     results = {}
     for n in sorted(by_num):
         if n in failed:
@@ -187,10 +289,16 @@ def main():
         "features": features,
         "protocols": protocols.split(),
         "system": system.group(1).strip().splitlines(),
+        "library": lib,
         "counts": {"considered": len(by_num), "ran": len(ran),
                    "ok": len(ran) - len(failed), "failed": len(failed),
                    "skipped": len(skipped)},
         "results": {str(n): r for n, r in results.items()},
+        "pytest": {"args": meta["pytest-args"],
+                   "exit-status": meta["pytest-exit-status"],
+                   "counts": pytest_counts,
+                   "functions-without-cases": pytest_uncollected,
+                   "cases": pytest_cases},
     }
 
     reasons = {}
@@ -207,6 +315,13 @@ def main():
         *version.strip().splitlines(),
         "```\n",
         common.md_table(["", "tests"], list(data["counts"].items())),
+        "## Built library\n",
+        (f"`{lib['file']}`, soname `{lib['soname']}`, "
+         f"{len(lib['symbols'])} defined dynamic symbols. Public functions "
+         f"missing: {lib['public-missing'] or 'none'}. Exported but not "
+         "public (`inventory/abi.md` lists the source definitions): "
+         + (", ".join(f"`{n}`" for n in lib["not-public"]) or "none")
+         + ".\n"),
         "## Failed\n",
         common.md_table(
             ["test", "name", "failed parts", "keywords"],
@@ -218,6 +333,22 @@ def main():
             [(why, classify(why), len(nums), sorted(nums))
              for why, nums in sorted(reasons.items(),
                                      key=lambda x: (classify(x[0]), x[0]))]),
+    ]
+    md += [
+        "## pytest suite (tests/http)\n",
+        common.md_table(["outcome", "cases"], sorted(pytest_counts.items())),
+        "### Not passed\n",
+        common.md_table(
+            ["case", "outcome", "message"],
+            [(k, c["outcome"], c["message"])
+             for k, c in sorted(pytest_cases.items())
+             if c["outcome"] in ("failed", "error")]),
+        "### Skip reasons\n",
+        common.md_table(["reason", "cases"],
+                        sorted(skip_reasons.items(), key=lambda x: -x[1])),
+        ("Test functions with no case in the report (collected away): "
+         + (", ".join(f"`{n}`" for n in pytest_uncollected) or "none")
+         + ".\n"),
     ]
     common.write("baseline", data, "\n".join(md), [
         "build/c/baseline/", "build/c/CMakeCache.txt", "tests/runtests.pl"],

@@ -65,6 +65,32 @@ pub(crate) fn allocator() -> Allocator {
 }
 
 impl Allocator {
+    /// `size` bytes from the installed `malloc`, or NULL.
+    pub(crate) fn malloc(&self, size: usize) -> *mut c_void {
+        // SAFETY: calling the installed `malloc`, which takes any size.
+        unsafe { (self.malloc)(size) }
+    }
+
+    /// Free memory from this allocator.
+    ///
+    /// # Safety
+    ///
+    /// `p` is NULL or came from this allocator and is not used again.
+    pub(crate) unsafe fn free(&self, p: *mut c_void) {
+        // SAFETY: as the caller guarantees.
+        unsafe { (self.free)(p) }
+    }
+
+    /// A copy of the C string `s` from the installed `strdup`, or NULL.
+    ///
+    /// # Safety
+    ///
+    /// `s` points to a NUL-terminated string.
+    pub(crate) unsafe fn strdup(&self, s: *const c_char) -> *mut c_char {
+        // SAFETY: as the caller guarantees.
+        unsafe { (self.strdup)(s) }
+    }
+
     /// A NUL-terminated copy of `bytes` the application frees with
     /// `curl_free`, or NULL if the allocation fails.
     pub(crate) fn c_string(&self, bytes: &[u8]) -> *mut c_char {

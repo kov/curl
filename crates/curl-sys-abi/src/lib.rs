@@ -19,6 +19,7 @@ mod error_codes;
 mod printf;
 mod root;
 mod strerror;
+mod strings;
 mod version;
 
 #[cfg(test)]

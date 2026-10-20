@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "curl"
+publish = false
+
+[workspace.lints.rust]
+# Unsafe code is allowed only in the modules CLAUDE.md lists, each of
+# which opts in with `#![allow(unsafe_code)]`.
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

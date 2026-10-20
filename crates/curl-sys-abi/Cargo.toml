@@ -1,0 +1,22 @@
+[package]
+name = "curl-sys-abi"
+description = "libcurl's C ABI, translated onto curl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "curl"
+crate-type = ["cdylib"]
+
+[features]
+# The hooks of a C debug build: the curl_dbg_* exports, memory tracking
+# and the libcurl-d.so.4 soname.
+debug-hooks = []
+
+[dependencies]
+curl-core = { path = "../curl-core" }
+
+[lints]
+workspace = true

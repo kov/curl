@@ -1,0 +1,10 @@
+[package]
+name = "curl-core"
+description = "The Rust API of the curl rewrite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

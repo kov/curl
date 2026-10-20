@@ -46,9 +46,10 @@ build:
 rewrite. Each is ported to a Rust test beside the code it exercises. The inventory maps every
 unit test to its target, so none is dropped silently.
 
-The rewrite's build must expose the same test hooks as a C debug build: the `Debug`,
-`TrackMemory` and `unittest` feature gates and the `libcurl-env-dbg` variables. Without them,
-the tests gated on those features skip instead of running.
+The rewrite's test build must expose the same test hooks as a C debug build: the `Debug` and
+`TrackMemory` feature gates and the `libcurl-env-dbg` variables. Without them, the tests gated
+on those features skip instead of running. It does not report `unittest`: the tests behind that
+gate run C unit-test programs, which test the C internals whatever library is installed.
 
 ## Reference build
 
@@ -95,10 +96,32 @@ local download, upload and request scorecard of `tests/http/scorecard.py`. Its `
 side. The benchmarks that call internal helpers rather than the public API (base64, number parsing)
 need Rust counterparts; the inventory marks them `port`.
 
+## Stages
+
+Each stage ends with its tests running on the Rust build and matching the C reference, with no
+test newly skipped:
+
+0. **Harness.** The Cargo workspace, a `build/rust` test tree in which the Rust library and tool
+   replace the C ones under the C-built test servers and programs, and a comparison against the
+   C baseline. The harness is armed by showing that a stub library passes nothing.
+1. **APIs without a network.** Formatted printing, error strings, string lists, escaping, date
+   parsing, the URL API, option metadata, version information and global init, with the debug
+   hooks those tests depend on. The tool answers `-V`.
+2. **The tool's command line.** Option parsing, help, configuration files and variables, and the
+   tool tests that need no server.
+3. **The transfer engine.** Easy and multi handles, the connection pool, `file://`, then HTTP/1.1
+   with cookies, authentication, redirects and proxies.
+4. **TLS** through OpenSSL.
+5. **HTTP/2 and HTTP/3.**
+6. **The other protocols:** FTP, SMTP, IMAP, POP3, SSH, LDAP, MQTT, WebSocket and the rest.
+7. **Shared state:** the share interface, HSTS, alt-svc, DoH and SSL session export.
+8. **Performance** against the C reference.
+
 ## Repository layout
 
 - The C tree stays where it is; it is the reference, not upstream.
-- The Cargo workspace lives at the top level.
+- The Cargo workspace lives at the top level, with its crates in `crates/` and build output in
+  `build/target`. `DESIGN.md` describes its architecture.
 - `inventory/` is generated and committed.
 
 Paths that belong to the rewrite are listed in `NOT_C_TREE` in `inventory/gen/common.py`.

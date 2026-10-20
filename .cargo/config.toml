@@ -1,0 +1,3 @@
+[build]
+# Keep build output under build/, which the C tree already ignores.
+target-dir = "build/target"

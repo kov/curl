@@ -8,6 +8,7 @@ contribution etiquette does not apply here. This file does.
 
 What the rewrite covers (platforms, backends, which tests count, the reference build) is decided
 in [`SCOPE.md`](SCOPE.md); what the C tree contains is enumerated in [`inventory/`](inventory/README.md).
+How the code is shaped (crates, ownership, types, allocation) is in [`DESIGN.md`](DESIGN.md).
 
 ## Why Rust, and what follows from it
 
@@ -21,6 +22,10 @@ comment naming the invariant and who upholds it. The rest of the code is safe Ru
 unsafe block outside these modules is a design failure, not a shortcut. Name each such module in
 this list when it is created, and keep the list exhaustive on purpose: a module that starts
 needing unsafe is a module whose types are wrong.
+
+Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
+
+- `crates/curl-sys-abi`: the C ABI shim.
 
 **Make bad state unrepresentable; fail the build, not the run.** Use the type system in our
 favour. libcurl is a soup of bare integers, `long` options and `void *` — option values, socket

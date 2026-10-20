@@ -1,0 +1,17 @@
+[package]
+name = "curl-tool"
+description = "The curl command-line tool, on curl-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "curl"
+path = "src/main.rs"
+
+[dependencies]
+curl-core = { path = "../curl-core" }
+
+[lints]
+workspace = true

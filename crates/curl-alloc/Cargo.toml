@@ -6,5 +6,16 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The debug build's memory tracker: a global allocator writing the
+# memdump the C test suite reads.
+debug-hooks = []
+
+[[test]]
+name = "track"
+required-features = ["debug-hooks"]
+# Past its limit every tracked allocation fails, the harness's included.
+harness = false
+
 [lints]
 workspace = true

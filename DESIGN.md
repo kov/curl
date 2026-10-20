@@ -136,8 +136,8 @@ on `curl-sys-abi` provides:
 
 Release builds contain none of this.
 
-The Rust build does not report the `unittest` feature: the C unit-test programs link C
-internals and must never run against the rewrite (see below).
+The C unit-test programs link C internals, so they never run on the Rust leg; the tests that
+use them are scored apart, and their Rust ports stand in for them (see below).
 
 ## Ported unit tests
 

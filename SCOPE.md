@@ -48,8 +48,9 @@ unit test to its target, so none is dropped silently.
 
 The rewrite's test build must expose the same test hooks as a C debug build: the `Debug` and
 `TrackMemory` feature gates and the `libcurl-env-dbg` variables. Without them, the tests gated
-on those features skip instead of running. It does not report `unittest`: the tests behind that
-gate run C unit-test programs, which test the C internals whatever library is installed.
+on those features skip instead of running. The `unittest` gate is always open in `runtests.pl`,
+but the tests behind it run C unit-test programs, which test C internals whatever library is
+installed: on the Rust build they are counted apart from the suite and replaced by the Rust ports.
 
 ## Reference build
 

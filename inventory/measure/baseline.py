@@ -18,12 +18,11 @@ import pathlib
 import re
 import subprocess
 import sys
-import time
-import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "gen"))
 import common
 import deps
+import suite
 from common import ROOT, check
 
 BUILD = ROOT / "build" / "c"
@@ -57,15 +56,9 @@ CMAKE_ARGS = {
     "DANTED": "/usr/bin/sockd",
     "SFTPD": "/usr/libexec/openssh/sftp-server",
 }
-# Features SCOPE.md leaves out: tests needing them skip by design.
-OUT_OF_SCOPE = {"NTLM"}
 # Test programs that link libcurl and ngtcp2 themselves.
 TEST_PROGRAMS = [BUILD / "tests/libtest/libtests",
                  BUILD / "tests/unit/units", BUILD / "tests/tunit/tunits"]
-RUNTESTS_ARGS = ["-a", "-n", "-j8"]
-# As the curl-pytest CMake target, plus a machine-readable report.
-PYTEST_ARGS = ["-n", "auto", "-p", "no:cacheprovider"]
-VENV = BUILD / "pytest-venv"
 
 
 def run():
@@ -86,74 +79,9 @@ def run():
     for binary in [next(BUILD.glob("lib/libcurl*.so.*.*.*")),
                    BUILD / "src/curl", *TEST_PROGRAMS]:
         deps.check_linked(binary)
-    RESULTS.mkdir(exist_ok=True)
-    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    with (RESULTS / "runtests.log").open("w") as log:
-        r = subprocess.run(["perl", str(ROOT / "tests/runtests.pl"),
-                            *RUNTESTS_ARGS], cwd=BUILD / "tests",
-                           stdout=log, stderr=subprocess.STDOUT, check=False)
-    probe_skips()
-    if not (VENV / "bin/pytest").exists():
-        subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
-        subprocess.run([str(VENV / "bin/pip"), "install", "-q", "-r",
-                        str(ROOT / "tests/http/requirements.txt")],
-                       check=True)
-    # The test servers run as `#!/usr/bin/env python3` and need the venv's
-    # modules, so the venv goes first on PATH, as if activated.
-    env = {**os.environ,
-           "PATH": f"{VENV / 'bin'}:{os.environ.get('PATH', '')}"}
-    with (RESULTS / "pytest.log").open("w") as log:
-        p = subprocess.run([str(VENV / "bin/pytest"), *PYTEST_ARGS,
-                            f"--junitxml={RESULTS / 'pytest.xml'}",
-                            str(ROOT / "tests/http")], cwd=BUILD / "tests",
-                           env=env, stdout=log, stderr=subprocess.STDOUT,
-                           check=False)
-    # The pytest harness leaves the vsftpd daemons it starts running; stop
-    # them so repeated runs do not pile them up.
-    leftover = subprocess.run(["pkill", "-c", "-f",
-                               f"^\\S*vsftpd {ROOT}/tests/http/gen/"],
-                              check=False, capture_output=True,
-                              text=True).stdout.strip()
-    finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    (RESULTS / "run.json").write_text(json.dumps({
-        "c-commit": commit, "started": started, "finished": finished,
-        "exit-status": r.returncode, "runtests-args": RUNTESTS_ARGS,
-        "pytest-exit-status": p.returncode, "pytest-args": PYTEST_ARGS,
-        "pytest-leftover-vsftpd": int(leftover or 0)},
-        indent=1) + "\n")
-
-
-SKIPPED_LINE = r"^test (\d+) SKIPPED: (.*?)\s*$"
-
-
-def probe_skips():
-    """
-    Recover the skip reason of every test runtests.pl skipped.
-
-    runtests.pl prints only the first three SKIPPED lines per reason and
-    nine numbers per reason in its summary. Rerunning just the unexplained
-    tests prints the next three, without starting any server; repeat until
-    each has its line in skip-probes.log.
-    """
-    log = (RESULTS / "runtests.log").read_text(errors="replace")
-    tests = json.loads((common.INVENTORY / "tests.json").read_text())["data"]
-    explained = {int(n) for n in
-                 re.findall(r"^test (\d+) [\[S]", log, re.MULTILINE)}
-    explained |= set(tests["disabled"]["unconditional"])
-    pending = sorted({t["number"] for t in tests["tests"]} - explained)
-    with (RESULTS / "skip-probes.log").open("w") as out:
-        while pending:
-            r = subprocess.run(["perl", str(ROOT / "tests/runtests.pl"),
-                                "-n", *map(str, pending)],
-                               cwd=BUILD / "tests", capture_output=True,
-                               text=True, check=False)
-            out.write(r.stdout)
-            check(not re.search(r"^test \d+ \[", r.stdout, re.MULTILINE),
-                  "a probed test ran instead of skipping")
-            got = {int(n) for n, _ in
-                   re.findall(SKIPPED_LINE, r.stdout, re.MULTILINE)}
-            check(got, f"probe explained none of {pending}")
-            pending = [n for n in pending if n not in got]
+    meta = suite.run(BUILD, RESULTS, dict(os.environ))
+    (RESULTS / "run.json").write_text(
+        json.dumps({"c-commit": commit, **meta}, indent=1) + "\n")
 
 
 def build_config():
@@ -166,100 +94,6 @@ def build_config():
         check(cache.get(k) == v,
               f"build/c has {k}={cache.get(k)!r}, CMAKE_ARGS says {v!r}")
     return cache
-
-
-def parse_log(log, all_tests, disabled):
-    ran = [int(n) for n in re.findall(r"^test (\d+) \[", log, re.MULTILINE)]
-    check(len(ran) == len(set(ran)), "a test ran twice")
-    ran = set(ran)
-    m = re.search(r"^TESTDONE: (\d+) tests were considered", log, re.MULTILINE)
-    check(m and int(m.group(1)) == len(all_tests),
-          "considered count differs from the tests inventory")
-    m = re.search(r"^TESTFAIL: These test cases failed: (.*)$", log, re.MULTILINE)
-    failed = {int(n) for n in m.group(1).split()} if m else set()
-    check(failed <= ran, "a failed test never started")
-    m = re.search(r"^TESTDONE: (\d+) tests out of (\d+) reported OK", log,
-                  re.MULTILINE)
-    check(m is not None, "no TESTDONE result line")
-    ok, total = int(m.group(1)), int(m.group(2))
-    check(total == len(ran) and ok == len(ran) - len(failed),
-          f"runtests says {ok}/{total} OK; log has {len(ran)} started, "
-          f"{len(failed)} failed")
-    check(len(re.findall(r"^\S+ OK \(", log, re.MULTILINE)) == ok,
-          "OK lines differ from the OK count")
-
-    # Skip reasons: SKIPPED lines (the run's, then probe_skips'), then
-    # TESTINFO lists (cut off after nine numbers), then DISABLED.
-    reason = {}
-    probes = (RESULTS / "skip-probes.log").read_text(errors="replace")
-    for n, why in re.findall(SKIPPED_LINE, log + probes, re.MULTILINE):
-        reason.setdefault(int(n), why)
-    info = {}
-    for why, count, nums in re.findall(
-            r'^TESTINFO: "(.*?)" (\d+) times? \(([^)]*)\)', log, re.MULTILINE):
-        info[why.strip()] = int(count)
-        for n in re.findall(r"\d+", nums.split(" and ")[0]):
-            reason.setdefault(int(n), why.strip())
-    for n in disabled:
-        reason.setdefault(n, "configured as DISABLED")
-    skipped = set(all_tests) - ran
-    check(skipped == set(reason) - ran,
-          f"skipped tests without a reason: {sorted(skipped - set(reason))}")
-    counts = {}
-    for n in skipped:
-        counts[reason[n]] = counts.get(reason[n], 0) + 1
-    check(counts == info, f"skip reasons {counts} differ from TESTINFO {info}")
-
-    failures = {}
-    for n in failed:
-        failures[n] = sorted(set(re.findall(
-            rf"^ {n}: (.*?) FAILED", log, re.MULTILINE)))
-    return ran, failed, {n: reason[n] for n in skipped}, failures
-
-
-def parse_pytest(report, log, files):
-    """
-    Return per-case outcomes from pytest's JUnit report.
-
-    Checked against the summary line pytest printed, and against the test
-    functions the tests inventory found in tests/http.
-    """
-    cases = {}
-    for tc in ET.parse(report).getroot().iter("testcase"):
-        module = next((p for p in tc.get("classname").split(".")
-                       if re.match(r"^test_\d+", p)), None)
-        check(module is not None, f"no module in {tc.get('classname')}")
-        case = f"{module}::{tc.get('name')}"
-        check(case not in cases, f"duplicate pytest case {case}")
-        outcome, message = "passed", None
-        for kind in ("failure", "error", "skipped"):
-            el = tc.find(kind)
-            if el is not None:
-                outcome = {"failure": "failed", "error": "error",
-                           "skipped": "skipped"}[kind]
-                message = (el.get("message") or "").strip()[:300]
-                break
-        cases[case] = {"outcome": outcome, "message": message}
-    m = re.search(r"^=+ (.*) in [\d.]+s.* =+$", log, re.MULTILINE)
-    check(m is not None, "no pytest summary line")
-    summary = {}
-    for n, what in re.findall(r"(\d+) (\w+)", m.group(1)):
-        summary[{"errors": "error", "error": "error"}.get(what, what)] = \
-            int(n)
-    counts = {}
-    for c in cases.values():
-        counts[c["outcome"]] = counts.get(c["outcome"], 0) + 1
-    check(counts == summary,
-          f"JUnit outcomes {counts} differ from pytest's summary {summary}")
-    known = set()
-    for f in files:
-        module = pathlib.Path(f["file"]).stem
-        names = [t["name"] for c in f["classes"] for t in c["tests"]]
-        names += [t["name"] for t in f.get("functions", [])]
-        known |= {f"{module}::{n}" for n in names}
-    ran = {c.split("[")[0] for c in cases}
-    check(ran <= known, f"cases for unknown functions: {sorted(ran - known)}")
-    return cases, sorted(known - ran)
 
 
 def exports():
@@ -276,19 +110,6 @@ def exports():
     return {"file": libs[0].name, "soname": soname, "symbols": symbols}
 
 
-def classify(why):
-    if why == "configured as DISABLED":
-        return "disabled"
-    m = re.match(r"^curl lacks (\S+) support$", why)
-    if m and m.group(1) in OUT_OF_SCOPE:
-        return "out of scope"
-    if re.match(r"^curl lacks ", why):
-        return "feature missing from build"
-    if re.match(r"^curl has ", why):
-        return "test requires a feature to be absent"
-    return "environment"
-
-
 def main():
     if "--run" in sys.argv[1:]:
         run()
@@ -301,9 +122,15 @@ def main():
     check(json.loads((common.INVENTORY / "tests.json").read_text())
           ["c-commit"] == meta["c-commit"], "tests inventory is stale")
     by_num = {t["number"]: t for t in tests["tests"]}
-    disabled = tests["disabled"]["unconditional"]
+    results, pytest_cases, pytest_uncollected = suite.results(
+        BUILD, RESULTS, tests)
+    failures = {n: r["failed-parts"] for n, r in results.items()
+                if r["result"] == "failed"}
+    failed = set(failures)
+    skipped = {n: r["reason"] for n, r in results.items()
+               if r["result"] == "skipped"}
+    ran = set(by_num) - set(skipped)
     log = (RESULTS / "runtests.log").read_text(errors="replace")
-    ran, failed, skipped, failures = parse_log(log, list(by_num), disabled)
 
     version = subprocess.run([str(BUILD / "src/curl"), "-V"],
                              capture_output=True, text=True,
@@ -314,10 +141,6 @@ def main():
                        log, re.MULTILINE | re.DOTALL)
     check(system is not None, "no System characteristics block")
 
-    pytest_cases, pytest_uncollected = parse_pytest(
-        RESULTS / "pytest.xml",
-        (RESULTS / "pytest.log").read_text(errors="replace"),
-        tests["pytest"]["files"])
     pytest_counts = {}
     for c in pytest_cases.values():
         pytest_counts[c["outcome"]] = pytest_counts.get(c["outcome"], 0) + 1
@@ -332,15 +155,6 @@ def main():
     lib["not-public"] = sorted(set(lib["symbols"]) - public)
     lib["public-missing"] = sorted(public - set(lib["symbols"]))
 
-    results = {}
-    for n in sorted(by_num):
-        if n in failed:
-            results[n] = {"result": "failed", "failed-parts": failures[n]}
-        elif n in ran:
-            results[n] = {"result": "ok"}
-        else:
-            results[n] = {"result": "skipped", "reason": skipped[n],
-                          "class": classify(skipped[n])}
     data = {
         "measured": {"started": meta["started"],
                      "finished": meta["finished"]},
@@ -393,9 +207,9 @@ def main():
         "## Skipped\n",
         common.md_table(
             ["reason", "class", "count", "tests"],
-            [(why, classify(why), len(nums), sorted(nums))
+            [(why, suite.classify(why), len(nums), sorted(nums))
              for why, nums in sorted(reasons.items(),
-                                     key=lambda x: (classify(x[0]), x[0]))]),
+                                     key=lambda x: (suite.classify(x[0]), x[0]))]),
     ]
     md += [
         "## pytest suite (tests/http)\n",

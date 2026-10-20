@@ -12,6 +12,10 @@ python3 inventory/gen/all.py --check   # also fail if any committed output is st
 ```
 
 Run `--check` after the C tree moves; a generator that fails its self-checks writes nothing.
+
+`baseline` comes from `inventory/measure/baseline.py`, which `all.py` does not run. `--run` configures and builds
+the C tree in `build/c`, runs the whole suite (about 90 seconds) and parses the results; without
+`--run` it only re-parses the stored results, and refuses if they were measured at another C commit.
 Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.
 
 ## Sections
@@ -24,6 +28,7 @@ Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.
 | `features` | Protocol schemes, `curl_version_info` features and the test-gating names derived from them, build options, backends per category, environment variables libcurl reads. |
 | `quirks` | Claims from KNOWN_BUGS, TODO, EXPERIMENTAL, DEPRECATE and KNOWN_RISKS. All are hypotheses until a test reproduces them. |
 | `tests` | Every `tests/data` case with keywords, features, servers and runner; DISABLED; libtest, unit and tunit programs; the pytest suite; test servers. |
+| `baseline` | Measured, not derived: what the C reference build in `build/c` does on the test suite, per test (ok, failed, or skipped with its reason), with the build flags and `curl -V`. |
 
 ## Reading the data
 

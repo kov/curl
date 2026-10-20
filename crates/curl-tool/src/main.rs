@@ -53,9 +53,10 @@ fn memlimit(value: &OsStr) -> Option<u64> {
 }
 
 fn main() -> ExitCode {
+    let argv = command_line();
     #[cfg(feature = "debug-hooks")]
     memory_tracking_init();
-    let mut args = std::env::args_os().skip(1).peekable();
+    let mut args = argv.into_iter().skip(1).peekable();
     // `-q`/`--disable` only stops the config file being read, and none is.
     if args
         .peek()
@@ -78,6 +79,20 @@ fn main() -> ExitCode {
             ExitCode::from(NOT_IMPLEMENTED)
         }
     }
+}
+
+/// The command line, as the operating system gave it.
+///
+/// It is read before allocation tracking starts: like C's `argv`, it is the
+/// process's input rather than memory curl allocates, and the C debug
+/// build's memdump never shows it. Copying it out of the OS is the one
+/// infallible allocation the tool keeps.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the command line is copied once, before anything is tracked"
+)]
+fn command_line() -> Vec<std::ffi::OsString> {
+    std::env::args_os().collect()
 }
 
 /// `curl --version`.

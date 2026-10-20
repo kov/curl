@@ -3,6 +3,10 @@
 //! this checks the same property for ours: a memdump is written, it shows
 //! the tool's allocations, and tests/memanalyze.pl, the analyser
 //! runtests.pl uses, finds nothing wrong in it.
+//!
+//! `--version` itself allocates nothing. The allocation that is always
+//! there is the tool reading `CURL_MEMLIMIT`, which happens after the
+//! memdump is opened, as C's tool reads it with a tracked `curl_getenv`.
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
@@ -16,7 +20,7 @@ fn test96_memory_tracking_operational() {
     let out = Command::new(env!("CARGO_BIN_EXE_curl"))
         .arg("--version")
         .env("CURL_MEMDEBUG", &memdump)
-        .env_remove("CURL_MEMLIMIT")
+        .env("CURL_MEMLIMIT", "1000000")
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");

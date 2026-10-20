@@ -649,7 +649,7 @@ fn parse_port(host: &mut Bytes, has_scheme: bool) -> Result<Option<u16>, UrlErro
     }
     let n = digits.iter().take_while(|b| b.is_ascii_digit()).count();
     match digits.get(n) {
-        _ if digits[0] == b'\\' => return Err(UrlErrorKind::Backslash),
+        // A backslash ends the digits, first or not.
         Some(b'\\') => return Err(UrlErrorKind::Backslash),
         Some(_) => return Err(UrlErrorKind::BadPortNumber),
         None => {}

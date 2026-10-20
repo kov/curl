@@ -442,6 +442,12 @@ CURL_SYM_RE = re.compile(r"\b(CURL[A-Z]*_[A-Z0-9_]+)\b")
 API_RE = re.compile(r"\b(curl_[a-z0-9_]+)\s*\(")
 
 
+# Helpers every tests/perf program uses for timing, argument parsing and
+# freeing; compiled into the perf binary, not what is being measured.
+PERF_HARNESS = {"curlx_now", "curlx_timediff_us", "curlx_str_number",
+                "curlx_free"}
+
+
 def analyze_c_test(path, kind, funcidx):
     src(path)
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -456,7 +462,7 @@ def analyze_c_test(path, kind, funcidx):
     }
     rec["curl_api_calls"] = sorted(set(API_RE.findall(stripped)))
     rec["curl_symbols"] = sorted(set(CURL_SYM_RE.findall(stripped)))
-    if kind in ("unit", "tunit"):
+    if kind in ("unit", "tunit", "perf"):
         internal = {}
         for name in sorted(calls):
             if name in funcidx and name not in entry:
@@ -715,6 +721,43 @@ def main():
     for f in tunit_files:
         programs[f[:-2]] = dict(analyze_c_test(TESTS / "tunit" / f, "tunit", funcidx),
                                 kind="tunit", generated=False)
+    # perf: stand-alone benchmarks, not run by runtests.pl
+    perf_listed = read_makefile_inc_list(TESTS / "perf" / "Makefile.inc")
+    perf_files = sorted(p.name for p in (TESTS / "perf").glob("*.c")
+                        if p.name != "first.c")
+    discrepancies["perf_listed_without_file"] = sorted(set(perf_listed) - set(perf_files))
+    discrepancies["perf_file_not_listed"] = sorted(set(perf_files) - set(perf_listed))
+    check("base64enc.c" in perf_listed and "urlparser.c" in perf_listed,
+          "known perf sources missing from tests/perf/Makefile.inc")
+    readme = (TESTS / "perf" / "README.md").read_text()
+    src(TESTS / "perf" / "README.md")
+    perf_docs = {m.group(1): m.group(2).strip() for m in re.finditer(
+        r"^## `(\w+)`\n\n(.*?)(?=^## |\Z)", readme, re.MULTILINE | re.DOTALL)}
+    check(set(perf_docs) == {f[:-2] for f in perf_files},
+          f"tests/perf/README.md sections {sorted(perf_docs)} differ from programs")
+    perf = {}
+    for f in perf_files:
+        rec = analyze_c_test(TESTS / "perf" / f, "perf", funcidx)
+        name = f[:-2]
+        usage = re.findall(r"^    (\./perf .*)$|`(\./perf [^`]*)`", perf_docs[name],
+                           re.MULTILINE)
+        usage = [a or b for a, b in usage]
+        check(usage, f"tests/perf/README.md gives no usage for {name}")
+        perf[name] = dict(
+            rec, description=" ".join(
+                l.strip() for l in perf_docs[name].split("\n\n")[0].splitlines()),
+            usage=usage,
+            measured_internal=sorted(set(rec["internal_functions"])
+                                     - PERF_HARNESS),
+            # measuring an internal helper (compiled into the perf binary
+            # from CURLX_C, not taken from libcurl) needs a Rust port; the
+            # rest measure the public API and can run against any libcurl
+            rust_leg="port" if set(rec["internal_functions"]) - PERF_HARNESS
+            else "c-abi")
+    check(perf["base64enc"]["rust_leg"] == "port"
+          and perf["urlencode"]["rust_leg"] == "c-abi",
+          "perf classification: base64enc uses curlx, urlencode only the API")
+
     for name, pr in programs.items():
         if not pr["generated"]:
             exp = f"test_{name}"
@@ -950,6 +993,7 @@ def main():
             "libtest_programs": sum(1 for p in programs.values() if p["kind"] == "libtest"),
             "unit_programs": len(unit_files),
             "tunit_programs": len(tunit_files),
+            "perf_programs": len(perf_files),
             "pytest_functions": n_py,
             "c_server_programs": len(c_servers),
             "server_keywords_mapped": len(SERVER_MAP),
@@ -985,6 +1029,7 @@ def main():
         "makefile_am": {"testcases_listed": len(mk_nums), "extra_dist": extra_files},
         "data_dir_other_files": other_files,
         "programs": {k: programs[k] for k in sorted(programs)},
+        "perf": perf,
         "helper_perl_scripts": script_users,
         "pytest": {
             "files": py,
@@ -1048,6 +1093,7 @@ def render_md(data, tests, programs, py_flat, SERVER_MAP, d_entries, d_directive
         ("libtest programs (incl. generated lib1521)", c["libtest_programs"]),
         ("unit programs (`tests/unit`)", c["unit_programs"]),
         ("tunit programs (`tests/tunit`)", c["tunit_programs"]),
+        ("perf benchmarks (`tests/perf`, not run by runtests.pl)", c["perf_programs"]),
         ("pytest functions (`tests/http/test_*.py`, before parametrization)", c["pytest_functions"]),
         ("C test server programs (`tests/server`)", c["c_server_programs"]),
         ("tests with no `<server>` section", data["tests_without_server_section"]),
@@ -1128,6 +1174,17 @@ def render_md(data, tests, programs, py_flat, SERVER_MAP, d_entries, d_directive
                      ", ".join(sorted(p["internal_functions"])) or "-",
                      "Windows/DOS only" if p.get("platform_conditional") else ""))
     emit(md_table(["program", "tests", "files", "functions", "note"], rows))
+
+    emit("\n## perf benchmarks (`tests/perf`)\n")
+    emit("Stand-alone programs in one `perf` binary that time a function in a loop; "
+         "not run by `runtests.pl`. `c-abi` ones use only the public API and can run "
+         "against any libcurl; `port` ones call internal helpers and need a Rust "
+         "counterpart, like the unit tests.\n")
+    emit(md_table(["program", "Rust leg", "public API", "internal measured", "usage"],
+                  [(k, p["rust_leg"], ", ".join(p["curl_api_calls"]) or "-",
+                    ", ".join(p["measured_internal"]) or "-",
+                    "; ".join(f"`{u}`" for u in p["usage"]))
+                   for k, p in sorted(data["perf"].items())]))
 
     # helper scripts
     emit("\n## Perl helper scripts invoked from test commands\n")

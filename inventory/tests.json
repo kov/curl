@@ -41,6 +41,7 @@
    "disabled_entries": 20,
    "disabled_unconditional": 14,
    "libtest_programs": 297,
+   "perf_programs": 10,
    "pytest_functions": 357,
    "server_keywords_mapped": 36,
    "test_files": 2146,
@@ -291,6 +292,8 @@
     "rtsp-ipv6",
     "tftp-ipv6"
    ],
+   "perf_file_not_listed": [],
+   "perf_listed_without_file": [],
    "port_variable_without_server_section": [
     422,
     462,
@@ -1421,6 +1424,560 @@
    "verify/strippart": 107,
    "verify/upload": 92,
    "verify/valgrind": 1
+  },
+  "perf": {
+   "base64dec": {
+    "bytes": 2686,
+    "curl_api_calls": [
+     "curl_mfprintf",
+     "curl_mprintf"
+    ],
+    "curl_symbols": [
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_OFF_T_MAX"
+    ],
+    "description": "This test base64 decodes a big encoded string. Repeatedly in a loop the provided number of times:",
+    "entry": [
+     "test_base64dec"
+    ],
+    "exercises_files": [
+     "lib/curlx/base64.c",
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/base64dec.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_base64_decode": {
+      "files": [
+       "lib/curlx/base64.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [
+     "curlx_base64_decode"
+    ],
+    "platform_conditional": false,
+    "rust_leg": "port",
+    "usage": [
+     "./perf base64dec [loops]"
+    ]
+   },
+   "base64enc": {
+    "bytes": 2285,
+    "curl_api_calls": [
+     "curl_mfprintf",
+     "curl_mprintf"
+    ],
+    "curl_symbols": [
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_OFF_T_MAX"
+    ],
+    "description": "This test base64 encodes a 256-byte buffer that has every different byte octet represented. Repeatedly in a loop the provided number of times:",
+    "entry": [
+     "test_base64enc"
+    ],
+    "exercises_files": [
+     "lib/curlx/base64.c",
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/base64enc.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_base64_encode": {
+      "files": [
+       "lib/curlx/base64.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [
+     "curlx_base64_encode"
+    ],
+    "platform_conditional": false,
+    "rust_leg": "port",
+    "usage": [
+     "./perf base64enc [loops]"
+    ]
+   },
+   "dateparser": {
+    "bytes": 8157,
+    "curl_api_calls": [
+     "curl_getdate",
+     "curl_mfprintf",
+     "curl_mprintf"
+    ],
+    "curl_symbols": [
+     "CURL_ARRAYSIZE",
+     "CURL_FORMAT_CURL_OFF_T"
+    ],
+    "description": "Runs through 180+ date strings and parses them (converts them to epoch time) `loops` number of times:",
+    "entry": [
+     "test_dateparser"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/dateparser.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [],
+    "platform_conditional": false,
+    "rust_leg": "c-abi",
+    "usage": [
+     "./perf dateparser [loops]"
+    ]
+   },
+   "maprintf": {
+    "bytes": 2850,
+    "curl_api_calls": [
+     "curl_free",
+     "curl_maprintf",
+     "curl_mfprintf",
+     "curl_mprintf"
+    ],
+    "curl_symbols": [
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_OFF_T_MAX"
+    ],
+    "description": "This test repeatedly formats a request header block with `curl_maprintf()`, which allocates the result, and measures the time per call. It exercises the allocating output path and a `curl_off_t` conversion, which the `snprintf` test does not:",
+    "entry": [
+     "test_maprintf"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/maprintf.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [],
+    "platform_conditional": false,
+    "rust_leg": "c-abi",
+    "usage": [
+     "./perf maprintf [loops]"
+    ]
+   },
+   "numparser": {
+    "bytes": 9172,
+    "curl_api_calls": [
+     "curl_mprintf"
+    ],
+    "curl_symbols": [
+     "CURL_ARRAYSIZE",
+     "CURL_FORMAT_CURL_OFF_T"
+    ],
+    "description": "This test repeatedly converts over a hundred different numbers from a string to binary. Decimal, hexadecimal and octal numbers, each with a set cap. Many numbers hit the cap, some numbers are not syntactically correct.",
+    "entry": [
+     "test_numparser"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/numparser.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_hex": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_octal": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [
+     "curlx_str_hex",
+     "curlx_str_octal"
+    ],
+    "platform_conditional": false,
+    "rust_leg": "port",
+    "usage": [
+     "./perf numparser [loops]"
+    ]
+   },
+   "simpleformat": {
+    "bytes": 2635,
+    "curl_api_calls": [
+     "curl_mprintf",
+     "curl_msnprintf"
+    ],
+    "curl_symbols": [
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_OFF_T_MAX"
+    ],
+    "description": "This test repeatedly formats a commonly used simple message with `curl_msnprintf()`: literal text plus `%s`, a `size_t` and a `curl_off_t`, with no width or precision. Where `snprintf` measures an elaborate format, this measures the common one:",
+    "entry": [
+     "test_simpleformat"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/simpleformat.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [],
+    "platform_conditional": false,
+    "rust_leg": "c-abi",
+    "usage": [
+     "./perf simpleformat [loops]"
+    ]
+   },
+   "snprintf": {
+    "bytes": 2324,
+    "curl_api_calls": [
+     "curl_mprintf",
+     "curl_msnprintf"
+    ],
+    "curl_symbols": [
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_OFF_T_MAX"
+    ],
+    "description": "This test repeatedly formats a representative string and measures the time per call:",
+    "entry": [
+     "test_snprintf"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/snprintf.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [],
+    "platform_conditional": false,
+    "rust_leg": "c-abi",
+    "usage": [
+     "./perf snprintf [loops]"
+    ]
+   },
+   "urldecode": {
+    "bytes": 3241,
+    "curl_api_calls": [
+     "curl_easy_unescape",
+     "curl_free",
+     "curl_mfprintf",
+     "curl_mprintf",
+     "curl_msnprintf"
+    ],
+    "curl_symbols": [
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_OFF_T_MAX"
+    ],
+    "description": "This test URL (percent) decodes a 600+ byte buffer. Repeatedly in a loop the provided number of times:",
+    "entry": [
+     "test_urldecode"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/urldecode.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [],
+    "platform_conditional": false,
+    "rust_leg": "c-abi",
+    "usage": [
+     "./perf urldecode [loops]"
+    ]
+   },
+   "urlencode": {
+    "bytes": 2210,
+    "curl_api_calls": [
+     "curl_easy_escape",
+     "curl_free",
+     "curl_mfprintf",
+     "curl_mprintf"
+    ],
+    "curl_symbols": [
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_OFF_T_MAX"
+    ],
+    "description": "This test URL (percent) encodes a 256-byte buffer that has every different byte octet represented. Repeatedly in a loop the provided number of times:",
+    "entry": [
+     "test_urlencode"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/urlencode.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [],
+    "platform_conditional": false,
+    "rust_leg": "c-abi",
+    "usage": [
+     "./perf urlencode [loops]"
+    ]
+   },
+   "urlparser": {
+    "bytes": 56938,
+    "curl_api_calls": [
+     "curl_mfprintf",
+     "curl_mprintf",
+     "curl_url",
+     "curl_url_cleanup",
+     "curl_url_set"
+    ],
+    "curl_symbols": [
+     "CURLUPART_URL",
+     "CURLU_ALLOW_SPACE",
+     "CURLU_DEFAULT_PORT",
+     "CURLU_DEFAULT_SCHEME",
+     "CURLU_DISALLOW_USER",
+     "CURLU_GUESS_SCHEME",
+     "CURLU_NON_SUPPORT_SCHEME",
+     "CURLU_PATH_AS_IS",
+     "CURL_ARRAYSIZE",
+     "CURL_FORMAT_CURL_OFF_T",
+     "CURL_HAVE_DIAG"
+    ],
+    "description": "Provide this test with a list of many URLs and it times how fast it can parse them: `./perf urlparser URLs.txt [loops]`",
+    "entry": [
+     "test_urlparser"
+    ],
+    "exercises_files": [
+     "lib/curlx/strparse.c",
+     "lib/curlx/timeval.c"
+    ],
+    "file": "tests/perf/urlparser.c",
+    "includes": [
+     "first.h"
+    ],
+    "internal_functions": {
+     "curlx_now": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_str_number": {
+      "files": [
+       "lib/curlx/strparse.c"
+      ],
+      "unittest_exposed": false
+     },
+     "curlx_timediff_us": {
+      "files": [
+       "lib/curlx/timeval.c"
+      ],
+      "unittest_exposed": false
+     }
+    },
+    "internal_headers": [],
+    "measured_internal": [],
+    "platform_conditional": false,
+    "rust_leg": "c-abi",
+    "usage": [
+     "./perf urlparser URLs.txt [loops]"
+    ]
+   }
   },
   "programs": {
    "cli_ev_download": {
@@ -148210,6 +148767,18 @@
   "tests/libtest/lib766.c",
   "tests/libtest/mk-lib1521.pl",
   "tests/negtelnetserver.py",
+  "tests/perf/Makefile.inc",
+  "tests/perf/README.md",
+  "tests/perf/base64dec.c",
+  "tests/perf/base64enc.c",
+  "tests/perf/dateparser.c",
+  "tests/perf/maprintf.c",
+  "tests/perf/numparser.c",
+  "tests/perf/simpleformat.c",
+  "tests/perf/snprintf.c",
+  "tests/perf/urldecode.c",
+  "tests/perf/urlencode.c",
+  "tests/perf/urlparser.c",
   "tests/rtspserver.pl",
   "tests/runtests.pl",
   "tests/secureserver.pl",

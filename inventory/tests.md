@@ -15,6 +15,7 @@ The tests the rewrite is scored on: `tests/data/testNNNN` driven by `tests/runte
 | libtest programs (incl.&#32;generated lib1521) | 297 |
 | unit programs (`tests/unit`) | 81 |
 | tunit programs (`tests/tunit`) | 6 |
+| perf benchmarks (`tests/perf`, not run by runtests.pl) | 10 |
 | pytest functions (`tests/http/test_*.py`, before parametrization) | 357 |
 | C test server programs (`tests/server`) | 8 |
 | tests with no `<server>` section | 243 |
@@ -1517,6 +1518,24 @@ Non-comment lines: 28 (20 test entries + 8 `%if`/`%else`/`%endif` directives).
 | tool1720 | 1720 | lib/curlx/dynbuf.c, tool_dirhie.c | create_dir_hierarchy, create_dir_hierarchy_trace_dynres, curlx_dyn_free, curlx_dyn_init, curlx_dyn_ptr, curlx_dyn_reset | Windows/DOS only |
 
 
+## perf benchmarks (`tests/perf`)
+
+Stand-alone programs in one `perf` binary that time a function in a loop; not run by `runtests.pl`. `c-abi` ones use only the public API and can run against any libcurl; `port` ones call internal helpers and need a Rust counterpart, like the unit tests.
+
+| program | Rust leg | public API | internal measured | usage |
+|---|---|---|---|---|
+| base64dec | port | curl_mfprintf, curl_mprintf | curlx_base64_decode | `./perf base64dec [loops]` |
+| base64enc | port | curl_mfprintf, curl_mprintf | curlx_base64_encode | `./perf base64enc [loops]` |
+| dateparser | c-abi | curl_getdate, curl_mfprintf, curl_mprintf | - | `./perf dateparser [loops]` |
+| maprintf | c-abi | curl_free, curl_maprintf, curl_mfprintf, curl_mprintf | - | `./perf maprintf [loops]` |
+| numparser | port | curl_mprintf | curlx_str_hex, curlx_str_octal | `./perf numparser [loops]` |
+| simpleformat | c-abi | curl_mprintf, curl_msnprintf | - | `./perf simpleformat [loops]` |
+| snprintf | c-abi | curl_mprintf, curl_msnprintf | - | `./perf snprintf [loops]` |
+| urldecode | c-abi | curl_easy_unescape, curl_free, curl_mfprintf, curl_mprintf, curl_msnprintf | - | `./perf urldecode [loops]` |
+| urlencode | c-abi | curl_easy_escape, curl_free, curl_mfprintf, curl_mprintf | - | `./perf urlencode [loops]` |
+| urlparser | c-abi | curl_mfprintf, curl_mprintf, curl_url, curl_url_cleanup, curl_url_set | - | `./perf urlparser URLs.txt [loops]` |
+
+
 ## Perl helper scripts invoked from test commands
 
 | script | tests |
@@ -2148,6 +2167,8 @@ Server keyword (`<server>`) to implementation, from `servers.pm`:
 | unit_file_not_listed | none |
 | tunit_listed_without_file | none |
 | tunit_file_not_listed | none |
+| perf_listed_without_file | none |
+| perf_file_not_listed | none |
 | tool_without_program | none |
 | tool_resolution_failed | none |
 | programs_without_test | ["cli_ftp_upload", "cli_h2_pausing", "cli_h2_serverpush", "cli_h2_upgrade_extreme", "cli_hx_download", "cli_hx_upload", "cli_tls_session_reuse", "cli_upload_... |

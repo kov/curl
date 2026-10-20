@@ -9,13 +9,23 @@ witness: curl-core url::tests::lib1560_get_url
 --- new
                 .map_or(b"https", |(_, name)| name);
 
-=== a file: URL may name 127.0.0.1 as its host no more
+=== a file: URL may name localhost as its host no more
 file: crates/curl-core/src/url/mod.rs
-witness: curl-core url::tests::lib1560_get_parts
+witness: curl-core url::tests::branches_as_c_takes_them
 --- old
             } else if starts_with_nocase(rest, b"localhost/")
 --- new
-            } else if false && starts_with_nocase(rest, b"localhost/")
+            } else if rest.starts_with(b"127.0.0.1/")
+
+=== a file: URL's localhost is matched case-sensitively
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::branches_as_c_takes_them
+--- old
+            } else if starts_with_nocase(rest, b"localhost/")
+                || starts_with_nocase(rest, b"127.0.0.1/")
+--- new
+            } else if rest.starts_with(b"localhost/")
+                || starts_with_nocase(rest, b"127.0.0.1/")
 
 === a URL with credentials is accepted although users are disallowed
 file: crates/curl-core/src/url/mod.rs

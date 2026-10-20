@@ -884,6 +884,13 @@ mod tests {
             get("file:///cc:/foo", Part::Path, p, g).as_deref(),
             Ok("/cc:/foo")
         );
+        for local in ["file://localhost/a", "file://LocalHost/a"] {
+            assert_eq!(get(local, Part::Url, p, g).as_deref(), Ok("file:///a"));
+        }
+        assert_eq!(
+            get("file://localhostx/a", Part::Url, p, g),
+            Err(UrlErrorKind::BadFileUrl)
+        );
         let default_port = GetOptions {
             default_port: true,
             ..GetOptions::NONE

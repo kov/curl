@@ -207,3 +207,26 @@ fn url_error(e: UrlErrorKind) -> ErrorKind {
         _ => ErrorKind::UrlMalformat,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Curl_uc_to_curlcode`.
+    #[test]
+    fn url_errors_map_as_c_maps_them() {
+        assert_eq!(
+            url_error(UrlErrorKind::UnsupportedScheme),
+            ErrorKind::UnsupportedProtocol
+        );
+        assert_eq!(url_error(UrlErrorKind::OutOfMemory), ErrorKind::OutOfMemory);
+        assert_eq!(
+            url_error(UrlErrorKind::UserNotAllowed),
+            ErrorKind::LoginDenied
+        );
+        assert_eq!(
+            url_error(UrlErrorKind::BadHostname),
+            ErrorKind::UrlMalformat
+        );
+    }
+}

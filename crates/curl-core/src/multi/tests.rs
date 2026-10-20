@@ -224,3 +224,134 @@ fn a_timer_abort_inside_remove_still_removes() {
     // Dead and empty: the next add starts over.
     m.add(removed.easy, (), &mut ev).unwrap();
 }
+
+/// A clock that jumps forward by `lag` right after its next reading, as if
+/// running the transfers took that long.
+struct LaggingClock {
+    inner: ManualClock,
+    lag: std::rc::Rc<std::cell::Cell<Duration>>,
+}
+
+impl Clock for LaggingClock {
+    fn now(&self) -> Instant {
+        let t = self.inner.now();
+        self.inner.advance(self.lag.take());
+        t
+    }
+}
+
+fn lagging_multi() -> (Multi, std::rc::Rc<std::cell::Cell<Duration>>) {
+    let lag = std::rc::Rc::new(std::cell::Cell::new(Duration::ZERO));
+    let env = Env {
+        clock: Box::new(LaggingClock {
+            inner: ManualClock::new().unwrap(),
+            lag: lag.clone(),
+        }),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+    };
+    (Multi::new(env).unwrap(), lag)
+}
+
+fn stall_within(ms: u64) -> Easy {
+    let mut e = easy("stall://a");
+    e.options_mut().limits.total = TimeLimit::from_millis(ms);
+    e
+}
+
+#[test]
+fn socket_action_catches_what_came_due_while_it_ran() {
+    let (mut m, lag) = lagging_multi();
+    let ev = &mut NoEvents;
+    let late = m.add(stall_within(10), (), ev).unwrap();
+    m.perform(ev).unwrap();
+    // Something to run, which takes long enough for `late` to come due.
+    m.add(easy("stall://b"), (), ev).unwrap();
+    lag.set(Duration::from_millis(10));
+    m.socket_action(SocketEvent::Timeout, ev).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(late.index(), Err(ErrorKind::OperationTimedout), 0)]
+    );
+}
+
+#[test]
+fn socket_action_runs_nothing_late_when_nothing_ran() {
+    let (mut m, lag) = lagging_multi();
+    let ev = &mut NoEvents;
+    m.add(stall_within(10), (), ev).unwrap();
+    m.perform(ev).unwrap();
+    lag.set(Duration::from_millis(10));
+    m.socket_action(SocketEvent::Timeout, ev).unwrap();
+    assert!(
+        m.info_read().is_none(),
+        "due only after the reading the run used"
+    );
+}
+
+#[test]
+fn a_fired_timer_queues_the_next_one() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    let mut e = stall_within(3000);
+    e.options_mut().limits.connect = TimeLimit::from_millis(1000);
+    m.add(e, (), ev).unwrap();
+    m.perform(ev).unwrap();
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1000)));
+    clock.advance(Duration::from_millis(1000));
+    // Connected already: the connect limit only wakes the transfer.
+    assert_eq!(m.socket_action(SocketEvent::Timeout, ev), Ok(1));
+    assert_eq!(m.timeout(), Some(Duration::from_millis(2000)));
+}
+
+#[test]
+fn transfers_on_later_rows_get_timers() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    for ms in [3000, 2000, 1000] {
+        m.add(stall_within(ms), (), ev).unwrap();
+    }
+    m.perform(ev).unwrap();
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1000)));
+}
+
+#[test]
+fn a_refused_add_counts_nothing_as_running() {
+    let (mut m, _clock) = multi();
+    let mut ev = RecordingEvents {
+        abort_at: Some(1),
+        ..RecordingEvents::default()
+    };
+    m.add(easy("null://a"), (), &mut ev).unwrap_err();
+    let counts = m.counts();
+    assert_eq!((counts.running, counts.current), (0, 0));
+}
+
+#[test]
+fn a_transfer_s_easy_is_reached_by_its_id() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    let id = m.add(easy("null://a"), (), ev).unwrap();
+    assert_eq!(m.easy(id).unwrap().options().url(), Some(&b"null://a"[..]));
+    m.easy_mut(id)
+        .unwrap()
+        .options_mut()
+        .set_url(Some(b"null://b"))
+        .unwrap();
+    assert_eq!(m.easy(id).unwrap().options().url(), Some(&b"null://b"[..]));
+    m.remove(id, ev).unwrap();
+    assert!(m.easy(id).is_none());
+    assert!(m.easy_mut(id).is_none());
+}
+
+#[test]
+fn a_url_without_a_scheme_is_guessed() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    // Guessed as http, which this build cannot run yet.
+    let id = m.add(easy("example.com/a"), (), ev).unwrap();
+    m.perform(ev).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::UnsupportedProtocol), 0)]
+    );
+}

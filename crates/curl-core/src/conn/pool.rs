@@ -146,6 +146,7 @@ mod tests {
         let a_id = a.id();
         assert_eq!(pool.release(a, Finish::default()), Released::Closed);
         assert!(pool.get_conn(a_id).is_none());
+        assert_eq!(pool.get_conn(b.id()).map(Conn::number), Some(ConnNumber(1)));
         let premature = Finish { premature: true };
         assert_eq!(pool.release(b, premature), Released::Terminated);
         assert_eq!(pool.len(), 0);

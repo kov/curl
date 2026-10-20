@@ -33,6 +33,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-alloc/src/track.rs`: the debug test build's global allocator and memory tracker.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place.
+- `crates/curl-os/src/net.rs`: opening and connecting sockets.
+- `crates/curl-os/src/poll.rs`: `poll(2)`.
 - `crates/curl-os/src/terminal.rs`: the terminal's width.
 - `crates/curl-os/src/users.rs`: the user database.
 - `crates/curl-sys-abi/csrc/va_fetch.c`: C, not Rust; reads the printf arguments stable Rust

@@ -10,6 +10,8 @@ publish.workspace = true
 # The process's own command line: captured at start-up so arguments can be
 # wiped in place. Only a program's own crate enables it, never a library.
 args = []
+# Sockets, polling and the waker, for the transfer engine.
+net = []
 
 [[test]]
 name = "wipe"
@@ -20,6 +22,10 @@ harness = false
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
 libc = "0.2"
+
+[dev-dependencies]
+# The tests cover every module without asking for it.
+curl-os = { path = ".", features = ["net"] }
 
 [lints]
 workspace = true

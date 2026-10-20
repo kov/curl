@@ -1,0 +1,77 @@
+# Sockets, polling and the waker (crates/curl-os, feature `net`).
+
+=== a signal ending a poll early is an error
+file: crates/curl-os/src/poll.rs
+witness: curl-os poll::tests::an_interrupted_wait_reports_nothing_ready
+--- old
+        if err.kind() == io::ErrorKind::Interrupted {
+            return Ok(0);
+        }
+--- new
+
+=== a poll timeout is rounded down to whole milliseconds
+file: crates/curl-os/src/poll.rs
+witness: curl-os poll::tests::a_sub_millisecond_timeout_still_waits
+--- old
+    let ms = timeout.as_nanos().div_ceil(1_000_000);
+--- new
+    let ms = timeout.as_nanos() / 1_000_000;
+
+=== a wake into a full pipe is an error
+file: crates/curl-os/src/wake.rs
+witness: curl-os wake::tests::waking_more_than_the_pipe_holds_is_fine
+--- old
+                Ok(_) => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+--- new
+                Ok(_) => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+
+=== draining takes only the first read's worth of wakes
+file: crates/curl-os/src/wake.rs
+witness: curl-os wake::tests::waking_more_than_the_pipe_holds_is_fine
+--- old
+                Ok(0) => return Ok(()),
+                Ok(_) => {}
+--- new
+                Ok(0) => return Ok(()),
+                Ok(_) => return Ok(()),
+
+=== a connect in progress is an error
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::a_refused_connect_reports_why
+--- old
+            Some(libc::EINPROGRESS | libc::EINTR) => Connect::InProgress,
+--- new
+            Some(libc::EINTR) => Connect::InProgress,
+
+=== the port is sent in host byte order
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::connects_over_ipv4_and_ipv6
+--- old
+                    sin_port: a.port().to_be(),
+--- new
+                    sin_port: a.port(),
+
+=== the end of the stream reads as would-block
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::receives_data_then_the_end_of_the_stream
+--- old
+                Ok(n) => return Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
+--- new
+                Ok(n) => return Ok(NonZeroUsize::new(n).map_or(Recv::WouldBlock, Recv::Data)),
+
+=== a receive with nothing to read is an error
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::receives_data_then_the_end_of_the_stream
+--- old
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Recv::WouldBlock),
+--- new
+
+=== a send into full buffers is an error
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::a_send_into_full_buffers_would_block
+--- old
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Sent::WouldBlock),
+--- new

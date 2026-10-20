@@ -74,6 +74,7 @@ name = "curl-os"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-os",
  "libc",
 ]
 

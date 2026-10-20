@@ -12,12 +12,13 @@ decisions, not implementation details: those live beside the code.
 | `curl-sys-abi` | The C ABI over `curl-core`, built as `libcurl.so.4`. | yes: it is the shim |
 | `curl-tool` | The `curl` binary, written against the Rust API, not the C ABI. | forbidden |
 | `curl-alloc` | Fallible allocation; the debug build's memory tracker. | in named modules |
-| `curl-os` | Operating-system interfaces: the command line, the terminal, the user database. | in named modules |
+| `curl-os` | Operating-system interfaces: the command line, the terminal, the user database, sockets and polling. | in named modules |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);
-- one crate for sockets, polling and other OS interfaces, with Linux first and other
-  platforms behind the same API;
+- one crate for sockets, polling and other OS interfaces (`curl-os`, over `libc`), with Linux
+  first and other platforms behind the same API. It exposes safe functions; `curl-core` adapts
+  them to its own traits;
 - one crate for allocation: the fallible constructors std lacks on stable (see
   [Allocation failure](#allocation-failure)) and the debug build's memory tracker (see
   [Debug hooks](#debug-hooks)).
@@ -45,7 +46,52 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
 - **A connection is a stack of filters.** TCP, then a proxy tunnel, then TLS, then HTTP/2, each
   with the same sans-IO interface. This is the C tree's `cfilters` model, and it keeps the
   combinations orthogonal.
-- **Time is an injected clock**, never read ad hoc, so timeouts are deterministic under test.
+- **A TLS backend is driven as C drives it.** The OpenSSL layer gets a custom BIO method over the
+  layer below, as `lib/vtls/openssl.c` does, so the `SSL *` and `SSL_CTX *` an application is
+  handed look the same as C's. A more efficient arrangement can come later as an opt-in.
+- **Time is an injected clock**, owned by the multi and read once per pass; everything below
+  receives that `now` as an argument, so timeouts are deterministic under test.
+- **Callbacks fire when C fires them.** The timer callback runs inside `add`, `remove` and
+  `pause`; the socket callback inside `remove` and `pause`, including a pause made from a write
+  callback; each transfer's pollset is assessed right after it runs. Ordering the application
+  can observe is part of the ABI.
+
+## The transfer engine
+
+- **A transfer's state is one enum.** The lease on its connection lives only inside the variants
+  that hold a connection, and only the step that finishes a request releases it, after the
+  protocol is done and the output flushed. `Completed` has one way in, which `remove` uses too.
+  C's `data->conn`, `conn->attached_xfers`, the multi's set memberships and `state.done` are all
+  read off the variant instead of being kept in step.
+- **A request's two directions are states, not flags.** Sending is head, waiting for
+  `100-continue`, body, done or aborted; receiving is head, body or done. How the body is framed
+  (length, chunked, until close) is decided once when the headers end.
+- **Time limits have one owner.** `Deadlines` holds the transfer's start instants and limits;
+  both the wake-up and the "is it late" check are computed from it, and the timer queue is an
+  index over it with one entry per transfer, reserved when the transfer is added. C's two anchors
+  for the total timeout (the wake-up from the current request, lateness from the whole
+  operation) are kept until a test on the C build shows the difference is a bug.
+- **A connection's identity is a `Route`, fixed when it is created.** Reuse means the routes are
+  equal, plus the deliberate allowances C makes (a TLS connection serving the plain scheme,
+  multiplexing limits). A setting added to the route joins the comparison by construction, and
+  nothing is written onto a pooled connection when it is reused.
+- **The pool owns every connection and issues leases.** A connection is connecting, open or
+  closing under one id that survives its handshake; setup is a pipeline of stages (resolve, race
+  the addresses, proxy, TLS), each owning what the one before produced. Operations that need a
+  handshaken connection exist only on an open one. The share lock is taken at the same four
+  points as in C.
+- **Pause is one value per direction.** Receiving is running, stopped by `curl_easy_pause` (the
+  current buffer still finishes) or held by a callback's pause (output is held at once); sending
+  is running or paused. A multiplexed connection buffers per stream, so a paused stream never
+  holds the connection's shared receive buffer.
+- **No engine borrow is live across a call-out** except values moved out of their homes for its
+  duration (the stepping transfer's state, the connection's receive buffer), so a callback's
+  context can reach every other transfer without aliasing.
+- **Reads are capped at the response's remaining size** on connections that are not
+  multiplexed, as C caps them, keeping traces and reuse decisions identical; the cap goes only
+  if both legs agree without it.
+- **A protocol is reported in `curl -V` as soon as its basic transfer works.** Tests that need
+  it then fail instead of skipping, which is the honest state.
 
 ## Variadic C functions
 
@@ -58,16 +104,29 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
 ## Ownership and lifetimes
 
 - **The multi handle owns the live state.** It holds the transfers, connections, the
-  connection pool, the timers and, unless shared, the DNS cache.
+  connection pool, the timers and, unless shared, the DNS cache. Ids are handed out as C hands
+  out its transfer ids (the next free row after the last one used, with C's growth policy), so
+  message and processing order match C's under add and remove churn.
 - **Cross-references are generational keys, never pointers or references.** A `TransferId`
   or `ConnId` names an arena slot. Looking up a slot that has been freed and reused fails by
   itself, so a stale id is an error at the lookup instead of a use-after-free.
 - **An easy handle is configuration plus at most one running transfer.** The C `CURL *` mixes
   the options, the in-flight state and the results of the last transfer. In Rust:
   - `Easy` owns the options;
+  - `Multi::add` takes the `Easy` by value and `remove` hands it back; `Easy::perform` moves
+    itself into its private multi and back. The private multi, with its connections and DNS
+    cache, persists across performs;
   - starting a transfer creates its state, and finishing it drops that state;
-  - what `curl_easy_getinfo` reports is a `TransferReport` value, replaced whole by the next
-    transfer, never patched field by field.
+  - what `curl_easy_getinfo` reports is a `TransferReport`, created whole when a transfer
+    starts, written only by the engine while it runs (getinfo inside a callback reads it live),
+    and left unchanged in the `Easy` until the next transfer replaces it. Its header store spans
+    every request of the transfer, since `curl_easy_header` is callable after `perform`.
+- **There is no hidden internal easy handle.** Connection-level work (pruning, health checks,
+  shutdown) takes a connection context whose limits are captured per connection when it is
+  created, not copied from whichever transfer ran last. The shim passes one internal `CURL *`
+  per multi where the C ABI shows connection-owned sockets.
+- **The Rust multi carries the application's values.** `Multi<H: Host>` stores one value per
+  transfer and one per socket, so the shim keeps no second map from ids to its handles.
 - **Typestate is used where C keeps flags.** Examples are a connection before and after its
   handshake, and a response before and after its headers. An operation that is valid in only
   one state exists only on that state's type.
@@ -97,6 +156,14 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
 - **Callbacks are traits.** Example: a write handler receives `&[u8]` and returns an enum.
   Pausing is a variant of that enum, not a magic return value. The shim implements these
   traits over the application's function pointers and user data.
+- **What a callback may call is a type.** Each call-out receives a context whose methods are
+  exactly the calls C allows from that callback (`lib/api.c`): transfer callbacks may pause,
+  read info or headers and change options of any transfer in the multi; socket and timer
+  callbacks may not pause; notification callbacks may also add and remove. The shim routes a
+  re-entrant C call through the live context, by a table generated from `lib/api.c`.
+- **When an option is read is recorded.** C reads options live, so a setopt during a transfer
+  takes effect per piece, per request or per transfer depending on the option. Which applies is
+  recorded per option in `inventory/options.json`, and the generated dispatch follows it.
 - **Strings handed to C belong to the shim.** It keeps NUL-terminated copies with the lifetime
   the C API promises (`CURLINFO_EFFECTIVE_URL` lives until the next transfer or cleanup), so
   the core never stores C-shaped strings.
@@ -117,12 +184,8 @@ state that outlives a call, since the application drives I/O and every call retu
 - **No allocation per chunk on the data path.** Each connection has a receive buffer and a send
   buffer, sized once and reused. Parsers return slices borrowed from the receive buffer, and
   write callbacks get those slices directly.
-- **No allocation per chunk on the data path.** Each connection has a receive buffer and a send
-  buffer, sized once and reused. Parsers return slices borrowed from the receive buffer, and
-  write callbacks get those slices directly.
-- **Response headers live in one buffer per response**, as byte ranges into it, not one string
-  per header. The buffer exists only while something can still ask for the headers
-  (`curl_easy_header`, the header callback).
+- **Response headers live in one store per transfer**, as byte ranges into a buffer, not one
+  string per header. It belongs to the `TransferReport` and lives as long as it does.
 - **Requests are formatted straight into the send buffer.** No intermediate strings.
 - **Configuration strings are stored once.** A copy shared between handles (`duphandle`, the
   share) is reference-counted, not duplicated.

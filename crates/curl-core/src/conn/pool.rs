@@ -3,7 +3,7 @@
 
 use curl_alloc::OutOfMemory;
 
-use super::{Conn, ConnId, ConnNumber, ConnSlot, Route};
+use super::{Conn, ConnId, ConnNumber, ConnSlot, Route, TransportKind};
 use crate::id::{Arena, ArenaPolicy};
 
 /// A transfer's hold on a connection. Only the pool makes one, and only
@@ -16,6 +16,10 @@ pub(crate) struct ConnLease {
 }
 
 impl ConnLease {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the shim's last connection, from step 10")
+    )]
     pub(crate) fn id(&self) -> ConnId {
         self.id
     }
@@ -66,17 +70,21 @@ impl Pool {
     /// A connection for `route`, leased to the caller. A networkless
     /// route always gets a new connection, which C also adds to its pool.
     pub(crate) fn acquire(&mut self, route: &Route) -> Result<ConnLease, OutOfMemory> {
+        match route.transport {
+            TransportKind::Local => {}
+        }
         let vacancy = self.conns.reserve()?;
         let number = ConnNumber(self.next_number);
         self.next_number += 1;
-        let id = vacancy.fill(ConnSlot::Open(Conn {
-            route: route.clone(),
-            number,
-        }));
+        let id = vacancy.fill(ConnSlot::Open(Conn { number }));
         Ok(ConnLease { id })
     }
 
     /// The connection a lease holds.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "protocols reach their connection, from step 8")
+    )]
     pub(crate) fn get(&mut self, lease: &ConnLease) -> &mut Conn {
         match self.conns.get_mut(lease.id) {
             Some(ConnSlot::Open(conn)) => conn,
@@ -85,6 +93,10 @@ impl Pool {
     }
 
     /// The connection `id` names, if it is still in the pool.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the shim's last connection, from step 10")
+    )]
     pub(crate) fn get_conn(&self, id: ConnId) -> Option<&Conn> {
         match self.conns.get(id)? {
             ConnSlot::Open(conn) => Some(conn),
@@ -112,6 +124,7 @@ impl Pool {
     }
 
     /// Connections in the pool, busy or idle.
+    #[cfg(test)]
     pub(crate) fn len(&self) -> u32 {
         self.conns.len()
     }

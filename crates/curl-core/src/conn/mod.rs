@@ -4,9 +4,10 @@
 //! Only networkless connections exist yet, which `file:` leases as C
 //! attaches a connection to every transfer; the multi uses them from
 //! milestone 1 step 5b (MILESTONES.md).
-#![allow(dead_code)]
 
 mod pool;
+
+pub(crate) use pool::{ConnLease, Finish, Pool};
 
 use std::fmt;
 
@@ -29,6 +30,10 @@ pub(crate) type ConnId = Key<ConnSlot>;
 /// A connection in the pool.
 #[derive(Debug)]
 pub(crate) enum ConnSlot {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read through Pool::get, from step 8")
+    )]
     Open(Conn),
 }
 
@@ -55,16 +60,19 @@ enum TransportKind {
 /// An established connection.
 #[derive(Debug)]
 pub(crate) struct Conn {
-    route: Route,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the trace names connections, from step 9")
+    )]
     number: ConnNumber,
 }
 
 impl Conn {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the trace names connections, from step 9")
+    )]
     pub(crate) fn number(&self) -> ConnNumber {
         self.number
-    }
-
-    pub(crate) fn route(&self) -> &Route {
-        &self.route
     }
 }

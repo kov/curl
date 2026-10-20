@@ -91,7 +91,9 @@ struct Row<T> {
 }
 
 /// Values reached by `Key`s, in rows handed out as C hands out its ids.
-pub struct Arena<T> {
+/// Keys are typed by `K`, the values' own type unless the keys must be
+/// public where the values are not.
+pub struct Arena<T, K = T> {
     rows: Vec<Row<T>>,
     reserved: u32,
     /// Rows holding a value, reserved rows included, as C counts its
@@ -99,15 +101,17 @@ pub struct Arena<T> {
     used: u32,
     /// The row last handed out, where the next search starts.
     last_added: Option<u32>,
+    _keys: PhantomData<fn() -> K>,
 }
 
-impl<T> Arena<T> {
+impl<T, K> Arena<T, K> {
     pub fn new(policy: ArenaPolicy) -> Result<Self, OutOfMemory> {
         let mut arena = Arena {
             rows: Vec::new(),
             reserved: policy.reserved,
             used: policy.reserved,
             last_added: policy.reserved.checked_sub(1),
+            _keys: PhantomData,
         };
         arena.grow_to(policy.initial)?;
         Ok(arena)
@@ -132,7 +136,7 @@ impl<T> Arena<T> {
     /// Make sure a row is free for one more value, growing the table as
     /// `multi_xfers_add` does: by half, at least 128 and at most 2048 rows,
     /// once fewer than an eighth of the rows (at least 4) are free.
-    pub fn reserve(&mut self) -> Result<Vacancy<'_, T>, OutOfMemory> {
+    pub fn reserve(&mut self) -> Result<Vacancy<'_, T, K>, OutOfMemory> {
         let capacity = self.capacity();
         let unused = capacity - self.used;
         if capacity < MAX_ROWS && unused < (capacity >> 3).max(4) {
@@ -145,14 +149,14 @@ impl<T> Arena<T> {
         Ok(Vacancy { arena: self })
     }
 
-    pub fn get(&self, key: Key<T>) -> Option<&T> {
+    pub fn get(&self, key: Key<K>) -> Option<&T> {
         let row = self.rows.get(key.row as usize)?;
         row.value
             .as_ref()
             .filter(|_| row.generation == key.generation)
     }
 
-    pub fn get_mut(&mut self, key: Key<T>) -> Option<&mut T> {
+    pub fn get_mut(&mut self, key: Key<K>) -> Option<&mut T> {
         let row = self.rows.get_mut(key.row as usize)?;
         row.value
             .as_mut()
@@ -160,7 +164,7 @@ impl<T> Arena<T> {
     }
 
     /// Take the value out; every key to it is stale from then on.
-    pub fn remove(&mut self, key: Key<T>) -> Option<T> {
+    pub fn remove(&mut self, key: Key<K>) -> Option<T> {
         let row = self.rows.get_mut(key.row as usize)?;
         if row.generation != key.generation {
             return None;
@@ -173,7 +177,7 @@ impl<T> Arena<T> {
 
     /// The key of the first value in a row after `after`'s, or the first
     /// of all: rows in ascending order, as C walks its ids.
-    pub fn next_after(&self, after: Option<Key<T>>) -> Option<Key<T>> {
+    pub fn next_after(&self, after: Option<Key<K>>) -> Option<Key<K>> {
         let start = after.map_or(0, |k| k.row as usize + 1);
         let (row, entry) = self
             .rows
@@ -183,6 +187,17 @@ impl<T> Arena<T> {
             .find(|(_, r)| r.value.is_some())?;
         Some(Key {
             row: u32::try_from(row).expect("rows fit their u32 ids"),
+            generation: entry.generation,
+            _of: PhantomData,
+        })
+    }
+
+    /// The key of the value in `row`, if there is one.
+    pub fn key_at(&self, row: u32) -> Option<Key<K>> {
+        let entry = self.rows.get(row as usize)?;
+        entry.value.as_ref()?;
+        Some(Key {
+            row,
             generation: entry.generation,
             _of: PhantomData,
         })
@@ -199,14 +214,20 @@ impl<T> Arena<T> {
 }
 
 /// A free row an `Arena::reserve` made sure of; filling it cannot fail.
-pub struct Vacancy<'a, T> {
-    arena: &'a mut Arena<T>,
+pub struct Vacancy<'a, T, K = T> {
+    arena: &'a mut Arena<T, K>,
 }
 
-impl<T> Vacancy<'_, T> {
+impl<T, K> Vacancy<'_, T, K> {
+    /// The arena's rows once filled: every row a key from it can name is
+    /// below this.
+    pub fn rows(&self) -> u32 {
+        self.arena.capacity()
+    }
+
     /// Put `value` in the next free row after the one last handed out,
     /// wrapping around, as `Curl_uint32_tbl_add` picks it.
-    pub fn fill(self, value: T) -> Key<T> {
+    pub fn fill(self, value: T) -> Key<K> {
         let arena = self.arena;
         let rows = arena.capacity();
         let start = arena.last_added.map_or(rows, |last| last.min(rows)) + 1;
@@ -248,7 +269,7 @@ mod tests {
     #[test]
     fn hands_out_ids_as_c_does() {
         for churn in [&c_order::PERFORM, &c_order::MULTI] {
-            let mut arena = Arena::new(ArenaPolicy::new(churn.rows, 1).unwrap()).unwrap();
+            let mut arena: Arena<_> = Arena::new(ArenaPolicy::new(churn.rows, 1).unwrap()).unwrap();
             let mut keys = std::collections::HashMap::new();
             let mut grew = false;
             for (i, op) in churn.ops.iter().enumerate() {
@@ -270,7 +291,7 @@ mod tests {
 
     #[test]
     fn stale_keys_fail_their_lookup() {
-        let mut arena = Arena::new(ArenaPolicy::new(16, 0).unwrap()).unwrap();
+        let mut arena: Arena<_> = Arena::new(ArenaPolicy::new(16, 0).unwrap()).unwrap();
         let old = arena.reserve().unwrap().fill("old");
         assert_eq!(arena.remove(old), Some("old"));
         // Add and remove until the search wraps around to the old row.
@@ -290,7 +311,7 @@ mod tests {
 
     #[test]
     fn walks_rows_in_ascending_order() {
-        let mut arena = Arena::new(ArenaPolicy::new(8, 1).unwrap()).unwrap();
+        let mut arena: Arena<_> = Arena::new(ArenaPolicy::new(8, 1).unwrap()).unwrap();
         let keys: Vec<_> = (0..5).map(|n| arena.reserve().unwrap().fill(n)).collect();
         arena.remove(keys[2]);
         let mut seen = Vec::new();

@@ -24,27 +24,17 @@ const MAX_WAIT: Duration = Duration::from_millis(i32::MAX as u64);
 const DEFAULT_CONNECT: Duration = Duration::from_secs(300);
 
 /// A reason for a transfer to wake, each armed at most once at a time
-/// (C's `expire_id`).
+/// (C's `expire_id`). The protocols' own timers join as they arrive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TimerKind {
     /// The whole transfer's limit, armed at each leg's start.
     Total,
     /// The connection's limit, armed at each leg's start when set.
     Connect,
-    Expect100,
-    AsyncName,
-    HappyEyeballs,
-    SpeedCheck,
-    TooFast,
-    Quic,
-    FtpAccept,
-    AlpnEyeballs,
-    Shutdown,
-    ServerResponse,
 }
 
 impl TimerKind {
-    const COUNT: usize = 12;
+    const COUNT: usize = 2;
 
     fn slot(self) -> usize {
         self as usize
@@ -55,6 +45,10 @@ impl TimerKind {
 /// (before C's `MSTATE_DO`) or past it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "judged while connecting, from step 11")
+    )]
     Connecting,
     Transferring,
 }
@@ -120,6 +114,7 @@ impl Deadlines {
         self.armed[kind.slot()] = Some(now.after(ms));
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "protocols clear their timers"))]
     pub(crate) fn clear(&mut self, kind: TimerKind) {
         self.armed[kind.slot()] = None;
     }
@@ -148,6 +143,10 @@ impl Deadlines {
     /// Whole milliseconds since the transfer started (`Curl_pgrs_since_ms`
     /// with `TIMER_STARTOP`): the N of the multi's "timed out" error once
     /// past connecting (multi.c:1820).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the timeout error texts, from step 9")
+    )]
     pub(crate) fn since_op_ms(&self, now: Instant) -> u64 {
         whole_ms(now.since(self.started_op))
     }
@@ -155,6 +154,10 @@ impl Deadlines {
     /// Whole milliseconds since the leg started (`TIMER_STARTSINGLE`): the
     /// N of the multi's error while connecting, and of the receive/send
     /// pass's error in any phase (transfer.c:382).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the timeout error texts, from step 9")
+    )]
     pub(crate) fn since_leg_ms(&self, now: Instant) -> u64 {
         whole_ms(now.since(self.started_single))
     }
@@ -228,19 +231,19 @@ impl<T> TimerQueue<T> {
         }
     }
 
-    /// Make room for `key`, so updating it never allocates. Called when the
-    /// transfer is added.
-    pub(crate) fn reserve(&mut self, key: Key<T>) -> Result<(), OutOfMemory> {
-        let row = row_of(key);
-        if self.position.len() <= row {
-            let more = row + 1 - self.position.len();
-            self.position.try_reserve(more).map_err(|_| OutOfMemory)?;
-            while self.position.len() <= row {
+    /// Make room for keys with rows below `rows`, so updating them never
+    /// allocates. Called when a transfer is added.
+    pub(crate) fn reserve(&mut self, rows: u32) -> Result<(), OutOfMemory> {
+        let rows = rows as usize;
+        if self.position.len() < rows {
+            self.position
+                .try_reserve(rows - self.position.len())
+                .map_err(|_| OutOfMemory)?;
+            while self.position.len() < rows {
                 self.position.try_push(None)?;
             }
         }
         // At most one entry per row.
-        let rows = self.position.len();
         if self.heap.capacity() < rows {
             self.heap
                 .try_reserve(rows - self.heap.len())
@@ -313,10 +316,7 @@ impl<T> TimerQueue<T> {
         Some(key)
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.heap.len()
-    }
-
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.heap.is_empty()
     }
@@ -368,6 +368,10 @@ impl<T> TimerQueue<T> {
     }
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the timeout error texts, from step 9")
+)]
 fn whole_ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
@@ -398,7 +402,7 @@ pub enum TimerChange {
 
 /// The time from `now` to `at` in milliseconds, rounded up, zero if past
 /// (`Curl_timeouts_next_ms`).
-fn wait_ms(now: Instant, at: Instant) -> Duration {
+pub(crate) fn wait_ms(now: Instant, at: Instant) -> Duration {
     let us = at.since(now).as_micros();
     let ms = us.div_ceil(1000);
     Duration::from_millis(u64::try_from(ms).unwrap_or(u64::MAX)).min(MAX_WAIT)
@@ -465,7 +469,7 @@ mod tests {
     fn queue(keys: &[Key<u32>]) -> TimerQueue<u32> {
         let mut q = TimerQueue::new();
         for &k in keys {
-            q.reserve(k).unwrap();
+            q.reserve(k.index() + 1).unwrap();
         }
         q
     }
@@ -636,20 +640,21 @@ mod tests {
         assert_eq!(d.since_op_ms(at_ms(12_000)), 12_000);
         assert_eq!(d.since_leg_ms(at_ms(12_000)), 8_000);
         d.arm_in(
-            TimerKind::Expect100,
+            TimerKind::Connect,
             at_ms(12_000),
             Duration::from_millis(1_000),
         );
+        assert_eq!(d.wake_at(), Some(at_ms(13_000)));
+        d.clear(TimerKind::Connect);
+        assert_eq!(d.wake_at(), Some(at_ms(14_000)));
+        d.expire(at_ms(14_000));
+        assert_eq!(d.wake_at(), None);
         d.arm_in(
-            TimerKind::TooFast,
+            TimerKind::Total,
             at_ms(12_000),
             Duration::from_secs(100 * 86_400),
         );
-        assert_eq!(d.wake_at(), Some(at_ms(13_000)));
-        d.clear(TimerKind::Expect100);
-        assert_eq!(d.wake_at(), Some(at_ms(14_000)));
-        d.expire(at_ms(14_000));
-        assert_eq!(d.wake_at(), Some(at_ms(12_000 + i32::MAX as u64)));
+        assert_eq!(d.wake_at(), Some(at_ms(12_000 + i32::MAX as u64)), "capped");
         d.clear_all();
         assert_eq!(d.wake_at(), None);
     }

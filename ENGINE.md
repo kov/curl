@@ -167,18 +167,21 @@ pub struct ArenaPolicy { initial: u32, reserved: u32 }
 impl ArenaPolicy {
     pub fn new(initial: u32, reserved: u32) -> Option<Self>;  // None unless a row is left to hand out
 }
-impl<T> Arena<T> {
+impl<T, K = T> Arena<T, K> {                     // values T, keys Key<K>
     pub fn new(p: ArenaPolicy) -> Result<Self, OutOfMemory>;
-    pub fn reserve(&mut self) -> Result<Vacancy<'_, T>, OutOfMemory>; // grows by the policy
-    pub fn get(&self, k: Key<T>) -> Option<&T>;                // stale key: None
-    pub fn get_mut(&mut self, k: Key<T>) -> Option<&mut T>;
-    pub fn remove(&mut self, k: Key<T>) -> Option<T>;          // bumps the generation
-    pub fn next_after(&self, k: Option<Key<T>>) -> Option<Key<T>>; // ascending row cursor
+    pub fn reserve(&mut self) -> Result<Vacancy<'_, T, K>, OutOfMemory>; // grows by the policy
+    pub fn get(&self, k: Key<K>) -> Option<&T>;                // stale key: None
+    pub fn get_mut(&mut self, k: Key<K>) -> Option<&mut T>;
+    pub fn remove(&mut self, k: Key<K>) -> Option<T>;          // bumps the generation
+    pub fn next_after(&self, k: Option<Key<K>>) -> Option<Key<K>>; // ascending row cursor
+    pub fn key_at(&self, row: u32) -> Option<Key<K>>;
 }
-impl<T> Vacancy<'_, T> {
-    pub fn fill(self, v: T) -> Key<T>;                         // cannot fail: the row is free
+impl<T, K> Vacancy<'_, T, K> {
+    pub fn rows(&self) -> u32;                                 // to reserve the other tables
+    pub fn fill(self, v: T) -> Key<K>;                         // cannot fail: the row is free
 }
-pub type TransferId = Key<Slot>;
+pub enum Transfer {}                              // TransferId's marker: Slot stays private
+pub type TransferId = Key<Transfer>;
 pub struct ConnNumber(u64);                       // monotonic per pool: "Connection #N"
 pub(crate) type ConnId = Key<ConnSlot>;            // the Conn carries its ConnNumber
 ```
@@ -493,7 +496,7 @@ impl<H: Host> Multi<H> {
     pub fn add(&mut self, easy: Easy, owner: H::Transfer, ev: &mut dyn MultiEvents<H>)
         -> Result<TransferId, AddError>;          // AddError hands the Easy back
     pub fn remove(&mut self, id: TransferId, ev: &mut dyn MultiEvents<H>)
-        -> Result<Easy, MultiError>;
+        -> Option<Removed<H>>;     // None: not in this multi; Removed { easy, owner, status }
     pub fn perform(&mut self, ev: &mut dyn MultiEvents<H>) -> Result<Running, MultiError>;
     pub fn socket_action(&mut self, what: SocketEvent, ev: &mut dyn MultiEvents<H>)
         -> Result<Running, MultiError>;
@@ -520,10 +523,12 @@ entries. It marks the transfer dirty and calls `timer_update`, so the timer call
 inside `curl_multi_add_handle` (multi.c:550). On OOM nothing is left behind and the `Easy` is
 returned.
 
-**`remove`**: `fail(Aborted)` through the one exit hook if the transfer is not `Completed`;
-forget its socket interest (socket callback REMOVE inside the call, multi.c:821); release the
-timer entry; remove the row; `schedule_pending`; `timer_update` (multi.c:868). Removing an id that
-is not in this multi returns `Ok`-equivalent `NotAdded` at the shim (3105).
+**`remove`**: a transfer that is not `Completed` gives back its lease as a premature end and
+leaves no message, as `curl_multi_remove_handle` (multi.c:780); forget its socket interest (socket callback REMOVE inside the call, multi.c:821); release the
+timer entry; remove the row; `schedule_pending`; `timer_update` (multi.c:868). The `Easy` and the
+owner value come back even when the timer callback aborts; `status` carries the abort. Removing
+an id that is not in this multi returns `None`, which the shim maps to `CURLM_OK` (3105).
+Dropping a `Multi` removes every transfer still in it (`curl_multi_cleanup`).
 
 **`perform`** (multi.c:2898), with `now` read once:
 1. run every process transfer in ascending slot order with an index cursor, so a transfer

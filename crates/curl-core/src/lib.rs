@@ -8,9 +8,12 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 mod conn;
+pub mod easy;
 pub mod error;
 pub mod id;
-mod multi;
+pub mod multi;
+pub mod options;
+mod proto;
 pub mod time;
 pub mod url;
 pub mod version;

@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 4 and 5a are **done**; every other step is **to do**.
+Status: steps 1 to 4, 5a and 5b are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -64,14 +64,20 @@ yet meet.
      in the pool ("Connection #N") and closed at done, since the scheme forbids reuse. Tests:
      numbers count from 0 and are never reused; a released local connection is closed, or
      terminated after a premature end; a dropped lease is caught in debug builds.
-   - **5b. multi: add Easy and the transfer state machine with a null protocol.** `Easy`
-     (allocating nothing by default; options and report only as far as the multi reads them),
-     `Multi`, `Host`/`NoHost`, `Slot`, `Run`, `Sched`, `TransferState` with the variants a
-     networkless transfer reaches, a test-only protocol that completes at once,
-     `add`/`remove`/`perform`/`socket_action(Timeout)`/`info_read`/`counts`/`timeout`,
-     `drive_to_completion`, `RecordingEvents`; wires in step 4's timers. Tests: info_read
-     order; remove twice (3105 semantics); the timer callback inside `add` and `remove`; the
-     dead multi (530/758 semantics); `running` counting `Init` and `Pending`.
+   - **5b. multi: add Easy and the transfer state machine with a null protocol.** **Done.**
+     `Easy` and `Options` (the URL and the two limits), `Multi`, `Host`/`NoHost`, `Slot`, `Run`,
+     the dirty `RowSet`, `Counts`, `TransferState` with the variants a networkless transfer
+     reaches (`Init`, `Exchanging`, `Done`, `Completed`), the test-only `null:` (completes at
+     once) and `stall:` (never does) protocols, `add`/`remove`/`perform`/
+     `socket_action(Timeout)`/`info_read`/`counts`/`timeout`, the transfer.c timeout check, and
+     a `Drop` that removes every transfer; step 4's timers wired in. The setup step parses the
+     URL with `GUESS_SCHEME | NON_SUPPORT_SCHEME` and fails a scheme this build lacks with
+     UnsupportedProtocol (23), and a missing URL with URL_MALFORMAT. Tests: info_read order;
+     remove twice (3105); the timer callback inside `add` and `remove`; the dead multi (530:
+     an abort inside `add` refuses the transfer, a dead multi fails its transfers, takes no
+     more until empty, and tells the timer nothing); `running` counting transfers not yet run;
+     a timed-out transfer failing with OPERATION_TIMEDOUT. `drive_to_completion` waits for
+     step 6's `wait`. `TransferReport` comes with step 7.
    - **5c. multi: add the callback contexts and notifications.** `EngineRest`, `TransferCx`,
      `EventCx`, `NotifyCx` with the methods possible before step 7 (no `pause`), the handler
      traits, `NotifyQueue` dispatched at the end of a pass. Tests: the generation tests for
@@ -82,7 +88,7 @@ yet meet.
      the tracker's limit, which also exercises arena growth failing.
 6. **os: add sockets, polling and the waker.** `curl-os` `net.rs`, `poll.rs`, `wake.rs`, with the
    CLAUDE.md unsafe list updated in the same commit; core
-   `SystemNet`, `FakeNet`; `Multi::wait`/`poll`/`fdset`/`waitfds`/`waker`. Loopback tests for
+   `SystemNet`, `FakeNet`; `Multi::wait`/`poll`/`fdset`/`waitfds`/`waker`, `drive_to_completion`. Loopback tests for
    connect-in-progress, EOF and would-block.
 
 **`file://` end to end**
@@ -94,10 +100,8 @@ yet meet.
    its own call; pause and replay with interleaving (3235/3236 shapes); getinfo inside callbacks;
    the pause torture scenario.
 8. **proto: add file:// and Easy::perform.** `proto/file.rs` (no pause support: PAUSE is a
-   WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`. The
-   transfer parses its URL with `CURLU_GUESS_SCHEME | CURLU_NON_SUPPORT_SCHEME` (plus
-   `DISALLOW_USER` and `PATH_AS_IS` from their options) and rejects a scheme it does not
-   implement as UnsupportedProtocol (23), as url.c does. Tests:
+   WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`.
+   Setup gains `DISALLOW_USER` and `PATH_AS_IS` from their options. Tests:
    a networkless `Easy::perform` of a file URL, upload and resume.
 9. **tool: run file:// transfers through the core.** Map `Operation` to `Easy`: the URL,
    `-o`, `-i`, `-s`/`-S`, `-v`, `--trace-ascii`/`--trace`/`--trace-time` with

@@ -20,7 +20,7 @@ fn is_slash_or_end(s: &[u8]) -> bool {
 
 /// Whether `p` has a `.` or `..` segment to remove (`needs_dedotdot`).
 fn needs_work(mut p: &[u8]) -> bool {
-    if p.len() < 2 || !p.iter().any(|&b| b == b'.' || b == b'%') {
+    if p.len() < 2 || !p.iter().any(|b| matches!(b, b'.' | b'%')) {
         return false;
     }
     while !p.is_empty() {

@@ -47,17 +47,10 @@ fn hex_value(b: u8) -> Option<u8> {
     (b as char).to_digit(16).map(|d| d as u8)
 }
 
-/// A `%xx` with at least one lowercase hex digit, which re-encoding
-/// uppercases.
-fn lowercase_escape(s: &[u8]) -> Option<u8> {
+/// A `%xx` escape's byte; re-encoding writes it with uppercase digits.
+fn escaped_byte(s: &[u8]) -> Option<u8> {
     match s {
-        [b'%', h, l, ..]
-            if h.is_ascii_hexdigit()
-                && l.is_ascii_hexdigit()
-                && (h.is_ascii_lowercase() || l.is_ascii_lowercase()) =>
-        {
-            Some(hex_value(*h)? << 4 | hex_value(*l)?)
-        }
+        [b'%', h, l, ..] => Some(hex_value(*h)? << 4 | hex_value(*l)?),
         _ => None,
     }
 }
@@ -80,7 +73,7 @@ pub(super) fn reencode(out: &mut Bytes, mut s: &[u8], query: Query) -> Result<()
                 ],
             )?;
             s = &s[1..];
-        } else if let Some(v) = lowercase_escape(s) {
+        } else if let Some(v) = escaped_byte(s) {
             push(
                 out,
                 &[
@@ -94,7 +87,7 @@ pub(super) fn reencode(out: &mut Bytes, mut s: &[u8], query: Query) -> Result<()
             let run = (1..s.len())
                 .find(|&i| {
                     let c = s[i];
-                    c == b' ' || !(b' '..0x7f).contains(&c) || lowercase_escape(&s[i..]).is_some()
+                    c == b' ' || !(b' '..0x7f).contains(&c) || escaped_byte(&s[i..]).is_some()
                 })
                 .unwrap_or(s.len());
             push(out, &s[..run])?;
@@ -182,5 +175,14 @@ mod tests {
         assert_eq!(decode(b"a%0a").unwrap(), None);
         assert_eq!(decode(b"a\tb").unwrap(), None);
         assert_eq!(escape(b"a b/~").unwrap(), b"a%20b%2F~");
+    }
+
+    #[test]
+    fn push_stops_short_of_the_input_limit() {
+        let mut out = Vec::new();
+        push(&mut out, &vec![b'a'; MAX_INPUT - 2]).unwrap();
+        push(&mut out, b"a").unwrap();
+        assert_eq!(push(&mut out, b"a"), Err(UrlErrorKind::TooLarge));
+        assert_eq!(out.len(), MAX_INPUT - 1);
     }
 }

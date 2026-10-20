@@ -58,7 +58,7 @@ pub(super) fn ipv4(host: &[u8]) -> Option<[u8; 4]> {
     let mut c = host;
     loop {
         let parsed = match c {
-            [b'0', x, rest @ ..] if x | 0x20 == b'x' => {
+            [b'0', x, rest @ ..] if x.eq_ignore_ascii_case(&b'x') => {
                 Some(number(rest, 16, u32::MAX.into()).ok()?)
             }
             [b'0', ..] => number(c, 8, u32::MAX.into()).ok(),
@@ -194,7 +194,8 @@ fn pton6(s: &[u8]) -> Option<[u8; 16]> {
                 colon = Some(tp);
                 continue;
             }
-            if i == src.len() || tp + 2 > 16 {
+            // Every word is two bytes, so a full address is exactly 16.
+            if i == src.len() || tp == 16 {
                 return None;
             }
             tmp[tp..tp + 2].copy_from_slice(&(val as u16).to_be_bytes());
@@ -367,6 +368,12 @@ mod tests {
         assert_eq!(v4("256.1.1.1"), None);
         assert_eq!(v4("0x"), None);
         assert_eq!(v4("example.com"), None);
+        // A part too large for the bytes it fills.
+        for name in ["256.1", "1.16777216", "256.1.1", "1.256.1", "1.1.65536"] {
+            assert_eq!(v4(name), None, "{name}");
+        }
+        assert_eq!(v4("1.16777215").as_deref(), Some("1.255.255.255"));
+        assert_eq!(v4("1.1.65535").as_deref(), Some("1.1.255.255"));
     }
 
     fn v6(s: &str) -> Result<(String, Option<String>), UrlErrorKind> {
@@ -397,5 +404,34 @@ mod tests {
         assert_eq!(v6("[::ffff:a0a:a0a]").unwrap().0, "[::ffff:a0a:a0a]");
         assert_eq!(v6("[::1%]"), Err(UrlErrorKind::BadIpv6));
         assert_eq!(v6("[1:2:3]"), Err(UrlErrorKind::BadIpv6));
+        for bad in [
+            "[::1..2.3]",
+            "[::.1.2.3.4]",
+            "[::1.2.3.4x]",
+            "[::1.2.3x4]",
+            "[1::2:]",
+            "[1:2:3:4:5:6:7:8:9:0]",
+        ] {
+            assert_eq!(v6(bad), Err(UrlErrorKind::BadIpv6), "{bad}");
+        }
+    }
+
+    /// `inet_ntop6` itself, below the URL's rule that keeps an address as
+    /// written when the normal form is no shorter.
+    #[test]
+    fn ntop6_as_c_prints_it() {
+        let ntop = |s: &str| {
+            let mut out = Vec::new();
+            ntop6(&mut out, pton6(s.as_bytes()).unwrap()).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        // The longest run of zero words, the first of equal ones.
+        assert_eq!(ntop("1:0:0:2:0:0:0:3"), "1:0:0:2::3");
+        assert_eq!(ntop("1:0:0:0:2:0:0:3"), "1::2:0:0:3");
+        assert_eq!(ntop("1:0:0:2:0:0:3:4"), "1::2:0:0:3:4");
+        // An embedded IPv4 address only for the mapped and compatible forms.
+        assert_eq!(ntop("0:0:1:2:3:4:5:6"), "::1:2:3:4:5:6");
+        assert_eq!(ntop("::1:2:3"), "::1:2:3");
+        assert_eq!(ntop("::ffff:1:2"), "::ffff:0.1.0.2");
     }
 }

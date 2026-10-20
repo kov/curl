@@ -650,7 +650,7 @@ fn parse_port(host: &mut Bytes, has_scheme: bool) -> Result<Option<u16>, UrlErro
     let n = digits.iter().take_while(|b| b.is_ascii_digit()).count();
     match digits.get(n) {
         _ if digits[0] == b'\\' => return Err(UrlErrorKind::Backslash),
-        Some(b'\\') if n > 0 => return Err(UrlErrorKind::Backslash),
+        Some(b'\\') => return Err(UrlErrorKind::Backslash),
         Some(_) => return Err(UrlErrorKind::BadPortNumber),
         None => {}
     }
@@ -890,6 +890,35 @@ mod tests {
         assert_eq!(
             get("file://localhostx/a", Part::Url, p, g),
             Err(UrlErrorKind::BadFileUrl)
+        );
+        // Parts C lets an application set one at a time.
+        let mut u = Url::parse(b"http://h/", p).unwrap();
+        u.password = Some(copy(b"pw").unwrap());
+        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "http://:pw@h/");
+        let mut u = Url::parse(b"imap://h/", p).unwrap();
+        u.options = Some(copy(b"opt").unwrap());
+        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "imap://;opt@h/");
+        let mut u = Url::parse(b"http://h/", p).unwrap();
+        u.scheme = None;
+        assert_eq!(u.get(Part::Url, g), Err(UrlErrorKind::NoScheme));
+        let default_scheme = GetOptions {
+            default_scheme: true,
+            ..GetOptions::NONE
+        };
+        assert_eq!(
+            show(&u.get(Part::Url, default_scheme).unwrap()),
+            "https://h/"
+        );
+        // The input limit, inclusive.
+        let long = |n: usize| format!("http://h/{}", "a".repeat(n - 9));
+        assert!(get(&long(MAX_INPUT), Part::Path, p, g).is_ok());
+        assert_eq!(
+            get(&long(MAX_INPUT + 1), Part::Path, p, g),
+            Err(UrlErrorKind::MalformedInput)
+        );
+        assert_eq!(
+            get("http://h/\0", Part::Path, p, g),
+            Err(UrlErrorKind::MalformedInput)
         );
         let default_port = GetOptions {
             default_port: true,

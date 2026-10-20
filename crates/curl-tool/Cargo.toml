@@ -10,7 +10,12 @@ publish.workspace = true
 name = "curl"
 path = "src/main.rs"
 
+[features]
+# The debug test build: track allocations as the C tool's debug build does.
+debug-hooks = ["curl-alloc/debug-hooks"]
+
 [dependencies]
+curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 
 [lints]

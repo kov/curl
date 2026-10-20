@@ -52,10 +52,14 @@ exclude_re = [
     'url/mod\.rs:.*: replace \+ with \* in path_part$',
     # Zeroing a password as it is freed: nothing safe can read it after.
     'url/mod\.rs:.*: replace <impl Drop for Url>::drop with \(\)$',
-    # The default `timer` is already `Ok(())`, and with it doing nothing,
-    # whether its calls are recorded cannot be seen.
+    # The default `timer` is already `Ok(())` and the default `notify` does
+    # nothing; with them, whether timer calls are recorded cannot be seen.
     'multi/mod\.rs:.*: replace MultiEvents::timer -> Result<\(\), Abort> with Ok\(\(\)\)$',
     'multi/mod\.rs:.*: replace MultiEvents::wants_timer -> bool with true$',
+    'multi/mod\.rs:.*: replace MultiEvents::notify with \(\)$',
+    # The debug build's invariant check fails only on a broken invariant;
+    # the sabotage entries witnessed by the property test show it does.
+    'multi/(mod|check)\.rs:.*: replace Multi<H>::check(_invariants)? with \(\)$',
     # Running a transfer clears its dirty row, so resuming the walk at
     # the row itself finds the same next one.
     'multi/mod\.rs:.*: replace \+ with \* in Multi<H>::run_dirty$',
@@ -65,7 +69,7 @@ exclude_re = [
     'multi/state\.rs:.*: replace \|\| with && in step$',
     'multi/state\.rs:.*: replace is_premature -> bool with (true|false)$',
     # Reserving more than needed.
-    '(sched|timers)\.rs:.*: replace (< with <=|- with \+) in (RowSet|TimerQueue<T>)::reserve$',
+    '(sched|timers|notify)\.rs:.*: replace (< with <=|- with \+) in (RowSet|TimerQueue<T>|NotifyQueue)::reserve$',
     # Sequence numbers are unique: two entries never compare equal.
     'multi/timers\.rs:.*: replace < with <= in Entry<T>::before$',
 ]

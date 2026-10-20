@@ -1,4 +1,5 @@
 use super::*;
+use crate::options::Options;
 use crate::time::{ManualClock, TimeLimit};
 
 /// Logs every timer call, and aborts the one numbered `abort_at` (from 1).
@@ -545,4 +546,94 @@ fn socket_action_delivers_notifications() {
     clock.advance(Duration::from_millis(10));
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(ev.log, [Notification::EasyDone(id)]);
+}
+
+/// Calls every context method from inside the callbacks and records what
+/// it saw.
+#[derive(Default)]
+struct Probe {
+    target: Option<TransferId>,
+    in_timer: Vec<String>,
+    in_notify: Vec<String>,
+}
+
+fn probe_options(options: Option<&Options>) -> String {
+    format!("{:?}", options.and_then(Options::url).map(<[u8]>::to_vec))
+}
+
+impl MultiEvents<NoHost> for Probe {
+    fn timer(&mut self, cx: &mut EventCx<'_, NoHost>, _: TimerChange) -> Result<(), Abort> {
+        let Some(id) = self.target else { return Ok(()) };
+        let c = cx.counts();
+        self.in_timer
+            .push(format!("counts {} {}", c.running, c.current));
+        self.in_timer.push(probe_options(cx.options(id)));
+        cx.options_mut(id)
+            .unwrap()
+            .set_url(Some(b"null://changed"))
+            .unwrap();
+        let dup = cx.duplicate(id).unwrap().unwrap();
+        self.in_timer.push(probe_options(Some(dup.options())));
+        cx.set_notify(NotifyKind::EasyDone, true);
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+
+    fn notify(&mut self, cx: &mut NotifyCx<'_, NoHost>, n: Notification) {
+        let Notification::EasyDone(id) = n else {
+            return;
+        };
+        let c = cx.counts();
+        self.in_notify
+            .push(format!("counts {} {}", c.running, c.current));
+        self.in_notify.push(format!("timeout {:?}", cx.timeout()));
+        self.in_notify.push(probe_options(cx.options(id)));
+        cx.options_mut(id)
+            .unwrap()
+            .set_url(Some(b"null://again"))
+            .unwrap();
+        let dup = cx.duplicate(id).unwrap().unwrap();
+        self.in_notify.push(probe_options(Some(dup.options())));
+        let read = cx.info_read().map(|m| m.id);
+        self.in_notify.push(format!("read {}", read == Some(id)));
+    }
+}
+
+#[test]
+fn callbacks_reach_the_multi_through_their_contexts() {
+    let (mut m, _clock) = multi();
+    let mut ev = Probe::default();
+    let first = m.add(stall_within(5000), (), &mut ev).unwrap();
+    m.perform(&mut ev).unwrap();
+    ev.target = Some(first);
+    // The timer hears of the add, and changes the first transfer's URL.
+    let id = m.add(easy("null://b"), (), &mut ev).unwrap();
+    let url = |o: &str| format!("{:?}", Some(o.as_bytes().to_vec()));
+    assert_eq!(
+        ev.in_timer,
+        [
+            "counts 2 2".to_owned(),
+            url("stall://a"),
+            url("null://changed")
+        ]
+    );
+    ev.target = None;
+    m.perform(&mut ev).unwrap();
+    assert_eq!(
+        ev.in_notify,
+        [
+            "counts 1 2".to_owned(),
+            "timeout Some(5s)".to_owned(),
+            url("null://b"),
+            url("null://again"),
+            "read true".to_owned(),
+        ]
+    );
+    assert_eq!(
+        m.easy(id).unwrap().options().url(),
+        Some(&b"null://again"[..])
+    );
 }

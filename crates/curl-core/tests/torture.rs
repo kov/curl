@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use curl_alloc::track::{self, Tracker};
-use curl_alloc::{OutOfMemory, try_box};
+use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::conn::io::{FakeNet, Net};
 use curl_core::easy::Easy;
 use curl_core::error::MultiErrorKind;
@@ -20,9 +20,10 @@ use curl_core::id::ArenaPolicy;
 use curl_core::multi::Multi;
 use curl_core::multi::{
     Abort, AddError, Env, EventCx, MultiEvents, NoHost, Notification, NotifyCx, NotifyKind,
-    SocketEvent, TimerChange,
+    SocketEvent, TimerChange, WaitMode,
 };
 use curl_core::time::{Clock, ManualClock, TimeLimit};
+use curl_os::wake::Waker;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -78,13 +79,18 @@ fn scenario() -> Result<Outcome, OutOfMemory> {
     let clock = ManualClock::new()?;
     let boxed: Box<dyn Clock> = try_box(clock.clone())?;
     let net: Box<dyn Net> = try_box(FakeNet::new(clock.clone()))?;
+    let waker = TryArc::try_new(Waker::new().expect("a socket pair"))?;
     let env = Env {
         clock: boxed,
         net,
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
-        waker: None,
+        waker: Some(waker),
     };
     let mut m: Multi = Multi::new(env)?;
+    match m.wait(&mut [], Duration::ZERO, WaitMode::Poll) {
+        Ok(0) | Err(MultiErrorKind::OutOfMemory) => {}
+        other => panic!("an idle wait got {other:?}"),
+    }
     m.set_notify(NotifyKind::InfoRead, true);
     m.set_notify(NotifyKind::EasyDone, true);
     let mut ev = Events::default();

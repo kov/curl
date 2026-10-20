@@ -51,3 +51,25 @@ impl Net for FakeNet {
         Ok(ready)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    use std::os::unix::net::UnixStream;
+
+    use super::*;
+
+    #[test]
+    fn the_system_network_polls_the_descriptors() {
+        let (mut a, b) = UnixStream::pair().unwrap();
+        let mut fds = [PollFd::new(b.as_fd(), Events::IN)];
+        assert_eq!(
+            SystemNet.poll(&mut fds, Duration::from_millis(1)).unwrap(),
+            0
+        );
+        a.write_all(b"x").unwrap();
+        assert_eq!(SystemNet.poll(&mut fds, Duration::from_secs(5)).unwrap(), 1);
+        assert!(fds[0].revents().contains(Events::IN));
+    }
+}

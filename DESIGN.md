@@ -11,6 +11,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-core` | The Rust API: handles, protocols, caches, the transfer engine. | forbidden |
 | `curl-sys-abi` | The C ABI over `curl-core`, built as `libcurl.so.4`. | yes: it is the shim |
 | `curl-tool` | The `curl` binary, written against the Rust API, not the C ABI. | forbidden |
+| `curl-alloc` | Fallible allocation; the debug build's memory tracker. | in named modules |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);

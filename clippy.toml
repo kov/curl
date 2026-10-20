@@ -1,0 +1,42 @@
+# Infallible allocation aborts the process on failure, and a library must
+# not (DESIGN.md, "Allocation failure"). Use curl-alloc's replacements.
+# `Clone::clone` cannot be banned for allocating types alone; the torture
+# tests catch an infallible clone.
+disallowed-methods = [
+    { path = "std::boxed::Box::new", reason = "use curl_alloc::try_box" },
+    { path = "std::sync::Arc::new", reason = "allocates infallibly" },
+    { path = "std::rc::Rc::new", reason = "allocates infallibly" },
+    { path = "std::vec::Vec::with_capacity", reason = "use Vec::new and try_reserve" },
+    { path = "std::vec::Vec::push", reason = "use curl_alloc::TryVec::try_push" },
+    { path = "std::vec::Vec::insert", reason = "reserve with try_reserve first" },
+    { path = "std::vec::Vec::extend_from_slice", reason = "use curl_alloc::TryVec::try_extend_from_slice" },
+    { path = "std::vec::Vec::extend_from_within", reason = "reserve with try_reserve first" },
+    { path = "std::vec::Vec::append", reason = "reserve with try_reserve first" },
+    { path = "std::vec::Vec::resize", reason = "reserve with try_reserve first" },
+    { path = "std::vec::Vec::reserve", reason = "use try_reserve" },
+    { path = "std::vec::Vec::reserve_exact", reason = "use try_reserve_exact" },
+    { path = "std::vec::Vec::into_boxed_slice", reason = "may reallocate to shrink" },
+    { path = "std::vec::Vec::shrink_to_fit", reason = "reallocates infallibly" },
+    { path = "std::string::String::with_capacity", reason = "use String::new and try_reserve" },
+    { path = "std::string::String::push", reason = "use curl_alloc::TryString::try_push" },
+    { path = "std::string::String::push_str", reason = "use curl_alloc::TryString::try_push_str" },
+    { path = "std::string::String::insert", reason = "reserve with try_reserve first" },
+    { path = "std::string::String::insert_str", reason = "reserve with try_reserve first" },
+    { path = "std::string::String::reserve", reason = "use try_reserve" },
+    { path = "std::string::String::reserve_exact", reason = "use try_reserve_exact" },
+    { path = "std::string::ToString::to_string", reason = "use curl_alloc::try_format" },
+    { path = "std::borrow::ToOwned::to_owned", reason = "allocates infallibly" },
+    { path = "slice::to_vec", reason = "allocates infallibly" },
+    { path = "str::to_uppercase", reason = "allocates infallibly" },
+    { path = "str::to_lowercase", reason = "allocates infallibly" },
+    { path = "str::repeat", reason = "allocates infallibly" },
+    { path = "std::iter::Iterator::collect", reason = "allocates infallibly" },
+    { path = "std::iter::Extend::extend", reason = "allocates infallibly" },
+    { path = "std::collections::HashMap::insert", reason = "reserve with try_reserve first" },
+    { path = "std::collections::VecDeque::push_back", reason = "reserve with try_reserve first" },
+    { path = "std::collections::VecDeque::push_front", reason = "reserve with try_reserve first" },
+]
+disallowed-macros = [
+    { path = "std::format", reason = "use curl_alloc::try_format" },
+    { path = "std::vec", reason = "allocates infallibly" },
+]

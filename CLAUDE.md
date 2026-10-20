@@ -26,6 +26,7 @@ needing unsafe is a module whose types are wrong.
 Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 
 - `crates/curl-sys-abi`: the C ABI shim.
+- `crates/curl-alloc/src/boxed.rs`: the fallible `Box` constructor std lacks on stable.
 
 **Make bad state unrepresentable; fail the build, not the run.** Use the type system in our
 favour. libcurl is a soup of bare integers, `long` options and `void *` — option values, socket

@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "curl-alloc"
+version = "0.1.0"
+
+[[package]]
 name = "curl-core"
 version = "0.1.0"
 

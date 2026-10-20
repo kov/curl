@@ -22,7 +22,8 @@ const PLACES: &[(&str, &str, bool)] = &[
     ("CURL_HOME", "", false),
     ("XDG_CONFIG_HOME", "", true),
     ("HOME", "", false),
-    // Only when `XDG_CONFIG_HOME` is not set.
+    // `curlrc` is looked for in one directory only: the first of these
+    // whose variable is set.
     ("CURL_HOME", "/.config", true),
     ("HOME", "/.config", true),
 ];
@@ -38,16 +39,16 @@ pub(crate) fn find_curlrc(
     env: impl Fn(&str) -> Option<OsString>,
     readable: impl Fn(&Path) -> bool,
 ) -> Result<Option<PathBuf>, OutOfMemory> {
-    let mut xdg_set = false;
+    let mut without_dot_tried = false;
     for &(var, append, without_dot) in PLACES {
         let Some(dir) = env(var).filter(|d| !d.is_empty()) else {
             continue;
         };
-        if without_dot && xdg_set {
-            continue;
-        }
-        if var == "XDG_CONFIG_HOME" {
-            xdg_set = true;
+        if without_dot {
+            if without_dot_tried {
+                continue;
+            }
+            without_dot_tried = true;
         }
         let name: &[u8] = if without_dot { b"curlrc" } else { b".curlrc" };
         let mut path = Vec::new();
@@ -109,8 +110,10 @@ mod tests {
             find(&no_xdg, &all[3..]).as_deref(),
             Some("/c/.config/curlrc")
         );
+        // So does a set `CURL_HOME`, for `HOME`'s.
+        assert_eq!(find(&no_xdg, &all[4..]), None);
         assert_eq!(
-            find(&no_xdg, &all[4..]).as_deref(),
+            find(&[("HOME", "/h")], &all[4..]).as_deref(),
             Some("/h/.config/curlrc")
         );
         // An empty variable is skipped, and does not count as set.

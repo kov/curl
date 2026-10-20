@@ -108,16 +108,22 @@ def probe_skips(build, results, env):
 
 def parse_log(log, probes, all_tests, disabled):
     """
-    Return (ran, failed, {skipped: reason}, {failed: parts}) from a run.
+    Return (ran, failed, {skipped: reason}, {failed: parts}, {ignored: why}).
 
     `log` is runtests.pl's output and `probes` probe_skips()'s. Every count
-    is checked against the totals runtests.pl printed itself.
+    is checked against the totals runtests.pl printed itself. A test whose
+    tool does not exist starts, is reported IGNORED, and is neither run nor
+    skipped as far as runtests.pl's totals go.
     """
-    ran = [int(n) for n in re.findall(r"^test (\d+) \[", log, re.MULTILINE)]
-    check(len(ran) == len(set(ran)), "a test ran twice")
-    ran = set(ran)
+    started = [int(n) for n in re.findall(r"^test (\d+) \[", log,
+                                          re.MULTILINE)]
+    check(len(started) == len(set(started)), "a test ran twice")
+    ignored = {int(n): why for n, why in re.findall(
+        r"^ (\d+): IGNORED: (.*?)\s*$", log, re.MULTILINE)}
+    check(set(ignored) <= set(started), "an ignored test never started")
+    ran = set(started) - set(ignored)
     m = re.search(r"^TESTDONE: (\d+) tests were considered", log, re.MULTILINE)
-    check(m and int(m.group(1)) == len(all_tests),
+    check(m and int(m.group(1)) == len(all_tests) - len(ignored),
           "considered count differs from the tests inventory")
     m = re.search(r"^TESTFAIL: These test cases failed: (.*)$", log, re.MULTILINE)
     failed = {int(n) for n in m.group(1).split()} if m else set()
@@ -145,8 +151,8 @@ def parse_log(log, probes, all_tests, disabled):
             reason.setdefault(int(n), why.strip())
     for n in disabled:
         reason.setdefault(n, "configured as DISABLED")
-    skipped = set(all_tests) - ran
-    check(skipped == set(reason) - ran,
+    skipped = set(all_tests) - ran - set(ignored)
+    check(skipped == set(reason) - ran - set(ignored),
           f"skipped tests without a reason: {sorted(skipped - set(reason))}")
     counts = {}
     for n in skipped:
@@ -157,7 +163,7 @@ def parse_log(log, probes, all_tests, disabled):
     for n in failed:
         failures[n] = sorted(set(re.findall(
             rf"^ {n}: (.*?) FAILED", log, re.MULTILINE)))
-    return ran, failed, {n: reason[n] for n in skipped}, failures
+    return ran, failed, {n: reason[n] for n in skipped}, failures, ignored
 
 
 def parse_pytest(report, log, files):
@@ -215,11 +221,13 @@ def results(build, results_dir, tests):
     by_num = {t["number"]: t for t in tests["tests"]}
     log = (results_dir / "runtests.log").read_text(errors="replace")
     probes = (results_dir / "skip-probes.log").read_text(errors="replace")
-    ran, failed, skipped, failures = parse_log(
+    ran, failed, skipped, failures, ignored = parse_log(
         log, probes, list(by_num), tests["disabled"]["unconditional"])
     out = {}
     for n in sorted(by_num):
-        if n in failed:
+        if n in ignored:
+            out[n] = {"result": "ignored", "reason": ignored[n]}
+        elif n in failed:
             out[n] = {"result": "failed", "failed-parts": failures[n]}
         elif n in ran:
             out[n] = {"result": "ok"}

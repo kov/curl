@@ -147,13 +147,26 @@ def check_loading(tool):
         check(curl is None, f"the Rust tool loads {curl}")
 
 
-def compare(now, base, runners):
+def tree_check(test):
+    """
+    Whether a test checks the C tree rather than the build.
+
+    Such perl-script tests read sources and built docs; they pass or fail
+    whatever library and tool are installed.
+    """
+    return (test["runner"] == "perl-script"
+            and "%CURL" not in (test.get("command") or ""))
+
+
+def compare(now, base, tests):
     """Classify each result against the baseline's."""
     classes = {}
     for n, b in base.items():
         r = now[n]["result"]
-        if runners[n] in UNIT_RUNNERS:
+        if tests[n]["runner"] in UNIT_RUNNERS:
             cls = f"C unit program, {r}"
+        elif tree_check(tests[n]):
+            cls = f"C tree check, {r}"
         elif b["result"] == "ok":
             cls = {"ok": "passes", "failed": "fails"}.get(r, "absent")
         elif r == "ok":
@@ -190,7 +203,7 @@ def report():
     base = json.loads((common.INVENTORY / "baseline.json").read_text())["data"]
     now, cases, _ = suite.results(BUILD, RESULTS, tests)
     classes = compare(now, {int(n): r for n, r in base["results"].items()},
-                      {t["number"]: t["runner"] for t in tests["tests"]})
+                      {t["number"]: t for t in tests["tests"]})
     pyclasses = compare_pytest(cases, base["pytest"]["cases"])
     score = {**meta, "runtests": {k: sorted(v) for k, v in classes.items()},
              "pytest": {k: sorted(v) for k, v in pyclasses.items()}}

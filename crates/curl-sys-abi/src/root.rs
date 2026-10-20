@@ -2,9 +2,8 @@
 //!
 //! `curl_global_init` counts its calls, and `curl_global_init_mem` swaps
 //! the allocator that memory handed to the application comes from (and
-//! that `curl_free` returns it to). With `debug-hooks`, it also holds the
-//! memory tracker of the `curl_dbg_*` hooks. The Rust library keeps no
-//! global state of its own; this is where the C API's lives.
+//! that `curl_free` returns it to). The Rust library keeps no global state
+//! of its own; this is where the C API's lives.
 
 #![allow(unsafe_code)]
 
@@ -47,23 +46,18 @@ const SYSTEM: Allocator = Allocator {
     calloc: libc::calloc,
 };
 
-pub(crate) struct Root {
+struct Root {
     /// `curl_global_init` calls not yet matched by `curl_global_cleanup`.
     initialized: u32,
     allocator: Allocator,
-    #[cfg(feature = "debug-hooks")]
-    pub(crate) tracker: crate::debug::Tracker,
 }
 
 static ROOT: Mutex<Root> = Mutex::new(Root {
     initialized: 0,
     allocator: SYSTEM,
-    #[cfg(feature = "debug-hooks")]
-    tracker: crate::debug::Tracker::new(),
 });
 
-/// The root, locked. Never held across a call into the application.
-pub(crate) fn root() -> std::sync::MutexGuard<'static, Root> {
+fn root() -> std::sync::MutexGuard<'static, Root> {
     // Panics abort, so the lock is never poisoned.
     ROOT.lock().expect("the global root lock is never poisoned")
 }

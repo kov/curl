@@ -18,6 +18,12 @@ mod ffi;
 mod error_codes;
 #[cfg(feature = "debug-hooks")]
 mod debug;
+
+/// The debug test build tracks the shim's Rust allocations (`DESIGN.md`,
+/// "Debug hooks").
+#[cfg(feature = "debug-hooks")]
+#[global_allocator]
+static ALLOCATOR: curl_alloc::track::Tracker = curl_alloc::track::Tracker;
 mod printf;
 mod root;
 mod strerror;

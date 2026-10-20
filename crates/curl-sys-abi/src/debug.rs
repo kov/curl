@@ -15,6 +15,9 @@
 //! is put before each block. C records the size there and never reads it
 //! back.
 //!
+//! The memdump and the limit are `curl_alloc::track`'s, shared with the
+//! Rust allocations the global allocator tracks.
+//!
 //! The prototypes are those of lib/curl_setup.h, which `ffi` does not
 //! cover; each is transcribed by hand beside its definition.
 
@@ -24,36 +27,17 @@ use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
 use core::fmt::{self, Write};
 use core::panic::Location;
 use core::ptr;
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+
+use curl_alloc::track::{self, Line, Ptr};
 
 use crate::root::{self, Allocator};
 
 /// `curl_socket_t` on the platforms in scope.
 type Socket = c_int;
 const SOCKET_BAD: Socket = -1;
-
-/// The tracker's state, held in the shim's root.
-pub(crate) struct Tracker {
-    log: Option<LogFile>,
-    /// Tracked calls left before they fail, once a limit is set.
-    limit: Option<c_long>,
-}
-
-impl Tracker {
-    pub(crate) const fn new() -> Self {
-        Tracker {
-            log: None,
-            limit: None,
-        }
-    }
-}
-
-/// The memdump stream, opened once and never closed: it is written
-/// unbuffered, line by line, so nothing is lost when the process ends.
-struct LogFile(*mut libc::FILE);
-
-// SAFETY: a `FILE` may be used from any thread; the root's lock keeps the
-// writes from interleaving.
-unsafe impl Send for LogFile {}
 
 /// Where a tracked call was made.
 #[derive(Clone, Copy)]
@@ -86,123 +70,46 @@ impl Source {
     fn is_internal(self) -> bool {
         matches!(self, Source::Internal)
     }
-}
 
-/// One log line, built on the stack: logging must not allocate through
-/// the tracker it logs. Longer lines are cut, as C cuts them at 1023
-/// bytes.
-struct Line {
-    buf: [u8; 1024],
-    len: usize,
-}
-
-impl Line {
-    fn new() -> Self {
-        Line {
-            buf: [0; 1024],
-            len: 0,
-        }
-    }
-
-    fn push(&mut self, bytes: &[u8]) {
-        let room = self.buf.len() - 1 - self.len;
-        let n = bytes.len().min(room);
-        self.buf[self.len..self.len + n].copy_from_slice(&bytes[..n]);
-        self.len += n;
-    }
-
-    fn bytes(&self) -> &[u8] {
-        &self.buf[..self.len]
-    }
-
-    /// Start a line with `kind` and where the call was made.
-    fn start(kind: &str, source: Source) -> Self {
-        let mut line = Line::new();
-        line.push(kind.as_bytes());
-        line.push(b" ");
-        match source {
+    /// Write `file:line`.
+    fn write(self, line: &mut Line) {
+        match self {
             Source::C(file, n) => {
                 // SAFETY: a `Source::C` holds a C string, by its
                 // constructor's contract.
                 line.push(unsafe { CStr::from_ptr(file) }.to_bytes());
-                let _ = write!(line, ":{n} ");
+                let _ = write!(line, ":{n}");
             }
             Source::Rust(at) => {
-                let _ = write!(line, "{}:{} ", at.file(), at.line());
+                let _ = write!(line, "{}:{}", at.file(), at.line());
             }
             Source::Internal => {}
         }
-        line
     }
 }
 
-impl Write for Line {
-    /// Never fails: a full line is cut instead.
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.push(s.as_bytes());
-        Ok(())
-    }
-}
-
-/// A pointer as `%p` prints it.
-struct Ptr<T>(*const T);
-
-impl<T> fmt::Display for Ptr<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0.is_null() {
-            f.write_str("(nil)")
-        } else {
-            write!(f, "{:#x}", self.0.addr())
-        }
-    }
-}
-
-/// Append `line` to the memdump, if there is one.
-fn log(tracker: &Tracker, line: &Line) {
-    let Some(LogFile(file)) = tracker.log else {
-        return;
-    };
-    let bytes = line.bytes();
-    // SAFETY: `file` is the stream `curl_dbg_memdebug` opened, which stays
-    // open; `bytes` is readable for its length.
-    unsafe { libc::fwrite(bytes.as_ptr().cast(), 1, bytes.len(), file) };
-    // SAFETY: as above.
-    unsafe { libc::fflush(file) };
-}
-
-/// Log a line built by `build`, unless the call is internal.
+/// Log a line built by `build` after `kind` and the source, unless the
+/// call is internal.
 fn log_call(source: Source, kind: &str, build: impl FnOnce(&mut Line) -> fmt::Result) {
     if source.is_internal() {
         return;
     }
-    let mut line = Line::start(kind, source);
+    let mut line = Line::new();
+    line.push(kind.as_bytes());
+    line.push(b" ");
+    source.write(&mut line);
+    line.push(b" ");
     let _ = build(&mut line);
     line.push(b"\n");
-    log(&root::root().tracker, &line);
+    track::log(&line);
 }
 
-/// Count a tracked call against the limit; true when it must fail.
+/// Count a tracked call against the limit; true when it must fail, with
+/// `errno` set as C sets it.
 fn limit_reached(func: &str, source: Source) -> bool {
-    if source.is_internal() {
+    if source.is_internal() || !track::limit_reached(func, |l| source.write(l)) {
         return false;
     }
-    let mut root = root::root();
-    match &mut root.tracker.limit {
-        Some(0) => {}
-        Some(left) => {
-            *left -= 1;
-            return false;
-        }
-        None => return false,
-    }
-    let mut line = Line::start("LIMIT", source);
-    let _ = writeln!(line, "{func} reached memlimit");
-    log(&root.tracker, &line);
-    let bytes = line.bytes();
-    // SAFETY: standard error is open for the life of the process, as C
-    // assumes; `bytes` is readable for its length. A failed write to it
-    // has nowhere to be reported.
-    unsafe { libc::write(2, bytes.as_ptr().cast(), bytes.len()) };
     set_errno(libc::ENOMEM);
     true
 }
@@ -303,16 +210,17 @@ pub(crate) unsafe fn free(alloc: &Allocator, p: *mut c_void, source: Source) {
 /// `logname` is NULL or a C string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_dbg_memdebug(logname: *const c_char) {
-    let mut root = root::root();
-    // SAFETY: `logname` is NULL or a C string, as the caller guarantees.
-    if root.tracker.log.is_some() || logname.is_null() || unsafe { logname.read() } == 0 {
+    if logname.is_null() {
         return;
     }
-    // SAFETY: both are C strings.
-    let file = unsafe { libc::fopen(logname, c"w".as_ptr()) };
-    if !file.is_null() {
-        root.tracker.log = Some(LogFile(file));
+    // SAFETY: `logname` is a C string, as the caller guarantees.
+    let name = unsafe { CStr::from_ptr(logname) }.to_bytes();
+    if name.is_empty() {
+        return;
     }
+    // A memdump that cannot be created leaves the test to fail on its
+    // absence, as in C.
+    let _ = track::start_log(Path::new(OsStr::from_bytes(name)));
 }
 const _: unsafe extern "C" fn(*const c_char) = curl_dbg_memdebug;
 
@@ -320,10 +228,13 @@ const _: unsafe extern "C" fn(*const c_char) = curl_dbg_memdebug;
 /// nothing.
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_dbg_memlimit(limit: c_long) {
-    let mut root = root::root();
-    if root.tracker.limit.is_none() {
-        root.tracker.limit = Some(limit);
-    }
+    track::set_limit(as_limit(limit));
+}
+
+/// C counts a `long` down and fails at zero, so a negative limit never
+/// fails anything.
+fn as_limit(limit: c_long) -> u64 {
+    u64::try_from(limit).unwrap_or(u64::MAX)
 }
 const _: extern "C" fn(c_long) = curl_dbg_memlimit;
 
@@ -664,17 +575,14 @@ const _: unsafe extern "C" fn(*const c_char, ...) = curl_dbg_log;
 ///
 /// As `curl_mvprintf`.
 unsafe fn vlog(format: *const c_char, args: VaList<'_>) {
-    if root::root().tracker.log.is_none() {
-        return;
-    }
     let mut line = Line::new();
+    let buf = line.buffer();
     // SAFETY: the buffer has room for its length; the format and
     // arguments are the caller's.
-    let n = unsafe {
-        crate::printf::curl_mvsnprintf(line.buf.as_mut_ptr().cast(), line.buf.len(), format, args)
-    };
-    line.len = usize::try_from(n).unwrap_or(0).min(line.buf.len() - 1);
-    log(&root::root().tracker, &line);
+    let n =
+        unsafe { crate::printf::curl_mvsnprintf(buf.as_mut_ptr().cast(), buf.len(), format, args) };
+    line.set_len(usize::try_from(n).unwrap_or(0));
+    track::log(&line);
 }
 
 #[cfg(test)]

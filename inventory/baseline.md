@@ -2,7 +2,7 @@
 
 # C reference baseline
 
-What the C build in `build/c` does on the C test suite: the floor the rewrite is scored against. Measured 2026-10-20T12:34:08Z to 2026-10-20T12:36:14Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
+What the C build in `build/c` does on the C test suite: the floor the rewrite is scored against. Measured 2026-10-20T12:37:10Z to 2026-10-20T12:39:17Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
 
 ```
 curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.22.1 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
@@ -61,7 +61,7 @@ None.
 | test_02_download::test_02_32_earlydata[h3] | failed | AssertionError: {0: 0, 1: -109} assert -109 == 109 |
 | test_07_upload::test_07_70_put_earlydata[h3-limited-body] | failed | AssertionError: {0: 0, 1: -65536}   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   URL: -n   [0-x] * !!! WARNING !!!   [0-x] * This is a debug build of libcurl, do not use in production.   [t-0] STARTED   [0-x] * [DNS] added on |
 | test_07_upload::test_07_70_put_earlydata[h3-small-body] | failed | AssertionError: {0: 0, 1: -1117}   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   URL: -n   [0-x] * !!! WARNING !!!   [0-x] * This is a debug build of libcurl, do not use in production.   [t-0] STARTED   [0-x] * [DNS] added one |
-| test_19_shutdown::test_19_01_check_tcp_rst[http/1.1] | failed | AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\n', 'tcpdump: verbose output suppressed, use -v[v]...&#32;for full protocol decode\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\n', '0 packets captured\n', '134 packets received by filter\n', '0 pack |
+| test_19_shutdown::test_19_01_check_tcp_rst[http/1.1] | failed | AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\n', 'tcpdump: verbose output suppressed, use -v[v]...&#32;for full protocol decode\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\n', '0 packets captured\n', '20 packets received by filter\n', '0 packe |
 
 ### Skip reasons
 

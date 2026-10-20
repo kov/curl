@@ -213,8 +213,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-10-20T12:36:14Z",
-   "started": "2026-10-20T12:34:08Z"
+   "finished": "2026-10-20T12:39:17Z",
+   "started": "2026-10-20T12:37:10Z"
   },
   "protocols": [
    "dict",
@@ -3294,7 +3294,7 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '0 packets captured\\n', '134 packets received by filter\\n', '0 pack",
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '0 packets captured\\n', '20 packets received by filter\\n', '0 packe",
      "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {

@@ -89,11 +89,18 @@ def run():
                             str(ROOT / "tests/http")], cwd=BUILD / "tests",
                            env=env, stdout=log, stderr=subprocess.STDOUT,
                            check=False)
+    # The pytest harness leaves the vsftpd daemons it starts running; stop
+    # them so repeated runs do not pile them up.
+    leftover = subprocess.run(["pkill", "-c", "-f",
+                               f"^\\S*vsftpd {ROOT}/tests/http/gen/"],
+                              check=False, capture_output=True,
+                              text=True).stdout.strip()
     finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     (RESULTS / "run.json").write_text(json.dumps({
         "c-commit": commit, "started": started, "finished": finished,
         "exit-status": r.returncode, "runtests-args": RUNTESTS_ARGS,
-        "pytest-exit-status": p.returncode, "pytest-args": PYTEST_ARGS},
+        "pytest-exit-status": p.returncode, "pytest-args": PYTEST_ARGS,
+        "pytest-leftover-vsftpd": int(leftover or 0)},
         indent=1) + "\n")
 
 

@@ -51,18 +51,25 @@ fn captured() -> (usize, *mut *mut c_char) {
     (argc.unsigned_abs(), argv)
 }
 
-/// Argument `index`, as the C string the process was given.
-fn argument(index: usize) -> Option<&'static CStr> {
+/// Argument `index`: the pointer glibc passed, through which the string
+/// may be written.
+fn argument(index: usize) -> Option<*mut c_char> {
     let (argc, argv) = captured();
     if index >= argc {
         return None;
     }
     // SAFETY: glibc passes an array of `argc` valid pointers, which stays
     // in place for the life of the process.
-    let arg = unsafe { argv.wrapping_add(index).read() };
-    // SAFETY: each is a NUL-terminated string that lives as long as the
-    // process; only `wipe` changes it, and never its length.
-    Some(unsafe { CStr::from_ptr(arg) })
+    Some(unsafe { argv.wrapping_add(index).read() })
+}
+
+/// Call `f` with the bytes of argument string `arg`. The borrow ends when
+/// `f` returns, so none is live when `wipe` writes the string.
+fn with_bytes<R>(arg: *mut c_char, f: impl FnOnce(&[u8]) -> R) -> R {
+    // SAFETY: `arg` is a NUL-terminated string glibc passed, alive for the
+    // life of the process. Callers hold `LOCK`, so `wipe` does not write
+    // it while `f` reads it.
+    f(unsafe { CStr::from_ptr(arg) }.to_bytes())
 }
 
 /// A copy of the command line, the program name first.
@@ -78,7 +85,7 @@ pub fn command_line() -> Vec<OsString> {
     let (argc, _) = captured();
     (0..argc)
         .map_while(argument)
-        .map(|a| OsString::from_vec(a.to_bytes().to_vec()))
+        .map(|a| with_bytes(a, |b| OsString::from_vec(b.to_vec())))
         .collect()
 }
 
@@ -90,15 +97,16 @@ pub fn wipe(index: usize, offset: usize) -> bool {
     let Some(arg) = argument(index) else {
         return false;
     };
-    let len = arg.to_bytes().len();
+    let len = with_bytes(arg, <[u8]>::len);
     if offset > len {
         return false;
     }
-    let start = arg.as_ptr().cast_mut().cast::<u8>().wrapping_add(offset);
-    // SAFETY: the bytes from `offset` to the NUL belong to the argument
-    // string, which the process may write. Nothing else reads it while
-    // this runs: only this module reads arguments, under `LOCK`. The NUL
-    // stays, so the length does not change.
+    let start = arg.cast::<u8>().wrapping_add(offset);
+    // SAFETY: `arg` is the pointer glibc passed in `argv`, and the bytes
+    // from `offset` to the NUL belong to its string, which the process may
+    // write. No reference to the string is live: `with_bytes`' ended above,
+    // and every other reader takes `LOCK`. The NUL stays, so the length
+    // does not change.
     unsafe { start.write_bytes(b'*', len - offset) };
     true
 }

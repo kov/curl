@@ -1,7 +1,7 @@
 //! The multi's invariants, recomputed from scratch and compared with what
 //! the multi keeps up to date, after every call in the debug build.
 
-use super::{Host, Multi, TransferState};
+use super::{Host, Multi, RecvPause, TransferState};
 
 /// Where the multi is when checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +37,11 @@ impl<H: Host> Multi<H> {
             assert!(
                 !matches!(run.state, TransferState::Done(_)),
                 "{id:?} rests in Done"
+            );
+            let pause = self.slots.get(id).expect("just found").pause;
+            assert!(
+                pause.recv != RecvPause::Held || run.state.holds_output(),
+                "{id:?} is paused on output it does not hold"
             );
             let wake = if run.state.is_completed() {
                 None

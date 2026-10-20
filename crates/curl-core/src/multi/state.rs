@@ -5,6 +5,7 @@
 //! only `Done` gives it back.
 
 use crate::conn::{ConnLease, Finish, Pool, Route};
+use crate::deliver::{Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::proto::{ProtoState, ProtoStep};
@@ -79,9 +80,25 @@ pub(crate) enum Wake {
 
 impl TransferState {
     /// Whether the transfer holds a connection lease.
-    #[cfg(any(test, debug_assertions))]
     pub(crate) fn holds_lease(&self) -> bool {
         matches!(self, TransferState::Exchanging(_) | TransferState::Done(_))
+    }
+
+    /// The output of the request under way, if its protocol delivers any.
+    pub(crate) fn pipeline_mut(&mut self) -> Option<&mut Pipeline> {
+        match self {
+            TransferState::Exchanging(x) => x.proto.pipeline_mut(),
+            _ => None,
+        }
+    }
+
+    /// Whether the request under way holds output for the application.
+    #[cfg(debug_assertions)]
+    pub(crate) fn holds_output(&self) -> bool {
+        match self {
+            TransferState::Exchanging(x) => x.proto.holds_output(),
+            _ => false,
+        }
     }
 
     pub(crate) fn is_completed(&self) -> bool {
@@ -146,6 +163,23 @@ impl<H: Host> StepCx<'_, H> {
             .report_mut()
     }
 
+    pub(crate) fn pause(&self) -> Pause {
+        self.rest
+            .slots
+            .get(self.me)
+            .expect("the stepping transfer")
+            .pause
+    }
+
+    pub(crate) fn pause_mut(&mut self) -> &mut Pause {
+        &mut self
+            .rest
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .pause
+    }
+
     pub(crate) fn mark(&mut self, timer: Timer) {
         let now = self.rest.now;
         self.report_mut().timings_mut().mark(timer, now);
@@ -163,6 +197,18 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
 
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
         self.rest.slots.get_mut(id).map(|s| &mut s.easy)
+    }
+
+    fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
+        super::pause_transfer(&mut self.rest, id, req)
+    }
+}
+
+/// Replay a transfer's held output, from outside its step.
+pub(crate) fn flush<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    match run.state.pipeline_mut() {
+        Some(p) => p.flush(cx),
+        None => Ok(()),
     }
 }
 
@@ -208,6 +254,12 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Done(d) => {
             let premature = d.premature || is_premature(d.result);
             cx.rest.pool.release(d.lease, Finish { premature });
+            // Held output went with the request; a pause the application
+            // asked for stays.
+            let pause = cx.pause_mut();
+            if pause.recv == RecvPause::Held {
+                pause.recv = RecvPause::Running;
+            }
             let completed = TransferState::Completed(Completed {
                 outcome: d.result,
                 message: Message::Unread,

@@ -7,23 +7,52 @@
     expect(dead_code, reason = "no protocol is built in before step 8")
 )]
 
+mod held;
+mod pause;
+
+pub use pause::PauseRequest;
+pub(crate) use pause::{Pause, RecvPause};
+
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::report::Timer;
+use held::{HeldOutput, OutKind};
 
 /// The most body a write handler is given at once (`CURL_MAX_WRITE_SIZE`).
 pub(crate) const MAX_WRITE: usize = 16384;
 
 /// One request's output, from the protocol to the handlers.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct Pipeline {
     accountant: BodyAccountant,
     out: ClientOut,
+    /// The protocol can stop its input while output is held; one that
+    /// cannot fails a pausing write (C's `PROTOPT_NONETWORK`).
+    pausable: bool,
 }
 
 impl Pipeline {
+    pub(crate) fn new(pausable: bool) -> Pipeline {
+        Pipeline {
+            accountant: BodyAccountant::default(),
+            out: ClientOut::default(),
+            pausable,
+        }
+    }
+
+    /// Replay held output, unless a handler holds it still.
+    pub(crate) fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        self.out.flush(cx, self.pausable)
+    }
+
+    /// Whether output is held: the request cannot be over until it is
+    /// delivered.
+    pub(crate) fn holds_output(&self) -> bool {
+        self.out.holds_output()
+    }
+
     /// Deliver body bytes, as the protocol decoded them.
     pub(crate) fn body<H: Host>(
         &mut self,
@@ -34,7 +63,7 @@ impl Pipeline {
         self.accountant.response_started(cx);
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(bytes.len(), max_filesize);
-        self.out.body(cx, &bytes[..allowed])?;
+        self.out.body(cx, &bytes[..allowed], self.pausable)?;
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
         self.accountant.bytecount += allowed as u64;
@@ -78,10 +107,11 @@ impl Pipeline {
         if origin != HeaderOrigin::Connect {
             self.accountant.response_started(cx);
         }
+        // An included line is body, to be held and replayed with it.
         if cx.easy().options().output.include_header {
-            self.out.body(cx, line)?;
+            self.out.body(cx, line, self.pausable)?;
         }
-        self.out.header(cx, line, origin)
+        self.out.header(cx, line, origin, self.pausable)
     }
 }
 
@@ -131,40 +161,25 @@ enum ClientOut {
     /// Writing straight to the handlers.
     #[default]
     Direct,
+    /// Output a write handler paused on, held until it is replayed, with
+    /// what came after it.
+    Held(HeldOutput),
     /// A write failed: no handler is called again (#13337).
     Failed,
 }
 
 impl ClientOut {
     /// Write `bytes` to the write handler in pieces of at most
-    /// `MAX_WRITE`, reading the handler again before each.
-    fn body<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Result<(), ErrorKind> {
-        let result = self.try_body(cx, bytes);
+    /// `MAX_WRITE`, reading the handler again before each; held, if output
+    /// is held already.
+    fn body<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        bytes: &[u8],
+        pausable: bool,
+    ) -> Result<(), ErrorKind> {
+        let result = self.write(cx, OutKind::Body, bytes, pausable);
         self.fail_on(result)
-    }
-
-    fn try_body<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Result<(), ErrorKind> {
-        if let ClientOut::Failed = self {
-            return Err(ErrorKind::WriteError);
-        }
-        for piece in bytes.chunks(MAX_WRITE) {
-            let easy = cx.easy();
-            let Some(handler) = easy.options().callbacks.write.clone() else {
-                return Ok(());
-            };
-            // Body bytes delivered, included header lines among them (C's
-            // `progress.deliver`).
-            let delivered = easy.report().sizes().delivered();
-            if let Some(max) = easy.options().limits.max_filesize
-                && piece.len() as u64 > max.get().saturating_sub(delivered)
-            {
-                // "Would have exceeded max file size"
-                return Err(ErrorKind::FilesizeExceeded);
-            }
-            verdict(handler.write(&mut TransferCx::new(cx), piece))?;
-            cx.report_mut().sizes_mut().delivered += piece.len() as u64;
-        }
-        Ok(())
     }
 
     fn header<H: Host>(
@@ -172,15 +187,64 @@ impl ClientOut {
         cx: &mut StepCx<'_, H>,
         line: &[u8],
         origin: HeaderOrigin,
+        pausable: bool,
     ) -> Result<(), ErrorKind> {
-        let result = match self {
-            ClientOut::Failed => Err(ErrorKind::WriteError),
-            ClientOut::Direct => match cx.easy().options().callbacks.header.clone() {
-                None => Ok(()),
-                Some(handler) => verdict(handler.header(&mut TransferCx::new(cx), line, origin)),
-            },
-        };
+        let result = self.write(cx, OutKind::Header(origin), line, pausable);
         self.fail_on(result)
+    }
+
+    /// Replay held output until it is all delivered or a handler pauses
+    /// again (`cw_out_flush_chain`).
+    fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>, pausable: bool) -> Result<(), ErrorKind> {
+        let result = self.replay(cx, pausable);
+        self.fail_on(result)
+    }
+
+    fn write<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        kind: OutKind,
+        bytes: &[u8],
+        pausable: bool,
+    ) -> Result<(), ErrorKind> {
+        match self {
+            ClientOut::Failed => Err(ErrorKind::WriteError),
+            ClientOut::Held(held) => {
+                held.append(kind, bytes)?;
+                self.replay(cx, pausable)
+            }
+            ClientOut::Direct => {
+                let delivered = deliver(cx, kind, bytes, pausable)?;
+                if delivered < bytes.len() {
+                    let mut held = HeldOutput::default();
+                    held.append(kind, &bytes[delivered..])?;
+                    *self = ClientOut::Held(held);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn replay<H: Host>(&mut self, cx: &mut StepCx<'_, H>, pausable: bool) -> Result<(), ErrorKind> {
+        let held = match self {
+            ClientOut::Failed => return Err(ErrorKind::WriteError),
+            ClientOut::Direct => return Ok(()),
+            ClientOut::Held(held) => held,
+        };
+        // Only a handler's own pause stops the replay, and it is the only
+        // thing that leaves an entry part delivered; one the application
+        // asked for from inside it does not.
+        while cx.pause().recv != RecvPause::Held {
+            let Some((kind, bytes)) = held.front() else {
+                break;
+            };
+            let delivered = deliver(cx, kind, bytes, pausable)?;
+            held.consume(delivered);
+        }
+        if held.is_empty() {
+            *self = ClientOut::Direct;
+        }
+        Ok(())
     }
 
     /// Any error ends the output for good.
@@ -190,14 +254,79 @@ impl ClientOut {
         }
         result
     }
+
+    fn holds_output(&self) -> bool {
+        matches!(self, ClientOut::Held(_))
+    }
 }
 
-fn verdict(w: Write) -> Result<(), ErrorKind> {
+/// Give `bytes` to the handler for `kind`, body in pieces, until a handler
+/// pauses; how much it took. A paused piece is not taken: it is given
+/// again, whole, when the transfer goes on (`cw_out_ptr_flush`).
+fn deliver<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    kind: OutKind,
+    bytes: &[u8],
+    pausable: bool,
+) -> Result<usize, ErrorKind> {
+    match kind {
+        OutKind::Body => deliver_body(cx, bytes, pausable),
+        OutKind::Header(origin) => {
+            let Some(handler) = cx.easy().options().callbacks.header.clone() else {
+                return Ok(bytes.len());
+            };
+            let w = handler.header(&mut TransferCx::new(cx), bytes, origin);
+            Ok(if verdict(cx, w, pausable)? {
+                bytes.len()
+            } else {
+                0
+            })
+        }
+    }
+}
+
+fn deliver_body<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    bytes: &[u8],
+    pausable: bool,
+) -> Result<usize, ErrorKind> {
+    let mut delivered = 0;
+    for piece in bytes.chunks(MAX_WRITE) {
+        let easy = cx.easy();
+        let Some(handler) = easy.options().callbacks.write.clone() else {
+            return Ok(bytes.len());
+        };
+        // Body bytes delivered, included header lines among them (C's
+        // `progress.deliver`).
+        let so_far = easy.report().sizes().delivered();
+        if let Some(max) = easy.options().limits.max_filesize
+            && piece.len() as u64 > max.get().saturating_sub(so_far)
+        {
+            // "Would have exceeded max file size"
+            return Err(ErrorKind::FilesizeExceeded);
+        }
+        let w = handler.write(&mut TransferCx::new(cx), piece);
+        if !verdict(cx, w, pausable)? {
+            break;
+        }
+        cx.report_mut().sizes_mut().delivered += piece.len() as u64;
+        delivered += piece.len();
+    }
+    Ok(delivered)
+}
+
+/// Whether the handler took what it was given; a pause holds the output
+/// from here on.
+fn verdict<H: Host>(cx: &mut StepCx<'_, H>, w: Write, pausable: bool) -> Result<bool, ErrorKind> {
     match w {
-        Write::Accepted => Ok(()),
-        // No protocol can pause yet ("Write callback asked for PAUSE when
-        // not supported").
-        Write::Pause | Write::Fail => Err(ErrorKind::WriteError),
+        Write::Accepted => Ok(true),
+        // "Write callback asked for PAUSE when not supported"
+        Write::Pause if !pausable => Err(ErrorKind::WriteError),
+        Write::Pause => {
+            cx.pause_mut().recv = RecvPause::Held;
+            Ok(false)
+        }
+        Write::Fail => Err(ErrorKind::WriteError),
     }
 }
 

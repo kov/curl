@@ -126,11 +126,16 @@ yet meet.
    - 7c. **Done.** `TransferReport`, `Timings`, `Sizes` and `HeaderStore`, with the
      accountant's STARTTRANSFER and download size and `TransferCx::info`. Ports unit 1399. Test:
      getinfo inside callbacks.
-   - 7d. `Pause` and `ClientOut::Held`. Tests: pause and replay with interleaving (3235/3236
-     shapes).
+   - 7d. **Done.** `Pause`, `PauseRequest`, `ClientOut::Held` with `HeldOutput`, and
+     `Multi::pause`/`TransferCx::pause`, a sibling's unpause replaying at once. Tests: pause and
+     replay with interleaving (3235/3236 shapes), the kept piece, the 64 MiB cap, a pause
+     where none is supported, the timer told of an unpause. The timer and socket callbacks
+     inside `TransferCx::pause` (decision 10) come with step 11's sockets; until then the
+     timer hears of it at the end of the pass.
    - 7e. Progress, the speed check and the meter. Ports units 1606, 1636.
    - 7f. `Upload` with rewind and resume.
-   - 7g. The pause torture scenario.
+   - 7g. The pause torture scenario, every allocation refused in turn while output is held
+     (the only test that sees `HeldOutput::append` reserve its entry before it copies).
 8. **proto: add file:// and Easy::perform.** `proto/file.rs` (no pause support: PAUSE is a
    WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`.
    Setup gains `DISALLOW_USER` and `PATH_AS_IS` from their options. Tests:

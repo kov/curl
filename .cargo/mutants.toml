@@ -59,6 +59,12 @@ exclude_re = [
     # The debug build's invariant check fails only on a broken invariant;
     # the sabotage entries witnessed by the property test show it does.
     'multi/(mod|check)\.rs:.*: replace Multi<H>::check(_invariants)? with \(\)$',
+    # Only the invariant check asks whether output is held; the sabotage
+    # entry that leaves a completed transfer held shows the check fires.
+    '(proto/mod|proto/script|multi/state)\.rs:.*: replace (ProtoState|Player|TransferState)::holds_output -> bool with true$',
+    # When delivered bytes are compacted away is a choice of threshold:
+    # one byte either way changes nothing observable.
+    'deliver/held\.rs:.*: replace > with >= in HeldOutput::consume$',
     # Running a transfer clears its dirty row, so resuming the walk at
     # the row itself finds the same next one.
     'multi/mod\.rs:.*: replace \+ with \* in Multi<H>::run_dirty$',

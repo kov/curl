@@ -8,7 +8,9 @@ use crate::handler::{
     DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler,
 };
 use crate::id::ArenaPolicy;
-use crate::multi::{Env, Multi, NoEvents, TransferCx, TransferId, drive_to_completion};
+use crate::multi::{
+    Env, Multi, NoEvents, PauseRequest, SocketEvent, TransferCx, TransferId, drive_to_completion,
+};
 use crate::options::script::{Piece, Script};
 use crate::report::{HeaderCursor, HeaderError, HeaderView, Origins, Request};
 
@@ -147,20 +149,18 @@ fn a_handler_replaced_inside_its_own_call_takes_the_next_piece() {
 }
 
 #[test]
-fn a_failed_or_paused_write_fails_the_transfer() {
-    for verdict in [Write::Fail, Write::Pause] {
-        let log = Log::default();
-        let mut e = script(vec![body(b"one"), body(b"two")]);
-        let mut h = Recorder::new("write", &log);
-        h.verdict = verdict;
-        e.options_mut().callbacks.write = Some(handler(h));
-        assert_eq!(run_alone(e), Err(ErrorKind::WriteError), "{verdict:?}");
-        assert_eq!(
-            *log.borrow(),
-            [("write", b"one".to_vec())],
-            "nothing after it"
-        );
-    }
+fn a_failed_write_fails_the_transfer() {
+    let log = Log::default();
+    let mut e = script(vec![body(b"one"), body(b"two")]);
+    let mut h = Recorder::new("write", &log);
+    h.verdict = Write::Fail;
+    e.options_mut().callbacks.write = Some(handler(h));
+    assert_eq!(run_alone(e), Err(ErrorKind::WriteError));
+    assert_eq!(
+        *log.borrow(),
+        [("write", b"one".to_vec())],
+        "nothing after it"
+    );
 }
 
 /// Sees its own transfer and its options from inside the call.
@@ -424,7 +424,7 @@ fn failed_output_stays_failed() {
     // Exchanging, as a protocol delivering output is.
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
-        let mut p = Pipeline::default();
+        let mut p = Pipeline::new(true);
         assert_eq!(p.body(cx, b"one"), Err(ErrorKind::WriteError));
         assert_eq!(
             p.header(cx, b"a: b\r\n", HeaderOrigin::Header),
@@ -594,4 +594,474 @@ fn an_invalid_header_line_fails_the_transfer() {
     let (result, seen) = played(vec![Piece::Header(b"no colon\r\n".to_vec())], |_, _| {});
     assert_eq!(result, Err(ErrorKind::BadFunctionArgument));
     assert_eq!(lengths(&seen, "header"), [0usize; 0]);
+}
+
+/// Every call the handlers of one transfer saw, in order: (handler, bytes,
+/// verdict).
+type Calls = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, Vec<u8>, Write)>>>;
+
+/// A write or header handler answering by `plan`, given the number of the
+/// call among all its transfer's handler calls; it may pause transfers.
+struct Planned<F> {
+    plan: std::rc::Rc<F>,
+    calls: Calls,
+}
+
+impl<F: Fn(&mut TransferCx<'_>, usize) -> Write> Planned<F> {
+    fn answer(&self, name: &'static str, cx: &mut TransferCx<'_>, bytes: &[u8]) -> Write {
+        let n = self.calls.borrow().len();
+        let w = (self.plan)(cx, n);
+        self.calls.borrow_mut().push((name, bytes.to_vec(), w));
+        w
+    }
+}
+
+impl<F: Fn(&mut TransferCx<'_>, usize) -> Write> WriteHandler for Planned<F> {
+    fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        self.answer("write", cx, body)
+    }
+}
+
+impl<F: Fn(&mut TransferCx<'_>, usize) -> Write> HeaderHandler for Planned<F> {
+    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+        self.answer("header", cx, line)
+    }
+}
+
+/// Give `e` write and header handlers answering by `plan`.
+fn planned<F>(e: &mut Easy, plan: F) -> Calls
+where
+    F: Fn(&mut TransferCx<'_>, usize) -> Write + 'static,
+{
+    let calls = Calls::default();
+    let plan = std::rc::Rc::new(plan);
+    let cb = &mut e.options_mut().callbacks;
+    cb.write = Some(
+        Handler::write(Planned {
+            plan: plan.clone(),
+            calls: calls.clone(),
+        })
+        .unwrap(),
+    );
+    cb.header = Some(
+        Handler::header(Planned {
+            plan,
+            calls: calls.clone(),
+        })
+        .unwrap(),
+    );
+    calls
+}
+
+/// What the handlers took, in order: (handler, bytes) of every accepted
+/// call.
+fn taken(calls: &Calls) -> Vec<(&'static str, Vec<u8>)> {
+    calls
+        .borrow()
+        .iter()
+        .filter(|(_, _, w)| *w == Write::Accepted)
+        .map(|(n, b, _)| (*n, b.clone()))
+        .collect()
+}
+
+fn pausing_on(calls: &'static [usize]) -> impl Fn(&mut TransferCx<'_>, usize) -> Write {
+    move |_, n| {
+        if calls.contains(&n) {
+            Write::Pause
+        } else {
+            Write::Accepted
+        }
+    }
+}
+
+/// A response with header lines and body, the body in two writes.
+fn response() -> Vec<Piece> {
+    vec![
+        Piece::Status(b"HTTP/1.1 200 OK\r\n".to_vec()),
+        Piece::Header(b"A: 1\r\n".to_vec()),
+        Piece::Header(b"\r\n".to_vec()),
+        Piece::Body(bytes(40000)),
+        Piece::Body(bytes(10)),
+        Piece::Header(b"T: trailer\r\n".to_vec()),
+    ]
+}
+
+/// Run `pieces`, pausing on the calls in `pause_on` and unpausing from
+/// outside after every pass; what the handlers took.
+fn paused_run(include_header: bool, pause_on: &'static [usize]) -> Vec<(&'static str, Vec<u8>)> {
+    let mut m = multi();
+    let mut e = script(response());
+    e.options_mut().output.include_header = include_header;
+    let calls = planned(&mut e, pausing_on(pause_on));
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    for _ in 0..100 {
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(msg) = m.info_read() {
+            assert_eq!(msg.result, Ok(()));
+            return taken(&calls);
+        }
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    }
+    panic!("never completed");
+}
+
+/// However often a handler pauses, and wherever, what the handlers take
+/// once unpaused is what they would have taken unpaused: same bytes, same
+/// order, with `-i` or without (`cw_out_append`, `cw_out_flush_chain`).
+#[test]
+fn held_output_is_replayed_in_the_order_it_came() {
+    for include_header in [false, true] {
+        let straight = paused_run(include_header, &[]);
+        let calls_unpaused = if include_header { 12 } else { 8 };
+        assert_eq!(straight.len(), calls_unpaused, "{straight:?}");
+        for pause_on in [
+            &[0][..],
+            &[1],
+            &[2],
+            &[4],
+            &[5],
+            &[0, 1, 2],
+            &[1, 3, 5, 7],
+            &[3, 4, 5, 6, 7, 8],
+        ] {
+            assert_eq!(
+                paused_run(include_header, pause_on),
+                straight,
+                "-i {include_header}, pausing on {pause_on:?}"
+            );
+        }
+    }
+}
+
+/// The piece a handler paused on is given again, whole, then the rest.
+#[test]
+fn the_paused_piece_is_given_again_whole() {
+    let mut m = multi();
+    let mut e = script(vec![Piece::Body(bytes(40000))]);
+    let calls = planned(&mut e, pausing_on(&[1]));
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let lens: Vec<_> = calls
+        .borrow()
+        .iter()
+        .map(|(_, b, w)| (b.len(), *w))
+        .collect();
+    assert_eq!(lens, [(16384, Write::Accepted), (16384, Write::Pause)]);
+    let sizes = *m.easy(id).unwrap().report().sizes();
+    assert_eq!(
+        (sizes.download(), sizes.delivered()),
+        (40000, 16384),
+        "held is downloaded, not delivered"
+    );
+    // The unpause replays at once, before it returns.
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let lens: Vec<_> = calls.borrow().iter().map(|(_, b, _)| b.len()).collect();
+    assert_eq!(lens, [16384, 16384, 16384, 7232]);
+    assert_eq!(m.easy(id).unwrap().report().sizes().delivered(), 40000);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+}
+
+/// A transfer whose output is held is not done, and a timeout ends it.
+#[test]
+fn held_output_keeps_the_transfer_going_until_its_time_is_up() {
+    let mut m = multi();
+    let clock = ManualClock::new().unwrap();
+    let mut e = script(vec![body(b"one")]);
+    e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
+    planned(&mut e, pausing_on(&[0]));
+    drop(clock);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents),
+        Ok(Err(ErrorKind::OperationTimedout))
+    );
+}
+
+/// A pipeline whose protocol cannot pause fails a pausing write
+/// ("Write callback asked for PAUSE when not supported").
+#[test]
+fn a_pause_where_none_is_supported_fails_the_write() {
+    let mut m = multi();
+    let mut e = easy("stall://a");
+    let calls = planned(&mut e, pausing_on(&[0]));
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(false);
+        assert_eq!(p.body(cx, b"x"), Err(ErrorKind::WriteError));
+        assert!(!p.holds_output());
+    });
+    assert_eq!(calls.borrow().len(), 1);
+}
+
+/// Past 64 MiB held, the transfer fails ("pause buffer not large enough").
+#[test]
+fn at_most_64_mib_of_output_is_held() {
+    let mut e = script(vec![Piece::Body(bytes(super::held::MAX_HELD + 1))]);
+    planned(&mut e, pausing_on(&[0]));
+    assert_eq!(run_alone(e), Err(ErrorKind::TooLarge));
+}
+
+/// Only a transfer with a connection can be paused.
+#[test]
+fn a_transfer_not_exchanging_cannot_be_paused() {
+    let mut m = multi();
+    let id = m.add(easy("null://a"), (), &mut NoEvents).unwrap();
+    let ev = &mut NoEvents;
+    assert_eq!(
+        m.pause(id, PauseRequest::RECV, ev),
+        Err(ErrorKind::BadFunctionArgument),
+        "not started"
+    );
+    m.perform(ev).unwrap();
+    assert_eq!(
+        m.pause(id, PauseRequest::RECV, ev),
+        Err(ErrorKind::BadFunctionArgument),
+        "completed"
+    );
+    m.remove(id, ev).unwrap();
+    assert_eq!(
+        m.pause(id, PauseRequest::RECV, ev),
+        Err(ErrorKind::BadFunctionArgument),
+        "gone"
+    );
+}
+
+/// A pause asked for from inside a write stops new input, not the write
+/// in progress; an unpause lets the input go on.
+#[test]
+fn a_receive_pause_finishes_the_write_under_way() {
+    let mut m = multi();
+    let mut e = script(vec![Piece::Body(bytes(40000)), body(b"z")]);
+    let calls = planned(&mut e, |cx, n| {
+        if n == 0 {
+            let me = cx.me();
+            cx.pause(me, PauseRequest::RECV).unwrap();
+        }
+        Write::Accepted
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let lens: Vec<_> = calls.borrow().iter().map(|(_, b, _)| b.len()).collect();
+    assert_eq!(
+        lens,
+        [16384, 16384, 7232],
+        "the write went on, the next did not come"
+    );
+    assert_eq!(m.info_read().map(|msg| msg.id), None);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(calls.borrow().len(), 3, "still paused");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    // The unpause marks it to run: a pass that runs only what is due or
+    // marked runs it.
+    m.socket_action(SocketEvent::Timeout, &mut NoEvents)
+        .unwrap();
+    assert_eq!(taken(&calls).last(), Some(&("write", b"z".to_vec())));
+    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+}
+
+/// An unpause from another transfer's handler replays at once; a pause
+/// during that replay holds again, and a second unpause goes on from the
+/// piece it held. No byte is lost or given twice.
+#[test]
+fn a_sibling_s_unpause_replays_at_once() {
+    let mut m = multi();
+    let mut a = script(vec![Piece::Body(bytes(40000))]);
+    let a_calls = planned(&mut a, pausing_on(&[0, 2]));
+    let a_id = m.add(a, (), &mut NoEvents).unwrap();
+    let mut b = script(vec![body(b"1"), body(b"2")]);
+    let b_calls = planned(&mut b, move |cx, _| {
+        cx.pause(a_id, PauseRequest::CONT).unwrap();
+        Write::Accepted
+    });
+    m.add(b, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let a_seen: Vec<_> = a_calls
+        .borrow()
+        .iter()
+        .map(|(_, b, w)| (b.len(), *w))
+        .collect();
+    use Write::{Accepted as A, Pause as P};
+    assert_eq!(
+        a_seen,
+        [(16384, P), (16384, A), (16384, P), (16384, A), (7232, A)]
+    );
+    let a_bytes: Vec<u8> = taken(&a_calls).into_iter().flat_map(|(_, b)| b).collect();
+    assert_eq!(a_bytes, bytes(40000));
+    assert_eq!(taken(&b_calls).len(), 2);
+    m.perform(&mut NoEvents).unwrap();
+    let mut results: Vec<_> = std::iter::from_fn(|| m.info_read().map(|msg| msg.result)).collect();
+    results.sort_by_key(|r| r.is_err());
+    assert_eq!(results, [Ok(()), Ok(())]);
+}
+
+/// An unpause of the transfer being replayed, from inside the replay,
+/// only changes its pause: the replay under way goes on (3235).
+#[test]
+fn an_unpause_inside_the_replay_lets_it_go_on() {
+    let mut m = multi();
+    let mut e = script(vec![Piece::Body(bytes(40000))]);
+    let calls = planned(&mut e, |cx, n| match n {
+        0 => Write::Pause,
+        1 => {
+            let me = cx.me();
+            cx.pause(me, PauseRequest::RECV).unwrap();
+            cx.pause(me, PauseRequest::CONT).unwrap();
+            Write::Accepted
+        }
+        _ => Write::Accepted,
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let lens: Vec<_> = calls.borrow().iter().map(|(_, b, _)| b.len()).collect();
+    assert_eq!(
+        lens,
+        [16384, 16384, 16384, 7232],
+        "the whole replay ran inside the unpause"
+    );
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+}
+
+/// A replay that fails is the unpause's error; the output stays failed
+/// and the transfer fails at its next step, calling no handler again.
+#[test]
+fn a_failed_replay_fails_the_unpause_and_then_the_transfer() {
+    let mut m = multi();
+    let mut e = script(vec![Piece::Body(bytes(40000))]);
+    let calls = planned(&mut e, |_, n| match n {
+        0 => Write::Pause,
+        1 => Write::Fail,
+        _ => Write::Accepted,
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        m.pause(id, PauseRequest::CONT, &mut NoEvents),
+        Err(ErrorKind::WriteError)
+    );
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        m.info_read().map(|msg| msg.result),
+        Some(Err(ErrorKind::WriteError))
+    );
+    assert_eq!(calls.borrow().len(), 2);
+}
+
+/// Counts the timer calls.
+#[derive(Default)]
+struct Timers(u32);
+
+impl crate::multi::MultiEvents<crate::multi::NoHost> for Timers {
+    fn timer(
+        &mut self,
+        _: &mut crate::multi::EventCx<'_, crate::multi::NoHost>,
+        _: crate::multi::TimerChange,
+    ) -> Result<(), crate::multi::Abort> {
+        self.0 += 1;
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+}
+
+/// An unpause from outside that leaves the transfer running tells the
+/// timer before it returns; a pause, or no change, does not.
+#[test]
+fn an_unpause_tells_the_timer() {
+    let mut m = multi();
+    let mut e = script(vec![body(b"one")]);
+    planned(&mut e, pausing_on(&[0]));
+    let ev = &mut Timers::default();
+    let id = m.add(e, (), ev).unwrap();
+    m.perform(ev).unwrap();
+    let before = ev.0;
+    // A change, but still paused every way it wants.
+    m.pause(id, PauseRequest::ALL, ev).unwrap();
+    assert_eq!(ev.0, before, "paused: nothing to run");
+    m.pause(id, PauseRequest::CONT, ev).unwrap();
+    assert_eq!(ev.0, before + 1, "running again, now");
+    m.pause(id, PauseRequest::CONT, ev).unwrap();
+    assert_eq!(ev.0, before + 1, "no change");
+}
+
+/// A receive pause asked for inside a replay lets the replay finish, every
+/// entry of it, then stops the input until it is lifted.
+#[test]
+fn a_receive_pause_inside_the_replay_lets_it_finish() {
+    let mut m = multi();
+    let status = b"HTTP/1.1 200 OK\r\n";
+    let mut e = script(vec![Piece::Status(status.to_vec()), body(b"z")]);
+    e.options_mut().output.include_header = true;
+    // The status line's copy in the body pauses, holding it and the
+    // header handler's copy: two entries.
+    let calls = planned(&mut e, |cx, n| match n {
+        0 => Write::Pause,
+        1 => {
+            let me = cx.me();
+            cx.pause(me, PauseRequest::RECV).unwrap();
+            Write::Accepted
+        }
+        _ => Write::Accepted,
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let seen: Vec<_> = calls
+        .borrow()
+        .iter()
+        .map(|(n, b, w)| (*n, b.clone(), *w))
+        .collect();
+    use Write::{Accepted as A, Pause as P};
+    assert_eq!(
+        seen,
+        [
+            ("write", status.to_vec(), P),
+            ("write", status.to_vec(), A),
+            ("header", status.to_vec(), A),
+        ]
+    );
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(calls.borrow().len(), 3, "stopped: nothing more read");
+    assert_eq!(m.info_read().map(|msg| msg.id), None);
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(taken(&calls).last(), Some(&("write", b"z".to_vec())));
+    assert_eq!(m.info_read().map(|msg| msg.result), Some(Ok(())));
+}
+
+/// Output written while output is held but no longer paused (an unpause
+/// the step has not replayed yet) goes behind what is held, body joining
+/// the body before it.
+#[test]
+fn output_written_while_held_goes_behind_it() {
+    let mut m = multi();
+    let mut e = easy("stall://a");
+    let calls = planned(&mut e, pausing_on(&[0]));
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(true);
+        p.body(cx, b"one").unwrap();
+        assert!(p.holds_output());
+        cx.pause_mut().recv = super::RecvPause::Running;
+        p.body(cx, b"two").unwrap();
+        assert!(!p.holds_output());
+    });
+    let seen: Vec<_> = calls
+        .borrow()
+        .iter()
+        .map(|(_, b, w)| (b.clone(), *w))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (b"one".to_vec(), Write::Pause),
+            (b"onetwo".to_vec(), Write::Accepted)
+        ]
+    );
 }

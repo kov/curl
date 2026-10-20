@@ -22,11 +22,13 @@ use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::Pool;
 use crate::conn::io::{Net, Waker};
+use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
 use crate::time::{Clock, Instant};
 
+pub use crate::deliver::PauseRequest;
 use cx::EngineRest;
 pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
@@ -115,6 +117,8 @@ enum Life {
 struct Slot<H: Host> {
     owner: H::Transfer,
     easy: Easy,
+    /// Reachable while the run is out, for the transfer's own handlers.
+    pause: Pause,
     /// Out only while the transfer is being stepped.
     run: Option<Box<Run>>,
 }
@@ -244,6 +248,7 @@ impl<H: Host> Multi<H> {
         let id = vacancy.fill(Slot {
             owner,
             easy,
+            pause: Pause::default(),
             run: Some(run),
         });
         self.counts.added();
@@ -376,6 +381,32 @@ impl<H: Host> Multi<H> {
         self.counts.get()
     }
 
+    /// Pause or unpause a transfer's directions from outside its handlers
+    /// (`curl_easy_pause`): an unpause replays held output before it
+    /// returns, and a change that leaves it running tells the timer.
+    pub fn pause(
+        &mut self,
+        id: TransferId,
+        req: PauseRequest,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), ErrorKind> {
+        let now = self.clock.now();
+        let mut rest = EngineRest {
+            slots: &mut self.slots,
+            pool: &mut self.pool,
+            dirty: &mut self.dirty,
+            now,
+        };
+        let result = pause_transfer(&mut rest, id, req);
+        // The timer hears only of a change: one that leaves the transfer
+        // running, which it marks dirty (easy.c:1229).
+        let timer = self
+            .update_timer(ev)
+            .map_err(|_| ErrorKind::AbortedByCallback);
+        self.check();
+        result.and(timer)
+    }
+
     pub fn easy(&self, id: TransferId) -> Option<&Easy> {
         self.slots.get(id).map(|s| &s.easy)
     }
@@ -404,6 +435,7 @@ impl<H: Host> Multi<H> {
             rest: EngineRest {
                 slots: &mut self.slots,
                 pool: &mut self.pool,
+                dirty: &mut self.dirty,
                 now,
             },
         };
@@ -433,6 +465,7 @@ impl<H: Host> Multi<H> {
             rest: EngineRest {
                 slots: &mut self.slots,
                 pool: &mut self.pool,
+                dirty: &mut self.dirty,
                 now,
             },
         };
@@ -624,6 +657,51 @@ fn run_in<H: Host>(slots: &Arena<Slot<H>, Transfer>, id: TransferId) -> &Run {
     slot.run
         .as_ref()
         .expect("no transfer is out while the multi is called")
+}
+
+/// Pause or unpause transfer `id` (the core of `curl_easy_pause`). An
+/// unpause of held output replays it at once if the transfer's run is in
+/// its slot; if it is out (the transfer is being stepped, or replayed
+/// already), the replay sees the change before its next entry. A failed
+/// replay leaves the output failed, and the transfer fails at its next
+/// step.
+fn pause_transfer<H: Host>(
+    rest: &mut EngineRest<'_, H>,
+    id: TransferId,
+    req: PauseRequest,
+) -> Result<(), ErrorKind> {
+    let Some(slot) = rest.slots.get_mut(id) else {
+        return Err(ErrorKind::BadFunctionArgument);
+    };
+    // A run out of its slot is delivering output, so it has a connection.
+    if slot.run.as_ref().is_some_and(|r| !r.state.holds_lease()) {
+        return Err(ErrorKind::BadFunctionArgument);
+    }
+    let was_held = slot.pause.recv == RecvPause::Held;
+    slot.pause.apply(req);
+    // Unless paused every way it wants (until uploads, only receiving),
+    // the transfer runs again.
+    if !slot.pause.recv_paused() {
+        rest.dirty.insert(id.index());
+    }
+    if was_held
+        && slot.pause.recv == RecvPause::Running
+        && let Some(mut run) = slot.run.take()
+    {
+        let mut cx = StepCx {
+            me: id,
+            rest: EngineRest {
+                slots: &mut *rest.slots,
+                pool: &mut *rest.pool,
+                dirty: &mut *rest.dirty,
+                now: rest.now,
+            },
+        };
+        let replayed = state::flush(&mut run, &mut cx);
+        rest.slots.get_mut(id).expect("still in the multi").run = Some(run);
+        return replayed;
+    }
+    Ok(())
 }
 
 impl<H: Host> Drop for Multi<H> {

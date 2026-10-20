@@ -152,7 +152,8 @@ curl-core/src/
     io.rs                    Net trait, SystemNet, FakeNet (test-util), DebugNet (debug-hooks)
     shutdown.rs              ShutdownSet
   resolve/                   Resolver trait, Literal, DnsCache, ResolveId
-  deliver/                   Pipeline, BodyAccountant, PauseGate, ContentDecoder, ClientOut
+  deliver/                   Pipeline, BodyAccountant, PauseGate, ContentDecoder, ClientOut,
+                             HeldOutput, Pause
   upload/                    BodySource, Upload, ChunkEncoder, Rewind
   proto/
     mod.rs                   ProtoState enum (File, Http1; later variants)
@@ -597,7 +598,6 @@ pub struct TransferCx<'a> { calls: &'a mut dyn TransferCalls }
 pub(crate) struct StepCx<'a, H: Host> {     // implements TransferCalls
     me: TransferId,
     me_basis: PollBasis,                  // my pollset before pause masking, computed at call-out
-    flush: Option<&'a mut Pipeline>,      // Some only where C would let a nested flush run
     rest: EngineRest<'a, H>,
     events: &'a mut dyn MultiEvents<H>,
 }
@@ -638,17 +638,17 @@ The rules that keep this sound:
   pipeline synchronously by the same rule as a step: its `Box<Run>` is moved out for the flush
   and put back after, so the handlers it calls get a context whose `EngineRest` does not alias
   it. A `pause` reaching a transfer whose `Run` is already out (the stepping one, or one being
-  flushed) gets no `flush` and only changes the value; nesting is bounded by that, not by a
-  counter.
+  flushed) finds no pipeline to flush and only changes the value; nesting is bounded by that,
+  not by a counter.
 - **A connection being driven** is moved out the same way: `ConnectMachine::drive(self)` takes
   the `Box` out of `ConnSlot::Connecting` and the pool puts the result back; no call-out to the
   application happens while it is out except the socket open hooks, whose context carries no
   pool access.
-- **Nested flushes cannot happen.** A context built for a callback that runs during a replay of
-  held output has `flush: None`, so `pause(me, Cont)` there only flips the value; the outer
-  replay loop sees it before the next entry (3235, 3236). The progress and prereq callbacks are
-  made with the pipeline not borrowed, so their contexts get `flush: Some(..)` and an unpause
-  there flushes synchronously, as in C.
+- **Nested flushes cannot happen.** A callback of the transfer being stepped or replayed runs
+  with its `Run` out, so `pause(me, Cont)` there only flips the value and marks it dirty; the
+  replay under way sees it before its next entry (3235, 3236), and one that had stopped resumes
+  at the transfer's next step, which replays before it reads. The progress and prereq callbacks
+  (7e) are made between pipeline calls, so the step replays right after they return.
 - **Event call-outs** (socket, timer) are made between transfers with no `Run` moved out;
   `EventCx` cannot pause.
 - **Notifications** are dispatched at the end of `perform`/`socket_action` with no borrow live;
@@ -922,7 +922,7 @@ pub(crate) struct Pipeline {
     out: ClientOut,
 }
 pub(crate) enum ClientOut { Direct, Held(HeldOutput), Failed }
-pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: VecDeque<(OutKind, Range<u32>)> }  // cap 64 MiB
+pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize, held: usize }  // cap 64 MiB
 ```
 
 - **Order is the field order**: raw trace, transfer decoding, accounting, pause gate, content
@@ -930,8 +930,12 @@ pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: VecDeque<(OutKind, Range
   report's `HeaderStore` from the response parser, before the line reaches `out`.
 - **`ClientOut`** passes body in pieces of at most 16384 bytes whatever BUFFERSIZE is, header
   lines whole; with `include_header` a line goes to the write handler, then the header handler.
-  A switch of output kind with held entries flushes them first, preserving interleaving.
-  Consecutive body entries extend the last range: O(1) per append (C's quadratic class).
+  Once anything is held, every later write is appended behind it and the entries replayed in
+  order, so interleaving is kept. An included header line is body and joins the body entry
+  before it; each header-handler line is its own entry. Consecutive body entries extend the
+  last range: O(1) per append (C's quadratic class). The cap counts what is still held;
+  delivered bytes are compacted away once more than the cap has gone, by moving, never
+  allocating.
   `Write::Pause` → `Held` with the unconsumed piece kept and `pause.recv = Held`; on a protocol
   without pause support (`file://`) it is WriteError "Write callback asked for PAUSE when not
   supported". `Write::Fail` or a short count → `Failed`, a terminal variant with no path to a
@@ -958,16 +962,18 @@ pub enum SendPause { Running, Paused }
   in progress still flows through the pipeline (C sets only the rate-limit block).
 - `Write::Pause` → `Held`: delivery stops at once and output is held.
 - `Read::Pause` and an API send pause → `SendPause::Paused`.
-- `CONT` → `Running`, flush held output (synchronously where `flush` is reachable, §3.6), reset
+- `CONT` → `Running`, flush held output (synchronously where the `Run` is in its slot, §3.6), reset
   the token bucket and the speed window, tell a mux (`stream_pause`).
-- A new request (redirect, retry) starts with both `Running`.
+- A new request (redirect, retry) starts with both `Running`. `Held` goes with the output it
+  held when the transfer completes; a `Stopped` the application asked for stays.
 - Derived effects: `Connecting` does not advance while `recv != Running`; the pollset drops IN
   while `recv != Running` and OUT while `send == Paused`; speed checks are skipped while either
   is paused; `Exchanging` does not reach `Done` while `recv == Held`.
 
 `pause` (core of `curl_easy_pause`):
 1. no lease held → BadFunctionArgument;
-2. apply per direction; an unpause of recv flushes when `flush` is reachable;
+2. apply per direction; an unpause of held output flushes when the `Run` is in its slot, and a
+   failed flush is `pause`'s error, leaving the output `Failed` for the next step to report;
 3. unless blocked in every wanted direction, mark the transfer dirty;
 4. if anything changed: `timer_update`, then `assess(id)`; an `Abort` from either is
    AbortedByCallback.
@@ -1196,8 +1202,7 @@ greps that every `extern "C"` function in `easy.rs` and `multi.rs` calls a gate.
 
 - Detached handle, or no lease → CURLE_BAD_FUNCTION_ARGUMENT.
 - `Added { multi, id }` with a `Transfer` frame → `cx.pause(id, req)`: own transfer or sibling;
-  the timer and socket callbacks run inside, the write callbacks run inside if `flush` is
-  reachable.
+  the timer and socket callbacks run inside, a sibling's write callbacks run inside.
 - `Event` frame → RECURSIVE_API_CALL (`no_event_cb`).
 - No frame → `Multi::pause(id, req, &mut ShimEvents)`: flush (write callbacks), then the timer
   callback, then the socket callback, inside the call, as easy.c:1187-1236.

@@ -6,21 +6,20 @@
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_handler_replaced_inside_its_own_call_takes_the_next_piece
 --- old
-            verdict(handler.write(&mut TransferCx::new(cx), piece))?;
+        let w = handler.write(&mut TransferCx::new(cx), piece);
 --- new
-            let mut tcx = TransferCx::new(cx);
-            let v = handler.write(&mut tcx, piece);
-            let me = tcx.me();
-            tcx.options_mut(me).unwrap().callbacks.write = Some(handler);
-            verdict(v)?;
+        let mut tcx = TransferCx::new(cx);
+        let w = handler.write(&mut tcx, piece);
+        let me = tcx.me();
+        tcx.options_mut(me).unwrap().callbacks.write = Some(handler);
 
 === a write handler's failure is ignored
 file: crates/curl-core/src/deliver/mod.rs
-witness: curl-core deliver::tests::a_failed_or_paused_write_fails_the_transfer
+witness: curl-core deliver::tests::a_failed_write_fails_the_transfer
 --- old
-        Write::Accepted => Ok(()),
+        Write::Accepted => Ok(true),
 --- new
-        Write::Accepted | Write::Fail => Ok(()),
+        Write::Accepted | Write::Fail => Ok(true),
 
 === header lines go to the write handler
 file: crates/curl-core/src/proto/script.rs
@@ -50,24 +49,26 @@ pub(crate) const MAX_WRITE: usize = 65536;
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_header_line_goes_out_whole
 --- old
-                Some(handler) => verdict(handler.header(&mut TransferCx::new(cx), line, origin)),
+        OutKind::Header(origin) => {
 --- new
-                Some(handler) => line.chunks(MAX_WRITE).try_for_each(|l| {
-                    verdict(handler.header(&mut TransferCx::new(cx), l, origin))
-                }),
+        OutKind::Header(origin) if bytes.len() > MAX_WRITE => {
+            deliver(cx, kind, &bytes[..MAX_WRITE], pausable)?;
+            deliver(cx, kind, &bytes[MAX_WRITE..], pausable)
+        }
+        OutKind::Header(origin) => {
 
 === an included header line reaches the header handler first
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::included_header_lines_go_to_the_write_handler_first
 --- old
         if cx.easy().options().output.include_header {
-            self.out.body(cx, line)?;
+            self.out.body(cx, line, self.pausable)?;
         }
-        self.out.header(cx, line, origin)
+        self.out.header(cx, line, origin, self.pausable)
 --- new
-        self.out.header(cx, line, origin)?;
+        self.out.header(cx, line, origin, self.pausable)?;
         if cx.easy().options().output.include_header {
-            self.out.body(cx, line)?;
+            self.out.body(cx, line, self.pausable)?;
         }
         Ok(())
 
@@ -92,7 +93,7 @@ witness: curl-core deliver::tests::a_body_over_the_size_limit_is_cut_at_the_limi
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::included_headers_count_against_the_size_limit
 --- old
-            cx.report_mut().sizes_mut().delivered += piece.len() as u64;
+        cx.report_mut().sizes_mut().delivered += piece.len() as u64;
 --- new
 
 === the body is traced without verbose
@@ -112,10 +113,193 @@ witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_receive
         self.accountant.response_started(cx);
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(bytes.len(), max_filesize);
-        self.out.body(cx, &bytes[..allowed])?;
+        self.out.body(cx, &bytes[..allowed], self.pausable)?;
 --- new
         self.accountant.response_started(cx);
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(bytes.len(), max_filesize);
-        self.out.body(cx, &bytes[..allowed])?;
+        self.out.body(cx, &bytes[..allowed], self.pausable)?;
         raw_trace(cx, bytes);
+
+=== a pause asked for inside a replay stops it
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_receive_pause_inside_the_replay_lets_it_finish
+--- old
+        while cx.pause().recv != RecvPause::Held {
+--- new
+        while !cx.pause().recv_paused() {
+
+=== a receive pause cuts the write under way
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
+--- old
+        if !verdict(cx, w, pausable)? {
+--- new
+        if !verdict(cx, w, pausable)? || cx.pause().recv_paused() {
+
+=== the piece a handler paused on is dropped
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::held_output_is_replayed_in_the_order_it_came
+--- old
+            let delivered = deliver(cx, kind, bytes, pausable)?;
+            held.consume(delivered);
+--- new
+            let delivered = deliver(cx, kind, bytes, pausable)?;
+            let n = bytes.len().min(delivered + MAX_WRITE);
+            held.consume(n);
+
+=== an included header line is held apart from the body
+file: crates/curl-core/src/deliver/held.rs
+witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
+--- old
+        let joins = kind == OutKind::Body
+--- new
+        let joins = false
+            && kind == OutKind::Body
+
+=== a write after held output skips the queue
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
+--- old
+            ClientOut::Held(held) => {
+                held.append(kind, bytes)?;
+                self.replay(cx, pausable)
+            }
+--- new
+            ClientOut::Held(held) if cx.pause().recv != RecvPause::Held => {
+                deliver(cx, kind, bytes, pausable)?;
+                self.replay(cx, pausable)
+            }
+            ClientOut::Held(held) => {
+                held.append(kind, bytes)?;
+                self.replay(cx, pausable)
+            }
+
+=== an unpause waits for the next step to replay
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core deliver::tests::a_sibling_s_unpause_replays_at_once
+--- old
+    if was_held
+        && slot.pause.recv == RecvPause::Running
+--- new
+    if false
+        && was_held
+        && slot.pause.recv == RecvPause::Running
+
+=== a paused transfer reads on
+file: crates/curl-core/src/proto/script.rs
+witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
+--- old
+            if cx.pause().recv_paused() {
+                return Ok(ProtoStep::Blocked);
+            }
+--- new
+
+=== a pause is honoured where none is supported
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_pause_where_none_is_supported_fails_the_write
+--- old
+        Write::Pause if !pausable => Err(ErrorKind::WriteError),
+--- new
+
+=== the held output has no cap
+file: crates/curl-core/src/deliver/held.rs
+witness: curl-core deliver::tests::at_most_64_mib_of_output_is_held
+--- old
+        if self.held + data.len() > MAX_HELD {
+--- new
+        if self.held + data.len() > usize::MAX / 2 {
+
+=== the cap counts what was delivered
+file: crates/curl-core/src/deliver/held.rs
+witness: curl-core deliver::held::tests::at_most_64_mib_is_held_counting_what_is_left
+--- old
+        self.held -= n;
+--- new
+
+=== delivered output is never dropped from the buffer
+file: crates/curl-core/src/deliver/held.rs
+witness: curl-core deliver::held::tests::what_was_delivered_does_not_pile_up
+--- old
+        } else if self.entries[self.first].range.start > MAX_HELD {
+--- new
+        } else if false {
+
+=== a failed replay is not the unpause's error
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core deliver::tests::a_failed_replay_fails_the_unpause_and_then_the_transfer
+--- old
+        return replayed;
+--- new
+        drop(replayed);
+        return Ok(());
+
+=== a failed replay leaves the output usable
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_failed_replay_fails_the_unpause_and_then_the_transfer
+--- old
+        let result = self.replay(cx, pausable);
+        self.fail_on(result)
+--- new
+        self.replay(cx, pausable)
+
+=== an unpause from outside does not tell the timer
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core deliver::tests::an_unpause_tells_the_timer
+--- old
+        let timer = self
+            .update_timer(ev)
+            .map_err(|_| ErrorKind::AbortedByCallback);
+--- new
+        let timer = Ok(());
+
+=== a paused transfer is marked to run
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core deliver::tests::an_unpause_tells_the_timer
+--- old
+    if !slot.pause.recv_paused() {
+        rest.dirty.insert(id.index());
+    }
+--- new
+    rest.dirty.insert(id.index());
+
+=== an unpaused transfer is not marked to run
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
+--- old
+    if !slot.pause.recv_paused() {
+        rest.dirty.insert(id.index());
+    }
+--- new
+
+=== a completed transfer can be paused
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core deliver::tests::a_transfer_not_exchanging_cannot_be_paused
+--- old
+    if slot.run.as_ref().is_some_and(|r| !r.state.holds_lease()) {
+--- new
+    if slot.run.as_ref().is_some_and(|r| matches!(r.state, TransferState::Init)) {
+
+=== a completed transfer stays held
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core deliver::tests::held_output_keeps_the_transfer_going_until_its_time_is_up
+--- old
+            if pause.recv == RecvPause::Held {
+                pause.recv = RecvPause::Running;
+            }
+--- new
+
+=== held output survives a receive pause as stopped
+file: crates/curl-core/src/deliver/pause.rs
+witness: curl-core deliver::pause::tests::held_output_stays_held_under_a_receive_pause
+--- old
+            (true, RecvPause::Held) => RecvPause::Held,
+--- new
+
+=== delivered bytes are compacted away at every entry
+file: crates/curl-core/src/deliver/held.rs
+witness: curl-core deliver::held::tests::delivered_bytes_are_dropped_only_past_the_cap
+--- old
+        } else if self.entries[self.first].range.start > MAX_HELD {
+--- new
+        } else if self.entries[self.first].range.start > 0 {

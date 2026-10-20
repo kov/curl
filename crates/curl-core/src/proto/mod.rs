@@ -8,6 +8,7 @@
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 
+use crate::deliver::Pipeline;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
@@ -47,6 +48,27 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             b"script" => Some(ProtoState::Script(script::Player::default())),
             _ => None,
+        }
+    }
+
+    /// Whether the request holds output for the application.
+    #[cfg(debug_assertions)]
+    pub(crate) fn holds_output(&self) -> bool {
+        match *self {
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Script(ref p) => p.holds_output(),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall => false,
+        }
+    }
+
+    /// The output of the request, for protocols that deliver any.
+    pub(crate) fn pipeline_mut(&mut self) -> Option<&mut Pipeline> {
+        match *self {
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Script(ref mut p) => Some(p.pipeline_mut()),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall => None,
         }
     }
 

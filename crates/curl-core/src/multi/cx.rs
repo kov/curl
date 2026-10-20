@@ -5,13 +5,16 @@
 use curl_alloc::OutOfMemory;
 
 use crate::conn::Pool;
+use crate::deliver::PauseRequest;
 use crate::easy::Easy;
+use crate::error::ErrorKind;
 use crate::id::Arena;
 use crate::options::Options;
 use crate::report::TransferReport;
 use crate::time::Instant;
 
 use super::notify::{NotifyKind, NotifyQueue};
+use super::sched::RowSet;
 use super::{
     AddError, Counts, Host, Message, Multi, MultiEvents, Removed, Slot, Transfer, TransferId,
     read_message,
@@ -23,6 +26,7 @@ use super::{
 pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
     pub(super) pool: &'a mut Pool,
+    pub(super) dirty: &'a mut RowSet,
     /// The pass's time, read once.
     pub(super) now: Instant,
 }
@@ -35,10 +39,6 @@ pub struct TransferCx<'a> {
 }
 
 impl<'a> TransferCx<'a> {
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "no protocol is built in before step 8")
-    )]
     pub(crate) fn new(calls: &'a mut dyn TransferCalls) -> TransferCx<'a> {
         TransferCx { calls }
     }
@@ -68,6 +68,14 @@ impl<'a> TransferCx<'a> {
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.calls.easy(id).map(Easy::try_clone)
     }
+
+    /// Pause or unpause a transfer, this one among them
+    /// (`curl_easy_pause`). Another's held output is replayed before this
+    /// returns; this one's, by the replay or step already under way. The
+    /// timer hears of it at the end of the pass.
+    pub fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
+        self.calls.pause(id, req)
+    }
 }
 
 /// What a `TransferCx` reaches, whatever the multi's `Host`.
@@ -75,6 +83,7 @@ pub(crate) trait TransferCalls {
     fn me(&self) -> TransferId;
     fn easy(&self, id: TransferId) -> Option<&Easy>;
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy>;
+    fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind>;
 }
 
 /// The multi as the timer callback sees it: only the calls api.c lets

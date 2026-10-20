@@ -27,8 +27,6 @@ exclude_globs = [
     "**/c_order.rs",
 ]
 
-# The test-only clock and protocols live behind this feature.
-features = ["curl-core/test-util"]
 
 # A planted fault can turn a loop infinite; fail it instead of waiting.
 timeout_multiplier = 3.0

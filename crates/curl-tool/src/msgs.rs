@@ -24,12 +24,9 @@ pub(crate) struct Messages {
 }
 
 impl Messages {
-    /// Messages wrapped at `COLUMNS` when it holds a width over 20, as
-    /// `get_terminal_columns` reads it.
-    ///
-    /// C then asks the terminal; this falls back to 79 columns, C's value
-    /// when that fails too, until the tool has an interface to the
-    /// terminal.
+    /// Messages wrapped at `COLUMNS` when it holds a width over 20, else at
+    /// the terminal's width, else at 79 columns, as `get_terminal_columns`
+    /// decides.
     pub(crate) fn new() -> Self {
         let columns = std::env::var_os("COLUMNS")
             .and_then(|c| {
@@ -41,6 +38,11 @@ impl Messages {
                     .ok()
             })
             .filter(|&n| n > 20 && n <= 10000)
+            .or_else(|| {
+                curl_os::terminal::columns()
+                    .map(usize::from)
+                    .filter(|&n| n > 0 && n < 10000)
+            })
             .unwrap_or(DEFAULT_COLUMNS);
         Messages {
             silent: false,

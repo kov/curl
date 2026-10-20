@@ -69,7 +69,11 @@ fn main() -> ExitCode {
     memory_tracking_init();
     let mut msgs = Messages::new();
     if config::reads_curlrc(&argv) {
-        match config::find_curlrc(|var| std::env::var_os(var), config::readable) {
+        match config::find_curlrc(
+            |var| std::env::var_os(var),
+            curl_os::users::home_directory,
+            config::readable,
+        ) {
             Ok(None) => {}
             Ok(Some(path)) => {
                 let path = path.as_os_str().as_encoded_bytes();
@@ -91,7 +95,13 @@ fn main() -> ExitCode {
         msgs.help(&[]);
         return ExitCode::from(exit_code(ErrorKind::FailedInit));
     }
-    let line = match options::parse(&argv, &mut msgs) {
+    let mut wipe = |index, offset| {
+        assert!(
+            curl_os::args::wipe(index, offset),
+            "argument {index} has {offset} bytes to keep"
+        );
+    };
+    let line = match options::parse(&argv, &mut msgs, &mut wipe) {
         Ok(Parsed::Run(line)) => line,
         Ok(Parsed::Request(request)) => return show(request, &msgs),
         Err(e) => return ExitCode::from(exit_code(e.kind())),
@@ -126,14 +136,9 @@ fn show(request: Request<'_>, msgs: &Messages) -> ExitCode {
 ///
 /// It is read before allocation tracking starts: like C's `argv`, it is the
 /// process's input rather than memory curl allocates, and the C debug
-/// build's memdump never shows it. Copying it out of the OS is the one
-/// infallible allocation the tool keeps.
-#[allow(
-    clippy::disallowed_methods,
-    reason = "the command line is copied once, before anything is tracked"
-)]
+/// build's memdump never shows it.
 fn command_line() -> Vec<std::ffi::OsString> {
-    std::env::args_os().collect()
+    curl_os::args::command_line()
 }
 
 /// `curl --version`.

@@ -17,11 +17,18 @@ pub(crate) enum Parsed<'a> {
     Request(Request<'a>),
 }
 
+/// Overwrites a secret in the process's own command line: argument
+/// `index`, from byte `offset` to its end.
+pub(crate) type Wipe<'w> = &'w mut dyn FnMut(usize, usize);
+
 /// Parse `argv`, the program name first. A rejected command line has been
-/// reported, with the hint to try `--help`, when this returns.
+/// reported, with the hint to try `--help`, when this returns. Arguments of
+/// options holding secrets are passed to `wipe` once read, as C's
+/// `cleanarg` overwrites them.
 pub(crate) fn parse<'a>(
     argv: &'a [OsString],
     msgs: &mut Messages,
+    wipe: Wipe<'_>,
 ) -> Result<Parsed<'a>, ParamError> {
     let mut line = CommandLine::new()?;
     let mut still_flags = true;
@@ -36,12 +43,13 @@ pub(crate) fn parse<'a>(
                 Ok((Flow::Continue, false))
             } else {
                 let next = argv.get(i + 1).map(|a| a.as_encoded_bytes());
-                getparameter(arg, next, &mut line, msgs)
+                getparameter(arg, i, next, &mut line, msgs, wipe)
             }
         } else {
             // A URL: it is the argument of an implied `--url`, not a word
             // after this one to skip.
-            getparameter(b"--url", Some(arg), &mut line, msgs).map(|(flow, _)| (flow, false))
+            getparameter(b"--url", i, Some(arg), &mut line, msgs, wipe)
+                .map(|(flow, _)| (flow, false))
         };
         match step {
             Ok((Flow::Continue, used_next)) => i += usize::from(used_next),
@@ -82,13 +90,15 @@ fn has_leading_unicode(arg: &[u8]) -> bool {
     matches!(arg, [0xe2, 0x80, third, ..] if third & 0x80 != 0)
 }
 
-/// Handle one command-line word, `flag`, with `next` the word after it.
-/// Returns what to do next and whether `next` was used.
+/// Handle one command-line word, `flag`, argument `index`, with `next` the
+/// word after it. Returns what to do next and whether `next` was used.
 fn getparameter<'a>(
     flag: &'a [u8],
+    index: usize,
     mut next: Option<&'a [u8]>,
     line: &mut CommandLine<'a>,
     msgs: &mut Messages,
+    wipe: Wipe<'_>,
 ) -> Result<(Flow<'a>, bool), ParamError> {
     let mut toggle = true;
     let mut separate = true;
@@ -149,7 +159,7 @@ fn getparameter<'a>(
         }
         let mut used_next = false;
         let mut attached = false;
-        let value = if spec.kind.takes_argument() {
+        let applied = if spec.kind.takes_argument() {
             let arg = if long.is_none() && letters.len() > at + 1 {
                 // `-ofile`: the rest of the word is the argument.
                 attached = true;
@@ -166,33 +176,44 @@ fn getparameter<'a>(
                 used_next = separate;
                 arg
             };
-            if spec.deprecated {
+            let applied = if spec.deprecated {
                 deprecated(msgs, spec);
-                return Ok((Flow::Continue, used_next));
-            }
-            if has_leading_unicode(arg) {
-                unicode_warning(msgs, spec, arg);
-            }
-            match spec.kind {
-                ArgKind::String | ArgKind::File => Value::Text(arg),
-                ArgKind::Seconds => Value::Millis(number::seconds_as_millis(arg)?),
-                ArgKind::Unsigned => Value::Number(number::unsigned(arg)?),
-                ArgKind::None | ArgKind::Bool => unreachable!("takes an argument"),
-            }
-        } else {
-            if spec.deprecated {
-                deprecated(msgs, spec);
-                return Ok((Flow::Continue, false));
-            }
-            if spec.kind == ArgKind::Bool {
-                Value::Toggle(toggle)
+                Ok(Flow::Continue)
             } else {
-                Value::Switch
+                if has_leading_unicode(arg) {
+                    unicode_warning(msgs, spec, arg);
+                }
+                match spec.kind {
+                    ArgKind::String | ArgKind::File => Ok(Value::Text(arg)),
+                    ArgKind::Seconds => number::seconds_as_millis(arg).map(Value::Millis),
+                    ArgKind::Unsigned => number::unsigned(arg).map(Value::Number),
+                    ArgKind::None | ArgKind::Bool => unreachable!("takes an argument"),
+                }
+                .and_then(|value| apply(line, msgs, spec, value))
+            };
+            if spec.secret {
+                // Wiped whether or not the option was accepted, as in C:
+                // in this word after the option, or the whole next word.
+                if used_next {
+                    wipe(index + 1, 0);
+                } else {
+                    wipe(index, flag.len() - arg.len());
+                }
             }
+            applied
+        } else if spec.deprecated {
+            deprecated(msgs, spec);
+            Ok(Flow::Continue)
+        } else if spec.kind == ArgKind::Bool {
+            apply(line, msgs, spec, Value::Toggle(toggle))
+        } else {
+            apply(line, msgs, spec, Value::Switch)
         };
-        let flow = apply(line, msgs, spec, value)?;
+        let flow = applied?;
         at += 1;
-        let more = long.is_none() && !attached && at < letters.len() && !used_next;
+        // A deprecated option ends the word, as in C.
+        let more =
+            long.is_none() && !attached && at < letters.len() && !used_next && !spec.deprecated;
         if !matches!(flow, Flow::Continue) || !more {
             return Ok((flow, used_next));
         }
@@ -218,6 +239,8 @@ fn unicode_warning(msgs: &Messages, spec: &Spec, arg: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use curl_alloc::TryVec as _;
+
     use super::*;
 
     fn run(args: &[&str]) -> Result<(usize, Option<&'static str>, Option<String>), ParamError> {
@@ -228,7 +251,7 @@ mod tests {
         let argv: &'static [OsString] = Vec::leak(argv);
         let mut msgs = Messages::new();
         msgs.silent = true;
-        match parse(argv, &mut msgs)? {
+        match parse(argv, &mut msgs, &mut |_, _| {})? {
             Parsed::Run(line) => Ok((
                 line.operations.len(),
                 line.unimplemented.map(|(s, _)| s.long),
@@ -283,6 +306,36 @@ mod tests {
             run(&["--bogus", "-V"]).err(),
             Some(ParamError::OptionUnknown)
         );
+    }
+
+    /// Where each secret is wiped: the argument and the byte it starts at.
+    #[test]
+    fn wipes_secrets_where_they_are() {
+        let wiped = |args: &[&str]| {
+            let argv: Vec<OsString> = std::iter::once("curl")
+                .chain(args.iter().copied())
+                .map(OsString::from)
+                .collect();
+            let mut msgs = Messages::new();
+            msgs.silent = true;
+            let mut at = Vec::new();
+            let _ = parse(&argv, &mut msgs, &mut |i, o| at.try_push((i, o)).unwrap());
+            at
+        };
+        assert_eq!(wiped(&["-u", "a:b", "x"]), [(2, 0)]);
+        assert_eq!(wiped(&["-ua:b", "x"]), [(1, 2)]);
+        assert_eq!(wiped(&["-sua:b", "x"]), [(1, 3)]);
+        assert_eq!(wiped(&["-su", "a:b", "x"]), [(2, 0)]);
+        assert_eq!(wiped(&["--user", "a:b", "x"]), [(2, 0)]);
+        assert_eq!(wiped(&["--user=a:b", "x"]), [(1, 7)]);
+        assert_eq!(
+            wiped(&["x", "-U", "p:q", "--pass", "k", "--oauth2-bearer=t"]),
+            [(3, 0), (5, 0), (6, 16)]
+        );
+        assert_eq!(wiped(&["-o", "a:b", "x", "--url", "u:p@h"]), []);
+        assert_eq!(wiped(&["-u"]), [], "no argument to wipe");
+        // Wiped even when parsing stops at a later error.
+        assert_eq!(wiped(&["-u", "a:b", "--bogus"]), [(2, 0)]);
     }
 
     #[test]

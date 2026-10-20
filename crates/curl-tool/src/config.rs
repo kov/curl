@@ -29,14 +29,12 @@ const PLACES: &[(&str, &str, bool)] = &[
 ];
 
 /// The default configuration file, if there is one: the first readable
-/// one of the places C looks. `env` reads a variable, `readable` checks a
-/// file can be opened.
-///
-/// C then tries the home directory of the user's password entry; that
-/// needs an interface to the user database the tool does not have yet, so
-/// a file there is not found.
+/// one of the places C looks, and last `.curlrc` in the home directory the
+/// user database names. `env` reads a variable, `home` asks the user
+/// database, `readable` checks a file can be opened.
 pub(crate) fn find_curlrc(
     env: impl Fn(&str) -> Option<OsString>,
+    home: impl FnOnce() -> Result<Option<OsString>, OutOfMemory>,
     readable: impl Fn(&Path) -> bool,
 ) -> Result<Option<PathBuf>, OutOfMemory> {
     let mut without_dot_tried = false;
@@ -51,17 +49,26 @@ pub(crate) fn find_curlrc(
             without_dot_tried = true;
         }
         let name: &[u8] = if without_dot { b"curlrc" } else { b".curlrc" };
-        let mut path = Vec::new();
-        path.try_extend_from_slice(dir.as_bytes())?;
-        path.try_extend_from_slice(append.as_bytes())?;
-        path.try_push(b'/')?;
-        path.try_extend_from_slice(name)?;
-        let path = PathBuf::from(OsString::from_vec(path));
+        let path = join(&[dir.as_bytes(), append.as_bytes(), b"/", name])?;
+        if readable(&path) {
+            return Ok(Some(path));
+        }
+    }
+    if let Some(dir) = home()? {
+        let path = join(&[dir.as_bytes(), b"/.curlrc"])?;
         if readable(&path) {
             return Ok(Some(path));
         }
     }
     Ok(None)
+}
+
+fn join(parts: &[&[u8]]) -> Result<PathBuf, OutOfMemory> {
+    let mut path = Vec::new();
+    for part in parts {
+        path.try_extend_from_slice(part)?;
+    }
+    Ok(PathBuf::from(OsString::from_vec(path)))
 }
 
 /// Whether `path` can be opened for reading, as `checkhome` checks it.
@@ -74,13 +81,17 @@ mod tests {
     use super::*;
 
     fn find(vars: &[(&str, &str)], files: &[&str]) -> Option<String> {
+        find_with_home(vars, None, files)
+    }
+
+    fn find_with_home(vars: &[(&str, &str)], home: Option<&str>, files: &[&str]) -> Option<String> {
         let env = |v: &str| {
             vars.iter()
                 .find(|(k, _)| *k == v)
                 .map(|(_, d)| OsString::from(d))
         };
         let readable = |p: &Path| files.iter().any(|f| Path::new(f) == p);
-        find_curlrc(env, readable)
+        find_curlrc(env, || Ok(home.map(OsString::from)), readable)
             .unwrap()
             .map(|p| p.display().to_string())
     }
@@ -123,6 +134,24 @@ mod tests {
             Some("/h/.config/curlrc")
         );
         assert_eq!(find(&[], &all), None);
+    }
+
+    /// Last, `.curlrc` in the user database's home directory, never
+    /// `.config/curlrc` there.
+    #[test]
+    fn then_the_users_home() {
+        let files = ["/p/.curlrc", "/p/.config/curlrc", "/h/.curlrc"];
+        assert_eq!(
+            find_with_home(&[], Some("/p"), &files).as_deref(),
+            Some("/p/.curlrc")
+        );
+        assert_eq!(find_with_home(&[], Some("/p"), &files[1..]), None);
+        let home = [("HOME", "/h")];
+        assert_eq!(
+            find_with_home(&home, Some("/p"), &files).as_deref(),
+            Some("/h/.curlrc")
+        );
+        assert_eq!(find_with_home(&[], None, &files), None);
     }
 
     #[test]

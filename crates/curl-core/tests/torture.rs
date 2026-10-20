@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use curl_alloc::track::{self, Tracker};
 use curl_alloc::{OutOfMemory, TryArc, try_box};
-use curl_core::conn::io::{FakeNet, Net};
+use curl_core::conn::io::{FakeNet, Net, Waker};
 use curl_core::easy::Easy;
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
@@ -23,7 +23,6 @@ use curl_core::multi::{
     SocketEvent, TimerChange, WaitMode,
 };
 use curl_core::time::{Clock, ManualClock, TimeLimit};
-use curl_os::wake::Waker;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;

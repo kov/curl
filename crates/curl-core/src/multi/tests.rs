@@ -1,8 +1,7 @@
 use super::*;
 use curl_alloc::TryArc;
-use curl_os::wake::Waker;
 
-use crate::conn::io::{Events, FakeNet, Net, PollFd};
+use crate::conn::io::{Events, FakeNet, Net, PollFd, Waker};
 use crate::options::Options;
 use crate::time::{ManualClock, TimeLimit};
 
@@ -795,4 +794,34 @@ fn driving_a_transfer_to_completion_leaves_others_messages() {
         drive_to_completion(&mut m, done, ev),
         Err(MultiErrorKind::BadEasyHandle)
     );
+}
+
+/// Takes `victim` out of the multi when it is reported done.
+struct RemoveWhenDone {
+    victim: TransferId,
+    removed: bool,
+}
+
+impl MultiEvents<NoHost> for RemoveWhenDone {
+    fn notify(&mut self, cx: &mut NotifyCx<'_, NoHost>, n: Notification) {
+        if n == Notification::EasyDone(self.victim) {
+            self.removed = cx.remove(self.victim, &mut NoEvents).is_some();
+        }
+    }
+}
+
+#[test]
+fn driving_a_transfer_a_callback_takes_out_is_an_error() {
+    let (mut m, _clock) = multi();
+    m.set_notify(NotifyKind::EasyDone, true);
+    let id = m.add(stall_within(1500), (), &mut NoEvents).unwrap();
+    let ev = &mut RemoveWhenDone {
+        victim: id,
+        removed: false,
+    };
+    assert_eq!(
+        drive_to_completion(&mut m, id, ev),
+        Err(MultiErrorKind::BadEasyHandle)
+    );
+    assert!(ev.removed);
 }

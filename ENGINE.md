@@ -131,7 +131,7 @@ curl-core/src/
   handler.rs                 handler traits and their verdict enums
   trace.rs                   infof/debug formatting on a stack buffer
   multi/
-    mod.rs                   Multi<H>, Host, public API, drive_to_completion
+    mod.rs                   Multi<H>, Host, public API
     slot.rs                  Slot, TransferShared, Run, the transition function
     state.rs                 TransferState and its variant structs
     step.rs                  run_single and the per-state steps
@@ -141,7 +141,7 @@ curl-core/src/
     notify.rs                NotifyQueue, Notification, NotifyKind
     check.rs                 the debug build's invariant check
     cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx
-    wait.rs                  wait/poll/fdset/waitfds over Net
+    wait.rs                  wait, the waker, drive_to_completion over Net
   conn/
     mod.rs                   ConnSlot, Conn, Route, ConnLease
     pool.rs                  Pool, SharedPool (the four lock points)
@@ -560,7 +560,8 @@ nothing ready. A negative timeout is the shim's BAD_FUNCTION_ARGUMENT. `Net` has
 until connections need more; `FakeNet` polls real descriptors without waiting and moves the
 `ManualClock` on by the timeout when none is ready. `drive_to_completion` is `easy_transfer`:
 `wait(Poll, 1 s)`, `perform`, until the transfer completes; its message is read, other
-transfers' are not.
+transfers' are not. A transfer not in the multi, checked every round as a callback may take it
+out, is `BadEasyHandle`.
 
 `run_dirty` iterates by index cursor, re-reading the dirty set after each transfer; a transfer
 marked dirty by a callback at a higher index is visited in the same pass (C's `bset_next`).

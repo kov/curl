@@ -5,6 +5,7 @@ use std::io;
 use std::time::Duration;
 
 pub use curl_os::poll::{Events, PollFd};
+pub use curl_os::wake::Waker;
 
 /// The network as the engine reaches it.
 pub trait Net {

@@ -3,7 +3,7 @@
 # multi_wait and easy.c's easy_transfer.
 
 === curl_multi_wait with nothing to wait for sleeps
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::wait_with_nothing_to_wait_for_returns_at_once
 --- old
         if fds.is_empty() && mode == WaitMode::Wait {
@@ -12,7 +12,7 @@ witness: curl-core multi::tests::wait_with_nothing_to_wait_for_returns_at_once
 --- new
 
 === a wait is not cut short by the multi's own timeout
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::the_multi_s_own_timeout_cuts_a_wait_short
 --- old
         let timeout = self.timeout().map_or(max, |t| t.min(max));
@@ -20,7 +20,7 @@ witness: curl-core multi::tests::the_multi_s_own_timeout_cuts_a_wait_short
         let timeout = max;
 
 === the waker's event is counted as a ready descriptor
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
 --- old
             let _ = w.drain();
@@ -29,7 +29,7 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_cons
             let _ = w.drain();
 
 === a wake is left pending after it ended a wait
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
 --- old
             let _ = w.drain();
@@ -38,7 +38,7 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_cons
             ready -= 1;
 
 === the waker is watched by a wait that does not wait
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
 --- old
         let watch_waker = mode == WaitMode::Poll || !extra.is_empty();
@@ -46,7 +46,7 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_cons
         let watch_waker = true;
 
 === the application's descriptors do not get their events
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_entries
 --- old
         for (mine, polled) in extra.iter_mut().zip(&fds) {
@@ -55,7 +55,7 @@ witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_e
 --- new
 
 === a failed poll is reported as something else
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_failed_poll_is_unrecoverable
 --- old
             .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
@@ -73,7 +73,7 @@ witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_e
         self.clock.advance(timeout);
 
 === driving one transfer reads whichever message is first
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
 --- old
         if let Some(outcome) = m.take_outcome(id) {
@@ -81,10 +81,27 @@ witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_
         if let Some(outcome) = m.info_read().map(|msg| msg.result) {
 
 === driving a transfer not in the multi waits forever
-file: crates/curl-core/src/multi/mod.rs
+file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
 --- old
+        if m.slots.get(id).is_none() {
+            return Err(MultiErrorKind::BadEasyHandle);
+        }
+--- new
+
+=== driving a transfer checks only at the start that it is in the multi
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_error
+--- old
+    loop {
+        // Checked on every round, as a callback may take it out.
+        if m.slots.get(id).is_none() {
+            return Err(MultiErrorKind::BadEasyHandle);
+        }
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
+--- new
     if m.slots.get(id).is_none() {
         return Err(MultiErrorKind::BadEasyHandle);
     }
---- new
+    loop {
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;

@@ -134,7 +134,8 @@ yet meet.
 10. **abi: add easy and multi handles.** `ShimEasy`, `ShimMulti`, the `with_multi`/`with_easy`
     gate, `TABLE` generated from `lib/api.c` with its comparison test, `ShimEvents`, the callback
     adapters, generated setopt for the options so far, getinfo, `curl_easy_perform`, `pause`,
-    `perform_ev`, the multi entry points. Flips: 1508, 3105, 1564, 2414 (and any `file://`-only
+    `perform_ev`, the multi entry points (`fdset` and `waitfds` list no sockets until step 11's
+    `Multi::sockets`, as no transfer owns one before then). Flips: 1508, 3105, 1564, 2414 (and any `file://`-only
     libtests the inventory lists).
 
 **HTTP/1.1 GET**

@@ -1,0 +1,91 @@
+# What a transfer reports (crates/curl-core/src/report.rs and where the
+# engine writes it), against progress.c and getinfo.c.
+
+=== STARTTRANSFER adds up on every call
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::phases_add_up_across_a_redirect
+--- old
+            Timer::StartTransfer if self.starttransfer_added => return,
+--- new
+
+=== a phase counts from the transfer's start, not its request's
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::phases_add_up_across_a_redirect
+--- old
+        *phase += since_start.saturating_sub(self.startsingle).max(1);
+--- new
+        *phase += since_start.max(1);
+
+=== a phase reached at once counts nothing
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::a_phase_reached_at_its_start_counts_a_microsecond
+--- old
+        *phase += since_start.saturating_sub(self.startsingle).max(1);
+--- new
+        *phase += since_start.saturating_sub(self.startsingle);
+
+=== queue time is not summed over requests
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::queue_time_sums_over_requests
+--- old
+                self.queued += since_start.saturating_sub(self.startqueue);
+--- new
+                self.queued = since_start.saturating_sub(self.startqueue);
+
+=== a transfer ending early misses the times it skipped
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_transfer_failing_before_its_request_gets_the_skipped_times
+--- old
+    if before_did {
+--- new
+    if false {
+
+=== a transfer the dead multi ends unstarted gets no report
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_transfer_a_dead_multi_ends_unstarted_gets_a_report
+--- old
+            if unstarted {
+                state::complete_unstarted(&mut slot.easy, now);
+            }
+--- new
+
+=== the total time is never taken
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_report_times_the_phases_a_transfer_reached
+--- old
+    t.completed(now);
+--- new
+
+=== the download size counts the write in progress
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_handler_reads_its_report_as_it_stands
+--- old
+        self.out.body(cx, &bytes[..allowed])?;
+        // Counted once the handlers are done with it: inside them, the
+        // download size leaves out the write in progress.
+        self.accountant.bytecount += allowed as u64;
+        cx.report_mut().sizes_mut().download += allowed as u64;
+--- new
+        cx.report_mut().sizes_mut().download += allowed as u64;
+        self.out.body(cx, &bytes[..allowed])?;
+        self.accountant.bytecount += allowed as u64;
+
+=== the delivered size counts the piece in progress
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_handler_reads_its_report_as_it_stands
+--- old
+            verdict(handler.write(&mut TransferCx::new(cx), piece))?;
+            cx.report_mut().sizes_mut().delivered += piece.len() as u64;
+--- new
+            cx.report_mut().sizes_mut().delivered += piece.len() as u64;
+            verdict(handler.write(&mut TransferCx::new(cx), piece))?;
+
+=== a proxy's CONNECT answer starts the response
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_connect_answer_does_not_start_the_response
+--- old
+        if origin != HeaderOrigin::Connect {
+            self.accountant.response_started(cx);
+        }
+--- new
+        self.accountant.response_started(cx);

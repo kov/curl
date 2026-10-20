@@ -1006,6 +1006,13 @@ machine's stats event, PRETRANSFER at DID, POSTTRANSFER at DID with nothing to s
 done, STARTTRANSFER at the first non-CONNECT client write, TOTAL every progress pass and at
 completion; a jump to completion from before DID marks PRE, POST and START together.
 
+The report starts whole at Init (`Curl_pgrsStart`). `Sizes` (download, delivered; upload with the send side)
+count the current request and start over at each leg's connection (`Curl_init_transfer`); with
+one leg per transfer, until redirects and retries, the fresh report already does that. Inside a
+write handler the download size leaves out the write in progress, the delivered size only the
+piece in progress. A transfer the dead multi ends before it ran gets a report started and
+completed at once.
+
 The progress handler runs only with progress enabled: after every receive/send pass (with the
 speed check), at the tail of every `run_single` iteration once connected, in throttled states,
 and a final forced call from `Done::finish` unless the outcome is AbortedByCallback or the
@@ -1264,6 +1271,8 @@ Each is either unobservable through the ABI or a fixed bug:
   multi's slot, not in the easy's meta hash.
 - `curl_easy_nextheader` with a stale `prev` returns NULL instead of reading freed memory.
 - `curl_easy_perform_ev` keeps its event state per call, not in a process-wide static.
+- A transfer without a URL starts a fresh report. C fails it in `Curl_pretransfer` before
+  `Curl_pgrsStart`, so it completes on the previous transfer's start time, or on a zero one.
 
 ---
 

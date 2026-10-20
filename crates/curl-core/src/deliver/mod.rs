@@ -11,6 +11,7 @@ use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
+use crate::report::Timer;
 
 /// The most body a write handler is given at once (`CURL_MAX_WRITE_SIZE`).
 pub(crate) const MAX_WRITE: usize = 16384;
@@ -30,10 +31,14 @@ impl Pipeline {
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
         raw_trace(cx, bytes);
+        self.accountant.response_started(cx);
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(bytes.len(), max_filesize);
         self.out.body(cx, &bytes[..allowed])?;
+        // Counted once the handlers are done with it: inside them, the
+        // download size leaves out the write in progress.
         self.accountant.bytecount += allowed as u64;
+        cx.report_mut().sizes_mut().download += allowed as u64;
         if allowed < bytes.len() {
             // "Exceeded the maximum allowed file size"
             return Err(ErrorKind::FilesizeExceeded);
@@ -49,6 +54,9 @@ impl Pipeline {
         line: &[u8],
         origin: HeaderOrigin,
     ) -> Result<(), ErrorKind> {
+        if origin != HeaderOrigin::Connect {
+            self.accountant.response_started(cx);
+        }
         if cx.easy().options().output.include_header {
             self.out.body(cx, line)?;
         }
@@ -73,9 +81,19 @@ fn raw_trace<H: Host>(cx: &mut StepCx<'_, H>, bytes: &[u8]) {
 struct BodyAccountant {
     /// Body bytes past the accountant (C's `req.bytecount`).
     bytecount: u64,
+    /// Something of the response, not of a proxy's CONNECT, has come.
+    started: bool,
 }
 
 impl BodyAccountant {
+    /// The response's first output: STARTTRANSFER.
+    fn response_started<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
+        if !self.started {
+            self.started = true;
+            cx.mark(Timer::StartTransfer);
+        }
+    }
+
     /// How much of `len` more bytes the size limit lets through.
     fn allowed(&self, len: usize, max_filesize: Option<std::num::NonZeroU64>) -> usize {
         let Some(max) = max_filesize else {
@@ -87,20 +105,13 @@ impl BodyAccountant {
 }
 
 /// The last stage: the handlers (`cw-out`).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum ClientOut {
-    /// Writing straight to the handlers; `delivered` counts the body
-    /// bytes, header lines included in it among them (C's
-    /// `progress.deliver`).
-    Direct { delivered: u64 },
+    /// Writing straight to the handlers.
+    #[default]
+    Direct,
     /// A write failed: no handler is called again (#13337).
     Failed,
-}
-
-impl Default for ClientOut {
-    fn default() -> ClientOut {
-        ClientOut::Direct { delivered: 0 }
-    }
 }
 
 impl ClientOut {
@@ -112,22 +123,25 @@ impl ClientOut {
     }
 
     fn try_body<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Result<(), ErrorKind> {
-        let ClientOut::Direct { delivered } = self else {
+        if let ClientOut::Failed = self {
             return Err(ErrorKind::WriteError);
-        };
+        }
         for piece in bytes.chunks(MAX_WRITE) {
-            let options = cx.easy().options();
-            let Some(handler) = options.callbacks.write.clone() else {
+            let easy = cx.easy();
+            let Some(handler) = easy.options().callbacks.write.clone() else {
                 return Ok(());
             };
-            if let Some(max) = options.limits.max_filesize
-                && piece.len() as u64 > max.get().saturating_sub(*delivered)
+            // Body bytes delivered, included header lines among them (C's
+            // `progress.deliver`).
+            let delivered = easy.report().sizes().delivered();
+            if let Some(max) = easy.options().limits.max_filesize
+                && piece.len() as u64 > max.get().saturating_sub(delivered)
             {
                 // "Would have exceeded max file size"
                 return Err(ErrorKind::FilesizeExceeded);
             }
             verdict(handler.write(&mut TransferCx::new(cx), piece))?;
-            *delivered += piece.len() as u64;
+            cx.report_mut().sizes_mut().delivered += piece.len() as u64;
         }
         Ok(())
     }
@@ -140,7 +154,7 @@ impl ClientOut {
     ) -> Result<(), ErrorKind> {
         let result = match self {
             ClientOut::Failed => Err(ErrorKind::WriteError),
-            ClientOut::Direct { .. } => match cx.easy().options().callbacks.header.clone() {
+            ClientOut::Direct => match cx.easy().options().callbacks.header.clone() {
                 None => Ok(()),
                 Some(handler) => verdict(handler.header(&mut TransferCx::new(cx), line, origin)),
             },

@@ -825,3 +825,109 @@ fn driving_a_transfer_a_callback_takes_out_is_an_error() {
     );
     assert!(ev.removed);
 }
+
+fn us(n: u64) -> Duration {
+    Duration::from_micros(n)
+}
+
+/// The phases of a transfer that times out exchanging: each reached at
+/// once, so a microsecond; no response, so no STARTTRANSFER; the total
+/// from its first run to its end.
+#[test]
+fn a_report_times_the_phases_a_transfer_reached() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    let id = m.add(stall_within(1000), (), ev).unwrap();
+    clock.advance(Duration::from_millis(5));
+    m.perform(ev).unwrap();
+    clock.advance(Duration::from_millis(1000));
+    m.perform(ev).unwrap();
+    let t = *m.easy(id).unwrap().report().timings();
+    assert_eq!(t.total(), Duration::from_secs(1), "from the first run");
+    assert_eq!(
+        [t.namelookup(), t.pretransfer(), t.posttransfer()],
+        [us(1); 3]
+    );
+    assert_eq!(t.starttransfer(), Duration::ZERO, "nothing received");
+    assert_eq!(
+        [t.connect(), t.appconnect(), t.queue()],
+        [Duration::ZERO; 3]
+    );
+}
+
+/// A transfer that ends before it was about to send gets the times it
+/// skipped (`mstate_enter_completed`).
+#[test]
+fn a_transfer_failing_before_its_request_gets_the_skipped_times() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    let no_url = m.add(Easy::new(), (), ev).unwrap();
+    let unsupported = m.add(easy("nope://a"), (), ev).unwrap();
+    clock.advance(Duration::from_millis(5));
+    m.perform(ev).unwrap();
+    for id in [no_url, unsupported] {
+        let t = *m.easy(id).unwrap().report().timings();
+        assert_eq!(
+            [t.pretransfer(), t.posttransfer(), t.starttransfer()],
+            [us(1); 3]
+        );
+        assert_eq!(t.namelookup(), Duration::ZERO);
+        assert_eq!(t.total(), Duration::ZERO, "it ended where it began");
+    }
+}
+
+/// One the dead multi ends before it ever ran gets a report all the same.
+#[test]
+fn a_transfer_a_dead_multi_ends_unstarted_gets_a_report() {
+    let (mut m, clock) = multi();
+    let mut ev = RecordingEvents {
+        abort_at: Some(2),
+        ..RecordingEvents::default()
+    };
+    let id = m.add(easy("null://a"), (), &mut ev).unwrap();
+    // A later add moves the wake-up, and that timer call aborts.
+    clock.advance(Duration::from_millis(1));
+    let refused = m.add(easy("null://b"), (), &mut ev).unwrap_err();
+    assert_eq!(refused.kind, MultiErrorKind::AbortedByCallback);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::AbortedByCallback), 0)]
+    );
+    let t = *m.easy(id).unwrap().report().timings();
+    assert_eq!(
+        [t.pretransfer(), t.posttransfer(), t.starttransfer()],
+        [us(1); 3]
+    );
+}
+
+/// Each run of an `Easy` gets a fresh report; a copy and a reset start
+/// with none.
+#[test]
+fn every_run_reports_afresh() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    let id = m.add(stall_within(1000), (), ev).unwrap();
+    m.perform(ev).unwrap();
+    clock.advance(Duration::from_millis(1000));
+    m.perform(ev).unwrap();
+    let mut e = m.remove(id, ev).unwrap().easy;
+    assert_eq!(e.report().timings().total(), Duration::from_secs(1));
+    assert_eq!(
+        e.try_clone().unwrap().report().timings().total(),
+        Duration::ZERO
+    );
+    e.options_mut().limits.total = None;
+    e.options_mut().set_url(Some(b"null://a")).unwrap();
+    let id = m.add(e, (), ev).unwrap();
+    m.perform(ev).unwrap();
+    let mut e = m.remove(id, ev).unwrap().easy;
+    assert_eq!(
+        e.report().timings().total(),
+        Duration::ZERO,
+        "the second run's"
+    );
+    assert_eq!(e.report().timings().pretransfer(), us(1));
+    e.reset();
+    assert_eq!(e.report().timings().pretransfer(), Duration::ZERO);
+}

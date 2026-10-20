@@ -92,7 +92,7 @@ witness: curl-core deliver::tests::a_body_over_the_size_limit_is_cut_at_the_limi
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::included_headers_count_against_the_size_limit
 --- old
-            *delivered += piece.len() as u64;
+            cx.report_mut().sizes_mut().delivered += piece.len() as u64;
 --- new
 
 === the body is traced without verbose
@@ -109,10 +109,12 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
 --- old
         raw_trace(cx, bytes);
+        self.accountant.response_started(cx);
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(bytes.len(), max_filesize);
         self.out.body(cx, &bytes[..allowed])?;
 --- new
+        self.accountant.response_started(cx);
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(bytes.len(), max_filesize);
         self.out.body(cx, &bytes[..allowed])?;

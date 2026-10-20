@@ -16,6 +16,7 @@ pub mod id;
 pub mod multi;
 pub mod options;
 mod proto;
+pub mod report;
 pub mod time;
 pub mod url;
 pub mod version;

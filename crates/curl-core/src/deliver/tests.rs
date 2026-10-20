@@ -1,4 +1,5 @@
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 use crate::conn::io::FakeNet;
 use crate::easy::Easy;
@@ -68,8 +69,7 @@ impl WriteHandler for Recorder {
 }
 
 impl HeaderHandler for Recorder {
-    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write {
-        assert_eq!(origin, HeaderOrigin::Header);
+    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         self.log.borrow_mut().push((self.name, line.to_vec()));
         self.verdict
     }
@@ -411,6 +411,8 @@ fn failed_output_stays_failed() {
     e.options_mut().callbacks.header =
         Some(Handler::header(Recorder::new("header", &log)).unwrap());
     let id = m.add(e, (), &mut NoEvents).unwrap();
+    // Exchanging, as a protocol delivering output is.
+    m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut p = Pipeline::default();
         assert_eq!(p.body(cx, b"one"), Err(ErrorKind::WriteError));
@@ -421,4 +423,83 @@ fn failed_output_stays_failed() {
         assert_eq!(p.body(cx, b"two"), Err(ErrorKind::WriteError));
     });
     assert_eq!(*log.borrow(), [("write", b"one".to_vec())]);
+}
+
+/// What the write handler sees of its own report at each call:
+/// (download, delivered, starttransfer).
+struct SizeProbe(std::cell::RefCell<Vec<(u64, u64, Duration)>>);
+
+impl WriteHandler for std::rc::Rc<SizeProbe> {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        let report = cx.info(cx.me()).unwrap();
+        let sizes = report.sizes();
+        self.0.borrow_mut().push((
+            sizes.download(),
+            sizes.delivered(),
+            report.timings().starttransfer(),
+        ));
+        Write::Accepted
+    }
+}
+
+/// Inside the write handler the download size leaves out the whole write
+/// in progress, the delivered size only the piece in progress
+/// (`cw_download_write`, `cw_out_ptr_flush`); the response had started.
+fn probed(include_header: bool) -> (Vec<(u64, u64, Duration)>, crate::report::Sizes) {
+    let probe = std::rc::Rc::new(SizeProbe(Default::default()));
+    let mut m = multi();
+    let mut e = script(vec![
+        Piece::Header(b"0123456789".to_vec()),
+        Piece::Body(bytes(40000)),
+        Piece::Body(bytes(10)),
+    ]);
+    e.options_mut().callbacks.write = Some(Handler::write(probe.clone()).unwrap());
+    e.options_mut().output.include_header = include_header;
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    let seen = probe.0.borrow().clone();
+    (seen, *m.easy(id).unwrap().report().sizes())
+}
+
+#[test]
+fn a_handler_reads_its_report_as_it_stands() {
+    let us = Duration::from_micros(1);
+    let (seen, sizes) = probed(false);
+    assert_eq!(
+        seen,
+        [
+            (0, 0, us),
+            (0, 16384, us),
+            (0, 32768, us),
+            (40000, 40000, us)
+        ]
+    );
+    assert_eq!((sizes.download(), sizes.delivered()), (40010, 40010));
+    // An included header line is delivered, not downloaded.
+    let (seen, sizes) = probed(true);
+    assert_eq!(seen[..2], [(0, 0, us), (0, 10, us)]);
+    assert_eq!((sizes.download(), sizes.delivered()), (40010, 40020));
+}
+
+/// A proxy's CONNECT answer is not the response starting.
+#[test]
+fn a_connect_answer_does_not_start_the_response() {
+    let mut m = multi();
+    let ids = [
+        Piece::Connect(b"HTTP/1.1 200 OK\r\n".to_vec()),
+        Piece::Header(b"HTTP/1.1 200 OK\r\n".to_vec()),
+    ]
+    .map(|p| m.add(script(vec![p]), (), &mut NoEvents).unwrap());
+    for id in ids {
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+    }
+    let start = |id| m.easy(id).unwrap().report().timings().starttransfer();
+    assert_eq!(start(ids[0]), Duration::ZERO);
+    assert_eq!(start(ids[1]), Duration::from_micros(1));
 }

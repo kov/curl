@@ -123,8 +123,9 @@ yet meet.
      options. The accountant's STARTTRANSFER mark is 7c's, its `maxdownload` cut and short-body
      end step 13's, with framing. Tests: 16 KiB pieces; header lines whole; `-i` order;
      `Failed` is terminal.
-   - 7c. `TransferReport`, `Timings`, `Sizes`, `HeaderStore`; the accountant's STARTTRANSFER
-     and download size. Ports unit 1399. Test: getinfo inside callbacks.
+   - 7c. `TransferReport`, `Timings` and `Sizes` are **done**, with the accountant's
+     STARTTRANSFER and download size, `TransferCx::info`, unit 1399 ported and getinfo inside
+     callbacks tested. `HeaderStore` is to do.
    - 7d. `Pause` and `ClientOut::Held`. Tests: pause and replay with interleaving (3235/3236
      shapes).
    - 7e. Progress, the speed check and the meter. Ports units 1606, 1636.

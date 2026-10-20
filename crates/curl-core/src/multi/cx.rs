@@ -8,6 +8,7 @@ use crate::conn::Pool;
 use crate::easy::Easy;
 use crate::id::Arena;
 use crate::options::Options;
+use crate::report::TransferReport;
 use crate::time::Instant;
 
 use super::notify::{NotifyKind, NotifyQueue};
@@ -49,6 +50,12 @@ impl<'a> TransferCx<'a> {
 
     pub fn options(&self, id: TransferId) -> Option<&Options> {
         self.calls.easy(id).map(Easy::options)
+    }
+
+    /// What a transfer reports so far, its own among them
+    /// (`curl_easy_getinfo`).
+    pub fn info(&self, id: TransferId) -> Option<&TransferReport> {
+        self.calls.easy(id).map(Easy::report)
     }
 
     /// A transfer's options, its own among them: a handler it installs
@@ -113,6 +120,10 @@ pub struct NotifyCx<'a, H: Host> {
 }
 
 impl<H: Host> NotifyCx<'_, H> {
+    #[expect(
+        clippy::result_large_err,
+        reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
+    )]
     pub fn add(
         &mut self,
         easy: Easy,

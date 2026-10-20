@@ -8,6 +8,8 @@ use curl_alloc::{OutOfMemory, TryRc};
 pub enum Piece {
     /// A header line, with its line ending.
     Header(Vec<u8>),
+    /// A header line of a proxy's answer to CONNECT.
+    Connect(Vec<u8>),
     Body(Vec<u8>),
 }
 

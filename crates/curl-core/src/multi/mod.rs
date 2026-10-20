@@ -190,6 +190,10 @@ impl<H: Host> Multi<H> {
     /// Add a transfer, to run at the next `perform` (`curl_multi_add_handle`).
     /// Everything the transfer can need from the multi's tables is
     /// reserved here, so running it allocates nothing in them.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
+    )]
     pub fn add(
         &mut self,
         easy: Easy,
@@ -201,12 +205,20 @@ impl<H: Host> Multi<H> {
         added
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
+    )]
     fn add_unchecked(
         &mut self,
         easy: Easy,
         owner: H::Transfer,
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<TransferId, AddError> {
+        #[expect(
+            clippy::result_large_err,
+            reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
+        )]
         let refuse = |kind, easy| Err(AddError { kind, easy });
         if self.life == Life::Dead {
             // A dead multi starts over once its transfers are gone.
@@ -409,8 +421,12 @@ impl<H: Host> Multi<H> {
         let mut run = slot.run.take().expect("not already out");
         if self.life == Life::Dead {
             // A callback aborted the multi: every transfer fails.
+            let unstarted = matches!(run.state, TransferState::Init);
             run.state = std::mem::replace(&mut run.state, TransferState::Init)
                 .fail(ErrorKind::AbortedByCallback);
+            if unstarted {
+                state::complete_unstarted(&mut slot.easy, now);
+            }
         }
         let mut cx = StepCx {
             me: id,

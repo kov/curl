@@ -3,12 +3,15 @@
 use curl_alloc::OutOfMemory;
 
 use crate::options::Options;
+use crate::report::TransferReport;
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
 /// and `Multi::remove` gives it back. The default allocates nothing.
 #[derive(Debug, Default)]
 pub struct Easy {
     options: Options,
+    /// The current or last transfer's.
+    report: TransferReport,
 }
 
 impl Easy {
@@ -24,16 +27,28 @@ impl Easy {
         &mut self.options
     }
 
+    /// What the running or last transfer reports (`curl_easy_getinfo`).
+    pub fn report(&self) -> &TransferReport {
+        &self.report
+    }
+
+    pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
+        &mut self.report
+    }
+
     /// A handle with the same options (`curl_easy_duphandle`).
     pub fn try_clone(&self) -> Result<Easy, OutOfMemory> {
         Ok(Easy {
             options: self.options.try_clone()?,
+            report: TransferReport::default(),
         })
     }
 
-    /// Every option back to its default (`curl_easy_reset`).
+    /// Every option back to its default, and the report with them
+    /// (`curl_easy_reset`).
     pub fn reset(&mut self) {
         self.options = Options::default();
+        self.report = TransferReport::default();
     }
 }
 

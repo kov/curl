@@ -8,6 +8,7 @@ use crate::conn::{ConnLease, Finish, Pool, Route};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::proto::{ProtoState, ProtoStep};
+use crate::report::{Timer, TransferReport};
 use crate::time::Instant;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
 
@@ -135,6 +136,22 @@ impl<H: Host> StepCx<'_, H> {
     }
 }
 
+impl<H: Host> StepCx<'_, H> {
+    pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
+        self.rest
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .easy
+            .report_mut()
+    }
+
+    pub(crate) fn mark(&mut self, timer: Timer) {
+        let now = self.rest.now;
+        self.report_mut().timings_mut().mark(timer, now);
+    }
+}
+
 impl<H: Host> TransferCalls for StepCx<'_, H> {
     fn me(&self) -> TransferId {
         self.me
@@ -156,7 +173,13 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Init => {
             let limits = cx.easy().options().limits;
             run.deadlines = Deadlines::new(cx.rest.now, limits.total, limits.connect);
-            (setup(run, cx), Wake::Again)
+            let now = cx.rest.now;
+            *cx.report_mut() = TransferReport::new(now);
+            let next = setup(run, cx);
+            if next.is_completed() {
+                enter_completed(cx.report_mut(), now, true);
+            }
+            (next, Wake::Again)
         }
         TransferState::Exchanging(mut x) => match x.proto.step(cx) {
             Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
@@ -189,12 +212,35 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 outcome: d.result,
                 message: Message::Unread,
             });
+            let now = cx.rest.now;
+            enter_completed(cx.report_mut(), now, false);
             (completed, Wake::Again)
         }
         s @ TransferState::Completed(_) => (s, Wake::Idle),
     };
     run.state = next;
     wake
+}
+
+/// The report of a transfer completing, from before the request was
+/// about to be sent or not (`mstate_enter_completed`, `Curl_pgrsCompleted`).
+fn enter_completed(report: &mut TransferReport, now: Instant, before_did: bool) {
+    let t = report.timings_mut();
+    if before_did {
+        // The times a jump to the end skipped.
+        t.mark(Timer::PreTransfer, now);
+        t.mark(Timer::PostTransfer, now);
+        t.mark(Timer::StartTransfer, now);
+    }
+    t.completed(now);
+}
+
+/// A transfer that never ran, ended by its multi: its report starts and
+/// completes at once.
+pub(crate) fn complete_unstarted(easy: &mut Easy, now: Instant) {
+    let report = easy.report_mut();
+    *report = TransferReport::new(now);
+    enter_completed(report, now, true);
 }
 
 /// `multi_done` treats these failures as premature whatever the caller
@@ -209,10 +255,14 @@ fn is_premature(result: Result<(), ErrorKind>) -> bool {
 /// C's pretransfer, SETUP and CONNECT, which always run in one pass: the
 /// URL, the leg's timers, the protocol and a connection.
 fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
-    let Some(url) = cx.easy().options().url() else {
+    if cx.easy().options().url().is_none() {
         return TransferState::Init.fail(ErrorKind::UrlMalformat);
-    };
+    }
+    cx.mark(Timer::StartOp);
     run.deadlines.start_leg(cx.rest.now);
+    cx.mark(Timer::StartSingle);
+    cx.mark(Timer::PostQueue);
+    let url = cx.easy().options().url().expect("checked above");
     let parse = ParseOptions {
         guess_scheme: true,
         non_support_scheme: true,
@@ -226,10 +276,15 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     let Some(proto) = ProtoState::for_scheme(&scheme) else {
         return TransferState::Init.fail(ErrorKind::UnsupportedProtocol);
     };
-    match cx.rest.pool.acquire(&Route::LOCAL) {
-        Ok(lease) => TransferState::Exchanging(Exchanging { lease, proto }),
-        Err(_) => TransferState::Init.fail(ErrorKind::OutOfMemory),
-    }
+    let Ok(lease) = cx.rest.pool.acquire(&Route::LOCAL) else {
+        return TransferState::Init.fail(ErrorKind::OutOfMemory);
+    };
+    // A connection without a network has its name at once.
+    cx.mark(Timer::NameLookup);
+    // DID: about to send, and nothing to send (`mstate_enter_did`).
+    cx.mark(Timer::PreTransfer);
+    cx.mark(Timer::PostTransfer);
+    TransferState::Exchanging(Exchanging { lease, proto })
 }
 
 /// A URL's error as a transfer's (`Curl_uc_to_curlcode`).

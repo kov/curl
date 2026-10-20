@@ -287,6 +287,8 @@ provably test the same thing as its C original:
   expected outputs, a generator extracts the table into data the Rust test reads.
 - **Ports are named after their originals.** Each Rust test carries the number of the C test
   it replaces.
-- **A checker compares the two lists.** The inventory records each C unit test and its number
-  of cases. The checker maps that to the Rust tests (`cargo test -- --list`), and reports each
-  C test as ported or missing, failing when the number of cases differs.
+- **A checker compares the two lists.** `inventory/measure/ported.py` maps the unit-test
+  programs the inventory records to the Rust tests named after them (`cargo test -- --list`),
+  reports each program as ported or missing, and fails on a port of a program that does not
+  exist. It does not count cases: the C tests share no notion of one. A port tests the same
+  cases as its original because its tables are generated from it.

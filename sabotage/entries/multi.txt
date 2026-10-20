@@ -5,11 +5,11 @@
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::completions_are_read_in_id_order
 --- old
-                if found.is_none() {
-                    found = Some(id);
+            if found.is_none() {
+                found = Some(id);
 --- new
-                if true {
-                    found = Some(id);
+            if true {
+                found = Some(id);
 
 === removing a running transfer keeps its connection in the pool
 file: crates/curl-core/src/multi/mod.rs
@@ -84,10 +84,10 @@ witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::completions_are_read_in_id_order
 --- old
-        if run.state.is_completed() {
+        if completed {
             self.counts.running -= 1;
 --- new
-        if run.state.is_completed() {
+        if completed {
 
 === a dirty transfer does not make the multi due at once
 file: crates/curl-core/src/multi/mod.rs
@@ -139,3 +139,90 @@ witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- new
         let now = self.clock.now();
         if self.run_dirty(now) > 0 {
+
+=== a transfer's message is announced before the transfer is done
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
+--- old
+            self.notify.push(Notification::EasyDone(id));
+            if !self.unread_besides(id) {
+                self.notify.push(Notification::InfoRead);
+            }
+--- new
+            if !self.unread_besides(id) {
+                self.notify.push(Notification::InfoRead);
+            }
+            self.notify.push(Notification::EasyDone(id));
+
+=== info_read is notified for every message, not once per batch
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::info_read_is_notified_again_once_every_message_is_read
+--- old
+            if !self.unread_besides(id) {
+--- new
+            if true {
+
+=== notifications are on before the application asks for them
+file: crates/curl-core/src/multi/notify.rs
+witness: curl-core multi::tests::notifications_are_off_until_enabled
+--- old
+        self.enabled & kind.bit() != 0
+--- new
+        true
+
+=== a kind turned off after queueing is still delivered
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_kind_turned_off_before_delivery_is_dropped
+--- old
+            if live && self.notify.is_enabled(n.kind()) {
+--- new
+            if live {
+
+=== a removed transfer's queued notification is delivered anyway
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_removed_transfer_s_notification_reaches_no_one
+--- old
+                Notification::EasyDone(id) => self.slots.get(id).is_some(),
+--- new
+                Notification::EasyDone(_) => true,
+
+=== delivered notifications stay queued for the next pass
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::info_read_is_notified_again_once_every_message_is_read
+--- old
+        self.notify.clear();
+--- new
+
+=== socket_action never delivers notifications
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::socket_action_delivers_notifications
+--- old
+            self.run_dirty(now);
+        }
+        self.dispatch(ev);
+--- new
+            self.run_dirty(now);
+        }
+
+=== perform never delivers notifications
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
+--- old
+            self.run_single(id, now);
+        }
+        self.dispatch(ev);
+--- new
+            self.run_single(id, now);
+        }
+
+=== the timer callback's context reads no messages
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::the_timer_callback_can_read_messages
+--- old
+    pub fn info_read(&mut self) -> Option<Message<'_, H>> {
+        read_message(self.slots)
+    }
+--- new
+    pub fn info_read(&mut self) -> Option<Message<'_, H>> {
+        None
+    }

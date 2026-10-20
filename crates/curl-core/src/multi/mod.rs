@@ -7,6 +7,8 @@
 //! `Easy` back with `remove`. It learns when to drive the multi next
 //! through the timer events of its `MultiEvents`.
 
+mod cx;
+mod notify;
 mod sched;
 mod state;
 mod timers;
@@ -21,9 +23,12 @@ use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
 use crate::time::{Clock, Instant};
 
+pub use cx::{EventCx, NotifyCx};
+pub use notify::{Notification, NotifyKind};
 pub use sched::Counts;
 pub use timers::TimerChange;
 
+use notify::NotifyQueue;
 use sched::RowSet;
 use state::{Message as MessageState, Run, StepCx, TransferState, Wake};
 use timers::{Due, TimerAnnounce, TimerQueue};
@@ -58,9 +63,16 @@ pub struct Abort;
 pub trait MultiEvents<H: Host> {
     /// The multi wants to be driven after this long, or no longer
     /// (`CURLMOPT_TIMERFUNCTION`). Called only on a change.
-    fn timer(&mut self, change: TimerChange) -> Result<(), Abort> {
-        let _ = change;
+    fn timer(&mut self, cx: &mut EventCx<'_, H>, change: TimerChange) -> Result<(), Abort> {
+        let _ = (cx, change);
         Ok(())
+    }
+
+    /// Something enabled with `set_notify` happened
+    /// (`CURLMOPT_NOTIFYFUNCTION`). Called at the end of `perform` and
+    /// `socket_action`, in the order the notifications were queued.
+    fn notify(&mut self, cx: &mut NotifyCx<'_, H>, n: Notification) {
+        let _ = (cx, n);
     }
 
     /// Whether `timer` is wanted. Without it the multi keeps no record of
@@ -136,6 +148,7 @@ pub struct Multi<H: Host = NoHost> {
     dirty: RowSet,
     timers: TimerQueue<Transfer>,
     announce: TimerAnnounce,
+    notify: NotifyQueue,
     pool: Pool,
     clock: Box<dyn Clock>,
     counts: Counts,
@@ -149,6 +162,7 @@ impl<H: Host> Multi<H> {
             dirty: RowSet::default(),
             timers: TimerQueue::new(),
             announce: TimerAnnounce::default(),
+            notify: NotifyQueue::default(),
             pool: Pool::new()?,
             clock: env.clock,
             counts: Counts::default(),
@@ -181,7 +195,10 @@ impl<H: Host> Multi<H> {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         };
         let rows = vacancy.rows();
-        if self.timers.reserve(rows).is_err() || self.dirty.reserve(rows).is_err() {
+        if self.timers.reserve(rows).is_err()
+            || self.dirty.reserve(rows).is_err()
+            || self.notify.reserve(rows).is_err()
+        {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         }
         let id = vacancy.fill(Slot {
@@ -239,6 +256,7 @@ impl<H: Host> Multi<H> {
             cursor = Some(id);
             self.run_single(id, now);
         }
+        self.dispatch(ev);
         // Timers due by the pass's start have been dealt with.
         while let Some(id) = self.timers.pop_due(now) {
             self.requeue_after_expiry(id, now);
@@ -266,6 +284,7 @@ impl<H: Host> Multi<H> {
             self.mark_expired_dirty(now);
             self.run_dirty(now);
         }
+        self.dispatch(ev);
         self.update_timer(ev)?;
         Ok(self.counts.running)
     }
@@ -273,37 +292,14 @@ impl<H: Host> Multi<H> {
     /// The oldest-added unread completion, marked read
     /// (`curl_multi_info_read`).
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
-        let mut found = None;
-        let mut remaining = 0;
-        let mut cursor = None;
-        while let Some(id) = self.slots.next_after(cursor) {
-            cursor = Some(id);
-            if let TransferState::Completed(c) = &self.run_of(id).state
-                && c.message == MessageState::Unread
-            {
-                if found.is_none() {
-                    found = Some(id);
-                } else {
-                    remaining += 1;
-                }
-            }
-        }
-        let id = found?;
-        let slot = self.slots.get_mut(id).expect("just found");
-        let run = slot
-            .run
-            .as_mut()
-            .expect("no transfer is out while the multi is called");
-        let TransferState::Completed(c) = &mut run.state else {
-            unreachable!("just found completed");
-        };
-        c.message = MessageState::Read;
-        Some(Message {
-            id,
-            owner: &slot.owner,
-            result: c.outcome,
-            remaining,
-        })
+        read_message(&mut self.slots)
+    }
+
+    /// Turn a kind of notification on or off
+    /// (`curl_multi_notify_enable`, `curl_multi_notify_disable`). One
+    /// already queued is not delivered once its kind is off.
+    pub fn set_notify(&mut self, kind: NotifyKind, on: bool) {
+        self.notify.set(kind, on);
     }
 
     /// How long until the multi should be driven: zero if something is
@@ -329,10 +325,7 @@ impl<H: Host> Multi<H> {
     }
 
     fn run_of(&self, id: TransferId) -> &Run {
-        let slot = self.slots.get(id).expect("a transfer in the multi");
-        slot.run
-            .as_ref()
-            .expect("no transfer is out while the multi is called")
+        run_in(&self.slots, id)
     }
 
     /// Step one transfer until it waits (`multi_runsingle`).
@@ -354,7 +347,8 @@ impl<H: Host> Multi<H> {
             now,
         };
         while state::step(&mut run, &mut cx) == Wake::Again {}
-        if run.state.is_completed() {
+        let completed = run.state.is_completed();
+        if completed {
             self.counts.running -= 1;
             run.deadlines.clear_all();
             self.timers.remove(id);
@@ -362,6 +356,49 @@ impl<H: Host> Multi<H> {
             self.timers.update(id, run.deadlines.wake_at());
         }
         slot.run = Some(run);
+        if completed {
+            // `Done` never outlasts a step, so this run went through it:
+            // done, then its message posted (`mstate_enter_done`,
+            // `multi_addmsg`).
+            self.notify.push(Notification::EasyDone(id));
+            if !self.unread_besides(id) {
+                self.notify.push(Notification::InfoRead);
+            }
+        }
+    }
+
+    /// Whether a transfer other than `id` has an unread message.
+    fn unread_besides(&self, id: TransferId) -> bool {
+        let mut cursor = None;
+        while let Some(other) = self.slots.next_after(cursor) {
+            cursor = Some(other);
+            if other != id
+                && let TransferState::Completed(c) = &self.run_of(other).state
+                && c.message == MessageState::Unread
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Deliver the pass's notifications (`Curl_mntfy_dispatch_all`). A
+    /// handler may add, remove and read, but runs no transfer, so it queues
+    /// nothing. One whose kind was turned off, or whose transfer is gone,
+    /// is dropped.
+    fn dispatch(&mut self, ev: &mut dyn MultiEvents<H>) {
+        let mut i = 0;
+        while let Some(n) = self.notify.get(i) {
+            i += 1;
+            let live = match n {
+                Notification::InfoRead => true,
+                Notification::EasyDone(id) => self.slots.get(id).is_some(),
+            };
+            if live && self.notify.is_enabled(n.kind()) {
+                ev.notify(&mut NotifyCx { multi: self }, n);
+            }
+        }
+        self.notify.clear();
     }
 
     /// Run the dirty transfers in id order, those made dirty meanwhile
@@ -433,11 +470,58 @@ impl<H: Host> Multi<H> {
         let Some(change) = self.announce.update(self.clock.now(), self.due()) else {
             return Ok(());
         };
-        ev.timer(change).map_err(|Abort| {
+        let mut cx = EventCx {
+            slots: &mut self.slots,
+            notify: &mut self.notify,
+            counts: self.counts,
+        };
+        ev.timer(&mut cx, change).map_err(|Abort| {
             self.life = Life::Dead;
             MultiErrorKind::AbortedByCallback
         })
     }
+}
+
+/// The lowest-id unread completion, marked read (`curl_multi_info_read`).
+fn read_message<H: Host>(slots: &mut Arena<Slot<H>, Transfer>) -> Option<Message<'_, H>> {
+    let mut found = None;
+    let mut remaining = 0;
+    let mut cursor = None;
+    while let Some(id) = slots.next_after(cursor) {
+        cursor = Some(id);
+        if let TransferState::Completed(c) = &run_in(slots, id).state
+            && c.message == MessageState::Unread
+        {
+            if found.is_none() {
+                found = Some(id);
+            } else {
+                remaining += 1;
+            }
+        }
+    }
+    let id = found?;
+    let slot = slots.get_mut(id).expect("just found");
+    let run = slot
+        .run
+        .as_mut()
+        .expect("no transfer is out while the multi is called");
+    let TransferState::Completed(c) = &mut run.state else {
+        unreachable!("just found completed");
+    };
+    c.message = MessageState::Read;
+    Some(Message {
+        id,
+        owner: &slot.owner,
+        result: c.outcome,
+        remaining,
+    })
+}
+
+fn run_in<H: Host>(slots: &Arena<Slot<H>, Transfer>, id: TransferId) -> &Run {
+    let slot = slots.get(id).expect("a transfer in the multi");
+    slot.run
+        .as_ref()
+        .expect("no transfer is out while the multi is called")
 }
 
 impl<H: Host> Drop for Multi<H> {

@@ -138,7 +138,7 @@ curl-core/src/
     sched.rs                 dirty set, pending cursor, Counts
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
     sockets.rs               SocketTable, pollset diff, announce
-    notify.rs                NotifyQueue
+    notify.rs                NotifyQueue, Notification, NotifyKind
     cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx
     wait.rs                  wait/poll/fdset/waitfds over Net
   conn/
@@ -337,8 +337,8 @@ pub trait Rewind {
 pub trait MultiEvents<H: Host> {
     fn socket(&mut self, cx: &mut EventCx<'_, H>, who: SocketOwner<'_, H>, s: SocketKey,
               what: SocketWhat, assigned: Option<&H::Socket>) -> Result<(), Abort>;
-    fn timer(&mut self, cx: &mut EventCx<'_, H>, t: TimerUpdate) -> Result<(), Abort>;
-    fn notify(&mut self, cx: &mut NotifyCx<'_, H>, n: Notification<'_, H>);
+    fn timer(&mut self, cx: &mut EventCx<'_, H>, t: TimerChange) -> Result<(), Abort>;
+    fn notify(&mut self, cx: &mut NotifyCx<'_, H>, n: Notification);
     fn wants_sockets(&self) -> bool;     // C keeps socket bookkeeping only with socket_cb set
     fn wants_timer(&self) -> bool;
 }
@@ -589,7 +589,13 @@ impl<H: Host> TransferCx<'_, H> {            // api.c's "may recurse" column
 }
 pub struct EventCx<'a, H: Host>  { /* the same methods except `pause` (api.c no_event_cb) */ }
 pub struct NotifyCx<'a, H: Host> { /* + add, remove, wait, poll, timeout: api.c allow_ntfy_cb */ }
+pub enum NotifyKind { InfoRead, EasyDone }               // CURLMNOTIFY_*, all off until enabled
+pub enum Notification { InfoRead, EasyDone(TransferId) } // Copy: borrows nothing
 ```
+
+`NotifyCx::add` and `remove` call the timer, whose `MultiEvents` is the one already borrowed
+for the `notify` call, so they take it as an argument and the handler passes `self`; a timer
+callback nested inside them gets its own `EventCx`.
 
 The rules that keep this sound:
 - **During a call-out, the engine holds only owned values moved out of their homes**: the
@@ -622,7 +628,12 @@ The rules that keep this sound:
   `EventCx` cannot pause.
 - **Notifications** are dispatched at the end of `perform`/`socket_action` with no borrow live;
   `NotifyCx` borrows the whole multi minus the call-out entry points. A stale id resolves to
-  nothing and is dropped; internal transfers are never passed (3107).
+  nothing and is dropped; internal transfers are never passed (3107). A transfer that completes
+  queues `EasyDone`, then `InfoRead` if no other message was unread (`mstate_enter_done`,
+  `multi_addmsg`); removing one queues nothing. A kind is queued only while enabled and
+  delivered only if still enabled. Room for two entries per row is reserved at `add` and the
+  queue is empty between passes, so queueing never allocates and C's deferred
+  `CURLM_OUT_OF_MEMORY` has no counterpart.
 
 **Handler take-and-restore.** Before a call-out the engine takes the handler out of
 `easy.options.callbacks` (`Option::take`), builds the context, calls it, and puts it back only if
@@ -1163,7 +1174,7 @@ greps that every `extern "C"` function in `easy.rs` and `multi.rs` calls a gate.
   or `conn_easy` for connection-owned and resolver sockets (non-NULL, as C passes its admin
   easy); `socketp` is the `assign`ed value; `-1` → `Abort` → dead multi. `curl_multi_assign`
   inside the callback goes through `EventCx::assign`.
-- Timer callback: `TimerUpdate::In(d)` → `long` ms capped at INT_MAX; `Clear` → -1.
+- Timer callback: `TimerChange::Set(d)` → `long` ms capped at INT_MAX; `Clear` → -1.
 - `curl_multi_info_read` writes `CURLMSG_DONE`, the `CURL *` and the mapped code into
   `ShimEasy.msg` and returns a pointer to it: valid until that easy is removed or cleaned up.
 - `CURLMINFO_XFERS_*` from `counts()`: RUNNING is process transfers (no "minus admin" because

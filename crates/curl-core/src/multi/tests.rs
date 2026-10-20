@@ -9,7 +9,7 @@ struct RecordingEvents {
 }
 
 impl MultiEvents<NoHost> for RecordingEvents {
-    fn timer(&mut self, change: TimerChange) -> Result<(), Abort> {
+    fn timer(&mut self, _cx: &mut EventCx<'_, NoHost>, change: TimerChange) -> Result<(), Abort> {
         self.timer.push(change);
         if Some(self.timer.len()) == self.abort_at {
             return Err(Abort);
@@ -354,4 +354,186 @@ fn a_url_without_a_scheme_is_guessed() {
         messages(&mut m),
         [(id.index(), Err(ErrorKind::UnsupportedProtocol), 0)]
     );
+}
+
+/// Logs every notification and timer call; on `EasyDone(trigger)` it
+/// removes `remove`, adds `add` and turns `EasyDone` off if `disable`.
+#[derive(Default)]
+struct NotifyEvents {
+    log: Vec<Notification>,
+    timer: Vec<TimerChange>,
+    trigger: Option<TransferId>,
+    remove: Option<TransferId>,
+    add: Option<Easy>,
+    disable: bool,
+    removed: Vec<Easy>,
+    added: Vec<TransferId>,
+    read_in_timer: bool,
+    read: Vec<(TransferId, Result<(), ErrorKind>)>,
+}
+
+impl MultiEvents<NoHost> for NotifyEvents {
+    fn timer(&mut self, cx: &mut EventCx<'_, NoHost>, change: TimerChange) -> Result<(), Abort> {
+        self.timer.push(change);
+        while self.read_in_timer
+            && let Some(m) = cx.info_read()
+        {
+            self.read.push((m.id, m.result));
+        }
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+
+    fn notify(&mut self, cx: &mut NotifyCx<'_, NoHost>, n: Notification) {
+        self.log.push(n);
+        if self.trigger.is_none_or(|t| n != Notification::EasyDone(t)) {
+            return;
+        }
+        if let Some(b) = self.remove.take() {
+            let removed = cx.remove(b, self).expect("in the multi");
+            self.removed.push(removed.easy);
+        }
+        if let Some(e) = self.add.take() {
+            let id = cx.add(e, (), self).expect("added");
+            self.added.push(id);
+        }
+        if self.disable {
+            cx.set_notify(NotifyKind::EasyDone, false);
+        }
+    }
+}
+
+fn notifying(m: &mut Multi) {
+    m.set_notify(NotifyKind::InfoRead, true);
+    m.set_notify(NotifyKind::EasyDone, true);
+}
+
+/// The order C's notify callback sees for the same transfers.
+#[test]
+fn notifications_come_in_the_order_things_happened() {
+    let (mut m, _clock) = multi();
+    notifying(&mut m);
+    let mut ev = NotifyEvents::default();
+    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
+    let b = m.add(easy("nope://b"), (), &mut ev).unwrap();
+    let c = m.add(easy("null://c"), (), &mut ev).unwrap();
+    ev.trigger = Some(a);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(
+        ev.log,
+        [
+            Notification::EasyDone(a),
+            Notification::InfoRead,
+            Notification::EasyDone(b),
+            Notification::EasyDone(c),
+        ]
+    );
+    assert_eq!(m.notify.len(), 0, "delivered and gone");
+}
+
+#[test]
+fn info_read_is_notified_again_once_every_message_is_read() {
+    let (mut m, _clock) = multi();
+    notifying(&mut m);
+    let mut ev = NotifyEvents::default();
+    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
+    ev.trigger = Some(a);
+    m.perform(&mut ev).unwrap();
+    let b = m.add(easy("null://b"), (), &mut ev).unwrap();
+    m.perform(&mut ev).unwrap();
+    assert_eq!(messages(&mut m).len(), 2);
+    let c = m.add(easy("null://c"), (), &mut ev).unwrap();
+    m.perform(&mut ev).unwrap();
+    assert_eq!(
+        ev.log,
+        [
+            Notification::EasyDone(a),
+            Notification::InfoRead,
+            Notification::EasyDone(b),
+            Notification::EasyDone(c),
+            Notification::InfoRead,
+        ]
+    );
+}
+
+#[test]
+fn notifications_are_off_until_enabled() {
+    let (mut m, _clock) = multi();
+    let mut ev = NotifyEvents::default();
+    m.add(easy("null://a"), (), &mut ev).unwrap();
+    m.set_notify(NotifyKind::EasyDone, true);
+    m.set_notify(NotifyKind::EasyDone, false);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(ev.log, []);
+    m.set_notify(NotifyKind::InfoRead, true);
+    m.add(easy("null://b"), (), &mut ev).unwrap();
+    messages(&mut m);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(ev.log, [Notification::InfoRead]);
+}
+
+#[test]
+fn a_kind_turned_off_before_delivery_is_dropped() {
+    let (mut m, _clock) = multi();
+    notifying(&mut m);
+    let mut ev = NotifyEvents::default();
+    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
+    m.add(easy("null://b"), (), &mut ev).unwrap();
+    ev.trigger = Some(a);
+    ev.disable = true;
+    m.perform(&mut ev).unwrap();
+    assert_eq!(ev.log, [Notification::EasyDone(a), Notification::InfoRead]);
+}
+
+/// C drops a removed transfer's notification as stale.
+#[test]
+fn a_removed_transfer_s_notification_reaches_no_one() {
+    let (mut m, _clock) = multi();
+    notifying(&mut m);
+    let mut ev = NotifyEvents::default();
+    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
+    let b = m.add(easy("null://b"), (), &mut ev).unwrap();
+    ev.trigger = Some(a);
+    ev.remove = Some(b);
+    ev.add = Some(easy("null://c"));
+    m.perform(&mut ev).unwrap();
+    let c = ev.added[0];
+    assert_eq!(ev.log, [Notification::EasyDone(a), Notification::InfoRead]);
+    assert_eq!(
+        ev.removed[0].options().url(),
+        Some(&b"null://b"[..]),
+        "the removed transfer's Easy comes back"
+    );
+    // Added from the callback: the timer heard of it inside the add, and
+    // it runs at the next pass.
+    assert_eq!(ev.timer.last(), Some(&SET_NOW));
+    m.perform(&mut ev).unwrap();
+    assert_eq!(ev.log[2..], [Notification::EasyDone(c)]);
+}
+
+#[test]
+fn the_timer_callback_can_read_messages() {
+    let (mut m, _clock) = multi();
+    let mut ev = NotifyEvents::default();
+    let a = m.add(easy("nope://a"), (), &mut ev).unwrap();
+    m.perform(&mut ev).unwrap();
+    ev.read_in_timer = true;
+    m.add(easy("null://b"), (), &mut ev).unwrap();
+    assert_eq!(ev.read, [(a, Err(ErrorKind::UnsupportedProtocol))]);
+}
+
+#[test]
+fn socket_action_delivers_notifications() {
+    let (mut m, clock) = multi();
+    m.set_notify(NotifyKind::EasyDone, true);
+    let mut ev = NotifyEvents::default();
+    let id = m.add(stall_within(10), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(ev.log, []);
+    clock.advance(Duration::from_millis(10));
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(ev.log, [Notification::EasyDone(id)]);
 }

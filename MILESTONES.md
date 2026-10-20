@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 4, 5a and 5b are **done**; every other step is **to do**.
+Status: steps 1 to 4 and 5a to 5c are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -78,10 +78,16 @@ yet meet.
      more until empty, and tells the timer nothing); `running` counting transfers not yet run;
      a timed-out transfer failing with OPERATION_TIMEDOUT. `drive_to_completion` waits for
      step 6's `wait`. `TransferReport` comes with step 7.
-   - **5c. multi: add the callback contexts and notifications.** `EngineRest`, `TransferCx`,
-     `EventCx`, `NotifyCx` with the methods possible before step 7 (no `pause`), the handler
-     traits, `NotifyQueue` dispatched at the end of a pass. Tests: the generation tests for
-     notifications and the timer queue.
+   - **5c. multi: add the event contexts and notifications.** **Done.** `EventCx` for the
+     timer callback and `NotifyCx` for `notify`, each with the calls api.c allows there that
+     exist so far (`info_read`, `counts`, `set_notify`, `options`, `options_mut`, `duplicate`;
+     `NotifyCx` adds `add`, `remove`, `timeout`); `Notification`, `NotifyKind`, and
+     `NotifyQueue` dispatched at the end of `perform` and `socket_action`. Tests: the order C's
+     notify callback sees (`EasyDone`, then `InfoRead` once per batch of unread messages), kinds
+     off until enabled and dropped when turned off before delivery, a transfer removed inside a
+     callback getting nothing, `add` and `remove` from a notification, `info_read` from the
+     timer callback. `EngineRest`, `TransferCx` and the handler traits come with step 7, whose
+     callbacks are the first to need them.
    - **5d. multi: check the invariants.** A full recount after every pass in the debug build;
      property tests for the invariants.
    - **5e. multi: survive allocation failure.** The add/perform/remove torture scenario under
@@ -93,7 +99,8 @@ yet meet.
 
 **`file://` end to end**
 
-7. **deliver: add the pipeline, client output and pause.** `Pipeline` (raw trace, accountant,
+7. **deliver: add the pipeline, client output and pause.** `EngineRest`, `TransferCx` and the
+   handler traits; `Pipeline` (raw trace, accountant,
    `ClientOut` Direct/Held/Failed), `Pause`, `Upload` with rewind and resume, `Timings`, `Sizes`,
    progress and the meter, `TransferReport`, `HeaderStore`. Ports units 1399, 1606, 1636. Tests:
    16 KiB pieces; header lines whole; `-i` order; `Failed` is terminal; a handler replaced inside

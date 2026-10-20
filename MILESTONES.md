@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 4 and 5a to 5d are **done**; every other step is **to do**.
+Status: steps 1 to 5 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -95,8 +95,13 @@ yet meet.
      removals from inside notifications against a model of what the application sees. It
      found that a transfer refused inside `add` counts as added, as in C; C's leaked running
      count for it is recorded as a deliberate difference.
-   - **5e. multi: survive allocation failure.** The add/perform/remove torture scenario under
-     the tracker's limit, which also exercises arena growth failing.
+   - **5e. multi: survive allocation failure.** **Done.** `track::fail_after` and
+     `track::live_tracked` in curl-alloc; `tests/torture.rs`, which runs 20 completing, failing
+     and timing-out transfers through add, both passes, a timeout, reads and removes once for
+     each of its 113 allocations, refusing that one and every later one: the arena's growth
+     past 16 rows among them. Every run ends cleanly with nothing left allocated, and a pass
+     allocates nothing. curl-core dev-depends on itself with `test-util`, so a plain
+     `cargo test` builds the test doubles and runs it.
 6. **os: add sockets, polling and the waker.** `curl-os` `net.rs`, `poll.rs`, `wake.rs`, with the
    CLAUDE.md unsafe list updated in the same commit; core
    `SystemNet`, `FakeNet`; `Multi::wait`/`poll`/`fdset`/`waitfds`/`waker`, `drive_to_completion`. Loopback tests for

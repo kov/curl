@@ -65,6 +65,7 @@ name = "curl-core"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",
+ "curl-core",
  "proptest",
 ]
 

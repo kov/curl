@@ -25,7 +25,7 @@ use std::fs::File;
 use std::io::{self, Write as _};
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// The source logged for allocations made by Rust code: a global allocator
 /// is not told its caller.
@@ -38,12 +38,22 @@ struct State {
     log: Option<File>,
     /// Tracked allocations left before they fail, once a limit is set.
     limit: Option<u64>,
+    /// Tracked allocations refused so far.
+    refused: u64,
+    /// Refusals are not reported on standard error: a torture run makes
+    /// one on purpose for every allocation it tries.
+    quiet: bool,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     log: None,
     limit: None,
+    refused: 0,
+    quiet: false,
 });
+
+/// Tracked blocks not yet freed.
+static LIVE: AtomicU64 = AtomicU64::new(0);
 
 /// Whether tracking is on: set once, never cleared.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -103,6 +113,32 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
     EXCLUDED.with(|d| d.set(d.get() + 1));
     let _leave = Leave;
     f()
+}
+
+/// Run `f` with `limit` more tracked allocations allowed and the rest
+/// refused, then lift the limit; whether any was refused. For the Rust
+/// torture tests, which run a scenario once for every allocation it makes;
+/// unlike [`set_limit`], it can be called again. Refusals are not reported
+/// on standard error meanwhile.
+pub fn fail_after<R>(limit: u64, f: impl FnOnce() -> R) -> (R, bool) {
+    let (previous, refused) = {
+        let mut state = state();
+        let previous = state.limit.replace(limit);
+        state.quiet = true;
+        (previous, state.refused)
+    };
+    ACTIVE.store(true, Ordering::Release);
+    let r = f();
+    let mut state = state();
+    state.limit = previous;
+    state.quiet = false;
+    let reached = state.refused > refused;
+    (r, reached)
+}
+
+/// Tracked blocks not yet freed, for leak checks around a scenario.
+pub fn live_tracked() -> u64 {
+    LIVE.load(Ordering::Relaxed)
 }
 
 /// Run `f` and return how many allocations this thread made in it, for
@@ -206,14 +242,17 @@ pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
         }
         None => return false,
     }
+    state.refused += 1;
     let mut line = Line::new();
     line.push(b"LIMIT ");
     source(&mut line);
     let _ = writeln!(line, " {func} reached memlimit");
     write_log(&state, &line);
-    // Standard error is unbuffered and does not allocate. A failed write
-    // there has nowhere to be reported.
-    let _ = io::stderr().write_all(line.bytes());
+    if !state.quiet {
+        // Standard error is unbuffered and does not allocate. A failed
+        // write there has nowhere to be reported.
+        let _ = io::stderr().write_all(line.bytes());
+    }
     true
 }
 
@@ -283,6 +322,7 @@ impl Tracker {
         unsafe { tag_slot(block).write(if tracked { TRACKED } else { PLAIN }) };
         count();
         if tracked {
+            LIVE.fetch_add(1, Ordering::Relaxed);
             let size = layout.size();
             if zeroed {
                 log_rust(|l| write!(l, "calloc(1,{size}) = {}", Ptr(block)));
@@ -327,6 +367,7 @@ unsafe impl GlobalAlloc for Tracker {
     unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
         // SAFETY: the caller passes a live block from this allocator.
         if unsafe { tag(block) } == TRACKED {
+            LIVE.fetch_sub(1, Ordering::Relaxed);
             log_rust(|l| write!(l, "free({})", Ptr(block)));
         }
         let outer = outer(layout).expect("a live block's layout fits");
@@ -362,6 +403,7 @@ unsafe impl GlobalAlloc for Tracker {
         if was_tracked {
             log_rust(|l| write!(l, "realloc({}, {new_size}) = {}", Ptr(block), Ptr(moved)));
         } else if now {
+            LIVE.fetch_add(1, Ordering::Relaxed);
             // SAFETY: as in `make`.
             unsafe { tag_slot(moved).write(TRACKED) };
             log_rust(|l| write!(l, "malloc({new_size}) = {}", Ptr(moved)));

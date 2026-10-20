@@ -1265,9 +1265,11 @@ peer gets a protocol error, not an out-of-memory one.
 
 ### 8.2 OOM tests and budgets
 
-- `fail_each_allocation(|| scenario())` runs a scenario under the tracker's limit for N = 1, 2, …
-  until it completes, and asserts every run ends in `OutOfMemory` (or an earlier clean error),
-  never aborts, and leaves the tracker leak-free. Scenarios: add/perform/remove, a plain GET, a
+- `curl_alloc::track::fail_after(n, scenario)` runs a scenario with only `n` tracked
+  allocations allowed, for n = 0, 1, … until a run has nothing refused; every run must end in
+  `OutOfMemory` (or an earlier clean error), never abort, and leave `track::live_tracked()` where
+  it was. The scenarios are harness-free test binaries (`crates/curl-core/tests/torture.rs`), as
+  the limit is process-wide. Scenarios: add/perform/remove, a plain GET, a
   reused GET, a redirect, pause and replay.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over

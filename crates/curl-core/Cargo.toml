@@ -17,7 +17,16 @@ test-util = []
 curl-alloc = { path = "../curl-alloc" }
 
 [dev-dependencies]
+curl-alloc = { path = "../curl-alloc", features = ["debug-hooks"] }
+# The integration tests need the test doubles without asking for them.
+curl-core = { path = ".", features = ["test-util"] }
 proptest = { version = "1.12.0", default-features = false, features = ["std"] }
+
+[[test]]
+name = "torture"
+# The tracker's limit is process-wide and fails the harness's own
+# allocations too.
+harness = false
 
 [lints]
 workspace = true

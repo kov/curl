@@ -49,6 +49,11 @@ impl Messages {
         }
     }
 
+    /// The terminal's width.
+    pub(crate) fn columns(&self) -> usize {
+        self.columns
+    }
+
     /// `errorf`: `curl: ` and the message, unless muted.
     pub(crate) fn error(&self, message: &[&[u8]]) {
         if !self.silent || self.show_error {

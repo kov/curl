@@ -11,6 +11,7 @@ use curl_core::error::ErrorKind;
 use curl_core::version::version;
 
 mod config;
+mod help;
 mod msgs;
 mod options;
 
@@ -113,10 +114,7 @@ fn show(request: Request<'_>, msgs: &Messages) -> ExitCode {
     match request {
         Request::Version => version_info(),
         Request::Manual => msgs.warn(&[b"built-in manual was disabled at build-time"]),
-        Request::Help(_) => {
-            msgs.error(&[b"--help is not implemented yet"]);
-            return ExitCode::from(NOT_IMPLEMENTED);
-        }
+        Request::Help(topic) => help::show(topic, msgs.columns()),
         // Nothing is embedded: a build without an embedded CA bundle prints
         // nothing.
         Request::CaEmbed => {}

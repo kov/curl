@@ -12,6 +12,8 @@ mod apply;
 )]
 #[rustfmt::skip]
 mod errors;
+#[rustfmt::skip]
+mod help;
 mod number;
 mod parse;
 #[rustfmt::skip]
@@ -19,6 +21,7 @@ mod table;
 
 pub(crate) use apply::Request;
 pub(crate) use errors::{ParamError, exit_code};
+pub(crate) use help::{CATEGORIES, HELP, HelpLine};
 pub(crate) use parse::{Parsed, parse};
 use table::{MAX_OPTION_LEN, OPTIONS, Opt};
 

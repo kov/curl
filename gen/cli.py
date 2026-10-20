@@ -11,6 +11,9 @@ values in inventory/abi.json:
   table's order, which is sorted for binary search, and the short-letter
   lookup;
 
+  crates/curl-tool/src/options/help.rs: the lines of `--help`, from
+  src/tool_listhelp.c, and its categories, from src/tool_help.c;
+
   crates/curl-tool/src/options/errors.rs: `ParamError`, a kind per
   `PARAM_*` error with its text, the library error each exits with, and
   `exit_code`, the exit status of each library error (the CURLcode value,
@@ -27,6 +30,7 @@ HERE = pathlib.Path(__file__).resolve()
 CLI = ROOT / "inventory" / "cli.json"
 TABLE_OUT = ROOT / "crates" / "curl-tool" / "src" / "options" / "table.rs"
 ERRORS_OUT = ROOT / "crates" / "curl-tool" / "src" / "options" / "errors.rs"
+HELP_OUT = ROOT / "crates" / "curl-tool" / "src" / "options" / "help.rs"
 
 # What each guard in the C table means for the Rust tool.
 GUARDS = {
@@ -179,12 +183,51 @@ pub(crate) fn exit_code(kind: ErrorKind) -> u8 {{
 """
 
 
+def help_table(cli):
+    lines = []
+    for e in cli["tool_listhelp_entries"]:
+        check(GUARDS.get(e["guard"]) == "", f"unexpected help guard {e['guard']}")
+        cats = ", ".join(json.dumps(c) for c in e["categories"])
+        lines.append(f"    HelpLine {{\n        opt: {json.dumps(e['opt'])},\n"
+                     f"        desc: {json.dumps(e['desc'])},\n"
+                     f"        categories: &[{cats}],\n    }},\n")
+    names = {c for e in cli["tool_listhelp_entries"] for c in e["categories"]}
+    cats = cli["help_categories"]
+    check(names == {c["name"] for c in cats} | {"important"},
+          "help lines use categories the table lacks")
+    categories = "".join(f"    ({json.dumps(c['name'])}, {json.dumps(c['desc'])}),\n"
+                         for c in cats)
+    return f"""{genlib.header(HERE, [CLI, ROOT / 'gen' / 'genlib.py', HERE])}\
+//! What `--help` shows: `src/tool_listhelp.c` and the categories of
+//! `src/tool_help.c`.
+
+/// One option's line in `--help`.
+pub(crate) struct HelpLine {{
+    /// The option as shown, such as `-o, --output <file>`.
+    pub(crate) opt: &'static str,
+    pub(crate) desc: &'static str,
+    /// The categories it is listed under.
+    pub(crate) categories: &'static [&'static str],
+}}
+
+/// Every option's line, in the order shown.
+pub(crate) static HELP: &[HelpLine] = &[
+{"".join(lines)}];
+
+/// The categories `--help category` lists, with their descriptions; the
+/// default page, `important`, is not among them.
+pub(crate) static CATEGORIES: &[(&str, &str)] = &[
+{categories}];
+"""
+
+
 def main():
     cli = json.loads(CLI.read_text())["data"]
     abi = json.loads(ABI.read_text())["data"]
     TABLE_OUT.parent.mkdir(exist_ok=True)
     genlib.write(TABLE_OUT, table(cli))
     genlib.write(ERRORS_OUT, errors(cli, abi))
+    genlib.write(HELP_OUT, help_table(cli))
 
 
 if __name__ == "__main__":

@@ -6,7 +6,10 @@
 #   git worktree add --detach build/mutants-tree <commit>
 #   git diff <base> <commit> > build/mutants.diff
 #   cd build/mutants-tree && systemd-run --user --scope -p MemoryMax=6G \
-#     -p MemorySwapMax=0 cargo mutants -o .. --in-diff ../mutants.diff -p <crate>
+#     -p MemorySwapMax=0 -p OOMPolicy=continue \
+#     cargo mutants -o .. --in-diff ../mutants.diff -p <crate>
+# (`OOMPolicy=continue` kills only the runaway test, which then counts as
+# caught; the default stops the whole run.)
 #   git worktree remove build/mutants-tree
 # A surviving mutant is code no test checks: add the test, or add it to
 # `exclude_re` below with a comment saying why it changes nothing observable.

@@ -44,7 +44,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ENTRIES = ROOT / "sabotage" / "entries"
 CAP = ["systemd-run", "--user", "--scope", "--quiet", "-p", "MemoryMax=6G",
-       "-p", "MemorySwapMax=0"]
+       "-p", "MemorySwapMax=0", "-p", "OOMPolicy=continue"]
 
 
 class Entry:

@@ -8,7 +8,9 @@ contribution etiquette does not apply here. This file does.
 
 What the rewrite covers (platforms, backends, which tests count, the reference build) is decided
 in [`SCOPE.md`](SCOPE.md); what the C tree contains is enumerated in [`inventory/`](inventory/README.md).
-How the code is shaped (crates, ownership, types, allocation) is in [`DESIGN.md`](DESIGN.md).
+How the code is shaped (crates, ownership, types, allocation) is in [`DESIGN.md`](DESIGN.md); the
+transfer engine in detail is in [`ENGINE.md`](ENGINE.md), and the order it is built in, with each
+step's status, in [`MILESTONES.md`](MILESTONES.md).
 
 ## Why Rust, and what follows from it
 
@@ -124,6 +126,10 @@ one will find it and the next regeneration eats it. Fix the generator or its inp
 
 ## Working here
 
+- Keep `ENGINE.md` and `MILESTONES.md` true as the engine is built. A commit that makes the code
+  depart from the design, or changes the design, updates `ENGINE.md` (and `DESIGN.md` for the
+  decisions it holds); a commit that finishes, splits or reorders a step updates its status in
+  `MILESTONES.md`. They describe what is, not how it got there.
 - Commit as work finishes. Never `git add -A` — this tree has untracked local files that must
   not be committed. Never push without asking.
 - Before committing, run the project's formatter, `cargo clippy -- -D warnings` and the tests the

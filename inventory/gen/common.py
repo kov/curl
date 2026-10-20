@@ -23,7 +23,8 @@ INVENTORY = ROOT / "inventory"
 # Paths that belong to the rewrite, not to the C reference tree. Commits
 # touching only these do not change what the inventory describes.
 NOT_C_TREE = ["inventory", "CLAUDE.md", "SCOPE.md", "DESIGN.md", "Cargo.toml",
-              "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates"]
+              "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates",
+              "clippy.toml"]
 
 
 def c_commit():

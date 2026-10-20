@@ -6,9 +6,11 @@
 
 use std::process::ExitCode;
 
+use curl_alloc::OutOfMemory;
 use curl_core::error::ErrorKind;
 use curl_core::version::version;
 
+mod config;
 mod msgs;
 mod options;
 
@@ -65,6 +67,24 @@ fn main() -> ExitCode {
     #[cfg(feature = "debug-hooks")]
     memory_tracking_init();
     let mut msgs = Messages::new();
+    if config::reads_curlrc(&argv) {
+        match config::find_curlrc(|var| std::env::var_os(var), config::readable) {
+            Ok(None) => {}
+            Ok(Some(path)) => {
+                let path = path.as_os_str().as_encoded_bytes();
+                msgs.error(&[
+                    b"reading the configuration file ",
+                    path,
+                    b" is not implemented yet",
+                ]);
+                return ExitCode::from(NOT_IMPLEMENTED);
+            }
+            Err(OutOfMemory) => {
+                msgs.error(&[b"out of memory"]);
+                return ExitCode::from(exit_code(ErrorKind::OutOfMemory));
+            }
+        }
+    }
     if argv.len() < 2 {
         // With no arguments, only a configuration file could name a URL.
         msgs.help(&[]);

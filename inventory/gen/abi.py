@@ -557,6 +557,7 @@ def generate():
     lines = [f"P({n});" for n in enum_names + obj_macros]
     lines += [f"F({f['name']});" for f in funcs]
     type_names = [t["name"] for t in typedefs] + sorted(structs)
+    type_names += sorted(f"enum {e['tag']}" for e in enums if not e["typedef"])
     lines += [f"S({t});" for t in type_names]
     for s, info in sorted(structs.items()):
         lines += [f"{'B' if 'bit-width' in f else 'O'}({s}, {f['name']});"
@@ -597,6 +598,9 @@ def generate():
         info.update(sizes[s])
     for t in typedefs:
         t.update(sizes.get(t["name"], {"size": None, "align": None}))
+    for e in enums:
+        check(e["typedef"] or f"enum {e['tag']}" in sizes,
+              f"no size for enum {e['tag']}")
 
     # Positive controls on known values for this target.
     def v(n):

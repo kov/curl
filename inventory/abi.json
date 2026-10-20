@@ -1,5 +1,5 @@
 {
- "c-commit": "af01ea6963e393dd401df4279838bf7f9ada0df5",
+ "c-commit": "0cf564c803f05accbc73781bcde3c11fa8d4585c",
  "data": {
   "constants": [
    {
@@ -11885,7 +11885,7 @@
      "CURLKHTYPE_ECDSA",
      "CURLKHTYPE_ED25519"
     ],
-    "size": null,
+    "size": 4,
     "tag": "curl_khtype",
     "typedef": null
    },
@@ -11899,7 +11899,7 @@
      "CURLKHSTAT_FINE_REPLACE",
      "CURLKHSTAT_LAST"
     ],
-    "size": null,
+    "size": 4,
     "tag": "curl_khstat",
     "typedef": null
    },
@@ -11911,7 +11911,7 @@
      "CURLKHMATCH_MISSING",
      "CURLKHMATCH_LAST"
     ],
-    "size": null,
+    "size": 4,
     "tag": "curl_khmatch",
     "typedef": null
    },
@@ -12297,7 +12297,7 @@
     "members": [
      "CURL_NETRC_LAST"
     ],
-    "size": null,
+    "size": 4,
     "tag": "CURL_NETRC_OPTION",
     "typedef": null
    },
@@ -12306,7 +12306,7 @@
     "members": [
      "CURL_TLSAUTH_LAST"
     ],
-    "size": null,
+    "size": 4,
     "tag": "CURL_TLSAUTH",
     "typedef": null
    },

@@ -12,6 +12,7 @@ Derived from `docs/cmdline-opts/*.md` frontmatter, the `aliases[]` option table 
 - exit codes documented: 88; CURLcode values: 102
 - tool getenv call sites: 30; documented env vars: 19
 - tool_listhelp.c entries: 278
+- `--help` categories (tool_help.c): 26
 
 ## Frontmatter keys
 

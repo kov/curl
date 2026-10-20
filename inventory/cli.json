@@ -15419,6 +15419,138 @@
     "output": "sinus[] table in src/tool_cb_prg.c"
    }
   ],
+  "help_categories": [
+   {
+    "category": "auth",
+    "desc": "Authentication methods",
+    "name": "auth"
+   },
+   {
+    "category": "connection",
+    "desc": "Manage connections",
+    "name": "connection"
+   },
+   {
+    "category": "curl",
+    "desc": "The command line tool itself",
+    "name": "curl"
+   },
+   {
+    "category": "deprecated",
+    "desc": "Legacy",
+    "name": "deprecated"
+   },
+   {
+    "category": "dns",
+    "desc": "Names and resolving",
+    "name": "dns"
+   },
+   {
+    "category": "file",
+    "desc": "FILE protocol",
+    "name": "file"
+   },
+   {
+    "category": "ftp",
+    "desc": "FTP protocol",
+    "name": "ftp"
+   },
+   {
+    "category": "global",
+    "desc": "Global options",
+    "name": "global"
+   },
+   {
+    "category": "http",
+    "desc": "HTTP and HTTPS protocol",
+    "name": "http"
+   },
+   {
+    "category": "imap",
+    "desc": "IMAP protocol",
+    "name": "imap"
+   },
+   {
+    "category": "ldap",
+    "desc": "LDAP protocol",
+    "name": "ldap"
+   },
+   {
+    "category": "mqtt",
+    "desc": "MQTT protocol",
+    "name": "mqtt"
+   },
+   {
+    "category": "output",
+    "desc": "File system output",
+    "name": "output"
+   },
+   {
+    "category": "pop3",
+    "desc": "POP3 protocol",
+    "name": "pop3"
+   },
+   {
+    "category": "post",
+    "desc": "HTTP POST specific",
+    "name": "post"
+   },
+   {
+    "category": "proxy",
+    "desc": "Options for proxies",
+    "name": "proxy"
+   },
+   {
+    "category": "scp",
+    "desc": "SCP protocol",
+    "name": "scp"
+   },
+   {
+    "category": "sftp",
+    "desc": "SFTP protocol",
+    "name": "sftp"
+   },
+   {
+    "category": "smtp",
+    "desc": "SMTP protocol",
+    "name": "smtp"
+   },
+   {
+    "category": "ssh",
+    "desc": "SSH protocol",
+    "name": "ssh"
+   },
+   {
+    "category": "telnet",
+    "desc": "TELNET protocol",
+    "name": "telnet"
+   },
+   {
+    "category": "tftp",
+    "desc": "TFTP protocol",
+    "name": "tftp"
+   },
+   {
+    "category": "timeout",
+    "desc": "Timeouts and delays",
+    "name": "timeout"
+   },
+   {
+    "category": "tls",
+    "desc": "TLS/SSL related",
+    "name": "tls"
+   },
+   {
+    "category": "upload",
+    "desc": "Upload, sending data",
+    "name": "upload"
+   },
+   {
+    "category": "verbose",
+    "desc": "Tracing, logging etc",
+    "name": "verbose"
+   }
+  ],
   "option_table": {
    "arg_flags": {
     "ARG_CLEAR": 32,

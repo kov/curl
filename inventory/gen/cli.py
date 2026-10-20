@@ -765,8 +765,34 @@ def parse_listhelp(opts):
     return got, cats, disc
 
 
+def parse_help_categories(cats):
+    """
+    Read the `categories[]` table of `src/tool_help.c`.
+
+    It is what `--help category` lists, in its order, and what
+    `--help <name>` looks up.
+    """
+    c = src("src/tool_help.c")
+    start = c.index("static const struct category_descriptors categories[] = {")
+    end = c.index("};", start)
+    block = c[start:end]
+    found = re.findall(r'\{ "([a-z0-9]+)", "([^"]*)", CURLHELP_([A-Z0-9]+) \}', block)
+    check(len(found) == block.count("CURLHELP_"), "categories[] entries unparsed")
+    got = [{"name": n, "desc": d, "category": cat.lower()} for n, d, cat in found]
+    for g in got:
+        check(g["name"] == g["category"] and g["category"] in cats,
+              f"category {g} does not name its CURLHELP_ define")
+    # `important` is the default page, not a listed category.
+    check({g["name"] for g in got} == set(cats) - {"important"},
+          "categories[] differs from the CURLHELP_ defines")
+    check(got[0] == {"name": "auth", "desc": "Authentication methods",
+                     "category": "auth"}, "categories[] control failed")
+    return got
+
+
 def generated_files(opts):
     listhelp, cats, disc = parse_listhelp(opts)
+    help_categories = parse_help_categories(cats)
     mk_am = src("src/Makefile.am")
     mk_cm = src("src/CMakeLists.txt")
     dm = src(f"{DOCDIR}/Makefile.am")
@@ -843,7 +869,7 @@ def generated_files(opts):
     check(files[2]["committed_in_tree"] is False,
           "tool_hugehelp.c unexpectedly tracked (generated file in tree)")
     check(listhelp, "no listhelp entries")
-    return files, disc, listhelp
+    return files, disc, listhelp, help_categories
 
 
 # --------------------------------------------------------------------------
@@ -857,7 +883,7 @@ def main():
     wo, wdisc = parse_writeout()
     ex, edisc = parse_exitcodes()
     env, _undoc = parse_env()
-    gen, gdisc, listhelp = generated_files(opts)
+    gen, gdisc, listhelp, help_categories = generated_files(opts)
 
     # positive controls on well-known entries
     bylong = {o["long"]: o for o in opts}
@@ -910,6 +936,7 @@ def main():
         "environment": env,
         "generated_files": gen,
         "tool_listhelp_entries": listhelp,
+        "help_categories": help_categories,
         "discrepancies": disc,
         "discrepancy_counts": dict(sorted(kinds.items())),
     }
@@ -944,7 +971,8 @@ def main():
               f"{len(ex['curlcode_enum'])}")
     emit(f"- tool getenv call sites: {len(env['tool_getenv_hits'])}; "
               f"documented env vars: {len(env['documented'])}")
-    emit(f"- tool_listhelp.c entries: {len(listhelp)}\n")
+    emit(f"- tool_listhelp.c entries: {len(listhelp)}")
+    emit(f"- `--help` categories (tool_help.c): {len(help_categories)}\n")
 
     emit("## Frontmatter keys\n")
     emit(md_table(["key", "options with it"],

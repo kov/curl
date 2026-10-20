@@ -37,6 +37,15 @@ pub(crate) fn unsigned(s: &[u8]) -> Result<u64, ParamError> {
     }
 }
 
+/// A byte offset, as `str2offset` reads it: only digits, at most
+/// `CURL_OFF_T_MAX`.
+pub(crate) fn offset(s: &[u8]) -> Result<u64, ParamError> {
+    match leading_number(s, LONG_MAX) {
+        Some((n, b"")) => Ok(n),
+        _ => Err(ParamError::BadNumeric),
+    }
+}
+
 /// A number of seconds with an optional fraction, in milliseconds, as
 /// `secs2ms` reads it. Anything after the number is ignored, as in C.
 pub(crate) fn seconds_as_millis(s: &[u8]) -> Result<u64, ParamError> {
@@ -71,6 +80,16 @@ mod tests {
     use super::*;
 
     /// The C tool's answers, from `build/c/src/curl --retry` and friends.
+    #[test]
+    fn offset_like_c() {
+        assert_eq!(offset(b"0"), Ok(0));
+        assert_eq!(offset(b"9223372036854775807"), Ok(LONG_MAX));
+        assert_eq!(offset(b"9223372036854775808"), Err(ParamError::BadNumeric));
+        assert_eq!(offset(b"-1"), Err(ParamError::BadNumeric));
+        assert_eq!(offset(b"1k"), Err(ParamError::BadNumeric));
+        assert_eq!(offset(b""), Err(ParamError::BadNumeric));
+    }
+
     #[test]
     fn unsigned_like_c() {
         assert_eq!(unsigned(b"0"), Ok(0));

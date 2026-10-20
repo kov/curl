@@ -183,6 +183,9 @@ fn getparameter<'a>(
                 if has_leading_unicode(arg) {
                     unicode_warning(msgs, spec, arg);
                 }
+                if spec.kind == ArgKind::File && arg.len() > 1 && arg[0] == b'-' {
+                    msgs.warn(&[b"The filename argument '", arg, b"' looks like a flag."]);
+                }
                 match spec.kind {
                     ArgKind::String | ArgKind::File => Ok(Value::Text(arg)),
                     ArgKind::Seconds => number::seconds_as_millis(arg).map(Value::Millis),
@@ -284,6 +287,16 @@ mod tests {
             (&["--url="], BlankString),
             (&["http://x/", "--next", "--bogus"], OptionUnknown),
             (&["--expand-silent", "x"], ExpandError),
+            (&["x", "--proto", "+-http"], BadUse),
+            (&["x", "--proto-redir", "=nope"], BadUse),
+            (&["x", "--no-clobber", "-C", "1"], BadUse),
+            (&["x", "-C", "1", "--no-clobber"], BadUse),
+            (&["x", "--remove-on-error", "-C", "-"], BadUse),
+            (&["x", "-C", "-", "--remove-on-error"], BadUse),
+            (&["x", "-C", "-1"], BadNumeric),
+            (&["x", "--etag-save", ""], BlankString),
+            (&["x", "y", "--etag-save", "e"], BadUse),
+            (&["x", "--etag-compare", "e", "--url", "y"], BadUse),
         ];
         for (args, want) in cases {
             assert_eq!(run(args).err(), Some(*want), "{args:?}");
@@ -353,5 +366,14 @@ mod tests {
             Ok((1, Some("output"), None))
         );
         assert_eq!(run(&["--retry=3", "x"]), Ok((1, Some("retry"), None)));
+        // Each operation has its own URLs and options.
+        assert_eq!(
+            run(&["x", "--etag-save", "e", "--next", "y", "z", "-C", "1"]),
+            Ok((2, None, None))
+        );
+        assert_eq!(
+            run(&["x", "-C", "1", "--clobber", "--no-remove-on-error"]),
+            Ok((1, None, None))
+        );
     }
 }

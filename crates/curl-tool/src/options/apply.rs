@@ -10,8 +10,9 @@
 
 use curl_alloc::TryVec;
 
+use super::protocols::{self, Protocols};
 use super::table::Opt;
-use super::{ParamError, Spec};
+use super::{ParamError, Spec, number};
 use crate::msgs::Messages;
 
 /// An option's argument, read according to its kind.
@@ -71,9 +72,58 @@ pub(crate) enum Request<'a> {
 
 /// The transfers one part of the command line asks for: the whole of it,
 /// or the part between two `--next`.
+#[allow(dead_code, reason = "read once transfers are implemented")]
 #[derive(Debug, Default)]
 pub(crate) struct Operation<'a> {
     pub(crate) urls: Vec<&'a [u8]>,
+    /// `--continue-at`.
+    pub(crate) resume: Option<Resume>,
+    /// `--clobber` and `--no-clobber`.
+    pub(crate) clobber: Clobber,
+    /// `--remove-on-error`.
+    pub(crate) remove_on_error: bool,
+    /// `--etag-save`.
+    pub(crate) etag_save: Option<&'a [u8]>,
+    /// `--etag-compare`.
+    pub(crate) etag_compare: Option<&'a [u8]>,
+    /// `--proto`: the protocols allowed, if limited.
+    pub(crate) protocols: Option<Protocols>,
+    /// `--proto-redir`: the protocols a redirect may go to, if set.
+    pub(crate) redirect_protocols: Option<Protocols>,
+}
+
+/// Where a transfer resumes.
+#[allow(dead_code, reason = "read once transfers are implemented")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Resume {
+    /// At this byte.
+    At(u64),
+    /// Where the output file ends: `--continue-at -`.
+    FromOutput,
+}
+
+/// Whether an output file that exists is overwritten.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Clobber {
+    /// As the output options decide.
+    #[default]
+    Default,
+    /// `--clobber`.
+    Always,
+    /// `--no-clobber`.
+    Never,
+}
+
+/// The error the options exclusive of `--continue-at` report.
+fn exclusive_with_resume(msgs: &Messages, other: &[u8]) -> ParamError {
+    msgs.error(&[b"--continue-at is mutually exclusive with ", other]);
+    ParamError::BadUse
+}
+
+/// The error of an etag option on more than one URL.
+fn etag_single_url(msgs: &Messages) -> ParamError {
+    msgs.error(&[b"The etag options only work on a single URL"]);
+    ParamError::BadUse
 }
 
 /// What the command line asks for.
@@ -142,7 +192,62 @@ pub(crate) fn apply<'a>(
             if url.is_empty() {
                 return Err(ParamError::BlankString);
             }
-            line.current().urls.try_push(url)?;
+            let op = line.current();
+            op.urls.try_push(url)?;
+            if op.urls.len() > 1 && (op.etag_save.is_some() || op.etag_compare.is_some()) {
+                return Err(etag_single_url(msgs));
+            }
+        }
+        Opt::EtagSave | Opt::EtagCompare => {
+            let op = line.current();
+            if op.urls.len() > 1 {
+                return Err(etag_single_url(msgs));
+            }
+            let file = Some(value.text()).filter(|f| !f.is_empty());
+            let file = file.ok_or(ParamError::BlankString)?;
+            if spec.opt == Opt::EtagSave {
+                op.etag_save = Some(file);
+            } else {
+                op.etag_compare = Some(file);
+            }
+        }
+        Opt::ContinueAt => {
+            let op = line.current();
+            // `--range` is not implemented, so it is never set here.
+            if op.remove_on_error {
+                return Err(exclusive_with_resume(msgs, b"--remove-on-error"));
+            }
+            if op.clobber == Clobber::Never {
+                return Err(exclusive_with_resume(msgs, b"--no-clobber"));
+            }
+            op.resume = Some(match value.text() {
+                b"-" => Resume::FromOutput,
+                at => Resume::At(number::offset(at)?),
+            });
+        }
+        Opt::RemoveOnError => {
+            let on = value.toggle();
+            let op = line.current();
+            if on && op.resume.is_some() {
+                return Err(exclusive_with_resume(msgs, b"--remove-on-error"));
+            }
+            op.remove_on_error = on;
+        }
+        Opt::Clobber => {
+            let on = value.toggle();
+            let op = line.current();
+            if !on && op.resume.is_some() {
+                return Err(exclusive_with_resume(msgs, b"--no-clobber"));
+            }
+            op.clobber = if on { Clobber::Always } else { Clobber::Never };
+        }
+        Opt::Proto => {
+            let set = protocols::parse(Protocols::all(), value.text(), msgs)?;
+            line.current().protocols = Some(set);
+        }
+        Opt::ProtoRedir => {
+            let set = protocols::parse(Protocols::redirect_default(), value.text(), msgs)?;
+            line.current().redirect_protocols = Some(set);
         }
         Opt::Next => return Ok(Flow::NextOperation),
         Opt::Silent => msgs.silent = value.toggle(),
@@ -176,13 +281,11 @@ pub(crate) fn apply<'a>(
         | Opt::CertStatus
         | Opt::CertType
         | Opt::Ciphers
-        | Opt::Clobber
         | Opt::Compressed
         | Opt::CompressedSsh
         | Opt::Config
         | Opt::ConnectTimeout
         | Opt::ConnectTo
-        | Opt::ContinueAt
         | Opt::Cookie
         | Opt::CookieJar
         | Opt::CreateDirs
@@ -213,8 +316,6 @@ pub(crate) fn apply<'a>(
         | Opt::Engine
         | Opt::Eprt
         | Opt::Epsv
-        | Opt::EtagCompare
-        | Opt::EtagSave
         | Opt::Expect100Timeout
         | Opt::Fail
         | Opt::FailEarly
@@ -317,9 +418,7 @@ pub(crate) fn apply<'a>(
         | Opt::Preproxy
         | Opt::ProgressBar
         | Opt::ProgressMeter
-        | Opt::Proto
         | Opt::ProtoDefault
-        | Opt::ProtoRedir
         | Opt::Proxy
         | Opt::ProxyAnyauth
         | Opt::ProxyBasic
@@ -363,7 +462,6 @@ pub(crate) fn apply<'a>(
         | Opt::RemoteName
         | Opt::RemoteNameAll
         | Opt::RemoteTime
-        | Opt::RemoveOnError
         | Opt::Request
         | Opt::RequestTarget
         | Opt::Resolve

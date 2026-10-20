@@ -16,6 +16,7 @@ mod errors;
 mod help;
 mod number;
 mod parse;
+mod protocols;
 #[rustfmt::skip]
 mod table;
 

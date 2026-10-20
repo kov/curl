@@ -102,14 +102,20 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
 
 ## Allocation
 
-The debug test build counts Rust allocations, so the C suite's memory limits apply to us.
-- Every test is capped at 1000 allocations and 1 MB peak unless its `<limits>` section says
-  otherwise.
-- 32 tests set limits of their own. Test 1, a plain HTTP GET with the tool, allows 140
-  allocations and 136000 bytes.
+Most of C's allocations exist because of C: a copy of every string option, a node per list
+item, a temporary string per formatted message. They have no counterpart here. What remains is
+state that outlives a call, since the application drives I/O and every call returns. The rule:
+**heap at setup, borrow on the hot path, small temporaries on the stack, buffers reused.**
 
-Rules that keep us inside those limits from the start:
-
+- **State that lives across calls lives in its handle**, allocated when the handle, the
+  connection or the transfer is set up, and borrowed after that. Large state stays where it is
+  and is passed by reference, not moved: a move is a copy.
+- **Temporaries within a call go on the stack, and stay small.** We run on the application's
+  threads, whose stacks may be small: a log line or a formatted number belongs on the stack, a
+  receive buffer does not.
+- **No allocation per chunk on the data path.** Each connection has a receive buffer and a send
+  buffer, sized once and reused. Parsers return slices borrowed from the receive buffer, and
+  write callbacks get those slices directly.
 - **No allocation per chunk on the data path.** Each connection has a receive buffer and a send
   buffer, sized once and reused. Parsers return slices borrowed from the receive buffer, and
   write callbacks get those slices directly.
@@ -120,8 +126,18 @@ Rules that keep us inside those limits from the start:
 - **Configuration strings are stored once.** A copy shared between handles (`duphandle`, the
   share) is reference-counted, not duplicated.
 - **Small, bounded collections are inline arrays**, not `Vec`s.
-- **A test measures allocations per transfer** on the steady-state data path, so a regression
-  fails a build rather than a benchmark.
+
+Two sets of budgets check this:
+
+- **The C suite's limits are ceilings.** The debug test build counts our allocations (see
+  [Debug hooks](#debug-hooks)), and every test is capped at 1000 allocations and 1 MB peak
+  unless its `<limits>` says otherwise; test 1, a plain HTTP GET, allows 140 and 136000 bytes.
+  They were set for C's design, and ours should sit well below them.
+- **Our own budgets are tighter, as Rust tests.** Each scenario (a plain GET, a reused
+  connection, a redirect, the steady-state data path) has a test that counts the allocations
+  its thread makes and fails above the budget, so a regression fails the build rather than a
+  benchmark. Budgets are set as each scenario lands, at what the design calls for, not at what
+  the code happens to do.
 
 Memory the application frees with `curl_free` comes from the application's allocator: the
 `curl_global_init_mem` callbacks when set, `malloc` otherwise. Everything internal uses the
@@ -158,21 +174,40 @@ that. Allocation is therefore always explicit and always fallible:
 
 ## Debug hooks
 
-The test build is the counterpart of the C debug build (`SCOPE.md`). A `debug-hooks` feature
-on `curl-sys-abi` provides:
-- the `libcurl-d.so.4` soname;
-- the `curl_dbg_*` exports the C test programs and tool import;
-- `curl_easy_perform_ev`;
-- memory tracking: a global allocator that writes the `memdump` log `tests/memanalyze.pl`
-  reads when `CURL_MEMDEBUG` names a file. It writes `MEM` lines for allocations and `FD`
-  lines for sockets.
-  - Only allocations made while logging are tracked; a header tag marks them, so freeing an
-    earlier allocation is not reported as a bad free.
-  - `CURL_MEMLIMIT` makes the Nth allocation fail, which the torture tests rely on.
-  - The tool honours `CURL_MEMDEBUG` and `CURL_MEMLIMIT` the same way.
-- the same log and limit for the memory C code sees: the application's `curl_dbg_*` calls and
-  every block the shim hands out, logged with its Rust caller. These blocks carry no header, so
-  the two are one pool, as in C: `curl_free` and `curl_dbg_free` each free either.
+The test build is the counterpart of the C debug build (`SCOPE.md`), and `runtests.pl` ties memory
+checking to the `Debug` feature, which 148 tests require: once we claim it, every test must leave
+a memdump that `tests/memanalyze.pl` finds leak-free and within the test's limits. The tracking
+behind it exists for what it checks in our model, not to mirror `lib/memdebug.c`:
+- **Allocation failure is an error** (see [Allocation failure](#allocation-failure)). Torture
+  runs fail each tracked allocation in turn; any infallible site left aborts the test. This is
+  the main purpose: the clippy ban cannot see `clone`, `collect` or allocations made in other
+  crates on our behalf.
+- **The allocation budgets** above.
+- **Leaks across the C boundary**, in memory the application and the shim share. Inside Rust,
+  ownership frees memory; a leak report there means a forgotten exclusion or a reference cycle.
+
+What is tracked: our allocations, not the process's, as C's tracker sees libcurl's and not
+libc's. Tracking starts when `CURL_MEMDEBUG` or `CURL_MEMLIMIT` turns it on and covers every
+Rust allocation from then on, except those made inside a named exclusion: the standard
+library's lazily created globals, such as the standard output buffer, which are created once
+and never freed. Excluding by name, rather than including by entry point, makes a mistake loud:
+a missing exclusion reports a leak, where a missing inclusion would silently under-count.
+
+A `debug-hooks` feature provides it, on `curl-alloc`, `curl-sys-abi` and `curl-tool`:
+- **`curl-alloc`** owns the tracker: the memdump, written line by line with nothing allocated
+  while logging, and the allocation limit. Its global allocator tags each block when it is
+  made, so a block made before tracking started is never reported as a bad free. Being
+  Rust's global allocator, it is process-wide by definition; it is the one global outside the
+  shim's root. It also counts allocations per thread, for the budget tests.
+- **`curl-sys-abi`** installs that allocator and adds:
+  - the `libcurl-d.so.4` soname;
+  - the `curl_dbg_*` exports the C test programs import, logging to the same memdump and
+    counting against the same limit. The application's blocks and those the shim hands out
+    carry no header and come from the installed C allocator, so `curl_free` and
+    `curl_dbg_free` each free either, as in C;
+  - `curl_easy_perform_ev`.
+- **`curl-tool`** installs the allocator and turns tracking on from `CURL_MEMDEBUG` and
+  `CURL_MEMLIMIT`, as `src/tool_main.c` does.
 
 Release builds contain none of this.
 

@@ -19,6 +19,12 @@ the principles; this file holds the decisions. What the C tree contains is enume
   default C build: `CURLAUTH_NTLM` and the related constants keep their values, and the
   `NTLM` feature is not reported. Tests that need NTLM skip, as they do on a default C build.
 
+A few tests check how the C code is written rather than what it does. Each is replaced by a
+Rust test that checks the same property of the rewrite, named after the original and listed in
+`REPLACED` in `inventory/measure/suite.py`; the scorer counts the original apart. Test 96
+expects the C tool's source file names in the memdump; its replacement checks that the tool's
+memdump records its allocations and that `tests/memanalyze.pl` finds nothing wrong in it.
+
 ## Platforms
 
 Linux is the first target. Windows (SSPI, Schannel, WinIDN) and macOS (Apple SecTrust,

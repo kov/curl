@@ -27,6 +27,13 @@ PYTEST_ARGS = ["-n", "auto", "-p", "no:cacheprovider"]
 VENV = ROOT / "build" / "c" / "pytest-venv"
 # Features SCOPE.md leaves out: tests needing them skip by design.
 OUT_OF_SCOPE = {"NTLM"}
+# Tests that check how the C code is written rather than what it does,
+# replaced by Rust tests checking the same property of ours (SCOPE.md):
+# test number -> (file, test function).
+REPLACED = {
+    96: ("crates/curl-tool/tests/memdebug.rs",
+         "test96_memory_tracking_operational"),
+}
 SKIPPED_LINE = r"^test (\d+) SKIPPED: (.*?)\s*$"
 
 

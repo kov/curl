@@ -158,12 +158,23 @@ def tree_check(test):
             and "%CURL" not in (test.get("command") or ""))
 
 
+def check_replacements():
+    """Each test replaced by a Rust test names one that exists."""
+    for n, (path, func) in suite.REPLACED.items():
+        source = ROOT / path
+        check(source.exists() and f"fn {func}(" in source.read_text(),
+              f"test {n} is replaced by {path}::{func}, which does not exist")
+
+
 def compare(now, base, tests):
     """Classify each result against the baseline's."""
+    check_replacements()
     classes = {}
     for n, b in base.items():
         r = now[n]["result"]
-        if tests[n]["runner"] in UNIT_RUNNERS:
+        if n in suite.REPLACED:
+            cls = f"replaced by a Rust test, {r}"
+        elif tests[n]["runner"] in UNIT_RUNNERS:
             cls = f"C unit program, {r}"
         elif tree_check(tests[n]):
             cls = f"C tree check, {r}"

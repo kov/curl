@@ -26,7 +26,8 @@ minutes; pytest gets a venv in `build/c/pytest-venv`) and parses the results (li
 `inventory/measure/score.py` scores the Rust build the same way: it lays out `build/rust` with the
 C build's test servers and programs and the Rust library and tool, checks with `ldd` that the
 Rust library is the one loaded, runs both suites and compares each result with `baseline`. Its
-results stay in `build/rust/score`. `--lib c` and `--lib stub` arm it (see the script). Both
+results stay in `build/rust/score`. `--lib c` and `--lib stub` arm it (see the script). Tests
+replaced by Rust tests (`REPLACED` in `suite.py`, see `SCOPE.md`) are counted apart. Both
 scripts run and parse the suites through `inventory/measure/suite.py`.
 Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.
 

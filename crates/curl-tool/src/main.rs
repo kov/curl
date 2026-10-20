@@ -1,11 +1,19 @@
 //! The curl command-line tool.
 
 #![forbid(unsafe_code)]
+// Tests may allocate infallibly; the non-test build is still checked.
+#![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
-use std::ffi::OsStr;
 use std::process::ExitCode;
 
+use curl_core::error::ErrorKind;
 use curl_core::version::version;
+
+mod msgs;
+mod options;
+
+use msgs::Messages;
+use options::{Parsed, Request, exit_code};
 
 /// Exit status for anything not implemented yet. No test expects it, so a
 /// missing feature cannot pass a test by accident.
@@ -42,7 +50,7 @@ fn memory_tracking_init() {
 /// The leading decimal number of `value`, as `curlx_str_number` reads it
 /// with a maximum of `LONG_MAX`.
 #[cfg(any(feature = "debug-hooks", test))]
-fn memlimit(value: &OsStr) -> Option<u64> {
+fn memlimit(value: &std::ffi::OsStr) -> Option<u64> {
     let bytes = value.as_encoded_bytes();
     let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
     let n = std::str::from_utf8(&bytes[..digits])
@@ -56,29 +64,44 @@ fn main() -> ExitCode {
     let argv = command_line();
     #[cfg(feature = "debug-hooks")]
     memory_tracking_init();
-    let mut args = argv.into_iter().skip(1).peekable();
-    // `-q`/`--disable` only stops the config file being read, and none is.
-    if args
-        .peek()
-        .is_some_and(|a| a == OsStr::new("-q") || a == OsStr::new("--disable"))
-    {
-        args.next();
+    let mut msgs = Messages::new();
+    if argv.len() < 2 {
+        // With no arguments, only a configuration file could name a URL.
+        msgs.help(&[]);
+        return ExitCode::from(exit_code(ErrorKind::FailedInit));
     }
-    let (first, rest) = (args.next(), args.next());
-    match (first.as_deref().and_then(OsStr::to_str), rest) {
-        (Some("-V" | "--version"), None) => {
-            version_info();
-            ExitCode::SUCCESS
-        }
-        (Some("-M" | "--manual"), None) => {
-            eprintln!("Warning: built-in manual was disabled at build-time");
-            ExitCode::SUCCESS
-        }
-        _ => {
-            eprintln!("curl: not implemented yet");
-            ExitCode::from(NOT_IMPLEMENTED)
-        }
+    let line = match options::parse(&argv, &mut msgs) {
+        Ok(Parsed::Run(line)) => line,
+        Ok(Parsed::Request(request)) => return show(request, &msgs),
+        Err(e) => return ExitCode::from(exit_code(e.kind())),
+    };
+    if let Some((spec, prefix)) = line.unimplemented {
+        let name = [prefix.as_bytes(), spec.long.as_bytes()];
+        msgs.error(&[b"option ", name[0], name[1], b": not implemented yet"]);
+        return ExitCode::from(NOT_IMPLEMENTED);
     }
+    if line.operations.iter().any(|op| op.urls.is_empty()) {
+        msgs.help(&[b"(2) no URL specified"]);
+        return ExitCode::from(exit_code(ErrorKind::FailedInit));
+    }
+    msgs.error(&[b"transfers are not implemented yet"]);
+    ExitCode::from(NOT_IMPLEMENTED)
+}
+
+/// Show what the command line asked for instead of transfers.
+fn show(request: Request<'_>, msgs: &Messages) -> ExitCode {
+    match request {
+        Request::Version => version_info(),
+        Request::Manual => msgs.warn(&[b"built-in manual was disabled at build-time"]),
+        Request::Help(_) => {
+            msgs.error(&[b"--help is not implemented yet"]);
+            return ExitCode::from(NOT_IMPLEMENTED);
+        }
+        // Nothing is embedded: a build without an embedded CA bundle prints
+        // nothing.
+        Request::CaEmbed => {}
+    }
+    ExitCode::SUCCESS
 }
 
 /// The command line, as the operating system gave it.
@@ -141,7 +164,7 @@ mod tests {
     /// As `curlx_str_number`: leading digits, at most `LONG_MAX`.
     #[test]
     fn reads_memlimit_like_c() {
-        let read = |s: &str| memlimit(OsStr::new(s));
+        let read = |s: &str| memlimit(std::ffi::OsStr::new(s));
         assert_eq!(read("140"), Some(140));
         assert_eq!(read("0"), Some(0));
         assert_eq!(read("12abc"), Some(12));

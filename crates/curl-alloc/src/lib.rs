@@ -10,11 +10,13 @@
 
 mod boxed;
 mod grow;
+mod rc;
 #[cfg(feature = "debug-hooks")]
 pub mod track;
 
 pub use boxed::try_box;
 pub use grow::{TryString, TryVec, try_format};
+pub use rc::{Count, Shared, TryArc, TryRc};
 
 /// An allocation failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

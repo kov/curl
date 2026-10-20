@@ -5,6 +5,7 @@
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
 use curl_alloc::track::{self, Tracker};
+use curl_alloc::{TryArc, TryRc};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -32,11 +33,14 @@ fn logs_tracked_blocks_and_fails_past_the_limit() {
     let mut ok: Vec<u8> = Vec::new();
     assert!(ok.try_reserve(16).is_ok(), "the last allowed allocation");
     let mut refused: Vec<u8> = Vec::new();
-    let refused = refused.try_reserve(16).is_err();
+    let refused = refused.try_reserve(16).is_err()
+        && TryRc::try_new([0u8; 64]).is_err()
+        && TryArc::try_new([0u8; 64]).is_err();
     track::untracked(|| check(&path, refused, [tracked_at, grown_at]));
     track::untracked(|| drop(ok));
 }
 
+/// `refused`: a `Vec`, a `TryRc` and a `TryArc` all failed past the limit.
 fn check(path: &std::path::Path, refused: bool, [tracked_at, grown_at]: [*const u8; 2]) {
     assert!(refused, "past the limit");
     let log = std::fs::read_to_string(path).unwrap();

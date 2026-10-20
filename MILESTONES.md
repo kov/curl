@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: every step is **to do**.
+Status: step 1 is **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -30,8 +30,10 @@ yet meet.
 
 **Prerequisites (Rust tests only)**
 
-1. **alloc: add fallible reference-counted pointers.** `TryRc<T>`, `TryArc<T>` (and `[T]`
-   forms). Tests: OOM on construction through the tracker limit; drop and weak counts.
+1. **alloc: add fallible reference-counted pointers.** **Done.** `TryRc<T>` and `TryArc<T>`
+   for sized `T`, without weak references; shared bytes are `TryRc<Vec<u8>>`. Tests: both fail
+   past the tracker's limit without aborting; the last handle drops the value once; handles
+   cross threads.
    DESIGN.md already promises them.
 2. **core: depend on curl-alloc; add Instant, Clock and the arena.** `time.rs`, `id.rs` with
    `ArenaPolicy`. Tests: a stale key fails after remove and reinsert on the same row; an order

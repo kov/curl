@@ -103,7 +103,7 @@ numbers are those of `SCOPE.md`.
 ### 2.1 Crates
 
 ```
-curl-alloc   + rc.rs      TryRc<T>, TryArc<T>: fallible reference-counted pointers (new)
+curl-alloc     rc.rs      TryRc<T>, TryArc<T>: fallible reference-counted pointers, sized T only
 curl-os      + net.rs     nonblocking TCP/UDP/Unix sockets over OwnedFd (new unsafe module)
              + poll.rs    poll(2) over a slice of PollFd (new unsafe module)
              + wake.rs    socketpair waker, Send + Sync (new unsafe module)
@@ -913,7 +913,7 @@ limiting is the `throttle: Option<Instant>` deadline on `Exchanging`, armed as T
 ### 5.4 Send side
 
 ```rust
-pub(crate) enum BodySource { Null, Shared(TryRc<[u8]>), Callback(ReadState), Mime(MimeReader) }
+pub(crate) enum BodySource { Null, Shared(TryRc<Vec<u8>>), Callback(ReadState), Mime(MimeReader) }
 pub(crate) struct Upload { source: BodySource, crlf: Option<LineConv>, chunked: Option<ChunkEncoder>,
                            known_len: Option<u64>, sent: u64, latch: ReadLatch /* Open|Eof|Errored */ }
 ```

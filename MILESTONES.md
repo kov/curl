@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 3 are **done**; every other step is **to do**.
+Status: steps 1 to 4 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -49,10 +49,16 @@ yet meet.
    (ported as `unit1395_dot_segments`); plus the branches those tables do not reach, with C's
    answers. Not yet: setting single parts, relative URLs and appending to the query (lib1560's
    other tables), IDN. Test 1560 itself runs once the shim exports `curl_url_*`.
-4. **core: add Deadlines, TimerQueue and TimerAnnounce.** Ports unit 1309 (against the queue's
-   insert/best/remove), unit 1303 (connect versus total, each from its own anchor), and unit
-   3230 (table generated from the C test). A test pins that a follow keeps `started_op` and
-   resets `started_single`.
+4. **core: add Deadlines, TimerQueue and TimerAnnounce; check the ports.** **Done.**
+   `multi/timers.rs` and `TimeLimit`. Ports: unit 1309 (removal, the due order test1309
+   expects, the rounded-up wait), unit 1303 (its 34 cases of time left, connect versus total),
+   both with their data generated from the C tests by `gen/timer_c_tests.py`, and unit 3230
+   (the timer callback's dedupe, a sequence of calls rather than a table). Tests: the two anchors told apart, timers consumed by an expiry pass, an
+   unchanged wake-up keeping its place, a stale key caught. `inventory/measure/ported.py` lists
+   each unit-test program as ported or missing from the Rust tests named after it, and fails on
+   a port of a program that does not exist; it does not compare case counts yet, since the
+   inventory records none. A new leg (`start_leg`, as at a follow) keeps `started_op` and resets
+   `started_single`, pinned by the two-anchor test.
 5. **multi: add the transfer state machine with a null protocol.** `Multi`, `Slot`, `Run`,
    `TransferState`, `Sched`, `NotifyQueue`, the three contexts, `add`/`remove`/`perform`/
    `socket_action`/`info_read`/`counts`, `drive_to_completion`, a test-only protocol that

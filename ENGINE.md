@@ -122,7 +122,7 @@ code.
 curl-core/src/
   error.rs, error/kinds.rs   existing; Error gains Option<Detail> (boxed fallibly)
   version.rs                 existing; reports protocols as they land (file, then http)
-  time.rs                    Instant, Clock, SystemClock, ManualClock (test-util)
+  time.rs                    Instant, TimeLimit, Clock, SystemClock, ManualClock (test-util)
   id.rs                      Arena<T>, ArenaPolicy, Key<T>; TransferId, ConnId, ConnNumber
   url/                       Url, Host, Port, Origin; urlapi.c-compatible parser
   options/                   typed config groups: Network, Http, Output, Limits, Callbacks…
@@ -206,6 +206,7 @@ own when the connection is gone.
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Instant(u64);                         // µs since the clock's epoch; saturating ops
+pub struct TimeLimit(NonZeroU64);                // ms; C's 0 ("no limit") is None
 pub trait Clock { fn now(&self) -> Instant; }
 pub struct SystemClock { base: std::time::Instant }
 #[cfg(any(test, feature = "test-util"))]
@@ -437,36 +438,50 @@ elsewhere "Operation timed out after N milliseconds with X out of Y bytes receiv
 pub(crate) struct Deadlines {
     started_op: Instant,                 // once per transfer (C TIMER_STARTOP)
     started_single: Instant,             // per leg (C TIMER_STARTSINGLE)
-    total: Option<Duration>, connect: Option<Duration>,
-    extra: EnumMap<TimerKind, Option<Instant>>,  // protocol- and stage-armed
+    total: Option<TimeLimit>, connect: Option<TimeLimit>,
+    armed: [Option<Instant>; TimerKind::COUNT],   // C's per-transfer expire list
 }
-pub enum TimerKind { Expect100, HappyEyeballs, AlpnEyeballs, AsyncName, SpeedCheck,
-                     TooFast, Shutdown, ServerResponse, FtpAccept, Quic }
+pub(crate) enum TimerKind { Total, Connect, Expect100, AsyncName, HappyEyeballs, SpeedCheck,
+                            TooFast, Quic, FtpAccept, AlpnEyeballs, Shutdown, ServerResponse }
 impl Deadlines {
-    fn wake_at(&self, class: PhaseClass) -> Option<Instant>;
-    fn expired(&self, now: Instant, class: PhaseClass) -> Option<TimeoutKind>;
+    fn start_leg(&mut self, now: Instant);                 // SETUP: arms Total and Connect
+    fn arm_in(&mut self, kind: TimerKind, now: Instant, wait: Duration);
+    fn clear(&mut self, kind: TimerKind); fn clear_all(&mut self);
+    fn wake_at(&self) -> Option<Instant>;                  // earliest armed timer
+    fn expire(&mut self, now: Instant);                    // an expiry pass consumed them
+    fn time_left(&self, now: Instant, phase: Phase) -> TimeLeft;   // timeleft_now_ms
+    fn since_op_ms(&self, now: Instant) -> u64;            // the N in the error texts:
+    fn since_leg_ms(&self, now: Instant) -> u64;           //   which one, see below
 }
 ```
 
-- **The C behaviour is ported**: the wake-up for the total timeout is `started_single + total`
-  (C re-arms EXPIRE_TIMEOUT at every SETUP, multi.c:2497), and lateness is judged against
-  `started_op + total` (connect.c:92). Both are computed from the two stored instants, so there
-  is one source. The connect limit is judged from `started_single`. The N in the error text
-  follows C too: the multi-level check reports milliseconds since `started_op`, the check at the
-  end of a receive/send pass (transfer.c:382-393) milliseconds since `started_single`;
-  `expired` returns which check fired so the message is built from the right anchor.
+- **The C behaviour is ported**: `start_leg` arms `Total` and `Connect` from `started_single`
+  (C arms EXPIRE_TIMEOUT and EXPIRE_CONNECTTIMEOUT at every SETUP, multi.c:2497), and
+  `time_left` judges the total limit from `started_op` and the connect limit (300 s when unset)
+  from `started_single` (connect.c:70), in C's whole-millisecond arithmetic, where a limit
+  reached exactly counts as passed by 1 ms. The connect timer is armed only when the limit is
+  set, as in C. A timer stays armed after its instant until an expiry pass consumes it
+  (`add_next_timeout`), so a timer armed in the past still wakes the transfer at once. The N
+  in the error text follows C's two checks: the multi-level check reports `since_leg_ms` while
+  connecting and `since_op_ms` after (multi.c:1820), the check at the end of a receive/send pass
+  always `since_leg_ms` (transfer.c:382-393).
 - `MultiPending` is not a kind: C declares EXPIRE_MULTI_PENDING (urldata.h:498) and never arms
   it.
-- **`TimerQueue`** is an indexed binary min-heap with one entry per slot, holding
-  `deadlines.wake_at()` of that slot. The position index lives in the queue (keyed by slot
-  index), capacity is reserved at `add`, and `update(slot, Option<Instant>)` is O(log n) with no
-  allocation. It is an index over `Deadlines`, rewritten after each step of that transfer, never
-  consulted for "is it late". Unit 1309's cases port against it.
+- **`TimerQueue`** is an indexed binary min-heap with one entry per transfer, holding
+  `deadlines.wake_at()` of that transfer, keyed by its `Key` with the position index by row.
+  Capacity is reserved at `add`, and `update(key, Option<Instant>)` is O(log n) with no
+  allocation. Transfers due at the same instant come out in the order they were queued, as from
+  C's splay tree; an update to an unchanged instant keeps the transfer's place. C instead
+  re-queues a transfer whose first timer is re-armed or cleared even when its earliest instant
+  stays the same, which only reorders transfers due in the same microsecond. It is an index over
+  `Deadlines`, rewritten after each step of that transfer, never consulted for "is it late".
+  Unit 1309's due order (from test1309's expected output) ports against it.
 - **`TimerAnnounce`** owns the unit 3230 dedupe, in the core because Rust users of
   `socket_action` need the same contract: call the timer callback only on a change (clear after
-  set, set after none, different absolute expiry), 0 ms whenever a dirty transfer is in process,
-  `socket_action(Timeout)` forgets the last value so it is re-announced. A callback `Abort`
-  makes the multi `Dead`.
+  set, set after none, different absolute expiry), 0 ms whenever a dirty transfer is in process
+  (re-announced at each new instant, as C compares the time of the check), and
+  `socket_action(Timeout)` forgets the last value so it is re-announced. Waits are rounded up to
+  whole milliseconds and capped at `INT_MAX`. A callback `Abort` makes the multi `Dead`.
 
 ### 3.5 The pass
 

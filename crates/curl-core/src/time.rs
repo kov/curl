@@ -4,6 +4,7 @@
 //! once and passes that `Instant` down, so under a `ManualClock` every
 //! timeout is deterministic and a test takes no time to wait for one.
 
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 /// A point in time: microseconds since its clock's epoch. Instants from
@@ -30,6 +31,22 @@ impl Instant {
 /// `d` in whole microseconds, saturating.
 fn micros(d: Duration) -> u64 {
     u64::try_from(d.as_micros()).unwrap_or(u64::MAX)
+}
+
+/// A time limit: a whole number of milliseconds, never zero, which C's
+/// options use to mean no limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TimeLimit(NonZeroU64);
+
+impl TimeLimit {
+    /// The limit of `ms` milliseconds, or none for zero.
+    pub fn from_millis(ms: u64) -> Option<TimeLimit> {
+        NonZeroU64::new(ms).map(TimeLimit)
+    }
+
+    pub fn duration(self) -> Duration {
+        Duration::from_millis(self.0.get())
+    }
 }
 
 /// Where a multi reads the time.

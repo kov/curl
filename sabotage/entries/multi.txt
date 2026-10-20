@@ -1,0 +1,141 @@
+# The multi and its transfers (crates/curl-core/src/multi), against C's
+# multi.c semantics: 3105 for removal, 530 for timer aborts.
+
+=== completions are read highest id first
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::completions_are_read_in_id_order
+--- old
+                if found.is_none() {
+                    found = Some(id);
+--- new
+                if true {
+                    found = Some(id);
+
+=== removing a running transfer keeps its connection in the pool
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::removing_a_running_transfer_gives_its_connection_back
+--- old
+        run.state.abandon(&mut self.pool);
+        self.timers.remove(id);
+--- new
+        std::mem::forget(run);
+        self.timers.remove(id);
+
+=== the timer callback is not called inside add
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::the_timer_hears_of_add_and_remove
+--- old
+        // Inside the add, as C, so the application hears of the 0 ms run.
+        if let Err(kind) = self.update_timer(ev) {
+--- new
+        if let Err(kind) = Ok::<(), MultiErrorKind>(()) {
+
+=== a dead multi takes new transfers while old ones remain
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_more
+--- old
+            if !self.slots.is_empty() {
+--- new
+            if false {
+
+=== an empty dead multi stays dead after a new add
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_timer_abort_inside_add_refuses_the_transfer
+--- old
+            self.life = Life::Alive;
+--- new
+
+=== a dead multi runs its transfers as if alive
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_more
+--- old
+        if self.life == Life::Dead {
+            // A callback aborted the multi: every transfer fails.
+--- new
+        if false {
+            // A callback aborted the multi: every transfer fails.
+
+=== a transfer out of time keeps waiting
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
+--- old
+                if matches!(
+                    run.deadlines.time_left(cx.now, Phase::Transferring),
+--- new
+                if false && matches!(
+                    run.deadlines.time_left(cx.now, Phase::Transferring),
+
+=== a fired timer stays armed
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
+--- old
+        run.deadlines.expire(now);
+--- new
+
+=== a timeout run re-announces nothing
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
+--- old
+            SocketEvent::Timeout => self.announce.forget(),
+--- new
+            SocketEvent::Timeout => {}
+
+=== a completed transfer is still counted as running
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::completions_are_read_in_id_order
+--- old
+        if run.state.is_completed() {
+            self.counts.running -= 1;
+--- new
+        if run.state.is_completed() {
+
+=== a dirty transfer does not make the multi due at once
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::the_timer_hears_of_add_and_remove
+--- old
+        if self.life == Life::Dead || self.dirty.first_from(0).is_some() {
+--- new
+        if self.life == Life::Dead {
+
+=== a dead multi keeps calling the timer
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_more
+--- old
+        if !ev.wants_timer() || self.life == Life::Dead {
+--- new
+        if !ev.wants_timer() {
+
+=== a scheme this build lacks fails as a malformed URL
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::completions_are_read_in_id_order
+--- old
+        return TransferState::Init.fail(ErrorKind::UnsupportedProtocol);
+--- new
+        return TransferState::Init.fail(ErrorKind::UrlMalformat);
+
+=== a URL that does not parse fails with something other than URL_MALFORMAT
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::completions_are_read_in_id_order
+--- old
+        _ => ErrorKind::UrlMalformat,
+--- new
+        _ => ErrorKind::BadFunctionArgument,
+
+=== a timer abort inside remove is not reported
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_timer_abort_inside_remove_still_removes
+--- old
+        let status = self.update_timer(ev);
+--- new
+        let status = self.update_timer(ev).or(Ok(()));
+
+=== socket_action runs nothing whose timer came due
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
+--- old
+        let now = self.clock.now();
+        self.mark_expired_dirty(now);
+        if self.run_dirty(now) > 0 {
+--- new
+        let now = self.clock.now();
+        if self.run_dirty(now) > 0 {

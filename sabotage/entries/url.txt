@@ -1,0 +1,242 @@
+# The URL parser (crates/curl-core/src/url), against C's lib1560 and unit1395
+# tables and answers taken from the C build.
+
+=== a guessed scheme defaults to https instead of http
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+                .map_or(b"http", |(_, name)| name);
+--- new
+                .map_or(b"https", |(_, name)| name);
+
+=== a file: URL may name 127.0.0.1 as its host no more
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+            } else if starts_with_nocase(rest, b"localhost/")
+--- new
+            } else if false && starts_with_nocase(rest, b"localhost/")
+
+=== a URL with credentials is accepted although users are disallowed
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+        if opts.disallow_user {
+--- new
+        if false {
+
+=== a guessed scheme is returned although the caller asked not to see one
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+                if opts.no_guess_scheme && self.scheme.as_ref().is_some_and(|s| s.guessed) {
+--- new
+                if false {
+
+=== a backslash after the port's digits is a bad port, not a backslash
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+        Some(b'\\') if n > 0 => return Err(UrlErrorKind::Backslash),
+--- new
+        Some(b'\\') if false => return Err(UrlErrorKind::Backslash),
+
+=== a percent-encoded host name is kept encoded
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+            host = encode::decode(&host)?.ok_or(UrlErrorKind::BadHostname)?;
+--- new
+            {}
+
+=== a user name with a control byte is accepted
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+        if bad_octets(&user, opts.allow_space) {
+--- new
+        if false {
+
+=== an http user name is split at a semicolon as if it carried options
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+        let semi = with_options
+--- new
+        let semi = true
+
+=== empty login options are kept as present
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::branches_as_c_takes_them
+--- old
+            .filter(|o| !o.is_empty())
+--- new
+            .filter(|_| true)
+
+=== dot segments are kept although the path is not to be taken as is
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+    if opts.path_as_is {
+--- new
+    if true {
+
+=== a space is rejected even where spaces are allowed
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+    let control = if allow_space { 0x1f } else { 0x20 };
+--- new
+    let control = 0x20;
+
+=== a space in a re-encoded query becomes %20 instead of +
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::reencodes_what_must_be
+--- old
+            push(out, if query == Query::Yes { b"+" } else { b"%20" })?;
+--- new
+            push(out, b"%20")?;
+
+=== an IPv4 part with an uppercase 0X prefix is not read as hex
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+            [b'0', x, rest @ ..] if x | 0x20 == b'x' => {
+--- new
+            [b'0', x, rest @ ..] if *x == b'x' => {
+
+=== a dotted IPv4 address with a trailing empty part is not an address
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::host::tests::ipv4_in_c_forms
+--- old
+            None if n > 0 && c.is_empty() && number(c, 10, 0).is_err() => n -= 1,
+--- new
+            None if false && c.is_empty() && number(c, 10, 0).is_err() => n -= 1,
+
+=== a single zero word of an IPv6 address is shortened to ::
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::host::tests::ipv6_as_c_prints_it
+--- old
+    let best = best.filter(|b| b.1 >= 2);
+--- new
+    let best = best.filter(|b| b.1 >= 1);
+
+=== an encoded %25 before an IPv6 zone id is taken as part of the id
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::host::tests::ipv6_as_c_prints_it
+--- old
+        if z.starts_with(b"25") && z.get(2).is_some_and(|&b| b != b']') {
+--- new
+        if false {
+
+=== an IPv6 zone id longer than C allows is accepted
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::tests::branches_as_c_takes_them
+--- old
+            .take(MAX_ZONE)
+--- new
+            .take(usize::MAX)
+
+=== an IPv6 address whose normal form is longer replaces the one written
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::host::tests::ipv6_as_c_prints_it
+--- old
+    if text.len() <= len {
+--- new
+    if true {
+
+=== a host name ending in two dots is accepted
+file: crates/curl-core/src/url/host.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+    if host.iter().any(|&b| invalid_host_byte(b)) || host.ends_with(b"..") || host == b"." {
+--- new
+    if host.iter().any(|&b| invalid_host_byte(b)) {
+
+=== a colon without a slash ends a scheme even when guessing
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+        Some([b':', ..]) if !guessing => Some(&url[..len]),
+--- new
+        Some([b':', ..]) => Some(&url[..len]),
+
+=== a scheme longer than C looks for is accepted
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+        .take(MAX_SCHEME - 1)
+--- new
+        .take(usize::MAX)
+
+=== a file: URL with a Windows drive letter is accepted off Windows
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::branches_as_c_takes_them
+--- old
+        if drive_prefix(path) || (path.first() == Some(&b'/') && drive_prefix(&path[1..])) {
+--- new
+        if false {
+
+=== a whole URL leaves out the default port it was asked for
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::branches_as_c_takes_them
+--- old
+            None if opts.default_port => known.map(|k| k.default_port),
+--- new
+            None if false => known.map(|k| k.default_port),
+
+=== a whole URL keeps a default port it was asked to leave out
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::branches_as_c_takes_them
+--- old
+            Some(p) if opts.no_default_port && known.is_some_and(|k| k.default_port == p) => None,
+--- new
+            Some(p) if false && known.is_some_and(|k| k.default_port == p) => None,
+
+=== a port part keeps a default port it was asked to leave out
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+            Some(p) if opts.no_default_port && scheme.is_some_and(|k| k.default_port == p) => None,
+--- new
+            Some(p) if false && scheme.is_some_and(|k| k.default_port == p) => None,
+
+=== a whole URL's host is not encoded when encoding is asked for
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_url
+--- old
+        } else if opts.url_encode {
+--- new
+        } else if false {
+
+=== a decoded query keeps its + signs
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+            if what == Part::Query {
+--- new
+            if false {
+
+=== more than three slashes after a scheme are accepted
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+                if !opts.no_authority && slashes > 3 {
+--- new
+                if slashes > 4 {
+
+=== an empty URL is parsed instead of rejected as malformed
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_get_parts
+--- old
+        if url.is_empty() || url.len() > MAX_INPUT || url.contains(&0) {
+--- new
+        if url.len() > MAX_INPUT || url.contains(&0) {
+
+=== %2e is not taken as a dot when removing dot segments
+file: crates/curl-core/src/url/path.rs
+witness: curl-core url::tests::unit1395_dot_segments
+--- old
+        [b'%', b'2', e, rest @ ..] if e | 0x20 == b'e' => Some(rest),
+--- new
+        [b'%', b'2', e, rest @ ..] if false => Some(rest),

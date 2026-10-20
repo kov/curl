@@ -1,0 +1,26 @@
+# The connection pool (crates/curl-core/src/conn).
+
+=== two connections share one number
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::local_connections_are_numbered_and_closed_when_released
+--- old
+        self.next_number += 1;
+--- new
+
+=== a premature end closes gracefully instead of terminating
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::local_connections_are_numbered_and_closed_when_released
+--- old
+        if finish.premature {
+            Released::Terminated
+--- new
+        if !finish.premature {
+            Released::Terminated
+
+=== a lease dropped without release goes unnoticed
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
+--- old
+            std::thread::panicking(),
+--- new
+            true,

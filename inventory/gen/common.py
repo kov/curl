@@ -25,7 +25,7 @@ INVENTORY = ROOT / "inventory"
 NOT_C_TREE = ["inventory", "CLAUDE.md", "SCOPE.md", "DESIGN.md", "ENGINE.md",
               "MILESTONES.md", "Cargo.toml",
               "Cargo.lock", "rust-toolchain.toml", ".cargo", "crates",
-              "clippy.toml", "gen"]
+              "clippy.toml", "gen", "sabotage"]
 
 
 def c_commit():

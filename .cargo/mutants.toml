@@ -1,0 +1,34 @@
+# cargo-mutants: plants faults in the code and checks a test fails for each.
+# Run at the end of a large piece of work, scoped to what it changed, from
+# a clean worktree (cargo-mutants copies the source tree, and the main one
+# carries gigabytes of ignored test files) and under a memory cap (a planted
+# fault can allocate without bound faster than the timeout fires):
+#   git worktree add --detach build/mutants-tree <commit>
+#   git diff <base> <commit> > build/mutants.diff
+#   cd build/mutants-tree && systemd-run --user --scope -p MemoryMax=6G \
+#     -p MemorySwapMax=0 cargo mutants -o .. --in-diff ../mutants.diff -p <crate>
+#   git worktree remove build/mutants-tree
+# A surviving mutant is code no test checks: add the test, or add it to
+# `exclude_re` below with a comment saying why it changes nothing observable.
+
+# Generated code is checked against its generator, not by its own tests.
+exclude_globs = [
+    "crates/curl-core/src/error/kinds.rs",
+    "crates/curl-core/src/url/schemes.rs",
+    "crates/curl-sys-abi/src/error_codes.rs",
+    "crates/curl-sys-abi/src/ffi.rs",
+    "crates/curl-tool/src/options/errors.rs",
+    "crates/curl-tool/src/options/help.rs",
+    "crates/curl-tool/src/options/table.rs",
+    "**/c_tests.rs",
+    "**/c_order.rs",
+]
+
+# The test-only clock and protocols live behind this feature.
+features = ["curl-core/test-util"]
+
+# A planted fault can turn a loop infinite; fail it instead of waiting.
+timeout_multiplier = 3.0
+
+# Mutants that change nothing observable, each with its reason.
+exclude_re = []

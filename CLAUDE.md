@@ -113,6 +113,15 @@ one will find it and the next regeneration eats it. Fix the generator or its inp
   first, then port it or delete it.
 - **Arm a new test by breaking the fix.** A test you have not watched fail is not a test, and
   agreement is worth only what would have made it differ.
+- **A test that guards an invariant gets a sabotage entry** (`sabotage/entries/`, format in
+  `sabotage/sweep.py`) in the same commit: the fault that breaks the invariant, planted by hand,
+  and the test that must catch it. `cargo test` fails when an entry's text has left the tree.
+- **At the end of a large piece of work, run the sweep and cargo-mutants on what it changed**:
+  `sabotage/sweep.py <area>` for the faults about meaning (the wrong anchor, the wrong order),
+  cargo-mutants for the mechanical ones, from a clean worktree and under a memory cap (the recipe
+  heads `.cargo/mutants.toml`; a runaway mutant otherwise takes the session down). Not on every
+  commit: their builds are slow. A survivor is code no test checks: add the test, or exclude the
+  mutant in that config with a comment saying why it changes nothing observable.
 - **An unrun test is absent, not passing.** A skipped test, a feature missing from the build or a
   test number not in the run all read as success. Read `runtests.pl`'s skipped line, and check
   the test ran on both legs.

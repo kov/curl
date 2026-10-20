@@ -111,4 +111,42 @@ mod tests {
             "found only {checked:?}"
         );
     }
+
+    /// Every sabotage entry's text must still be in the tree, once, or the
+    /// sweep plants nothing (format in `sabotage/sweep.py`).
+    #[test]
+    fn sabotage_entries_are_current() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(root.join("sabotage/entries")).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "txt") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            for block in format!("\n{text}").split("\n=== ").skip(1) {
+                let name = block.lines().next().unwrap();
+                let file = block
+                    .lines()
+                    .find_map(|l| l.strip_prefix("file: "))
+                    .unwrap_or_else(|| panic!("{}: '{name}' has no file:", path.display()));
+                let (_, rest) = block
+                    .split_once("\n--- old\n")
+                    .unwrap_or_else(|| panic!("{}: '{name}' has no --- old", path.display()));
+                let (old, _) = rest
+                    .split_once("\n--- new")
+                    .unwrap_or_else(|| panic!("{}: '{name}' has no --- new", path.display()));
+                let source = std::fs::read_to_string(root.join(file)).unwrap_or_default();
+                assert_eq!(
+                    source.matches(old.trim_end_matches('\n')).count(),
+                    1,
+                    "{}: the text '{name}' changes is not in {file} exactly once",
+                    path.display()
+                );
+                checked += 1;
+            }
+        }
+        // A positive control: the walk must find the entries.
+        assert!(checked >= 60, "found only {checked} entries");
+    }
 }

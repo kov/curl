@@ -1,0 +1,119 @@
+# Transfer deadlines, the timer queue and timer announcing
+# (crates/curl-core/src/multi/timers.rs), against units 1303, 1309, 3230.
+
+=== transfers due at the same instant come out in heap order, not queue order
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit1309_due_order
+--- old
+        (self.at, self.seq) < (other.at, other.seq)
+--- new
+        self.at < other.at
+
+=== a limit reached exactly counts as no limit at all
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit1303_time_left
+--- old
+                0 => -1,
+--- new
+                0 => 0,
+
+=== the default connect limit is not C's five minutes
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit1303_time_left
+--- old
+const DEFAULT_CONNECT: Duration = Duration::from_secs(300);
+--- new
+const DEFAULT_CONNECT: Duration = Duration::from_secs(301);
+
+=== the connect limit is judged from the transfer's start, not the leg's
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
+--- old
+            Phase::Connecting => left(
+                self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration),
+                self.started_single,
+--- new
+            Phase::Connecting => left(
+                self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration),
+                self.started_op,
+
+=== the time left under two limits is the larger, not the smaller
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit1303_time_left
+--- old
+            (c, t) => c.min(t),
+--- new
+            (c, t) => c.max(t),
+
+=== the error text's leg time is measured from the transfer's start
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
+--- old
+        whole_ms(now.since(self.started_single))
+--- new
+        whole_ms(now.since(self.started_op))
+
+=== a timer due exactly now survives the expiry pass
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
+--- old
+            if t.is_some_and(|at| at <= now) {
+--- new
+            if t.is_some_and(|at| at < now) {
+
+=== a timer is armed beyond the INT_MAX milliseconds C caps it at
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
+--- old
+            Duration::from_millis(u64::try_from(wait.min(MAX_WAIT).as_millis()).expect("capped"));
+--- new
+            Duration::from_millis(u64::try_from(wait.as_millis()).expect("capped"));
+
+=== a transfer re-queued at the same instant loses its place
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::an_unchanged_wake_up_keeps_its_place
+--- old
+            if Some(self.heap[i].at) == at {
+                return;
+            }
+--- new
+
+=== an entry taken from the middle of the heap is not sifted down
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit1309_due_order
+--- old
+            self.sift_down(i);
+            self.sift_up(i);
+--- new
+            self.sift_up(i);
+
+=== the wait to a timer is rounded down, so the application wakes early
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit1309_wait_rounds_up
+--- old
+    let ms = us.div_ceil(1000);
+--- new
+    let ms = us / 1000;
+
+=== the timer is told to clear when it was never set
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit3230_timer_updates
+--- old
+            TimerChange::Clear => self.set,
+--- new
+            TimerChange::Clear => true,
+
+=== a timer set to a new instant with the same wait is not re-announced
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit3230_timer_updates
+--- old
+            TimerChange::Set(_) => !self.set || self.last_due != at,
+--- new
+            TimerChange::Set(_) => !self.set,
+
+=== a timeout run does not make the next timer be announced again
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::unit3230_timer_updates
+--- old
+        self.last_due = None;
+--- new

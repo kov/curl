@@ -19,14 +19,26 @@ pub struct Release {
 /// Each variant exists once the capability is implemented; a build reports
 /// only what it can do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Feature {}
+pub enum Feature {
+    /// A debug build, for the test suite: never for production.
+    #[cfg(feature = "debug-hooks")]
+    Debug,
+}
 
 impl Feature {
     /// The name `curl -V` lists it under.
     pub fn name(self) -> &'static str {
-        match self {}
+        match self {
+            #[cfg(feature = "debug-hooks")]
+            Feature::Debug => "Debug",
+        }
     }
 }
+
+#[cfg(feature = "debug-hooks")]
+const FEATURES: &[Feature] = &[Feature::Debug];
+#[cfg(not(feature = "debug-hooks"))]
+const FEATURES: &[Feature] = &[];
 
 /// A URL scheme the build can transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,7 +93,7 @@ static VERSION: VersionInfo = VersionInfo {
     },
     timestamp: curlver::TIMESTAMP,
     host: HOST,
-    features: &[],
+    features: FEATURES,
     protocols: &[],
 };
 

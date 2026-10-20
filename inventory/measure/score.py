@@ -91,7 +91,7 @@ def assemble(lib, tool):
     """Build the Rust crates and lay out build/rust."""
     cargo = subprocess.run(
         ["cargo", "build", "-p", "curl-sys-abi", "-p", "curl-tool",
-         "--features", "curl-sys-abi/debug-hooks"], cwd=ROOT, check=False)
+         "--features", "curl-sys-abi/debug-hooks,curl-tool/debug-hooks"], cwd=ROOT, check=False)
     check(cargo.returncode == 0, "cargo build failed")
     if BUILD.exists():
         shutil.rmtree(BUILD)

@@ -112,7 +112,7 @@ def run(e, timeout):
 
 
 def ran_witness(out, test):
-    return re.search(rf"^test {re.escape(test)} \.\.\. ", out, re.MULTILINE)
+    return re.search(rf"^test {re.escape(test)}( - should panic)? \.\.\. ", out, re.MULTILINE)
 
 
 def build_error_inside(out, e, start, end):

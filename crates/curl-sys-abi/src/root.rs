@@ -2,8 +2,9 @@
 //!
 //! `curl_global_init` counts its calls, and `curl_global_init_mem` swaps
 //! the allocator that memory handed to the application comes from (and
-//! that `curl_free` returns it to). The Rust library keeps no global state
-//! of its own; this is where the C API's lives.
+//! that `curl_free` returns it to). With `debug-hooks`, it also holds the
+//! memory tracker of the `curl_dbg_*` hooks. The Rust library keeps no
+//! global state of its own; this is where the C API's lives.
 
 #![allow(unsafe_code)]
 
@@ -26,12 +27,15 @@ type Calloc = unsafe extern "C" fn(usize, usize) -> *mut c_void;
 pub(crate) struct Allocator {
     malloc: Malloc,
     free: Free,
-    // Kept to restore the full set the application installed; used once
-    // the shim grows or zeroes memory it hands out.
-    #[allow(dead_code)]
     realloc: Realloc,
+    #[cfg_attr(
+        feature = "debug-hooks",
+        expect(
+            dead_code,
+            reason = "a debug build copies strings with `malloc`, as C's does"
+        )
+    )]
     strdup: Strdup,
-    #[allow(dead_code)]
     calloc: Calloc,
 }
 
@@ -43,18 +47,23 @@ const SYSTEM: Allocator = Allocator {
     calloc: libc::calloc,
 };
 
-struct Root {
+pub(crate) struct Root {
     /// `curl_global_init` calls not yet matched by `curl_global_cleanup`.
     initialized: u32,
     allocator: Allocator,
+    #[cfg(feature = "debug-hooks")]
+    pub(crate) tracker: crate::debug::Tracker,
 }
 
 static ROOT: Mutex<Root> = Mutex::new(Root {
     initialized: 0,
     allocator: SYSTEM,
+    #[cfg(feature = "debug-hooks")]
+    tracker: crate::debug::Tracker::new(),
 });
 
-fn root() -> std::sync::MutexGuard<'static, Root> {
+/// The root, locked. Never held across a call into the application.
+pub(crate) fn root() -> std::sync::MutexGuard<'static, Root> {
     // Panics abort, so the lock is never poisoned.
     ROOT.lock().expect("the global root lock is never poisoned")
 }
@@ -64,11 +73,59 @@ pub(crate) fn allocator() -> Allocator {
     root().allocator
 }
 
+// What the application or the C library installed, called as is.
+#[cfg_attr(
+    not(feature = "debug-hooks"),
+    expect(dead_code, reason = "only the tracker grows or zeroes memory")
+)]
 impl Allocator {
-    /// `size` bytes from the installed `malloc`, or NULL.
-    pub(crate) fn malloc(&self, size: usize) -> *mut c_void {
-        // SAFETY: calling the installed `malloc`, which takes any size.
+    pub(crate) fn raw_malloc(&self, size: usize) -> *mut c_void {
+        // SAFETY: the installed `malloc` takes any size.
         unsafe { (self.malloc)(size) }
+    }
+
+    pub(crate) fn raw_calloc(&self, n: usize, size: usize) -> *mut c_void {
+        // SAFETY: the installed `calloc` takes any sizes.
+        unsafe { (self.calloc)(n, size) }
+    }
+
+    /// # Safety
+    ///
+    /// `p` is NULL or came from this allocator and is not used again if
+    /// this succeeds.
+    pub(crate) unsafe fn raw_realloc(&self, p: *mut c_void, size: usize) -> *mut c_void {
+        // SAFETY: as the caller guarantees.
+        unsafe { (self.realloc)(p, size) }
+    }
+
+    /// # Safety
+    ///
+    /// `p` is NULL or came from this allocator and is not used again.
+    pub(crate) unsafe fn raw_free(&self, p: *mut c_void) {
+        // SAFETY: as the caller guarantees.
+        unsafe { (self.free)(p) }
+    }
+
+    /// # Safety
+    ///
+    /// `s` is a C string.
+    #[cfg(not(feature = "debug-hooks"))]
+    unsafe fn raw_strdup(&self, s: *const c_char) -> *mut c_char {
+        // SAFETY: as the caller guarantees.
+        unsafe { (self.strdup)(s) }
+    }
+}
+
+// Memory handed to the application: tracked, with the Rust caller as its
+// source, when the hooks are built in.
+impl Allocator {
+    /// `size` bytes, or NULL.
+    #[track_caller]
+    pub(crate) fn malloc(&self, size: usize) -> *mut c_void {
+        #[cfg(feature = "debug-hooks")]
+        return crate::debug::malloc(self, size, crate::debug::Source::caller());
+        #[cfg(not(feature = "debug-hooks"))]
+        self.raw_malloc(size)
     }
 
     /// Free memory from this allocator.
@@ -76,35 +133,48 @@ impl Allocator {
     /// # Safety
     ///
     /// `p` is NULL or came from this allocator and is not used again.
+    #[track_caller]
     pub(crate) unsafe fn free(&self, p: *mut c_void) {
+        #[cfg(feature = "debug-hooks")]
         // SAFETY: as the caller guarantees.
-        unsafe { (self.free)(p) }
+        return unsafe { crate::debug::free(self, p, crate::debug::Source::caller()) };
+        #[cfg(not(feature = "debug-hooks"))]
+        // SAFETY: as the caller guarantees.
+        unsafe {
+            self.raw_free(p)
+        }
     }
 
-    /// A copy of the C string `s` from the installed `strdup`, or NULL.
+    /// A copy of the C string `s`, or NULL.
     ///
     /// # Safety
     ///
     /// `s` points to a NUL-terminated string.
+    #[track_caller]
     pub(crate) unsafe fn strdup(&self, s: *const c_char) -> *mut c_char {
+        #[cfg(feature = "debug-hooks")]
         // SAFETY: as the caller guarantees.
-        unsafe { (self.strdup)(s) }
+        return unsafe { crate::debug::strdup(self, s, crate::debug::Source::caller()) };
+        #[cfg(not(feature = "debug-hooks"))]
+        // SAFETY: as the caller guarantees.
+        unsafe {
+            self.raw_strdup(s)
+        }
     }
 
     /// A NUL-terminated copy of `bytes` the application frees with
     /// `curl_free`, or NULL if the allocation fails.
+    #[track_caller]
     pub(crate) fn c_string(&self, bytes: &[u8]) -> *mut c_char {
         if bytes.is_empty() {
             // As C does: an empty result is a strdup of "".
-            // SAFETY: the literal is NUL-terminated; `strdup` is the
-            // application's or the C library's and reads only up to the NUL.
-            return unsafe { (self.strdup)(c"".as_ptr()) };
+            // SAFETY: the literal is NUL-terminated.
+            return unsafe { self.strdup(c"".as_ptr()) };
         }
         let Some(size) = bytes.len().checked_add(1) else {
             return core::ptr::null_mut();
         };
-        // SAFETY: calling the installed `malloc` with a non-zero size.
-        let p = unsafe { (self.malloc)(size) }.cast::<u8>();
+        let p = self.malloc(size).cast::<u8>();
         if p.is_null() {
             return p.cast();
         }
@@ -172,16 +242,16 @@ pub extern "C" fn curl_global_cleanup() {
 }
 const _: ffi::proto::curl_global_cleanup = curl_global_cleanup;
 
-/// NULL is passed on to the free callback too, as C does.
+/// NULL is passed on to the free callback too, as C does, except where
+/// the debug hooks track memory and ignore it.
 ///
 /// # Safety
 ///
 /// `p` is NULL or memory this library handed to the application.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_free(p: *mut c_void) {
-    let free = allocator().free;
     // SAFETY: the caller passes NULL or memory this library allocated with
     // the installed allocator, as `curl_free` requires.
-    unsafe { free(p) };
+    unsafe { allocator().free(p) };
 }
 const _: ffi::proto::curl_free = curl_free;

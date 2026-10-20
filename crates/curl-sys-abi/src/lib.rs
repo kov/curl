@@ -16,6 +16,8 @@ mod ffi;
     expect(dead_code, reason = "the code mappings are unused until calls return errors")
 )]
 mod error_codes;
+#[cfg(feature = "debug-hooks")]
+mod debug;
 mod printf;
 mod root;
 mod strerror;

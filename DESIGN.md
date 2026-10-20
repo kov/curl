@@ -170,6 +170,9 @@ on `curl-sys-abi` provides:
     earlier allocation is not reported as a bad free.
   - `CURL_MEMLIMIT` makes the Nth allocation fail, which the torture tests rely on.
   - The tool honours `CURL_MEMDEBUG` and `CURL_MEMLIMIT` the same way.
+- the same log and limit for the memory C code sees: the application's `curl_dbg_*` calls and
+  every block the shim hands out, logged with its Rust caller. These blocks carry no header, so
+  the two are one pool, as in C: `curl_free` and `curl_dbg_free` each free either.
 
 Release builds contain none of this.
 

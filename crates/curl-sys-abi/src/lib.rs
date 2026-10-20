@@ -77,7 +77,7 @@ mod tests {
             let text = std::fs::read_to_string(&file).unwrap();
             let field = |name: &str| {
                 text.lines()
-                    .take(3)
+                    .take(4)
                     .find_map(|l| l.strip_prefix(name))
                     .map(str::to_owned)
             };
@@ -85,6 +85,15 @@ mod tests {
             else {
                 continue;
             };
+            let output =
+                field("// output-hash: ").expect("generated files record their body's hash");
+            let (_, body) = text.split_once("\n\n").expect("a header, then the body");
+            assert_eq!(
+                u64::from_str_radix(&output, 16).unwrap(),
+                fnv1a(0xcbf2_9ce4_8422_2325, body.as_bytes()),
+                "{} was edited by hand or reformatted: run gen/all.py",
+                file.display()
+            );
             let hash = inputs.split(' ').fold(0xcbf2_9ce4_8422_2325, |h, input| {
                 fnv1a(h, &input_bytes(&root.join(input)))
             });

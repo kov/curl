@@ -2,9 +2,10 @@
 Shared by the generators of Rust code in gen/.
 
 Each generated file starts with a header naming the generator, the
-files it was generated from and a hash of them. The `generated_is_fresh`
-test in curl-sys-abi recomputes the hash of every such file in crates/,
-so a stale file fails `cargo test` without Python.
+files it was generated from, a hash of them and a hash of the file's
+body. The `generated_is_fresh` test in curl-sys-abi recomputes both for
+every such file in crates/, so a stale or hand-edited file fails
+`cargo test` without Python.
 """
 
 import pathlib
@@ -47,8 +48,17 @@ def header(generator, inputs):
             f"// inputs-hash: {digest:016x}\n\n")
 
 
+def with_output_hash(text):
+    """Add the hash of the body, what follows the header's blank line."""
+    head, sep, body = text.partition("\n\n")
+    check(sep and head.splitlines()[-1].startswith("// inputs-hash: "),
+          "generated text does not start with genlib.header()")
+    return f"{head}\n// output-hash: {fnv1a(body.encode()):016x}{sep}{body}"
+
+
 def write(path, text):
     """Write `path`, or with `--check` fail if it would change."""
+    text = with_output_hash(text)
     if "--check" in sys.argv[1:]:
         check(path.exists() and path.read_text() == text,
               f"{path.relative_to(ROOT)} is stale; run gen/all.py")

@@ -75,6 +75,12 @@ pub(crate) enum Wake {
 }
 
 impl TransferState {
+    /// Whether the transfer holds a connection lease.
+    #[cfg(any(test, debug_assertions))]
+    pub(crate) fn holds_lease(&self) -> bool {
+        matches!(self, TransferState::Exchanging(_) | TransferState::Done(_))
+    }
+
     pub(crate) fn is_completed(&self) -> bool {
         matches!(self, TransferState::Completed(_))
     }

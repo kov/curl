@@ -7,6 +7,8 @@
 //! `Easy` back with `remove`. It learns when to drive the multi next
 //! through the timer events of its `MultiEvents`.
 
+#[cfg(debug_assertions)]
+mod check;
 mod cx;
 mod notify;
 mod sched;
@@ -29,7 +31,7 @@ pub use sched::Counts;
 pub use timers::TimerChange;
 
 use notify::NotifyQueue;
-use sched::RowSet;
+use sched::{RowSet, Tally};
 use state::{Message as MessageState, Run, StepCx, TransferState, Wake};
 use timers::{Due, TimerAnnounce, TimerQueue};
 
@@ -149,9 +151,11 @@ pub struct Multi<H: Host = NoHost> {
     timers: TimerQueue<Transfer>,
     announce: TimerAnnounce,
     notify: NotifyQueue,
+    /// Notifications are being delivered.
+    delivering: bool,
     pool: Pool,
     clock: Box<dyn Clock>,
-    counts: Counts,
+    counts: Tally,
     life: Life,
 }
 
@@ -163,9 +167,10 @@ impl<H: Host> Multi<H> {
             timers: TimerQueue::new(),
             announce: TimerAnnounce::default(),
             notify: NotifyQueue::default(),
+            delivering: false,
             pool: Pool::new()?,
             clock: env.clock,
-            counts: Counts::default(),
+            counts: Tally::default(),
             life: Life::Alive,
         })
     }
@@ -174,6 +179,17 @@ impl<H: Host> Multi<H> {
     /// Everything the transfer can need from the multi's tables is
     /// reserved here, so running it allocates nothing in them.
     pub fn add(
+        &mut self,
+        easy: Easy,
+        owner: H::Transfer,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<TransferId, AddError> {
+        let added = self.add_unchecked(easy, owner, ev);
+        self.check();
+        added
+    }
+
+    fn add_unchecked(
         &mut self,
         easy: Easy,
         owner: H::Transfer,
@@ -206,16 +222,13 @@ impl<H: Host> Multi<H> {
             easy,
             run: Some(run),
         });
-        self.counts.running += 1;
-        self.counts.current += 1;
-        self.counts.added_ever += 1;
+        self.counts.added();
         self.dirty.insert(id.index());
         // Inside the add, as C, so the application hears of the 0 ms run.
         if let Err(kind) = self.update_timer(ev) {
             let slot = self.slots.remove(id).expect("just added");
             self.dirty.remove(id.index());
-            self.counts.running -= 1;
-            self.counts.current -= 1;
+            self.counts.add_undone();
             return refuse(kind, slot.easy);
         }
         Ok(id)
@@ -226,15 +239,22 @@ impl<H: Host> Multi<H> {
     /// A transfer that had not completed gives its connection back as a
     /// premature end, and leaves no message.
     pub fn remove(&mut self, id: TransferId, ev: &mut dyn MultiEvents<H>) -> Option<Removed<H>> {
+        let removed = self.remove_unchecked(id, ev);
+        self.check();
+        removed
+    }
+
+    fn remove_unchecked(
+        &mut self,
+        id: TransferId,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Option<Removed<H>> {
         let mut slot = self.slots.remove(id)?;
         let run = slot
             .run
             .take()
             .expect("no transfer is out while the multi is called");
-        if !run.state.is_completed() {
-            self.counts.running -= 1;
-        }
-        self.counts.current -= 1;
+        self.counts.removed(run.state.is_completed());
         run.state.abandon(&mut self.pool);
         self.timers.remove(id);
         self.dirty.remove(id.index());
@@ -250,6 +270,12 @@ impl<H: Host> Multi<H> {
     /// the application when to come back (`curl_multi_perform`). Returns
     /// how many are still running.
     pub fn perform(&mut self, ev: &mut dyn MultiEvents<H>) -> Result<u32, MultiErrorKind> {
+        let running = self.perform_unchecked(ev);
+        self.check();
+        running
+    }
+
+    fn perform_unchecked(&mut self, ev: &mut dyn MultiEvents<H>) -> Result<u32, MultiErrorKind> {
         let now = self.clock.now();
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
@@ -262,11 +288,21 @@ impl<H: Host> Multi<H> {
             self.requeue_after_expiry(id, now);
         }
         self.update_timer(ev)?;
-        Ok(self.counts.running)
+        Ok(self.counts.get().running)
     }
 
     /// Run the transfers an event concerns (`curl_multi_socket_action`).
     pub fn socket_action(
+        &mut self,
+        what: SocketEvent,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<u32, MultiErrorKind> {
+        let running = self.socket_action_unchecked(what, ev);
+        self.check();
+        running
+    }
+
+    fn socket_action_unchecked(
         &mut self,
         what: SocketEvent,
         ev: &mut dyn MultiEvents<H>,
@@ -286,7 +322,7 @@ impl<H: Host> Multi<H> {
         }
         self.dispatch(ev);
         self.update_timer(ev)?;
-        Ok(self.counts.running)
+        Ok(self.counts.get().running)
     }
 
     /// The oldest-added unread completion, marked read
@@ -313,7 +349,7 @@ impl<H: Host> Multi<H> {
     }
 
     pub fn counts(&self) -> Counts {
-        self.counts
+        self.counts.get()
     }
 
     pub fn easy(&self, id: TransferId) -> Option<&Easy> {
@@ -349,7 +385,7 @@ impl<H: Host> Multi<H> {
         while state::step(&mut run, &mut cx) == Wake::Again {}
         let completed = run.state.is_completed();
         if completed {
-            self.counts.running -= 1;
+            self.counts.completed();
             run.deadlines.clear_all();
             self.timers.remove(id);
         } else {
@@ -387,6 +423,7 @@ impl<H: Host> Multi<H> {
     /// nothing. One whose kind was turned off, or whose transfer is gone,
     /// is dropped.
     fn dispatch(&mut self, ev: &mut dyn MultiEvents<H>) {
+        self.delivering = true;
         let mut i = 0;
         while let Some(n) = self.notify.get(i) {
             i += 1;
@@ -399,6 +436,17 @@ impl<H: Host> Multi<H> {
             }
         }
         self.notify.clear();
+        self.delivering = false;
+    }
+
+    /// Check every invariant in the debug build (`check.rs`).
+    fn check(&self) {
+        #[cfg(debug_assertions)]
+        self.check_invariants(if self.delivering {
+            check::At::Delivering
+        } else {
+            check::At::Rest
+        });
     }
 
     /// Run the dirty transfers in id order, those made dirty meanwhile
@@ -473,7 +521,7 @@ impl<H: Host> Multi<H> {
         let mut cx = EventCx {
             slots: &mut self.slots,
             notify: &mut self.notify,
-            counts: self.counts,
+            counts: self.counts.get(),
         };
         ev.timer(&mut cx, change).map_err(|Abort| {
             self.life = Life::Dead;
@@ -539,5 +587,7 @@ impl<H: Host> Drop for Multi<H> {
     }
 }
 
+#[cfg(test)]
+mod props;
 #[cfg(test)]
 mod tests;

@@ -139,6 +139,7 @@ curl-core/src/
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
     sockets.rs               SocketTable, pollset diff, announce
     notify.rs                NotifyQueue, Notification, NotifyKind
+    check.rs                 the debug build's invariant check
     cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx
     wait.rs                  wait/poll/fdset/waitfds over Net
   conn/
@@ -644,9 +645,14 @@ internal invariant.
 
 ### 3.7 Counts and messages
 
-`Counts { running, pending, done_unread, current, added_ever }` is written only by the transition
-function as states change, and is checked against a full recount from the states after every pass
-in the debug build. `running_handles` is "added and not `Completed`" (Init and Pending count).
+`Counts { running, pending, done_unread, current, added_ever }` lives in a `Tally` whose only
+writers are its methods for a transfer added, refused after adding, completed and removed. After
+every `add`, `remove`, `perform` and `socket_action`, the debug build recounts from the states
+and checks the counts, that no `Run` is out of its slot or resting in `Done`, that the timer
+queue holds exactly each transfer's next wake-up, that the pool holds exactly the leased
+connections, that every dirty row names a transfer, and, outside delivery, that no notification
+is left queued (`multi/check.rs`). `running_handles` is "added and not `Completed`" (Init and
+Pending count).
 `info_read` returns the lowest-slot `Completed { message: Unread }`, sets it `Read`, and reports
 the number still unread.
 
@@ -1225,6 +1231,10 @@ Each is either unobservable through the ABI or a fixed bug:
 - Stale notifications, socket users and the pending cursor resolve to nothing (generational
   ids); C may hand them to whatever easy reuses the mid.
 - `remove` runs the completion hook (C bypasses it at multi.c:815).
+- A transfer the timer callback refuses inside `add` is not counted as running. C takes it out
+  of its table but leaves its process bit and `xfers_alive`, so `running_handles` stays one too
+  high for the life of the multi, and the debug build asserts at the next perform
+  (multi.c:2916). It still counts towards `CURLMINFO_XFERS_ADDED`, as in C.
 - `EXPIRE_MULTI_PENDING` does not exist (never armed in C).
 - Connection settings are captured per connection, not last-writer-wins on an admin easy.
 - `curl_easy_reset` cannot desynchronise socket bookkeeping: the announced pollset lives in the

@@ -76,6 +76,41 @@ pub struct Counts {
     pub added_ever: u64,
 }
 
+/// The multi's counts, changed only as transfers come, complete and go.
+/// The debug build checks them against a recount after every call.
+#[derive(Debug, Default)]
+pub(crate) struct Tally(Counts);
+
+impl Tally {
+    pub(crate) fn get(&self) -> Counts {
+        self.0
+    }
+
+    pub(crate) fn added(&mut self) {
+        self.0.running += 1;
+        self.0.current += 1;
+        self.0.added_ever += 1;
+    }
+
+    /// An add the timer callback refused: the transfer is gone again, but
+    /// it was added.
+    pub(crate) fn add_undone(&mut self) {
+        self.0.running -= 1;
+        self.0.current -= 1;
+    }
+
+    pub(crate) fn completed(&mut self) {
+        self.0.running -= 1;
+    }
+
+    pub(crate) fn removed(&mut self, completed: bool) {
+        if !completed {
+            self.0.running -= 1;
+        }
+        self.0.current -= 1;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

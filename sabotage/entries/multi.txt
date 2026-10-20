@@ -85,7 +85,7 @@ file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::completions_are_read_in_id_order
 --- old
         if completed {
-            self.counts.running -= 1;
+            self.counts.completed();
 --- new
         if completed {
 
@@ -226,3 +226,51 @@ witness: curl-core multi::tests::the_timer_callback_can_read_messages
     pub fn info_read(&mut self) -> Option<Message<'_, H>> {
         None
     }
+
+=== removing a completed transfer counts it off running a second time
+file: crates/curl-core/src/multi/sched.rs
+witness: curl-core multi::props::random_calls_keep_the_multi_consistent
+--- old
+    pub(crate) fn removed(&mut self, completed: bool) {
+        if !completed {
+            self.0.running -= 1;
+        }
+--- new
+    pub(crate) fn removed(&mut self, completed: bool) {
+        if !completed || self.0.running > 0 {
+            self.0.running -= 1;
+        }
+
+=== a completed transfer stays in the timer queue
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::props::random_calls_keep_the_multi_consistent
+--- old
+            self.counts.completed();
+            run.deadlines.clear_all();
+            self.timers.remove(id);
+--- new
+            self.counts.completed();
+            run.deadlines.clear_all();
+
+=== a removed transfer stays dirty
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::props::random_calls_keep_the_multi_consistent
+--- old
+        self.timers.remove(id);
+        self.dirty.remove(id.index());
+        let status = self.update_timer(ev);
+--- new
+        self.timers.remove(id);
+        let status = self.update_timer(ev);
+
+=== an expired timer is not queued again
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::props::random_calls_keep_the_multi_consistent
+--- old
+        while let Some(id) = self.timers.pop_due(now) {
+            self.requeue_after_expiry(id, now);
+        }
+--- new
+        while let Some(id) = self.timers.pop_due(now) {
+            let _ = id;
+        }

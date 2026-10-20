@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 4 and 5a to 5c are **done**; every other step is **to do**.
+Status: steps 1 to 4 and 5a to 5d are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -88,8 +88,13 @@ yet meet.
      callback getting nothing, `add` and `remove` from a notification, `info_read` from the
      timer callback. `EngineRest`, `TransferCx` and the handler traits come with step 7, whose
      callbacks are the first to need them.
-   - **5d. multi: check the invariants.** A full recount after every pass in the debug build;
-     property tests for the invariants.
+   - **5d. multi: check the invariants.** **Done.** The counts behind a `Tally` with one method
+     per event; `multi/check.rs` recounting and cross-checking every table after each `add`,
+     `remove`, `perform` and `socket_action` in the debug build; a proptest property test of
+     random adds, removes, passes, clock moves, reads, notification switches, timer aborts and
+     removals from inside notifications against a model of what the application sees. It
+     found that a transfer refused inside `add` counts as added, as in C; C's leaked running
+     count for it is recorded as a deliberate difference.
    - **5e. multi: survive allocation failure.** The add/perform/remove torture scenario under
      the tracker's limit, which also exercises arena growth failing.
 6. **os: add sockets, polling and the waker.** `curl-os` `net.rs`, `poll.rs`, `wake.rs`, with the

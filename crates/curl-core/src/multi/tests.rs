@@ -314,6 +314,9 @@ fn transfers_on_later_rows_get_timers() {
     assert_eq!(m.timeout(), Some(Duration::from_millis(1000)));
 }
 
+/// C leaves a refused transfer in `running_handles` for good, though its
+/// `CURLMINFO_XFERS_RUNNING` drops at the next perform (ENGINE.md 7.8);
+/// it does count it as added.
 #[test]
 fn a_refused_add_counts_nothing_as_running() {
     let (mut m, _clock) = multi();
@@ -322,8 +325,14 @@ fn a_refused_add_counts_nothing_as_running() {
         ..RecordingEvents::default()
     };
     m.add(easy("null://a"), (), &mut ev).unwrap_err();
-    let counts = m.counts();
-    assert_eq!((counts.running, counts.current), (0, 0));
+    assert_eq!(
+        m.counts(),
+        Counts {
+            running: 0,
+            current: 0,
+            added_ever: 1
+        }
+    );
 }
 
 #[test]

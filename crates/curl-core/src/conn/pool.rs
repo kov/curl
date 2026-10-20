@@ -124,7 +124,7 @@ impl Pool {
     }
 
     /// Connections in the pool, busy or idle.
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn len(&self) -> u32 {
         self.conns.len()
     }

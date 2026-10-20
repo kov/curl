@@ -1,6 +1,7 @@
 //! Nonblocking TCP sockets (`lib/cf-socket.c`). Opening and connecting
 //! are system calls of their own; everything after goes through a std
-//! `TcpStream`, which already sends with `MSG_NOSIGNAL`.
+//! `TcpStream`, which already sends with `MSG_NOSIGNAL`. A nonblocking
+//! receive or send never sleeps, so no signal interrupts it.
 
 #![allow(unsafe_code)]
 
@@ -140,29 +141,23 @@ impl TcpSocket {
     /// look like the peer closing.
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
         assert!(!buf.is_empty(), "a receive needs room");
-        loop {
-            match (&self.0).read(buf) {
-                Ok(n) => return Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Recv::WouldBlock),
-                Err(e) => return Err(e),
-            }
+        match (&self.0).read(buf) {
+            Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Recv::WouldBlock),
+            Err(e) => Err(e),
         }
     }
 
     /// Send from `buf`, which must not be empty.
     pub fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         assert!(!buf.is_empty(), "a send needs bytes");
-        loop {
-            match (&self.0).write(buf) {
-                Ok(n) => {
-                    let n = NonZeroUsize::new(n).expect("a send of some bytes takes some");
-                    return Ok(Sent::Bytes(n));
-                }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Sent::WouldBlock),
-                Err(e) => return Err(e),
+        match (&self.0).write(buf) {
+            Ok(n) => {
+                let n = NonZeroUsize::new(n).expect("a send of some bytes takes some");
+                Ok(Sent::Bytes(n))
             }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Sent::WouldBlock),
+            Err(e) => Err(e),
         }
     }
 
@@ -187,6 +182,7 @@ impl TcpSocket {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv6Addr, TcpListener};
+    use std::os::fd::AsRawFd;
     use std::time::Duration;
 
     use super::*;
@@ -319,8 +315,100 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let (s, mut peer) = connected(&listener);
         s.set_nodelay(true).unwrap();
+        assert!(s.0.nodelay().unwrap());
         s.shutdown_send().unwrap();
         let mut buf = [0u8; 4];
         assert_eq!(std::io::Read::read(&mut peer, &mut buf).unwrap(), 0);
+    }
+
+    /// Close `peer` with a reset rather than an orderly end.
+    fn reset(peer: TcpStream) {
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        let len = libc::socklen_t::try_from(size_of::<libc::linger>()).unwrap();
+        // SAFETY: `linger` is a valid `SO_LINGER` value of the length given
+        // and lives through the call; `peer` is open.
+        let rc = unsafe {
+            libc::setsockopt(
+                peer.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                (&raw const linger).cast(),
+                len,
+            )
+        };
+        assert_eq!(rc, 0);
+    }
+
+    #[test]
+    fn a_reset_connection_fails_both_ways() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (s, peer) = connected(&listener);
+        reset(peer);
+        assert!(ready(&s, Events::IN).contains(Events::IN));
+        let mut buf = [0u8; 4];
+        let err = s.recv(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionReset);
+        let err = s.send(b"x").unwrap_err();
+        assert!(
+            matches!(
+                err.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ),
+            "{err}"
+        );
+    }
+
+    /// Set in the child process `descriptors_run_from_zero_to_the_limit`
+    /// runs itself in.
+    const CHILD: &str = "CURL_OS_NET_DESCRIPTOR_CHILD";
+
+    /// A socket may be descriptor 0, and opening one past the descriptor
+    /// limit is an error, not a crash. Run in a child process, as it
+    /// closes stdin and lowers the limit.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn descriptors_run_from_zero_to_the_limit() {
+        if std::env::var_os(CHILD).is_some() {
+            return in_child();
+        }
+        let name = "net::tests::descriptors_run_from_zero_to_the_limit";
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stdout}{stderr}");
+        assert!(stdout.contains("1 passed"), "the child ran it: {stdout}");
+    }
+
+    fn in_child() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // SAFETY: nothing in this process reads stdin.
+        assert_eq!(unsafe { libc::close(0) }, 0);
+        let (s, _) = connect(addr).unwrap();
+        assert_eq!(s.fd().as_raw_fd(), 0, "the lowest free descriptor");
+        // SAFETY: `dup` of the open stdout; the copy is closed at once.
+        let next = unsafe { libc::dup(1) };
+        assert!(next > 0);
+        // SAFETY: `next` was just opened here and is used by nothing else.
+        assert_eq!(unsafe { libc::close(next) }, 0);
+        // SAFETY: a zeroed `rlimit` is valid, and is filled in by the call.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        // SAFETY: `limit` is valid to write and lives through the call.
+        let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) };
+        assert_eq!(rc, 0);
+        limit.rlim_cur = libc::rlim_t::try_from(next).unwrap();
+        // SAFETY: `limit` is valid and lives through the call.
+        let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
+        assert_eq!(rc, 0);
+        let err = connect(addr).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::EMFILE));
+        drop(s);
     }
 }

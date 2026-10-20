@@ -38,12 +38,6 @@ impl std::ops::BitOr for Events {
     }
 }
 
-impl std::ops::BitOrAssign for Events {
-    fn bitor_assign(&mut self, other: Events) {
-        self.0 |= other.0;
-    }
-}
-
 /// One descriptor to poll, borrowed for as long as the entry lives: the
 /// kernel is never handed a descriptor that may have been closed.
 #[derive(Clone, Copy)]
@@ -117,6 +111,36 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn events_combine_and_contain() {
+        let both = Events::IN | Events::OUT;
+        assert!(both.contains(Events::IN));
+        assert!(both.contains(Events::OUT));
+        assert!(!Events::IN.contains(Events::OUT));
+        assert_eq!(Events::IN | Events::IN, Events::IN);
+        assert!(Events::NONE.is_empty());
+        assert!(!both.is_empty());
+    }
+
+    #[test]
+    fn a_copy_s_events_go_back_to_the_entry() {
+        let (mut a, b) = UnixStream::pair().unwrap();
+        a.write_all(b"x").unwrap();
+        let mut mine = PollFd::new(b.as_fd(), Events::IN | Events::OUT);
+        let mut copies = [mine];
+        assert_eq!(poll(&mut copies, Duration::from_secs(5)).unwrap(), 1);
+        mine.copy_revents(&copies[0]);
+        assert_eq!(mine.revents(), Events::IN | Events::OUT);
+    }
+
+    #[test]
+    #[should_panic = "a copy of this entry"]
+    fn events_only_go_back_to_the_entry_polled() {
+        let (_a, b) = UnixStream::pair().unwrap();
+        let mut mine = PollFd::new(b.as_fd(), Events::IN);
+        mine.copy_revents(&PollFd::new(b.as_fd(), Events::OUT));
+    }
 
     #[test]
     fn reports_the_ready_descriptor_only() {

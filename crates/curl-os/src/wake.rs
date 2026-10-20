@@ -1,6 +1,7 @@
 //! Waking a waiting multi from another thread (`curl_multi_wakeup`,
 //! `lib/socketpair.c`): a connected socket pair, written on one end and
-//! polled on the other.
+//! polled on the other. Both ends are nonblocking, so no signal
+//! interrupts a wake or a drain.
 
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsFd, BorrowedFd};
@@ -25,13 +26,10 @@ impl Waker {
     /// Make the next poll of [`Waker::fd`] report it readable. A wake
     /// already pending is enough: a full pipe is not an error.
     pub fn wake(&self) -> io::Result<()> {
-        loop {
-            match (&self.write).write(&[1]) {
-                Ok(_) => return Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(e) => return Err(e),
-            }
+        match (&self.write).write(&[1]) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(e) => Err(e),
         }
     }
 
@@ -42,7 +40,6 @@ impl Waker {
             match (&self.read).read(&mut buf) {
                 Ok(0) => return Ok(()),
                 Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(e) => return Err(e),
             }

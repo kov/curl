@@ -21,12 +21,10 @@ witness: curl-os poll::tests::a_sub_millisecond_timeout_still_waits
 file: crates/curl-os/src/wake.rs
 witness: curl-os wake::tests::waking_more_than_the_pipe_holds_is_fine
 --- old
-                Ok(_) => return Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
 --- new
-                Ok(_) => return Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Ok(_) => Ok(()),
 
 === draining takes only the first read's worth of wakes
 file: crates/curl-os/src/wake.rs
@@ -58,20 +56,46 @@ witness: curl-os net::tests::connects_over_ipv4_and_ipv6
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::receives_data_then_the_end_of_the_stream
 --- old
-                Ok(n) => return Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
+            Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
 --- new
-                Ok(n) => return Ok(NonZeroUsize::new(n).map_or(Recv::WouldBlock, Recv::Data)),
+            Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::WouldBlock, Recv::Data)),
 
 === a receive with nothing to read is an error
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::receives_data_then_the_end_of_the_stream
 --- old
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Recv::WouldBlock),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Recv::WouldBlock),
 --- new
 
 === a send into full buffers is an error
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_send_into_full_buffers_would_block
 --- old
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(Sent::WouldBlock),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Sent::WouldBlock),
+--- new
+
+=== a reset connection reads as would-block
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::a_reset_connection_fails_both_ways
+--- old
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Recv::WouldBlock),
+            Err(e) => Err(e),
+--- new
+            Err(_) => Ok(Recv::WouldBlock),
+
+=== a socket opened as descriptor 0 is taken for a failure
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::descriptors_run_from_zero_to_the_limit
+--- old
+    if fd < 0 {
+--- new
+    if fd <= 0 {
+
+=== a failed socket(2) is taken for a descriptor
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::descriptors_run_from_zero_to_the_limit
+--- old
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
 --- new

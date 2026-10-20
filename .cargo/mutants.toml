@@ -38,6 +38,7 @@ exclude_re = [
     # Joining parts whose bits cannot overlap: `|` and `^` agree.
     'url/host\.rs:.*: replace \| with \^ in (ipv4|pton6)$',
     'url/encode\.rs:.*: replace \| with \^ in (escaped_byte|decode)$',
+    'curl-os/src/net\.rs:.*: replace \| with \^ in connect$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.
     'url/host\.rs:.*: replace < with <= in invalid_host_byte$',
     # `ipv4` is only given a host that starts with a digit, so it never
@@ -68,6 +69,9 @@ exclude_re = [
     'multi/state\.rs:.*: replace is_premature -> bool with (true|false)$',
     # Reserving more than needed.
     '(sched|timers|notify)\.rs:.*: replace (< with <=|- with \+) in (RowSet|TimerQueue<T>|NotifyQueue)::reserve$',
+    # The waker holds both ends of its nonblocking pair, so no error but
+    # would-block can be made to happen.
+    'curl-os/src/wake\.rs:.*: replace match guard e\.kind\(\) == io::ErrorKind::WouldBlock with true in Waker::(wake|drain)$',
     # Sequence numbers are unique: two entries never compare equal.
     'multi/timers\.rs:.*: replace < with <= in Entry<T>::before$',
 ]

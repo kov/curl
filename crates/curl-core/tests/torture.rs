@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use curl_alloc::track::{self, Tracker};
 use curl_alloc::{OutOfMemory, try_box};
+use curl_core::conn::io::{FakeNet, Net};
 use curl_core::easy::Easy;
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
@@ -76,9 +77,12 @@ struct Outcome {
 fn scenario() -> Result<Outcome, OutOfMemory> {
     let clock = ManualClock::new()?;
     let boxed: Box<dyn Clock> = try_box(clock.clone())?;
+    let net: Box<dyn Net> = try_box(FakeNet::new(clock.clone()))?;
     let env = Env {
         clock: boxed,
+        net,
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
     };
     let mut m: Multi = Multi::new(env)?;
     m.set_notify(NotifyKind::InfoRead, true);

@@ -5,6 +5,7 @@
 use proptest::prelude::*;
 
 use super::*;
+use crate::conn::io::FakeNet;
 use crate::time::{ManualClock, TimeLimit};
 
 #[derive(Clone, Debug)]
@@ -116,7 +117,9 @@ fn run(ops: &[Op]) {
     let clock = ManualClock::new().unwrap();
     let env = Env {
         clock: Box::new(clock.clone()),
+        net: Box::new(FakeNet::new(clock.clone())),
         arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
     };
     let mut m = Multi::new(env).unwrap();
     let mut ev = Events::default();

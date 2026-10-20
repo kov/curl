@@ -1,0 +1,90 @@
+# Waiting: Multi::wait, the waker, FakeNet and drive_to_completion
+# (crates/curl-core/src/multi/mod.rs, conn/io.rs), against multi.c's
+# multi_wait and easy.c's easy_transfer.
+
+=== curl_multi_wait with nothing to wait for sleeps
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::wait_with_nothing_to_wait_for_returns_at_once
+--- old
+        if fds.is_empty() && mode == WaitMode::Wait {
+            return Ok(0);
+        }
+--- new
+
+=== a wait is not cut short by the multi's own timeout
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::the_multi_s_own_timeout_cuts_a_wait_short
+--- old
+        let timeout = self.timeout().map_or(max, |t| t.min(max));
+--- new
+        let timeout = max;
+
+=== the waker's event is counted as a ready descriptor
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
+--- old
+            let _ = w.drain();
+            ready -= 1;
+--- new
+            let _ = w.drain();
+
+=== a wake is left pending after it ended a wait
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
+--- old
+            let _ = w.drain();
+            ready -= 1;
+--- new
+            ready -= 1;
+
+=== the waker is watched by a wait that does not wait
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
+--- old
+        let watch_waker = mode == WaitMode::Poll || !extra.is_empty();
+--- new
+        let watch_waker = true;
+
+=== the application's descriptors do not get their events
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_entries
+--- old
+        for (mine, polled) in extra.iter_mut().zip(&fds) {
+            mine.copy_revents(polled);
+        }
+--- new
+
+=== a failed poll is reported as something else
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_failed_poll_is_unrecoverable
+--- old
+            .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
+--- new
+            .map_err(|_| MultiErrorKind::InternalError)?;
+
+=== the fake network sleeps even when something is ready
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_entries
+--- old
+        if ready == 0 {
+            self.clock.advance(timeout);
+        }
+--- new
+        self.clock.advance(timeout);
+
+=== driving one transfer reads whichever message is first
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
+--- old
+        if let Some(outcome) = m.take_outcome(id) {
+--- new
+        if let Some(outcome) = m.info_read().map(|msg| msg.result) {
+
+=== driving a transfer not in the multi waits forever
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
+--- old
+    if m.slots.get(id).is_none() {
+        return Err(MultiErrorKind::BadEasyHandle);
+    }
+--- new

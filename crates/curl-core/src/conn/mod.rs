@@ -3,8 +3,10 @@
 //!
 //! Only networkless connections exist yet, which `file:` leases as C
 //! attaches a connection to every transfer; the multi uses them from
-//! milestone 1 step 5b (MILESTONES.md).
+//! milestone 1 step 5b (MILESTONES.md). `io` is the engine's way to the
+//! network.
 
+pub mod io;
 mod pool;
 
 pub(crate) use pool::{ConnLease, Finish, Pool};

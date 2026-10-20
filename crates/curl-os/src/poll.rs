@@ -46,6 +46,7 @@ impl std::ops::BitOrAssign for Events {
 
 /// One descriptor to poll, borrowed for as long as the entry lives: the
 /// kernel is never handed a descriptor that may have been closed.
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct PollFd<'a> {
     raw: libc::pollfd,
@@ -67,6 +68,17 @@ impl<'a> PollFd<'a> {
     /// What the last `poll` reported for this descriptor.
     pub fn revents(&self) -> Events {
         Events(self.raw.revents)
+    }
+
+    /// Take what a poll of a copy of this entry reported, as when the
+    /// entries were polled among others.
+    pub fn copy_revents(&mut self, polled: &PollFd<'_>) {
+        assert_eq!(
+            (self.raw.fd, self.raw.events),
+            (polled.raw.fd, polled.raw.events),
+            "a copy of this entry"
+        );
+        self.raw.revents = polled.raw.revents;
     }
 }
 

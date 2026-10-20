@@ -1,4 +1,8 @@
 use super::*;
+use curl_alloc::TryArc;
+use curl_os::wake::Waker;
+
+use crate::conn::io::{Events, FakeNet, Net, PollFd};
 use crate::options::Options;
 use crate::time::{ManualClock, TimeLimit};
 
@@ -27,7 +31,9 @@ fn multi() -> (Multi, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let env = Env {
         clock: Box::new(clock.clone()),
+        net: Box::new(FakeNet::new(clock.clone())),
         arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
     };
     (Multi::new(env).unwrap(), clock)
 }
@@ -243,12 +249,15 @@ impl Clock for LaggingClock {
 
 fn lagging_multi() -> (Multi, std::rc::Rc<std::cell::Cell<Duration>>) {
     let lag = std::rc::Rc::new(std::cell::Cell::new(Duration::ZERO));
+    let inner = ManualClock::new().unwrap();
     let env = Env {
         clock: Box::new(LaggingClock {
-            inner: ManualClock::new().unwrap(),
+            inner: inner.clone(),
             lag: lag.clone(),
         }),
+        net: Box::new(FakeNet::new(inner)),
         arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
     };
     (Multi::new(env).unwrap(), lag)
 }
@@ -635,5 +644,155 @@ fn callbacks_reach_the_multi_through_their_contexts() {
     assert_eq!(
         m.easy(id).unwrap().options().url(),
         Some(&b"null://again"[..])
+    );
+}
+
+fn multi_with_waker() -> (Multi, ManualClock, TryArc<Waker>) {
+    let clock = ManualClock::new().unwrap();
+    let waker = TryArc::try_new(Waker::new().unwrap()).unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(FakeNet::new(clock.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: Some(waker.clone()),
+    };
+    (Multi::new(env).unwrap(), clock, waker)
+}
+
+/// How far `f` moved the clock: how long a wait over `FakeNet` slept.
+fn slept(clock: &ManualClock, f: impl FnOnce()) -> Duration {
+    let start = clock.now();
+    f();
+    clock.now().since(start)
+}
+
+#[test]
+fn wait_with_nothing_to_wait_for_returns_at_once() {
+    let (mut m, clock) = multi();
+    let max = Duration::from_secs(3);
+    let took = slept(&clock, || {
+        assert_eq!(m.wait(&mut [], max, WaitMode::Wait), Ok(0));
+    });
+    assert_eq!(took, Duration::ZERO);
+}
+
+#[test]
+fn poll_sleeps_out_its_timeout_with_nothing_to_wait_for() {
+    let (mut m, clock) = multi();
+    let max = Duration::from_secs(3);
+    let took = slept(&clock, || {
+        assert_eq!(m.wait(&mut [], max, WaitMode::Poll), Ok(0));
+    });
+    assert_eq!(took, max);
+}
+
+#[test]
+fn the_multi_s_own_timeout_cuts_a_wait_short() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    m.add(stall_within(1500), (), ev).unwrap();
+    let max = Duration::from_secs(10);
+    let took = slept(&clock, || {
+        m.wait(&mut [], max, WaitMode::Poll).unwrap();
+    });
+    assert_eq!(took, Duration::ZERO, "a transfer to run: no wait at all");
+    m.perform(ev).unwrap();
+    let took = slept(&clock, || {
+        m.wait(&mut [], max, WaitMode::Poll).unwrap();
+    });
+    assert_eq!(took, Duration::from_millis(1500));
+}
+
+#[test]
+fn ready_extra_descriptors_are_reported_in_their_entries() {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    let (mut m, clock) = multi();
+    let (mut a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+    let (_c, d) = std::os::unix::net::UnixStream::pair().unwrap();
+    a.write_all(b"x").unwrap();
+    let mut extra = [
+        PollFd::new(d.as_fd(), Events::IN),
+        PollFd::new(b.as_fd(), Events::IN),
+    ];
+    let max = Duration::from_secs(3);
+    let took = slept(&clock, || {
+        assert_eq!(m.wait(&mut extra, max, WaitMode::Wait), Ok(1));
+    });
+    assert_eq!(took, Duration::ZERO);
+    assert!(extra[0].revents().is_empty());
+    assert!(extra[1].revents().contains(Events::IN));
+}
+
+#[test]
+fn a_wake_ends_a_wait_without_counting_and_is_consumed() {
+    let (mut m, clock, waker) = multi_with_waker();
+    let max = Duration::from_secs(3);
+    assert!(m.waker().is_some_and(|w| TryArc::ptr_eq(&w, &waker)));
+    waker.wake().unwrap();
+    // A wait that would not wait leaves the wake pending.
+    assert_eq!(m.wait(&mut [], max, WaitMode::Wait), Ok(0));
+    let took = slept(&clock, || {
+        assert_eq!(m.wait(&mut [], max, WaitMode::Poll), Ok(0));
+    });
+    assert_eq!(took, Duration::ZERO, "woken");
+    let took = slept(&clock, || {
+        assert_eq!(m.wait(&mut [], max, WaitMode::Poll), Ok(0));
+    });
+    assert_eq!(took, max, "the wake was consumed");
+}
+
+/// A network whose every poll fails.
+struct BrokenNet;
+
+impl Net for BrokenNet {
+    fn poll(&mut self, _: &mut [PollFd<'_>], _: Duration) -> std::io::Result<u32> {
+        Err(std::io::Error::from_raw_os_error(9))
+    }
+}
+
+#[test]
+fn a_failed_poll_is_unrecoverable() {
+    let env = Env {
+        clock: Box::new(ManualClock::new().unwrap()),
+        net: Box::new(BrokenNet),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    assert_eq!(
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll),
+        Err(MultiErrorKind::UnrecoverablePoll)
+    );
+}
+
+#[test]
+fn driving_a_transfer_to_completion_leaves_others_messages() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    let sibling = m.add(easy("nope://a"), (), ev).unwrap();
+    let id = m.add(stall_within(2500), (), ev).unwrap();
+    let took = slept(&clock, || {
+        assert_eq!(
+            drive_to_completion(&mut m, id, ev),
+            Ok(Err(ErrorKind::OperationTimedout))
+        );
+    });
+    assert_eq!(
+        took,
+        Duration::from_millis(2500),
+        "the waits slept until the limit"
+    );
+    assert_eq!(
+        messages(&mut m),
+        [(sibling.index(), Err(ErrorKind::UnsupportedProtocol), 0)],
+        "the driven transfer's message is read, the sibling's is not"
+    );
+    let done = m.add(easy("null://b"), (), ev).unwrap();
+    assert_eq!(drive_to_completion(&mut m, done, ev), Ok(Ok(())));
+    m.remove(done, ev).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, done, ev),
+        Err(MultiErrorKind::BadEasyHandle)
     );
 }

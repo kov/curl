@@ -506,7 +506,7 @@ impl<H: Host> Multi<H> {
         -> Result<(), Error>;
     pub fn info_read(&mut self) -> Option<Message<'_, H>>;   // lowest slot first
     pub fn timeout(&self) -> Option<Duration>;
-    pub fn wait(&mut self, extra: &mut [WaitFd], max: Duration, mode: WaitMode)
+    pub fn wait(&mut self, extra: &mut [PollFd<'_>], max: Duration, mode: WaitMode)
         -> Result<u32, MultiError>;
     pub fn waker(&self) -> Option<TryArc<Waker>>;            // Send + Sync, for curl_multi_wakeup
     pub fn assign(&mut self, s: SocketKey, v: H::Socket) -> Result<(), MultiError>;
@@ -550,6 +550,17 @@ Dropping a `Multi` removes every transfer still in it (`curl_multi_cleanup`).
    re-assesses that transfer's pollset and calls the socket callback for the changes, at once;
 4. if anything ran: `now2 = clock.now()`, expire and `run_dirty(now2)` exactly once more;
 5. `schedule_pending` if flagged, dispatch notifications, `timer_update`.
+
+**`wait`** (multi.c:1522) polls the multi's sockets, the application's `extra` descriptors and,
+when the wait will be one (`WaitMode::Poll`, or anything else to poll), the waker, through
+`Net::poll`, for `max` capped by `timeout()`. `WaitMode::Wait` with nothing to poll returns at
+once; `Poll` sleeps. The waker's event is drained and not counted; `extra`'s events are copied
+back into its entries; a failed poll is `UnrecoverablePoll`, a signal ending it early counts as
+nothing ready. A negative timeout is the shim's BAD_FUNCTION_ARGUMENT. `Net` has only `poll`
+until connections need more; `FakeNet` polls real descriptors without waiting and moves the
+`ManualClock` on by the timeout when none is ready. `drive_to_completion` is `easy_transfer`:
+`wait(Poll, 1 s)`, `perform`, until the transfer completes; its message is read, other
+transfers' are not.
 
 `run_dirty` iterates by index cursor, re-reading the dirty set after each transfer; a transfer
 marked dirty by a callback at a higher index is visited in the same pass (C's `bset_next`).

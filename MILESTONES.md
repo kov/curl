@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 5 are **done**; every other step is **to do**.
+Status: steps 1 to 6 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -102,10 +102,14 @@ yet meet.
      past 16 rows among them. Every run ends cleanly with nothing left allocated, and a pass
      allocates nothing. curl-core dev-depends on itself with `test-util`, so a plain
      `cargo test` builds the test doubles and runs it.
-6. **os: add sockets, polling and the waker.** `curl-os` `net.rs`, `poll.rs`, `wake.rs`, with the
-   CLAUDE.md unsafe list updated in the same commit; core
-   `SystemNet`, `FakeNet`; `Multi::wait`/`poll`/`fdset`/`waitfds`/`waker`, `drive_to_completion`. Loopback tests for
-   connect-in-progress, EOF and would-block.
+6. **os: add sockets, polling and the waker.** **Done.** `curl-os` (feature `net`): `net.rs`
+   (nonblocking TCP: connect, recv, send, `SO_ERROR`; UDP and Unix sockets when a protocol
+   needs them), `poll.rs`, `wake.rs` (a socket pair in safe code), with the CLAUDE.md unsafe list
+   updated; core `Net` (just `poll` so far), `SystemNet`, `FakeNet`; `Env` gains the network and
+   the waker; `Multi::wait` with `WaitMode::{Wait, Poll}`, `Multi::waker`,
+   `drive_to_completion`. Loopback tests for connect done or in progress, refusal, would-block
+   both ways, data then EOF, an interrupted poll and a woken wait. `fdset` and `waitfds` are the
+   shim's, built from step 11's `Multi::sockets`, as no transfer owns a socket before then.
 
 **`file://` end to end**
 
@@ -138,7 +142,9 @@ yet meet.
 11. **conn: add plain TCP connections to the pool.** Network routes, reuse and idle
     connections, leases counted per connection, the connection table's own growth (C doubles it
     from 16 when full), the four lock points (a recording `Lock` test pins the 1554 sequence), `ConnectMachine` with `Resolving` (`Literal`) → `Racing` (one attempt) →
-    established, socket open and close order, `ShutdownSet`. `FakeNet` tests: refusal ("Failed
+    established, socket open and close order, `ShutdownSet`, `Multi::sockets` (the transfers'
+    and closing connections' sockets, which `wait` polls and the shim's `fdset` and `waitfds`
+    list). `FakeNet` tests: refusal ("Failed
     to connect to … after N ms"), connect timeout under `ManualClock`, REMOVE before the close
     hook.
 12. **http1: render requests behind the credential gate.** `RequestHead`, `UserHeaders`,

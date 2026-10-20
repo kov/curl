@@ -129,6 +129,10 @@ def declarator_name(decl):
     m = re.search(r"\(\s*\*\s*(\w+)\s*\)", decl)
     if m:
         return m.group(1)
+    # A function type: `RET name(params)`.
+    m = re.match(r"^[^(]*?\b(\w+)\s*\(.*\)$", decl.strip())
+    if m:
+        return m.group(1)
     decl = re.sub(r"\[[^\]]*\]", "", decl)
     return re.findall(r"\w+", decl)[-1]
 

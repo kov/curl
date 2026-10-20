@@ -23737,6 +23737,14 @@
     "size": 4
    },
    {
+    "align": 4,
+    "decl": "typedef CURLcode curl_ssls_export_cb(CURL *curl, void *userptr, const char *session_key, const unsigned char *shmac, size_t shmac_len, const unsigned char *sdata, size_t sdata_len, curl_off_t valid_until, int ietf_tls_id, const char *alpn, size_t earlydata_max)",
+    "deprecated": null,
+    "header": "curl.h",
+    "name": "curl_ssls_export_cb",
+    "size": 1
+   },
+   {
     "align": 8,
     "decl": "typedef char *(*curl_strdup_callback)(const char *str)",
     "deprecated": null,
@@ -23818,14 +23826,6 @@
     "header": "curl.h",
     "name": "curlsocktype",
     "size": 4
-   },
-   {
-    "align": null,
-    "decl": "typedef CURLcode curl_ssls_export_cb(CURL *curl, void *userptr, const char *session_key, const unsigned char *shmac, size_t shmac_len, const unsigned char *sdata, size_t sdata_len, curl_off_t valid_until, int ietf_tls_id, const char *alpn, size_t earlydata_max)",
-    "deprecated": null,
-    "header": "curl.h",
-    "name": "earlydata_max",
-    "size": null
    }
   ]
  },

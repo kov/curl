@@ -6,6 +6,8 @@ use curl_alloc::{OutOfMemory, TryRc};
 /// One client write.
 #[derive(Debug)]
 pub enum Piece {
+    /// A status line, with its line ending.
+    Status(Vec<u8>),
     /// A header line, with its line ending.
     Header(Vec<u8>),
     /// A header line of a proxy's answer to CONNECT.

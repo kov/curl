@@ -89,3 +89,91 @@ witness: curl-core deliver::tests::a_connect_answer_does_not_start_the_response
         }
 --- new
         self.accountant.response_started(cx);
+
+=== a header's value keeps its trailing blanks
+file: crates/curl-core/src/report/headers.rs
+witness: curl-core report::headers::tests::a_line_is_split_into_name_and_trimmed_value
+--- old
+        let end = rest.len()
+            - rest[start..]
+                .iter()
+                .rev()
+                .take_while(|&&b| is_blank(b))
+                .count();
+--- new
+        let end = rest.len();
+
+=== a header line without its line ending is stored
+file: crates/curl-core/src/report/headers.rs
+witness: curl-core report::headers::tests::what_is_not_a_header_line_is_refused_or_skipped
+--- old
+        if header.len() == line.len() {
+            // Not ended by CR or LF.
+            return Err(ErrorKind::WeirdServerReply);
+        }
+--- new
+
+=== header names are matched case-sensitively
+file: crates/curl-core/src/report/headers.rs
+witness: curl-core report::headers::tests::lookups_count_by_name_origin_and_index
+--- old
+                && self.text(&e.name).eq_ignore_ascii_case(name)
+--- new
+                && self.text(&e.name) == name
+
+=== a lookup ignores the origins asked for
+file: crates/curl-core/src/report/headers.rs
+witness: curl-core report::headers::tests::lookups_count_by_name_origin_and_index
+--- old
+            origins.contains(e.origin)
+                && e.request == request
+--- new
+            e.request == request
+
+=== a cursor from an earlier store goes on in the new one
+file: crates/curl-core/src/report/headers.rs
+witness: curl-core report::headers::tests::a_cursor_from_an_earlier_transfer_leads_nowhere
+--- old
+            Some(c) if c.generation == self.generation => c.entry as usize + 1,
+            Some(_) => return None,
+--- new
+            Some(c) => c.entry as usize + 1,
+
+=== a reset store's cursors are good again after the next run
+file: crates/curl-core/src/easy.rs
+witness: curl-core deliver::tests::a_transfer_s_headers_are_stored_for_its_handlers_and_after
+--- old
+        self.report = self.report.cleared();
+--- new
+        self.report = TransferReport::default();
+
+=== next counts a header's index among every name
+file: crates/curl-core/src/report/headers.rs
+witness: curl-core report::headers::tests::next_walks_the_headers_in_order_with_their_counts
+--- old
+        let index = self
+            .matching(name, origins, request)
+            .take_while(|&(i, _)| i < at)
+            .count();
+--- new
+        let index = at;
+
+=== the status line is stored as a header
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_transfer_s_headers_are_stored_for_its_handlers_and_after
+--- old
+        self.head_line(cx, line, HeaderOrigin::Header)
+    }
+--- new
+        self.header(cx, line, HeaderOrigin::Header)
+    }
+
+=== a header line is delivered before the store refuses it
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::an_invalid_header_line_fails_the_transfer
+--- old
+        cx.report_mut().headers_mut().push(line, origin)?;
+        self.head_line(cx, line, origin)
+--- new
+        self.head_line(cx, line, origin)?;
+        cx.report_mut().headers_mut().push(line, origin)

@@ -1095,16 +1095,32 @@ fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOption
 ### 6.3 Header store
 
 ```rust
-pub struct HeaderStore { gen: StoreGen, buf: Vec<u8>, entries: Vec<HeaderEntry> }
-pub struct HeaderEntry { name: Range<u32>, value: Range<u32>, origin: HeaderOrigin, request: u16 }
-pub struct HeaderCursor { gen: StoreGen, index: u32 }
+pub struct HeaderStore { generation: u32, request: u16, bytes: Vec<u8>, entries: Vec<Entry> }
+struct Entry { name: Range<u32>, value: Range<u32>, origin: HeaderOrigin, request: u16 }
+pub struct HeaderCursor { generation: u32, entry: u32 }
+impl HeaderStore {
+    pub fn get(&self, name: &[u8], index: usize, origins: Origins, request: Request)
+        -> Result<HeaderView<'_>, HeaderError>;              // curl_easy_header
+    pub fn next(&self, origins: Origins, request: Request, prev: Option<HeaderCursor>)
+        -> Option<HeaderView<'_>>;                           // curl_easy_nextheader
+}
+pub enum Request { Last, Nth(u16) }                           // C's -1 and n
+pub enum HeaderError { NoHeaders, NoRequest, Missing, BadIndex }
 ```
 
 It lives in `TransferReport`, so it spans every request of the transfer and stays readable after
-`perform` returns, until the next transfer's Init or the `Easy` is dropped (headers.c). Growth is
-`try_reserve` after the budget check. A `HeaderCursor` from an earlier transfer fails its
-generation check and the shim returns NULL from `curl_easy_nextheader`, where C chases a freed
-list node.
+`perform` returns, until the next transfer's Init, a reset or the `Easy` is dropped (headers.c).
+`Pipeline::header` stores each line before delivering it; a status line goes through
+`Pipeline::status`, which does not (`CLIENTWRITE_STATUS`). `push` keeps `Curl_headers_push`'s
+rules: the blank line is skipped, a line without CR or LF or all blank is WeirdServerReply, the
+5001st header TooLarge, one without a colon (or with a NUL before it) BadFunctionArgument; the
+value is trimmed of blanks at both ends, the name keeps what precedes the colon. Growth is
+fallible. Each new store's generation is the last one's plus one, so a `HeaderCursor` from an
+earlier transfer or from before a reset fails its generation check and the shim returns NULL
+from `curl_easy_nextheader`, where C chases a freed list node. A bad origin mask or a request
+below -1 is the shim's BAD_ARGUMENT. `next` counts a header's index and amount by scanning,
+where C sorts once per walk and caches; a walk over all 5000 headers is quadratic until a
+measurement says it matters.
 
 ### 6.4 Redirects and auth
 

@@ -2,7 +2,11 @@
 //! the engine as the transfer runs, readable from inside its callbacks,
 //! and kept in the `Easy` after it ends, until the next transfer starts.
 
+mod headers;
+
 use std::time::Duration;
+
+pub use headers::{HeaderCursor, HeaderError, HeaderStore, HeaderView, Origins, Request};
 
 use crate::time::Instant;
 
@@ -11,18 +15,32 @@ use crate::time::Instant;
 pub struct TransferReport {
     timings: Timings,
     sizes: Sizes,
+    headers: HeaderStore,
 }
 
 impl TransferReport {
-    /// The report of a transfer starting at `now` (`Curl_pgrsStart`).
-    pub(crate) fn new(now: Instant) -> TransferReport {
+    /// Start over for a transfer starting at `now` (`Curl_pgrsStart`,
+    /// `Curl_headers_cleanup`).
+    pub(crate) fn restart(&mut self, now: Instant) {
+        *self = self.cleared();
+        self.timings.start = Some(now);
+    }
+
+    /// An empty report, whose header cursors are not this one's.
+    pub(crate) fn cleared(&self) -> TransferReport {
         TransferReport {
-            timings: Timings {
-                start: Some(now),
-                ..Timings::default()
-            },
-            sizes: Sizes::default(),
+            headers: HeaderStore::after(&self.headers),
+            ..TransferReport::default()
         }
+    }
+
+    /// Every request's response headers.
+    pub fn headers(&self) -> &HeaderStore {
+        &self.headers
+    }
+
+    pub(crate) fn headers_mut(&mut self) -> &mut HeaderStore {
+        &mut self.headers
     }
 
     pub fn timings(&self) -> &Timings {
@@ -221,6 +239,12 @@ impl Sizes {
 mod tests {
     use super::*;
 
+    fn started(now: Instant) -> Timings {
+        let mut r = TransferReport::default();
+        r.restart(now);
+        r.timings
+    }
+
     fn at(us: u64) -> Instant {
         Instant::EPOCH.after(Duration::from_micros(us))
     }
@@ -240,7 +264,7 @@ mod tests {
     #[test]
     fn phases_add_up_across_a_redirect() {
         let start = 12_345_678_000_000;
-        let mut t = TransferReport::new(at(start)).timings;
+        let mut t = started(at(start));
         t.mark(Timer::StartSingle, at(start));
         let now = start + 2_250_000;
         for timer in [
@@ -274,7 +298,7 @@ mod tests {
 
     #[test]
     fn a_phase_reached_at_its_start_counts_a_microsecond() {
-        let mut t = TransferReport::new(at(5)).timings;
+        let mut t = started(at(5));
         t.mark(Timer::StartSingle, at(5));
         t.mark(Timer::PreTransfer, at(5));
         assert_eq!(t.pretransfer(), Duration::from_micros(1));
@@ -283,7 +307,7 @@ mod tests {
     /// Queueing time sums over requests, each from when it started queueing.
     #[test]
     fn queue_time_sums_over_requests() {
-        let mut t = TransferReport::new(at(0)).timings;
+        let mut t = started(at(0));
         t.mark(Timer::StartOp, at(10));
         t.mark(Timer::PostQueue, at(40));
         t.mark(Timer::Redirect, at(100));

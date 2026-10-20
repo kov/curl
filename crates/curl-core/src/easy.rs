@@ -48,7 +48,7 @@ impl Easy {
     /// (`curl_easy_reset`).
     pub fn reset(&mut self) {
         self.options = Options::default();
-        self.report = TransferReport::default();
+        self.report = self.report.cleared();
     }
 }
 

@@ -30,6 +30,7 @@ impl Player {
             };
             self.next += 1;
             match piece {
+                Piece::Status(line) => self.pipeline.status(cx, line)?,
                 Piece::Header(line) => self.pipeline.header(cx, line, HeaderOrigin::Header)?,
                 Piece::Connect(line) => self.pipeline.header(cx, line, HeaderOrigin::Connect)?,
                 Piece::Body(bytes) => self.pipeline.body(cx, bytes)?,

@@ -46,9 +46,30 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Deliver one header line, whole: to the write handler first if the
-    /// headers are included in the output, then to the header handler.
+    /// Deliver one header line, whole: into the report's header store,
+    /// then to the write handler if the headers are included in the
+    /// output, then to the header handler.
     pub(crate) fn header<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        line: &[u8],
+        origin: HeaderOrigin,
+    ) -> Result<(), ErrorKind> {
+        cx.report_mut().headers_mut().push(line, origin)?;
+        self.head_line(cx, line, origin)
+    }
+
+    /// Deliver a response's status line, as a header line the store does
+    /// not keep (`CLIENTWRITE_STATUS`).
+    pub(crate) fn status<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        line: &[u8],
+    ) -> Result<(), ErrorKind> {
+        self.head_line(cx, line, HeaderOrigin::Header)
+    }
+
+    fn head_line<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         line: &[u8],

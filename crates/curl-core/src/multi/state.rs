@@ -174,7 +174,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let limits = cx.easy().options().limits;
             run.deadlines = Deadlines::new(cx.rest.now, limits.total, limits.connect);
             let now = cx.rest.now;
-            *cx.report_mut() = TransferReport::new(now);
+            cx.report_mut().restart(now);
             let next = setup(run, cx);
             if next.is_completed() {
                 enter_completed(cx.report_mut(), now, true);
@@ -239,7 +239,7 @@ fn enter_completed(report: &mut TransferReport, now: Instant, before_did: bool) 
 /// completes at once.
 pub(crate) fn complete_unstarted(easy: &mut Easy, now: Instant) {
     let report = easy.report_mut();
-    *report = TransferReport::new(now);
+    report.restart(now);
     enter_completed(report, now, true);
 }
 

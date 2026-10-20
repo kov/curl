@@ -10,6 +10,7 @@ use crate::handler::{
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx, TransferId, drive_to_completion};
 use crate::options::script::{Piece, Script};
+use crate::report::{HeaderCursor, HeaderError, HeaderView, Origins, Request};
 
 use super::Pipeline;
 use crate::time::ManualClock;
@@ -100,7 +101,7 @@ fn run_alone(e: Easy) -> Result<(), ErrorKind> {
 fn a_script_s_pieces_reach_their_handlers_in_order() {
     let log = Log::default();
     let mut e = script(vec![
-        Piece::Header(b"HTTP/1.1 200 OK\r\n".to_vec()),
+        Piece::Status(b"HTTP/1.1 200 OK\r\n".to_vec()),
         Piece::Header(b"\r\n".to_vec()),
         body(b"one"),
         body(b"two"),
@@ -247,6 +248,14 @@ fn lengths(seen: &[Seen], name: &str) -> Vec<usize> {
         .collect()
 }
 
+/// A header line `n` bytes long, its line ending included.
+fn header_line(n: usize) -> Vec<u8> {
+    let mut line = b"x: ".to_vec();
+    line.resize(n - 2, b'y');
+    line.extend_from_slice(b"\r\n");
+    line
+}
+
 fn bytes(n: usize) -> Vec<u8> {
     (0..n).map(|i| (i % 251) as u8).collect()
 }
@@ -262,7 +271,8 @@ fn the_body_goes_out_in_pieces_of_at_most_16_kib() {
 
 #[test]
 fn a_header_line_goes_out_whole() {
-    let mut line = vec![b'x'; 20000];
+    let mut line = b"x: ".to_vec();
+    line.extend_from_slice(&[b'y'; 19997]);
     line.extend_from_slice(b"\r\n");
     let (result, seen) = played(vec![Piece::Header(line)], |_, _| {});
     assert_eq!(result, Ok(()));
@@ -275,7 +285,7 @@ fn a_header_line_goes_out_whole() {
 fn included_header_lines_go_to_the_write_handler_first() {
     let (result, seen) = played(
         vec![
-            Piece::Header(b"HTTP/1.1 200 OK\r\n".to_vec()),
+            Piece::Status(b"HTTP/1.1 200 OK\r\n".to_vec()),
             Piece::Header(b"\r\n".to_vec()),
             body(b"hi"),
         ],
@@ -360,7 +370,7 @@ fn a_body_over_the_size_limit_is_cut_at_the_limit() {
 #[test]
 fn included_headers_count_against_the_size_limit() {
     let (result, seen) = played(
-        vec![Piece::Header(bytes(100)), Piece::Body(bytes(100))],
+        vec![Piece::Header(header_line(100)), Piece::Body(bytes(100))],
         |o, _| {
             o.output.include_header = true;
             o.limits.max_filesize = limit(150);
@@ -449,7 +459,7 @@ fn probed(include_header: bool) -> (Vec<(u64, u64, Duration)>, crate::report::Si
     let probe = std::rc::Rc::new(SizeProbe(Default::default()));
     let mut m = multi();
     let mut e = script(vec![
-        Piece::Header(b"0123456789".to_vec()),
+        Piece::Header(b"a: 34567\r\n".to_vec()),
         Piece::Body(bytes(40000)),
         Piece::Body(bytes(10)),
     ]);
@@ -489,8 +499,8 @@ fn a_handler_reads_its_report_as_it_stands() {
 fn a_connect_answer_does_not_start_the_response() {
     let mut m = multi();
     let ids = [
-        Piece::Connect(b"HTTP/1.1 200 OK\r\n".to_vec()),
-        Piece::Header(b"HTTP/1.1 200 OK\r\n".to_vec()),
+        Piece::Connect(b"Via: proxy\r\n".to_vec()),
+        Piece::Status(b"HTTP/1.1 200 OK\r\n".to_vec()),
     ]
     .map(|p| m.add(script(vec![p]), (), &mut NoEvents).unwrap());
     for id in ids {
@@ -502,4 +512,86 @@ fn a_connect_answer_does_not_start_the_response() {
     let start = |id| m.easy(id).unwrap().report().timings().starttransfer();
     assert_eq!(start(ids[0]), Duration::ZERO);
     assert_eq!(start(ids[1]), Duration::from_micros(1));
+}
+
+/// Reads `Content-Type` from inside its call.
+struct ReadsHeader(std::cell::RefCell<Option<Vec<u8>>>);
+
+impl WriteHandler for std::rc::Rc<ReadsHeader> {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        let h = cx.info(cx.me()).unwrap().headers();
+        let found = h.get(b"content-type", 0, Origins::ALL, Request::Last);
+        *self.0.borrow_mut() = Some(found.unwrap().value.to_vec());
+        Write::Accepted
+    }
+}
+
+fn headed() -> Easy {
+    script(vec![
+        Piece::Status(b"HTTP/1.1 200 OK\r\n".to_vec()),
+        Piece::Header(b"Content-Type: text/plain\r\n".to_vec()),
+        Piece::Header(b"X-Two: 2\r\n".to_vec()),
+        Piece::Header(b"\r\n".to_vec()),
+        body(b"hi"),
+    ])
+}
+
+fn next(e: &Easy, prev: Option<HeaderCursor>) -> Option<HeaderView<'_>> {
+    e.report().headers().next(Origins::ALL, Request::Last, prev)
+}
+
+/// Run `e` alone to its end and give it back.
+fn rerun(m: &mut Multi, e: Easy) -> Easy {
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    assert_eq!(drive_to_completion(m, id, &mut NoEvents).unwrap(), Ok(()));
+    m.remove(id, &mut NoEvents).unwrap().easy
+}
+
+/// Header lines are stored as they arrive, the status line and the end of
+/// the head aside, readable from the handlers and after the transfer,
+/// until the next one starts.
+#[test]
+fn a_transfer_s_headers_are_stored_for_its_handlers_and_after() {
+    let probe = std::rc::Rc::new(ReadsHeader(Default::default()));
+    let mut m = multi();
+    let mut e = headed();
+    e.options_mut().callbacks.write = Some(Handler::write(probe.clone()).unwrap());
+    let e = rerun(&mut m, e);
+    assert_eq!(probe.0.borrow().as_deref(), Some(&b"text/plain"[..]));
+    let first = next(&e, None).unwrap();
+    assert_eq!(first.name, b"Content-Type");
+    let cursor = first.cursor;
+    assert_eq!(next(&e, Some(cursor)).unwrap().name, b"X-Two");
+    assert_eq!(next(&e, Some(next(&e, Some(cursor)).unwrap().cursor)), None);
+    // The next run stores its own, and the cursor is stale.
+    let mut e = rerun(&mut m, e);
+    let store = e.report().headers();
+    let h = store
+        .get(b"Content-Type", 0, Origins::ALL, Request::Last)
+        .unwrap();
+    assert_eq!(h.amount, 1);
+    assert_eq!(next(&e, Some(cursor)), None);
+    // A reset empties the store, and no later run makes the cursor good
+    // again.
+    e.reset();
+    assert_eq!(
+        e.report()
+            .headers()
+            .get(b"Content-Type", 0, Origins::ALL, Request::Last),
+        Err(HeaderError::NoHeaders)
+    );
+    let mut fresh = headed();
+    std::mem::swap(fresh.options_mut(), e.options_mut());
+    let e = rerun(&mut m, e);
+    assert_eq!(next(&e, None).unwrap().name, b"Content-Type");
+    assert_eq!(next(&e, Some(cursor)), None);
+}
+
+/// A header line the store cannot split fails the transfer before it is
+/// delivered.
+#[test]
+fn an_invalid_header_line_fails_the_transfer() {
+    let (result, seen) = played(vec![Piece::Header(b"no colon\r\n".to_vec())], |_, _| {});
+    assert_eq!(result, Err(ErrorKind::BadFunctionArgument));
+    assert_eq!(lengths(&seen, "header"), [0usize; 0]);
 }

@@ -46,6 +46,14 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
   combinations orthogonal.
 - **Time is an injected clock**, never read ad hoc, so timeouts are deterministic under test.
 
+## Variadic C functions
+
+The `...` and `va_list` functions (`curl_easy_setopt`, the `curl_m*printf` family) read their
+arguments in the shim with `core::ffi::VaList`, after a safe parse has typed every argument.
+Stable Rust cannot read a `long double`. A format with `%L` conversions therefore has its
+arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built with its
+`nightly` feature, which reads them as `f128` on aarch64.
+
 ## Ownership and lifetimes
 
 - **The multi handle owns the live state.** It holds the transfers, connections, the

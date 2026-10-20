@@ -14,9 +14,17 @@ crate-type = ["cdylib"]
 # The hooks of a C debug build: the curl_dbg_* exports, memory tracking
 # and the libcurl-d.so.4 soname.
 debug-hooks = []
+# Read `long double` printf arguments in Rust (aarch64 only), with nightly's
+# `f128`; without it a C helper reads them.
+nightly = []
 
 [dependencies]
+curl-alloc = { version = "0.1.0", path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
+libc = "0.2"
 
 [lints]
 workspace = true
+
+[build-dependencies]
+cc = "1.9.0"

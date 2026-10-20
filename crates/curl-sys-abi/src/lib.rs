@@ -4,11 +4,14 @@
 //! raw pointers and NUL-terminated strings are converted to and from the
 //! Rust API at this boundary and go no further.
 
+#![cfg_attr(all(feature = "nightly", target_arch = "aarch64"), feature(f128))]
 // Tests may allocate infallibly; the non-test build is still checked.
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 #[rustfmt::skip]
 mod ffi;
+mod printf;
+mod root;
 mod version;
 
 #[cfg(test)]

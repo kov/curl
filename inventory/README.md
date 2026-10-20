@@ -15,7 +15,8 @@ Run `--check` after the C tree moves; a generator that fails its self-checks wri
 
 `baseline` comes from `inventory/measure/baseline.py`, which `all.py` does not run. `--run` configures and builds
 the C tree in `build/c`, runs `runtests.pl` and the `tests/http` pytest suite (about seven
-minutes; pytest gets a venv in `build/c/pytest-venv`) and parses the results; without
+minutes; pytest gets a venv in `build/c/pytest-venv`) and parses the results (libraries newer than the distribution's come from
+`inventory/measure/deps.py`, under `build/deps`); without
 `--run` it only re-parses the stored results, and refuses if they were measured at another C commit.
 Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.
 

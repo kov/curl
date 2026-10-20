@@ -58,7 +58,9 @@ uses every backend and feature this machine can provide:
 
 - a debug build (`ENABLE_DEBUG`), so the `Debug` and `TrackMemory` test gates are open;
 - OpenSSL for TLS;
-- nghttp2 for HTTP/2, and ngtcp2 + nghttp3 for HTTP/3;
+- nghttp2 for HTTP/2, and ngtcp2 + nghttp3 for HTTP/3. ngtcp2 is built by
+  `inventory/measure/deps.py` at the version curl's CI pins, because HTTP/3 0-RTT is rejected
+  with the distribution's older ngtcp2;
 - libssh2 for SSH and c-ares for name resolution;
 - zlib, brotli, zstd, libidn2, libpsl, GSS-API (MIT krb5) and OpenLDAP;
 - the experimental HTTPS RR, SSL session export, HTTP message signatures and HTTP/3 proxy.

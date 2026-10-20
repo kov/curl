@@ -23,6 +23,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "gen"))
 import common
+import deps
 from common import ROOT, check
 
 BUILD = ROOT / "build" / "c"
@@ -49,6 +50,8 @@ CMAKE_ARGS = {
     "CURL_DISABLE_HTTPSIG": "OFF",
     "USE_PROXY_HTTP3": "ON",
     "USE_ECH": "OFF",
+    # ngtcp2 from inventory/measure/deps.py, found through PKG_CONFIG_PATH.
+    "CMAKE_BUILD_RPATH": str(deps.NGTCP2 / "lib"),
     # Test servers for the tests/http pytest suite, where CMake does not
     # look on Fedora: dante's daemon is sockd, sftp-server is under openssh.
     "DANTED": "/usr/bin/sockd",
@@ -56,6 +59,9 @@ CMAKE_ARGS = {
 }
 # Features SCOPE.md leaves out: tests needing them skip by design.
 OUT_OF_SCOPE = {"NTLM"}
+# Test programs that link libcurl and ngtcp2 themselves.
+TEST_PROGRAMS = [BUILD / "tests/libtest/libtests",
+                 BUILD / "tests/unit/units", BUILD / "tests/tunit/tunits"]
 RUNTESTS_ARGS = ["-a", "-n", "-j8"]
 # As the curl-pytest CMake target, plus a machine-readable report.
 PYTEST_ARGS = ["-n", "auto", "-p", "no:cacheprovider"]
@@ -66,11 +72,20 @@ def run():
     commit = common.c_commit()
     check(not commit.endswith("-dirty"),
           "C tree has local changes; a baseline must name a commit")
+    dep_env = deps.build()
+    # A fresh cache: nothing configured by hand earlier, such as another
+    # library location, may carry into the measurement.
+    (BUILD / "CMakeCache.txt").unlink(missing_ok=True)
     subprocess.run(["cmake", "-S", str(ROOT), "-B", str(BUILD), "-G",
                     "Ninja", *(f"-D{k}={v}" for k, v in CMAKE_ARGS.items())],
+                   check=True, stdout=subprocess.DEVNULL,
+                   env={**os.environ, **dep_env})
+    # The test programs are not in the default target.
+    subprocess.run(["ninja", "-C", str(BUILD), "all", "testdeps"],
                    check=True, stdout=subprocess.DEVNULL)
-    subprocess.run(["ninja", "-C", str(BUILD)], check=True,
-                   stdout=subprocess.DEVNULL)
+    for binary in [next(BUILD.glob("lib/libcurl*.so.*.*.*")),
+                   BUILD / "src/curl", *TEST_PROGRAMS]:
+        deps.check_linked(binary)
     RESULTS.mkdir(exist_ok=True)
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     with (RESULTS / "runtests.log").open("w") as log:

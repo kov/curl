@@ -5,6 +5,9 @@
 //! banned by `clippy.toml` everywhere else; this crate provides what
 //! replaces them.
 
+// Tests may allocate infallibly; the non-test build is still checked.
+#![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
+
 mod boxed;
 mod grow;
 

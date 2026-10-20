@@ -4,3 +4,7 @@
 //! tool in `curl-tool` are built on it.
 
 #![forbid(unsafe_code)]
+// Tests may allocate infallibly; the non-test build is still checked.
+#![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
+
+pub mod version;

@@ -4,13 +4,15 @@
 //! raw pointers and NUL-terminated strings are converted to and from the
 //! Rust API at this boundary and go no further.
 
+// Tests may allocate infallibly; the non-test build is still checked.
+#![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
+
 #[rustfmt::skip]
 mod ffi;
+mod version;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
-
     /// `ffi.rs` must be regenerated whenever its inputs change.
     #[test]
     fn ffi_is_fresh() {

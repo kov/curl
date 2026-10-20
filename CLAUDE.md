@@ -135,6 +135,9 @@ one will find it and the next regeneration eats it. Fix the generator or its inp
   not be committed. Never push without asking.
 - Before committing, run the project's formatter, `cargo clippy -- -D warnings` and the tests the
   change touches.
+- A change to an unsafe module also runs that crate's unit tests under Miri
+  (`cargo +nightly miri test -p <crate> --lib`), where Miri can run them; say so when it cannot
+  (FFI, `.init_array`, the global allocator).
 
 ## Commit messages
 

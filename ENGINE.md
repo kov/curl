@@ -162,20 +162,21 @@ curl-core/src/
 ### 2.3 Ids and the arena
 
 ```rust
-pub struct Key<T> { slot: u32, gen: NonZeroU32, _t: PhantomData<fn() -> T> }  // Copy, Eq
-pub struct Arena<T> { slots: Vec<Entry<T>>, last_added: u32, live: u32, policy: ArenaPolicy }
-pub struct ArenaPolicy {
-    pub initial: u32,          // rows reserved at creation
-    pub reserved_rows: u32,    // leading rows never handed out
+pub struct Key<T> { row: u32, generation: NonZeroU32, _of: PhantomData<fn() -> T> }  // Copy, Eq
+pub struct ArenaPolicy { initial: u32, reserved: u32 }
+impl ArenaPolicy {
+    pub fn new(initial: u32, reserved: u32) -> Option<Self>;  // None unless a row is left to hand out
 }
 impl<T> Arena<T> {
-    pub fn with_policy(p: ArenaPolicy) -> Result<Self, OutOfMemory>;
-    pub fn reserve_one(&mut self) -> Result<(), OutOfMemory>;   // grows by the policy
-    pub fn insert(&mut self, v: T) -> Key<T>;                  // infallible after reserve_one
+    pub fn new(p: ArenaPolicy) -> Result<Self, OutOfMemory>;
+    pub fn reserve(&mut self) -> Result<Vacancy<'_, T>, OutOfMemory>; // grows by the policy
     pub fn get(&self, k: Key<T>) -> Option<&T>;                // stale key: None
     pub fn get_mut(&mut self, k: Key<T>) -> Option<&mut T>;
     pub fn remove(&mut self, k: Key<T>) -> Option<T>;          // bumps the generation
-    pub fn next_after(&self, k: Option<Key<T>>) -> Option<Key<T>>; // ascending slot cursor
+    pub fn next_after(&self, k: Option<Key<T>>) -> Option<Key<T>>; // ascending row cursor
+}
+impl<T> Vacancy<'_, T> {
+    pub fn fill(self, v: T) -> Key<T>;                         // cannot fail: the row is free
 }
 pub type TransferId = Key<Slot>;
 pub struct ConnNumber(u64);                       // monotonic per pool: "Connection #N"
@@ -186,14 +187,15 @@ Slot selection copies `Curl_uint32_tbl_add`: scan for a free row from `last_adde
 from the first unreserved row; grow when fewer than `max(capacity/8, 4)` rows are free, by
 `clamp(capacity/2, 128, 2048)` (multi.c:419-440). Because `curl_multi_info_read` and
 `multi_perform` walk ascending mids, matching the policy keeps message order identical to C
-under add/remove churn (751).
+under add/remove churn (751). `reserve` then `fill` is the add: `add` reserves rows in every
+table it needs before it fills any, and filling cannot fail. The test replays a seeded churn
+whose ids `gen/arena.py` records from C's real multi, built against the C build's `libcurlu`.
 
 The policy is a value, not constants in the core:
-- the shim passes `initial: 128, reserved_rows: 1` for `curl_multi_init` and `initial: 16,
-  reserved_rows: 1` for the private multi of `curl_easy_perform` (multi.c:53, easy.c:805). Row
-  0 stays unused only so that indices equal C's mids, where the admin easy holds mid 0; the
-  core has no admin easy.
-- the Rust API's default is `initial: 16, reserved_rows: 0`.
+- the shim passes `ArenaPolicy::new(128, 1)` for `curl_multi_init` and `new(16, 1)` for the
+  private multi of `curl_easy_perform` (multi.c:53, easy.c:805). Row 0 stays unused only so
+  that indices equal C's mids, where the admin easy holds mid 0; the core has no admin easy.
+- the Rust API's default is `new(16, 0)`.
 
 `ConnId` folds C's `(last_cpid, last_conn_id)` pair into one value. CONNECT_ONLY's "last
 connection" (`ACTIVESOCKET`, `curl_easy_send`/`recv`) is an ordinary lookup that fails on its

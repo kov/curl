@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: step 1 is **done**, step 2 is **in progress**; every other step is **to do**.
+Status: steps 1 and 2 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -34,18 +34,16 @@ yet meet.
    for sized `T`, without weak references; shared bytes are `TryRc<Vec<u8>>`. Tests: both fail
    past the tracker's limit without aborting; the last handle drops the value once; handles
    cross threads.
-   DESIGN.md already promises them.
-2. **core: depend on curl-alloc; add Instant, Clock and the arena.** **In progress:** the
-   clock is done (`time.rs`: `Instant`, `Clock`, `SystemClock`, `ManualClock` behind
-   `test-util`); the arena is to do. `time.rs`, `id.rs` with
-   `ArenaPolicy`. Tests: a stale key fails after remove and reinsert on the same row; an order
-   test replays an add/remove churn and compares the slot sequence with a table produced by
-   running `Curl_uint32_tbl_add`'s policy in the C build's unit-test harness; `reserve_one`
-   under a failing limit.
-3. **url: add the Url type and a parser for the milestone's subset**: `file:` paths, scheme guessing (22), empty path to "/",
-   query without path (59, 260), fragment dropped (1109), userinfo (367), unsupported scheme as
-   UnsupportedProtocol (23). The covered rows of unit 1560 are generated into a table; the
-   ported-test checker reports 1560 as partial.
+2. **core: depend on curl-alloc; add Instant, Clock and the arena.** **Done.** `time.rs`
+   (`Instant`, `Clock`, `SystemClock`, `ManualClock` behind `test-util`) and `id/` (`Arena`,
+   `Key`, `ArenaPolicy`, `Vacancy`). Tests: a stale key fails after its row is reused; a seeded
+   add/remove churn gets the ids C's real multi gives it, recorded by `gen/arena.py` through a
+   harness linked against `libcurlu`. Growth failing under the allocation limit is exercised by
+   step 5's add/perform/remove torture scenario.
+3. **url: add the Url type and a parser for the milestone's subset**: `file:` paths, scheme
+   guessing (22), empty path to "/", query without path (59, 260), fragment dropped (1109),
+   userinfo (367), unsupported scheme as UnsupportedProtocol (23). The covered rows of unit
+   1560 are generated into a table; the ported-test checker reports 1560 as partial.
 4. **core: add Deadlines, TimerQueue and TimerAnnounce.** Ports unit 1309 (against the queue's
    insert/best/remove), unit 1303 (connect versus total, each from its own anchor), and unit
    3230 (table generated from the C test). A test pins that a follow keeps `started_op` and

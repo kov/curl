@@ -8,5 +8,6 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 pub mod error;
+pub mod id;
 pub mod time;
 pub mod version;

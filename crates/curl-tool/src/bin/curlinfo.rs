@@ -25,7 +25,8 @@ const TOGGLES: &[(&str, bool)] = &[
     ("resolv-threaded", false),
     // The type-checking macros of the C headers, which ship unchanged.
     ("typecheck", true),
-    ("verbose-strings", false),
+    // Error codes have their full messages.
+    ("verbose-strings", true),
     ("wakeup", false),
     ("headers-api", false),
     ("xattr", false),

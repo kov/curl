@@ -1,5 +1,5 @@
 {
- "c-commit": "d1d4b5931af37bd17aae66992107a5e4841577cf",
+ "c-commit": "190a48634686097b8dc0e62bd0607a9d84bac181",
  "data": {
   "constants": [
    {
@@ -12908,6 +12908,14 @@
   "functions": [
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_easy_cleanup.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "None"
+    },
     "header": "easy.h",
     "name": "curl_easy_cleanup",
     "params": [
@@ -12919,6 +12927,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9",
+     "path": "docs/libcurl/curl_easy_duphandle.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "If this function returns NULL, something went wrong and no valid handle was\nreturned."
+    },
     "header": "easy.h",
     "name": "curl_easy_duphandle",
     "params": [
@@ -12930,6 +12946,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.15.4",
+     "path": "docs/libcurl/curl_easy_escape.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string or NULL if it failed."
+    },
     "header": "curl.h",
     "name": "curl_easy_escape",
     "params": [
@@ -12943,6 +12967,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.4.1",
+     "path": "docs/libcurl/curl_easy_getinfo.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "easy.h",
     "name": "curl_easy_getinfo",
     "params": [
@@ -12956,6 +12988,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.83.0",
+     "path": "docs/libcurl/curl_easy_header.md",
+     "protocol": [
+      "HTTP"
+     ],
+     "return-value": "This function returns a CURLHcode indicating success or error. CURLHE_OK (0)\nmeans everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "header.h",
     "name": "curl_easy_header",
     "params": [
@@ -12972,6 +13012,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_easy_init.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "If this function returns NULL, something went wrong and you cannot use the\nother curl functions."
+    },
     "header": "easy.h",
     "name": "curl_easy_init",
     "params": [],
@@ -12981,6 +13029,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.83.0",
+     "path": "docs/libcurl/curl_easy_nextheader.md",
+     "protocol": [
+      "HTTP"
+     ],
+     "return-value": "This function returns the next header, or NULL when there are no more\n(matching) headers or an error occurred.\n\nIf this function returns NULL when *prev* was set to NULL, then there are no\nheaders available within the scope to return."
+    },
     "header": "header.h",
     "name": "curl_easy_nextheader",
     "params": [
@@ -12995,6 +13051,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.73.0",
+     "path": "docs/libcurl/curl_easy_option_by_id.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to the *curl_easyoption* struct for the option or NULL."
+    },
     "header": "options.h",
     "name": "curl_easy_option_by_id",
     "params": [
@@ -13006,6 +13070,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.73.0",
+     "path": "docs/libcurl/curl_easy_option_by_name.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to the *curl_easyoption* struct for the option or NULL."
+    },
     "header": "options.h",
     "name": "curl_easy_option_by_name",
     "params": [
@@ -13017,6 +13089,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.73.0",
+     "path": "docs/libcurl/curl_easy_option_next.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to the *curl_easyoption* struct for the next option or NULL if\nno more options."
+    },
     "header": "options.h",
     "name": "curl_easy_option_next",
     "params": [
@@ -13028,6 +13108,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.18.0",
+     "path": "docs/libcurl/curl_easy_pause.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_easy_pause",
     "params": [
@@ -13040,6 +13128,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_easy_perform.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "easy.h",
     "name": "curl_easy_perform",
     "params": [
@@ -13051,6 +13147,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.18.2",
+     "path": "docs/libcurl/curl_easy_recv.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "On success, returns **CURLE_OK**, stores the received data into\n**buffer**, and the number of bytes it actually read into ***n**.\n\nOn failure, returns the appropriate error code.\n\nThe function may return **CURLE_AGAIN**. In this case, use your operating\nsystem facilities to wait until data can be read, and retry.\n\nReading exactly 0 bytes indicates a closed connection.\n\nIf there is no socket available to use from the previous transfer, this\nfunction returns **CURLE_UNSUPPORTED_PROTOCOL**."
+    },
     "header": "easy.h",
     "name": "curl_easy_recv",
     "params": [
@@ -13065,6 +13169,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.12.1",
+     "path": "docs/libcurl/curl_easy_reset.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Nothing"
+    },
     "header": "easy.h",
     "name": "curl_easy_reset",
     "params": [
@@ -13076,6 +13188,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.18.2",
+     "path": "docs/libcurl/curl_easy_send.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "On success, returns **CURLE_OK** and stores the number of bytes actually\nsent into ***n**. Note that this may be less than the amount you wanted to\nsend.\n\nOn failure, returns the appropriate error code.\n\nThis function may return **CURLE_AGAIN**. In this case, use your operating\nsystem facilities to wait until the socket is writable, and retry.\n\nIf there is no socket available to use from the previous transfer, this\nfunction returns **CURLE_UNSUPPORTED_PROTOCOL**."
+    },
     "header": "easy.h",
     "name": "curl_easy_send",
     "params": [
@@ -13090,6 +13210,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_easy_setopt.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned.\n\nStrings passed on to libcurl must be shorter than 8000000 bytes, otherwise\ncurl_easy_setopt(3) returns **CURLE_BAD_FUNCTION_ARGUMENT** (added in 7.65.0).\n\n**CURLE_BAD_FUNCTION_ARGUMENT** is returned when the argument to an option is\ninvalid, like perhaps out of range.\n\nIf you try to set an option that libcurl does not know about, perhaps because\nthe library is too old to support it or the option was removed in a recent\nversion, this function returns *CURLE_UNKNOWN_OPTION*. If support for the\noption was disabled at compile-time, it returns *CURLE_NOT_BUILT_IN*."
+    },
     "header": "easy.h",
     "name": "curl_easy_setopt",
     "params": [
@@ -13103,6 +13231,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.12.0",
+     "path": "docs/libcurl/curl_easy_ssls_export.md",
+     "protocol": [
+      "TLS"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_easy_ssls_export",
     "params": [
@@ -13116,6 +13252,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.12.0",
+     "path": "docs/libcurl/curl_easy_ssls_import.md",
+     "protocol": [
+      "TLS"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_easy_ssls_import",
     "params": [
@@ -13132,6 +13276,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.12.0",
+     "path": "docs/libcurl/curl_easy_strerror.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string."
+    },
     "header": "curl.h",
     "name": "curl_easy_strerror",
     "params": [
@@ -13143,6 +13295,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.15.4",
+     "path": "docs/libcurl/curl_easy_unescape.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string or NULL if it failed."
+    },
     "header": "curl.h",
     "name": "curl_easy_unescape",
     "params": [
@@ -13157,6 +13317,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.62.0",
+     "path": "docs/libcurl/curl_easy_upkeep.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "easy.h",
     "name": "curl_easy_upkeep",
     "params": [
@@ -13168,6 +13336,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_escape.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string or NULL if it failed."
+    },
     "header": "curl.h",
     "name": "curl_escape",
     "params": [
@@ -13180,6 +13356,14 @@
    },
    {
     "deprecated": "since 7.56.0. Use curl_mime_init()",
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_formadd.md",
+     "protocol": [
+      "HTTP"
+     ],
+     "return-value": "0 means everything was OK, non-zero means an error occurred corresponding to a\n`CURL_FORMADD_*` constant defined in *\\<curl/curl.h\\>*."
+    },
     "header": "curl.h",
     "name": "curl_formadd",
     "params": [
@@ -13193,6 +13377,14 @@
    },
    {
     "deprecated": "since 7.56.0. Use curl_mime_free()",
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_formfree.md",
+     "protocol": [
+      "HTTP"
+     ],
+     "return-value": "None"
+    },
     "header": "curl.h",
     "name": "curl_formfree",
     "params": [
@@ -13204,6 +13396,14 @@
    },
    {
     "deprecated": "since 7.56.0. ",
+    "doc": {
+     "added-in": "7.15.5",
+     "path": "docs/libcurl/curl_formget.md",
+     "protocol": [
+      "HTTP"
+     ],
+     "return-value": "0 means everything was OK, non-zero means an error occurred"
+    },
     "header": "curl.h",
     "name": "curl_formget",
     "params": [
@@ -13217,6 +13417,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_free.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "None"
+    },
     "header": "curl.h",
     "name": "curl_free",
     "params": [
@@ -13228,6 +13436,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_getdate.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns -1 when it fails to parse the date string. Otherwise it\nreturns the number of seconds as described.\n\nOn systems with a signed 32-bit time_t: if the year is larger than 2037 or\nless than 1903, this function returns -1.\n\nOn systems with an unsigned 32-bit time_t: if the year is larger than 2106 or\nless than 1970, this function returns -1.\n\nOn systems with 64-bit time_t: if the year is less than 1583, this function\nreturns -1. (The Gregorian calendar was first introduced 1582 so no \"real\"\ndates in this way of doing dates existed before then.)"
+    },
     "header": "curl.h",
     "name": "curl_getdate",
     "params": [
@@ -13240,6 +13456,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_getenv.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string or NULL if it failed to find the\nspecified name."
+    },
     "header": "curl.h",
     "name": "curl_getenv",
     "params": [
@@ -13251,6 +13475,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.8",
+     "path": "docs/libcurl/curl_global_cleanup.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "None"
+    },
     "header": "curl.h",
     "name": "curl_global_cleanup",
     "params": [],
@@ -13260,6 +13492,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.8",
+     "path": "docs/libcurl/curl_global_init.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "If this function returns non-zero, something went wrong and you cannot use the\nother curl functions."
+    },
     "header": "curl.h",
     "name": "curl_global_init",
     "params": [
@@ -13271,6 +13511,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.12.0",
+     "path": "docs/libcurl/curl_global_init_mem.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_global_init_mem",
     "params": [
@@ -13287,6 +13535,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_global_sslset.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "If this function returns *CURLSSLSET_OK*, the backend was successfully\nselected.\n\nIf the chosen backend is unknown (or support for the chosen backend has not\nbeen compiled into libcurl), the function returns\n*CURLSSLSET_UNKNOWN_BACKEND*.\n\nIf the backend had been configured previously, or if curl_global_init(3)\nhas already been called, the function returns *CURLSSLSET_TOO_LATE*.\n\nIf this libcurl was built completely without SSL support, with no backends at\nall, this function returns *CURLSSLSET_NO_BACKENDS*."
+    },
     "header": "curl.h",
     "name": "curl_global_sslset",
     "params": [
@@ -13300,6 +13556,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.3.0",
+     "path": "docs/libcurl/curl_global_trace.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "If this function returns non-zero, something went wrong and the configuration\nmay not have any effects or may only been applied partially."
+    },
     "header": "curl.h",
     "name": "curl_global_trace",
     "params": [
@@ -13311,6 +13575,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_maprintf",
     "params": [
@@ -13323,6 +13595,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_mfprintf",
     "params": [
@@ -13336,6 +13616,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_addpart.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "A mime part structure handle, or NULL upon failure."
+    },
     "header": "curl.h",
     "name": "curl_mime_addpart",
     "params": [
@@ -13347,6 +13637,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_data.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_data",
     "params": [
@@ -13360,6 +13660,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_data_cb.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_data_cb",
     "params": [
@@ -13376,6 +13686,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_encoder.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_encoder",
     "params": [
@@ -13388,6 +13708,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_filedata.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned.\n\nCURLE_READ_ERROR is only an indication that the file is not yet readable: it\ncan be safely ignored at this time, but the file must be made readable before\nthe pertaining easy handle is performed."
+    },
     "header": "curl.h",
     "name": "curl_mime_filedata",
     "params": [
@@ -13400,6 +13730,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_filename.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_filename",
     "params": [
@@ -13412,6 +13752,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_free.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "None"
+    },
     "header": "curl.h",
     "name": "curl_mime_free",
     "params": [
@@ -13423,6 +13773,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_headers.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_headers",
     "params": [
@@ -13436,6 +13796,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_init.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "A mime struct handle, or NULL upon failure."
+    },
     "header": "curl.h",
     "name": "curl_mime_init",
     "params": [
@@ -13447,6 +13817,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_name.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_name",
     "params": [
@@ -13459,6 +13839,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_subparts.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_subparts",
     "params": [
@@ -13471,6 +13861,16 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.56.0",
+     "path": "docs/libcurl/curl_mime_type.md",
+     "protocol": [
+      "HTTP",
+      "IMAP",
+      "SMTP"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned."
+    },
     "header": "curl.h",
     "name": "curl_mime_type",
     "params": [
@@ -13483,6 +13883,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_mprintf",
     "params": [
@@ -13495,6 +13903,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_msnprintf",
     "params": [
@@ -13509,6 +13925,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_msprintf",
     "params": [
@@ -13522,6 +13946,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9.6",
+     "path": "docs/libcurl/curl_multi_add_handle.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_add_handle",
     "params": [
@@ -13534,6 +13966,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.15.5",
+     "path": "docs/libcurl/curl_multi_assign.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_assign",
     "params": [
@@ -13547,6 +13987,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9.6",
+     "path": "docs/libcurl/curl_multi_cleanup.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_cleanup",
     "params": [
@@ -13558,6 +14006,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9.6",
+     "path": "docs/libcurl/curl_multi_fdset.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_fdset",
     "params": [
@@ -13573,6 +14029,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.4.0",
+     "path": "docs/libcurl/curl_multi_get_handles.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Returns NULL on failure. Otherwise it returns a pointer to an allocated array."
+    },
     "header": "multi.h",
     "name": "curl_multi_get_handles",
     "params": [
@@ -13584,6 +14048,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.16.0",
+     "path": "docs/libcurl/curl_multi_get_offt.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred,\nsee libcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_get_offt",
     "params": [
@@ -13597,6 +14069,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9.6",
+     "path": "docs/libcurl/curl_multi_info_read.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a filled-in struct, or NULL if it failed or ran out of structs.\nIt also writes the number of messages left in the queue (after this read) in\nthe integer the second argument points to."
+    },
     "header": "multi.h",
     "name": "curl_multi_info_read",
     "params": [
@@ -13609,6 +14089,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9.6",
+     "path": "docs/libcurl/curl_multi_init.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "If this function returns NULL, something went wrong and you cannot use the\nother curl functions."
+    },
     "header": "multi.h",
     "name": "curl_multi_init",
     "params": [],
@@ -13618,6 +14106,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.17.0",
+     "path": "docs/libcurl/curl_multi_notify_disable.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3).\n\nThe return code is for the whole multi stack. Problems still might have\noccurred on individual transfers even when one of these functions return OK."
+    },
     "header": "multi.h",
     "name": "curl_multi_notify_disable",
     "params": [
@@ -13630,6 +14126,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.17.0",
+     "path": "docs/libcurl/curl_multi_notify_enable.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3).\n\nThe return code is for the whole multi stack. Problems still might have\noccurred on individual transfers even when one of these functions return OK."
+    },
     "header": "multi.h",
     "name": "curl_multi_notify_enable",
     "params": [
@@ -13642,6 +14146,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9.6",
+     "path": "docs/libcurl/curl_multi_perform.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3).\n\nThis function returns errors regarding the whole multi stack. Problems on\nindividual transfers may have occurred even when this function returns\n*CURLM_OK*. Use curl_multi_info_read(3) to figure out how individual transfers\ndid."
+    },
     "header": "multi.h",
     "name": "curl_multi_perform",
     "params": [
@@ -13654,6 +14166,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.66.0",
+     "path": "docs/libcurl/curl_multi_poll.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_poll",
     "params": [
@@ -13669,6 +14189,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.9.6",
+     "path": "docs/libcurl/curl_multi_remove_handle.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_remove_handle",
     "params": [
@@ -13681,6 +14209,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.15.4",
+     "path": "docs/libcurl/curl_multi_setopt.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3).\n\nNote that it returns a CURLM_UNKNOWN_OPTION if you try setting an option that\nthis version of libcurl does not know of."
+    },
     "header": "multi.h",
     "name": "curl_multi_setopt",
     "params": [
@@ -13694,6 +14230,14 @@
    },
    {
     "deprecated": "since 7.19.5. Use curl_multi_socket_action()",
+    "doc": {
+     "added-in": "7.15.4",
+     "path": "docs/libcurl/curl_multi_socket.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3).\n\nThe return code is for the whole multi stack. Problems still might have\noccurred on individual transfers even when one of these functions return OK."
+    },
     "header": "multi.h",
     "name": "curl_multi_socket",
     "params": [
@@ -13707,6 +14251,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.16.3",
+     "path": "docs/libcurl/curl_multi_socket_action.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_socket_action",
     "params": [
@@ -13721,6 +14273,14 @@
    },
    {
     "deprecated": "since 7.19.5. Use curl_multi_socket_action()",
+    "doc": {
+     "added-in": "7.15.4",
+     "path": "docs/libcurl/curl_multi_socket_all.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3).\n\nThe return code is for the whole multi stack. Problems still might have\noccurred on individual transfers even when one of these functions return OK."
+    },
     "header": "multi.h",
     "name": "curl_multi_socket_all",
     "params": [
@@ -13733,6 +14293,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.12.0",
+     "path": "docs/libcurl/curl_multi_strerror.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string."
+    },
     "header": "multi.h",
     "name": "curl_multi_strerror",
     "params": [
@@ -13744,6 +14312,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.15.4",
+     "path": "docs/libcurl/curl_multi_timeout.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_timeout",
     "params": [
@@ -13756,6 +14332,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.28.0",
+     "path": "docs/libcurl/curl_multi_wait.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_wait",
     "params": [
@@ -13771,6 +14355,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.8.0",
+     "path": "docs/libcurl/curl_multi_waitfds.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_waitfds",
     "params": [
@@ -13785,6 +14377,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.68.0",
+     "path": "docs/libcurl/curl_multi_wakeup.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "This function returns a CURLMcode indicating success or error.\n\nCURLM_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3)."
+    },
     "header": "multi.h",
     "name": "curl_multi_wakeup",
     "params": [
@@ -13796,6 +14396,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_mvaprintf",
     "params": [
@@ -13808,6 +14416,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_mvfprintf",
     "params": [
@@ -13821,6 +14437,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_mvprintf",
     "params": [
@@ -13833,6 +14457,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_mvsnprintf",
     "params": [
@@ -13847,6 +14479,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_mprintf.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "The **curl_maprintf** and **curl_mvaprintf** functions return a pointer to\na newly allocated string, or NULL if it failed.\n\nAll other functions return the number of characters actually printed\n(excluding the null byte used to end output to strings). Note that this\nsometimes differ from how the POSIX versions of these functions work.\n\nSince libcurl 8.23.0 curl_mfprintf, curl_mprintf, curl_mvfprintf and\ncurl_mvprintf return -1 when the output fails."
+    },
     "header": "mprintf.h",
     "name": "curl_mvsprintf",
     "params": [
@@ -13860,6 +14500,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.44.0",
+     "path": "docs/libcurl/curl_pushheader_byname.md",
+     "protocol": [
+      "HTTP"
+     ],
+     "return-value": "Returns a pointer to the header field content or NULL."
+    },
     "header": "multi.h",
     "name": "curl_pushheader_byname",
     "params": [
@@ -13872,6 +14520,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.44.0",
+     "path": "docs/libcurl/curl_pushheader_bynum.md",
+     "protocol": [
+      "HTTP"
+     ],
+     "return-value": "Returns a pointer to the header field content or NULL."
+    },
     "header": "multi.h",
     "name": "curl_pushheader_bynum",
     "params": [
@@ -13884,6 +14540,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.10",
+     "path": "docs/libcurl/curl_share_cleanup.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "CURLSHE_OK (zero) means that the option was set properly, non-zero means an\nerror occurred as *\\<curl/curl.h\\>* defines. See the libcurl-errors(3) man\npage for the full list with descriptions. If an error occurs, then the share\nobject is not deleted."
+    },
     "header": "curl.h",
     "name": "curl_share_cleanup",
     "params": [
@@ -13895,6 +14559,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.10",
+     "path": "docs/libcurl/curl_share_init.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "If this function returns NULL, something went wrong (out of memory, etc.)\nand therefore the share object was not created."
+    },
     "header": "curl.h",
     "name": "curl_share_init",
     "params": [],
@@ -13904,6 +14576,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.10",
+     "path": "docs/libcurl/curl_share_setopt.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "CURLSHE_OK (zero) means that the option was set properly, non-zero means an\nerror occurred as *\\<curl/curl.h\\>* defines. See the libcurl-errors(3) man\npage for the full list with descriptions."
+    },
     "header": "curl.h",
     "name": "curl_share_setopt",
     "params": [
@@ -13917,6 +14597,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.12.0",
+     "path": "docs/libcurl/curl_share_strerror.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string."
+    },
     "header": "curl.h",
     "name": "curl_share_strerror",
     "params": [
@@ -13928,6 +14616,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_slist_append.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A null pointer is returned if anything went wrong, otherwise the new list\npointer is returned. To avoid overwriting an existing non-empty list on\nfailure, the new list should be returned to a temporary variable which can\nbe tested for NULL before updating the original list pointer."
+    },
     "header": "curl.h",
     "name": "curl_slist_append",
     "params": [
@@ -13940,6 +14636,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_slist_free_all.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Nothing."
+    },
     "header": "curl.h",
     "name": "curl_slist_free_all",
     "params": [
@@ -13951,6 +14655,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_strequal.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Non-zero if the strings are identical. Zero if they are not."
+    },
     "header": "curl.h",
     "name": "curl_strequal",
     "params": [
@@ -13963,6 +14675,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_strnequal.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Non-zero if the strings are identical. Zero if they are not."
+    },
     "header": "curl.h",
     "name": "curl_strnequal",
     "params": [
@@ -13976,6 +14696,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_unescape.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string or NULL if it failed."
+    },
     "header": "curl.h",
     "name": "curl_unescape",
     "params": [
@@ -13988,6 +14716,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.62.0",
+     "path": "docs/libcurl/curl_url.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Returns a **CURLU *** if successful, or NULL if out of memory."
+    },
     "header": "urlapi.h",
     "name": "curl_url",
     "params": [],
@@ -13997,6 +14733,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.62.0",
+     "path": "docs/libcurl/curl_url_cleanup.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "none"
+    },
     "header": "urlapi.h",
     "name": "curl_url_cleanup",
     "params": [
@@ -14008,6 +14752,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.62.0",
+     "path": "docs/libcurl/curl_url_dup.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Returns a pointer to a new `CURLU` handle or NULL if out of memory or if\n*inhandle* is NULL."
+    },
     "header": "urlapi.h",
     "name": "curl_url_dup",
     "params": [
@@ -14019,6 +14771,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.62.0",
+     "path": "docs/libcurl/curl_url_get.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Returns a CURLUcode error value, which is CURLUE_OK (0) if everything went\nfine. See the libcurl-errors(3) man page for the full list with descriptions.\n\nIf this function returns an error, no URL part is returned."
+    },
     "header": "urlapi.h",
     "name": "curl_url_get",
     "params": [
@@ -14033,6 +14793,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.62.0",
+     "path": "docs/libcurl/curl_url_set.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "Returns a *CURLUcode* error value, which is CURLUE_OK (0) if everything\nwent fine. See the libcurl-errors(3) man page for the full list with\ndescriptions.\n\nThe input string passed to curl_url_set(3) must be shorter than eight\nmillion bytes. Otherwise this function returns **CURLUE_MALFORMED_INPUT**.\n\nIf this function returns an error, no URL part is set."
+    },
     "header": "urlapi.h",
     "name": "curl_url_set",
     "params": [
@@ -14047,6 +14815,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.80.0",
+     "path": "docs/libcurl/curl_url_strerror.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string."
+    },
     "header": "urlapi.h",
     "name": "curl_url_strerror",
     "params": [
@@ -14058,6 +14834,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.1",
+     "path": "docs/libcurl/curl_version.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a null-terminated string. The string resides in a statically\nallocated buffer and must not be freed by the caller."
+    },
     "header": "curl.h",
     "name": "curl_version",
     "params": [],
@@ -14067,6 +14851,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.10",
+     "path": "docs/libcurl/curl_version_info.md",
+     "protocol": [
+      "All"
+     ],
+     "return-value": "A pointer to a curl_version_info_data struct."
+    },
     "header": "curl.h",
     "name": "curl_version_info",
     "params": [
@@ -14078,6 +14870,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.86.0",
+     "path": "docs/libcurl/curl_ws_meta.md",
+     "protocol": [
+      "WS"
+     ],
+     "return-value": "This function returns a pointer to a *curl_ws_frame* struct with read-only\ninformation that is valid for this specific callback invocation. If it cannot\nreturn this information, or if the function is called in the wrong context, it\nreturns NULL."
+    },
     "header": "websockets.h",
     "name": "curl_ws_meta",
     "params": [
@@ -14089,6 +14889,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.86.0",
+     "path": "docs/libcurl/curl_ws_recv.md",
+     "protocol": [
+      "WS"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned.\n\nReturns **CURLE_GOT_NOTHING** if the associated connection is closed.\n\nInstead of blocking, the function returns **CURLE_AGAIN**. The correct\nbehavior is then to wait for the socket to signal readability before calling\nthis function again.\n\nAny other non-zero return value indicates an error. See the libcurl-errors(3)\nman page for the full list with descriptions.\n\nReturns **CURLE_GOT_NOTHING** if the associated connection is closed."
+    },
     "header": "websockets.h",
     "name": "curl_ws_recv",
     "params": [
@@ -14104,6 +14912,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "7.86.0",
+     "path": "docs/libcurl/curl_ws_send.md",
+     "protocol": [
+      "WS"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned.\n\nInstead of blocking, the function returns **CURLE_AGAIN**. The correct\nbehavior is then to wait for the socket to signal readability before calling\nthis function again.\n\nAny other non-zero return value indicates an error. See the libcurl-errors(3)\nman page for the full list with descriptions."
+    },
     "header": "websockets.h",
     "name": "curl_ws_send",
     "params": [
@@ -14120,6 +14936,14 @@
    },
    {
     "deprecated": null,
+    "doc": {
+     "added-in": "8.16.0",
+     "path": "docs/libcurl/curl_ws_start_frame.md",
+     "protocol": [
+      "WS"
+     ],
+     "return-value": "This function returns a CURLcode indicating success or error.\n\nCURLE_OK (0) means everything was OK, non-zero means an error occurred, see\nlibcurl-errors(3). If CURLOPT_ERRORBUFFER(3) was set with curl_easy_setopt(3)\nthere can be an error message stored in the error buffer when non-zero is\nreturned.\n\nInstead of blocking, the function returns **CURLE_AGAIN**. The correct\nbehavior is then to wait for the socket to signal readability before calling\nthis function again.\n\nAny other non-zero return value indicates an error. See the libcurl-errors(3)\nman page for the full list with descriptions."
+    },
     "header": "websockets.h",
     "name": "curl_ws_start_frame",
     "params": [
@@ -14295,6 +15119,200 @@
    "struct curl_mimepart",
    "struct curl_pushheaders"
   ],
+  "strerror": {
+   "curl_easy_strerror": {
+    "enum": "CURLcode",
+    "labels-reaching-unknown": [
+     "default"
+    ],
+    "messages": {
+     "CURLE_ABORTED_BY_CALLBACK": "Operation was aborted by an application callback",
+     "CURLE_AGAIN": "Socket not ready for send/recv",
+     "CURLE_AUTH_ERROR": "An authentication function returned an error",
+     "CURLE_BAD_CONTENT_ENCODING": "Unrecognized or bad HTTP Content or Transfer-Encoding",
+     "CURLE_BAD_DOWNLOAD_RESUME": "Could not resume download",
+     "CURLE_BAD_FUNCTION_ARGUMENT": "A libcurl function was given a bad argument",
+     "CURLE_CHUNK_FAILED": "Chunk callback failed",
+     "CURLE_COULDNT_CONNECT": "Could not connect to server",
+     "CURLE_COULDNT_RESOLVE_HOST": "Could not resolve hostname",
+     "CURLE_COULDNT_RESOLVE_PROXY": "Could not resolve proxy name",
+     "CURLE_ECH_REQUIRED": "ECH attempted but failed",
+     "CURLE_FAILED_INIT": "Failed initialization",
+     "CURLE_FILESIZE_EXCEEDED": "Maximum file size exceeded",
+     "CURLE_FILE_COULDNT_READ_FILE": "Could not read a file:// file",
+     "CURLE_FTP_ACCEPT_FAILED": "FTP: The server failed to connect to data port",
+     "CURLE_FTP_ACCEPT_TIMEOUT": "FTP: Accepting server connect has timed out",
+     "CURLE_FTP_BAD_FILE_LIST": "Unable to parse FTP file list",
+     "CURLE_FTP_CANT_GET_HOST": "FTP: cannot figure out the host in the PASV response",
+     "CURLE_FTP_COULDNT_RETR_FILE": "FTP: could not retrieve (RETR failed) the specified file",
+     "CURLE_FTP_COULDNT_SET_TYPE": "FTP: could not set file type",
+     "CURLE_FTP_COULDNT_USE_REST": "FTP: command REST failed",
+     "CURLE_FTP_PORT_FAILED": "FTP: command PORT failed",
+     "CURLE_FTP_PRET_FAILED": "FTP: The server did not accept the PRET command.",
+     "CURLE_FTP_WEIRD_227_FORMAT": "FTP: unknown 227 response format",
+     "CURLE_FTP_WEIRD_PASS_REPLY": "FTP: unknown PASS reply",
+     "CURLE_FTP_WEIRD_PASV_REPLY": "FTP: unknown PASV reply",
+     "CURLE_GOT_NOTHING": "Server returned nothing (no headers, no data)",
+     "CURLE_HTTP2": "Error in the HTTP2 framing layer",
+     "CURLE_HTTP2_STREAM": "Stream error in the HTTP/2 framing layer",
+     "CURLE_HTTP3": "HTTP/3 error",
+     "CURLE_HTTP_RETURNED_ERROR": "HTTP response code said error",
+     "CURLE_INTERFACE_FAILED": "Failed binding local connection end",
+     "CURLE_LDAP_CANNOT_BIND": "LDAP: cannot bind",
+     "CURLE_LDAP_SEARCH_FAILED": "LDAP: search failed",
+     "CURLE_LOGIN_DENIED": "Login denied",
+     "CURLE_NOT_BUILT_IN": "A requested feature, protocol or option was not found built-in in this libcurl due to a build-time decision.",
+     "CURLE_NO_CONNECTION_AVAILABLE": "The max connection limit is reached",
+     "CURLE_OK": "No error",
+     "CURLE_OPERATION_TIMEDOUT": "Timeout was reached",
+     "CURLE_OUT_OF_MEMORY": "Out of memory",
+     "CURLE_PARTIAL_FILE": "Transferred a partial file",
+     "CURLE_PEER_FAILED_VERIFICATION": "SSL peer certificate or SSH remote key was not OK",
+     "CURLE_PROXY": "proxy handshake error",
+     "CURLE_QUIC_CONNECT_ERROR": "QUIC connection error",
+     "CURLE_QUOTE_ERROR": "Quote command returned error",
+     "CURLE_RANGE_ERROR": "Requested range was not delivered by the server",
+     "CURLE_READ_ERROR": "Failed to open/read local data from file/application",
+     "CURLE_RECURSIVE_API_CALL": "API function called from within callback",
+     "CURLE_RECV_ERROR": "Failure when receiving data from the peer",
+     "CURLE_REMOTE_ACCESS_DENIED": "Access denied to remote resource",
+     "CURLE_REMOTE_DISK_FULL": "Disk full or allocation exceeded",
+     "CURLE_REMOTE_FILE_EXISTS": "Remote file already exists",
+     "CURLE_REMOTE_FILE_NOT_FOUND": "Remote file not found",
+     "CURLE_RTSP_CSEQ_ERROR": "RTSP CSeq mismatch or invalid CSeq",
+     "CURLE_RTSP_SESSION_ERROR": "RTSP session error",
+     "CURLE_SEND_ERROR": "Failed sending data to the peer",
+     "CURLE_SEND_FAIL_REWIND": "Send failed since rewinding of the data stream failed",
+     "CURLE_SETOPT_OPTION_SYNTAX": "Malformed option provided in a setopt",
+     "CURLE_SSH": "Error in the SSH layer",
+     "CURLE_SSL_CACERT_BADFILE": "Problem with the SSL CA cert (path? access rights?)",
+     "CURLE_SSL_CERTPROBLEM": "Problem with the local SSL certificate",
+     "CURLE_SSL_CIPHER": "Could not use specified SSL cipher",
+     "CURLE_SSL_CLIENTCERT": "SSL Client Certificate required",
+     "CURLE_SSL_CONNECT_ERROR": "SSL connect error",
+     "CURLE_SSL_CRL_BADFILE": "Failed to load CRL file (path? access rights?, format?)",
+     "CURLE_SSL_ENGINE_INITFAILED": "Failed to initialize SSL crypto engine",
+     "CURLE_SSL_ENGINE_NOTFOUND": "SSL crypto engine not found",
+     "CURLE_SSL_ENGINE_SETFAILED": "Can not set SSL crypto engine as default",
+     "CURLE_SSL_INVALIDCERTSTATUS": "SSL server certificate status verification FAILED",
+     "CURLE_SSL_ISSUER_ERROR": "Issuer check against peer certificate failed",
+     "CURLE_SSL_PINNEDPUBKEYNOTMATCH": "SSL public key does not match pinned public key",
+     "CURLE_SSL_SHUTDOWN_FAILED": "Failed to shut down the SSL connection",
+     "CURLE_TFTP_ILLEGAL": "TFTP: Illegal operation",
+     "CURLE_TFTP_NOSUCHUSER": "TFTP: No such user",
+     "CURLE_TFTP_NOTFOUND": "TFTP: File Not Found",
+     "CURLE_TFTP_PERM": "TFTP: Access Violation",
+     "CURLE_TFTP_UNKNOWNID": "TFTP: Unknown transfer ID",
+     "CURLE_TOO_LARGE": "A value or data field grew larger than allowed",
+     "CURLE_TOO_MANY_REDIRECTS": "Number of redirects hit maximum amount",
+     "CURLE_UNKNOWN_OPTION": "An unknown option was passed in to libcurl",
+     "CURLE_UNRECOVERABLE_POLL": "Unrecoverable error in select/poll",
+     "CURLE_UNSUPPORTED_PROTOCOL": "Unsupported protocol",
+     "CURLE_UPLOAD_FAILED": "Upload failed (at start/before it took off)",
+     "CURLE_URL_MALFORMAT": "URL using bad/illegal format or missing URL",
+     "CURLE_USE_SSL_FAILED": "Requested SSL level failed",
+     "CURLE_WEIRD_SERVER_REPLY": "Weird server reply",
+     "CURLE_WRITE_ERROR": "Failed writing received data to disk/application"
+    },
+    "unknown": "Unknown error",
+    "without-verbose-strings": [
+     "No error",
+     "Error"
+    ]
+   },
+   "curl_multi_strerror": {
+    "enum": "CURLMcode",
+    "labels-reaching-unknown": [
+     "CURLM_LAST"
+    ],
+    "messages": {
+     "CURLM_ABORTED_BY_CALLBACK": "Operation was aborted by an application callback",
+     "CURLM_ADDED_ALREADY": "The easy handle is already added to a multi handle",
+     "CURLM_BAD_EASY_HANDLE": "Invalid easy handle",
+     "CURLM_BAD_FUNCTION_ARGUMENT": "A libcurl function was given a bad argument",
+     "CURLM_BAD_HANDLE": "Invalid multi handle",
+     "CURLM_BAD_SOCKET": "Invalid socket argument",
+     "CURLM_CALL_MULTI_PERFORM": "Please call curl_multi_perform() soon",
+     "CURLM_INTERNAL_ERROR": "Internal error",
+     "CURLM_OK": "No error",
+     "CURLM_OUT_OF_MEMORY": "Out of memory",
+     "CURLM_RECURSIVE_API_CALL": "API function called from within callback",
+     "CURLM_UNKNOWN_OPTION": "Unknown option",
+     "CURLM_UNRECOVERABLE_POLL": "Unrecoverable error in select/poll",
+     "CURLM_WAKEUP_FAILURE": "Wakeup is unavailable or failed"
+    },
+    "unknown": "Unknown error",
+    "without-verbose-strings": [
+     "No error",
+     "Error"
+    ]
+   },
+   "curl_share_strerror": {
+    "enum": "CURLSHcode",
+    "labels-reaching-unknown": [
+     "CURLSHE_LAST"
+    ],
+    "messages": {
+     "CURLSHE_BAD_OPTION": "Unknown share option",
+     "CURLSHE_INVALID": "Invalid share handle",
+     "CURLSHE_IN_USE": "Share currently in use",
+     "CURLSHE_NOMEM": "Out of memory",
+     "CURLSHE_NOT_BUILT_IN": "Feature not enabled in this library",
+     "CURLSHE_OK": "No error"
+    },
+    "unknown": "CURLSHcode unknown",
+    "without-verbose-strings": [
+     "No error",
+     "Error"
+    ]
+   },
+   "curl_url_strerror": {
+    "enum": "CURLUcode",
+    "labels-reaching-unknown": [
+     "CURLUE_LAST"
+    ],
+    "messages": {
+     "CURLUE_BACKSLASH": "Found a backslash where a forward slash was expected",
+     "CURLUE_BAD_FILE_URL": "Bad file:// URL",
+     "CURLUE_BAD_FRAGMENT": "Bad fragment",
+     "CURLUE_BAD_HANDLE": "An invalid CURLU pointer was passed as argument",
+     "CURLUE_BAD_HOSTNAME": "Bad hostname",
+     "CURLUE_BAD_IPV6": "Bad IPv6 address",
+     "CURLUE_BAD_LOGIN": "Bad login",
+     "CURLUE_BAD_PARTPOINTER": "An invalid 'part' argument was passed as argument",
+     "CURLUE_BAD_PASSWORD": "Bad password",
+     "CURLUE_BAD_PATH": "Bad path",
+     "CURLUE_BAD_PORT_NUMBER": "Port number was not a decimal number between 0 and 65535",
+     "CURLUE_BAD_QUERY": "Bad query",
+     "CURLUE_BAD_SCHEME": "Bad scheme",
+     "CURLUE_BAD_SLASHES": "Unsupported number of slashes following scheme",
+     "CURLUE_BAD_USER": "Bad user",
+     "CURLUE_LACKS_IDN": "libcurl lacks IDN support",
+     "CURLUE_MALFORMED_INPUT": "Malformed input to a URL function",
+     "CURLUE_NO_FRAGMENT": "No fragment present",
+     "CURLUE_NO_HOST": "No host present",
+     "CURLUE_NO_OPTIONS": "No options present",
+     "CURLUE_NO_PASSWORD": "No password present",
+     "CURLUE_NO_PORT": "No port number present",
+     "CURLUE_NO_QUERY": "No query present",
+     "CURLUE_NO_SCHEME": "No scheme present",
+     "CURLUE_NO_USER": "No user present",
+     "CURLUE_NO_ZONEID": "No zoneid present",
+     "CURLUE_OK": "No error",
+     "CURLUE_OUT_OF_MEMORY": "A memory function failed",
+     "CURLUE_TOO_LARGE": "A value or data field is larger than allowed",
+     "CURLUE_UNKNOWN_PART": "An unknown part ID was passed to a URL API function",
+     "CURLUE_UNSUPPORTED_SCHEME": "Unsupported URL scheme",
+     "CURLUE_URLDECODE": "URL decode error, most likely because of rubbish in the input",
+     "CURLUE_USER_NOT_ALLOWED": "Credentials was passed in the URL when prohibited"
+    },
+    "unknown": "CURLUcode unknown",
+    "without-verbose-strings": [
+     "No error",
+     "Error"
+    ]
+   }
+  },
   "structs": {
    "struct CURLMsg": {
     "align": 8,
@@ -22814,6 +23832,7 @@
  "generated-by": "inventory/gen/abi.py",
  "sources": [
   "curl-config.in",
+  "docs/libcurl/",
   "docs/libcurl/symbols-in-versions",
   "include/curl/",
   "lib/",
@@ -22821,6 +23840,8 @@
   "lib/Makefile.soname",
   "lib/libcurl.def",
   "lib/libcurl.vers.in",
-  "libcurl.pc.in"
+  "lib/strerror.c",
+  "libcurl.pc.in",
+  "tests/data/test1538"
  ]
 }

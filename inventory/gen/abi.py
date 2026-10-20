@@ -50,7 +50,8 @@ def preprocess():
     """
     Return (macros, code) from the public headers only. `macros` maps a
     name to {header, params, body}; `code` maps a header to its
-    preprocessed declarations."""
+    preprocessed declarations.
+    """
     src = SCRATCH / "pp.c"
     src.write_text("#include <curl/curl.h>\n")
     r = gcc(["-E", "-dD", str(src)])
@@ -98,7 +99,8 @@ def split_top(text, sep, opens="({[", closes=")}]"):
 def strip_attrs(text):
     """
     Remove `__attribute__((...))` groups; return (text, deprecated msg or
-    None)."""
+    None).
+    """
     dep = None
     while True:
         i = text.find("__attribute__")
@@ -279,7 +281,8 @@ int main(void)
 def run_probe(lines):
     """
     Compile `lines` (one statement each) into the probe; drop lines that
-    fail to compile and retry. Returns (stdout, dropped lines)."""
+    fail to compile and retry. Returns (stdout, dropped lines).
+    """
     lines, dropped = list(lines), []
     first = PROBE_PRELUDE.count("\n") + 1
     for _ in range(50):
@@ -339,7 +342,8 @@ def lib_defined_curl_functions():
     """
     Heuristic: functions named curl_* defined (not declared) in lib/.
     The linker version script exports every global `curl_*`, so anything
-    here that is not public still leaks into the dynamic symbol table."""
+    here that is not public still leaks into the dynamic symbol table.
+    """
     found = {}
     for p in sorted((ROOT / "lib").rglob("*.c")):
         lines = p.read_text(errors="replace").splitlines()
@@ -353,6 +357,123 @@ def lib_defined_curl_functions():
                 found.setdefault(m.group(1), []).append(
                     f"{p.relative_to(ROOT)}:{i + 1}")
     return found
+
+
+STRERROR = {"curl_easy_strerror": ("CURLcode", "e"),
+            "curl_multi_strerror": ("CURLMcode", "m"),
+            "curl_share_strerror": ("CURLSHcode", "s"),
+            "curl_url_strerror": ("CURLUcode", "u")}
+C_STRING = r'((?:"(?:[^"\\]|\\.)*"\s*)+)'
+
+
+def c_string(lit):
+    return "".join(re.findall(r'"((?:[^"\\]|\\.)*)"', lit))
+
+
+def strerror_tables():
+    """
+    Return the message each *_strerror function gives per code name.
+
+    lib/strerror.c switches on the code under CURLVERBOSE; a build without
+    it returns only the strings of its `#else` branch.
+    """
+    text = common.read("lib/strerror.c")
+    tables = {}
+    for fn, (enum, _) in STRERROR.items():
+        m = re.search(rf"^const char \*{fn}\({enum} \w+\)\n\{{\n(.*?)^\}}",
+                      text, re.MULTILINE | re.DOTALL)
+        check(m is not None, f"{fn} not found in lib/strerror.c")
+        verbose, _, quiet = m.group(1).partition("#else")
+        check(verbose.lstrip().startswith("#ifdef CURLVERBOSE") and quiet,
+              f"{fn}: no CURLVERBOSE split")
+        # The message for an unknown code is the switch's last return;
+        # labels ending in `break` (or `default`) fall through to it.
+        returns = list(re.finditer(rf"return {C_STRING};", verbose))
+        check(returns, f"{fn}: no returns")
+        fallback = c_string(returns[-1].group(1))
+        messages, labels, to_fallback = {}, [], []
+        for tok in re.finditer(rf"case (\w+):|(default):|(break);|"
+                               rf"return {C_STRING};",
+                               verbose[:returns[-1].start()]):
+            if tok.group(1):
+                labels.append(tok.group(1))
+            elif tok.group(2):
+                labels.append("default")
+            elif tok.group(3):
+                to_fallback += labels
+                labels = []
+            else:
+                check(labels, f"{fn}: return without case label")
+                for label in labels:
+                    messages[label] = c_string(tok.group(4))
+                labels = []
+        to_fallback += labels
+        tables[fn] = {"enum": enum, "messages": messages,
+                      "unknown": fallback,
+                      "labels-reaching-unknown": to_fallback,
+                      "without-verbose-strings": [
+                          c_string(lit) for lit in
+                          re.findall(rf"return {C_STRING};", quiet)]}
+    return tables
+
+
+def check_strerror_against_test1538(tables, constants):
+    """Compare the parsed tables with test 1538, which prints them all."""
+    by_value = {}
+    for c in constants:
+        if c["kind"] == "enum":
+            by_value.setdefault((c["enum"], int(c["value"])), []).append(
+                c["name"])
+    body = common.read("tests/data/test1538")
+    out = body[body.index("<stdout>\n") + 9:body.index("</stdout>")]
+    seen = 0
+    for line in out.splitlines():
+        m = re.match(r"^([emsu])(-?\d+): (.*)$", line)
+        if not m:
+            continue
+        fn = next(f for f, (_, p) in STRERROR.items() if p == m.group(1))
+        t = tables[fn]
+        names = by_value.get((t["enum"], int(m.group(2))), [])
+        got = {t["messages"][n] for n in names if n in t["messages"]}
+        check(len(got) <= 1, f"{fn}: one value, several messages: {names}")
+        want = got.pop() if got else t["unknown"]
+        check(want == m.group(3), f"test1538 says {line!r}, parsed {want!r}")
+        seen += 1
+    # lib1538 prints every value from the lowest member to the _LAST one.
+    want_lines = 0
+    for t in tables.values():
+        vals = [v for (e, v) in by_value if e == t["enum"]]
+        want_lines += max(vals) - min(vals) + 1
+    check(seen == want_lines,
+          f"test1538 lines checked: {seen}, expected {want_lines}")
+
+
+def function_docs(funcs):
+    """Attach each function's man page metadata and RETURN VALUE text."""
+    # A page may document several functions (curl_mprintf.md covers the
+    # whole printf family): fall back to the page whose SYNOPSIS names it.
+    synopsis = {}
+    for page in sorted((ROOT / "docs/libcurl").glob("curl_*.md")):
+        m = re.search(r"^# SYNOPSIS\n(.*?)(?=^# )", page.read_text(),
+                      re.MULTILINE | re.DOTALL)
+        for name in set(re.findall(r"\b(curl_\w+)\s*\(", m.group(1)
+                                   if m else "")):
+            synopsis.setdefault(name, []).append(
+                str(page.relative_to(ROOT)))
+    for f in funcs:
+        path = f"docs/libcurl/{f['name']}.md"
+        if not (ROOT / path).exists():
+            pages = synopsis.get(f["name"], [])
+            if len(pages) != 1:
+                f["doc"] = None
+                continue
+            path = pages[0]
+        meta, body = common.frontmatter(common.read(path))
+        m = re.search(r"^# RETURN VALUE\n\n(.*?)(?=^# |\Z)", body,
+                      re.MULTILINE | re.DOTALL)
+        f["doc"] = {"path": path, "added-in": meta.get("Added-in"),
+                    "protocol": meta.get("Protocol"),
+                    "return-value": m.group(1).strip() if m else None}
 
 
 def soname():
@@ -450,9 +571,9 @@ def generate():
         elif kind == "S":
             sizes[rest[0]] = {"size": int(rest[1]), "align": int(rest[2])}
         elif kind == "O":
-            offsets[(rest[0], rest[1])] = (int(rest[2]), int(rest[3]))
+            offsets[rest[0], rest[1]] = (int(rest[2]), int(rest[3]))
         elif kind == "B":
-            bitpos[(rest[0], rest[1])] = (int(rest[2]), int(rest[3]))
+            bitpos[rest[0], rest[1]] = (int(rest[2]), int(rest[3]))
         elif kind == "F":
             linked.add(rest[0])
     dropped_names = {re.match(r"^\w\((.*)\);$", d).group(1) for d in dropped}
@@ -468,10 +589,10 @@ def generate():
             if "bit-width" in f:
                 check((s, f["name"]) in bitpos,
                       f"no bit position for {s}.{f['name']}")
-                f["offset"], f["bit"] = bitpos[(s, f["name"])]
+                f["offset"], f["bit"] = bitpos[s, f["name"]]
                 continue
             check((s, f["name"]) in offsets, f"no offset for {s}.{f['name']}")
-            f["offset"], f["size"] = offsets[(s, f["name"])]
+            f["offset"], f["size"] = offsets[s, f["name"]]
         check(s in sizes, f"no size for {s}")
         info.update(sizes[s])
     for t in typedefs:
@@ -492,6 +613,7 @@ def generate():
               structs["struct curl_slist"]["fields"][1]["offset"] == 8,
               "curl_slist layout on LP64")
 
+    function_docs(funcs)
     constants = [{"name": m["name"], "kind": "enum",
                   "enum": e["typedef"] or f"enum {e['tag']}",
                   "header": e["header"], "expr": m["expr"],
@@ -554,6 +676,11 @@ def generate():
     discrepancies += [{"kind": "prototype-without-lib-definition-heuristic",
                        "name": n} for n in sorted(fnames - set(lib_defs))]
 
+    discrepancies += [{"kind": "function-without-man-page", "name": f["name"]}
+                      for f in funcs if f["doc"] is None]
+    strerrors = strerror_tables()
+    check_strerror_against_test1538(strerrors, constants)
+
     deprecated_consts = sum(1 for c in constants if c.get("deprecated")
                             is not None)
     data = {
@@ -575,6 +702,7 @@ def generate():
         "opaque-types": opaque,
         "typedefs": sorted(typedefs, key=lambda t: t["name"]),
         "symbol-history": siv,
+        "strerror": strerrors,
         "lib-defined-curl-functions-not-public-heuristic": leaked,
         "discrepancies": discrepancies,
     }
@@ -612,10 +740,23 @@ def generate():
                            data["library"]["versioned-symbols"]
                            ["prefix-by-backend"]]),
           "## Functions\n",
-          common.md_table(["name", "header", "prototype", "deprecated"],
+          common.md_table(["name", "header", "prototype", "added",
+                           "deprecated"],
                           [(f["name"], f["header"], f"`{f['prototype']}`",
+                            (f["doc"] or {}).get("added-in", ""),
                             f["deprecated"] if f["deprecated"] is not None
                             else "") for f in data["functions"]]),
+          "## Error strings\n",
+          ("Returned by the `*_strerror` functions in a build with verbose "
+           "strings (the `verbose-strings` test feature); without it they "
+           "return only the `#else` strings. Checked line by line against "
+           "test 1538.\n"),
+          common.md_table(
+              ["function", "codes with a message", "unknown code",
+               "without verbose strings"],
+              [(fn, len(t["messages"]), t["unknown"],
+                t["without-verbose-strings"])
+               for fn, t in strerrors.items()]),
           "## Structs\n"]
     for s, info in data["structs"].items():
         md += [(f"### `{s}` ({info['header']}): size {info['size']}, "
@@ -652,7 +793,8 @@ def generate():
     common.write("abi", data, "\n".join(md), [
         "include/curl/", "docs/libcurl/symbols-in-versions",
         "lib/libcurl.def", "lib/libcurl.vers.in", "lib/Makefile.soname",
-        "lib/CMakeLists.txt", "curl-config.in", "libcurl.pc.in", "lib/"])
+        "lib/CMakeLists.txt", "curl-config.in", "libcurl.pc.in", "lib/",
+        "lib/strerror.c", "tests/data/test1538", "docs/libcurl/"])
 
 
 if __name__ == "__main__":

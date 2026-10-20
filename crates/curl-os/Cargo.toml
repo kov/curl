@@ -1,0 +1,25 @@
+[package]
+name = "curl-os"
+description = "The operating-system interfaces of the curl rewrite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The process's own command line: captured at start-up so arguments can be
+# wiped in place. Only a program's own crate enables it, never a library.
+args = []
+
+[[test]]
+name = "wipe"
+required-features = ["args"]
+# The test re-executes itself, and reads its own command line.
+harness = false
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+libc = "0.2"
+
+[lints]
+workspace = true

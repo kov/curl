@@ -12,6 +12,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-sys-abi` | The C ABI over `curl-core`, built as `libcurl.so.4`. | yes: it is the shim |
 | `curl-tool` | The `curl` binary, written against the Rust API, not the C ABI. | forbidden |
 | `curl-alloc` | Fallible allocation; the debug build's memory tracker. | in named modules |
+| `curl-os` | Operating-system interfaces: the command line, the terminal, the user database. | in named modules |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);
@@ -197,8 +198,9 @@ A `debug-hooks` feature provides it, on `curl-alloc`, `curl-sys-abi` and `curl-t
 - **`curl-alloc`** owns the tracker: the memdump, written line by line with nothing allocated
   while logging, and the allocation limit. Its global allocator tags each block when it is
   made, so a block made before tracking started is never reported as a bad free. Being
-  Rust's global allocator, it is process-wide by definition; it is the one global outside the
-  shim's root. It also counts allocations per thread, for the budget tests.
+  Rust's global allocator, it is process-wide by definition. It and the command line
+  `curl-os` captures for the tool, written once before `main`, are the only globals outside
+  the shim's root. It also counts allocations per thread, for the budget tests.
 - **`curl-sys-abi`** installs that allocator and adds:
   - the `libcurl-d.so.4` soname;
   - the `curl_dbg_*` exports the C test programs import, logging to the same memdump and

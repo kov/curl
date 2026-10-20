@@ -125,10 +125,11 @@ curl-core/src/
   time.rs                    Instant, TimeLimit, Clock, SystemClock, ManualClock (test-util)
   id.rs                      Arena<T>, ArenaPolicy, Key<T>; TransferId, ConnId, ConnNumber
   url/                       Url, Host, Port, Origin; urlapi.c-compatible parser
-  options/                   typed config groups: Network, Http, Output, Limits, Callbacks…
+  options/                   typed config groups: Network, Http, Output, Limits, Callbacks…;
+                             script.rs: what the test protocol `script:` plays (test-util)
   easy.rs                    Easy, Easy::perform
   report.rs                  TransferReport, Timings, Sizes, HeaderStore, HeaderCursor
-  handler.rs                 handler traits and their verdict enums
+  handler.rs                 handler traits, their verdict enums, Handler
   trace.rs                   infof/debug formatting on a stack buffer
   multi/
     mod.rs                   Multi<H>, Host, public API
@@ -156,6 +157,7 @@ curl-core/src/
   proto/
     mod.rs                   ProtoState enum (File, Http1; later variants)
     file.rs
+    script.rs                the test protocol `script:` (test-util)
     http1/                   request.rs, response.rs, chunked.rs, follow.rs, auth.rs
   share.rs                   Share, Lock trait
 ```
@@ -325,16 +327,17 @@ last variants.
 pub enum Write { Accepted, Pause, Fail }          // the shim maps a short count to Fail
 pub enum Read { Data(usize), Eof, Pause, Abort }   // Data(n > buf.len()) is rejected, not asserted
 pub enum ProgressVerdict { Continue, ContinueWithMeter, Abort }
-pub trait WriteHandler  { fn write(&mut self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write; }
-pub trait HeaderHandler { fn header(&mut self, cx: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write; }
-pub trait ReadHandler   { fn read(&mut self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read; }
-pub trait DebugHandler  { fn debug(&mut self, cx: &mut TransferCx<'_>, k: DebugKind, data: &[u8]); }
-pub trait ProgressHandler { fn progress(&mut self, cx: &mut TransferCx<'_>, p: Progress) -> ProgressVerdict; }
-pub trait PrereqHandler { fn prereq(&mut self, cx: &mut TransferCx<'_>, p: &PrereqInfo) -> Result<(), Abort>; }
+pub trait WriteHandler  { fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write; }
+pub trait HeaderHandler { fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write; }
+pub trait ReadHandler   { fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read; }
+pub trait DebugHandler  { fn debug(&self, cx: &mut TransferCx<'_>, k: DebugKind, data: &[u8]); }
+pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: Progress) -> ProgressVerdict; }
+pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, p: &PrereqInfo) -> Result<(), Abort>; }
 pub trait Rewind {
-    fn rewind(&mut self, cx: &mut TransferCx<'_>) -> RewindResult;      // Ok | Fail
-    fn seek(&mut self, cx: &mut TransferCx<'_>, to: u64) -> SeekResult; // Ok | CantSeek | Fail
+    fn rewind(&self, cx: &mut TransferCx<'_>) -> RewindResult;      // Ok | Fail
+    fn seek(&self, cx: &mut TransferCx<'_>, to: u64) -> SeekResult; // Ok | CantSeek | Fail
 }
+pub struct Handler<T: ?Sized>(TryRc<Box<T>>);     // Clone shares it; Handler::write(h) etc. box one
 pub trait MultiEvents<H: Host> {
     fn socket(&mut self, cx: &mut EventCx<'_, H>, who: SocketOwner<'_, H>, s: SocketKey,
               what: SocketWhat, assigned: Option<&H::Socket>) -> Result<(), Abort>;
@@ -345,7 +348,15 @@ pub trait MultiEvents<H: Host> {
 }
 ```
 
-`TransferCx` is generic over `H` in the code; the lifetime-only form above is shorthand.
+Handlers live in `Options::callbacks` as `Handler<dyn …>`, shared: a copy of the options
+(`curl_easy_duphandle`) shares each handler, as C's copies share a callback and its userdata
+pointer. So a handler is called through `&self` and keeps its state in cells, and `Easy` is not
+`Send` (nor is `Multi`, whose clock and network are boxed without `Send`).
+
+`TransferCx` names no `Host`: the handlers live in an `Easy`, which has none. It wraps a
+crate-private object-safe trait, `TransferCalls`, which the step context implements for each
+`H`. The calls api.c allows a transfer callback that need `H` (a message's owner value, a
+socket's assigned value) are offered without the `H` part or not at all.
 
 ---
 
@@ -582,21 +593,22 @@ pub struct EngineRest<'a, H: Host> {      // the multi minus what the step holds
     announce: &'a mut TimerAnnounce, sched: &'a mut Sched, notify: &'a mut NotifyQueue,
     net: &'a mut dyn Net, now: Instant, life: &'a mut MultiLife,
 }
-pub struct TransferCx<'a, H: Host> {
+pub struct TransferCx<'a> { calls: &'a mut dyn TransferCalls }
+pub(crate) struct StepCx<'a, H: Host> {     // implements TransferCalls
     me: TransferId,
     me_basis: PollBasis,                  // my pollset before pause masking, computed at call-out
     flush: Option<&'a mut Pipeline>,      // Some only where C would let a nested flush run
     rest: EngineRest<'a, H>,
     events: &'a mut dyn MultiEvents<H>,
 }
-impl<H: Host> TransferCx<'_, H> {            // api.c's "may recurse" column
+impl TransferCx<'_> {                        // api.c's "may recurse" column
+    pub fn me(&self) -> TransferId;
     pub fn info(&self, id: TransferId) -> Option<&TransferReport>;
     pub fn header(&self, id: TransferId, q: HeaderQuery) -> Result<HeaderView<'_>, HeaderError>;
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options>;
     pub fn pause(&mut self, id: TransferId, p: PauseRequest) -> Result<(), Error>;
     pub fn duplicate(&self, id: TransferId) -> Result<Easy, OutOfMemory>;
-    pub fn info_read(&mut self) -> Option<Message<'_, H>>;
-    pub fn assign(&mut self, s: SocketKey, v: H::Socket) -> Result<(), MultiError>;
+    pub fn info_read(&mut self) -> Option<(TransferId, Result<(), Error>)>;  // no owner value
     pub fn counts(&self) -> Counts;
     pub fn set_notify(&mut self, kind: NotifyKind, on: bool);
 }
@@ -648,12 +660,11 @@ The rules that keep this sound:
   queue is empty between passes, so queueing never allocates and C's deferred
   `CURLM_OUT_OF_MEMORY` has no counterpart.
 
-**Handler take-and-restore.** Before a call-out the engine takes the handler out of
-`easy.options.callbacks` (`Option::take`), builds the context, calls it, and puts it back only if
-the slot is still empty. A handler installed from inside its own call wins, and the next piece
-of the same write uses it (fix 8940c1436b, #23085). A handler is never invoked re-entrantly
-because it is not in its slot while it runs; the engine `expect`s it present on entry, an
-internal invariant.
+**Handlers are read at each call.** Before a call-out the engine clones the shared handle from
+`easy.options.callbacks` (no allocation), builds the context and calls it, leaving the options
+alone. A handler installed from inside its own call wins, and the next piece of the same write
+uses it (fix 8940c1436b, #23085). A handler called again from inside itself (through a
+sibling's unpause, say) is the application's to allow: its state is in cells.
 
 ### 3.7 Counts and messages
 

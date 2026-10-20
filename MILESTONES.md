@@ -114,9 +114,10 @@ yet meet.
 **`file://` end to end**
 
 7. **deliver: add the pipeline, client output and pause.** In parts:
-   - 7a. `EngineRest`, `TransferCx` and the handler traits with take-and-restore; the callbacks
-     options; a scripted test protocol (header lines, body pieces, end, yield). Test: a handler
-     replaced inside its own call.
+   - 7a. **Done.** `EngineRest`, `TransferCx` and the write and header handlers, shared and read
+     at each call; the callbacks options; the test protocol `script:` (header lines and body
+     pieces). The other handlers come with the parts that call them. Test: a handler replaced
+     inside its own call.
    - 7b. `Pipeline`: raw trace, accountant, `ClientOut` Direct/Failed. Tests: 16 KiB pieces;
      header lines whole; `-i` order; `Failed` is terminal.
    - 7c. `TransferReport`, `Timings`, `Sizes`, `HeaderStore`. Ports unit 1399. Test: getinfo

@@ -11,7 +11,7 @@ use crate::proto::{ProtoState, ProtoStep};
 use crate::time::Instant;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
 
-use super::cx::EngineRest;
+use super::cx::{EngineRest, TransferCalls};
 use super::timers::{Deadlines, Phase, TimeLeft};
 use super::{Host, TransferId};
 
@@ -121,17 +121,31 @@ impl TransferState {
 /// slot, and the rest of the multi.
 pub(crate) struct StepCx<'a, H: Host> {
     pub(crate) me: TransferId,
-    pub(crate) rest: EngineRest<'a, H>,
+    pub(super) rest: EngineRest<'a, H>,
 }
 
 impl<H: Host> StepCx<'_, H> {
-    fn easy(&self) -> &Easy {
+    pub(crate) fn easy(&self) -> &Easy {
         &self
             .rest
             .slots
             .get(self.me)
             .expect("the stepping transfer")
             .easy
+    }
+}
+
+impl<H: Host> TransferCalls for StepCx<'_, H> {
+    fn me(&self) -> TransferId {
+        self.me
+    }
+
+    fn easy(&self, id: TransferId) -> Option<&Easy> {
+        self.rest.slots.get(id).map(|s| &s.easy)
+    }
+
+    fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
+        self.rest.slots.get_mut(id).map(|s| &mut s.easy)
     }
 }
 
@@ -144,8 +158,9 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             run.deadlines = Deadlines::new(cx.rest.now, limits.total, limits.connect);
             (setup(run, cx), Wake::Again)
         }
-        TransferState::Exchanging(mut x) => match x.proto.step() {
-            ProtoStep::Done => (
+        TransferState::Exchanging(mut x) => match x.proto.step(cx) {
+            Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
+            Ok(ProtoStep::Done) => (
                 TransferState::Done(Done {
                     lease: x.lease,
                     result: Ok(()),
@@ -154,7 +169,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 Wake::Again,
             ),
             // Out of time at the end of the pass (transfer.c:382).
-            ProtoStep::Blocked
+            Ok(ProtoStep::Blocked)
                 if matches!(
                     run.deadlines.time_left(cx.rest.now, Phase::Transferring),
                     TimeLeft::Expired(_)
@@ -165,7 +180,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     Wake::Again,
                 )
             }
-            ProtoStep::Blocked => (TransferState::Exchanging(x), Wake::Idle),
+            Ok(ProtoStep::Blocked) => (TransferState::Exchanging(x), Wake::Idle),
         },
         TransferState::Done(d) => {
             let premature = d.premature || is_premature(d.result);

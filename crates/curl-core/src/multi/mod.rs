@@ -12,7 +12,7 @@ mod check;
 mod cx;
 mod notify;
 mod sched;
-mod state;
+pub(crate) mod state;
 mod timers;
 mod wait;
 
@@ -28,7 +28,7 @@ use crate::id::{Arena, ArenaPolicy, Key};
 use crate::time::{Clock, Instant};
 
 use cx::EngineRest;
-pub use cx::{EventCx, NotifyCx};
+pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
 pub use sched::Counts;
 pub use timers::TimerChange;

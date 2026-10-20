@@ -1,0 +1,39 @@
+# Delivering output to the application's handlers (crates/curl-core/src/
+# deliver, handler.rs, the `script:` test protocol), against sendf.c's
+# client writers.
+
+=== a handler's replacement of itself is undone after its call
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core multi::tests::a_handler_replaced_inside_its_own_call_takes_the_next_piece
+--- old
+    verdict(handler.write(&mut TransferCx::new(cx), body))
+--- new
+    let mut tcx = TransferCx::new(cx);
+    let v = handler.write(&mut tcx, body);
+    let me = tcx.me();
+    tcx.options_mut(me).unwrap().callbacks.write = Some(handler);
+    verdict(v)
+
+=== a write handler's failure is ignored
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core multi::tests::a_failed_or_paused_write_fails_the_transfer
+--- old
+        Write::Accepted => Ok(()),
+--- new
+        Write::Accepted | Write::Fail => Ok(()),
+
+=== header lines go to the write handler
+file: crates/curl-core/src/proto/script.rs
+witness: curl-core multi::tests::a_script_s_pieces_reach_their_handlers_in_order
+--- old
+                Piece::Header(line) => deliver::header(cx, line, HeaderOrigin::Header)?,
+--- new
+                Piece::Header(line) => deliver::body(cx, line)?,
+
+=== a copy of the options gets no handlers
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core multi::tests::a_copy_of_the_options_shares_the_handlers
+--- old
+            callbacks: self.callbacks.clone(),
+--- new
+            callbacks: Callbacks::default(),

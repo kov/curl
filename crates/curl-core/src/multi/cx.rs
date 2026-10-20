@@ -20,10 +20,54 @@ use super::{
 /// slot: what a step and the callbacks it makes reach everything else
 /// through.
 pub(crate) struct EngineRest<'a, H: Host> {
-    pub(crate) slots: &'a mut Arena<Slot<H>, Transfer>,
-    pub(crate) pool: &'a mut Pool,
+    pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
+    pub(super) pool: &'a mut Pool,
     /// The pass's time, read once.
-    pub(crate) now: Instant,
+    pub(super) now: Instant,
+}
+
+/// The multi as a transfer's own handlers see it: the calls api.c lets a
+/// write, header or read callback make. It names no `Host`, as the
+/// handlers live in an `Easy`, which has none.
+pub struct TransferCx<'a> {
+    calls: &'a mut dyn TransferCalls,
+}
+
+impl<'a> TransferCx<'a> {
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "no protocol is built in before step 8")
+    )]
+    pub(crate) fn new(calls: &'a mut dyn TransferCalls) -> TransferCx<'a> {
+        TransferCx { calls }
+    }
+
+    /// The transfer whose handler this is.
+    pub fn me(&self) -> TransferId {
+        self.calls.me()
+    }
+
+    pub fn options(&self, id: TransferId) -> Option<&Options> {
+        self.calls.easy(id).map(Easy::options)
+    }
+
+    /// A transfer's options, its own among them: a handler it installs
+    /// takes the next piece of output.
+    pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
+        self.calls.easy_mut(id).map(Easy::options_mut)
+    }
+
+    /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
+    pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
+        self.calls.easy(id).map(Easy::try_clone)
+    }
+}
+
+/// What a `TransferCx` reaches, whatever the multi's `Host`.
+pub(crate) trait TransferCalls {
+    fn me(&self) -> TransferId;
+    fn easy(&self, id: TransferId) -> Option<&Easy>;
+    fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy>;
 }
 
 /// The multi as the timer callback sees it: only the calls api.c lets

@@ -8,8 +8,10 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 pub mod conn;
+mod deliver;
 pub mod easy;
 pub mod error;
+pub mod handler;
 pub mod id;
 pub mod multi;
 pub mod options;

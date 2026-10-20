@@ -3,8 +3,12 @@
 //! Only the options the multi reads exist yet; the rest arrive with the
 //! code that reads them.
 
+#[cfg(any(test, feature = "test-util"))]
+pub mod script;
+
 use curl_alloc::{OutOfMemory, TryVec};
 
+use crate::handler::{Handler, HeaderHandler, WriteHandler};
 use crate::time::TimeLimit;
 
 /// Every option of a transfer. The default sets nothing and allocates
@@ -13,6 +17,10 @@ use crate::time::TimeLimit;
 pub struct Options {
     url: Option<Vec<u8>>,
     pub limits: Limits,
+    pub callbacks: Callbacks,
+    /// What the test protocol `script:` plays.
+    #[cfg(any(test, feature = "test-util"))]
+    pub script: Option<script::Script>,
 }
 
 impl Options {
@@ -32,6 +40,9 @@ impl Options {
         Ok(Options {
             url: self.url.as_deref().map(copy).transpose()?,
             limits: self.limits,
+            callbacks: self.callbacks.clone(),
+            #[cfg(any(test, feature = "test-util"))]
+            script: self.script.clone(),
         })
     }
 }
@@ -49,4 +60,14 @@ pub struct Limits {
     pub total: Option<TimeLimit>,
     /// Each connection (`CURLOPT_CONNECTTIMEOUT_MS`); five minutes if none.
     pub connect: Option<TimeLimit>,
+}
+
+/// Where a transfer's output goes. A copy of the options shares each
+/// handler, as C's copies share a callback and its userdata.
+#[derive(Clone, Debug, Default)]
+pub struct Callbacks {
+    /// The body; without one, it is dropped.
+    pub write: Option<Handler<dyn WriteHandler>>,
+    /// Header lines; without one, they go nowhere.
+    pub header: Option<Handler<dyn HeaderHandler>>,
 }

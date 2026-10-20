@@ -13,6 +13,10 @@ python3 inventory/gen/all.py --check   # also fail if any committed output is st
 
 Run `--check` after the C tree moves; a generator that fails its self-checks writes nothing.
 
+`perf` comes from `inventory/measure/perf.py` the same way (`--run`, about 15 minutes). Its figures
+hold for this machine only: compare builds measured here by the same script, never against
+numbers from elsewhere.
+
 `baseline` comes from `inventory/measure/baseline.py`, which `all.py` does not run. `--run` configures and builds
 the C tree in `build/c`, runs `runtests.pl` and the `tests/http` pytest suite (about seven
 minutes; pytest gets a venv in `build/c/pytest-venv`) and parses the results (libraries newer than the distribution's come from
@@ -31,6 +35,7 @@ Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.
 | `quirks` | Claims from KNOWN_BUGS, TODO, EXPERIMENTAL, DEPRECATE and KNOWN_RISKS. All are hypotheses until a test reproduces them. |
 | `tests` | Every `tests/data` case with keywords, features, servers and runner; DISABLED; libtest, unit and tunit programs; the pytest suite; test servers. |
 | `baseline` | Measured, not derived: what the C reference build in `build/c` does on the test suite, per test (ok, failed, or skipped with its reason) for both `runtests.pl` and pytest, with the build flags, `curl -V` and the built library's exported symbols. |
+| `perf` | Measured, not derived: a release build of the reference configuration in `build/c-release`, timed with the `tests/perf` benchmarks and the local parts of `tests/http/scorecard.py`. Medians and interquartile ranges, with the machine it ran on. |
 
 ## Reading the data
 

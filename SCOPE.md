@@ -87,6 +87,14 @@ The machine also needs the following for the test servers, which the build does 
 
 A missing server makes its tests skip or error. It does not make them fail.
 
+## Performance
+
+The rewrite is compared with the C reference on this machine, release build against release
+build. `inventory/measure/perf.py` measures both the same way: the `tests/perf` benchmarks and the
+local download, upload and request scorecard of `tests/http/scorecard.py`. Its `perf` section is the C
+side. The benchmarks that call internal helpers rather than the public API (base64, number parsing)
+need Rust counterparts; the inventory marks them `port`.
+
 ## Repository layout
 
 - The C tree stays where it is; it is the reference, not upstream.

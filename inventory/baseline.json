@@ -6,7 +6,7 @@
    "CMAKE_BUILD_TYPE": "Debug",
    "CURL_BROTLI": "ON",
    "CURL_DISABLE_HTTPSIG": "OFF",
-   "CURL_ENABLE_NTLM": "ON",
+   "CURL_ENABLE_NTLM": "OFF",
    "CURL_USE_GSSAPI": "ON",
    "CURL_USE_LIBPSL": "ON",
    "CURL_USE_LIBSSH2": "ON",
@@ -28,15 +28,15 @@
   "counts": {
    "considered": 2146,
    "failed": 0,
-   "ok": 2107,
-   "ran": 2107,
-   "skipped": 39
+   "ok": 2057,
+   "ran": 2057,
+   "skipped": 89
   },
   "curl-version": [
    "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.22.1 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "Release-Date: [unreleased]",
    "Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz NTLM proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
+   "Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd"
   ],
   "features": [
    "alt-svc",
@@ -55,7 +55,6 @@
    "Kerberos",
    "Largefile",
    "libz",
-   "NTLM",
    "proxy-HTTP3",
    "PSL",
    "SPNEGO",
@@ -213,8 +212,8 @@
    ]
   },
   "measured": {
-   "finished": "2026-10-20T12:39:17Z",
-   "started": "2026-10-20T12:37:10Z"
+   "finished": "2026-10-20T12:56:51Z",
+   "started": "2026-10-20T12:54:48Z"
   },
   "protocols": [
    "dict",
@@ -1042,8 +1041,8 @@
      "outcome": "passed"
     },
     "test_04_stuttered::test_04_02_100_100_10[h3]": {
-     "message": null,
-     "outcome": "passed"
+     "message": "AssertionError: response #102 http_code: expected 200, got 502\n  json stat from curl:{\n    \"certs\": \"\",\n    \"conn_id\": 0,\n    \"content_type\": \"text/html; charset=UTF-8\",\n    \"errormsg\": null,\n    \"exitcode\": 0,\n    \"filename_effective\": \"download_23.data\",\n    \"ftp_entry_path\": null,\n    \"http_code\"",
+     "outcome": "failed"
     },
     "test_04_stuttered::test_04_03_1000_10_1[h2]": {
      "message": null,
@@ -1658,7 +1657,7 @@
      "outcome": "passed"
     },
     "test_07_upload::test_07_70_put_earlydata[h3-limited-body]": {
-     "message": "AssertionError: {0: 0, 1: -65536}\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  URL: -n\n  [0-x] * !!! WARNING !!!\n  [0-x] * This is a debug build of libcurl, do not use in production.\n  [t-0] STARTED\n  [0-x] * [DNS] added on",
+     "message": "AssertionError: {0: 0, 1: -96}\n  >>--stdout ----------------------------------------------\n  >>--stderr ----------------------------------------------\n  URL: -n\n  [0-x] * !!! WARNING !!!\n  [0-x] * This is a debug build of libcurl, do not use in production.\n  [t-0] STARTED\n  [0-x] * [DNS] added one.h",
      "outcome": "failed"
     },
     "test_07_upload::test_07_70_put_earlydata[h3-small-body]": {
@@ -3294,7 +3293,7 @@
      "outcome": "passed"
     },
     "test_19_shutdown::test_19_01_check_tcp_rst[http/1.1]": {
-     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '0 packets captured\\n', '20 packets received by filter\\n', '0 packe",
+     "message": "AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\\n', 'tcpdump: verbose output suppressed, use -v[v]... for full protocol decode\\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\\n', '0 packets captured\\n', '4 packets received by filter\\n', '0 packet",
      "outcome": "failed"
     },
     "test_19_shutdown::test_19_02_check_shutdown[h2]": {
@@ -4243,8 +4242,8 @@
     }
    },
    "counts": {
-    "failed": 4,
-    "passed": 913,
+    "failed": 5,
+    "passed": 912,
     "skipped": 80
    },
    "exit-status": 1,
@@ -4285,7 +4284,9 @@
     "result": "ok"
    },
    "1008": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1009": {
     "result": "ok"
@@ -4330,7 +4331,9 @@
     "result": "ok"
    },
    "1021": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1022": {
     "result": "ok"
@@ -4534,9 +4537,7 @@
     "result": "ok"
    },
    "1083": {
-    "class": "environment",
-    "reason": "Resolving IPv6 'ip6-localhost' did not work",
-    "result": "skipped"
+    "result": "ok"
    },
    "1084": {
     "result": "ok"
@@ -4581,7 +4582,9 @@
     "result": "ok"
    },
    "1097": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1098": {
     "result": "ok"
@@ -4596,7 +4599,9 @@
     "result": "ok"
    },
    "1100": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1101": {
     "result": "ok"
@@ -4985,7 +4990,9 @@
     "result": "ok"
    },
    "1215": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1216": {
     "result": "ok"
@@ -5941,7 +5948,9 @@
     "result": "ok"
    },
    "150": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1500": {
     "result": "ok"
@@ -6108,7 +6117,9 @@
     "result": "ok"
    },
    "155": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1550": {
     "result": "ok"
@@ -6240,7 +6251,9 @@
     "result": "ok"
    },
    "159": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1590": {
     "result": "ok"
@@ -6279,7 +6292,9 @@
     "result": "ok"
    },
    "1600": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1601": {
     "result": "ok"
@@ -6342,7 +6357,9 @@
     "result": "ok"
    },
    "162": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1620": {
     "result": "ok"
@@ -6573,7 +6590,9 @@
     "result": "ok"
    },
    "169": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1690": {
     "result": "ok"
@@ -6591,7 +6610,9 @@
     "result": "ok"
    },
    "170": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "1700": {
     "result": "ok"
@@ -6698,7 +6719,9 @@
     "result": "ok"
    },
    "176": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "177": {
     "result": "ok"
@@ -7093,7 +7116,9 @@
     "result": "ok"
    },
    "2025": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "2026": {
     "result": "ok"
@@ -7102,22 +7127,32 @@
     "result": "ok"
    },
    "2028": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "2029": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "203": {
     "result": "ok"
    },
    "2030": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "2031": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "2032": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "2033": {
     "class": "feature missing from build",
@@ -7316,7 +7351,9 @@
     "result": "ok"
    },
    "209": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "2090": {
     "result": "ok"
@@ -7405,7 +7442,9 @@
     "result": "ok"
    },
    "213": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "214": {
     "result": "ok"
@@ -7588,7 +7627,9 @@
     "result": "ok"
    },
    "239": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "2397": {
     "result": "ok"
@@ -7630,9 +7671,7 @@
     "result": "ok"
    },
    "241": {
-    "class": "environment",
-    "reason": "Resolving IPv6 'ip6-localhost' did not work",
-    "result": "skipped"
+    "result": "ok"
    },
    "2410": {
     "result": "ok"
@@ -7662,7 +7701,9 @@
     "result": "ok"
    },
    "243": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "244": {
     "result": "ok"
@@ -7785,13 +7826,17 @@
     "result": "ok"
    },
    "265": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "266": {
     "result": "ok"
    },
    "267": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "268": {
     "result": "ok"
@@ -9251,10 +9296,14 @@
     "result": "ok"
    },
    "547": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "548": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "549": {
     "result": "ok"
@@ -9278,7 +9327,9 @@
     "result": "ok"
    },
    "555": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "556": {
     "result": "ok"
@@ -9395,7 +9446,9 @@
     "result": "ok"
    },
    "590": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "591": {
     "result": "ok"
@@ -9661,7 +9714,9 @@
     "result": "ok"
    },
    "67": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "670": {
     "result": "ok"
@@ -9694,7 +9749,9 @@
     "result": "ok"
    },
    "68": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "680": {
     "result": "ok"
@@ -9727,7 +9784,9 @@
     "result": "ok"
    },
    "69": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "690": {
     "result": "ok"
@@ -9742,7 +9801,9 @@
     "result": "ok"
    },
    "694": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "695": {
     "result": "ok"
@@ -9763,7 +9824,9 @@
     "result": "ok"
    },
    "70": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "700": {
     "result": "ok"
@@ -9961,7 +10024,9 @@
     "result": "ok"
    },
    "76": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "760": {
     "result": "ok"
@@ -10012,7 +10077,9 @@
     "result": "ok"
    },
    "775": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "777": {
     "result": "ok"
@@ -10126,7 +10193,9 @@
     "result": "ok"
    },
    "81": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "810": {
     "result": "ok"
@@ -10168,7 +10237,9 @@
     "result": "ok"
    },
    "822": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "823": {
     "result": "ok"
@@ -10183,7 +10254,9 @@
     "result": "ok"
    },
    "827": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "828": {
     "result": "ok"
@@ -10198,7 +10271,9 @@
     "result": "ok"
    },
    "831": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "832": {
     "result": "ok"
@@ -10207,7 +10282,9 @@
     "result": "ok"
    },
    "834": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "835": {
     "result": "ok"
@@ -10320,7 +10397,9 @@
     "result": "ok"
    },
    "868": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "869": {
     "result": "ok"
@@ -10338,7 +10417,9 @@
     "result": "ok"
    },
    "873": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "874": {
     "result": "ok"
@@ -10350,7 +10431,9 @@
     "result": "ok"
    },
    "877": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "878": {
     "result": "ok"
@@ -10362,7 +10445,9 @@
     "result": "ok"
    },
    "880": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "881": {
     "result": "ok"
@@ -10394,7 +10479,9 @@
     "result": "ok"
    },
    "89": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "890": {
     "result": "ok"
@@ -10430,7 +10517,9 @@
     "result": "ok"
    },
    "90": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "900": {
     "result": "ok"
@@ -10451,7 +10540,9 @@
     "result": "ok"
    },
    "906": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "907": {
     "result": "ok"
@@ -10463,7 +10554,9 @@
     "result": "ok"
    },
    "91": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "910": {
     "result": "ok"
@@ -10502,7 +10595,9 @@
     "result": "ok"
    },
    "921": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "922": {
     "result": "ok"
@@ -10541,7 +10636,9 @@
     "result": "ok"
    },
    "933": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "934": {
     "result": "ok"
@@ -10550,7 +10647,9 @@
     "result": "ok"
    },
    "936": {
-    "result": "ok"
+    "class": "out of scope",
+    "reason": "curl lacks NTLM support",
+    "result": "skipped"
    },
    "937": {
     "result": "ok"
@@ -10778,7 +10877,7 @@
    "* curl 8.23.1-DEV (Linux) ",
    "* libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.22.1 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15",
    "* Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss",
-   "* Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz NTLM proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
+   "* Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd",
    "* Disabled: resolv-threaded, win32-ca-searchpath, win32-ca-search-safe",
    "* Host: pera",
    "* System: Linux pera 7.1.8-200.fc44.aarch64 #1 SMP PREEMPT_DYNAMIC Mon Aug 10 03:37:58 UTC 2026 aarch64 GNU/Linux",

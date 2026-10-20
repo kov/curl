@@ -12,6 +12,13 @@ the principles; this file holds the decisions. What the C tree contains is enume
 - **`curl`**, the command-line tool, with the same options, output and exit codes.
 - **A Rust API** that is the product. The C ABI is a translation layer over it (see `CLAUDE.md`).
 
+## Out of scope
+
+- **NTLM.** It has been opt-in in both C build systems since 8.20.0 (`CURL_ENABLE_NTLM`,
+  `--enable-ntlm`), and `docs/DEPRECATE.md` schedules its removal. The rewrite behaves like a
+  default C build: `CURLAUTH_NTLM` and the related constants keep their values, and the
+  `NTLM` feature is not reported. Tests that need NTLM skip, as they do on a default C build.
+
 ## Platforms
 
 Linux is the first target. Windows (SSPI, Schannel, WinIDN) and macOS (Apple SecTrust,
@@ -54,8 +61,7 @@ uses every backend and feature this machine can provide:
 - nghttp2 for HTTP/2, and ngtcp2 + nghttp3 for HTTP/3;
 - libssh2 for SSH and c-ares for name resolution;
 - zlib, brotli, zstd, libidn2, libpsl, GSS-API (MIT krb5) and OpenLDAP;
-- the opt-in NTLM, and the experimental HTTPS RR, SSL session export, HTTP message signatures
-  and HTTP/3 proxy.
+- the experimental HTTPS RR, SSL session export, HTTP message signatures and HTTP/3 proxy.
 
 These cannot be built here:
 
@@ -69,6 +75,15 @@ These are not covered by this build:
 - the threaded resolver, which c-ares replaces.
 
 Each of these needs its own build configuration to be measured.
+
+The machine also needs the following for the test servers, which the build does not check:
+
+- httpd with mod_ssl and httpd-devel (for `apxs`);
+- nghttpx, caddy, vsftpd, dante-server, sshd and stunnel;
+- tcpdump;
+- `::1 ip6-localhost` in `/etc/hosts`, which tests 241 and 1083 resolve.
+
+A missing server makes its tests skip or error. It does not make them fail.
 
 ## Repository layout
 

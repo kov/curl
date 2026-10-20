@@ -2,22 +2,22 @@
 
 # C reference baseline
 
-What the C build in `build/c` does on the C test suite: the floor the rewrite is scored against. Measured 2026-10-20T12:37:10Z to 2026-10-20T12:39:17Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
+What the C build in `build/c` does on the C test suite: the floor the rewrite is scored against. Measured 2026-10-20T12:54:48Z to 2026-10-20T12:56:51Z with `runtests.pl -a -n -j8`; build flags are in `inventory/measure/baseline.py` and SCOPE.md.
 
 ```
 curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.5.9 zlib/1.3.1.zlib-ng brotli/1.2.0 zstd/1.5.7 c-ares/1.34.8 libidn2/2.3.8 libpsl/0.21.5 libssh2/1.11.1 nghttp2/1.68.0 ngtcp2/1.22.1 nghttp3/1.18.0 mit-krb5/1.22.2 OpenLDAP/2.6.15
 Release-Date: [unreleased]
 Protocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss
-Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz NTLM proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
+Features: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTP3 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz proxy-HTTP3 PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd
 ```
 
 |  | tests |
 |---|---|
 | considered | 2146 |
-| ran | 2107 |
-| ok | 2107 |
+| ran | 2057 |
+| ok | 2057 |
 | failed | 0 |
-| skipped | 39 |
+| skipped | 89 |
 
 ## Built library
 
@@ -32,7 +32,6 @@ None.
 | reason | class | count | tests |
 |---|---|---|---|
 | configured as DISABLED | disabled | 14 | 594, 836, 882, 938, 1182, 1184, 1209, 1211, 1307, 1316, 1512, 1801, 2043, 4656 |
-| Resolving IPv6 'ip6-localhost' did not work | environment | 2 | 241, 1083 |
 | openssl engine not supported | environment | 1 | 307 |
 | test_rlimit problem: | environment | 1 | 537 |
 | curl lacks ECH support | feature missing from build | 3 | 2117, 4000, 4001 |
@@ -41,6 +40,7 @@ None.
 | curl lacks asyn-rr support | feature missing from build | 1 | 464 |
 | curl lacks threaded-resolver support | feature missing from build | 1 | 3026 |
 | curl lacks win32 support | feature missing from build | 1 | 1451 |
+| curl lacks NTLM support | out of scope | 52 | 67, 68, 69, 70, 76, 81, 89, 90, 91, 150, 155, 159, 162, 169, 170, 176, 209, 213, 239, 243, 265, 267, 547, 548, 555, 590, 694, 775, 822, 827, 831, 834, 868, 873, 877, 880, 906, 921, 933, 936, 1008, 1021, 1097, 1100, 1215, 1600, 2025, 2028, 2029, 2030, 2031, 2032 |
 | curl has IDN support | test requires a feature to be absent | 3 | 959, 960, 961 |
 | curl has IPv6 support | test requires a feature to be absent | 1 | 1454 |
 | curl has c-ares support | test requires a feature to be absent | 1 | 506 |
@@ -50,8 +50,8 @@ None.
 
 | outcome | cases |
 |---|---|
-| failed | 4 |
-| passed | 913 |
+| failed | 5 |
+| passed | 912 |
 | skipped | 80 |
 
 ### Not passed
@@ -59,9 +59,10 @@ None.
 | case | outcome | message |
 |---|---|---|
 | test_02_download::test_02_32_earlydata[h3] | failed | AssertionError: {0: 0, 1: -109} assert -109 == 109 |
-| test_07_upload::test_07_70_put_earlydata[h3-limited-body] | failed | AssertionError: {0: 0, 1: -65536}   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   URL: -n   [0-x] * !!! WARNING !!!   [0-x] * This is a debug build of libcurl, do not use in production.   [t-0] STARTED   [0-x] * [DNS] added on |
+| test_04_stuttered::test_04_02_100_100_10[h3] | failed | AssertionError: response #102 http_code: expected 200, got 502   json stat from curl:{     "certs": "",     "conn_id": 0,     "content_type": "text/html; charset=UTF-8",     "errormsg": null,     "exitcode": 0,     "filename_effective": "download_23.data",     "ftp_entry_path": null,     "http_code" |
+| test_07_upload::test_07_70_put_earlydata[h3-limited-body] | failed | AssertionError: {0: 0, 1: -96}   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   URL: -n   [0-x] * !!! WARNING !!!   [0-x] * This is a debug build of libcurl, do not use in production.   [t-0] STARTED   [0-x] * [DNS] added one.h |
 | test_07_upload::test_07_70_put_earlydata[h3-small-body] | failed | AssertionError: {0: 0, 1: -1117}   >>--stdout ----------------------------------------------   >>--stderr ----------------------------------------------   URL: -n   [0-x] * !!! WARNING !!!   [0-x] * This is a debug build of libcurl, do not use in production.   [t-0] STARTED   [0-x] * [DNS] added one |
-| test_19_shutdown::test_19_01_check_tcp_rst[http/1.1] | failed | AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\n', 'tcpdump: verbose output suppressed, use -v[v]...&#32;for full protocol decode\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\n', '0 packets captured\n', '20 packets received by filter\n', '0 packe |
+| test_19_shutdown::test_19_01_check_tcp_rst[http/1.1] | failed | AssertionError: Expected TCP RSTs packets: ['dropped privs to tcpdump\n', 'tcpdump: verbose output suppressed, use -v[v]...&#32;for full protocol decode\n', 'listening on lo, link-type EN10MB (Ethernet), snapshot length 262144 bytes\n', '0 packets captured\n', '4 packets received by filter\n', '0 packet |
 
 ### Skip reasons
 

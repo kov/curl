@@ -42,7 +42,8 @@ CMAKE_ARGS = {
     "USE_LIBIDN2": "ON",
     "CURL_USE_LIBPSL": "ON",
     "CURL_USE_GSSAPI": "ON",
-    "CURL_ENABLE_NTLM": "ON",
+    # Out of scope (SCOPE.md); explicit so an older cache cannot keep it on.
+    "CURL_ENABLE_NTLM": "OFF",
     "USE_HTTPSRR": "ON",
     "USE_SSLS_EXPORT": "ON",
     "CURL_DISABLE_HTTPSIG": "OFF",
@@ -53,6 +54,8 @@ CMAKE_ARGS = {
     "DANTED": "/usr/bin/sockd",
     "SFTPD": "/usr/libexec/openssh/sftp-server",
 }
+# Features SCOPE.md leaves out: tests needing them skip by design.
+OUT_OF_SCOPE = {"NTLM"}
 RUNTESTS_ARGS = ["-a", "-n", "-j8"]
 # As the curl-pytest CMake target, plus a machine-readable report.
 PYTEST_ARGS = ["-n", "auto", "-p", "no:cacheprovider"]
@@ -74,6 +77,7 @@ def run():
         r = subprocess.run(["perl", str(ROOT / "tests/runtests.pl"),
                             *RUNTESTS_ARGS], cwd=BUILD / "tests",
                            stdout=log, stderr=subprocess.STDOUT, check=False)
+    probe_skips()
     if not (VENV / "bin/pytest").exists():
         subprocess.run([sys.executable, "-m", "venv", str(VENV)], check=True)
         subprocess.run([str(VENV / "bin/pip"), "install", "-q", "-r",
@@ -102,6 +106,39 @@ def run():
         "pytest-exit-status": p.returncode, "pytest-args": PYTEST_ARGS,
         "pytest-leftover-vsftpd": int(leftover or 0)},
         indent=1) + "\n")
+
+
+SKIPPED_LINE = r"^test (\d+) SKIPPED: (.*?)\s*$"
+
+
+def probe_skips():
+    """
+    Recover the skip reason of every test runtests.pl skipped.
+
+    runtests.pl prints only the first three SKIPPED lines per reason and
+    nine numbers per reason in its summary. Rerunning just the unexplained
+    tests prints the next three, without starting any server; repeat until
+    each has its line in skip-probes.log.
+    """
+    log = (RESULTS / "runtests.log").read_text(errors="replace")
+    tests = json.loads((common.INVENTORY / "tests.json").read_text())["data"]
+    explained = {int(n) for n in
+                 re.findall(r"^test (\d+) [\[S]", log, re.MULTILINE)}
+    explained |= set(tests["disabled"]["unconditional"])
+    pending = sorted({t["number"] for t in tests["tests"]} - explained)
+    with (RESULTS / "skip-probes.log").open("w") as out:
+        while pending:
+            r = subprocess.run(["perl", str(ROOT / "tests/runtests.pl"),
+                                "-n", *map(str, pending)],
+                               cwd=BUILD / "tests", capture_output=True,
+                               text=True, check=False)
+            out.write(r.stdout)
+            check(not re.search(r"^test \d+ \[", r.stdout, re.MULTILINE),
+                  "a probed test ran instead of skipping")
+            got = {int(n) for n, _ in
+                   re.findall(SKIPPED_LINE, r.stdout, re.MULTILINE)}
+            check(got, f"probe explained none of {pending}")
+            pending = [n for n in pending if n not in got]
 
 
 def build_config():
@@ -136,10 +173,11 @@ def parse_log(log, all_tests, disabled):
     check(len(re.findall(r"^\S+ OK \(", log, re.MULTILINE)) == ok,
           "OK lines differ from the OK count")
 
-    # Skip reasons: SKIPPED lines, then TESTINFO lists (cut off after ten
-    # numbers, hence the other two sources), then DISABLED.
+    # Skip reasons: SKIPPED lines (the run's, then probe_skips'), then
+    # TESTINFO lists (cut off after nine numbers), then DISABLED.
     reason = {}
-    for n, why in re.findall(r"^test (\d+) SKIPPED: (.*?)\s*$", log, re.MULTILINE):
+    probes = (RESULTS / "skip-probes.log").read_text(errors="replace")
+    for n, why in re.findall(SKIPPED_LINE, log + probes, re.MULTILINE):
         reason.setdefault(int(n), why)
     info = {}
     for why, count, nums in re.findall(
@@ -226,6 +264,9 @@ def exports():
 def classify(why):
     if why == "configured as DISABLED":
         return "disabled"
+    m = re.match(r"^curl lacks (\S+) support$", why)
+    if m and m.group(1) in OUT_OF_SCOPE:
+        return "out of scope"
     if re.match(r"^curl lacks ", why):
         return "feature missing from build"
     if re.match(r"^curl has ", why):

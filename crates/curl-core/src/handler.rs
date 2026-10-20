@@ -35,7 +35,25 @@ pub enum HeaderOrigin {
     Interim,
 }
 
-/// Takes the body (`CURLOPT_WRITEFUNCTION`).
+/// What a trace entry is (`curl_infotype`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DebugKind {
+    Text,
+    HeaderIn,
+    HeaderOut,
+    DataIn,
+    DataOut,
+    SslDataIn,
+    SslDataOut,
+}
+
+/// Takes the trace of a verbose transfer (`CURLOPT_DEBUGFUNCTION`).
+pub trait DebugHandler {
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]);
+}
+
+/// Takes the body (`CURLOPT_WRITEFUNCTION`), in pieces of at most 16384
+/// bytes (`CURL_MAX_WRITE_SIZE`).
 pub trait WriteHandler {
     fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write;
 }
@@ -69,6 +87,12 @@ impl Handler<dyn WriteHandler> {
 
 impl Handler<dyn HeaderHandler> {
     pub fn header(handler: impl HeaderHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn DebugHandler> {
+    pub fn debug(handler: impl DebugHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

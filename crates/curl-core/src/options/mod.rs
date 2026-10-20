@@ -8,7 +8,9 @@ pub mod script;
 
 use curl_alloc::{OutOfMemory, TryVec};
 
-use crate::handler::{Handler, HeaderHandler, WriteHandler};
+use std::num::NonZeroU64;
+
+use crate::handler::{DebugHandler, Handler, HeaderHandler, WriteHandler};
 use crate::time::TimeLimit;
 
 /// Every option of a transfer. The default sets nothing and allocates
@@ -17,6 +19,7 @@ use crate::time::TimeLimit;
 pub struct Options {
     url: Option<Vec<u8>>,
     pub limits: Limits,
+    pub output: Output,
     pub callbacks: Callbacks,
     /// What the test protocol `script:` plays.
     #[cfg(any(test, feature = "test-util"))]
@@ -40,6 +43,7 @@ impl Options {
         Ok(Options {
             url: self.url.as_deref().map(copy).transpose()?,
             limits: self.limits,
+            output: self.output,
             callbacks: self.callbacks.clone(),
             #[cfg(any(test, feature = "test-util"))]
             script: self.script.clone(),
@@ -60,6 +64,19 @@ pub struct Limits {
     pub total: Option<TimeLimit>,
     /// Each connection (`CURLOPT_CONNECTTIMEOUT_MS`); five minutes if none.
     pub connect: Option<TimeLimit>,
+    /// The most body bytes a transfer may deliver
+    /// (`CURLOPT_MAXFILESIZE_LARGE`).
+    pub max_filesize: Option<NonZeroU64>,
+}
+
+/// What a transfer tells the application besides the body.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Output {
+    /// Header lines go to the write handler too, before the header
+    /// handler (`CURLOPT_HEADER`).
+    pub include_header: bool,
+    /// Trace the transfer (`CURLOPT_VERBOSE`).
+    pub verbose: bool,
 }
 
 /// Where a transfer's output goes. A copy of the options shares each
@@ -70,4 +87,6 @@ pub struct Callbacks {
     pub write: Option<Handler<dyn WriteHandler>>,
     /// Header lines; without one, they go nowhere.
     pub header: Option<Handler<dyn HeaderHandler>>,
+    /// The trace of a verbose transfer.
+    pub debug: Option<Handler<dyn DebugHandler>>,
 }

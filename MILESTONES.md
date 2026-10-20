@@ -118,10 +118,13 @@ yet meet.
      at each call; the callbacks options; the test protocol `script:` (header lines and body
      pieces). The other handlers come with the parts that call them. Test: a handler replaced
      inside its own call.
-   - 7b. `Pipeline`: raw trace, accountant, `ClientOut` Direct/Failed. Tests: 16 KiB pieces;
-     header lines whole; `-i` order; `Failed` is terminal.
-   - 7c. `TransferReport`, `Timings`, `Sizes`, `HeaderStore`. Ports unit 1399. Test: getinfo
-     inside callbacks.
+   - 7b. **Done.** `Pipeline`: raw trace, the accountant's byte count and size limit,
+     `ClientOut` Direct/Failed with the delivered-size check; the debug handler; the output
+     options. The accountant's STARTTRANSFER mark is 7c's, its `maxdownload` cut and short-body
+     end step 13's, with framing. Tests: 16 KiB pieces; header lines whole; `-i` order;
+     `Failed` is terminal.
+   - 7c. `TransferReport`, `Timings`, `Sizes`, `HeaderStore`; the accountant's STARTTRANSFER
+     and download size. Ports unit 1399. Test: getinfo inside callbacks.
    - 7d. `Pause` and `ClientOut::Held`. Tests: pause and replay with interleaving (3235/3236
      shapes).
    - 7e. Progress, the speed check and the meter. Ports units 1606, 1636.
@@ -159,7 +162,8 @@ yet meet.
     `render_h1`, `CredentialGate`. Fixture tests compare byte-exactly with the `<protocol>` of 1,
     14, 47, 461, 1121, 1292.
 13. **http1: parse responses and decide framing.** `ResponseHeadParser`, `decide_framing`,
-    `ChunkDecoder`, trailers, GOT_NOTHING, every limit. Byte-fed tests at every split point from
+    `ChunkDecoder`, trailers, GOT_NOTHING, every limit, the accountant's `maxdownload` cut and
+    short-body end ("end of response with N bytes missing"). Byte-fed tests at every split point from
     the fixtures of 1274, 1430–1433, 1466, 365, 2918, 1722, 1723, 2119, 772, 773, 497, 747, 1154,
     34, 36, 207, 1416, 1417, 2106. Ports units 1625, 1626.
 14. **http1: generate the fixture runner from tests/data.** The milestone set's cases without

@@ -4,19 +4,19 @@
 
 === a handler's replacement of itself is undone after its call
 file: crates/curl-core/src/deliver/mod.rs
-witness: curl-core multi::tests::a_handler_replaced_inside_its_own_call_takes_the_next_piece
+witness: curl-core deliver::tests::a_handler_replaced_inside_its_own_call_takes_the_next_piece
 --- old
-    verdict(handler.write(&mut TransferCx::new(cx), body))
+            verdict(handler.write(&mut TransferCx::new(cx), piece))?;
 --- new
-    let mut tcx = TransferCx::new(cx);
-    let v = handler.write(&mut tcx, body);
-    let me = tcx.me();
-    tcx.options_mut(me).unwrap().callbacks.write = Some(handler);
-    verdict(v)
+            let mut tcx = TransferCx::new(cx);
+            let v = handler.write(&mut tcx, piece);
+            let me = tcx.me();
+            tcx.options_mut(me).unwrap().callbacks.write = Some(handler);
+            verdict(v)?;
 
 === a write handler's failure is ignored
 file: crates/curl-core/src/deliver/mod.rs
-witness: curl-core multi::tests::a_failed_or_paused_write_fails_the_transfer
+witness: curl-core deliver::tests::a_failed_or_paused_write_fails_the_transfer
 --- old
         Write::Accepted => Ok(()),
 --- new
@@ -24,16 +24,96 @@ witness: curl-core multi::tests::a_failed_or_paused_write_fails_the_transfer
 
 === header lines go to the write handler
 file: crates/curl-core/src/proto/script.rs
-witness: curl-core multi::tests::a_script_s_pieces_reach_their_handlers_in_order
+witness: curl-core deliver::tests::a_script_s_pieces_reach_their_handlers_in_order
 --- old
-                Piece::Header(line) => deliver::header(cx, line, HeaderOrigin::Header)?,
+                Piece::Header(line) => self.pipeline.header(cx, line, HeaderOrigin::Header)?,
 --- new
-                Piece::Header(line) => deliver::body(cx, line)?,
+                Piece::Header(line) => self.pipeline.body(cx, line)?,
 
 === a copy of the options gets no handlers
 file: crates/curl-core/src/options/mod.rs
-witness: curl-core multi::tests::a_copy_of_the_options_shares_the_handlers
+witness: curl-core deliver::tests::a_copy_of_the_options_shares_the_handlers
 --- old
             callbacks: self.callbacks.clone(),
 --- new
             callbacks: Callbacks::default(),
+
+=== the body goes out in pieces of 64 KiB
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::the_body_goes_out_in_pieces_of_at_most_16_kib
+--- old
+pub(crate) const MAX_WRITE: usize = 16384;
+--- new
+pub(crate) const MAX_WRITE: usize = 65536;
+
+=== header lines are cut into pieces like the body
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_header_line_goes_out_whole
+--- old
+                Some(handler) => verdict(handler.header(&mut TransferCx::new(cx), line, origin)),
+--- new
+                Some(handler) => line.chunks(MAX_WRITE).try_for_each(|l| {
+                    verdict(handler.header(&mut TransferCx::new(cx), l, origin))
+                }),
+
+=== an included header line reaches the header handler first
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::included_header_lines_go_to_the_write_handler_first
+--- old
+        if cx.easy().options().output.include_header {
+            self.out.body(cx, line)?;
+        }
+        self.out.header(cx, line, origin)
+--- new
+        self.out.header(cx, line, origin)?;
+        if cx.easy().options().output.include_header {
+            self.out.body(cx, line)?;
+        }
+        Ok(())
+
+=== a failed output takes writes again
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::failed_output_stays_failed
+--- old
+        if result.is_err() {
+            *self = ClientOut::Failed;
+        }
+--- new
+
+=== a body over the size limit is delivered whole
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_body_over_the_size_limit_is_cut_at_the_limit
+--- old
+        let allowed = self.accountant.allowed(bytes.len(), max_filesize);
+--- new
+        let allowed = bytes.len();
+
+=== included header lines do not count against the size limit
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::included_headers_count_against_the_size_limit
+--- old
+            *delivered += piece.len() as u64;
+--- new
+
+=== the body is traced without verbose
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
+--- old
+    if !options.output.verbose {
+        return;
+    }
+--- new
+
+=== the body is traced after it was delivered
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
+--- old
+        raw_trace(cx, bytes);
+        let max_filesize = cx.easy().options().limits.max_filesize;
+        let allowed = self.accountant.allowed(bytes.len(), max_filesize);
+        self.out.body(cx, &bytes[..allowed])?;
+--- new
+        let max_filesize = cx.easy().options().limits.max_filesize;
+        let allowed = self.accountant.allowed(bytes.len(), max_filesize);
+        self.out.body(cx, &bytes[..allowed])?;
+        raw_trace(cx, bytes);

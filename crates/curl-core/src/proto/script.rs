@@ -1,7 +1,7 @@
 //! `script:`, the test protocol that delivers its transfer's
 //! `Options::script` as a real protocol's client writes would.
 
-use crate::deliver;
+use crate::deliver::Pipeline;
 use crate::error::ErrorKind;
 use crate::handler::HeaderOrigin;
 use crate::multi::Host;
@@ -14,6 +14,7 @@ use super::ProtoStep;
 #[derive(Debug, Default)]
 pub(crate) struct Player {
     next: usize,
+    pipeline: Pipeline,
 }
 
 impl Player {
@@ -29,8 +30,8 @@ impl Player {
             };
             self.next += 1;
             match piece {
-                Piece::Header(line) => deliver::header(cx, line, HeaderOrigin::Header)?,
-                Piece::Body(bytes) => deliver::body(cx, bytes)?,
+                Piece::Header(line) => self.pipeline.header(cx, line, HeaderOrigin::Header)?,
+                Piece::Body(bytes) => self.pipeline.body(cx, bytes)?,
             }
         }
     }

@@ -377,6 +377,29 @@ impl<H: Host> Multi<H> {
     }
 
     /// Step one transfer until it waits (`multi_runsingle`).
+    /// Call `f` with transfer `id`'s step context, as a step would, its
+    /// `Run` out of its slot.
+    #[cfg(test)]
+    pub(crate) fn with_step_cx<R>(
+        &mut self,
+        id: TransferId,
+        f: impl FnOnce(&mut StepCx<'_, H>) -> R,
+    ) -> R {
+        let run = self.slots.get_mut(id).expect("in the multi").run.take();
+        let now = self.clock.now();
+        let mut cx = StepCx {
+            me: id,
+            rest: EngineRest {
+                slots: &mut self.slots,
+                pool: &mut self.pool,
+                now,
+            },
+        };
+        let r = f(&mut cx);
+        self.slots.get_mut(id).expect("still in the multi").run = run;
+        r
+    }
+
     fn run_single(&mut self, id: TransferId, now: Instant) {
         self.dirty.remove(id.index());
         let slot = self.slots.get_mut(id).expect("a transfer in the multi");

@@ -807,10 +807,10 @@ Special forms: `%header{...}`, `%time{...}`, `%output{...}`. Time specifiers: %a
 | 8 | CURLE_WEIRD_SERVER_REPLY | Weird server reply. The server sent data curl could not parse. |
 | 9 | CURLE_REMOTE_ACCESS_DENIED | FTP access denied. The server denied login or denied access to the particular resource or  |
 | 10 | CURLE_FTP_ACCEPT_FAILED | FTP accept failed. While waiting for the server to connect back when an active FTP session |
-| 11 | CURLE_FTP_WEIRD_PASS_REPLY | FTP weird PASS reply. curl could not parse the reply sent to the PASS request. |
+| 11 | CURLE_FTP_WEIRD_PASS_REPLY | FTP weird PASS reply.&#32;curl could not parse the reply sent to the PASS request. |
 | 12 | CURLE_FTP_ACCEPT_TIMEOUT | During an active FTP session while waiting for the server to connect back to curl, the tim |
 | 13 | CURLE_FTP_WEIRD_PASV_REPLY | FTP weird PASV reply, curl could not parse the reply sent to the PASV request. |
-| 14 | CURLE_FTP_WEIRD_227_FORMAT | FTP weird 227 format. curl could not parse the 227-line the server sent. |
+| 14 | CURLE_FTP_WEIRD_227_FORMAT | FTP weird 227 format.&#32;curl could not parse the 227-line the server sent. |
 | 15 | CURLE_FTP_CANT_GET_HOST | FTP cannot use host. Could not resolve the host IP we got in the 227-line. |
 | 16 | CURLE_HTTP2 | HTTP/2 error. A problem was detected in the HTTP2 framing layer. This is somewhat generic  |
 | 17 | CURLE_FTP_COULDNT_SET_TYPE | FTP could not set binary. Could not change transfer method to binary. |
@@ -818,7 +818,7 @@ Special forms: `%header{...}`, `%time{...}`, `%output{...}`. Time specifiers: %a
 | 19 | CURLE_FTP_COULDNT_RETR_FILE | FTP could not download/access the given file, the RETR (or similar) command failed. |
 | 21 | CURLE_QUOTE_ERROR | FTP quote error. A quote command returned error from the server. |
 | 22 | CURLE_HTTP_RETURNED_ERROR | HTTP page not retrieved. The requested URL was not found or returned another error with th |
-| 23 | CURLE_WRITE_ERROR | Write error. curl could not write data to a local file system or similar. |
+| 23 | CURLE_WRITE_ERROR | Write error.&#32;curl could not write data to a local file system or similar. |
 | 25 | CURLE_UPLOAD_FAILED | Failed starting the upload. For FTP, the server typically denied the STOR command. |
 | 26 | CURLE_READ_ERROR | Read error. Various reading problems. |
 | 27 | CURLE_OUT_OF_MEMORY | Out of memory. A memory allocation request failed. |

@@ -303,7 +303,7 @@ Every option-like constant of the libcurl API: easy, multi and share options, ge
 | CURLOPT_HTTPSIG_HEADERS | 10332 | STRINGPOINT | STRING | string | 8.22.0 |  | HTTP | NULL (uses the default component set) |
 | CURLOPT_WRITEFUNCTION | 20011 | FUNCTIONPOINT | FUNCTION | write_callback | 7.1 |  | All | fwrite(3) |
 | CURLOPT_READFUNCTION | 20012 | FUNCTIONPOINT | FUNCTION | read_cb | 7.1 |  | All | fread(3) |
-| CURLOPT_PROGRESSFUNCTION | 20056 | FUNCTIONPOINT | FUNCTION | progress_cb | 7.1 | 7.32.0: Use CURLOPT_XFERINFOFUNCTION | All | NULL. libcurl has an internal progress meter. That is rar... |
+| CURLOPT_PROGRESSFUNCTION | 20056 | FUNCTIONPOINT | FUNCTION | progress_cb | 7.1 | 7.32.0: Use CURLOPT_XFERINFOFUNCTION | All | NULL.&#32;libcurl has an internal progress meter. That is rar... |
 | CURLOPT_HEADERFUNCTION | 20079 | FUNCTIONPOINT | FUNCTION | write_callback | 7.7.2 |  | HTTP, FTP, POP3, IMAP, SMTP | Nothing. |
 | CURLOPT_DEBUGFUNCTION | 20094 | FUNCTIONPOINT | FUNCTION | debug_cb | 7.9.6 |  | All | NULL |
 | CURLOPT_SSL_CTX_FUNCTION | 20108 | FUNCTIONPOINT | FUNCTION | ssl_ctx_cb | 7.10.6 |  | TLS | NULL |

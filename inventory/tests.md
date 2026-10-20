@@ -12,7 +12,7 @@ The tests the rewrite is scored on: `tests/data/testNNNN` driven by `tests/runte
 | unconditionally DISABLED | 14 |
 | DISABLED only under a condition | 5 |
 | tests in a default run before feature/server skips | 2132 |
-| libtest programs (incl. generated lib1521) | 297 |
+| libtest programs (incl.&#32;generated lib1521) | 297 |
 | unit programs (`tests/unit`) | 81 |
 | tunit programs (`tests/tunit`) | 6 |
 | pytest functions (`tests/http/test_*.py`, before parametrization) | 357 |
@@ -1089,7 +1089,7 @@ Non-comment lines: 28 (20 test entries + 8 `%if`/`%else`/`%endif` directives).
 
 | test | conditions | name | comment |
 |---|---|---|---|
-| 594 | - | FTP multi PORT upload, no data conn and no positive prelim. reply | *************************************************************************** _   _ ____  _ Project                     ___\| \| \| \|  _ \\| \| / __\| \| \| \| \|_) \| \| \| (__\| \|_\| \|  _ <\| \|___ \___\|\___/\|_\| \_\_____\| Copyright (C) Daniel Stenberg, <daniel@haxx.se>, et al. This software is licensed as described in the file COPYING, which you should have received as part of this distribution. The terms are also available at https://curl.se/docs/copyright.html. You may opt to use, copy, modify, merge, publish, distribute and/or sell copies of the Software, and permit persons to whom the Software is furnished to do so, under the terms of the COPYING file. This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. SPDX-License-Identifier: curl This file can be used to specify test cases that should not run when all test cases are run by runtests.pl. Add the plain test case numbers, one per line. Lines starting with '#' letters are treated as comments. |
+| 594 | - | FTP multi PORT upload, no data conn and no positive prelim.&#32;reply |  |
 | 836 | - | IMAP multiple connection authentication |  |
 | 882 | - | POP3 multiple connection authentication |  |
 | 938 | - | SMTP multiple connection authentication |  |

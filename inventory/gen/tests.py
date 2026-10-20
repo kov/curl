@@ -340,14 +340,22 @@ def parse_disabled():
 
 
 def disabled_comments():
-    """Comment blocks (contiguous '#' lines) directly above each entry/directive."""
+    """
+    Comment blocks (contiguous '#' lines) directly above each entry/directive.
+
+    The block before the first non-comment line is the file header (license
+    and usage), not a comment on the first entry.
+    """
     p = DATA / "DISABLED"
     out = {}
     block = []
+    in_header = True
     for l in p.read_text().splitlines():
         if re.match(r"^ *#", l):
-            block.append(l.lstrip(" #").rstrip())
+            if not in_header:
+                block.append(l.lstrip(" #").rstrip())
             continue
+        in_header = False
         m = re.match(r"^\s*(\d+)\s*$", l)
         if m and block:
             out[int(m.group(1))] = " ".join(b for b in block if b)

@@ -11,7 +11,9 @@ use crate::proto::{ProtoState, ProtoStep};
 use crate::time::Instant;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
 
+use super::cx::EngineRest;
 use super::timers::{Deadlines, Phase, TimeLeft};
+use super::{Host, TransferId};
 
 /// A transfer from `add` to `remove`.
 #[derive(Debug)]
@@ -115,20 +117,31 @@ impl TransferState {
     }
 }
 
-/// What a step needs from the multi.
-pub(crate) struct StepCx<'a> {
-    pub(crate) easy: &'a Easy,
-    pub(crate) pool: &'a mut Pool,
-    pub(crate) now: Instant,
+/// What a step needs: the transfer it steps, whose `Run` is out of its
+/// slot, and the rest of the multi.
+pub(crate) struct StepCx<'a, H: Host> {
+    pub(crate) me: TransferId,
+    pub(crate) rest: EngineRest<'a, H>,
+}
+
+impl<H: Host> StepCx<'_, H> {
+    fn easy(&self) -> &Easy {
+        &self
+            .rest
+            .slots
+            .get(self.me)
+            .expect("the stepping transfer")
+            .easy
+    }
 }
 
 /// Run one step of `run`.
-pub(crate) fn step(run: &mut Run, cx: &mut StepCx<'_>) -> Wake {
+pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     let state = std::mem::replace(&mut run.state, TransferState::Init);
     let (next, wake) = match state {
         TransferState::Init => {
-            let limits = cx.easy.options().limits;
-            run.deadlines = Deadlines::new(cx.now, limits.total, limits.connect);
+            let limits = cx.easy().options().limits;
+            run.deadlines = Deadlines::new(cx.rest.now, limits.total, limits.connect);
             (setup(run, cx), Wake::Again)
         }
         TransferState::Exchanging(mut x) => match x.proto.step() {
@@ -143,7 +156,7 @@ pub(crate) fn step(run: &mut Run, cx: &mut StepCx<'_>) -> Wake {
             // Out of time at the end of the pass (transfer.c:382).
             ProtoStep::Blocked
                 if matches!(
-                    run.deadlines.time_left(cx.now, Phase::Transferring),
+                    run.deadlines.time_left(cx.rest.now, Phase::Transferring),
                     TimeLeft::Expired(_)
                 ) =>
             {
@@ -156,7 +169,7 @@ pub(crate) fn step(run: &mut Run, cx: &mut StepCx<'_>) -> Wake {
         },
         TransferState::Done(d) => {
             let premature = d.premature || is_premature(d.result);
-            cx.pool.release(d.lease, Finish { premature });
+            cx.rest.pool.release(d.lease, Finish { premature });
             let completed = TransferState::Completed(Completed {
                 outcome: d.result,
                 message: Message::Unread,
@@ -180,11 +193,11 @@ fn is_premature(result: Result<(), ErrorKind>) -> bool {
 
 /// C's pretransfer, SETUP and CONNECT, which always run in one pass: the
 /// URL, the leg's timers, the protocol and a connection.
-fn setup(run: &mut Run, cx: &mut StepCx<'_>) -> TransferState {
-    let Some(url) = cx.easy.options().url() else {
+fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
+    let Some(url) = cx.easy().options().url() else {
         return TransferState::Init.fail(ErrorKind::UrlMalformat);
     };
-    run.deadlines.start_leg(cx.now);
+    run.deadlines.start_leg(cx.rest.now);
     let parse = ParseOptions {
         guess_scheme: true,
         non_support_scheme: true,
@@ -198,7 +211,7 @@ fn setup(run: &mut Run, cx: &mut StepCx<'_>) -> TransferState {
     let Some(proto) = ProtoState::for_scheme(&scheme) else {
         return TransferState::Init.fail(ErrorKind::UnsupportedProtocol);
     };
-    match cx.pool.acquire(&Route::LOCAL) {
+    match cx.rest.pool.acquire(&Route::LOCAL) {
         Ok(lease) => TransferState::Exchanging(Exchanging { lease, proto }),
         Err(_) => TransferState::Init.fail(ErrorKind::OutOfMemory),
     }

@@ -113,13 +113,19 @@ yet meet.
 
 **`file://` end to end**
 
-7. **deliver: add the pipeline, client output and pause.** `EngineRest`, `TransferCx` and the
-   handler traits; `Pipeline` (raw trace, accountant,
-   `ClientOut` Direct/Held/Failed), `Pause`, `Upload` with rewind and resume, `Timings`, `Sizes`,
-   progress and the meter, `TransferReport`, `HeaderStore`. Ports units 1399, 1606, 1636. Tests:
-   16 KiB pieces; header lines whole; `-i` order; `Failed` is terminal; a handler replaced inside
-   its own call; pause and replay with interleaving (3235/3236 shapes); getinfo inside callbacks;
-   the pause torture scenario.
+7. **deliver: add the pipeline, client output and pause.** In parts:
+   - 7a. `EngineRest`, `TransferCx` and the handler traits with take-and-restore; the callbacks
+     options; a scripted test protocol (header lines, body pieces, end, yield). Test: a handler
+     replaced inside its own call.
+   - 7b. `Pipeline`: raw trace, accountant, `ClientOut` Direct/Failed. Tests: 16 KiB pieces;
+     header lines whole; `-i` order; `Failed` is terminal.
+   - 7c. `TransferReport`, `Timings`, `Sizes`, `HeaderStore`. Ports unit 1399. Test: getinfo
+     inside callbacks.
+   - 7d. `Pause` and `ClientOut::Held`. Tests: pause and replay with interleaving (3235/3236
+     shapes).
+   - 7e. Progress, the speed check and the meter. Ports units 1606, 1636.
+   - 7f. `Upload` with rewind and resume.
+   - 7g. The pause torture scenario.
 8. **proto: add file:// and Easy::perform.** `proto/file.rs` (no pause support: PAUSE is a
    WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`.
    Setup gains `DISALLOW_USER` and `PATH_AS_IS` from their options. Tests:

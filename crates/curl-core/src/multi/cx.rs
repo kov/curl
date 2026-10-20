@@ -4,15 +4,27 @@
 
 use curl_alloc::OutOfMemory;
 
+use crate::conn::Pool;
 use crate::easy::Easy;
 use crate::id::Arena;
 use crate::options::Options;
+use crate::time::Instant;
 
 use super::notify::{NotifyKind, NotifyQueue};
 use super::{
     AddError, Counts, Host, Message, Multi, MultiEvents, Removed, Slot, Transfer, TransferId,
     read_message,
 };
+
+/// The multi minus the transfer being stepped, whose `Run` is out of its
+/// slot: what a step and the callbacks it makes reach everything else
+/// through.
+pub(crate) struct EngineRest<'a, H: Host> {
+    pub(crate) slots: &'a mut Arena<Slot<H>, Transfer>,
+    pub(crate) pool: &'a mut Pool,
+    /// The pass's time, read once.
+    pub(crate) now: Instant,
+}
 
 /// The multi as the timer callback sees it: only the calls api.c lets
 /// recurse into a running multi call.

@@ -60,10 +60,10 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- old
                 if matches!(
-                    run.deadlines.time_left(cx.now, Phase::Transferring),
+                    run.deadlines.time_left(cx.rest.now, Phase::Transferring),
 --- new
                 if false && matches!(
-                    run.deadlines.time_left(cx.now, Phase::Transferring),
+                    run.deadlines.time_left(cx.rest.now, Phase::Transferring),
 
 === a fired timer stays armed
 file: crates/curl-core/src/multi/mod.rs

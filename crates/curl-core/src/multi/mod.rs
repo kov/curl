@@ -27,6 +27,7 @@ use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
 use crate::time::{Clock, Instant};
 
+use cx::EngineRest;
 pub use cx::{EventCx, NotifyCx};
 pub use notify::{Notification, NotifyKind};
 pub use sched::Counts;
@@ -389,9 +390,12 @@ impl<H: Host> Multi<H> {
                 .fail(ErrorKind::AbortedByCallback);
         }
         let mut cx = StepCx {
-            easy: &slot.easy,
-            pool: &mut self.pool,
-            now,
+            me: id,
+            rest: EngineRest {
+                slots: &mut self.slots,
+                pool: &mut self.pool,
+                now,
+            },
         };
         while state::step(&mut run, &mut cx) == Wake::Again {}
         let completed = run.state.is_completed();
@@ -402,7 +406,7 @@ impl<H: Host> Multi<H> {
         } else {
             self.timers.update(id, run.deadlines.wake_at());
         }
-        slot.run = Some(run);
+        self.slots.get_mut(id).expect("still in the multi").run = Some(run);
         if completed {
             // `Done` never outlasts a step, so this run went through it:
             // done, then its message posted (`mstate_enter_done`,

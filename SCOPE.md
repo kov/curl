@@ -40,7 +40,10 @@ build:
 
 - `tests/data` through `runtests.pl`;
 - `tests/libtest`, which uses only the public ABI and is the ABI oracle;
-- the `tests/http` pytest suite.
+- the `tests/http` pytest suite;
+- torture runs (`runtests.pl -t`), which fail each allocation of a test in turn: a failed
+  allocation is an error, never an abort (see `DESIGN.md`). They are scored against a torture
+  run of the C build on the same tests.
 
 `tests/unit` and `tests/tunit` link internal `Curl_*` symbols and cannot run against the
 rewrite. Each is ported to a Rust test beside the code it exercises. The inventory maps every

@@ -16,7 +16,9 @@ Code that must talk to C or to the OS gets its own crate, never a module of `cur
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);
 - one crate for sockets, polling and other OS interfaces, with Linux first and other
   platforms behind the same API;
-- one crate for the debug build's memory tracker (see [Debug hooks](#debug-hooks)).
+- one crate for allocation: the fallible constructors std lacks on stable (see
+  [Allocation failure](#allocation-failure)) and the debug build's memory tracker (see
+  [Debug hooks](#debug-hooks)).
 
 That keeps `#![forbid(unsafe_code)]` on `curl-core` true for the whole project. The workspace
 denies `unsafe_code`, and each module allowed to use it opts in by name and is listed in
@@ -116,9 +118,34 @@ Memory the application frees with `curl_free` comes from the application's alloc
 `curl_global_init_mem` callbacks when set, `malloc` otherwise. Everything internal uses the
 Rust allocator. The two never mix.
 
-When an allocation fails, the process aborts, as Rust's allocator does. Sizes a peer chooses
-(lengths, chunk sizes, header counts) are bounded at the trust boundary before anything is
-allocated for them, so a hostile peer gets an error, never an abort.
+## Allocation failure
+
+We ship a shared library, and a library must not take down the process that loaded it. A failed
+allocation is an error: `CURLE_OUT_OF_MEMORY` at the C ABI, an `OutOfMemory` error kind in the
+Rust API, and a NULL return from the C functions that return pointers. The C library behaves
+this way, and its torture tests (`runtests.pl -t`) check it by failing each allocation of a test
+in turn. The rule covers `curl-core`, the shim and the tool, which those tests also run.
+
+Rust's standard library aborts when an allocation fails, and stable Rust offers no hook to change
+that. Allocation is therefore always explicit and always fallible:
+
+- **Collections grow only through `try_reserve`.** `Vec`, `String`, `VecDeque` and `HashMap`
+  have it on stable; a push is valid only within capacity already reserved.
+- **Heap objects are created through the allocation crate.** It provides the constructors std
+  has only on nightly: a fallible `Box`, and a reference-counted pointer of its own, since std's
+  `Arc` cannot be built fallibly on stable.
+- **The infallible APIs are banned at build time.** Clippy's `disallowed_methods` and
+  `disallowed_macros` reject `Box::new`, `Arc::new`, `format!`, `vec!`, `to_string`,
+  `to_owned`, `collect` and the growing methods of the collections in these crates.
+- **Third-party Rust crates are vetted for this before use.** A crate that allocates
+  infallibly on a path we call cannot be used there. The C libraries we bind report allocation
+  failure as an error themselves.
+- **Peer-chosen sizes are bounded first.** Lengths, chunk sizes and header counts are checked
+  against limits at the trust boundary before anything is reserved for them, so a hostile peer
+  gets a protocol error, not an out-of-memory one.
+- **The torture tests enforce the rule.** The debug tracker honours `CURL_MEMLIMIT` by failing
+  the Nth allocation. Any allocation site that is still infallible then aborts, and the test
+  fails. Rust unit tests use the same mechanism to fail every allocation of a code path in turn.
 
 ## Debug hooks
 
@@ -132,7 +159,8 @@ on `curl-sys-abi` provides:
   lines for sockets.
   - Only allocations made while logging are tracked; a header tag marks them, so freeing an
     earlier allocation is not reported as a bad free.
-  - The tool honours `CURL_MEMDEBUG` the same way.
+  - `CURL_MEMLIMIT` makes the Nth allocation fail, which the torture tests rely on.
+  - The tool honours `CURL_MEMDEBUG` and `CURL_MEMLIMIT` the same way.
 
 Release builds contain none of this.
 

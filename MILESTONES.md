@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 and 2 are **done**; every other step is **to do**.
+Status: steps 1 to 3 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -40,10 +40,15 @@ yet meet.
    add/remove churn gets the ids C's real multi gives it, recorded by `gen/arena.py` through a
    harness linked against `libcurlu`. Growth failing under the allocation limit is exercised by
    step 5's add/perform/remove torture scenario.
-3. **url: add the Url type and a parser for the milestone's subset**: `file:` paths, scheme
-   guessing (22), empty path to "/", query without path (59, 260), fragment dropped (1109),
-   userinfo (367), unsupported scheme as UnsupportedProtocol (23). The covered rows of unit
-   1560 are generated into a table; the ported-test checker reports 1560 as partial.
+3. **url: add the Url type and urlapi.c's parser.** **Done.** `url/`: a whole URL parsed with
+   every `curl_url_set` flag, and every part got with every `curl_url_get` flag but the IDN
+   conversions; the known schemes generated from `lib/protocol.c` by `gen/schemes.py`. Tests,
+   generated from the C tests by `gen/url_c_tests.py`: lib1560's `get_parts_list` and
+   `get_url_list` as the reference build compiles them (173 and 226 rows, with the 4 and 1 that
+   ask for IDN conversions left out), and unit1395's pairs
+   (ported as `unit1395_dot_segments`); plus the branches those tables do not reach, with C's
+   answers. Not yet: setting single parts, relative URLs and appending to the query (lib1560's
+   other tables), IDN. Test 1560 itself runs once the shim exports `curl_url_*`.
 4. **core: add Deadlines, TimerQueue and TimerAnnounce.** Ports unit 1309 (against the queue's
    insert/best/remove), unit 1303 (connect versus total, each from its own anchor), and unit
    3230 (table generated from the C test). A test pins that a follow keeps `started_op` and
@@ -69,7 +74,10 @@ yet meet.
    its own call; pause and replay with interleaving (3235/3236 shapes); getinfo inside callbacks;
    the pause torture scenario.
 8. **proto: add file:// and Easy::perform.** `proto/file.rs` (no pause support: PAUSE is a
-   WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`. Tests:
+   WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`. The
+   transfer parses its URL with `CURLU_GUESS_SCHEME | CURLU_NON_SUPPORT_SCHEME` (plus
+   `DISALLOW_USER` and `PATH_AS_IS` from their options) and rejects a scheme it does not
+   implement as UnsupportedProtocol (23), as url.c does. Tests:
    a networkless `Easy::perform` of a file URL, upload and resume.
 9. **tool: run file:// transfers through the core.** Map `Operation` to `Easy`: the URL,
    `-o`, `-i`, `-s`/`-S`, `-v`, `--trace-ascii`/`--trace`/`--trace-time` with

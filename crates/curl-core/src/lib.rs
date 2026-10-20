@@ -10,4 +10,5 @@
 pub mod error;
 pub mod id;
 pub mod time;
+pub mod url;
 pub mod version;

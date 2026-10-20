@@ -34,7 +34,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from functools import cmp_to_key
 from statistics import fmean, mean
-from threading import Thread
+from threading import Event, Thread
 from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
@@ -183,6 +183,8 @@ class RunTcpDump:
         self._env = env
         self._run_dir = run_dir
         self._proc = None
+        # set once tcpdump captures, or once it is known it never will
+        self._ready = Event()
         self._stdoutfile = os.path.join(self._run_dir, 'tcpdump.out')
         self._stderrfile = os.path.join(self._run_dir, 'tcpdump.err')
 
@@ -244,20 +246,33 @@ class RunTcpDump:
                 self._proc = subprocess.Popen(args, stdout=cout, stderr=cerr,
                                               text=True, cwd=self._run_dir,
                                               shell=False)
-                assert self._proc
-                assert self._proc.returncode is None
-                while self._proc:
+                proc = self._proc
+                assert proc
+                assert proc.returncode is None
+                # finish() ends the loop by clearing self._proc
+                while self._proc and proc.returncode is None:
+                    if not self._ready.is_set():
+                        # tcpdump reports this once its capture is active
+                        with open(self._stderrfile) as fd:
+                            if 'listening on' in fd.read():
+                                self._ready.set()
                     # timeout means tcpdump is still running
                     with contextlib.suppress(subprocess.TimeoutExpired):
-                        self._proc.wait(timeout=1)
+                        proc.wait(timeout=1 if self._ready.is_set() else 0.01)
         except Exception:
             log.exception('Tcpdump')
+        finally:
+            self._ready.set()
 
     def start(self):
         def do_sample():
             self.sample()
         t = Thread(target=do_sample)
         t.start()
+        # Starting tcpdump takes tens of milliseconds, longer than a whole
+        # local transfer: do not let the transfer run before the capture.
+        if not self._ready.wait(timeout=10):
+            log.warning('tcpdump did not start capturing within 10s')
 
     def finish(self):
         if self._proc:

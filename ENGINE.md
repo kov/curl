@@ -180,7 +180,7 @@ impl<T> Vacancy<'_, T> {
 }
 pub type TransferId = Key<Slot>;
 pub struct ConnNumber(u64);                       // monotonic per pool: "Connection #N"
-pub struct ConnId { slot: u32, number: ConnNumber } // the number is the generation
+pub(crate) type ConnId = Key<ConnSlot>;            // the Conn carries its ConnNumber
 ```
 
 Slot selection copies `Curl_uint32_tbl_add`: scan for a free row from `last_added + 1`, wrap
@@ -789,11 +789,14 @@ impl Pool {
     pub fn acquire(&mut self, route: &Route, wants: ReuseWants, now: Instant)
         -> Result<Acquire, Error>;                                               // lock points 2, 3
     pub fn get(&mut self, lease: &ConnLease) -> &mut ConnSlot;                  // cannot fail
-    pub fn release(&mut self, lease: ConnLease, how: Release) -> Released;      // lock point 4
+    pub fn release(&mut self, lease: ConnLease, finish: Finish) -> Released;   // lock point 4
     pub fn get_conn(&self, id: ConnId) -> Option<&Conn>;                        // stale: None
 }
 ```
 
+- `release` decides the connection's fate as `multi_done_locked` does, from what the pool knows
+  (other leases, the route's reuse rules, a close mark) and what the transfer reports in
+  `Finish` (premature, reuse forbidden): `Released::{InUse, Idle, Closed, Terminated}`.
 - The pool owns every connection, busy or idle. It is the only issuer and consumer of leases,
   so it counts them itself; a connection's lease count, its `Session` users and the transfer's
   variant cannot disagree because only `acquire` and `release` change them. The per-route index

@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 4 are **done**; every other step is **to do**.
+Status: steps 1 to 4 and 5a are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -58,16 +58,31 @@ yet meet.
    each unit-test program as ported or missing from the Rust tests named after it, and fails on
    a port of a program that does not exist. A new leg (`start_leg`, as at a follow) keeps `started_op` and resets
    `started_single`, pinned by the two-anchor test.
-5. **multi: add the transfer state machine with a null protocol.** `Multi`, `Slot`, `Run`,
-   `TransferState`, `Sched`, `NotifyQueue`, the three contexts, `add`/`remove`/`perform`/
-   `socket_action`/`info_read`/`counts`, `drive_to_completion`, a test-only protocol that
-   completes immediately, `FakeNet`, `RecordingEvents`. Tests: info_read order; remove twice
-   (3105 semantics); the timer callback inside `add` and `remove`; the dead multi (530/758
-   semantics); generation tests for notifications and the timer queue; property tests for the
-   invariants; the add/perform/remove torture scenario.
+5. **The multi, in five commits.**
+   - **5a. conn: add a networkless connection pool.** **Done.** `conn/`: `Pool`, `ConnLease`,
+     `ConnNumber`, `Route::LOCAL`. C attaches a connection to a `file:` transfer too, numbered
+     in the pool ("Connection #N") and closed at done, since the scheme forbids reuse. Tests:
+     numbers count from 0 and are never reused; a released local connection is closed, or
+     terminated after a premature end; a dropped lease is caught in debug builds.
+   - **5b. multi: add Easy and the transfer state machine with a null protocol.** `Easy`
+     (allocating nothing by default; options and report only as far as the multi reads them),
+     `Multi`, `Host`/`NoHost`, `Slot`, `Run`, `Sched`, `TransferState` with the variants a
+     networkless transfer reaches, a test-only protocol that completes at once,
+     `add`/`remove`/`perform`/`socket_action(Timeout)`/`info_read`/`counts`/`timeout`,
+     `drive_to_completion`, `RecordingEvents`; wires in step 4's timers. Tests: info_read
+     order; remove twice (3105 semantics); the timer callback inside `add` and `remove`; the
+     dead multi (530/758 semantics); `running` counting `Init` and `Pending`.
+   - **5c. multi: add the callback contexts and notifications.** `EngineRest`, `TransferCx`,
+     `EventCx`, `NotifyCx` with the methods possible before step 7 (no `pause`), the handler
+     traits, `NotifyQueue` dispatched at the end of a pass. Tests: the generation tests for
+     notifications and the timer queue.
+   - **5d. multi: check the invariants.** A full recount after every pass in the debug build;
+     property tests for the invariants.
+   - **5e. multi: survive allocation failure.** The add/perform/remove torture scenario under
+     the tracker's limit, which also exercises arena growth failing.
 6. **os: add sockets, polling and the waker.** `curl-os` `net.rs`, `poll.rs`, `wake.rs`, with the
    CLAUDE.md unsafe list updated in the same commit; core
-   `SystemNet`; `Multi::wait`/`poll`/`fdset`/`waitfds`/`waker`. Loopback tests for
+   `SystemNet`, `FakeNet`; `Multi::wait`/`poll`/`fdset`/`waitfds`/`waker`. Loopback tests for
    connect-in-progress, EOF and would-block.
 
 **`file://` end to end**
@@ -99,9 +114,9 @@ yet meet.
 
 **HTTP/1.1 GET**
 
-11. **conn: add the pool, leases and plain TCP connections.** `ConnSlot`, `Conn`, `Route`,
-    `ConnLease`, `Pool` with the four lock points (a recording `Lock` test pins the 1554
-    sequence), `ConnectMachine` with `Resolving` (`Literal`) → `Racing` (one attempt) →
+11. **conn: add plain TCP connections to the pool.** Network routes, reuse and idle
+    connections, leases counted per connection, the connection table's own growth (C doubles it
+    from 16 when full), the four lock points (a recording `Lock` test pins the 1554 sequence), `ConnectMachine` with `Resolving` (`Literal`) → `Racing` (one attempt) →
     established, socket open and close order, `ShutdownSet`. `FakeNet` tests: refusal ("Failed
     to connect to … after N ms"), connect timeout under `ManualClock`, REMOVE before the close
     hook.

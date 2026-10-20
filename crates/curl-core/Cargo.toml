@@ -10,6 +10,11 @@ publish.workspace = true
 # The counterpart of the C debug build: reports the `Debug` feature, and
 # will carry the debug-only behaviours the test suite relies on.
 debug-hooks = []
+# Test doubles for other crates' tests: the manual clock.
+test-util = []
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
 
 [lints]
 workspace = true

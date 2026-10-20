@@ -19,6 +19,9 @@ version = "0.1.0"
 [[package]]
 name = "curl-core"
 version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+]
 
 [[package]]
 name = "curl-os"

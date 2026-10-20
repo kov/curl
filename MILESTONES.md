@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: step 1 is **done**; every other step is **to do**.
+Status: step 1 is **done**, step 2 is **in progress**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -35,7 +35,9 @@ yet meet.
    past the tracker's limit without aborting; the last handle drops the value once; handles
    cross threads.
    DESIGN.md already promises them.
-2. **core: depend on curl-alloc; add Instant, Clock and the arena.** `time.rs`, `id.rs` with
+2. **core: depend on curl-alloc; add Instant, Clock and the arena.** **In progress:** the
+   clock is done (`time.rs`: `Instant`, `Clock`, `SystemClock`, `ManualClock` behind
+   `test-util`); the arena is to do. `time.rs`, `id.rs` with
    `ArenaPolicy`. Tests: a stale key fails after remove and reinsert on the same row; an order
    test replays an add/remove churn and compares the slot sequence with a table produced by
    running `Curl_uint32_tbl_add`'s policy in the C build's unit-test harness; `reserve_one`

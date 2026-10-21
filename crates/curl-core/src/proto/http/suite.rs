@@ -39,7 +39,6 @@ const CASES: &[u32] = &[
 /// brings it.
 const KNOWN: &[(u32, &str)] = &[
     (367, "Basic auth from the URL's credentials (step 16)"),
-    (772, "a second, different Location"),
     (1144, "a body with no head under HEAD"),
 ];
 

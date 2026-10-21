@@ -546,6 +546,43 @@ fn a_length_is_one_number() {
     assert_eq!((got.error, got.framing), (None, Some(Framing::UntilClose)));
 }
 
+/// A response points one place: a second `Location` that says something
+/// else is refused, an empty one or the same again passed over, across
+/// the request's interim heads too (test 772, `http_header_l`).
+#[test]
+fn a_response_has_one_location() {
+    let got = outcome(&fixture::reply(772), PLAIN);
+    assert_eq!(
+        got.error,
+        Some(HeadError::Framing(FramingError::MultipleLocations))
+    );
+    assert_eq!(
+        got.error.map(|e| (e.to_string(), e.kind())),
+        Some((
+            "Multiple Location headers".into(),
+            ErrorKind::WeirdServerReply
+        ))
+    );
+    let head = |lines: &str| {
+        let reply = format!("HTTP/1.1 200 OK\r\n{lines}Content-Length: 0\r\n\r\n");
+        outcome(reply.as_bytes(), PLAIN).error
+    };
+    assert_eq!(head("Location: a\r\nLocation:  a \r\n"), None);
+    assert_eq!(head("Location:\r\nLocation: a\r\nLocation: \r\n"), None);
+    assert_eq!(
+        head("location: a\r\nLOCATION: A\r\n"),
+        Some(HeadError::Framing(FramingError::MultipleLocations))
+    );
+    let got = outcome(
+        b"HTTP/1.1 100 Continue\r\nLocation: a\r\n\r\nHTTP/1.1 200 OK\r\nLocation: b\r\n\r\n",
+        PLAIN,
+    );
+    assert_eq!(
+        got.error,
+        Some(HeadError::Framing(FramingError::MultipleLocations))
+    );
+}
+
 /// A size past the limit fails at the head's end, after the blank line is
 /// delivered; one too large to be a size fails at its header.
 #[test]

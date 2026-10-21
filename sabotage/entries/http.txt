@@ -95,3 +95,21 @@ witness: curl-core proto::http::suite::the_milestone_s_http_cases
                 Some(n) => Framing::Length(n),
 --- new
                 Some(_) => Framing::UntilClose,
+
+=== a second Location is taken
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_response_has_one_location
+--- old
+            if self.location.is_some() {
+                return Err(FramingError::MultipleLocations);
+--- new
+            if false {
+                return Err(FramingError::MultipleLocations);
+
+=== the same Location again is a second one
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_response_has_one_location
+--- old
+            if v.is_empty() || self.location.as_deref() == Some(v) {
+--- new
+            if v.is_empty() {

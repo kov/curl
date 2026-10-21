@@ -72,6 +72,8 @@ pub(crate) enum FramingError {
     ListedAfterChunked(Vec<u8>),
     TooManyCodings,
     ChunkedNotLast,
+    /// A second `Location` that says something else.
+    MultipleLocations,
     OutOfMemory,
 }
 
@@ -112,6 +114,7 @@ impl fmt::Display for FramingError {
             FramingError::ChunkedNotLast => {
                 f.write_str("Reject response due to 'chunked' not being the last Transfer-Encoding")
             }
+            FramingError::MultipleLocations => f.write_str("Multiple Location headers"),
             FramingError::OutOfMemory => Ok(()),
         }
     }
@@ -138,6 +141,8 @@ pub(crate) struct Meta {
     /// The connection closes after the response.
     close: bool,
     content_type: Option<Vec<u8>>,
+    /// Where the response points (`req.location`).
+    location: Option<Vec<u8>>,
     /// The response announced trailers.
     trailer: bool,
 }
@@ -201,6 +206,19 @@ impl Meta {
                 self.close = true;
                 self.length_void = true;
             }
+            return Ok(None);
+        }
+        if value_of(line, b"Location:").is_some() {
+            // An empty one, or the same again, is passed over
+            // (`http_header_l`).
+            let v = fields::header_value(line).unwrap_or(&[]);
+            if v.is_empty() || self.location.as_deref() == Some(v) {
+                return Ok(None);
+            }
+            if self.location.is_some() {
+                return Err(FramingError::MultipleLocations);
+            }
+            self.location = Some(copy(v)?);
             return Ok(None);
         }
         if value_of(line, b"Trailer:").is_some() {

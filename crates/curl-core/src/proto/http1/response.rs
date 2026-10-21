@@ -121,7 +121,9 @@ impl HeadError {
             | HeadError::UnknownVersion
             | HeadError::BadCode => ErrorKind::UnsupportedProtocol,
             HeadError::TooLarge { .. } => ErrorKind::RecvError,
-            HeadError::Framing(FramingError::BadLength) => ErrorKind::WeirdServerReply,
+            HeadError::Framing(FramingError::BadLength | FramingError::MultipleLocations) => {
+                ErrorKind::WeirdServerReply
+            }
             HeadError::Framing(FramingError::FileTooLarge) => ErrorKind::FilesizeExceeded,
             HeadError::Framing(
                 FramingError::Unsolicited(_)

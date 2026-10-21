@@ -202,7 +202,6 @@ impl<H: Host> MultiEvents<H> for EventTable {
         true
     }
 
-    /// `events_socket`.
     fn socket(
         &mut self,
         _: &mut EventCx<'_, H>,
@@ -211,6 +210,17 @@ impl<H: Host> MultiEvents<H> for EventTable {
         what: SocketWhat,
         _: Option<H::Socket>,
     ) -> Result<(), Abort> {
+        self.note(s, what)
+    }
+
+    fn wants_sockets(&self) -> bool {
+        true
+    }
+}
+
+impl EventTable {
+    /// Watch `s` for `what`, or stop (`events_socket`).
+    fn note(&mut self, s: SocketKey, what: SocketWhat) -> Result<(), Abort> {
         let events = match what {
             SocketWhat::In => Events::IN,
             SocketWhat::Out => Events::OUT,
@@ -233,10 +243,6 @@ impl<H: Host> MultiEvents<H> for EventTable {
             }
         }
         Ok(())
-    }
-
-    fn wants_sockets(&self) -> bool {
-        true
     }
 }
 
@@ -291,5 +297,34 @@ pub fn drive_by_events<H: Host>(
         if let Some(outcome) = m.take_outcome(id) {
             return Ok(outcome);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The table keeps what each socket is watched for, as the socket
+    /// callback last said, and forgets one removed.
+    #[test]
+    fn the_event_table_follows_the_socket_callback() {
+        let mut t = EventTable::default();
+        let (a, b) = (SocketKey::new(3), SocketKey::new(4));
+        t.note(a, SocketWhat::Out).unwrap();
+        t.note(b, SocketWhat::In).unwrap();
+        assert_eq!(t.sockets, [(a, Events::OUT), (b, Events::IN)]);
+        t.note(a, SocketWhat::InOut).unwrap();
+        assert_eq!(t.sockets, [(a, Events::IN | Events::OUT), (b, Events::IN)]);
+        t.note(a, SocketWhat::Remove).unwrap();
+        assert_eq!(t.sockets, [(b, Events::IN)]);
+        t.note(b, SocketWhat::Remove).unwrap();
+        assert_eq!(t.sockets, []);
+    }
+
+    #[test]
+    #[should_panic(expected = "removed but never added")]
+    fn the_event_table_refuses_a_socket_removed_unknown() {
+        let mut t = EventTable::default();
+        t.note(SocketKey::new(3), SocketWhat::Remove).unwrap();
     }
 }

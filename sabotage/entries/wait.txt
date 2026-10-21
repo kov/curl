@@ -156,7 +156,7 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_on_a_transfer_s_socket
 
 === an event-driven transfer watches its socket for writing when it reads
 file: crates/curl-core/src/multi/wait.rs
-witness: curl-core multi::tests::events_drive_a_transfer_as_waits_do
+witness: curl-core multi::wait::tests::the_event_table_follows_the_socket_callback
 --- old
             SocketWhat::In => Events::IN,
 --- new
@@ -172,7 +172,7 @@ witness: curl-core multi::tests::events_wait_for_a_socket_with_nothing_due
 
 === an event-driven transfer keeps watching a socket after its REMOVE
 file: crates/curl-core/src/multi/wait.rs
-witness: curl-core multi::tests::events_drive_a_transfer_as_waits_do
+witness: curl-core multi::wait::tests::the_event_table_follows_the_socket_callback
 --- old
                 self.sockets.remove(at);
 --- new

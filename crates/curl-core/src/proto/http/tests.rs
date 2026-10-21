@@ -1133,3 +1133,16 @@ fn a_get_with_a_reused_connection_that_closes_mid_body_fails() {
     assert_eq!(ran.result, Err(ErrorKind::PartialFile));
     assert!(!ran.seen.text().iter().any(|l| l.contains("retrying")));
 }
+
+/// A response read until the connection closes, over a reused one, ends
+/// the request: it got something back, so it is not tried again.
+#[test]
+fn a_response_until_close_over_a_reused_connection_is_whole() {
+    let until_close = b"HTTP/1.1 200 OK\r\n\r\nab";
+    let talk = Conversation::replies(&[OK, until_close], true);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    assert_eq!(get(&mut m, "/a", talk.clone(), |_| {}).result, Ok(()));
+    let ran = get(&mut m, "/b", talk.clone(), |_| {});
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"ab".to_vec()));
+    assert!(!ran.seen.text().iter().any(|l| l.contains("retrying")));
+}

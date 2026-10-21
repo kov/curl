@@ -174,21 +174,25 @@ mod tests {
         assert_eq!(in_missing.kind(), io::ErrorKind::NotFound);
     }
 
-    /// The descriptors the process has open.
-    fn open_descriptors() -> usize {
-        std::fs::read_dir("/proc/self/fd").unwrap().count()
+    /// The descriptors the process has open on `dir`: none of the other
+    /// tests', which open their own, so their comings and goings meanwhile
+    /// do not count.
+    fn open_on(dir: &std::path::Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter(|fd| std::fs::read_link(fd.as_ref().unwrap().path()).is_ok_and(|to| to == dir))
+            .count()
     }
 
     /// A listing closes its directory when it goes.
     #[test]
     fn a_listing_closes_its_directory() {
         let s = Scratch::new("close");
-        let before = open_descriptors();
+        let dir = std::fs::canonicalize(&s.0).unwrap();
         let dirs: Vec<Dir> = (0..32).map(|_| Dir::open(&c(&s.0)).unwrap()).collect();
-        assert!(open_descriptors() >= before + 32);
+        assert_eq!(open_on(&dir), 32);
         drop(dirs);
-        // Other tests' descriptors come and go meanwhile: well under the 32.
-        assert!(open_descriptors() < before + 16);
+        assert_eq!(open_on(&dir), 0);
     }
 
     #[test]

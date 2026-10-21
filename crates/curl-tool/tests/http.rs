@@ -1,0 +1,172 @@
+//! The tool running HTTP transfers: the options that shape the request
+//! and what is done with the response.
+//!
+//! The expectations are the C tool's: `CURL_TOOL_UNDER_TEST` names
+//! another tool to run them on, as
+//! `CURL_TOOL_UNDER_TEST=build/c/src/curl LD_LIBRARY_PATH=build/c/lib`.
+
+#![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
+
+use std::io::{Read as _, Write as _};
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::process::Command;
+use std::thread::JoinHandle;
+
+/// A server that answers one request with `reply`, then closes; joining
+/// it gives the request it got, its port written as `PORT`.
+struct Server {
+    port: u16,
+    request: JoinHandle<Vec<u8>>,
+}
+
+impl Server {
+    fn new(reply: &'static [u8]) -> Server {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let request = std::thread::spawn(move || {
+            let Ok((mut peer, _)) = listener.accept() else {
+                return Vec::new();
+            };
+            let mut got = Vec::new();
+            let mut buf = [0; 4096];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match peer.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let _ = peer.write_all(reply);
+            String::from_utf8_lossy(&got)
+                .replace(&port.to_string(), "PORT")
+                .into_bytes()
+        });
+        Server { port, request }
+    }
+
+    fn url(&self) -> String {
+        format!("http://127.0.0.1:{}/", self.port)
+    }
+
+    fn request(self) -> String {
+        String::from_utf8(self.request.join().unwrap()).unwrap()
+    }
+}
+
+struct Run {
+    code: i32,
+    stdout: Vec<u8>,
+    stderr: String,
+}
+
+/// Run the tool with `args`, without a configuration file.
+fn curl(args: &[&str]) -> Run {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let out = Command::new(tool).arg("-q").args(args).output().unwrap();
+    Run {
+        code: out.status.code().unwrap(),
+        stdout: out.stdout,
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    }
+}
+
+const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nA: b\r\n\r\n-foo-\n";
+
+/// `-A`, `-e` (its `;auto` cut), `-H` adding, replacing and removing,
+/// and `-0`, as they reach the request.
+#[test]
+fn options_shape_the_request() {
+    let s = Server::new(OK);
+    let url = s.url();
+    let run = curl(&[
+        "-s",
+        "-A",
+        "me/1",
+        "-e",
+        "http://r/;auto",
+        "-H",
+        "X-A: 1",
+        "-H",
+        "Accept;",
+        "-0",
+        &url,
+    ]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"-foo-\n"[..]));
+    assert_eq!(
+        s.request(),
+        "GET / HTTP/1.0\r\nHost: 127.0.0.1:PORT\r\nUser-Agent: me/1\r\nReferer: http://r/\r\n\
+         X-A: 1\r\nAccept:\r\n\r\n"
+    );
+}
+
+/// `-D` writes the header lines, and only those, to its file.
+#[test]
+fn dumps_the_headers() {
+    let dir = std::env::temp_dir().join(format!("curl-tool-http-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("heads");
+    let s = Server::new(OK);
+    let run = curl(&["-s", "-D", file.to_str().unwrap(), &s.url()]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"-foo-\n"[..]));
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nA: b\r\n\r\n"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    // One that cannot be opened fails the transfer before it starts.
+    let missing = dir.join("no/such/heads");
+    let run = curl(&[
+        "-sS",
+        "-D",
+        missing.to_str().unwrap(),
+        "http://127.0.0.1:1/",
+    ]);
+    assert_eq!(run.code, 23);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "curl: Failed to open {}\n\
+             curl: (23) Failed writing received data to disk/application\n",
+            missing.display()
+        )
+    );
+}
+
+/// `-f` fails a 404, with what the library says, writing no body.
+#[test]
+fn fails_on_an_error_code() {
+    let s = Server::new(b"HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\n\r\nabcde");
+    let run = curl(&["-sS", "-f", &s.url()]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (
+            22,
+            &b""[..],
+            "curl: (22) The requested URL returned error: 404\n"
+        )
+    );
+}
+
+/// `--max-filesize` takes a unit; a body announced larger fails at once.
+#[test]
+fn limits_the_file_size() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2000\r\n\r\nabc");
+    let run = curl(&["-sS", "--max-filesize", "1k", &s.url()]);
+    assert_eq!(
+        (run.code, &run.stderr[..]),
+        (63, "curl: (63) Maximum file size exceeded\n")
+    );
+}
+
+/// `-I` with `-T` asks for two methods: the transfer is not made.
+#[test]
+fn takes_one_method() {
+    let run = curl(&["-I", "-T", "/dev/null", "http://127.0.0.1:1/"]);
+    assert_eq!(run.code, 2);
+    assert_eq!(
+        run.stderr,
+        "Warning: You can only select one HTTP request method! You asked for both PUT \n\
+         Warning: (-T, --upload-file) and HEAD (-I, --head).\n"
+    );
+}

@@ -8,7 +8,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::os::unix::ffi::OsStrExt as _;
 use std::time::{Duration, UNIX_EPOCH};
 
-use curl_alloc::{OutOfMemory, try_format};
+use curl_alloc::{OutOfMemory, TryVec as _, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
@@ -17,7 +17,10 @@ use curl_core::options::{self, Method, Progress, UploadSource};
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
 use crate::msgs::Messages;
-use crate::options::{CommandLine, Global, Node, Operation, Output, Resume, Upload, exit_code};
+use crate::options::{
+    self as tool, CommandLine, Global, HttpVersion, Node, Operation, Output, Resume, Upload,
+    exit_code,
+};
 use crate::os_message;
 use crate::output;
 use crate::stdout::Stdout;
@@ -76,12 +79,12 @@ fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
             msgs.help(&[b"(2) no URL specified"]);
             return Ending::Done(Err(ErrorKind::FailedInit));
         }
-        for node in &op.nodes {
+        for (i, node) in op.nodes.iter().enumerate() {
             let Some(url) = node.url else {
                 msgs.warn(&[b"Got more output options than URLs"]);
                 break;
             };
-            match transfer(op, run, node, url) {
+            match transfer(op, run, node, url, i == 0) {
                 Step::Ran(result) => {
                     last = result;
                     if result.is_err_and(fatal) {
@@ -117,13 +120,24 @@ struct Shared<'a, 'l> {
 }
 
 /// Set up, run and finish one URL's transfer (`create_single`,
-/// `pre_transfer`, the perform and `post_per_transfer`).
-fn transfer(op: &Operation<'_>, run: &Shared<'_, '_>, node: &Node<'_>, url: &[u8]) -> Step {
+/// `pre_transfer`, the perform and `post_per_transfer`); `first` is the
+/// operation's first.
+fn transfer(
+    op: &Operation<'_>,
+    run: &Shared<'_, '_>,
+    node: &Node<'_>,
+    url: &[u8],
+    first: bool,
+) -> Step {
     let msgs = run.msgs;
     let upload = match node.upload {
         Upload::File(file) => Some(file),
         Upload::Unset | Upload::Nothing => None,
     };
+    // An upload is a PUT, which no other method may be chosen with.
+    if upload.is_some() && op.method.allows(tool::Method::Put, &msgs).is_err() {
+        return Step::Failed(ErrorKind::FailedInit);
+    }
     let to_stdout = matches!(node.output, Output::Unset | Output::File(b"-"));
     let made = match node.output {
         Output::Null => output::Output::null(msgs),
@@ -141,6 +155,14 @@ fn transfer(op: &Operation<'_>, run: &Shared<'_, '_>, node: &Node<'_>, url: &[u8
         let result = finish(op, run, url, easy, &out, Err(e), false);
         Step::Failed(result.expect_err("a failure stays one"))
     };
+    // `setup_headerfile`.
+    if let Some(name) = op.dump_header {
+        match out.dump_to(name, first, run.stdout) {
+            Ok(()) => {}
+            Err(output::DumpFailed::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+            Err(output::DumpFailed::Open) => return failed(&easy, ErrorKind::WriteError),
+        }
+    }
     // Where the transfer starts (`setup_outfile`, `setup_transfer_upload`).
     let mut resume_from = match op.resume {
         Some(Resume::At(n)) => Some(n),
@@ -183,6 +205,7 @@ fn transfer(op: &Operation<'_>, run: &Shared<'_, '_>, node: &Node<'_>, url: &[u8
         stream.show_headers = op.show_headers;
         stream.terminal = terminal;
         stream.binary_ok = node.output == Output::File(b"-");
+        stream.no_buffer = op.no_buffer;
     }
     let config = Config {
         url,
@@ -237,6 +260,8 @@ fn configure(
     }
     if config.upload {
         o.method = Method::Upload;
+    } else if op.no_body {
+        o.method = Method::Head;
     }
     o.resume = config.resume;
     o.progress = if run.global.no_progress || run.msgs.silent || config.terminal {
@@ -250,7 +275,39 @@ fn configure(
     }
     o.callbacks.write = Some(out.body_handler()?);
     o.callbacks.header = Some(out.header_handler()?);
+    // `credentials_and_headers_setopts` and `http_setopts`.
+    let http = &mut o.http;
+    http.headers = options::UserHeaders::new(op.headers.iter().copied())?;
+    http.referer = op.referer.map(copy).transpose()?;
+    http.user_agent = Some(match op.user_agent {
+        Some(agent) => copy(agent)?,
+        None => copy(
+            try_format(format_args!(
+                "curl/{}",
+                curl_core::version::version().version
+            ))?
+            .as_bytes(),
+        )?,
+    });
+    if let Some(version) = op.http_version {
+        http.version = match version {
+            HttpVersion::Http10 => options::HttpVersion::Http10,
+            HttpVersion::Http11 => options::HttpVersion::Http11,
+        };
+    }
+    http.allow_09 = op.http09;
+    http.raw = op.raw;
+    http.ignore_content_length = op.ignore_content_length;
+    http.fail_on_error = op.fail;
+    o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     Ok(())
+}
+
+/// `bytes`, owned.
+fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    let mut owned = Vec::new();
+    owned.try_extend_from_slice(bytes)?;
+    Ok(owned)
 }
 
 /// What is done after a transfer, run or skipped, whatever its result

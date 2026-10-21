@@ -102,6 +102,90 @@ pub(crate) struct Operation<'a> {
     pub(crate) skip_existing: bool,
     /// `--write-out`.
     pub(crate) write_out: Option<&'a [u8]>,
+    /// `--header`, in the order given.
+    pub(crate) headers: Vec<&'a [u8]>,
+    /// `--user-agent`.
+    pub(crate) user_agent: Option<&'a [u8]>,
+    /// `--referer`, without its `;auto`.
+    pub(crate) referer: Option<&'a [u8]>,
+    /// `--referer` ending in `;auto`: a redirect sends the URL it came
+    /// from, which only matters with `--location` (not implemented).
+    pub(crate) auto_referer: bool,
+    /// `--http1.0` and `--http1.1`.
+    pub(crate) http_version: Option<HttpVersion>,
+    /// `--http0.9`.
+    pub(crate) http09: bool,
+    /// `--dump-header`: a file, `-` for standard output, `%` for standard
+    /// error.
+    pub(crate) dump_header: Option<&'a [u8]>,
+    /// `--raw`.
+    pub(crate) raw: bool,
+    /// `--ignore-content-length`.
+    pub(crate) ignore_content_length: bool,
+    /// `--max-filesize`, in bytes; 0 is no limit.
+    pub(crate) max_filesize: u64,
+    /// `--head`: no body is asked for.
+    pub(crate) no_body: bool,
+    /// The HTTP method the options chose (C's `config->httpreq`).
+    pub(crate) method: Method,
+    /// `--fail`.
+    pub(crate) fail: bool,
+    /// `--no-buffer`: output is written as it comes.
+    pub(crate) no_buffer: bool,
+}
+
+/// The HTTP version `--http1.0` and `--http1.1` ask for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HttpVersion {
+    Http10,
+    Http11,
+}
+
+/// The HTTP method the options chose (C's `HttpReq`); only one may be.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Method {
+    #[default]
+    Unset,
+    Get,
+    Head,
+    Put,
+}
+
+impl Method {
+    /// How C names the method, with the option that asks for it.
+    fn name(self) -> &'static [u8] {
+        match self {
+            Method::Unset => b"",
+            Method::Get => b"GET (-G, --get)",
+            Method::Head => b"HEAD (-I, --head)",
+            Method::Put => b"PUT (-T, --upload-file)",
+        }
+    }
+
+    /// Whether `wanted` could be chosen after this one, warning if not,
+    /// without choosing it: the transfer side of `SetHTTPrequest`, which
+    /// C runs on the operation's configuration as it creates a transfer.
+    pub(crate) fn allows(self, wanted: Method, msgs: &Messages) -> Result<(), ()> {
+        let mut method = self;
+        method.choose(wanted, msgs)
+    }
+
+    /// Choose `wanted`, unless another method was chosen already
+    /// (`SetHTTPrequest`): then warn and refuse.
+    pub(crate) fn choose(&mut self, wanted: Method, msgs: &Messages) -> Result<(), ()> {
+        if *self == Method::Unset || *self == wanted {
+            *self = wanted;
+            return Ok(());
+        }
+        msgs.warn(&[
+            b"You can only select one HTTP request method! You asked for both ",
+            wanted.name(),
+            b" and ",
+            self.name(),
+            b".",
+        ]);
+        Err(())
+    }
 }
 
 impl<'a> Operation<'a> {
@@ -418,6 +502,70 @@ pub(crate) fn apply<'a>(
             line.current().default_protocol = Some(protocol);
         }
         Opt::Include | Opt::ShowHeaders => line.current().show_headers = value.toggle(),
+        Opt::Head => {
+            let on = value.toggle();
+            let op = line.current();
+            op.no_body = on;
+            op.show_headers = on;
+            let wanted = if on { Method::Head } else { Method::Get };
+            op.method
+                .choose(wanted, msgs)
+                .map_err(|()| ParamError::BadUse)?;
+        }
+        Opt::Header => {
+            let header = value.text();
+            if header.first() == Some(&b'@') {
+                line.feature_not_implemented("reading headers from a file");
+            } else if !header.iter().any(|&b| b == b':' || b == b';') {
+                msgs.warn(&[
+                    b"The provided HTTP header '",
+                    header,
+                    b"' does not look like a header?",
+                ]);
+            }
+            line.current().headers.try_push(header)?;
+        }
+        Opt::UserAgent => line.current().user_agent = Some(value.text()),
+        Opt::Referer => {
+            let text = value.text();
+            let op = line.current();
+            let given = match text.strip_suffix(b";auto") {
+                Some(given) => {
+                    op.auto_referer = true;
+                    given
+                }
+                None => {
+                    op.auto_referer = false;
+                    text
+                }
+            };
+            op.referer = (!given.is_empty()).then_some(given);
+        }
+        Opt::Http10 | Opt::Http11 => {
+            let version = if spec.opt == Opt::Http10 {
+                HttpVersion::Http10
+            } else {
+                HttpVersion::Http11
+            };
+            let op = line.current();
+            if op.http_version.is_some_and(|v| v != version) {
+                msgs.warn(&[b"Overrides previous HTTP version option"]);
+            }
+            op.http_version = Some(version);
+        }
+        Opt::Http09 => line.current().http09 = value.toggle(),
+        Opt::DumpHeader => {
+            let file = value.text();
+            if file.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().dump_header = Some(file);
+        }
+        Opt::Raw => line.current().raw = value.toggle(),
+        Opt::IgnoreContentLength => line.current().ignore_content_length = value.toggle(),
+        Opt::MaxFilesize => line.current().max_filesize = number::size(value.text())?,
+        Opt::Fail => line.current().fail = value.toggle(),
+        Opt::Buffer => line.current().no_buffer = !value.toggle(),
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::WriteOut => {
@@ -479,7 +627,6 @@ pub(crate) fn apply<'a>(
         | Opt::Append
         | Opt::AwsSigv4
         | Opt::Basic
-        | Opt::Buffer
         | Opt::CaNative
         | Opt::Cacert
         | Opt::Capath
@@ -516,14 +663,12 @@ pub(crate) fn apply<'a>(
         | Opt::DohCertStatus
         | Opt::DohInsecure
         | Opt::DohUrl
-        | Opt::DumpHeader
         | Opt::Ech
         | Opt::EgdFile
         | Opt::Engine
         | Opt::Eprt
         | Opt::Epsv
         | Opt::Expect100Timeout
-        | Opt::Fail
         | Opt::FailEarly
         | Opt::FailWithBody
         | Opt::FalseStart
@@ -549,14 +694,9 @@ pub(crate) fn apply<'a>(
         | Opt::HappyEyeballsTimeoutMs
         | Opt::HaproxyClientip
         | Opt::HaproxyProtocol
-        | Opt::Head
-        | Opt::Header
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
         | Opt::Hsts
-        | Opt::Http09
-        | Opt::Http10
-        | Opt::Http11
         | Opt::Http2
         | Opt::Http2PriorKnowledge
         | Opt::Http3
@@ -565,7 +705,6 @@ pub(crate) fn apply<'a>(
         | Opt::HttpsigHeaders
         | Opt::HttpsigKey
         | Opt::HttpsigKeyid
-        | Opt::IgnoreContentLength
         | Opt::Insecure
         | Opt::Interface
         | Opt::IpTos
@@ -593,7 +732,6 @@ pub(crate) fn apply<'a>(
         | Opt::MailFrom
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
-        | Opt::MaxFilesize
         | Opt::MaxRedirs
         | Opt::MaxTime
         | Opt::Metalink
@@ -657,8 +795,6 @@ pub(crate) fn apply<'a>(
         | Opt::RandomFile
         | Opt::Range
         | Opt::Rate
-        | Opt::Raw
-        | Opt::Referer
         | Opt::RemoteHeaderName
         | Opt::RemoteName
         | Opt::RemoteNameAll
@@ -722,7 +858,6 @@ pub(crate) fn apply<'a>(
         | Opt::UrlQuery
         | Opt::UseAscii
         | Opt::User
-        | Opt::UserAgent
         | Opt::Variable
         | Opt::VlanPriority
         | Opt::Xattr => line.not_implemented(spec, "--"),

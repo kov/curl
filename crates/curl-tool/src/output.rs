@@ -45,7 +45,30 @@ pub(crate) struct Stream {
     pub(crate) terminal: bool,
     /// `--output -`: binary output to a terminal is wanted.
     pub(crate) binary_ok: bool,
+    /// `--no-buffer`: what is written is flushed at once.
+    pub(crate) no_buffer: bool,
+    /// `--dump-header`: where header lines are written too.
+    dump: Option<Dump>,
     msgs: Messages,
+}
+
+/// Where `--dump-header` writes, and the name it was given.
+struct Dump {
+    target: DumpTarget,
+    name: Vec<u8>,
+}
+
+enum DumpTarget {
+    Stdout(Stdout),
+    Stderr,
+    File(File),
+}
+
+/// Why `--dump-header`'s file could not be set up.
+pub(crate) enum DumpFailed {
+    OutOfMemory,
+    /// It could not be opened; said already.
+    Open,
 }
 
 enum Target {
@@ -91,6 +114,8 @@ impl Output {
             show_headers: false,
             terminal: false,
             binary_ok: false,
+            no_buffer: false,
+            dump: None,
             msgs,
         };
         Ok(Output(TryRc::try_new(RefCell::new(stream))?))
@@ -98,6 +123,51 @@ impl Output {
 
     pub(crate) fn stream(&self) -> std::cell::RefMut<'_, Stream> {
         self.0.borrow_mut()
+    }
+
+    /// Write header lines to `name` too, as `--dump-header` asks: `-` is
+    /// standard output and `%` standard error; a file is emptied first if
+    /// `fresh`, then added to (`setup_headerfile`).
+    pub(crate) fn dump_to(
+        &self,
+        name: &[u8],
+        fresh: bool,
+        stdout: &Stdout,
+    ) -> Result<(), DumpFailed> {
+        let mut owned = Vec::new();
+        owned
+            .try_extend_from_slice(name)
+            .map_err(|OutOfMemory| DumpFailed::OutOfMemory)?;
+        let mut stream = self.stream();
+        let target = match name {
+            b"%" => DumpTarget::Stderr,
+            b"-" => DumpTarget::Stdout(stdout.clone()),
+            _ => {
+                let mut c_name = Vec::new();
+                c_name
+                    .try_extend_from_slice(name)
+                    .and_then(|()| c_name.try_push(0))
+                    .map_err(|OutOfMemory| DumpFailed::OutOfMemory)?;
+                let c_name = Stream::c_name(&c_name);
+                let keep = if fresh {
+                    Keep::Nothing
+                } else {
+                    Keep::Everything
+                };
+                match fs::open_write(c_name, keep, NEW_FILE_MODE) {
+                    Ok(file) => DumpTarget::File(file),
+                    Err(_) => {
+                        stream.msgs.error(&[b"Failed to open ", name]);
+                        return Err(DumpFailed::Open);
+                    }
+                }
+            }
+        };
+        stream.dump = Some(Dump {
+            target,
+            name: owned,
+        });
+        Ok(())
     }
 
     /// The write handler.
@@ -203,15 +273,44 @@ impl Stream {
         match self.write_all(body) {
             Ok(()) => {
                 self.bytes += body.len() as u64;
+                if self.no_buffer && self.flush().is_err() {
+                    return Write::Fail;
+                }
                 Write::Accepted
             }
             Err(_) => Write::Fail,
         }
     }
 
+    /// The `--dump-header` side of `tool_header_cb`: every line, flushed.
+    fn dump(&mut self, line: &[u8]) -> Write {
+        let Some(dump) = &mut self.dump else {
+            return Write::Accepted;
+        };
+        let written = match &mut dump.target {
+            DumpTarget::Stdout(out) => out.write_all(line).and_then(|()| out.flush()),
+            DumpTarget::Stderr => {
+                let mut err = std::io::stderr();
+                err.write_all(line).and_then(|()| err.flush())
+            }
+            DumpTarget::File(file) => file.write_all(line),
+        };
+        match written {
+            Ok(()) => Write::Accepted,
+            Err(_) => {
+                self.msgs
+                    .error(&[b"Failed writing headers to ", &dump.name]);
+                Write::Fail
+            }
+        }
+    }
+
     /// The output side of `tool_header_cb`: shown header lines, their
     /// names in bold on a terminal.
     fn header(&mut self, line: &[u8], protocol: Option<Protocol>) -> Write {
+        if self.dump(line) == Write::Fail {
+            return Write::Fail;
+        }
         // C shows them for HTTP, HTTPS, RTSP and FILE.
         if !self.show_headers || protocol != Some(Protocol::File) {
             return Write::Accepted;
@@ -320,6 +419,30 @@ mod tests {
         let shown = std::fs::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         shown
+    }
+
+    /// `--dump-header` writes every line, for any protocol and whether
+    /// shown or not; its file is emptied by an operation's first transfer
+    /// and added to by the rest.
+    #[test]
+    fn dumps_headers_to_a_file() {
+        let path = scratch("dump");
+        std::fs::write(&path, b"old\n").unwrap();
+        let name = path.as_os_str().as_encoded_bytes();
+        let stdout = Stdout::new().unwrap();
+        for (fresh, line) in [(true, &b"A: 1\r\n"[..]), (false, b"B: 2\r\n")] {
+            let out = Output::null(quiet()).unwrap();
+            assert!(out.dump_to(name, fresh, &stdout).is_ok());
+            assert_eq!(out.stream().header(line, None), Write::Accepted);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), b"A: 1\r\nB: 2\r\n");
+        std::fs::remove_file(&path).unwrap();
+        let out = Output::null(quiet()).unwrap();
+        let missing = scratch("no/such/dir");
+        assert!(matches!(
+            out.dump_to(missing.as_os_str().as_encoded_bytes(), true, &stdout),
+            Err(DumpFailed::Open)
+        ));
     }
 
     /// Header names are bold on a terminal; lines without one are not.

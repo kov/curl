@@ -315,6 +315,10 @@ mod tests {
             (&["x", "--etag-save", ""], BlankString),
             (&["x", "y", "--etag-save", "e"], BadUse),
             (&["x", "--etag-compare", "e", "--url", "y"], BadUse),
+            (&["x", "-D", ""], BlankString),
+            (&["x", "--max-filesize", "a"], BadNumeric),
+            (&["x", "--max-filesize", "3x"], BadUse),
+            (&["x", "-I", "--no-head"], BadUse),
         ];
         for (args, want) in cases {
             assert_eq!(run(args).err(), Some(*want), "{args:?}");
@@ -446,6 +450,57 @@ mod tests {
         let etag = Some("etag-save");
         assert_eq!(run(&["--etag-save", "e", "x"]), Ok((1, etag, None)));
         assert_eq!(run(&["x", "--etag-save", "e"]), Ok((1, etag, None)));
+    }
+
+    #[test]
+    fn reads_the_http_options() {
+        let l = line(&[
+            "x",
+            "-H",
+            "A: 1",
+            "-H",
+            "B;",
+            "-A",
+            "ua",
+            "-e",
+            "r;auto",
+            "-0",
+            "--http0.9",
+            "-D",
+            "h",
+            "--raw",
+            "--ignore-content-length",
+            "--max-filesize",
+            "1.5k",
+            "-f",
+            "-N",
+        ]);
+        let op = &l.operations[0];
+        assert_eq!(op.headers, [&b"A: 1"[..], b"B;"]);
+        assert_eq!(op.user_agent, Some(&b"ua"[..]));
+        assert_eq!((op.referer, op.auto_referer), (Some(&b"r"[..]), true));
+        assert_eq!(op.http_version, Some(crate::options::HttpVersion::Http10));
+        assert!(op.http09 && op.raw && op.ignore_content_length && op.fail && op.no_buffer);
+        assert_eq!((op.dump_header, op.max_filesize), (Some(&b"h"[..]), 1536));
+        // `;auto` alone sets no referer; a later `-e` without it clears it.
+        let op = &line(&["x", "-e", ";auto"]).operations[0];
+        assert_eq!((op.referer, op.auto_referer), (None, true));
+        let op = &line(&["x", "-e", "a;auto", "-e", "b"]).operations[0];
+        assert_eq!((op.referer, op.auto_referer), (Some(&b"b"[..]), false));
+        // `--head` shows the headers and asks for no body; `--no-buffer`
+        // is `--buffer` negated.
+        let op = &line(&["x", "-I"]).operations[0];
+        assert!(op.no_body && op.show_headers);
+        assert_eq!(op.method, crate::options::Method::Head);
+        assert!(!line(&["x", "-N", "--buffer"]).operations[0].no_buffer);
+        assert_eq!(
+            run(&["x", "-H", "@file"]),
+            Ok((1, Some("reading headers from a file"), None))
+        );
+        assert_eq!(
+            run(&["x", "--tr-encoding"]),
+            Ok((1, Some("tr-encoding"), None))
+        );
     }
 
     #[test]

@@ -189,3 +189,53 @@ witness: curl-tool output::tests::shows_header_names_in_bold_on_a_terminal
             Some(at) => [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]]
 --- new
             Some(at) => [BOLD, BOLD_OFF, &line[..at], b":", &line[at + 1..]]
+
+=== a size's fraction keeps digits its unit cannot tell apart
+file: crates/curl-tool/src/options/number.rs
+witness: curl-tool options::number::tests::size_like_c
+--- old
+                while mlen <= plen {
+--- new
+                while mlen < plen {
+
+=== a dumped headers file is added to by an operation's first transfer
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::dumps_headers_to_a_file
+--- old
+                let keep = if fresh {
+                    Keep::Nothing
+--- new
+                let keep = if false {
+                    Keep::Nothing
+
+=== a referer's `;auto` is sent
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options_shape_the_request
+--- old
+            let given = match text.strip_suffix(b";auto") {
+--- new
+            let given = match None::<&[u8]> {
+
+=== `--fail` is not given to the transfer
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool fails_on_an_error_code
+--- old
+    http.fail_on_error = op.fail;
+--- new
+    http.fail_on_error = false;
+
+=== an upload may come with another method
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool takes_one_method
+--- old
+    if upload.is_some() && op.method.allows(tool::Method::Put, &msgs).is_err() {
+--- new
+    if false {
+
+=== a dumped headers file that cannot be opened is reported as no failure
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool dumps_the_headers
+--- old
+            Err(output::DumpFailed::Open) => return failed(&easy, ErrorKind::WriteError),
+--- new
+            Err(output::DumpFailed::Open) => {}

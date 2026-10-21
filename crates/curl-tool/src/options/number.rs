@@ -75,9 +75,96 @@ pub(crate) fn seconds_as_millis(s: &[u8]) -> Result<u64, ParamError> {
     Ok(secs * 1000 + millis)
 }
 
+/// A size in bytes with an optional fraction and unit, `k` to `p` (or
+/// `b`), as `GetSizeParameter` reads it for `--max-filesize`.
+pub(crate) fn size(s: &[u8]) -> Result<u64, ParamError> {
+    let digits = s.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 {
+        return Err(ParamError::BadNumeric);
+    }
+    let value = leading_number(s, LONG_MAX)
+        .ok_or(ParamError::NumberTooLarge)?
+        .0;
+    let mut unit = &s[digits..];
+    let (mut prec, mut plen) = (0, 0);
+    if let Some(fraction) = unit.strip_prefix(b".") {
+        let (p, after) = leading_number(fraction, LONG_MAX).ok_or(ParamError::BadNumeric)?;
+        plen = fraction.len() - after.len();
+        prec = p;
+        unit = after;
+    }
+    if unit.len() > 1 {
+        return Err(ParamError::BadUse);
+    }
+    let (mul, add) = match unit.first().map(|&u| u | 0x20) {
+        None | Some(b'b') if plen > 0 => return Err(ParamError::BadUse),
+        None | Some(b'b') => (1, 0),
+        Some(u) => {
+            let (mul, mlen): (u64, usize) = match u {
+                b'p' => (1 << 50, 16),
+                b't' => (1 << 40, 13),
+                b'g' => (1 << 30, 10),
+                b'm' => (1 << 20, 7),
+                b'k' => (1 << 10, 4),
+                _ => return Err(ParamError::BadUse),
+            };
+            let mut add = 0;
+            if prec > 0 {
+                // Digits past what the unit can tell apart are dropped.
+                while mlen <= plen {
+                    prec /= 10;
+                    plen -= 1;
+                }
+                let frac = 10u64.pow(u32::try_from(plen).expect("fewer digits than the unit's"));
+                add = if LONG_MAX / mul > prec {
+                    mul * prec / frac
+                } else {
+                    (mul / frac) * prec
+                };
+            }
+            (mul, add)
+        }
+    };
+    if value > (LONG_MAX - add) / mul {
+        return Err(ParamError::NumberTooLarge);
+    }
+    Ok(value * mul + add)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unit test 1623's cases, read from its source.
+    #[test]
+    fn size_like_c() {
+        let source = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/tunit/tool1623.c"
+        ))
+        .unwrap();
+        let mut checked = 0;
+        for line in source.lines().map(str::trim) {
+            let Some(case) = line
+                .strip_prefix("{ \"")
+                .and_then(|l| l.strip_suffix(" },"))
+            else {
+                continue;
+            };
+            let (input, rest) = case.split_once("\", ").unwrap();
+            let (amount, err) = rest.split_once(", ").unwrap();
+            let want = match err {
+                "PARAM_OK" => Ok(amount.parse().unwrap()),
+                "PARAM_BAD_USE" => Err(ParamError::BadUse),
+                "PARAM_BAD_NUMERIC" => Err(ParamError::BadNumeric),
+                "PARAM_NUMBER_TOO_LARGE" => Err(ParamError::NumberTooLarge),
+                other => panic!("{other}"),
+            };
+            assert_eq!(size(input.as_bytes()), want, "{input}");
+            checked += 1;
+        }
+        assert!(checked > 50, "the cases were read");
+    }
 
     /// The C tool's answers, from `build/c/src/curl --retry` and friends.
     #[test]

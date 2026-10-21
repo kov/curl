@@ -38,7 +38,7 @@ pub use notify::{Notification, NotifyKind};
 pub use sched::Counts;
 pub use sockets::{SocketWhat, UnknownSocket};
 pub use timers::TimerChange;
-pub use wait::{WaitMode, drive_to_completion};
+pub use wait::{WaitMode, drive_by_events, drive_to_completion};
 
 use notify::NotifyQueue;
 use sched::{RowSet, Tally};

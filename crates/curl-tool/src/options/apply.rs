@@ -392,6 +392,10 @@ pub(crate) struct Global<'a> {
     pub(crate) no_progress: bool,
     /// `--progress-bar`: the bar in place of the meter.
     pub(crate) progress_bar: bool,
+    /// `--test-event`: transfers are driven by the multi's events (the
+    /// debug build's).
+    #[cfg(feature = "debug-hooks")]
+    pub(crate) test_event: bool,
 }
 
 /// Where a transfer resumes.
@@ -869,7 +873,7 @@ pub(crate) fn apply<'a>(
         #[cfg(feature = "debug-hooks")]
         Opt::TestDuphandle => line.not_implemented(spec, "--"),
         #[cfg(feature = "debug-hooks")]
-        Opt::TestEvent => line.not_implemented(spec, "--"),
+        Opt::TestEvent => line.global.test_event = value.toggle(),
         Opt::AbstractUnixSocket
         | Opt::Alpn
         | Opt::AltSvc

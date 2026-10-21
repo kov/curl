@@ -18,9 +18,9 @@ witness: curl-core easy::tests::adding_a_handle_drops_its_own_multi
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::performs_a_file_url_on_its_own
 --- old
-                    break msg.result;
+                    return msg.result;
 --- new
-                    break Ok(());
+                    return Ok(());
 
 === the effective URL is copied again for each call
 file: crates/curl-sys-abi/src/getinfo.rs

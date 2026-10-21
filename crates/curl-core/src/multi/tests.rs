@@ -1152,6 +1152,131 @@ fn an_established_connection_forgets_the_next_attempt() {
     assert_eq!(m.timeout(), None, "the body still to come");
 }
 
+/// A transfer driven through `socket_action` alone, watching only what
+/// the multi tells its timer and socket callbacks, ends as one driven by
+/// waits on the multi's own sockets, at the same time
+/// (`curl_easy_perform_ev`). A socket announced for the wrong events, or
+/// not at all, leaves it waiting until its time runs out.
+#[test]
+fn events_drive_a_transfer_as_waits_do() {
+    use crate::conn::io::{Conversation, Peer};
+    let run = |by_events: bool| {
+        let clock = ManualClock::new().unwrap();
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 7));
+        let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5)))
+            .with_conversation(at, Conversation::new(reply, false));
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(net),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let mut e = easy("http://127.0.0.1:7/");
+        e.options_mut().limits.total = TimeLimit::from_millis(1000);
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let start = clock.now();
+        let result = if by_events {
+            drive_by_events(&mut m, id)
+        } else {
+            drive_to_completion(&mut m, id, &mut NoEvents)
+        };
+        let took = clock.now().since(start);
+        let easy = m.remove(id, &mut NoEvents).unwrap().easy;
+        let report = easy.report();
+        (
+            result,
+            report.response_code(),
+            report.sizes().download(),
+            took,
+        )
+    };
+    let waited = run(false);
+    assert_eq!(waited, (Ok(Ok(())), Some(200), 3, Duration::from_millis(5)));
+    assert_eq!(run(true), waited);
+}
+
+/// A network whose peers hang up once the multi waits for them, and that
+/// fails a run polling over and over without waiting.
+struct Patient {
+    net: FakeNet,
+    opened: Vec<crate::conn::io::SocketKey>,
+    hurried: u32,
+}
+
+impl Net for Patient {
+    fn poll(
+        &mut self,
+        sockets: &mut [crate::conn::io::SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        if timeout.is_zero() {
+            self.hurried += 1;
+            assert!(self.hurried < 10, "polled again and again without waiting");
+        } else if !sockets.is_empty() {
+            for &key in &self.opened {
+                self.net.hang_up(key);
+            }
+        }
+        // As long as a fake clock goes.
+        self.net
+            .poll(sockets, fds, timeout.min(Duration::from_secs(3600)))
+    }
+
+    fn connect(
+        &mut self,
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
+        let (socket, connect) = self.net.connect(addr)?;
+        self.opened.push(socket.key());
+        Ok((socket, connect))
+    }
+
+    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+        self.net.close(socket);
+    }
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.net.resolve(name, family)
+    }
+}
+
+/// With nothing due, a transfer driven by events waits for its socket for
+/// as long as it takes: after the timer ran out with no new one set, it
+/// does not poll without waiting until the socket is ready.
+#[test]
+fn events_wait_for_a_socket_with_nothing_due() {
+    use crate::conn::io::{Conversation, Peer};
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 7));
+    // A peer that never answers, until it hangs up.
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, Conversation::replies(&[], false));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(Patient {
+            net,
+            opened: Vec::new(),
+            hurried: 0,
+        }),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let id = m
+        .add(easy("http://127.0.0.1:7/"), (), &mut NoEvents)
+        .unwrap();
+    assert_eq!(drive_by_events(&mut m, id), Ok(Err(ErrorKind::GotNothing)));
+}
+
 /// A verbose transfer of `url`, and its trace.
 fn traced(url: &str) -> (Easy, TextLines) {
     let mut e = easy(url);
@@ -1525,7 +1650,7 @@ fn a_share_keeps_connections_across_handles() {
         let mut m: Multi = Multi::new(env()).unwrap();
         let mut e = easy("tcp://127.0.0.1:1/");
         e.options_mut().share = Some(share.clone());
-        e.perform_in(&mut m).unwrap();
+        e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
         connects.push(e.report().connects());
         drop(m);
     }
@@ -1534,7 +1659,7 @@ fn a_share_keeps_connections_across_handles() {
     let lent = share.lend().unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
     e.options_mut().share = Some(share.clone());
-    let refused = e.perform_in(&mut Multi::new(env()).unwrap());
+    let refused = e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits);
     assert_eq!(refused.unwrap_err().kind(), ErrorKind::RecursiveApiCall);
     share.give_back(lent);
     drop(e);

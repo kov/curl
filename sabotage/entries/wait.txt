@@ -58,8 +58,10 @@ witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_failed_poll_is_unrecoverable
 --- old
+            .poll(&mut sockets, &mut fds, timeout)
             .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
 --- new
+            .poll(&mut sockets, &mut fds, timeout)
             .map_err(|_| MultiErrorKind::InternalError)?;
 
 === the fake network sleeps even when something is ready
@@ -75,8 +77,10 @@ witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_messages
 --- old
+        m.perform(ev)?;
         if let Some(outcome) = m.take_outcome(id) {
 --- new
+        m.perform(ev)?;
         if let Some(outcome) = m.info_read().map(|msg| msg.result) {
 
 === driving a transfer not in the multi waits forever
@@ -86,7 +90,9 @@ witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_
         if m.slots.get(id).is_none() {
             return Err(MultiErrorKind::BadEasyHandle);
         }
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
 --- new
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
 
 === driving a transfer checks only at the start that it is in the multi
 file: crates/curl-core/src/multi/wait.rs
@@ -147,3 +153,27 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_on_a_transfer_s_socket
         let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
 --- new
         let watch_waker = mode == WaitMode::Poll || !extra.is_empty();
+
+=== an event-driven transfer watches its socket for writing when it reads
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::events_drive_a_transfer_as_waits_do
+--- old
+            SocketWhat::In => Events::IN,
+--- new
+            SocketWhat::In => Events::OUT,
+
+=== an event-driven transfer polls without waiting after its timer ran out
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::events_wait_for_a_socket_with_nothing_due
+--- old
+            table.wait = None;
+--- new
+            table.wait = Some(Duration::ZERO);
+
+=== an event-driven transfer keeps watching a socket after its REMOVE
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::events_drive_a_transfer_as_waits_do
+--- old
+                self.sockets.remove(at);
+--- new
+                let _ = at;

@@ -2126,6 +2126,51 @@ fn recv_and_send_need_a_connect_only_connection() {
     }
 }
 
+/// `curl_easy_perform_ev` runs the transfer by the events its multi
+/// announces, waiting for a server that answers late, and refuses a handle
+/// in a multi.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn performs_by_events() {
+    use crate::easy::curl_easy_perform_ev;
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0; 1024];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = peer.read(&mut buf).unwrap();
+            got.extend_from_slice(&buf[..n]);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nlater")
+            .unwrap();
+    });
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform_ev(c) }, CURLE_OK);
+    server.join().unwrap();
+    let mut size: ffi::curl_off_t = 0;
+    let m = curl_multi_init();
+    // SAFETY: live handles, and an info of this type.
+    unsafe {
+        assert_eq!(
+            crate::getinfo::curl_easy_getinfo(c, ffi::CURLINFO_SIZE_DOWNLOAD_T, &raw mut size),
+            CURLE_OK
+        );
+        assert_eq!(curl_multi_add_handle(m, c), ffi::CURLM_OK);
+        assert_eq!(curl_easy_perform_ev(c), ffi::CURLE_FAILED_INIT);
+        assert_eq!(curl_multi_cleanup(m), ffi::CURLM_OK);
+        curl_easy_cleanup(c);
+    }
+    assert_eq!(size, 5);
+}
+
 /// `curl_easy_header` and `curl_easy_nextheader` over a real response:
 /// lookups by name in any case with index and amount, iteration in
 /// arrival order, and the arguments C refuses (as lib1940 checks them).

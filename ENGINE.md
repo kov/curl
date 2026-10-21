@@ -1575,9 +1575,13 @@ adapters are its own, installed in place of the ones it was cloned with.
   (`home = Added { private, id }`); `drive_to_completion` (the same core function `Easy::perform`
   uses, plus frames); remove; move the `Easy` back. An internal multi error maps to OutOfMemory
   or BadFunctionArgument.
-- `perform_ev` (debug-hooks): the same, driven through `socket_action` with an event table owned
-  by that call, not C's `static struct events` (easy.c:705); any multi error →
-  CURLE_URL_MALFORMAT, as C.
+- `perform_ev` (debug-hooks): the same, driven through `socket_action` by `drive_by_events`,
+  with an event table owned by that call, not C's `static struct events` (easy.c:705); any
+  multi error → CURLE_URL_MALFORMAT, as C. The table holds what the timer and socket callbacks
+  were told, sockets by key; the multi polls them by resolving each key to the socket a
+  transfer waits on (`poll_watched`), never from its own list, so an announcement missed
+  stalls the transfer instead of passing unseen. `Easy::perform_ev` and the tool's
+  `--test-event` use the same driver.
 - `curl_multi_add_handle` of an easy with a private multi drops that multi; already added →
   ADDED_ALREADY; dead multi → ABORTED_BY_CALLBACK until no transfer remains (530, 758); clears
   ERRORBUFFER and os_errno.
@@ -1658,7 +1662,9 @@ Each is either unobservable through the ABI or a fixed bug:
 - `curl_easy_reset` cannot desynchronise socket bookkeeping: the announced pollset lives in the
   multi's slot, not in the easy's meta hash.
 - `curl_easy_nextheader` with a stale `prev` returns NULL instead of reading freed memory.
-- `curl_easy_perform_ev` keeps its event state per call, not in a process-wide static.
+- `curl_easy_perform_ev` keeps its event state per call, not in a process-wide static. After
+  the timer runs out it holds no timer until the multi sets one; C's `wait_or_timeout` sets 0
+  there, and polls without waiting until a socket is ready when the multi never set one.
 - A transfer without a URL starts a fresh report. C fails it in `Curl_pretransfer` before
   `Curl_pgrsStart`, so it completes on the previous transfer's start time, or on a zero one.
 - file:// fails with ReadError where reading the file, its status or its directory fails; C

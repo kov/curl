@@ -15,7 +15,7 @@ use core::ptr::{self, NonNull};
 use curl_alloc::{OutOfMemory, try_box};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
-use curl_core::multi::{PauseRequest, TransferId, drive_to_completion};
+use curl_core::multi::{PauseRequest, TransferId, drive_by_events, drive_to_completion};
 use curl_core::options::Options;
 use curl_core::report::TransferReport;
 
@@ -433,12 +433,47 @@ pub unsafe extern "C" fn curl_easy_perform(curl: *mut CURL) -> CURLcode {
         // "easy handle already used in multi handle"
         return CURLE_FAILED_INIT;
     }
-    perform(easy)
+    perform(easy, Drive::Waits)
 }
 const _: ffi::proto::curl_easy_perform = curl_easy_perform;
 
+/// `curl_easy_perform`, driven through `socket_action` by what the multi
+/// tells its timer and socket callbacks: the debug build's test of the
+/// event API (`curl_easy_perform_ev`).
+///
+/// # Safety
+///
+/// `curl` is NULL or a live handle.
+#[cfg(feature = "debug-hooks")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_easy_perform_ev(curl: *mut CURL) -> CURLcode {
+    // SAFETY: as the caller guarantees.
+    let Some(easy) = (unsafe { handle(curl) }) else {
+        return CURLE_BAD_FUNCTION_ARGUMENT;
+    };
+    let Ok(_entry) = easy.enter(EasyCall::Perform) else {
+        return CURLE_RECURSIVE_API_CALL;
+    };
+    if easy.added().is_some() {
+        return CURLE_FAILED_INIT;
+    }
+    perform(easy, Drive::Events)
+}
+#[cfg(feature = "debug-hooks")]
+const _: unsafe extern "C" fn(*mut CURL) -> CURLcode = curl_easy_perform_ev;
+
+/// How `perform` drives the handle's multi.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Drive {
+    /// Waiting on its sockets (`easy_transfer`).
+    Waits,
+    /// By its events alone (`easy_events`).
+    #[cfg_attr(not(feature = "debug-hooks"), expect(dead_code))]
+    Events,
+}
+
 /// Run the handle's transfer to its end in its own multi (`easy_perform`).
-fn perform(easy: &ShimEasy) -> CURLcode {
+fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
     let multi = match easy.private.take() {
         Some(multi) => multi,
         None => match ShimMulti::private() {
@@ -471,7 +506,12 @@ fn perform(easy: &ShimEasy) -> CURLcode {
         assert!(matches!(entry.reach, Reach::Direct));
         // SAFETY: nothing else runs on the private multi.
         let core = unsafe { m.core_mut() };
-        drive_to_completion(core, id, &mut ShimEvents::new(m))
+        match drive {
+            Drive::Waits => drive_to_completion(core, id, &mut ShimEvents::new(m)),
+            // A private multi has no callbacks of the application's; the
+            // event table stands in for them.
+            Drive::Events => drive_by_events(core, id),
+        }
     };
     let result = match outcome {
         Ok(result) => result,

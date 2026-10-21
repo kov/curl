@@ -535,7 +535,15 @@ fn transfer(
                     }
                 }
             }
-            let result = easy.perform().map_err(|e| e.kind());
+            #[cfg(feature = "debug-hooks")]
+            let result = if run.global.test_event {
+                easy.perform_ev()
+            } else {
+                easy.perform()
+            };
+            #[cfg(not(feature = "debug-hooks"))]
+            let result = easy.perform();
+            let result = result.map_err(|e| e.kind());
             let result = settle(op, msgs, &easy, &out, result);
             let attempt = Attempt {
                 result,

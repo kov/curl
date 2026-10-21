@@ -8,7 +8,7 @@ use curl_alloc::{OutOfMemory, try_box};
 use crate::conn::io::SystemNet;
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::id::ArenaPolicy;
-use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode};
+use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::Options;
 use crate::report::TransferReport;
 use crate::share::Lent;
@@ -105,6 +105,18 @@ impl Easy {
     /// handle's own multi, made the first time with the system's clock
     /// and network.
     pub fn perform(&mut self) -> Result<(), Error> {
+        self.perform_by(Drive::Waits)
+    }
+
+    /// Run the transfer to its end as `perform` does, driven through
+    /// `socket_action` by what the multi tells its timer and socket
+    /// callbacks (the debug build's `curl_easy_perform_ev`).
+    #[cfg(feature = "debug-hooks")]
+    pub fn perform_ev(&mut self) -> Result<(), Error> {
+        self.perform_by(Drive::Events)
+    }
+
+    fn perform_by(&mut self, drive: Drive) -> Result<(), Error> {
         let mut multi = match self.private.take() {
             Some(Private(multi)) => multi,
             None => {
@@ -117,14 +129,15 @@ impl Easy {
                 try_box(Multi::new(env).map_err(oom)?).map_err(oom)?
             }
         };
-        let result = self.perform_in(&mut multi);
+        let result = self.perform_in(&mut multi, drive);
         self.private = Some(Private(multi));
         result
     }
 
-    /// Run the transfer to its end in `multi`, with its share's caches in
-    /// place of the multi's own for the length of it.
-    pub(crate) fn perform_in(&mut self, multi: &mut Multi) -> Result<(), Error> {
+    /// Run the transfer to its end in `multi`, driven as `drive` says,
+    /// with its share's caches in place of the multi's own for the length
+    /// of it.
+    pub(crate) fn perform_in(&mut self, multi: &mut Multi, drive: Drive) -> Result<(), Error> {
         // The easy handle's limit is its multi's (`curl_easy_perform`).
         multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
         let share = self.options.share.clone();
@@ -140,7 +153,7 @@ impl Easy {
         if let Some(caches) = &mut lent {
             multi.swap_caches(caches);
         }
-        let (result, easy) = run_to_end(multi, std::mem::take(self));
+        let (result, easy) = run_to_end(multi, std::mem::take(self), drive);
         *self = easy;
         if let (Some(share), Some(mut caches)) = (share, lent) {
             multi.swap_caches(&mut caches);
@@ -154,29 +167,49 @@ fn oom(_: OutOfMemory) -> ErrorKind {
     ErrorKind::OutOfMemory
 }
 
-/// Add `easy` to `multi`, drive it to its end, and take it out again
-/// (`easy_transfer`): its result, and the handle.
-fn run_to_end(multi: &mut Multi, easy: Easy) -> (Result<(), ErrorKind>, Easy) {
+/// How a perform drives its multi.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Drive {
+    /// Waiting on the multi's sockets, then running it (`easy_transfer`).
+    Waits,
+    /// Through `socket_action`, by what it tells its callbacks
+    /// (`easy_events`).
+    #[cfg_attr(not(feature = "debug-hooks"), expect(dead_code))]
+    Events,
+}
+
+/// Add `easy` to `multi`, drive it to its end as `drive` says, and take it
+/// out again: its result, and the handle.
+fn run_to_end(multi: &mut Multi, easy: Easy, drive: Drive) -> (Result<(), ErrorKind>, Easy) {
     let id = match multi.add(easy, (), &mut NoEvents) {
         Ok(id) => id,
         Err(AddError { kind, easy }) => return (Err(multi_error(kind)), easy),
     };
-    let result = loop {
+    let result = match drive {
+        Drive::Waits => wait_to_end(multi),
+        Drive::Events => drive_by_events(multi, id).unwrap_or_else(|e| Err(multi_error(e))),
+    };
+    let removed = multi.remove(id, &mut NoEvents).expect("added above");
+    (result, removed.easy)
+}
+
+/// Wait on `multi`'s sockets and run it until its transfer ends
+/// (`easy_transfer`).
+fn wait_to_end(multi: &mut Multi) -> Result<(), ErrorKind> {
+    loop {
         if let Err(e) = multi.wait(&mut [], POLL, WaitMode::Poll) {
-            break Err(multi_error(e));
+            return Err(multi_error(e));
         }
         match multi.perform(&mut NoEvents) {
-            Err(e) => break Err(multi_error(e)),
+            Err(e) => return Err(multi_error(e)),
             Ok(0) => {
                 if let Some(msg) = multi.info_read() {
-                    break msg.result;
+                    return msg.result;
                 }
             }
             Ok(_) => {}
         }
-    };
-    let removed = multi.remove(id, &mut NoEvents).expect("added above");
-    (result, removed.easy)
+    }
 }
 
 /// A multi's failure as the transfer's: out of memory, or something that

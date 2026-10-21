@@ -1498,9 +1498,11 @@ struct Calls {
     multi: usize,
     timers: Vec<c_long>,
     timer_answer: c_int,
-    /// Set once added: a callback during the add cannot reach the
-    /// transfer yet (MILESTONES step 10).
+    /// Set once added and running.
     performing: bool,
+    /// What a setopt on the transfer being added answered, in the add's
+    /// timer callback.
+    adding_setopt: Option<CURLcode>,
     timer_getinfo: Option<CURLcode>,
     timer_pause: Option<CURLcode>,
     easy: usize,
@@ -1514,6 +1516,10 @@ unsafe extern "C" fn timer(m: *mut CURLM, ms: c_long, data: *mut c_void) -> c_in
     let e = unsafe { &mut *data.cast::<Calls>() };
     e.multi = m as usize;
     e.timers.push(ms);
+    if e.easy != 0 && !e.performing && e.adding_setopt.is_none() {
+        let c = e.easy as *mut CURL;
+        e.adding_setopt = Some(long(c, ffi::CURLOPT_TIMEOUT_MS, 100_000));
+    }
     if e.easy != 0 && e.performing {
         let c = e.easy as *mut CURL;
         let mut n: curl_off_t = 0;
@@ -1548,9 +1554,10 @@ type TimerFn = unsafe extern "C" fn(*mut CURLM, c_long, *mut c_void) -> c_int;
 type NotifyFn = unsafe extern "C" fn(*mut CURLM, c_uint, *mut CURL, *mut c_void);
 
 /// The timer callback hears of a new transfer, with the multi, and may
-/// read it but not pause it; the notify callback hears the transfer is
-/// done, then that a message waits, and may read and pause it. A timer
-/// that answers -1 aborts the add.
+/// set its options during the add, and read it but not pause it later;
+/// the notify callback hears the transfer is done, then that a message
+/// waits, and may read and pause it. A timer that answers -1 aborts the
+/// add, and the handle is on its own again.
 #[test]
 fn the_multi_s_callbacks_run_with_their_frames() {
     let (path, url) = file("events", b"hello");
@@ -1623,6 +1630,9 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
         assert_eq!(e.multi, m as usize);
         assert_eq!(e.timers.first(), Some(&0), "run at once");
+        assert_eq!(e.adding_setopt, Some(CURLE_OK));
+        let total = options(c, |o| o.limits.total);
+        assert_eq!(total, curl_core::time::TimeLimit::from_millis(100_000));
         e.performing = true;
         let mut offt: curl_off_t = -2;
         assert_eq!(
@@ -1696,6 +1706,7 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         // A timer that answers -1 aborts the change it was told of.
         e.timer_answer = -1;
         assert_eq!(curl_multi_add_handle(m, c), ffi::CURLM_ABORTED_BY_CALLBACK);
+        assert_eq!(long(c, ffi::CURLOPT_TIMEOUT_MS, 5), CURLE_OK);
         curl_easy_cleanup(c);
         assert_eq!(curl_multi_cleanup(m), CURLM_OK);
     }

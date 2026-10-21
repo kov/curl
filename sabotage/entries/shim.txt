@@ -72,3 +72,10 @@ witness: curl-sys-abi url::tests::copies_and_reads_back
         append_query: has(flags, ffi::CURLU_APPENDQUERY),
 --- new
         append_query: false,
+
+=== a handle being added is not reachable from the add's timer callback
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-sys-abi handle_tests::the_multi_s_callbacks_run_with_their_frames
+--- old
+        ev.added(id, &self.slots.get(id).expect("just added").owner);
+--- new

@@ -207,6 +207,15 @@ impl<'a> ShimEvents<'a> {
 }
 
 impl MultiEvents<CHost> for ShimEvents<'_> {
+    /// The handle is in the multi from here, so the add's timer callback
+    /// reaches it (a setopt on it, for one); an add the timer refuses
+    /// sends it home again.
+    fn added(&mut self, id: TransferId, owner: &NonNull<ShimEasy>) {
+        // SAFETY: a transfer's owner is its live handle, which the add
+        // borrows.
+        unsafe { owner.as_ref() }.attach(NonNull::from(self.multi), id);
+    }
+
     fn timer(&mut self, cx: &mut EventCx<'_, CHost>, change: TimerChange) -> Result<(), Abort> {
         let cb = self.multi.cb.get();
         let Some(f) = cb.timer else { return Ok(()) };
@@ -354,7 +363,11 @@ pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<()
     };
     match added {
         Ok(id) => {
-            easy.attach(NonNull::from(multi), id);
+            assert_eq!(
+                easy.added(),
+                Some((NonNull::from(multi), id)),
+                "attached as added"
+            );
             Ok(())
         }
         Err(e) => {

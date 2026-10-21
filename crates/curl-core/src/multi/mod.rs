@@ -91,6 +91,13 @@ pub trait MultiEvents<H: Host> {
         let _ = (cx, n);
     }
 
+    /// Transfer `id`, owned by `owner`, was just added, before the timer
+    /// hears of it: from here the host may name it, as a timer callback
+    /// inside the add may.
+    fn added(&mut self, id: TransferId, owner: &H::Transfer) {
+        let _ = (id, owner);
+    }
+
     /// Whether `timer` is wanted. Without it the multi keeps no record of
     /// what it announced, as C without a timer callback.
     fn wants_timer(&self) -> bool {
@@ -360,6 +367,7 @@ impl<H: Host> Multi<H> {
         self.counts.added();
         self.caches.pool.xfer_init();
         self.dirty.insert(id.index());
+        ev.added(id, &self.slots.get(id).expect("just added").owner);
         // Inside the add, as C, so the application hears of the 0 ms run.
         if let Err(kind) = self.update_timer(ev) {
             let slot = self.slots.remove(id).expect("just added");

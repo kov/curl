@@ -1584,7 +1584,9 @@ adapters are its own, installed in place of the ones it was cloned with.
   stalls the transfer instead of passing unseen. `Easy::perform_ev` and the tool's
   `--test-event` use the same driver.
 - `curl_multi_add_handle` of an easy with a private multi drops that multi; already added →
-  ADDED_ALREADY; dead multi → ABORTED_BY_CALLBACK until no transfer remains (530, 758); clears
+  ADDED_ALREADY; the core names the new transfer to the host (`MultiEvents::added`) before the
+  timer callback hears of it, so the shim attaches the handle first and a setopt from that
+  callback reaches it, as in C; dead multi → ABORTED_BY_CALLBACK until no transfer remains (530, 758); clears
   ERRORBUFFER and os_errno.
 - `curl_easy_cleanup` on an added handle removes it first (753, 1939). `curl_multi_cleanup`
   removes every app transfer, returning each `Easy` to its `ShimEasy`, drops internal ones, then

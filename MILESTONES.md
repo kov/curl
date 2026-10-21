@@ -391,12 +391,13 @@ cargo-mutants run on the milestone's diff.
     1716, 1909, 3035, 3036); URLs read from a file with `--url @file` (2012). Waiting: `-R`,
     for the date parser (step 30) to read `Last-Modified` (762, 1443); `--retry-connrefused`,
     for the connect's errno in the report.
-28. **multi: event mode.** **In progress.** Done: `drive_by_events`, behind
-    `curl_easy_perform_ev`, `Easy::perform_ev` and the tool's `--test-event`; the regression
-    list passes under `runtests.pl -e` on both legs. To do: `curl_multi_assign` from a
-    transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
-    handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`
-    (step 10).
+28. **multi: event mode.** **Done**, but for what waits on later work. `drive_by_events`,
+    behind `curl_easy_perform_ev`, `Easy::perform_ev` and the tool's `--test-event`; the
+    regression list passes under `runtests.pl -e` on both legs. The core names a new transfer
+    to the host (`MultiEvents::added`) before the add's timer callback, so a setopt from it
+    reaches the handle. Waiting: `curl_multi_assign` from a transfer's own handler, for a
+    `TransferCx` that reaches the socket table; the timer and socket callbacks inside a pause
+    from a transfer's own handler, which come at the end of the pass instead (ENGINE.md 7.8).
 29. **http: authenticate.** **To do.** Basic from the options, then netrc, Bearer and Digest,
     and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15) with it.
     T1 tests 1876 and 1877.

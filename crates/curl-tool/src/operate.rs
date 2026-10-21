@@ -75,6 +75,9 @@ fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
     let msgs = run.msgs;
     // The result of the last transfer that ran.
     let mut last = Ok(());
+    // Each URL's number on the command line, across operations
+    // (`outnum`).
+    let mut urlnum = 0;
     for op in &line.operations {
         if op.nodes.first().and_then(|n| n.url).is_none() {
             msgs.help(&[b"(2) no URL specified"]);
@@ -85,7 +88,12 @@ fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
                 msgs.warn(&[b"Got more output options than URLs"]);
                 break;
             };
-            match transfer(op, run, node, url, i == 0) {
+            let this = Given {
+                text: url,
+                num: urlnum,
+            };
+            urlnum += 1;
+            match transfer(op, run, node, this, i == 0) {
                 Step::Ran(result) => {
                     last = result;
                     if result.is_err_and(fatal) {
@@ -112,6 +120,13 @@ fn fatal(e: ErrorKind) -> bool {
     )
 }
 
+/// A URL as the command line gives it, and its number there.
+#[derive(Clone, Copy)]
+struct Given<'a> {
+    text: &'a [u8],
+    num: u64,
+}
+
 /// What every transfer of the run shares.
 struct Shared<'a, 'l> {
     global: &'a Global<'l>,
@@ -127,10 +142,11 @@ fn transfer(
     op: &Operation<'_>,
     run: &Shared<'_, '_>,
     node: &Node<'_>,
-    url: &[u8],
+    given: Given<'_>,
     first: bool,
 ) -> Step {
     let msgs = run.msgs;
+    let url = given.text;
     let upload = match node.upload {
         Upload::File(file) => Some(file),
         Upload::Unset | Upload::Nothing => None,
@@ -153,7 +169,7 @@ fn transfer(
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
     let failed = |easy: &Easy, e| {
-        let result = finish(op, run, url, easy, &out, Err(e), false);
+        let result = finish(op, run, given, easy, &out, Err(e), false);
         Step::Failed(result.expect_err("a failure stays one"))
     };
     // `setup_headerfile`.
@@ -226,15 +242,22 @@ fn transfer(
                 Err(Unopened::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
                 Err(Unopened::Io) => {
                     msgs.help(&[b"cannot open '", file, b"'"]);
-                    let result =
-                        finish(op, run, url, &easy, &out, Err(ErrorKind::ReadError), false);
+                    let result = finish(
+                        op,
+                        run,
+                        given,
+                        &easy,
+                        &out,
+                        Err(ErrorKind::ReadError),
+                        false,
+                    );
                     return Step::Unopened(result.expect_err("a failure stays one"));
                 }
             }
         }
         easy.perform().map_err(|e| e.kind())
     };
-    Step::Ran(finish(op, run, url, &easy, &out, result, skip))
+    Step::Ran(finish(op, run, given, &easy, &out, result, skip))
 }
 
 /// What one transfer is set up with, beyond its operation's options.
@@ -331,7 +354,7 @@ fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 fn finish(
     op: &Operation<'_>,
     run: &Shared<'_, '_>,
-    url: &[u8],
+    url: Given<'_>,
     easy: &Easy,
     out: &output::Output,
     mut result: Result<(), ErrorKind>,
@@ -370,17 +393,16 @@ fn finish(
             set_file_time(name, t, msgs);
         }
     }
-    if let Some(format) = op.write_out {
+    if let Some(format) = &op.write_out {
         let stream = out.stream();
         let facts = Facts {
-            exit_code: result.err().map_or(0, exit_code),
-            url,
+            result,
+            url: url.text,
+            urlnum: url.num,
             filename: stream.file_name(),
-            size_download: easy.report().sizes().download(),
-            size_header: easy.report().sizes().header(),
-            size_upload: easy.report().sizes().upload(),
+            report: easy.report(),
         };
-        write_out::write(format, &facts, run.stdout);
+        write_out::write(format.bytes(), &facts, run.stdout);
     }
     result
 }

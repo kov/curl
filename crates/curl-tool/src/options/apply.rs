@@ -115,7 +115,7 @@ pub(crate) struct Operation<'a> {
     /// `--skip-existing`.
     pub(crate) skip_existing: bool,
     /// `--write-out`.
-    pub(crate) write_out: Option<&'a [u8]>,
+    pub(crate) write_out: Option<write_out::Format<'a>>,
     /// `--header`, in the order given.
     pub(crate) headers: Vec<&'a [u8]>,
     /// `--resolve`, in the order given.
@@ -626,13 +626,34 @@ pub(crate) fn apply<'a>(
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::WriteOut => {
-            let format = value.text();
-            if format.first() == Some(&b'@') {
-                line.feature_not_implemented("reading --write-out from a file");
-            } else if let Some(missing) = write_out::unimplemented(format) {
+            let format = match value.text().strip_prefix(b"@") {
+                // A file's text, or standard input's, with no line ends
+                // (`parse_writeout`, `file2string`).
+                Some(name) => {
+                    let shown = if name == b"-" { &b"<stdin>"[..] } else { name };
+                    match write_out::Format::read(name) {
+                        Ok(format) if format.bytes().is_empty() => {
+                            msgs.warn(&[b"Failed to read ", shown]);
+                            None
+                        }
+                        Ok(format) => Some(format),
+                        Err(write_out::ReadFailed::OutOfMemory) => return Err(ParamError::NoMem),
+                        Err(write_out::ReadFailed::Open) => {
+                            msgs.error(&[b"Failed to open ", shown]);
+                            return Err(ParamError::ReadError);
+                        }
+                        Err(write_out::ReadFailed::Read) => return Err(ParamError::ReadError),
+                    }
+                }
+                None => Some(write_out::Format::Given(value.text())),
+            };
+            if let Some(missing) = format
+                .as_ref()
+                .and_then(|f| write_out::unimplemented(f.bytes()))
+            {
                 line.feature_not_implemented(missing);
             }
-            line.current().write_out = Some(format);
+            line.current().write_out = format;
         }
         Opt::ProgressMeter => line.global.no_progress = !value.toggle(),
         Opt::Verbose => verbose(line, msgs, value.toggle()),

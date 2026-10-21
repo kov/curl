@@ -69,8 +69,15 @@ witness: curl-tool includes_headers
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_an_upload_it_cannot_open
 --- old
-                    let result =
-                        finish(op, run, url, &easy, &out, Err(ErrorKind::ReadError), false);
+                    let result = finish(
+                        op,
+                        run,
+                        given,
+                        &easy,
+                        &out,
+                        Err(ErrorKind::ReadError),
+                        false,
+                    );
 --- new
                     let result: Result<(), ErrorKind> = Err(ErrorKind::ReadError);
 
@@ -96,9 +103,9 @@ witness: curl-tool reports_a_failure
 file: crates/curl-tool/src/write_out.rs
 witness: curl-tool reports_a_failure
 --- old
-                Var::OnError if facts.exit_code == 0 => return false,
+                Var::OnError if facts.result.is_ok() => return false,
 --- new
-                Var::OnError if facts.exit_code != 0 => return false,
+                Var::OnError if facts.result.is_err() => return false,
 
 === `--output -` refuses binary output to a terminal too
 file: crates/curl-tool/src/output.rs
@@ -263,3 +270,29 @@ witness: curl-tool options::parse::tests::reads_urls_and_operations
             .filter(|op| !op.globoff)
 --- new
             .filter(|_| true)
+
+=== a status code is written without its leading zeroes
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_values_as_c
+--- old
+        Var::HttpCode => write!(out, "{:03}", r.response_code().unwrap_or(0)),
+--- new
+        Var::HttpCode => write!(out, "{}", r.response_code().unwrap_or(0)),
+
+=== a URL's part is read without the scheme's port
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_values_as_c
+--- old
+        default_port: true,
+        ..GetOptions::NONE
+--- new
+        default_port: false,
+        ..GetOptions::NONE
+
+=== a format's file keeps its line ends
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::reads_a_format_file_without_line_ends
+--- old
+            for line in buf[..n].split(|&b| b == b'\r' || b == b'\n') {
+--- new
+            for line in buf[..n].split(|&b| b == 0) {

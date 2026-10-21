@@ -418,8 +418,8 @@ mod tests {
             Ok((1, Some("uploading standard input"), None))
         );
         assert_eq!(
-            run(&["-w", "%{http_code}", "x"]),
-            Ok((1, Some("http_code"), None))
+            run(&["-w", "%{content_type}", "x"]),
+            Ok((1, Some("content_type"), None))
         );
         assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None, None)));
     }

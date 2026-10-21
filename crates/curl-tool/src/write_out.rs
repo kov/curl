@@ -6,9 +6,14 @@
 //! when the option is read, never written without it.
 
 use std::io::Write;
+use std::time::Duration;
 
 use curl_alloc::TryVec;
+use curl_core::error::ErrorKind;
+use curl_core::report::{ResponseVersion, TransferReport};
+use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
+use crate::options::exit_code;
 use crate::stdout::Stdout;
 
 /// C's limit on a variable's name, its terminating zero included: a longer
@@ -30,13 +35,48 @@ enum Var {
     Stdout,
     Stderr,
     ExitCode,
+    /// Why the transfer failed; nothing if it did not.
+    ErrorMsg,
     /// The URL as the transfer was given it.
     Url,
+    /// A part of the URL as given, or of the URL the transfer used
+    /// (`effective`).
+    UrlPart {
+        part: Part,
+        effective: bool,
+    },
+    /// The URL the transfer used.
+    UrlEffective,
+    /// The number of the URL on the command line, from 0.
+    UrlNum,
     /// The output file, if any.
     FilenameEffective,
+    /// The last response's status code, in three digits.
+    HttpCode,
+    HttpVersion,
+    /// The scheme of the connection used, lowercase.
+    Scheme,
+    SizeDelivered,
     SizeDownload,
     SizeHeader,
     SizeUpload,
+    SpeedDownload,
+    SpeedUpload,
+    Time(Time),
+}
+
+/// A moment of the transfer, as seconds since its start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Time {
+    Appconnect,
+    Connect,
+    Namelookup,
+    Posttransfer,
+    Pretransfer,
+    Queue,
+    Redirect,
+    Starttransfer,
+    Total,
 }
 
 const fn known(name: &'static str) -> Variable {
@@ -50,19 +90,23 @@ const fn written(name: &'static str, var: Var) -> Variable {
     }
 }
 
+const fn part(part: Part, effective: bool) -> Var {
+    Var::UrlPart { part, effective }
+}
+
 /// C's `variables`, in its order.
 const VARIABLES: &[Variable] = &[
     known("certs"),
     known("conn_id"),
     known("content_type"),
-    known("errormsg"),
+    written("errormsg", Var::ErrorMsg),
     written("exitcode", Var::ExitCode),
     written("filename_effective", Var::FilenameEffective),
     known("ftp_entry_path"),
     known("header_json"),
-    known("http_code"),
+    written("http_code", Var::HttpCode),
     known("http_connect"),
-    known("http_version"),
+    written("http_version", Var::HttpVersion),
     known("json"),
     known("local_ip"),
     known("local_port"),
@@ -79,51 +123,51 @@ const VARIABLES: &[Variable] = &[
     known("referer"),
     known("remote_ip"),
     known("remote_port"),
-    known("response_code"),
-    known("scheme"),
-    known("size_delivered"),
+    written("response_code", Var::HttpCode),
+    written("scheme", Var::Scheme),
+    written("size_delivered", Var::SizeDelivered),
     written("size_download", Var::SizeDownload),
     written("size_header", Var::SizeHeader),
     known("size_request"),
     written("size_upload", Var::SizeUpload),
-    known("speed_download"),
-    known("speed_upload"),
+    written("speed_download", Var::SpeedDownload),
+    written("speed_upload", Var::SpeedUpload),
     known("ssl_verify_result"),
     written("stderr", Var::Stderr),
     written("stdout", Var::Stdout),
-    known("time_appconnect"),
-    known("time_connect"),
-    known("time_namelookup"),
-    known("time_posttransfer"),
-    known("time_pretransfer"),
-    known("time_queue"),
-    known("time_redirect"),
-    known("time_starttransfer"),
-    known("time_total"),
+    written("time_appconnect", Var::Time(Time::Appconnect)),
+    written("time_connect", Var::Time(Time::Connect)),
+    written("time_namelookup", Var::Time(Time::Namelookup)),
+    written("time_posttransfer", Var::Time(Time::Posttransfer)),
+    written("time_pretransfer", Var::Time(Time::Pretransfer)),
+    written("time_queue", Var::Time(Time::Queue)),
+    written("time_redirect", Var::Time(Time::Redirect)),
+    written("time_starttransfer", Var::Time(Time::Starttransfer)),
+    written("time_total", Var::Time(Time::Total)),
     known("tls_earlydata"),
     written("url", Var::Url),
-    known("url.fragment"),
-    known("url.host"),
-    known("url.options"),
-    known("url.password"),
-    known("url.path"),
-    known("url.port"),
-    known("url.query"),
-    known("url.scheme"),
-    known("url.user"),
-    known("url.zoneid"),
-    known("url_effective"),
-    known("urle.fragment"),
-    known("urle.host"),
-    known("urle.options"),
-    known("urle.password"),
-    known("urle.path"),
-    known("urle.port"),
-    known("urle.query"),
-    known("urle.scheme"),
-    known("urle.user"),
-    known("urle.zoneid"),
-    known("urlnum"),
+    written("url.fragment", part(Part::Fragment, false)),
+    written("url.host", part(Part::Host, false)),
+    written("url.options", part(Part::Options, false)),
+    written("url.password", part(Part::Password, false)),
+    written("url.path", part(Part::Path, false)),
+    written("url.port", part(Part::Port, false)),
+    written("url.query", part(Part::Query, false)),
+    written("url.scheme", part(Part::Scheme, false)),
+    written("url.user", part(Part::User, false)),
+    written("url.zoneid", part(Part::ZoneId, false)),
+    written("url_effective", Var::UrlEffective),
+    written("urle.fragment", part(Part::Fragment, true)),
+    written("urle.host", part(Part::Host, true)),
+    written("urle.options", part(Part::Options, true)),
+    written("urle.password", part(Part::Password, true)),
+    written("urle.path", part(Part::Path, true)),
+    written("urle.port", part(Part::Port, true)),
+    written("urle.query", part(Part::Query, true)),
+    written("urle.scheme", part(Part::Scheme, true)),
+    written("urle.user", part(Part::User, true)),
+    written("urle.zoneid", part(Part::ZoneId, true)),
+    written("urlnum", Var::UrlNum),
     known("xfer_id"),
 ];
 
@@ -131,15 +175,67 @@ fn lookup(name: &[u8]) -> Option<&'static Variable> {
     VARIABLES.iter().find(|v| v.name.as_bytes() == name)
 }
 
-/// What a transfer reports, for the variables.
+/// What the variables are read from: the transfer's report, and what only
+/// the tool knows of it.
 pub(crate) struct Facts<'a> {
-    /// The transfer's CURLcode: 0 for success.
-    pub(crate) exit_code: u8,
+    pub(crate) result: Result<(), ErrorKind>,
+    /// The URL as given.
     pub(crate) url: &'a [u8],
+    /// Its number on the command line, from 0.
+    pub(crate) urlnum: u64,
     pub(crate) filename: Option<&'a [u8]>,
-    pub(crate) size_download: u64,
-    pub(crate) size_header: u64,
-    pub(crate) size_upload: u64,
+    pub(crate) report: &'a TransferReport,
+}
+
+/// A format, as given or as read from a file.
+#[derive(Debug)]
+pub(crate) enum Format<'a> {
+    Given(&'a [u8]),
+    Read(Vec<u8>),
+}
+
+/// Why a format's file was not read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadFailed {
+    Open,
+    Read,
+    OutOfMemory,
+}
+
+impl Format<'_> {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        match self {
+            Format::Given(text) => text,
+            Format::Read(text) => text,
+        }
+    }
+
+    /// The text of file `name`, or of standard input for `-`, its
+    /// carriage returns and line feeds left out (`file2string`).
+    pub(crate) fn read(name: &[u8]) -> Result<Format<'static>, ReadFailed> {
+        use std::io::Read as _;
+        let mut file: Box<dyn std::io::Read> = if name == b"-" {
+            curl_alloc::try_box(std::io::stdin()).map_err(|_| ReadFailed::OutOfMemory)?
+        } else {
+            let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name);
+            let file = std::fs::File::open(path).map_err(|_| ReadFailed::Open)?;
+            curl_alloc::try_box(file).map_err(|_| ReadFailed::OutOfMemory)?
+        };
+        let mut text = Vec::new();
+        let mut buf = [0; 4096];
+        loop {
+            let n = match file.read(&mut buf) {
+                Ok(0) => return Ok(Format::Read(text)),
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return Err(ReadFailed::Read),
+            };
+            for line in buf[..n].split(|&b| b == b'\r' || b == b'\n') {
+                text.try_extend_from_slice(line)
+                    .map_err(|_| ReadFailed::OutOfMemory)?;
+            }
+        }
+    }
 }
 
 /// One piece of a format.
@@ -241,29 +337,12 @@ pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
                 let _ = out.write_all(&[b]);
             }
             Piece::Variable(v) => match v.var.expect("refused when the option was read") {
-                Var::OnError if facts.exit_code == 0 => return false,
+                Var::OnError if facts.result.is_ok() => return false,
                 Var::OnError => {}
                 Var::Stdout => to_stderr = false,
                 Var::Stderr => to_stderr = true,
-                Var::ExitCode => {
-                    let _ = write!(out, "{}", facts.exit_code);
-                }
-                Var::Url => {
-                    let _ = out.write_all(facts.url);
-                }
-                Var::FilenameEffective => {
-                    if let Some(name) = facts.filename {
-                        let _ = out.write_all(name);
-                    }
-                }
-                Var::SizeDownload => {
-                    let _ = write!(out, "{}", facts.size_download);
-                }
-                Var::SizeHeader => {
-                    let _ = write!(out, "{}", facts.size_header);
-                }
-                Var::SizeUpload => {
-                    let _ = write!(out, "{}", facts.size_upload);
+                var => {
+                    let _ = value(var, facts, out);
                 }
             },
             Piece::Unknown(name) => {
@@ -280,6 +359,94 @@ pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
         }
         true
     });
+}
+
+/// Write `var`'s value for `facts`; nothing for one the transfer has
+/// none of (`writeString`, `writeLong`, `writeOffset`, `writeTime`).
+fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()> {
+    let r = facts.report;
+    match var {
+        Var::OnError | Var::Stdout | Var::Stderr => unreachable!("not a value"),
+        Var::ExitCode => write!(out, "{}", facts.result.err().map_or(0, exit_code)),
+        Var::ErrorMsg => match facts.result {
+            Ok(()) => Ok(()),
+            Err(e) => match r.failure() {
+                Some(why) => out.write_all(why),
+                None => write!(out, "{e}"),
+            },
+        },
+        Var::Url => out.write_all(facts.url),
+        Var::UrlPart { part, effective } => {
+            let url = if effective {
+                r.url().unwrap_or_default()
+            } else {
+                facts.url
+            };
+            match url_part(url, part) {
+                Some(text) => out.write_all(&text),
+                None => Ok(()),
+            }
+        }
+        Var::UrlEffective => out.write_all(r.url().unwrap_or_default()),
+        Var::UrlNum => write!(out, "{}", facts.urlnum),
+        Var::FilenameEffective => match facts.filename {
+            Some(name) => out.write_all(name),
+            None => Ok(()),
+        },
+        Var::HttpCode => write!(out, "{:03}", r.response_code().unwrap_or(0)),
+        Var::HttpVersion => out.write_all(match r.response_version() {
+            None => b"0",
+            Some(ResponseVersion::Http10) => b"1",
+            Some(ResponseVersion::Http11) => b"1.1",
+            Some(ResponseVersion::Http2) => b"2",
+            Some(ResponseVersion::Http3) => b"3",
+        }),
+        Var::Scheme => match r.protocol() {
+            Some(p) => out.write_all(p.name().as_bytes()),
+            None => Ok(()),
+        },
+        Var::SizeDelivered => write!(out, "{}", r.sizes().delivered()),
+        Var::SizeDownload => write!(out, "{}", r.sizes().download()),
+        Var::SizeHeader => write!(out, "{}", r.sizes().header()),
+        Var::SizeUpload => write!(out, "{}", r.sizes().upload()),
+        Var::SpeedDownload => write!(out, "{}", r.speeds().download()),
+        Var::SpeedUpload => write!(out, "{}", r.speeds().upload()),
+        Var::Time(time) => {
+            let t = r.timings();
+            let d = match time {
+                Time::Appconnect => t.appconnect(),
+                Time::Connect => t.connect(),
+                Time::Namelookup => t.namelookup(),
+                Time::Posttransfer => t.posttransfer(),
+                Time::Pretransfer => t.pretransfer(),
+                Time::Queue => t.queue(),
+                Time::Redirect => t.redirect(),
+                Time::Starttransfer => t.starttransfer(),
+                Time::Total => t.total(),
+            };
+            write_seconds(out, d)
+        }
+    }
+}
+
+/// `d` as C writes a time: seconds, and six digits of microseconds.
+fn write_seconds(out: &mut dyn Write, d: Duration) -> std::io::Result<()> {
+    write!(out, "{}.{:06}", d.as_secs(), d.subsec_micros())
+}
+
+/// `part` of `url`, read as `urlpart` reads it: a scheme guessed if none
+/// is given, any scheme allowed, the scheme's port if none is given.
+fn url_part(url: &[u8], part: Part) -> Option<Vec<u8>> {
+    let parse = ParseOptions {
+        guess_scheme: true,
+        non_support_scheme: true,
+        ..ParseOptions::NONE
+    };
+    let get = GetOptions {
+        default_port: true,
+        ..GetOptions::NONE
+    };
+    Url::parse(url, parse).ok()?.get(part, get).ok()
 }
 
 /// Standard output as a `Write`.
@@ -349,11 +516,85 @@ mod tests {
         assert_eq!(render(too_long.as_bytes()), b"a");
     }
 
+    /// What `name` writes for a transfer of `url` that never ran and
+    /// ended with `result`.
+    fn written_for(name: &str, url: &[u8], result: Result<(), ErrorKind>) -> Vec<u8> {
+        let report = TransferReport::default();
+        let facts = Facts {
+            result,
+            url,
+            urlnum: 7,
+            filename: None,
+            report: &report,
+        };
+        let mut out = Vec::new();
+        value(
+            lookup(name.as_bytes()).unwrap().var.unwrap(),
+            &facts,
+            &mut out,
+        )
+        .unwrap();
+        out
+    }
+
+    /// Values are written as C writes them, nothing for what is unknown.
+    #[test]
+    fn writes_values_as_c() {
+        let url = b"http://u:p@example.com/a?q#f";
+        let ok = |name| written_for(name, url, Ok(()));
+        assert_eq!(ok("http_code"), b"000");
+        assert_eq!(ok("response_code"), b"000");
+        assert_eq!(ok("http_version"), b"0");
+        assert_eq!(ok("scheme"), b"");
+        assert_eq!(ok("url_effective"), b"");
+        assert_eq!(ok("time_total"), b"0.000000");
+        assert_eq!(ok("urlnum"), b"7");
+        assert_eq!(ok("errormsg"), b"");
+        assert_eq!(ok("exitcode"), b"0");
+        assert_eq!(ok("url.host"), b"example.com");
+        assert_eq!(ok("url.port"), b"80", "the scheme's");
+        assert_eq!(ok("url.user"), b"u");
+        assert_eq!(ok("url.query"), b"q");
+        assert_eq!(ok("url.fragment"), b"f");
+        assert_eq!(ok("url.zoneid"), b"");
+        assert_eq!(ok("urle.host"), b"", "no URL used");
+        assert_eq!(
+            written_for("url.scheme", b"example.com", Ok(())),
+            b"http",
+            "guessed"
+        );
+        let failed = Err(ErrorKind::CouldntResolveHost);
+        assert_eq!(written_for("exitcode", url, failed), b"6");
+        assert_eq!(
+            written_for("errormsg", url, failed),
+            ErrorKind::CouldntResolveHost.to_string().as_bytes()
+        );
+        let mut out = Vec::new();
+        write_seconds(&mut out, Duration::from_micros(3_000_042)).unwrap();
+        assert_eq!(out, b"3.000042");
+    }
+
+    /// A format's file is read without its line ends.
+    #[test]
+    fn reads_a_format_file_without_line_ends() {
+        let dir = std::env::temp_dir().join(format!("curl-wo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("format");
+        std::fs::write(&file, b"a\r\n%{url}\nb\n").unwrap();
+        let name = std::os::unix::ffi::OsStrExt::as_bytes(file.as_os_str());
+        assert_eq!(Format::read(name).unwrap().bytes(), b"a%{url}b");
+        assert_eq!(
+            Format::read(b"/nonexistent/x").unwrap_err(),
+            ReadFailed::Open
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn refuses_what_is_not_implemented() {
         assert_eq!(unimplemented(b"%{url} %{exitcode}\\n"), None);
         assert_eq!(unimplemented(b"%{nosuch}"), None);
-        assert_eq!(unimplemented(b"x %{http_code}"), Some("http_code"));
+        assert_eq!(unimplemented(b"x %{content_type}"), Some("content_type"));
         assert_eq!(unimplemented(b"%header{a}"), Some("--write-out %header{}"));
         assert_eq!(unimplemented(b"%time{%H}"), Some("--write-out %time{}"));
         assert_eq!(unimplemented(b"%output{f}"), Some("--write-out %output{}"));

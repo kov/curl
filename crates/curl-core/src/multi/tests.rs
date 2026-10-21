@@ -118,9 +118,9 @@ fn removing_a_running_transfer_gives_its_connection_back() {
     let ev = &mut NoEvents;
     let id = m.add(easy("stall://a"), (), ev).unwrap();
     m.perform(ev).unwrap();
-    assert_eq!(m.pool.len(), 1);
+    assert_eq!(m.caches.pool.len(), 1);
     m.remove(id, ev).unwrap();
-    assert_eq!(m.pool.len(), 0);
+    assert_eq!(m.caches.pool.len(), 0);
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn a_dead_multi_fails_its_transfers_and_takes_no_more() {
         messages(&mut m),
         [(id.index(), Err(ErrorKind::AbortedByCallback), 0)]
     );
-    assert_eq!(m.pool.len(), 0, "the connection was given back");
+    assert_eq!(m.caches.pool.len(), 0, "the connection was given back");
     assert_eq!(ev.timer.len(), 2, "a dead multi tells the timer nothing");
     m.remove(id, &mut ev).unwrap();
     m.add(refused.easy, (), &mut ev).unwrap();
@@ -212,7 +212,7 @@ fn timers_wake_transfers_through_socket_action() {
         messages(&mut m),
         [(id.index(), Err(ErrorKind::OperationTimedout), 0)]
     );
-    assert_eq!(m.pool.len(), 0);
+    assert_eq!(m.caches.pool.len(), 0);
 }
 
 #[test]
@@ -1321,7 +1321,7 @@ fn removing_a_connecting_transfer_closes_its_socket() {
     let mut open = 0;
     m.sockets(|_, _| open += 1);
     assert_eq!(open, 0);
-    assert_eq!(m.pool.len(), 0);
+    assert_eq!(m.caches.pool.len(), 0);
     assert_eq!(
         trace_of(&lines),
         ["  Trying 127.0.0.1:3...\n", "closing connection #0\n"]
@@ -1828,7 +1828,7 @@ fn a_full_pool_is_traced_by_the_transfer_filling_it() {
             "Connection #1 to host localhost:1 left intact\n",
         ]
     );
-    assert_eq!(m.pool.len(), 1);
+    assert_eq!(m.caches.pool.len(), 1);
 }
 
 /// A transfer that forbids reuse closes its connection when done with it,
@@ -1861,7 +1861,7 @@ fn a_transfer_can_refuse_to_share_its_connection() {
         fresh.last().unwrap(),
         "Connection #2 to host 127.0.0.1:1 left intact\n"
     );
-    assert_eq!(m.pool.len(), 2, "#1 kept too");
+    assert_eq!(m.caches.pool.len(), 2, "#1 kept too");
 }
 
 /// A transfer that would pass the host limit waits, running not at all,
@@ -1951,7 +1951,7 @@ fn an_idle_connection_makes_room_under_the_total_limit() {
         assert!(trace_of(&lines).last().unwrap().ends_with("left intact\n"));
         m.remove(id, &mut NoEvents).unwrap();
     }
-    assert_eq!(m.pool.len(), 1);
+    assert_eq!(m.caches.pool.len(), 1);
 }
 
 /// A waiting transfer's time runs on: once it is up, the timer finds it
@@ -2002,7 +2002,7 @@ fn a_waiting_transfer_is_removed_cleanly() {
     m.remove(b, &mut NoEvents).unwrap();
     m.remove(a, &mut NoEvents).unwrap();
     assert_eq!(m.counts().running, 0);
-    assert_eq!(m.pool.len(), 0);
+    assert_eq!(m.caches.pool.len(), 0);
 }
 
 /// With no limit set, the pool keeps twice the transfers in the multi,

@@ -67,7 +67,7 @@ impl<H: Host> Multi<H> {
             "the timer queue holds stale entries"
         );
         assert_eq!(
-            self.pool.leased(),
+            self.caches.pool.leased(),
             leases,
             "the pool's leased connections are not the transfers' leases"
         );

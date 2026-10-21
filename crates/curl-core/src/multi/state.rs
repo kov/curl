@@ -439,7 +439,7 @@ impl<H: Host> StepCx<'_, H> {
 impl<H: Host> StepCx<'_, H> {
     /// The connection `lease` holds.
     pub(crate) fn conn(&mut self, lease: &ConnLease) -> &mut Conn {
-        self.rest.pool.get(lease)
+        self.rest.caches.pool.get(lease)
     }
 
     pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
@@ -713,7 +713,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 premature |= is_premature(d.result);
             }
             let max_age = cx.easy().options().limits.reuse.dns_max_age;
-            cx.rest.dns.prune(cx.rest.now, max_age);
+            cx.rest.caches.dns.prune(cx.rest.now, max_age);
             release(cx, d.lease, premature, d.origin.as_ref());
             // Held output went with the request; a pause the application
             // asked for stays.
@@ -1228,7 +1228,7 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
         let (name, port, addrs, permanent, given) = match parse_entry(line) {
             Ok(None) => continue,
             Ok(Some(ListEntry::Remove { name, port })) => {
-                cx.rest.dns.remove(name, port);
+                cx.rest.caches.dns.remove(name, port);
                 continue;
             }
             Ok(Some(ListEntry::Add {
@@ -1255,7 +1255,7 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
         };
         let answer = Answer::new(name, addrs).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         let answer = TryRc::try_new(answer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        if cx.rest.dns.remove(name, port) {
+        if cx.rest.caches.dns.remove(name, port) {
             let name = Bytes(name);
             trace::info(
                 cx,
@@ -1263,6 +1263,7 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
             );
         }
         cx.rest
+            .caches
             .dns
             .put(answer, port, now, permanent)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;

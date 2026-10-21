@@ -23,7 +23,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
-use crate::conn::{AddLimits, DnsCache, Pool};
+use crate::conn::{AddLimits, Caches, Pool};
 use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -236,8 +236,7 @@ pub struct Multi<H: Host = NoHost> {
     notify: NotifyQueue,
     /// Notifications are being delivered.
     delivering: bool,
-    pool: Pool,
-    dns: DnsCache,
+    caches: Caches,
     limits: ConnLimits,
     /// The transfer last let look for a connection again.
     pending_after: Option<TransferId>,
@@ -261,8 +260,7 @@ impl<H: Host> Multi<H> {
             announce: TimerAnnounce::default(),
             notify: NotifyQueue::default(),
             delivering: false,
-            pool: Pool::new()?,
-            dns: DnsCache::default(),
+            caches: Caches::new()?,
             limits: ConnLimits::default(),
             pending_after: None,
             sockets: SocketTable::new(),
@@ -360,7 +358,7 @@ impl<H: Host> Multi<H> {
         };
         let id = vacancy.fill(slot);
         self.counts.added();
-        self.pool.xfer_init();
+        self.caches.pool.xfer_init();
         self.dirty.insert(id.index());
         // Inside the add, as C, so the application hears of the 0 ms run.
         if let Err(kind) = self.update_timer(ev) {
@@ -582,7 +580,7 @@ impl<H: Host> Multi<H> {
     /// Every socket the transfers wait on, and for what, in id order
     /// (`curl_multi_fdset`, `curl_multi_waitfds`).
     pub fn sockets(&self, f: impl FnMut(&dyn Socket, Events)) {
-        pollsets(&self.slots, &self.pool, f);
+        pollsets(&self.slots, &self.caches.pool, f);
     }
 
     /// The multi but for the runs out of their slots, for a step or a
@@ -590,8 +588,7 @@ impl<H: Host> Multi<H> {
     fn rest<'a>(&'a mut self, now: Instant, ev: &'a mut dyn MultiEvents<H>) -> EngineRest<'a, H> {
         EngineRest {
             slots: &mut self.slots,
-            pool: &mut self.pool,
-            dns: &mut self.dns,
+            caches: &mut self.caches,
             limits: &mut self.limits,
             pending_after: &mut self.pending_after,
             net: &mut *self.net,
@@ -621,7 +618,7 @@ impl<H: Host> Multi<H> {
                 .run
                 .as_ref()
                 .expect("no transfer is out while the multi is called");
-            run.state.pollset(&self.pool, slot.pause).wants()
+            run.state.pollset(&self.caches.pool, slot.pause).wants()
         });
         self.tell_wants(id, wants, ev)
     }
@@ -1021,7 +1018,7 @@ impl<H: Host> Drop for Multi<H> {
                 self.abandon(id, run, &mut NoEvents);
             }
         }
-        self.pool.close_idle(&mut *self.net);
+        self.caches.pool.close_idle(&mut *self.net);
     }
 }
 

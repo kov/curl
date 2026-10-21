@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::conn::io::{
     Connect, Family, Net, PollFd, ResolveFailure, Socket, SocketKey, SocketPoll,
 };
-use crate::conn::{DnsCache, Pool};
+use crate::conn::{Caches, DnsCache, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
@@ -32,8 +32,7 @@ use super::{
 /// through.
 pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) slots: &'a mut Slots<H>,
-    pub(super) pool: &'a mut Pool,
-    pub(super) dns: &'a mut DnsCache,
+    pub(super) caches: &'a mut Caches,
     /// `Multi::conn_limits_mut`.
     pub(super) limits: &'a mut ConnLimits,
     /// The transfer last let look for a connection again.
@@ -58,8 +57,7 @@ impl<H: Host> EngineRest<'_, H> {
     pub(super) fn reborrow(&mut self) -> EngineRest<'_, H> {
         EngineRest {
             slots: &mut *self.slots,
-            pool: &mut *self.pool,
-            dns: &mut *self.dns,
+            caches: &mut *self.caches,
             limits: &mut *self.limits,
             pending_after: &mut *self.pending_after,
             net: &mut *self.net,
@@ -91,7 +89,8 @@ impl<H: Host> EngineRest<'_, H> {
             events: &mut *self.events,
             who,
         };
-        (&mut *self.pool, net, &mut *self.dns)
+        let Caches { pool, dns } = &mut *self.caches;
+        (pool, net, dns)
     }
 
     /// The pool, and the network it is to use for transfer `who`: one

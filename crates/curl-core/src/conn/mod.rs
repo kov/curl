@@ -30,6 +30,23 @@ use curl_alloc::TryRc;
 use crate::options::IpVersion;
 
 pub(crate) use self::buf::RecvBuf;
+
+/// What transfers keep for those after them: the connections and the
+/// names resolved. A multi holds its own; a share will hold them in its
+/// place.
+pub(crate) struct Caches {
+    pub(crate) pool: Pool,
+    pub(crate) dns: DnsCache,
+}
+
+impl Caches {
+    pub(crate) fn new() -> Result<Caches, curl_alloc::OutOfMemory> {
+        Ok(Caches {
+            pool: Pool::new()?,
+            dns: DnsCache::default(),
+        })
+    }
+}
 use self::connect::ConnectMachine;
 use self::io::{Recv, Sent, Socket};
 use crate::id::Key;

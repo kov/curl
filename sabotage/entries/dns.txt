@@ -50,7 +50,7 @@ witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
-            cx.rest.dns.prune(cx.rest.now, max_age);
+            cx.rest.caches.dns.prune(cx.rest.now, max_age);
 --- new
             let _ = max_age;
 
@@ -120,7 +120,7 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
             let max_age = cx.easy().options().limits.reuse.dns_max_age;
-            cx.rest.dns.prune(cx.rest.now, max_age);
+            cx.rest.caches.dns.prune(cx.rest.now, max_age);
 --- new
             let max_age = Some(std::time::Duration::from_secs(60));
-            cx.rest.dns.prune(cx.rest.now, max_age);
+            cx.rest.caches.dns.prune(cx.rest.now, max_age);

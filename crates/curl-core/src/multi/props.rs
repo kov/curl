@@ -196,7 +196,11 @@ fn run(ops: &[Op]) {
     for id in live {
         m.remove(id, &mut ev).expect("live");
     }
-    assert_eq!(m.pool.len(), 0, "a connection outlived its transfers");
+    assert_eq!(
+        m.caches.pool.len(),
+        0,
+        "a connection outlived its transfers"
+    );
     assert!(m.timers.is_empty(), "a timer outlived its transfer");
 }
 

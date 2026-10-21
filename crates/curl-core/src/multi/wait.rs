@@ -34,12 +34,12 @@ impl<H: Host> Multi<H> {
     ) -> Result<u32, MultiErrorKind> {
         let timeout = self.timeout().map_or(max, |t| t.min(max));
         let mut wanted = 0;
-        pollsets(&self.slots, &self.pool, |_, _| wanted += 1);
+        pollsets(&self.slots, &self.caches.pool, |_, _| wanted += 1);
         let mut sockets = Vec::new();
         sockets
             .try_reserve_exact(wanted)
             .map_err(|_| MultiErrorKind::OutOfMemory)?;
-        pollsets(&self.slots, &self.pool, |s, events| {
+        pollsets(&self.slots, &self.caches.pool, |s, events| {
             sockets
                 .try_push(SocketPoll::new(s, events))
                 .expect("reserved");

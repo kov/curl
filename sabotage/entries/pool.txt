@@ -115,7 +115,7 @@ witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_multi_closes_its_idle_connections_when_dropped
 --- old
-        self.pool.close_idle(&mut *self.net);
+        self.caches.pool.close_idle(&mut *self.net);
 --- new
 
 === a limit is compared to the exact time, not whole milliseconds

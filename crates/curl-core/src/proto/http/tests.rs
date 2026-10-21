@@ -15,7 +15,6 @@ use crate::options::{Method, Options, Resume, UserHeaders};
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
 use crate::time::{Clock as _, ManualClock};
-use crate::url::{GetOptions, Part};
 
 /// Where the fake server listens.
 const PORT: u16 = 8990;
@@ -787,9 +786,8 @@ fn the_report_s_url_has_no_credentials() {
         },
     );
     assert_eq!(ran.result, Ok(()));
-    let url = ran.easy.report().url().unwrap();
     assert_eq!(
-        url.get(Part::Url, GetOptions::NONE).unwrap(),
+        ran.easy.report().url().unwrap(),
         format!("http://127.0.0.1:{PORT}/x?q").as_bytes()
     );
 }

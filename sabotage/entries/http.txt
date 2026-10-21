@@ -314,9 +314,9 @@ file: crates/curl-core/src/report.rs
 witness: curl-core proto::http::tests::the_report_s_url_has_no_credentials
 --- old
         url.forget_credentials();
-        self.url = Some(url);
+        let get = GetOptions {
 --- new
-        self.url = Some(url);
+        let get = GetOptions {
 
 === the line ending a head is assumed to fit in two bytes
 file: crates/curl-core/src/proto/http.rs

@@ -870,6 +870,31 @@ fn a_report_times_the_phases_a_transfer_reached() {
     );
 }
 
+/// A URL that parses but grows past C's limit when read back fails its
+/// transfer as `URL_MALFORMAT`, saying nothing, as C fails it at the
+/// read-back; the report keeps no URL.
+#[test]
+fn a_url_too_long_to_read_back_fails_its_transfer() {
+    let (mut m, _clock) = multi();
+    let ev = &mut NoEvents;
+    // `file:/x` reads back as `file:///x`: two bytes longer.
+    let mut url = b"file:/".to_vec();
+    url.resize(7_999_999, b'a');
+    let (e, lines) = traced(std::str::from_utf8(&url).unwrap());
+    let id = m.add(e, (), ev).unwrap();
+    m.perform(ev).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::UrlMalformat), 0)]
+    );
+    assert!(
+        trace_of(&lines).iter().all(|l| !l.contains("URL")),
+        "{:?}",
+        trace_of(&lines)
+    );
+    assert_eq!(m.easy(id).unwrap().report().url(), None);
+}
+
 /// A transfer that ends before it was about to send gets the times it
 /// skipped (`mstate_enter_completed`).
 #[test]

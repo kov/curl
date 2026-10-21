@@ -7,9 +7,7 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
-use curl_core::error::UrlErrorKind;
 use curl_core::report::{ResponseVersion, TransferReport};
-use curl_core::url::{GetOptions, Part};
 use curl_core::version::Protocol;
 
 use crate::easy::{self, ShimEasy};
@@ -95,25 +93,15 @@ fn proto_bit(p: Protocol) -> c_long {
 /// The URL the transfer used, without its credentials, as the handle
 /// keeps it for C; empty before any transfer (`effective_url`).
 fn effective_url(easy: &ShimEasy, r: &TransferReport) -> Result<*const c_char, OutOfMemory> {
-    let Some(url) = r.url() else {
+    let Some(text) = r.url() else {
         return Ok(c"".as_ptr());
     };
-    let get = GetOptions {
-        get_empty: true,
-        ..GetOptions::NONE
-    };
-    let text = match url.get(Part::Url, get) {
-        Ok(text) => text,
-        Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),
-        // The transfer ran with it, so it reads back.
-        Err(e) => unreachable!("a transfer's URL does not read back: {e:?}"),
-    };
     let mut kept = easy.effective_url.borrow_mut();
-    if kept.strip_suffix(b"\0") != Some(&text[..]) {
+    if kept.strip_suffix(b"\0") != Some(text) {
         let mut copy = Vec::new();
         copy.try_reserve_exact(text.len() + 1)
             .map_err(|_| OutOfMemory)?;
-        copy.try_extend_from_slice(&text)?;
+        copy.try_extend_from_slice(text)?;
         copy.try_push(0)?;
         *kept = copy;
     }

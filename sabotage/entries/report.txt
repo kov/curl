@@ -200,3 +200,15 @@ witness: curl-core report::tests::keeps_the_first_failure
         let mut kept = Vec::new();
 --- new
         let mut kept = Vec::new();
+
+=== a URL that cannot be read back runs its transfer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_url_too_long_to_read_back_fails_its_transfer
+--- old
+    if let Err(e) = url.get(Part::Url, get) {
+        return TransferState::Init.fail(url_error(e));
+    }
+--- new
+    if let Err(e) = url.get(Part::Url, get) {
+        let _ = e;
+    }

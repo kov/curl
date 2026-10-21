@@ -855,6 +855,16 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         }
         Err(UrlRefused::Failed(kind)) => return TransferState::Init.fail(kind),
     };
+    // Read back once parsed, credentials and all, as C reads it back
+    // (`url.c`, `CURLUPART_URL` into `state.url`): one that cannot be,
+    // grown past the limit, fails the transfer without a word.
+    let get = GetOptions {
+        get_empty: true,
+        ..GetOptions::NONE
+    };
+    if let Err(e) = url.get(Part::Url, get) {
+        return TransferState::Init.fail(url_error(e));
+    }
     let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
         Ok(s) => s,
         Err(e) => return TransferState::Init.fail(url_error(e)),
@@ -872,17 +882,21 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
             };
             let kind = ErrorKind::UnsupportedProtocol;
             let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why]);
-            cx.report_mut().set_url(url);
+            // Out of memory keeping the URL, the first failure stands.
+            let _kept = cx.report_mut().set_url(url);
             return TransferState::Init.fail(kind);
         }
         Err(e) => {
-            cx.report_mut().set_url(url);
+            // As above.
+            let _kept = cx.report_mut().set_url(url);
             return TransferState::Init.fail(e);
         }
     };
     let target = proto.network(&url);
     // The transfer's URL from here on is the report's.
-    cx.report_mut().set_url(url);
+    if let Err(OutOfMemory) = cx.report_mut().set_url(url) {
+        return TransferState::Init.fail(ErrorKind::OutOfMemory);
+    }
     let target = match target {
         Ok(target) => target,
         Err(e) => return TransferState::Init.fail(e),

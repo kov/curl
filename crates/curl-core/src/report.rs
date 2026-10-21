@@ -11,7 +11,10 @@ pub use headers::{HeaderCursor, HeaderError, HeaderStore, HeaderView, Origins, R
 use curl_alloc::TryVec;
 
 use crate::time::Instant;
-use crate::url::Url;
+use curl_alloc::OutOfMemory;
+
+use crate::error::UrlErrorKind;
+use crate::url::{GetOptions, Part, Url};
 use crate::version::Protocol;
 
 /// The HTTP version a status line says.
@@ -48,8 +51,8 @@ pub struct TransferReport {
     /// The seconds a response asked to wait before trying again, at most
     /// six hours (`info.retry_after`).
     retry_after: u64,
-    /// The URL the transfer used, without its credentials.
-    url: Option<Url>,
+    /// The URL the transfer used, without its credentials, as text.
+    url: Option<Vec<u8>>,
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
     /// none when keeping it ran out of memory.
     failure: Option<Vec<u8>>,
@@ -141,13 +144,26 @@ impl TransferReport {
 
     /// The URL the transfer used, its credentials taken out
     /// (`CURLINFO_EFFECTIVE_URL`).
-    pub fn url(&self) -> Option<&Url> {
-        self.url.as_ref()
+    pub fn url(&self) -> Option<&[u8]> {
+        self.url.as_deref()
     }
 
-    pub(crate) fn set_url(&mut self, mut url: Url) {
+    /// Keep `url`'s text without its credentials. The transfer's start
+    /// made sure the URL reads back with them, so without them it can
+    /// fail only for memory.
+    pub(crate) fn set_url(&mut self, mut url: Url) -> Result<(), OutOfMemory> {
         url.forget_credentials();
-        self.url = Some(url);
+        let get = GetOptions {
+            get_empty: true,
+            ..GetOptions::NONE
+        };
+        let text = match url.get(Part::Url, get) {
+            Ok(text) => text,
+            Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),
+            Err(e) => unreachable!("a URL that read back with credentials fails without: {e:?}"),
+        };
+        self.url = Some(text);
+        Ok(())
     }
 
     /// Why the transfer failed, in the words of the first reason given.

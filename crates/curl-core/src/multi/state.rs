@@ -11,8 +11,8 @@ use curl_alloc::{OutOfMemory, TryVec};
 
 use crate::conn::io::{Events, Socket};
 use crate::conn::{
-    Acquired, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote, Progress,
-    Released, ReuseRules, Route,
+    Acquired, Conn, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote,
+    Progress, Released, ReuseRules, Route,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -122,6 +122,9 @@ pub(crate) struct Attached {
 #[derive(Debug)]
 pub(crate) struct Done {
     lease: ConnLease,
+    /// The protocol, to say its last of the request; none if it never
+    /// connected over the connection.
+    proto: Option<ProtoState>,
     result: Result<(), ErrorKind>,
     /// Ended before the request was complete.
     premature: bool,
@@ -214,6 +217,7 @@ impl TransferState {
             }),
             TransferState::Connecting(c) => TransferState::Done(Done {
                 lease: c.lease,
+                proto: None,
                 result: Err(err),
                 premature: true,
                 reached: Reached::Unmade,
@@ -272,8 +276,8 @@ fn release<H: Host>(
 impl TransferState {
     /// The socket the transfer waits on, and for what (`Curl_multi_pollset`):
     /// a setup waits to write, unless receiving is paused
-    /// (`mstate_connecting_pollset`). The later states wait on nothing
-    /// until a protocol waits in one.
+    /// (`mstate_connecting_pollset`); an exchange waits for what its
+    /// protocol says (`Curl_http_perform_pollset`).
     pub(crate) fn pollset<'p>(
         &self,
         pool: &'p Pool,
@@ -282,6 +286,12 @@ impl TransferState {
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
                 pool.socket(&c.lease).map(|s| (s, Events::OUT))
+            }
+            TransferState::Exchanging(x) => {
+                let events = x.proto.interest(pause);
+                pool.socket(&x.lease)
+                    .filter(|_| !events.is_empty())
+                    .map(|s| (s, events))
             }
             _ => None,
         }
@@ -308,6 +318,7 @@ impl Attached {
     fn done(self, result: Result<(), ErrorKind>, premature: bool, reached: Reached) -> Done {
         Done {
             lease: self.lease,
+            proto: Some(self.proto),
             result,
             premature,
             reached,
@@ -335,6 +346,11 @@ impl<H: Host> StepCx<'_, H> {
 }
 
 impl<H: Host> StepCx<'_, H> {
+    /// The connection `lease` holds.
+    pub(crate) fn conn(&mut self, lease: &ConnLease) -> &mut Conn {
+        self.rest.pool.get(lease)
+    }
+
     pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
         self.rest
             .slots
@@ -458,7 +474,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Connecting(c) => connecting(run, c, cx),
         // No protocol connects over its connection yet.
         TransferState::ProtoConnect(x) => (TransferState::Do(x), Wake::Again),
-        TransferState::Do(mut x) => match x.proto.do_it(cx) {
+        TransferState::Do(mut x) => match x.proto.do_it(cx, &x.lease) {
             Ok(()) => {
                 // About to send; sent already, with no body
                 // (`mstate_enter_did`).
@@ -488,7 +504,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         ),
         TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
         TransferState::Exchanging(mut x) => {
-            let stepped = x.proto.step(cx);
+            let stepped = x.proto.step(cx, &x.lease);
             let expired = matches!(
                 run.deadlines.time_left(cx.rest.now, Phase::Transferring),
                 TimeLeft::Expired(_)
@@ -523,8 +539,12 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
         }
         TransferState::Done(mut d) => {
-            // A last progress pass, unless a callback aborted already
-            // (`multi_done`).
+            // The protocol's last word first (`multi_done`).
+            if let Some(proto) = d.proto.as_mut() {
+                let premature = d.premature || is_premature(d.result);
+                d.result = proto.done(cx, &d.lease, d.result, premature);
+            }
+            // A last progress pass, unless a callback aborted already.
             if d.result != Err(ErrorKind::AbortedByCallback)
                 && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
                 && d.result.is_ok()
@@ -733,7 +753,7 @@ impl std::fmt::Display for Ip {
 
 /// An operating system error as `strerror` words it, without std's
 /// "(os error N)".
-struct OsError<'a>(&'a std::io::Error);
+pub(crate) struct OsError<'a>(pub(crate) &'a std::io::Error);
 
 impl std::fmt::Display for OsError<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

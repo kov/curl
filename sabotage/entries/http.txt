@@ -1,0 +1,65 @@
+# The HTTP/1 driver: proto/http.rs, and the connection rules it relies on.
+
+=== a body of a known size is read past its end
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_body_is_read_no_further_than_its_size
+--- old
+                usize::try_from(left).map_or(READ_SIZE, |left| left.min(READ_SIZE))
+--- new
+                usize::try_from(left).map_or(READ_SIZE, |_| READ_SIZE)
+
+=== a connection its peer closed is kept
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::responses_end_as_c_ends_them
+--- old
+                // Shut down by the server, not reused (`multi_done`).
+                self.close = true;
+--- new
+                // Shut down by the server, not reused (`multi_done`).
+
+=== a held line is dropped at the end
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_held_line_is_delivered_at_the_end
+--- old
+        if !held.is_empty() {
+--- new
+        if false {
+
+=== an empty reply is fine
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::responses_end_as_c_ends_them
+--- old
+        if !premature && head.got_nothing(self.pipeline.bytecount()) {
+--- new
+        if !premature && head.got_nothing(self.pipeline.bytecount() + 1) {
+
+=== trailers are delivered as headers
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::chunks_are_read_to_their_end
+--- old
+                    if let Err(e) = pipeline.header(cx, line, HeaderOrigin::Trailer) {
+--- new
+                    if let Err(e) = pipeline.header(cx, line, HeaderOrigin::Header) {
+
+=== raw chunks are decoded
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::chunks_are_read_to_their_end
+--- old
+        if cx.easy().options().http.raw {
+--- new
+        if false {
+
+=== a body after a bodyless head is dropped unjudged
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_head_wants_no_body
+--- old
+                self.pipeline.body(cx, rest)?;
+--- new
+
+=== a response's close keeps the connection
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
+--- old
+        if head.meta().close() || self.pipeline.body_closes() {
+--- new
+        if self.pipeline.body_closes() {

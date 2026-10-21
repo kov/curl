@@ -9,7 +9,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::connect::{ConnectError, ConnectMachine, Drove, Progress};
 use super::io::{Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnId, ConnNumber, ConnSlot, RecvBuf, Route, SendBuf, Transport, Use};
+use super::{Conn, ConnId, ConnNumber, ConnSlot, RecvBuf, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::time::Instant;
 
@@ -200,7 +200,8 @@ impl Pool {
                 connected_at: now,
                 use_: Use::Leased(NonZeroU32::MIN),
                 rx: RecvBuf::default(),
-                tx: SendBuf::default(),
+                served: false,
+                close: false,
             }),
             Route::Tcp(scheme, dest) => {
                 ConnSlot::Connecting(ConnectMachine::new(number, scheme, dest, now))
@@ -325,10 +326,6 @@ impl Pool {
     }
 
     /// The connection a lease holds, once up.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "protocols reach their connection, from step 12")
-    )]
     pub(crate) fn get(&mut self, lease: &ConnLease) -> &mut Conn {
         match self.conns.get_mut(lease.id) {
             Some(ConnSlot::Open(conn)) => conn,
@@ -380,9 +377,11 @@ impl Pool {
             && let Route::Tcp(scheme, _) = conn.route
             && scheme.reuse
             && !finish.premature
+            && !conn.close
         {
             assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
             conn.use_ = Use::Idle { since: now };
+            conn.served = true;
             return Released::Idle(conn.number);
         }
         let slot = self

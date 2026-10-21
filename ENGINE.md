@@ -159,8 +159,10 @@ curl-core/src/
   proto/
     mod.rs                   ProtoState enum (File, Http1; later variants)
     file.rs
+    http.rs                  the HTTP/1 driver: the request sent, the response read
     script.rs                the test protocol `script:` (test-util)
-    http1/                   request.rs, response.rs, chunked.rs, follow.rs, auth.rs
+    http1/                   request.rs, response.rs, framing.rs, chunked.rs, fields.rs;
+                             later follow.rs, auth.rs
   share.rs                   Share, Lock trait
 ```
 
@@ -742,16 +744,18 @@ pub(crate) struct Conn {
     transport: Transport,              // Tcp(Socket) | Unix(Socket) | Local | later Udp; owns the socket
     layers: LayerStack,                // InlineVec<Box<dyn Layer>, 4>; empty for plain TCP
     session: Session,                  // Exclusive | Mux(Box<dyn Mux>)
-    rx: RecvBuf, tx: SendBuf,          // sized once at creation, reused across requests
+    rx: RecvBuf,                       // received, not yet used; grown fallibly before a read
     created: Instant, idle_since: Option<Instant>,
-    close: Option<CloseReason>,        // Some: not reusable, released as Close
+    served: bool,                      // carried a request before (C's bits.reuse)
+    close: bool,                       // not reusable, released as Close: the response
+                                       // said so, or the peer closed (EOF read)
     info: ConnInfo,                    // primary/local addresses, HTTP version seen
 }
 ```
 
 Protocols without a network (`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with
-`Transport::Local`: no socket, no layers, never pooled for reuse (released as Close), with empty
-`rx`/`tx` that allocate nothing; the file protocol reads the file into the pipeline itself. This
+`Transport::Local`: no socket, no layers, never pooled for reuse (released as Close), with an
+empty `rx` that allocates nothing; the file protocol reads the file into the pipeline itself. This
 keeps one lease-holding path through `Done` for every protocol, as C attaches a connection for
 `file:` too.
 
@@ -979,18 +983,28 @@ CURLOPT_RESOLVE entries are permanent; negative entries only for an authoritativ
 
 ### 5.1 Receive
 
-Inside an `Exchanging` step:
-1. `pool.get(&lease)` gives the `Conn`; up to 10 rounds of `transport.recv` → layers →
-   `conn.rx`, unless `recv != Running` or the request no longer receives;
-2. the step takes `conn.rx` out (`mem::take`), releases the pool borrow, and feeds
-   `proto.on_input(Input::Data(rx.filled()), now, &mut req, &mut cx)`, which returns how much
-   it consumed; then puts `rx` back with the remainder;
-3. `Recv::Eof` becomes `Input::Eof`, which decides: GOT_NOTHING (52), a short body (18), the end
-   of an `UntilClose` body, the HTTP/0.9 flush, or `Retry` on a reused connection that delivered
-   nothing (at most 5).
+A protocol reaches its connection through `StepCx::conn(&lease)`; `do_it`, `step` and `done`
+are given the lease the transfer's state holds. Inside an `Exchanging` step of `http:`:
+1. what is left of the request's head is sent (`Conn::send`, traced as HEADER_OUT as it goes);
+   the request owns its send buffer, as C's `req.sendbuf` is per request;
+2. reads follow until one would block, the response is over or receiving pauses: each
+   `Conn::recv` reads into `conn.rx`, which the step takes out (`mem::take`), feeds whole to the
+   head parser, the body and the chunk decoder, and puts back emptied. C's cap of 11 reads per
+   pass is not kept: a readable socket is read until it would block;
+3. EOF decides: a head cut short with a size known is "transfer closed with N bytes remaining to
+   read" (18), a short body "end of response with N bytes missing" (18), unfinished chunks
+   "transfer closed with outstanding read data remaining" (18), an `UntilClose` body ends. A
+   connection that read EOF is not reused. Retrying a reused connection that delivered nothing
+   is not built yet.
+4. `ProtoState::done`, before the last progress pass (`multi_done` calls the handler's `done`
+   first), delivers a line the head parser still holds after the trace of whatever failed, as
+   `Curl_http_done` does, ignoring what comes of it, and judges GOT_NOTHING ("Empty reply from
+   server", 52, the connection closed).
+While exchanging, the transfer waits on its socket for what the protocol says: IN while the
+response is not over and receiving is not paused, OUT while the head has more to send.
 
-Reads are capped at `size - bytecount` on non-multiplexed connections, as transfer.c's
-`xfer_recv_resp` does. The cap is redundant with a per-connection buffer (leftovers would simply
+Reads are capped at 16384 bytes, and at `size - bytecount` in a body of known size on
+non-multiplexed connections, as transfer.c's `xfer_recv_resp` does. The cap is redundant with a per-connection buffer (leftovers would simply
 wait in `conn.rx`), but it fixes how `DATA_IN` traces are chunked and when unsolicited input is
 seen; it is dropped only after a C-leg comparison on 1701 and 3223.
 

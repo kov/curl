@@ -22,7 +22,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-pub(crate) use self::buf::{RecvBuf, SendBuf};
+pub(crate) use self::buf::RecvBuf;
 use self::connect::ConnectMachine;
 use self::io::{Recv, Sent, Socket};
 use crate::id::Key;
@@ -116,35 +116,15 @@ pub(crate) struct Conn {
     created: Instant,
     connected_at: Instant,
     use_: Use,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the http protocol moves bytes from step 14b")
-    )]
     rx: RecvBuf,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the http protocol moves bytes from step 14b")
-    )]
-    tx: SendBuf,
+    /// It carried a request before the one leasing it (C's
+    /// `bits.reuse`).
+    served: bool,
+    /// It is not to be kept for another request (C's `connclose`), or
+    /// its peer closed it, which no request can use again.
+    close: bool,
 }
 
-/// What a flush of a connection's queued bytes came to.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the http protocol moves bytes from step 14b")
-)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Flushed {
-    /// Bytes the network took.
-    pub(crate) sent: usize,
-    /// Nothing is left to send.
-    pub(crate) done: bool,
-}
-
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the http protocol moves bytes from step 14b")
-)]
 impl Conn {
     fn socket(&self) -> &dyn Socket {
         match &self.transport {
@@ -153,14 +133,19 @@ impl Conn {
         }
     }
 
+    /// Whether it carried a request before this one.
+    pub(crate) fn reused(&self) -> bool {
+        self.served
+    }
+
+    /// Keep it for no other request: it closes when its lease goes back.
+    pub(crate) fn mark_close(&mut self) {
+        self.close = true;
+    }
+
     /// Received bytes no request has used yet.
     pub(crate) fn rx_mut(&mut self) -> &mut RecvBuf {
         &mut self.rx
-    }
-
-    /// Bytes queued to send.
-    pub(crate) fn tx_mut(&mut self) -> &mut SendBuf {
-        &mut self.tx
     }
 
     /// Read once from the network, up to `max` bytes, behind what `rx`
@@ -178,25 +163,20 @@ impl Conn {
         let got = socket.recv(room);
         let n = match got {
             Ok(Recv::Data(n)) => n.get(),
-            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
+            Ok(Recv::Eof) => {
+                // Shut down by the server, not reused (`multi_done`).
+                self.close = true;
+                0
+            }
+            Ok(Recv::WouldBlock) | Err(_) => 0,
         };
         self.rx.commit(max, n);
         got
     }
 
-    /// Send what is queued, as much as the network takes now.
-    pub(crate) fn flush(&mut self) -> std::io::Result<Flushed> {
-        let mut sent = 0;
-        while !self.tx.is_empty() {
-            match self.socket().send(self.tx.pending())? {
-                Sent::Bytes(n) => {
-                    self.tx.sent(n.get());
-                    sent += n.get();
-                }
-                Sent::WouldBlock => return Ok(Flushed { sent, done: false }),
-            }
-        }
-        Ok(Flushed { sent, done: true })
+    /// Send from `bytes`, which is not empty, what the network takes now.
+    pub(crate) fn send(&mut self, bytes: &[u8]) -> std::io::Result<Sent> {
+        self.socket().send(bytes)
     }
 }
 

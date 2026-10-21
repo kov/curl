@@ -9,10 +9,11 @@ use crate::error::ErrorKind;
 /// for itself taken off (`DYN_HTTP_REQUEST`).
 const MAX_HEAD: usize = 1024 * 1024 - 1;
 
-/// The version a request is made in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Version {
+/// The version an HTTP request is made in (`CURLOPT_HTTP_VERSION`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Version {
     Http10,
+    #[default]
     Http11,
 }
 
@@ -140,6 +141,11 @@ impl UserHeaders {
             headers.lines.try_push(classify(copy))?;
         }
         Ok(headers)
+    }
+
+    /// A copy (`curl_easy_duphandle`).
+    pub fn try_clone(&self) -> Result<UserHeaders, OutOfMemory> {
+        UserHeaders::new(self.lines.iter().map(|h| &h.line[..]))
     }
 
     /// The first line that replaces the library's header `name`.

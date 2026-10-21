@@ -319,11 +319,19 @@ impl Meta {
         self.close
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "CURLINFO_CONTENT_TYPE is not reported yet")
+    )]
     pub(crate) fn content_type(&self) -> Option<&[u8]> {
         self.content_type.as_deref()
     }
 
     /// The response announced trailers.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only a multiplexed response waits for them")
+    )]
     pub(crate) fn trailer(&self) -> bool {
         self.trailer
     }

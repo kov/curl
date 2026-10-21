@@ -365,12 +365,13 @@ fn a_transfer_s_easy_is_reached_by_its_id() {
 fn a_url_without_a_scheme_is_guessed() {
     let (mut m, _clock) = multi();
     let ev = &mut NoEvents;
-    // Guessed as http, which this build cannot run yet.
+    // Guessed as http, a name the resolver, which knows only literal
+    // addresses, cannot resolve.
     let id = m.add(easy("example.com/a"), (), ev).unwrap();
     m.perform(ev).unwrap();
     assert_eq!(
         messages(&mut m),
-        [(id.index(), Err(ErrorKind::UnsupportedProtocol), 0)]
+        [(id.index(), Err(ErrorKind::CouldntResolveHost), 0)]
     );
 }
 

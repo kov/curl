@@ -60,8 +60,8 @@ impl Pipeline {
     /// Whether output is held: the request cannot be over until it is
     /// delivered.
     #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "only the test protocol holds output before HTTP")
+        not(any(test, feature = "test-util", debug_assertions)),
+        expect(dead_code, reason = "only the debug build's check asks")
     )]
     pub(crate) fn holds_output(&self) -> bool {
         self.out.holds_output()
@@ -74,39 +74,23 @@ impl Pipeline {
     }
 
     /// What the response's head says the body comes to.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no protocol reads a head before HTTP")
-    )]
     pub(crate) fn expect(&mut self, expect: Expect) {
         self.accountant.expect = expect;
     }
 
     /// The body is complete: what more comes is no part of it (C's
     /// `download_done`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no protocol reads a head before HTTP")
-    )]
     pub(crate) fn body_done(&self) -> bool {
         self.accountant.done
     }
 
     /// The body showed the connection cannot be reused: more came than was
     /// expected, or any where none was.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no protocol reads a head before HTTP")
-    )]
     pub(crate) fn body_closes(&self) -> bool {
         self.accountant.close
     }
 
     /// Body bytes delivered (C's `req.bytecount`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no protocol reads a head before HTTP")
-    )]
     pub(crate) fn bytecount(&self) -> u64 {
         self.accountant.bytecount
     }
@@ -163,10 +147,6 @@ impl Pipeline {
 
     /// The response ended (`CLIENTWRITE_EOS`): a body of a known size must
     /// be whole.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no protocol reads a head before HTTP")
-    )]
     pub(crate) fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let expect = self.accountant.expect;
         let bytecount = self.accountant.bytecount;
@@ -199,13 +179,6 @@ impl Pipeline {
 
     /// Deliver a response's status line, as a header line the store does
     /// not keep (`CLIENTWRITE_STATUS`).
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(
-            dead_code,
-            reason = "only the test protocol writes a status line before HTTP"
-        )
-    )]
     pub(crate) fn status<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -416,8 +389,8 @@ impl ClientOut {
     }
 
     #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "only the test protocol holds output before HTTP")
+        not(any(test, feature = "test-util", debug_assertions)),
+        expect(dead_code, reason = "only the debug build's check asks")
     )]
     fn holds_output(&self) -> bool {
         matches!(self, ClientOut::Held(_))

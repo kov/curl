@@ -264,11 +264,14 @@ yet meet.
       `tx` (`conn/buf.rs`), `Conn::recv` behind what waits and `Conn::flush`; `FakeNet`
       conversations, a peer that replies to a request's head and then closes or not, and keeps
       what it was sent.
-    - **b. The HTTP/1 driver.** **To do.** `http:` as a protocol: the head rendered at DO and
-      sent, the response read and parsed, delivered through the pipeline with what its head
-      expects, the body framed by length, chunks or the close, the end judged (nothing, short,
-      outstanding chunks), the connection kept or closed. Armed end to end on test 1 over
-      `FakeNet`.
+    - **b. The HTTP/1 driver.** **Done.** `proto/http.rs`: `http:` as a protocol, the head
+      rendered at DO and sent, the response read and parsed, each line traced and delivered,
+      the body framed by length (reads capped at its end), chunks or the close, the end judged
+      (nothing, short, outstanding chunks, a head cut short), a held line delivered at done,
+      the connection kept or closed. `Options::http` holds what the driver reads. Armed end to
+      end on tests 1, 266 and 326 over `FakeNet`, the outcomes and texts taken from the C
+      binary. Not yet: a request body, retrying a reused connection that delivered nothing,
+      C's debug-build-only trace lines.
     - **c. The fixture runner.** **To do.** Generated from `tests/data`: the milestone set's
       cases without servercmd, driven over `FakeNet` and `ManualClock`; armed by breaking a
       framing rule. Adds the plain-GET allocation budget test, set at this design's count.

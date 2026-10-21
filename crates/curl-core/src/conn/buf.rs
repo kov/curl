@@ -1,10 +1,4 @@
-//! A connection's bytes between the network and its requests: what was
-//! received and not yet used, and what was queued and not yet sent.
-
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the http protocol moves bytes from step 14b")
-)]
+//! What a connection received and no request has used yet.
 
 use curl_alloc::OutOfMemory;
 
@@ -42,52 +36,8 @@ impl RecvBuf {
     }
 }
 
-/// Bytes queued to send and not yet sent.
-#[derive(Debug, Default)]
-pub(crate) struct SendBuf {
-    bytes: Vec<u8>,
-    /// How many of `bytes` went.
-    sent: usize,
-}
-
-impl SendBuf {
-    /// What is still to send.
-    pub(crate) fn pending(&self) -> &[u8] {
-        &self.bytes[self.sent..]
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.pending().is_empty()
-    }
-
-    /// Queue what `fill` appends, behind what is pending.
-    pub(crate) fn queue<E>(
-        &mut self,
-        fill: impl FnOnce(&mut Vec<u8>) -> Result<(), E>,
-    ) -> Result<(), E> {
-        if self.is_empty() {
-            self.bytes.clear();
-            self.sent = 0;
-        }
-        let len = self.bytes.len();
-        let filled = fill(&mut self.bytes);
-        if filled.is_err() {
-            self.bytes.truncate(len);
-        }
-        filled
-    }
-
-    /// The first `n` pending bytes went.
-    pub(crate) fn sent(&mut self, n: usize) {
-        assert!(n <= self.pending().len(), "sent more than was pending");
-        self.sent += n;
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use curl_alloc::TryVec as _;
-
     use super::*;
 
     #[test]
@@ -101,22 +51,5 @@ mod tests {
         assert_eq!(rx.filled(), b"abcde", "behind what waits");
         rx.consume(2);
         assert_eq!(rx.filled(), b"cde");
-    }
-
-    #[test]
-    fn queued_bytes_go_in_order() {
-        let mut tx = SendBuf::default();
-        tx.queue(|b| b.try_extend_from_slice(b"head")).unwrap();
-        tx.sent(2);
-        tx.queue(|b| b.try_extend_from_slice(b"body")).unwrap();
-        assert_eq!(tx.pending(), b"adbody");
-        tx.sent(6);
-        assert!(tx.is_empty());
-        let failed: Result<(), ()> = tx.queue(|b| {
-            b.extend_from_slice(b"half");
-            Err(())
-        });
-        assert!(failed.is_err());
-        assert!(tx.is_empty(), "a failed fill queues nothing");
     }
 }

@@ -150,18 +150,9 @@ witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 --- old
-            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
+            Ok(Recv::WouldBlock) | Err(_) => 0,
 --- new
-            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => max,
-
-=== a failed fill stays queued
-file: crates/curl-core/src/conn/buf.rs
-witness: curl-core conn::buf::tests::queued_bytes_go_in_order
---- old
-        if filled.is_err() {
-            self.bytes.truncate(len);
-        }
---- new
+            Ok(Recv::WouldBlock) | Err(_) => max,
 
 === received bytes are replaced, not added to
 file: crates/curl-core/src/conn/buf.rs

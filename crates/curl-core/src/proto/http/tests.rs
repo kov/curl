@@ -1,0 +1,377 @@
+use std::cell::RefCell;
+use std::net::SocketAddr;
+use std::rc::Rc;
+
+use crate::conn::io::{Conversation, FakeNet, Peer};
+use crate::easy::Easy;
+use crate::error::ErrorKind;
+use crate::handler::{
+    DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler,
+};
+use crate::id::ArenaPolicy;
+use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
+use crate::options::Options;
+use crate::proto::http1::fixture;
+use crate::time::ManualClock;
+
+/// Where the fake server listens.
+const PORT: u16 = 8990;
+
+/// One thing a transfer saw: which handler, or which kind of trace, and
+/// the bytes.
+type Saw = (&'static str, Vec<u8>);
+
+/// What a transfer saw, in the order it saw it.
+#[derive(Clone, Default)]
+struct Seen(Rc<RefCell<Vec<Saw>>>);
+
+impl Seen {
+    fn of(&self, what: &str) -> Vec<Vec<u8>> {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|(w, _)| *w == what)
+            .map(|(_, b)| b.clone())
+            .collect()
+    }
+
+    /// The trace's text lines, without the debug build's warning.
+    fn text(&self) -> Vec<String> {
+        self.of("text")
+            .into_iter()
+            .map(|l| String::from_utf8(l).unwrap())
+            .filter(|l| !l.starts_with("!!! WARNING") && !l.starts_with("This is a debug build"))
+            .collect()
+    }
+
+    /// Everything the body handler got, joined.
+    fn body(&self) -> Vec<u8> {
+        self.of("body").concat()
+    }
+}
+
+impl WriteHandler for Seen {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        self.0.borrow_mut().push(("body", body.to_vec()));
+        Write::Accepted
+    }
+}
+
+impl HeaderHandler for Seen {
+    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write {
+        let what = match origin {
+            HeaderOrigin::Trailer => "trailer",
+            HeaderOrigin::Interim => "interim",
+            HeaderOrigin::Header | HeaderOrigin::Connect => "header",
+        };
+        self.0.borrow_mut().push((what, line.to_vec()));
+        Write::Accepted
+    }
+}
+
+impl DebugHandler for Seen {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        let what = match kind {
+            DebugKind::Text => "text",
+            DebugKind::HeaderIn => "in",
+            DebugKind::HeaderOut => "out",
+            DebugKind::DataIn => "data",
+            _ => "other",
+        };
+        self.0.borrow_mut().push((what, data.to_vec()));
+    }
+}
+
+/// What a run came to.
+struct Ran {
+    result: Result<(), ErrorKind>,
+    /// What the server was sent.
+    request: Vec<u8>,
+    seen: Seen,
+    easy: Easy,
+}
+
+/// A verbose GET of `/path` from a server replying `reply`, closing after
+/// it if `close`, with the options `set` makes.
+fn run(path: &str, reply: &[u8], close: bool, set: impl FnOnce(&mut Options)) -> Ran {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::new(reply, close);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{PORT}{path}");
+    let seen = Seen::default();
+    let o = e.options_mut();
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.output.verbose = true;
+    o.http.user_agent = Some(b"curl/test".to_vec());
+    o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
+    o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    set(o);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let easy = m.remove(id, &mut NoEvents).unwrap().easy;
+    Ran {
+        result,
+        request: talk.received(),
+        seen,
+        easy,
+    }
+}
+
+/// The request test `test` expects, its `%VERSION` our user agent's.
+fn request_of(path: &str) -> Vec<u8> {
+    format!(
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n"
+    )
+    .into_bytes()
+}
+
+/// Test 1: the head goes, the response's head comes to the header
+/// handler line by line and its body to the write handler, and the
+/// connection closes as the response says.
+#[test]
+fn a_get_is_sent_and_its_response_delivered() {
+    let ran = run("/1", &fixture::reply(1), false, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.request, request_of("/1"));
+    assert_eq!(
+        ran.seen.of("out").concat(),
+        request_of("/1"),
+        "traced as sent"
+    );
+    assert_eq!(ran.seen.body(), b"-foo-\n");
+    let reply = fixture::reply(1);
+    let head_end = fixture::find(&reply, b"\r\n\r\n").unwrap() + 4;
+    assert_eq!(ran.seen.of("header").concat(), &reply[..head_end]);
+    assert_eq!(ran.seen.of("in"), ran.seen.of("header"), "each line traced");
+    assert_eq!(ran.seen.of("header").len(), 11);
+    let text = ran.seen.text();
+    assert_eq!(text[0], format!("  Trying 127.0.0.1:{PORT}...\n"));
+    assert_eq!(
+        &text[2..],
+        [
+            "Request completely sent off\n",
+            "shutting down connection #0\n"
+        ]
+    );
+    let sizes = ran.easy.report().sizes();
+    assert_eq!((sizes.download(), sizes.download_expected()), (6, Some(6)));
+}
+
+/// A response that keeps the connection leaves it in the pool.
+#[test]
+fn a_kept_connection_is_left_intact() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+    let ran = run("/", reply, false, |_| {});
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"abc".to_vec()));
+    assert_eq!(
+        ran.seen.text().last().unwrap(),
+        &format!("Connection #0 to host 127.0.0.1:{PORT} left intact\n")
+    );
+}
+
+/// The ways a response can end, each as the C tool showed.
+#[test]
+fn responses_end_as_c_ends_them() {
+    // The reply, whether the server closes after it, the result, the body
+    // and a line the trace must have.
+    type Case<'a> = (&'a [u8], bool, Result<(), ErrorKind>, &'a [u8], &'a str);
+    let cases: &[Case<'_>] = &[
+        // No size, no chunks, no close: the end is the close.
+        (
+            b"HTTP/1.1 200 OK\r\n\r\n-foo-\n",
+            true,
+            Ok(()),
+            b"-foo-\n",
+            "shutting down connection #0\n",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc",
+            true,
+            Err(ErrorKind::PartialFile),
+            b"abc",
+            "end of response with 3 bytes missing\n",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabcdef",
+            false,
+            Ok(()),
+            b"abc",
+            "Excess found writing body: excess = 3, size = 3, maxdownload = 3, bytecount = 3\n",
+        ),
+        (
+            b"HTTP/1.1 100 Continue\r\n\r\n",
+            true,
+            Err(ErrorKind::GotNothing),
+            b"",
+            "Empty reply from server\n",
+        ),
+        (
+            b"",
+            true,
+            Err(ErrorKind::GotNothing),
+            b"",
+            "Empty reply from server\n",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\n",
+            true,
+            Ok(()),
+            b"",
+            "shutting down connection #0\n",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc",
+            true,
+            Err(ErrorKind::PartialFile),
+            b"abc",
+            "transfer closed with outstanding read data remaining\n",
+        ),
+        (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nFunny-head: swsclose\r\n",
+            true,
+            Err(ErrorKind::PartialFile),
+            b"",
+            "transfer closed with 6 bytes remaining to read\n",
+        ),
+    ];
+    for &(reply, close, result, body, says) in cases {
+        let ran = run("/", reply, close, |_| {});
+        let shown = String::from_utf8_lossy(reply);
+        assert_eq!(
+            (ran.result, &ran.seen.body()[..]),
+            (result, body),
+            "{shown}"
+        );
+        assert!(
+            ran.seen.text().iter().any(|l| l == says),
+            "{shown}: {:?}",
+            ran.seen.text()
+        );
+    }
+}
+
+/// A line held to see whether the next continues it is delivered at the
+/// end, after the failure the end found (`Curl_http_done`).
+#[test]
+fn a_held_line_is_delivered_at_the_end() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nFunny-head: swsclose\r\n";
+    let ran = run("/", reply, true, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::PartialFile));
+    assert_eq!(
+        ran.seen.of("header").last().unwrap(),
+        b"Funny-head: swsclose\r\n"
+    );
+    let order: Vec<_> = ran
+        .seen
+        .0
+        .borrow()
+        .iter()
+        .filter(|(w, _)| matches!(*w, "text" | "header"))
+        .map(|(w, b)| (*w, String::from_utf8_lossy(b).into_owned()))
+        .collect();
+    let failed = order
+        .iter()
+        .position(|(_, l)| l.starts_with("transfer closed with"))
+        .unwrap();
+    assert_eq!(order[failed + 1].1, "Funny-head: swsclose\r\n");
+    // A line never ended is traced, but no handler takes it.
+    let ran = run("/", b"HTTP/1.1 200", true, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::GotNothing));
+    assert_eq!(ran.seen.of("in"), [b"HTTP/1.1 200".to_vec()]);
+    assert_eq!(ran.seen.of("header"), Vec::<Vec<u8>>::new());
+}
+
+/// Chunks are decoded into the body and their trailers delivered as
+/// trailers (test 266); raw, they go as they came (test 326).
+#[test]
+fn chunks_are_read_to_their_end() {
+    let ran = run("/266", &fixture::reply(266), false, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let abc = [&[b'a'; 64][..], &[b'b'; 48], &[b'c'; 32], b"\n"].concat();
+    assert_eq!(ran.seen.body(), abc);
+    assert_eq!(
+        ran.seen.of("trailer"),
+        [b"chunky-trailer: header data\r\n".to_vec()]
+    );
+    let ran = run("/326", &fixture::reply(326), false, |o| o.http.raw = true);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        ran.seen.body(),
+        b"18\r\nline 1\n line 2\n  line 3\n\r\n0\r\n\r\n"
+    );
+}
+
+/// A HEAD asks for no body, and one that comes anyway gives up the
+/// connection.
+#[test]
+fn a_head_wants_no_body() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n";
+    let ran = run("/", reply, false, |o| {
+        o.method = crate::options::Method::Head
+    });
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), Vec::new()));
+    assert!(ran.request.starts_with(b"HEAD / HTTP/1.1\r\n"));
+    assert!(ran.seen.text().last().unwrap().ends_with("left intact\n"));
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabcdef";
+    let ran = run("/", reply, false, |o| {
+        o.method = crate::options::Method::Head
+    });
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), Vec::new()));
+    assert_eq!(
+        ran.seen.text().last().unwrap(),
+        "shutting down connection #0\n"
+    );
+}
+
+/// A bad head fails the transfer with C's words.
+#[test]
+fn a_bad_head_fails() {
+    let ran = run("/", b"HTTP/1.1 200 OK\r\nno colon\r\n\r\n", true, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Header without colon\n".to_string())
+    );
+    assert_eq!(ran.seen.text().last().unwrap(), "closing connection #0\n");
+    let ran = run("/", b"hello\r\n", true, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Received HTTP/0.9 when not allowed\n".to_string())
+    );
+    let ran = run("/", b"hello\r\nworld", true, |o| o.http.allow_09 = true);
+    assert_eq!(
+        (ran.result, ran.seen.body()),
+        (Ok(()), b"hello\r\nworld".to_vec())
+    );
+}
+
+/// A body of a known size is read no further than its end: what follows
+/// it in a later read stays unread, and the connection is kept
+/// (`xfer_recv_resp`).
+#[test]
+fn a_body_is_read_no_further_than_its_size() {
+    let mut reply = b"HTTP/1.1 200 OK\r\nContent-Length: 20000\r\n\r\n".to_vec();
+    reply.resize(reply.len() + 20000, b'x');
+    reply.extend_from_slice(b"EXTRA");
+    let ran = run("/", &reply, false, |_| {});
+    assert_eq!((ran.result, ran.seen.body().len()), (Ok(()), 20000));
+    let reads: Vec<usize> = ran.seen.of("data").iter().map(Vec::len).collect();
+    // The head is 42 bytes of the first read.
+    assert_eq!(reads, [16384 - 42, 20000 - (16384 - 42)]);
+    assert!(ran.seen.text().last().unwrap().ends_with("left intact\n"));
+}

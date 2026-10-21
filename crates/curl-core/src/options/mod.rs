@@ -16,6 +16,8 @@ use crate::handler::{
 };
 use crate::time::TimeLimit;
 
+pub use crate::proto::http1::request::{UserHeaders, Version as HttpVersion};
+
 /// Every option of a transfer. The default sets nothing and allocates
 /// nothing.
 #[derive(Debug, Default)]
@@ -36,6 +38,7 @@ pub struct Options {
     pub progress: Progress,
     /// What a transfer sends, if its request has a body.
     pub upload: UploadSource,
+    pub http: Http,
     /// What the test protocol `script:` plays.
     #[cfg(any(test, feature = "test-util"))]
     pub script: Option<script::Script>,
@@ -78,6 +81,7 @@ impl Options {
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
             upload: self.upload.clone(),
+            http: self.http.try_clone()?,
             #[cfg(any(test, feature = "test-util"))]
             script: self.script.clone(),
         })
@@ -192,6 +196,41 @@ pub struct LowSpeed {
     pub limit: NonZeroU64,
     /// Seconds.
     pub time: NonZeroU16,
+}
+
+/// What an HTTP request says, and how its response is read.
+#[derive(Debug, Default)]
+pub struct Http {
+    /// `CURLOPT_USERAGENT`.
+    pub user_agent: Option<Vec<u8>>,
+    /// The application's header lines (`CURLOPT_HTTPHEADER`).
+    pub headers: UserHeaders,
+    pub version: HttpVersion,
+    /// A response that is no HTTP is read as HTTP/0.9
+    /// (`CURLOPT_HTTP09_ALLOWED`).
+    pub allow_09: bool,
+    /// `Content-Length` is not read (`CURLOPT_IGNORE_CONTENT_LENGTH`).
+    pub ignore_content_length: bool,
+    /// Transfer codings are passed on as they came, not decoded
+    /// (`CURLOPT_HTTP_TRANSFER_DECODING` off).
+    pub raw: bool,
+    /// Codings other than chunked are asked for and decoded
+    /// (`CURLOPT_TRANSFER_ENCODING`).
+    pub transfer_encoding: bool,
+}
+
+impl Http {
+    fn try_clone(&self) -> Result<Http, OutOfMemory> {
+        Ok(Http {
+            user_agent: self.user_agent.as_deref().map(copy).transpose()?,
+            headers: self.headers.try_clone()?,
+            version: self.version,
+            allow_09: self.allow_09,
+            ignore_content_length: self.ignore_content_length,
+            raw: self.raw,
+            transfer_encoding: self.transfer_encoding,
+        })
+    }
 }
 
 /// What a transfer tells the application besides the body.

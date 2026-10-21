@@ -246,6 +246,7 @@ impl HeadParser {
     }
 
     /// Whether the final head has ended: what follows is body.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the driver reads framing"))]
     pub(crate) fn is_done(&self) -> bool {
         self.phase == Phase::Done
     }
@@ -256,13 +257,24 @@ impl HeadParser {
         self.request_bytes
     }
 
+    /// Bytes read and not given out: a line not ended, or one held to see
+    /// whether the next continues it (`state.headerb` at the end).
+    pub(crate) fn held(&self) -> &[u8] {
+        if self.given { &[] } else { &self.line }
+    }
+
+    /// Count `held`, delivered at the end, against the limits.
+    pub(crate) fn count_held(
+        &mut self,
+        len: u64,
+        transfer_bytes: &mut u64,
+    ) -> Result<(), HeadError> {
+        self.count(len, transfer_bytes)
+    }
+
     /// Whether the server sent nothing that counts: no head but interim
     /// ones, and no `body` bytes (`Curl_http_done`'s "Empty reply from
     /// server").
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no transfer reads a response yet")
-    )]
     pub(crate) fn got_nothing(&self, body: u64) -> bool {
         body + self.request_bytes - self.interim_bytes == 0
     }

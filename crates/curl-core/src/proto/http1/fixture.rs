@@ -3,7 +3,7 @@
 
 /// The bytes the test server replies with: the first `<data>` of
 /// `<reply>`.
-pub(super) fn reply(test: u32) -> Vec<u8> {
+pub(crate) fn reply(test: u32) -> Vec<u8> {
     let path = format!("{}/../../tests/data/test{test}", env!("CARGO_MANIFEST_DIR"));
     let file = std::fs::read(path).unwrap();
     let reply = &file[find(&file, b"<reply>").expect("a reply")..];
@@ -80,11 +80,11 @@ fn hex_bytes(text: &[u8]) -> Vec<u8> {
     out
 }
 
-pub(super) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+pub(crate) fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-pub(super) fn replace(text: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+pub(crate) fn replace(text: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut at = 0;
     while let Some(i) = find(&text[at..], from) {

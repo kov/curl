@@ -80,16 +80,38 @@ fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_
     kind
 }
 
+/// Bytes a verbose transfer traces (`Curl_debug`).
+pub(crate) fn bytes<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
+    if cx.easy().options().output.verbose {
+        out(cx, kind, bytes);
+    }
+}
+
 /// Text to the debug handler, or without one to standard error after
-/// `* ` (`Curl_debug`).
+/// `* `.
 fn text<H: Host>(cx: &mut StepCx<'_, H>, line: &[u8]) {
+    out(cx, DebugKind::Text, line);
+}
+
+/// To the debug handler, or without one, text and headers to standard
+/// error after their mark (`Curl_debug`).
+fn out<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
     let options = cx.easy().options();
     match options.callbacks.debug.clone() {
-        Some(handler) => handler.debug(&mut TransferCx::new(cx), DebugKind::Text, line),
+        Some(handler) => handler.debug(&mut TransferCx::new(cx), kind, bytes),
         None => {
+            let mark: &[u8] = match kind {
+                DebugKind::Text => b"* ",
+                DebugKind::HeaderIn => b"< ",
+                DebugKind::HeaderOut => b"> ",
+                DebugKind::DataIn
+                | DebugKind::DataOut
+                | DebugKind::SslDataIn
+                | DebugKind::SslDataOut => return,
+            };
             let sink = options.callbacks.stderr.as_ref();
-            progress::to_stderr(sink, b"* ");
-            progress::to_stderr(sink, line);
+            progress::to_stderr(sink, mark);
+            progress::to_stderr(sink, bytes);
         }
     }
 }

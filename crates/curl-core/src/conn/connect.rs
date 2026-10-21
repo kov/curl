@@ -13,7 +13,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 
 use super::io::{Connect, Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnNumber, Destination, RecvBuf, Route, Scheme, SendBuf, Transport, Use};
+use super::{Conn, ConnNumber, Destination, RecvBuf, Route, Scheme, Transport, Use};
 use crate::time::Instant;
 
 /// A connection being set up.
@@ -164,7 +164,8 @@ impl ConnectMachine {
                             connected_at: now,
                             use_: Use::Leased(NonZeroU32::MIN),
                             rx: RecvBuf::default(),
-                            tx: SendBuf::default(),
+                            served: false,
+                            close: false,
                         }))
                     }
                     Ok(Some(error)) | Err(error) => Err(a.fail(net, error)),

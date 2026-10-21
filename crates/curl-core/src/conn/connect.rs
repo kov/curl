@@ -16,7 +16,7 @@ use std::num::NonZeroU32;
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use super::dns::{Answer, DnsCache, Lookup};
-use super::io::{Connect, Events, Net, Socket, SocketPoll};
+use super::io::{Connect, Events, Family, Net, ResolveFailure, Socket, SocketPoll};
 use super::{Conn, ConnNumber, RecvBuf, Route, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
@@ -185,12 +185,23 @@ pub(crate) enum Failure {
 /// Why a setup failed; any socket it had is closed.
 #[derive(Debug)]
 pub(crate) enum ConnectError {
-    /// The name has no address this build can find.
-    Unresolved,
+    /// The name has no address to try.
+    Unresolved(Unresolved),
     /// The last attempt failed.
     Failed(Failure),
     /// Memory ran out: no failure of the peer's.
     OutOfMemory,
+}
+
+/// Why a name has no address to try.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unresolved {
+    /// The resolver said so now.
+    Resolver(ResolveFailure),
+    /// It said so before, and the cache kept its word.
+    Negative,
+    /// None of the addresses found is of the family allowed.
+    NoAddress,
 }
 
 impl ConnectMachine {
@@ -238,10 +249,10 @@ impl ConnectMachine {
         let delay = setup.delay;
         let r = match &mut self.stage {
             Stage::Resolving => {
-                let (answer, found) = self.resolve(setup, now)?;
+                let (answer, found) = self.resolve(net, setup, now)?;
                 let eyeballs = Eyeballs::new(answer, self.route.ip);
                 if !eyeballs.more() {
-                    return Err(ConnectError::Unresolved);
+                    return Err(ConnectError::Unresolved(Unresolved::NoAddress));
                 }
                 self.stage = Stage::Racing(Racing {
                     eyeballs,
@@ -311,23 +322,43 @@ impl ConnectMachine {
     }
 
     /// The peer's answer (`hostip_resolv`): what the cache keeps, or what
-    /// the name stands for without asking a resolver, then kept.
+    /// the name stands for without asking a resolver, or what the system's
+    /// resolver finds, then kept. That the name does not exist is kept
+    /// too; that the resolver could not tell is not.
     fn resolve(
         &self,
+        net: &mut dyn Net,
         setup: Setup<'_>,
         now: Instant,
     ) -> Result<(TryRc<Answer>, Found), ConnectError> {
         let peer = self.route.destination();
         let (name, port) = (peer.name(), peer.port());
-        let found = match setup.dns.lookup(name, port, setup.wildcard, now) {
+        let family = match self.route.ip {
+            IpVersion::Any => Family::Any,
+            IpVersion::V4 => Family::V4,
+            IpVersion::V6 => Family::V6,
+        };
+        let found = match setup.dns.lookup(name, port, family, setup.wildcard, now) {
             Lookup::Found(answer) => return Ok((answer, Found::Cached)),
+            Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
             Lookup::Stale => Found::Stale,
             Lookup::Missing => Found::Resolved,
         };
         let oom = |OutOfMemory| ConnectError::OutOfMemory;
-        let answer = shortcut(peer.shown(), name)
-            .map_err(oom)?
-            .ok_or(ConnectError::Unresolved)?;
+        let answer = match shortcut(peer.shown(), name).map_err(oom)? {
+            Some(answer) => answer,
+            None => match net.resolve(name, family) {
+                Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
+                Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
+                Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
+                    let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
+                    let none = TryRc::try_new(none).map_err(oom)?;
+                    setup.dns.put(none, port, now, false).map_err(oom)?;
+                    return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
+                }
+                Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
+            },
+        };
         let answer = TryRc::try_new(answer).map_err(oom)?;
         setup
             .dns
@@ -401,8 +432,8 @@ impl Attempt {
 /// The addresses `host`, as the URL names it, stands for without asking
 /// a resolver (`hostip_resolv_start`'s shortcuts): an address itself, or
 /// the loopback addresses for `localhost` and the names under it (RFC
-/// 6761). None for any other name, until a resolver lands. The answer is
-/// for `name`, the host without brackets.
+/// 6761). None for any other name, which a resolver must find. The answer
+/// is for `name`, the host without brackets.
 fn shortcut(host: &[u8], name: &[u8]) -> Result<Option<Answer>, OutOfMemory> {
     let mut addrs = Vec::new();
     if let Some(ip) = literal(host) {

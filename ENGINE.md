@@ -1044,15 +1044,21 @@ pub enum Resolve { Answer(DnsAnswer), Pending(ResolveId) }
 and `localhost`), then getaddrinfo, then c-ares; the resolver-start callback is announced for
 the shortcuts too (655 and 464).
 
-Built so far: the shortcuts and the cache. `DnsCache` is the multi's (the share's, behind
-`Lock`, when shares land): entries by name, in any case, and port, each a `TryRc<Answer>` that
-the connect machine using it shares. A setup looks in the cache first (`hostip_resolv`), then
-asks the shortcuts and keeps what they answer for the cache's timeout (60 seconds; the option
-lands with the resolver). `CURLOPT_RESOLVE` entries are read into the cache when a transfer
+Built so far: the shortcuts, the system's resolver and the cache. The resolver is not yet the
+trait above: `Net::resolve(name, Family)` asks `getaddrinfo` and waits for its answer, as C's
+synchronous resolver does, so the fake network that stands in for the system's sockets stands
+in for its names too; the trait comes with c-ares, the first resolver that answers later.
+`DnsCache` is the multi's (the share's, behind `Lock`, when shares land): entries by name, in
+any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
+the family asked (`dns_queries`): an answer for one family is no answer for both. A setup
+looks in the cache first (`hostip_resolv`), then asks the shortcuts, then the resolver, and
+keeps what they answer for the cache's timeout (60 seconds; the option is still to come). That
+a name does not exist, or has no address of the family asked, is kept too, as an answer with no
+addresses ("Negative DNS entry"); that the resolver could not answer is not. A failure gives
+the reference build's reason, c-ares's ("Domain name not found"), then fails again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
 stamp it last read); they are permanent unless given with `+`, and `*` answers for any name on
-its port. A transfer's end prunes what has gone stale (`multi_done`). Negative entries only for
-an authoritative NXDOMAIN, once a resolver can say so.
+its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ---
 

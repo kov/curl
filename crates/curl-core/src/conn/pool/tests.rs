@@ -389,7 +389,7 @@ fn unresolved_names_and_immediate_failures() {
     let named = to(TCP, b"example.com", 80);
     let named = new(&mut pool, named, &mut net, now);
     let err = connect(&mut pool, &named, &mut net, now).unwrap_err();
-    assert!(matches!(err, ConnectError::Unresolved), "{err:?}");
+    assert!(matches!(err, ConnectError::Unresolved(_)), "{err:?}");
     let nobody = new(&mut pool, tcp(9), &mut net, now);
     resolved(&mut pool, &nobody, &mut net, now);
     let err = connect(&mut pool, &nobody, &mut net, now).unwrap_err();

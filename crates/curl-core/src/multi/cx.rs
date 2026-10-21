@@ -5,10 +5,12 @@
 use curl_alloc::OutOfMemory;
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use crate::conn::io::{Connect, Net, PollFd, Socket, SocketKey, SocketPoll};
+use crate::conn::io::{
+    Connect, Family, Net, PollFd, ResolveFailure, Socket, SocketKey, SocketPoll,
+};
 use crate::conn::{DnsCache, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
@@ -134,6 +136,10 @@ impl<H: Host> Net for Announcing<'_, H> {
     fn close(&mut self, socket: Box<dyn Socket>) {
         self.forget(socket.key());
         self.net.close(socket);
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+        self.net.resolve(name, family)
     }
 }
 

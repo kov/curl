@@ -9,11 +9,11 @@ use std::net::{IpAddr, SocketAddr};
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
-use crate::conn::io::Events;
+use crate::conn::io::{Events, ResolveFailure};
 use crate::conn::{
     Acquired, Answer, BadEntry, BadVia, Conn, ConnLease, ConnectError, Connected, Failure, Finish,
     Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route,
-    Setup, Tcp, WaitReason, parse_entry,
+    Setup, Tcp, Unresolved, WaitReason, parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -896,12 +896,35 @@ fn connect_failed<H: Host>(
 ) -> ErrorKind {
     match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
-        ConnectError::Unresolved => {
+        ConnectError::Unresolved(why) => {
             let to = via.unwrap_or(origin);
             let (host, port) = (Bytes(to.name()), to.port());
-            trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
             let kind = ErrorKind::CouldntResolveHost;
-            return trace::fail(cx, kind, format_args!("Could not resolve host: {host}"));
+            // The reference build's resolver, c-ares, gives its reason
+            // (`ares_strerror`), then fails again without it.
+            let reason = match why {
+                Unresolved::Resolver(ResolveFailure::NotFound) => Some("Domain name not found"),
+                Unresolved::Resolver(ResolveFailure::NoData) => {
+                    Some("DNS server returned answer with no data")
+                }
+                _ => None,
+            };
+            if why == Unresolved::Negative {
+                trace::info(cx, format_args!("Negative DNS entry"));
+            }
+            let kind = match reason {
+                Some(reason) => {
+                    let first = format_args!("Could not resolve host: {host} ({reason})");
+                    let kind = trace::fail(cx, kind, first);
+                    trace::fail(cx, kind, format_args!("Could not resolve host: {host}"))
+                }
+                None => trace::fail(cx, kind, format_args!("Could not resolve host: {host}")),
+            };
+            trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
+            if why == Unresolved::Negative {
+                trace::info(cx, format_args!("Could not resolve: {host}"));
+            }
+            return kind;
         }
         ConnectError::Failed(failure) => trace_failure(cx, failure),
     }

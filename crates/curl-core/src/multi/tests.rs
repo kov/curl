@@ -2,7 +2,7 @@ use super::*;
 use curl_alloc::TryArc;
 
 use crate::conn::io::{Events, FakeNet, Net, PollFd, Waker};
-use crate::options::Options;
+use crate::options::{IpVersion, Options};
 use crate::time::{ManualClock, TimeLimit};
 
 /// Logs every timer call, and aborts the one numbered `abort_at` (from 1).
@@ -767,6 +767,15 @@ impl Net for BrokenNet {
     }
 
     fn close(&mut self, _: Box<dyn crate::conn::io::Socket>) {}
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        let _ = (name, family);
+        Err(crate::conn::io::ResolveFailure::Failed)
+    }
 }
 
 #[test]
@@ -1094,7 +1103,8 @@ fn networked() -> (Multi, ManualClock) {
         .with_peer(
             std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 4)),
             Peer::Silent,
-        );
+        )
+        .with_name("v4.test", &[[127, 0, 0, 1].into()]);
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
@@ -1242,8 +1252,9 @@ fn unresolved_and_immediate_failures() {
     assert_eq!(
         trace_of(&named_lines),
         [
-            "Could not resolve: example.com:80\n",
+            "Could not resolve host: example.com (Domain name not found)\n",
             "Could not resolve host: example.com\n",
+            "Could not resolve: example.com:80\n",
             "closing connection #0\n",
         ]
     );
@@ -1381,6 +1392,14 @@ impl Net for Closes {
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
         self.1.set(self.1.get() + 1);
         self.0.close(socket);
+    }
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.0.resolve(name, family)
     }
 }
 
@@ -1625,6 +1644,66 @@ fn stale_answers_are_dropped() {
     let pruned = run(&mut m, "tcp://localhost:1/");
     assert!(!pruned.contains(&zapped), "{pruned:?}");
     assert!(pruned.contains(&"Host localhost:1 was resolved.\n".to_string()));
+}
+
+/// A name neither the cache nor the shortcuts know is asked of the
+/// resolver; that it does not exist is kept, for the family asked, and
+/// told from the cache after (`fetch_entry`, `Curl_async_failed`).
+#[test]
+fn the_resolver_s_answers_are_kept() {
+    let (mut m, _clock) = networked();
+    let mut run = |url: &str, ip| {
+        let (mut e, lines) = traced(url);
+        e.options_mut().ip_version = ip;
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        let result = messages(&mut m).last().map(|r| r.1);
+        m.remove(id, &mut NoEvents).unwrap();
+        (result, trace_of(&lines))
+    };
+    let failed = Some(Err(ErrorKind::CouldntResolveHost));
+    let (result, lines) = run("tcp://nowhere.test:1/", IpVersion::Any);
+    assert_eq!(result, failed);
+    assert_eq!(
+        lines,
+        [
+            "Could not resolve host: nowhere.test (Domain name not found)\n",
+            "Could not resolve host: nowhere.test\n",
+            "Could not resolve: nowhere.test:1\n",
+            "closing connection #0\n",
+        ]
+    );
+    let (result, lines) = run("tcp://nowhere.test:1/", IpVersion::Any);
+    assert_eq!(result, failed);
+    assert_eq!(
+        lines,
+        [
+            "Negative DNS entry\n",
+            "Could not resolve host: nowhere.test\n",
+            "Could not resolve: nowhere.test:1\n",
+            "Could not resolve: nowhere.test\n",
+            "closing connection #1\n",
+        ]
+    );
+    // No IPv6 address: kept as such, which says nothing of IPv4.
+    let (result, lines) = run("tcp://v4.test:1/", IpVersion::V6);
+    assert_eq!(result, failed);
+    let no_data = "Could not resolve host: v4.test (DNS server returned answer with no data)\n";
+    assert_eq!(lines[0], no_data);
+    let (result, lines) = run("tcp://v4.test:1/", IpVersion::Any);
+    assert_eq!(result, Some(Ok(())));
+    assert_eq!(
+        lines[..3],
+        [
+            "Host v4.test:1 was resolved.\n",
+            "IPv6: (none)\n",
+            "IPv4: 127.0.0.1\n"
+        ]
+    );
+    // An answer for both answers for one.
+    let (result, lines) = run("tcp://v4.test:1/", IpVersion::V4);
+    assert_eq!(result, Some(Ok(())));
+    assert_eq!(lines[0], "Hostname v4.test was found in DNS cache\n");
 }
 
 /// An entry the list cannot be read with fails the transfer, and the list
@@ -1904,7 +1983,7 @@ fn a_connection_serves_only_the_peer_it_goes_through() {
     // No peer: the URL's host, which nothing resolves.
     let (result, direct) = run(&[]);
     assert_eq!(result, Err(ErrorKind::CouldntResolveHost));
-    assert_eq!(direct[0], "Could not resolve: foo.test:9\n");
+    assert_eq!(direct[2], "Could not resolve: foo.test:9\n");
     // A failure names both.
     let (result, refused) = run(&[b":9:127.0.0.1:2"]);
     assert_eq!(result, Err(ErrorKind::CouldntConnect));
@@ -2000,6 +2079,14 @@ impl Net for SharedNet {
 
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
         self.0.borrow_mut().close(socket);
+    }
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.0.borrow_mut().resolve(name, family)
     }
 }
 

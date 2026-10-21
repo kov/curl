@@ -7,23 +7,41 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
+use crate::conn::io::Family;
 use crate::time::Instant;
 
 /// The addresses a name stands for, in the order they were found (C's
-/// `Curl_dns_entry`).
+/// `Curl_dns_entry`); none for a name the resolver said does not exist.
 #[derive(Debug)]
 pub(crate) struct Answer {
     /// The name as it was resolved, or given: an address, a host, or `*`
     /// for any.
     name: Vec<u8>,
     addrs: Vec<IpAddr>,
+    /// The addresses asked for (`dns_queries`): an answer for one family
+    /// answers no lookup for both.
+    family: Family,
 }
 
 impl Answer {
+    /// The addresses of either family `name` stands for.
     pub(crate) fn new(name: &[u8], addrs: Vec<IpAddr>) -> Result<Answer, OutOfMemory> {
+        Answer::of(name, addrs, Family::Any)
+    }
+
+    /// What a resolver answered for `name`, asked for `family`.
+    pub(crate) fn of(
+        name: &[u8],
+        addrs: Vec<IpAddr>,
+        family: Family,
+    ) -> Result<Answer, OutOfMemory> {
         let mut owned = Vec::new();
         owned.try_extend_from_slice(name)?;
-        Ok(Answer { name: owned, addrs })
+        Ok(Answer {
+            name: owned,
+            addrs,
+            family,
+        })
     }
 
     pub(crate) fn name(&self) -> &[u8] {
@@ -67,6 +85,8 @@ struct Entry {
 #[derive(Debug)]
 pub(crate) enum Lookup {
     Found(TryRc<Answer>),
+    /// The name was found not to exist.
+    Negative,
     /// It had gone stale, and is gone.
     Stale,
     Missing,
@@ -81,12 +101,13 @@ impl DnsCache {
     }
 
     /// What is kept for `name` and `port`, or for any name on the port if
-    /// `wildcard` (`fetch_entry`): an entry older than `max_age` is
-    /// dropped.
+    /// `wildcard` (`fetch_entry`), if it answers for `family`: a stale
+    /// entry is dropped.
     pub(crate) fn lookup(
         &mut self,
         name: &[u8],
         port: u16,
+        family: Family,
         wildcard: bool,
         now: Instant,
     ) -> Lookup {
@@ -100,7 +121,14 @@ impl DnsCache {
             self.entries.remove(row);
             return Lookup::Stale;
         }
-        Lookup::Found(self.entries[row].answer.clone())
+        let answer = &self.entries[row].answer;
+        if answer.family != Family::Any && answer.family != family {
+            return Lookup::Missing;
+        }
+        if answer.addrs.is_empty() {
+            return Lookup::Negative;
+        }
+        Lookup::Found(answer.clone())
     }
 
     /// Keep `answer` for its name and `port` from `now`, in place of what
@@ -437,11 +465,11 @@ mod tests {
         let mut cache = DnsCache::default();
         assert!(!cache.put(answer(b"Example.com"), 80, now, false).unwrap());
         assert!(matches!(
-            cache.lookup(b"example.COM", 80, false, now),
+            cache.lookup(b"example.COM", 80, Family::Any, false, now),
             Lookup::Found(_)
         ));
         assert!(matches!(
-            cache.lookup(b"example.com", 81, false, now),
+            cache.lookup(b"example.com", 81, Family::Any, false, now),
             Lookup::Missing
         ));
         assert!(
@@ -450,30 +478,36 @@ mod tests {
         );
         assert!(!cache.put(answer(b"*"), 81, now, true).unwrap());
         assert!(matches!(
-            cache.lookup(b"other", 81, false, now),
+            cache.lookup(b"other", 81, Family::Any, false, now),
             Lookup::Missing
         ));
-        let Lookup::Found(any) = cache.lookup(b"other", 81, true, now) else {
+        let Lookup::Found(any) = cache.lookup(b"other", 81, Family::Any, true, now) else {
             panic!("the wildcard");
         };
         assert_eq!(any.name(), b"*");
         let later = now.after(CACHE_TIMEOUT);
         assert!(matches!(
-            cache.lookup(b"example.com", 80, false, later),
+            cache.lookup(b"example.com", 80, Family::Any, false, later),
             Lookup::Stale
         ));
         assert!(matches!(
-            cache.lookup(b"example.com", 80, false, later),
+            cache.lookup(b"example.com", 80, Family::Any, false, later),
             Lookup::Missing
         ));
         assert!(
-            matches!(cache.lookup(b"*", 81, false, later), Lookup::Found(_)),
+            matches!(
+                cache.lookup(b"*", 81, Family::Any, false, later),
+                Lookup::Found(_)
+            ),
             "for good"
         );
         assert!(cache.put(answer(b"a"), 1, now, false).is_ok());
         cache.prune(later);
         assert!(
-            matches!(cache.lookup(b"a", 1, false, now), Lookup::Missing),
+            matches!(
+                cache.lookup(b"a", 1, Family::Any, false, now),
+                Lookup::Missing
+            ),
             "pruned"
         );
         assert!(cache.remove(b"*", 81));

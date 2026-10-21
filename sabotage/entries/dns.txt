@@ -72,3 +72,28 @@ witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
 --- new
     if read.is_ok() || read.is_err() {
         cx.easy_mut().resolve_read = list;
+
+=== a name found not to exist is not kept
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_resolver_s_answers_are_kept
+--- old
+                    setup.dns.put(none, port, now, false).map_err(oom)?;
+--- new
+                    drop((none, port));
+
+=== an answer for one family answers for both
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::tests::the_resolver_s_answers_are_kept
+--- old
+        if answer.family != Family::Any && answer.family != family {
+--- new
+        if answer.family != Family::Any && answer.family != family && false {
+
+=== the announcing network resolves nothing
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::the_resolver_s_answers_are_kept
+--- old
+        self.net.resolve(name, family)
+--- new
+        let _ = (name, family);
+        Err(ResolveFailure::NotFound)

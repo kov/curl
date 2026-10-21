@@ -3,7 +3,7 @@
 
 use std::fmt;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::time::Duration;
 
@@ -13,6 +13,7 @@ use crate::time::Instant;
 
 pub use curl_os::net::{Connect, Recv, Sent};
 pub use curl_os::poll::{Events, PollFd};
+pub use curl_os::resolve::{Failure as ResolveFailure, Family};
 pub use curl_os::wake::Waker;
 
 /// A socket's number, as C hands it to the application (`curl_socket_t`).
@@ -105,6 +106,10 @@ pub trait Net {
 
     /// Close a socket the network opened.
     fn close(&mut self, socket: Box<dyn Socket>);
+
+    /// The addresses of `name`, of `family`, as the system's resolver
+    /// finds them, waiting for its answer (C's synchronous resolver).
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure>;
 }
 
 impl Socket for curl_os::net::TcpSocket {
@@ -155,6 +160,10 @@ impl Net for SystemNet {
 
     fn close(&mut self, socket: Box<dyn Socket>) {
         drop(socket);
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+        curl_os::resolve::lookup(name, family)
     }
 }
 
@@ -343,6 +352,8 @@ impl Conversation {
 pub struct FakeNet {
     clock: crate::time::ManualClock,
     peers: Vec<(SocketAddr, Peer)>,
+    /// The names it knows, with their addresses in the order answered.
+    names: Vec<(Vec<u8>, Vec<IpAddr>)>,
     /// The conversations to come, each for the next connection to its
     /// address.
     conversations: Vec<(SocketAddr, Conversation)>,
@@ -375,6 +386,7 @@ impl FakeNet {
         FakeNet {
             clock,
             peers: Vec::new(),
+            names: Vec::new(),
             conversations: Vec::new(),
             open,
         }
@@ -389,6 +401,16 @@ impl FakeNet {
     }
 
     /// A peer at `addr`.
+    /// `name` resolves to `addrs`; any name not given is not found.
+    pub fn with_name(mut self, name: &str, addrs: &[IpAddr]) -> FakeNet {
+        let (mut n, mut a) = (Vec::new(), Vec::new());
+        n.try_extend_from_slice(name.as_bytes())
+            .expect("a test's names fit");
+        a.try_extend_from_slice(addrs).expect("a test's names fit");
+        self.names.try_push((n, a)).expect("a test's names fit");
+        self
+    }
+
     pub fn with_peer(mut self, addr: SocketAddr, peer: Peer) -> FakeNet {
         self.peers
             .try_push((addr, peer))
@@ -506,6 +528,27 @@ impl Net for FakeNet {
             "{:?} closed twice",
             socket.key()
         );
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+        let (_, addrs) = self
+            .names
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .ok_or(ResolveFailure::NotFound)?;
+        let wanted = |a: &&IpAddr| match family {
+            Family::Any => true,
+            Family::V4 => a.is_ipv4(),
+            Family::V6 => a.is_ipv6(),
+        };
+        let mut found = Vec::new();
+        for &a in addrs.iter().filter(wanted) {
+            found.try_push(a).map_err(|_| ResolveFailure::OutOfMemory)?;
+        }
+        if found.is_empty() {
+            return Err(ResolveFailure::NoData);
+        }
+        Ok(found)
     }
 }
 

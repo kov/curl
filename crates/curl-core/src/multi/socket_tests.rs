@@ -97,6 +97,14 @@ impl Net for Counting {
         self.1.set(self.1.get() + 1);
         self.0.close(socket);
     }
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.0.resolve(name, family)
+    }
 }
 
 /// A multi over peers that refuse (port 2), stay silent (3) and accept

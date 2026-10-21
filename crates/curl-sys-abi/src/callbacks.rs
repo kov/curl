@@ -12,7 +12,9 @@ use core::ffi::{c_char, c_int, c_long, c_void};
 use core::num::NonZeroUsize;
 use core::ptr::{self, NonNull};
 
-use curl_alloc::{OutOfMemory, try_format};
+use core::cell::Cell;
+
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_format};
 use curl_core::handler::{
     DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow,
     ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink, Write, WriteHandler,
@@ -219,23 +221,124 @@ pub(crate) fn sync_progress(
     Ok(())
 }
 
-/// The body an upload sends, from the read function
-/// (`CURLOPT_INFILESIZE`).
+/// What `CURLOPT_POSTFIELDS`, `CURLOPT_COPYPOSTFIELDS` and
+/// `CURLOPT_POSTFIELDSIZE` set, kept whatever the method until set again.
+#[derive(Clone)]
+pub(crate) struct Post {
+    pub(crate) fields: PostFields,
+    /// `CURLOPT_POSTFIELDSIZE`, -1 for the fields' length.
+    pub(crate) size: i64,
+}
+
+impl Post {
+    pub(crate) fn new() -> Post {
+        Post {
+            fields: PostFields::None,
+            size: -1,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) enum PostFields {
+    /// None: a POST reads the read function.
+    None,
+    /// The application's bytes, read where they are when sent.
+    App(NonNull<u8>),
+    /// The handle's copy of them.
+    Copied(TryRc<Vec<u8>>),
+}
+
+/// The body the method sends (`Curl_pretransfer`'s `infilesize`,
+/// `set_reader`): an upload reads the read function, `CURLOPT_INFILESIZE`
+/// long; a POST its fields, as long as `CURLOPT_POSTFIELDSIZE` says or
+/// up to their zero byte, else the read function, as long as
+/// `CURLOPT_POSTFIELDSIZE` says.
 pub(crate) fn sync_upload(
     options: &mut Options,
     easy: NonNull<ShimEasy>,
     set: &CSettings,
 ) -> Result<(), OutOfMemory> {
-    options.upload = if options.method == Method::Upload {
-        UploadSource::Read {
+    let read = |size: Option<u64>| -> Result<UploadSource, OutOfMemory> {
+        Ok(UploadSource::Read {
             handler: Handler::read(Adapter(easy))?,
             rewind: Some(Handler::rewind(Adapter(easy))?),
-            size: u64::try_from(set.in_file_size).ok(),
+            size,
+        })
+    };
+    options.upload = match options.method {
+        Method::Upload => read(u64::try_from(set.in_file_size).ok())?,
+        Method::Post => {
+            // SAFETY: the handle is alive while its options are set.
+            let post = unsafe { easy.as_ref() }.post.borrow();
+            let size = u64::try_from(post.size).ok();
+            match &post.fields {
+                PostFields::None => read(size)?,
+                PostFields::Copied(bytes) => match size.and_then(|n| usize::try_from(n).ok()) {
+                    Some(n) if n < bytes.len() => {
+                        let mut prefix = Vec::new();
+                        prefix.try_extend_from_slice(&bytes[..n])?;
+                        UploadSource::Bytes(TryRc::try_new(prefix)?)
+                    }
+                    _ => UploadSource::Bytes(bytes.clone()),
+                },
+                PostFields::App(at) => {
+                    let len = match size {
+                        Some(n) => usize::try_from(n).unwrap_or(usize::MAX),
+                        // SAFETY: the application's fields, without a
+                        // size, are a C string.
+                        None => unsafe { libc::strlen(at.as_ptr().cast()) },
+                    };
+                    let fields = Fields(TryRc::try_new(AppFields {
+                        at: *at,
+                        len,
+                        read: Cell::new(0),
+                    })?);
+                    UploadSource::Read {
+                        handler: Handler::read(fields.clone())?,
+                        rewind: Some(Handler::rewind(fields)?),
+                        size: Some(len as u64),
+                    }
+                }
+            }
         }
-    } else {
-        UploadSource::None
+        Method::Get | Method::Head => UploadSource::None,
     };
     Ok(())
+}
+
+/// The application's `CURLOPT_POSTFIELDS`, read where they are as they
+/// are sent, by the read and the rewind both.
+#[derive(Clone)]
+struct Fields(TryRc<AppFields>);
+
+struct AppFields {
+    at: NonNull<u8>,
+    len: usize,
+    read: Cell<usize>,
+}
+
+impl ReadHandler for Fields {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
+        let fields = &*self.0;
+        let read = fields.read.get();
+        let n = (fields.len - read).min(buf.len());
+        let start = fields.at.as_ptr().wrapping_add(read);
+        // SAFETY: the application keeps its fields, `len` bytes, alive and
+        // unchanged until the transfer is over, as `CURLOPT_POSTFIELDS`
+        // requires; `read + n` is within them.
+        let from = unsafe { core::slice::from_raw_parts(start, n) };
+        buf[..n].copy_from_slice(from);
+        fields.read.set(read + n);
+        NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
+    }
+}
+
+impl Rewind for Fields {
+    fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
+        self.0.read.set(0);
+        Ok(())
+    }
 }
 
 /// Calls the application on behalf of the handle at its pointer.

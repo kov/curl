@@ -43,6 +43,8 @@ pub(crate) struct ShimEasy {
     home: RefCell<Home>,
     pub(crate) ccb: Cell<CCallbacks>,
     pub(crate) set: Cell<CSettings>,
+    /// What a POST sends, if not read from the read function.
+    pub(crate) post: RefCell<callbacks::Post>,
     /// `CURLOPT_ERRORBUFFER`.
     pub(crate) errbuf: Cell<*mut c_char>,
     /// The multi `curl_easy_perform` runs in, between performs.
@@ -82,6 +84,7 @@ impl ShimEasy {
         easy: Easy,
         ccb: CCallbacks,
         set: CSettings,
+        post: callbacks::Post,
         errbuf: *mut c_char,
     ) -> Result<NonNull<ShimEasy>, OutOfMemory> {
         let shim = try_box(ShimEasy::empty(false, ccb, set))?;
@@ -89,6 +92,7 @@ impl ShimEasy {
         // SAFETY: just made, and reached only through this pointer.
         let me = unsafe { shim.as_ref() };
         me.errbuf.set(errbuf);
+        *me.post.borrow_mut() = post;
         let mut easy = easy;
         if let Err(e) = callbacks::install(easy.options_mut(), shim, &set, &ccb, errbuf) {
             // SAFETY: made above by `Box::leak`, used nowhere else.
@@ -112,6 +116,7 @@ impl ShimEasy {
             home: RefCell::new(Home::Nowhere),
             ccb: Cell::new(ccb),
             set: Cell::new(set),
+            post: RefCell::new(callbacks::Post::new()),
             errbuf: Cell::new(ptr::null_mut()),
             private: Cell::new(None),
             // SAFETY: a `CURLMsg` of zeroes is its empty value.
@@ -275,6 +280,7 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
         Easy::new(),
         CCallbacks::new(),
         CSettings::new(),
+        callbacks::Post::new(),
         ptr::null_mut(),
     ) {
         Ok(easy) => easy.as_ptr().cast(),
@@ -341,7 +347,14 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         return ptr::null_mut();
     };
     // The copy's adapters are its own (`install` replaces the original's).
-    match ShimEasy::boxed(copy, easy.ccb.get(), easy.set.get(), easy.errbuf.get()) {
+    let post = easy.post.borrow().clone();
+    match ShimEasy::boxed(
+        copy,
+        easy.ccb.get(),
+        easy.set.get(),
+        post,
+        easy.errbuf.get(),
+    ) {
         Ok(dup) => dup.as_ptr().cast(),
         Err(OutOfMemory) => ptr::null_mut(),
     }
@@ -364,6 +377,7 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     let (ccb, set) = (CCallbacks::new(), CSettings::new());
     easy.ccb.set(ccb);
     easy.set.set(set);
+    *easy.post.borrow_mut() = callbacks::Post::new();
     easy.errbuf.set(ptr::null_mut());
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as

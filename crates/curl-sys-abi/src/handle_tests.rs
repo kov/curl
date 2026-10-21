@@ -361,6 +361,95 @@ fn the_method_follows_nobody_and_upload_as_in_c() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The POST options combine as setopt.c and `Curl_pretransfer` combine
+/// them: the fields, copied or not, sized or up to their zero byte, kept
+/// across other methods; without them the read function.
+#[test]
+fn the_post_options_combine_as_in_c() {
+    #[derive(Debug, PartialEq)]
+    enum Body {
+        None,
+        Bytes(Vec<u8>),
+        Read(Option<u64>),
+    }
+    let c = curl_easy_init();
+    let body = |c| {
+        options(c, |o| match &o.upload {
+            UploadSource::None => Body::None,
+            UploadSource::Bytes(b) => Body::Bytes(b.to_vec()),
+            UploadSource::Read { size, .. } => Body::Read(*size),
+        })
+    };
+    let method = |c| options(c, |o| o.method);
+    assert_eq!(long(c, ffi::CURLOPT_POST, 1), CURLE_OK);
+    assert_eq!((method(c), body(c)), (Method::Post, Body::Read(None)));
+    assert_eq!(long(c, ffi::CURLOPT_POSTFIELDSIZE, 0), CURLE_OK);
+    assert_eq!(body(c), Body::Read(Some(0)));
+    assert_eq!(off(c, ffi::CURLOPT_POSTFIELDSIZE_LARGE, -1), CURLE_OK);
+    let mut text = *b"abc\0def";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_COPYPOSTFIELDS, text.as_mut_ptr()),
+        CURLE_OK
+    );
+    text[0] = b'X';
+    assert_eq!(
+        body(c),
+        Body::Bytes(b"abc".to_vec()),
+        "copied to its zero byte"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_POSTFIELDSIZE, 2), CURLE_OK);
+    assert_eq!(
+        body(c),
+        Body::Read(Some(2)),
+        "a size above the last drops the copy"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_POSTFIELDSIZE, 7), CURLE_OK);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_COPYPOSTFIELDS, text.as_mut_ptr()),
+        CURLE_OK
+    );
+    assert_eq!(
+        body(c),
+        Body::Bytes(b"Xbc\0def".to_vec()),
+        "sized, zero bytes and all"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_POSTFIELDSIZE, 2), CURLE_OK);
+    assert_eq!(
+        body(c),
+        Body::Bytes(b"Xb".to_vec()),
+        "a smaller size cuts it"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_POSTFIELDSIZE, -1), CURLE_OK);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_POSTFIELDS, text.as_mut_ptr()),
+        CURLE_OK
+    );
+    assert_eq!(
+        body(c),
+        Body::Read(Some(3)),
+        "the application's, to its zero byte"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_UPLOAD, 1), CURLE_OK);
+    assert_eq!((method(c), body(c)), (Method::Upload, Body::Read(None)));
+    assert_eq!(long(c, ffi::CURLOPT_POST, 1), CURLE_OK);
+    assert_eq!(body(c), Body::Read(Some(3)), "the fields are kept");
+    assert_eq!(long(c, ffi::CURLOPT_HTTPGET, 1), CURLE_OK);
+    assert_eq!((method(c), body(c)), (Method::Get, Body::None));
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_POSTFIELDS, ptr::null_mut::<u8>()),
+        CURLE_OK
+    );
+    assert_eq!((method(c), body(c)), (Method::Post, Body::Read(None)));
+    assert_eq!(
+        long(c, ffi::CURLOPT_POSTFIELDSIZE, -2),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(long(c, ffi::CURLOPT_POST, 0), CURLE_OK);
+    assert_eq!(method(c), Method::Get);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 #[test]
 fn limits_are_checked_as_in_c() {
     let c = curl_easy_init();

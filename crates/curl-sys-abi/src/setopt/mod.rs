@@ -15,14 +15,14 @@ use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use core::ptr::NonNull;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 use curl_core::options::{
     ContinueWait, EyeballsDelay, FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options,
     Resume, ReuseLimits, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
-use crate::callbacks::{self, CCallbacks, CSettings};
+use crate::callbacks::{self, CCallbacks, CSettings, PostFields};
 use crate::easy::{self, ShimEasy};
 use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_NOT_BUILT_IN, CURLE_OK, CURLE_OUT_OF_MEMORY,
@@ -191,6 +191,58 @@ fn in_file_size(
     Ok(callbacks::sync_upload(options, me, set)?)
 }
 
+/// The size of the fields a POST sends: -1 for up to their zero byte,
+/// below is refused; a copy shorter than it is dropped
+/// (`CURLOPT_POSTFIELDSIZE`).
+fn post_fields_size(
+    options: &mut Options,
+    me: NonNull<ShimEasy>,
+    set: &mut CSettings,
+    n: i64,
+) -> Result<(), Refused> {
+    if n < -1 {
+        return Err(Refused::Bad);
+    }
+    {
+        // SAFETY: the handle is alive while its options are set.
+        let mut post = unsafe { me.as_ref() }.post.borrow_mut();
+        if post.size < n && matches!(post.fields, PostFields::Copied(_)) {
+            post.fields = PostFields::None;
+        }
+        post.size = n;
+    }
+    Ok(callbacks::sync_upload(options, me, set)?)
+}
+
+/// A copy of the fields at `p`: `size` bytes, or up to their zero byte
+/// for -1, at most C's longest input; none for NULL
+/// (`setopt_copypostfields`).
+///
+/// # Safety
+///
+/// `p` is NULL, or points to `size` readable bytes, or to a C string for
+/// a `size` of -1.
+unsafe fn copy_post_fields(p: *mut c_void, size: i64) -> Result<PostFields, Refused> {
+    let Some(at) = NonNull::new(p.cast::<u8>()) else {
+        return Ok(PostFields::None);
+    };
+    let fields = match usize::try_from(size) {
+        // SAFETY: as the caller guarantees.
+        Ok(n) => unsafe { core::slice::from_raw_parts(at.as_ptr(), n) },
+        Err(_) => {
+            // SAFETY: as the caller guarantees.
+            let fields = unsafe { CStr::from_ptr(at.as_ptr().cast()) }.to_bytes();
+            if fields.len() > MAX_INPUT_LENGTH {
+                return Err(Refused::Bad);
+            }
+            fields
+        }
+    };
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(fields)?;
+    Ok(PostFields::Copied(TryRc::try_new(copy)?))
+}
+
 /// Apply `option` with `arg` to the handle at `me`.
 fn apply(
     me: NonNull<ShimEasy>,
@@ -217,6 +269,36 @@ fn apply(
             }
             callbacks::sync_upload(options, me, set)?;
         }
+        (ffi::CURLOPT_POST, Long(n)) => {
+            options.method = if n != 0 { Method::Post } else { Method::Get };
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_HTTPGET, Long(n)) => {
+            if n != 0 {
+                options.method = Method::Get;
+                callbacks::sync_upload(options, me, set)?;
+            }
+        }
+        (ffi::CURLOPT_POSTFIELDS, Ptr(p)) => {
+            let fields = NonNull::new(p.cast::<u8>()).map_or(PostFields::None, PostFields::App);
+            // SAFETY: the handle is alive while its options are set.
+            unsafe { me.as_ref() }.post.borrow_mut().fields = fields;
+            options.method = Method::Post;
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_COPYPOSTFIELDS, Ptr(p)) => {
+            // SAFETY: as above.
+            let shim = unsafe { me.as_ref() };
+            let size = shim.post.borrow().size;
+            // SAFETY: the application passes its fields, a C string unless
+            // a size was set, or NULL.
+            let copied = unsafe { copy_post_fields(p, size) }?;
+            shim.post.borrow_mut().fields = copied;
+            options.method = Method::Post;
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_POSTFIELDSIZE, Long(n)) => post_fields_size(options, me, set, wide(n))?,
+        (ffi::CURLOPT_POSTFIELDSIZE_LARGE, Off(n)) => post_fields_size(options, me, set, n)?,
         (ffi::CURLOPT_UPLOAD | ffi::CURLOPT_PUT, Long(n)) => {
             options.method = if n != 0 { Method::Upload } else { Method::Get };
             callbacks::sync_upload(options, me, set)?;

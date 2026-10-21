@@ -1,0 +1,42 @@
+
+=== CURLOPT_POST off still posts
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
+--- old
+            options.method = if n != 0 { Method::Post } else { Method::Get };
+--- new
+            options.method = Method::Post;
+
+=== a larger POSTFIELDSIZE keeps the copy
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
+--- old
+        if post.size < n && matches!(post.fields, PostFields::Copied(_)) {
+--- new
+        if false {
+
+=== a smaller POSTFIELDSIZE sends the whole copy
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
+--- old
+                    Some(n) if n < bytes.len() => {
+--- new
+                    Some(n) if false && n < bytes.len() => {
+
+=== COPYPOSTFIELDS copies the zero byte
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
+--- old
+            let fields = unsafe { CStr::from_ptr(at.as_ptr().cast()) }.to_bytes();
+--- new
+            let fields = unsafe { CStr::from_ptr(at.as_ptr().cast()) }.to_bytes_with_nul();
+
+=== CURLOPT_HTTPGET off chooses GET
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
+--- old
+        (ffi::CURLOPT_HTTPGET, Long(n)) => {
+            if n != 0 {
+--- new
+        (ffi::CURLOPT_HTTPGET, Long(n)) => {
+            if n == 0 {

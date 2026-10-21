@@ -339,7 +339,14 @@ pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<()
     let core = Core::of(multi, reach).map_err(|_| MultiErrorKind::RecursiveApiCall)?;
     // Cleared as early as possible (multi.c:516).
     easy.clear_error_buffer();
-    let (transfer, owner) = (easy.detach(), NonNull::from(easy));
+    let (mut transfer, owner) = (easy.detach(), NonNull::from(easy));
+    // The body is sized as the transfer starts, the application's fields
+    // as they are now (`Curl_pretransfer`).
+    let set = easy.set.get();
+    if crate::callbacks::sync_upload(transfer.options_mut(), owner, &set).is_err() {
+        easy.return_home(transfer);
+        return Err(MultiErrorKind::OutOfMemory);
+    }
     let mut ev = ShimEvents::new(multi);
     let added = match core {
         Core::Direct(core) => core.add(transfer, owner, &mut ev),

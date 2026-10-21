@@ -77,6 +77,8 @@ pub(crate) enum Flow<'a> {
     Request(Request<'a>),
     /// `--config`: read the options in this file next.
     Config(&'a [u8]),
+    /// `--url @file`: read URLs from this file next, one a line.
+    Urls(&'a [u8]),
 }
 
 /// What the command line asked to be shown.
@@ -277,6 +279,29 @@ impl<'a> Operation<'a> {
     /// The first node `taken` says is free of what is being set, or a new
     /// one (`add_url`, `parse_output` and `parse_upload_file` each look
     /// for theirs).
+    /// Give the next node without a URL `url` (`add_url`); one `from_file`
+    /// is named as `--remote-name` names it and never globbed.
+    pub(crate) fn add_url(
+        &mut self,
+        url: &'a [u8],
+        from_file: bool,
+        msgs: &Messages,
+    ) -> Result<(), ParamError> {
+        if url.is_empty() {
+            return Err(ParamError::BlankString);
+        }
+        let node = self.free_node(|n| n.url.is_some())?;
+        node.url = Some(url);
+        if from_file {
+            node.remote = true;
+            node.literal = true;
+        }
+        if self.url_count() > 1 && (self.etag_save.is_some() || self.etag_compare.is_some()) {
+            return Err(etag_single_url(msgs));
+        }
+        Ok(())
+    }
+
     fn free_node(
         &mut self,
         taken: impl Fn(&Node<'a>) -> bool,
@@ -304,8 +329,12 @@ pub(crate) struct Node<'a> {
     pub(crate) output: Output<'a>,
     pub(crate) upload: Upload<'a>,
     /// The output is the URL's own file name if not set: the node was
-    /// made after `--remote-name-all` (`useremote`, from `new_getout`).
+    /// made after `--remote-name-all` (`useremote`, from `new_getout`), or
+    /// its URL read from a file.
     pub(crate) remote: bool,
+    /// The URL is taken as it is, never globbed: it was read from a file
+    /// (`noglob`).
+    pub(crate) literal: bool,
 }
 
 /// Where a URL's output goes.
@@ -447,7 +476,7 @@ impl<'a> CommandLine<'a> {
         })
     }
 
-    fn current(&mut self) -> &mut Operation<'a> {
+    pub(crate) fn current(&mut self) -> &mut Operation<'a> {
         self.operations
             .last_mut()
             .expect("there is always an operation")
@@ -493,19 +522,10 @@ pub(crate) fn apply<'a>(
     match spec.opt {
         Opt::Url => {
             let url = value.text();
-            if url.first() == Some(&b'@') {
-                // A file of URLs.
-                line.not_implemented(spec, "--");
-                return Ok(Flow::Continue);
+            if let Some(file) = url.strip_prefix(b"@") {
+                return Ok(Flow::Urls(file));
             }
-            if url.is_empty() {
-                return Err(ParamError::BlankString);
-            }
-            let op = line.current();
-            op.free_node(|n| n.url.is_some())?.url = Some(url);
-            if op.url_count() > 1 && (op.etag_save.is_some() || op.etag_compare.is_some()) {
-                return Err(etag_single_url(msgs));
-            }
+            line.current().add_url(url, false, msgs)?;
         }
         Opt::Output => {
             let file = value.text();

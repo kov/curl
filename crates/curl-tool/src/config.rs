@@ -183,6 +183,25 @@ pub(crate) fn entries(text: &mut [u8]) -> Result<Vec<Entry<'_>>, Unread> {
     Ok(entries)
 }
 
+/// The buffer `parse_url` reads a file of URLs with: a line, its newline
+/// and a zero byte fit in it.
+const URL_LINE_BUFFER: usize = 8092;
+
+/// The URLs of `text`, a file of them one a line, as `parse_url` reads it:
+/// blank lines and comments are passed over, and a line is taken up to a
+/// zero byte. `Err` for a line longer than C's buffer holds.
+pub(crate) fn url_lines(text: &[u8]) -> impl Iterator<Item = Result<&[u8], Unread>> {
+    text.split_inclusive(|&b| b == b'\n').filter_map(|line| {
+        if line.len() + 1 > URL_LINE_BUFFER {
+            return Some(Err(Unread::TooLong));
+        }
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
+        let first = line.iter().position(|b| !is_blank(*b))?;
+        (line[first] != b'#').then_some(Ok(line))
+    })
+}
+
 fn is_blank(b: u8) -> bool {
     b == b' ' || b == b'\t'
 }
@@ -384,6 +403,31 @@ mod tests {
                 (8, "last".into(), None, &[]),
             ]
         );
+    }
+
+    /// One URL a line, comments and blank lines left out, a line as long as
+    /// C's buffer holds and no longer.
+    #[test]
+    fn reads_urls_a_line_each() {
+        let urls = |text: &[u8]| -> Vec<Result<Vec<u8>, Unread>> {
+            url_lines(text).map(|u| u.map(<[u8]>::to_vec)).collect()
+        };
+        assert_eq!(
+            urls(b"http://a/\n\n  # no\n  http://b/ x\r\nhttp://c/\0rest\nlast"),
+            [
+                Ok(b"http://a/".to_vec()),
+                Ok(b"  http://b/ x\r".to_vec()),
+                Ok(b"http://c/".to_vec()),
+                Ok(b"last".to_vec()),
+            ]
+        );
+        let mut long = vec![b'a'; 8090];
+        long.push(b'\n');
+        assert_eq!(urls(&long), [Ok(vec![b'a'; 8090])]);
+        long.insert(0, b'a');
+        assert_eq!(urls(&long), [Err(Unread::TooLong)]);
+        long.pop();
+        assert_eq!(urls(&long), [Ok(vec![b'a'; 8091])]);
     }
 
     #[test]

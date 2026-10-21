@@ -170,6 +170,35 @@ fn retries_a_failure() {
     assert_eq!(run.stderr, expected);
 }
 
+/// `--url @file` reads URLs from a file, one a line, comments and blank
+/// lines left out; each is saved as `-O` names it, and never globbed.
+#[test]
+fn reads_urls_from_a_file() {
+    let dir = Scratch::new("url-file");
+    std::fs::create_dir(dir.0.join("src")).unwrap();
+    std::fs::create_dir(dir.0.join("out")).unwrap();
+    dir.write("src/a", b"A");
+    dir.write("src/b{1,2}", b"B");
+    let urls = format!(
+        "{}\n\n  # not one\n{}\n",
+        dir.url("src/a"),
+        dir.url("src/b{1,2}")
+    );
+    dir.write("urls", urls.as_bytes());
+    let run = curl(&dir, &["--url", "@urls", "--output-dir", "out"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(dir.read("out/a"), b"A");
+    assert_eq!(dir.read("out/b{1,2}"), b"B");
+    let run = curl(&dir, &["--url", "@missing"]);
+    assert_eq!(run.code, 26);
+    assert!(
+        run.stderr
+            .starts_with("curl: option --url: error encountered when reading a file\n"),
+        "{}",
+        run.stderr
+    );
+}
+
 /// `-K` reads options from a file as they are met, one file naming the
 /// next; an error in one is reported at each level that read it.
 #[test]

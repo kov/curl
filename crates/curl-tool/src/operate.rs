@@ -125,8 +125,8 @@ fn node_transfers(
     // A name without patterns still names an output through one, unless
     // globbing is off (`glob_inuse` is true of a literal).
     let literal = Glob::literal();
-    let expand = |text: &[u8]| -> Result<Option<Glob>, Ending> {
-        if op.globoff || !glob::has_patterns(text) {
+    let expand = |text: &[u8], literal: bool| -> Result<Option<Glob>, Ending> {
+        if op.globoff || literal || !glob::has_patterns(text) {
             return Ok(None);
         }
         match Glob::parse(text) {
@@ -142,7 +142,7 @@ fn node_transfers(
         Upload::Unset | Upload::Nothing => None,
     };
     // `setup_input_file`.
-    let mut uploads = match file.map(expand).transpose() {
+    let mut uploads = match file.map(|file| expand(file, false)).transpose() {
         Ok(uploads) => uploads.flatten(),
         Err(ending) => return Some(ending),
     };
@@ -167,7 +167,8 @@ fn node_transfers(
             Err(ending) => return Some(ending),
         };
         // `setup_url_pattern`, again for each upload.
-        let mut urls = match expand(given.text) {
+        // A URL read from a file is not globbed (`noglob`).
+        let mut urls = match expand(given.text, node.literal) {
             Ok(urls) => urls,
             Err(ending) => return Some(ending),
         };
@@ -181,7 +182,8 @@ fn node_transfers(
                 Err(ending) => return Some(ending),
             };
             let this = Given { text, ..given };
-            let names = (!op.globoff).then(|| Names {
+            // Names read the patterns while one is in use (`glob_inuse`).
+            let names = (!op.globoff && (!node.literal || file.is_some())).then(|| Names {
                 url: urls.as_ref().unwrap_or(&literal),
                 upload: uploads.as_ref(),
             });

@@ -374,23 +374,23 @@ cargo-mutants run on the milestone's diff.
     and IDN in the build. Not done: a redirect before a large body is all sent closing the
     connection instead of sending the rest (`http_perhapsrewind`'s abort half), and a
     connection's own memory of HTTP/1.0 (`conn->httpversion_seen`).
-27. **tool: several URLs, then globbing.** **In progress.** Done: the multi's pool and DNS
-    cache are one `Caches`, and `Telling` the one bundle of what the socket callback reaches,
-    which `EngineRest` and `Announcing` hold; a `Share` lends its `Caches` to each perform, and
-    the tool's transfers share one, so they reuse connections and names across URLs (2051,
-    2052, 3225, 3226, 1080, 1081); `-O` and `--remote-name-all` (422, 681, 690, 691, 1334-1347,
-    1644, 3008, 3009, 3013), `--no-clobber` (481, 1681, 1683, 4644) and `--output-dir` (1682);
-    URL and upload file globbing, with output names reading the patterns, and an upload's file
-    name added to a URL whose path has none (74, 75, 86, 87, 214, 490-492, 759, 761, 994, 2053
-    and others); `--create-dirs` (3011, 3031); `-J`, from `Content-Disposition` or a
-    redirect's `Location` (1210, 1310-1313, 1338-1341, 1368-1371, 1422, 1460, 1487, 1492, 1584,
-    1585, 1641-1643, 3012, 3037); `-K` and the default `.curlrc`, a file's text kept while
-    what was parsed from it lives (17, 56, 411, 430-436, 468, 1639, 3228 and others);
-    `--retry`, its delay, time limit and `--retry-all-errors`, the output cut back or kept and
-    resumed between attempts (197, 198, 366, 752, 1269, 1497, 1633-1637, 1673, 1716, 1909,
-    3035, 3036). To do: `--retry-connrefused`, which needs the connect's errno reported; URLs
-    read from a file (2012). `-R` waits for the date parser (step 30) to read `Last-Modified`
-    (762, 1443).
+27. **tool: several URLs, then globbing.** **Done**, but for what waits on later work. The
+    multi's pool and DNS cache are one `Caches`, and `Telling` the one bundle of what the
+    socket callback reaches, which `EngineRest` and `Announcing` hold; a `Share` lends its
+    `Caches` to each perform, and the tool's transfers share one, so they reuse connections and
+    names across URLs (2051, 2052, 3225, 3226, 1080, 1081); `-O` and `--remote-name-all` (422,
+    681, 690, 691, 1334-1347, 1644, 3008, 3009, 3013), `--no-clobber` (481, 1681, 1683, 4644)
+    and `--output-dir` (1682); URL and upload file globbing, with output names reading the
+    patterns, and an upload's file name added to a URL whose path has none (74, 75, 86, 87,
+    214, 490-492, 759, 761, 994, 2053 and others); `--create-dirs` (3011, 3031); `-J`, from
+    `Content-Disposition` or a redirect's `Location` (1210, 1310-1313, 1338-1341, 1368-1371,
+    1422, 1460, 1487, 1492, 1584, 1585, 1641-1643, 3012, 3037); `-K` and the default `.curlrc`,
+    a file's text kept while what was parsed from it lives (17, 56, 411, 430-436, 468, 1639,
+    3228 and others); `--retry`, its delay, time limit and `--retry-all-errors`, the output cut
+    back or kept and resumed between attempts (197, 198, 366, 752, 1269, 1497, 1633-1637, 1673,
+    1716, 1909, 3035, 3036); URLs read from a file with `--url @file` (2012). Waiting: `-R`,
+    for the date parser (step 30) to read `Last-Modified` (762, 1443); `--retry-connrefused`,
+    for the connect's errno in the report.
 28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a
     transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
     handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`
@@ -399,7 +399,8 @@ cargo-mutants run on the milestone's diff.
     and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15) with it.
     T1 tests 1876 and 1877.
 30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
-    share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`.
+    share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`;
+    then `-R` (step 27) on the date parser.
 31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
     the proxy options and the scheme table, each trace's host checked on the C leg. Then the
     absolute request target and Proxy-Authorization; then CONNECT, after the dial result is

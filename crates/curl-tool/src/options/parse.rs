@@ -63,7 +63,7 @@ pub(crate) fn parse<'a, R>(
     go_on(step, msgs, wipe, then)
 }
 
-/// Parse `argv` as `parse` does, but for configuration files: none may be
+/// Parse `argv` as `parse` does, but for files to read: none may be
 /// named. For tests.
 #[cfg(test)]
 fn parse_args<'a>(
@@ -73,7 +73,7 @@ fn parse_args<'a>(
 ) -> Result<Parsed<'a>, ParamError> {
     match Parser::new(argv)?.drive(msgs, wipe) {
         Step::Done(parsed) => parsed,
-        Step::Read(..) => panic!("a configuration file was named"),
+        Step::Read(..) | Step::ReadUrls(..) => panic!("a file to read was named"),
     }
 }
 
@@ -82,6 +82,8 @@ enum Step<'a> {
     Done(Result<Parsed<'a>, ParamError>),
     /// It goes on once this configuration file is read.
     Read(Parser<'a>, Wanted<'a>),
+    /// It goes on once the URLs in this file are read (`parse_url`).
+    ReadUrls(Parser<'a>, &'a [u8]),
 }
 
 /// A configuration file to read.
@@ -105,6 +107,29 @@ fn go_on<'a, R>(
     let (parser, wanted) = match step {
         Step::Done(parsed) => return then(parsed, msgs),
         Step::Read(parser, wanted) => (parser, wanted),
+        Step::ReadUrls(parser, name) => {
+            let text = match crate::slurp::read(name, As::Binary) {
+                Ok(text) => text,
+                // Any failure is one to read the file.
+                Err(_) => {
+                    let step = parser.fail(ParamError::ReadError, msgs);
+                    return go_on(step, msgs, wipe, then);
+                }
+            };
+            // What is parsed from here borrows the file's text.
+            let mut parser: Parser<'_> = parser;
+            let added = config::url_lines(&text).try_for_each(|url| {
+                let url = url.map_err(|_| ParamError::ReadError)?;
+                let op = parser.line.current();
+                op.add_url(url, true, msgs)
+                    .map_err(|_| ParamError::ReadError)
+            });
+            let step = match added {
+                Ok(()) => parser.drive(msgs, wipe),
+                Err(e) => parser.fail(e, msgs),
+            };
+            return go_on(step, msgs, wipe, then);
+        }
     };
     let mut text = match crate::slurp::read(wanted.name, As::Binary) {
         Ok(text) => text,
@@ -328,6 +353,7 @@ impl<'a> Parser<'a> {
                 Ok((Flow::Continue, _)) => {}
                 Ok((Flow::NextOperation, _)) => unreachable!("started above"),
                 Ok((Flow::Request(r), _)) => return Step::Done(Ok(Parsed::Request(r))),
+                Ok((Flow::Urls(name), _)) => return Step::ReadUrls(self, name),
                 Ok((Flow::Config(name), levels)) => {
                     // Each file read uses up a level (`C_CONFIG`).
                     if levels == 0 {

@@ -267,9 +267,9 @@ witness: curl-tool gives_up_after_the_time_allowed
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool globs_unless_told_not_to
 --- old
-        if op.globoff || !glob::has_patterns(text) {
+        if op.globoff || literal || !glob::has_patterns(text) {
 --- new
-        if !glob::has_patterns(text) {
+        if literal || !glob::has_patterns(text) {
 
 === a status code is written without its leading zeroes
 file: crates/curl-tool/src/write_out.rs
@@ -588,3 +588,37 @@ witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
         if std::io::Seek::seek(file, std::io::SeekFrom::End(0)).is_err() {
 --- new
         if false {
+
+=== a URL read from a file is globbed
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool reads_urls_from_a_file
+--- old
+            node.remote = true;
+            node.literal = true;
+--- new
+            node.remote = true;
+
+=== a URL read from a file goes to standard output
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool reads_urls_from_a_file
+--- old
+            node.remote = true;
+            node.literal = true;
+--- new
+            node.literal = true;
+
+=== a comment in a file of URLs is one
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_urls_a_line_each
+--- old
+        (line[first] != b'#').then_some(Ok(line))
+--- new
+        Some(Ok(line))
+
+=== a file of URLs' line may be one byte longer
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_urls_a_line_each
+--- old
+        if line.len() + 1 > URL_LINE_BUFFER {
+--- new
+        if line.len() > URL_LINE_BUFFER {

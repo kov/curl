@@ -317,3 +317,17 @@ witness: curl-core proto::http::tests::the_report_s_url_has_no_credentials
         self.url = Some(url);
 --- new
         self.url = Some(url);
+
+=== the line ending a head is assumed to fit in two bytes
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_long_line_ending_the_head_is_delivered_whole
+--- old
+                    None => {
+                        long = copied(line.bytes)?;
+                        &long
+                    }
+--- new
+                    None => {
+                        long = copied(&line.bytes[..2])?;
+                        &long
+                    }

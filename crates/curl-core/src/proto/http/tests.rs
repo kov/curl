@@ -190,6 +190,29 @@ fn a_get_is_sent_and_its_response_delivered() {
     assert_eq!((sizes.download(), sizes.download_expected()), (6, Some(6)));
 }
 
+/// A line ending the head is whatever runs from a CR or LF to the LF:
+/// stray bytes before it are delivered with it, as C delivers them, and
+/// the body follows.
+#[test]
+fn a_long_line_ending_the_head_is_delivered_whole() {
+    let ran = run(
+        "/",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\rX\r\nabc",
+        false,
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        ran.seen.of("header"),
+        [
+            &b"HTTP/1.1 200 OK\r\n"[..],
+            b"Content-Length: 3\r\n",
+            b"\rX\r\n"
+        ]
+    );
+    assert_eq!(ran.seen.body(), b"abc");
+}
+
 /// A response that keeps the connection leaves it in the pool.
 #[test]
 fn a_kept_connection_is_left_intact() {

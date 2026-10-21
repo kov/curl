@@ -438,9 +438,21 @@ impl Request {
                 // What the body comes to is known before the blank line is
                 // delivered (`http_size`, then the last header), so the
                 // header handler reads it there.
-                let mut blank = [0u8; 2];
-                blank[..line.bytes.len()].copy_from_slice(line.bytes);
-                let blank = &blank[..line.bytes.len()];
+                // The line borrows the parser `body_start` reads, so it is
+                // copied: CRLF on the stack, anything longer a server sent
+                // (stray CRs before the LF, which C delivers whole) not.
+                let mut short = [0u8; 2];
+                let long;
+                let blank: &[u8] = match short.get_mut(..line.bytes.len()) {
+                    Some(short) => {
+                        short.copy_from_slice(line.bytes);
+                        short
+                    }
+                    None => {
+                        long = copied(line.bytes)?;
+                        &long
+                    }
+                };
                 self.body_start(cx);
                 self.pipeline.header(cx, blank, origin)?;
             }
@@ -616,6 +628,14 @@ impl Request {
         }
         Ok(())
     }
+}
+
+/// A copy of `bytes`; out of memory fails the transfer.
+fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(bytes)
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    Ok(copy)
 }
 
 /// Why the head is refused, said as C says it.

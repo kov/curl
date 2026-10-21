@@ -374,13 +374,15 @@ cargo-mutants run on the milestone's diff.
     and IDN in the build. Not done: a redirect before a large body is all sent closing the
     connection instead of sending the rest (`http_perhapsrewind`'s abort half), and a
     connection's own memory of HTTP/1.0 (`conn->httpversion_seen`).
-27. **tool: several URLs, then globbing.** **To do.** The tool's transfers share their
-    connections and DNS cache, as C's share handle has them (tests 2051, 2052 and 3225 with
-    step 24's `%{num_connects}`). Opening commit: the multi's tables that a share can hold in
-    its place (the pool and the DNS cache) grouped, so that `EngineRest`, `Announcing` and
-    `Telling` stop each listing their own subset of them. Globbing is refused with exit 125
-    until then (test 2053). Then the tool's output names (`-O`, `-J`, `--no-clobber`), `-K`
-    and `--retry`. T1 tests 75, 468, 1340, 1341, 1635, 1681, 2051, 2052 and 3224–3226.
+27. **tool: several URLs, then globbing.** **In progress.** Done: the multi's pool and DNS
+    cache are one `Caches`, and `Telling` the one bundle of what the socket callback reaches,
+    which `EngineRest` and `Announcing` hold; a `Share` lends its `Caches` to each perform, and
+    the tool's transfers share one, so they reuse connections and names across URLs (2051,
+    2052, 3225, 3226, 1080, 1081); `-O` and `--remote-name-all` (422, 681, 690, 691, 1334-1347,
+    1644, 3008, 3009, 3013), `--no-clobber` (481, 1681, 1683, 4644) and `--output-dir` (1682).
+    To do: globbing, refused with exit 125 until then (2053, 75); `-J`; `-K` (468, 1639);
+    `--retry` (1635); `--create-dirs` (3011). `-R` waits for the date parser (step 30) to read
+    `Last-Modified` (762, 1443).
 28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a
     transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
     handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`

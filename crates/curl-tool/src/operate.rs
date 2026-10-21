@@ -14,6 +14,7 @@ use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
 use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
+use curl_core::share::Share;
 use curl_core::time::TimeLimit;
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
@@ -59,11 +60,18 @@ pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
         Ok(tracer) => tracer,
         Err(OutOfMemory) => return Ending::Done(Err(ErrorKind::OutOfMemory)),
     };
+    // The transfers share their connections and resolved names, as C's
+    // tool gives each handle its share.
+    let share = match Share::new() {
+        Ok(share) => share,
+        Err(OutOfMemory) => return Ending::Done(Err(ErrorKind::OutOfMemory)),
+    };
     let run = Shared {
         global: &line.global,
         stdout: &stdout,
         tracer: tracer.as_ref(),
         msgs,
+        share: &share,
     };
     let ending = run_all(line, &run);
     // What is left is written at exit; a failure then goes unreported, as
@@ -144,6 +152,7 @@ struct Shared<'a, 'l> {
     stdout: &'a Stdout,
     tracer: Option<&'a Tracer>,
     msgs: Messages,
+    share: &'a Share,
 }
 
 /// Set up, run and finish one URL's transfer (`create_single`,
@@ -225,6 +234,7 @@ fn transfer(
         return Step::Failed(ErrorKind::OutOfMemory);
     };
     let mut easy = Easy::new();
+    easy.options_mut().share = Some(run.share.clone());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
     let failed = |easy: &Easy, e| {

@@ -135,6 +135,10 @@ one will find it and the next regeneration eats it. Fix the generator or its inp
 - **Proxies lie, and they lie towards success.** An exit code of 0, a clean log, a status that
   reads healthy: each is true about something, and none of them is the bytes on the wire or in the
   output. For a load-bearing claim, look at the artifact the claim is about.
+- **Check a long run every 10 minutes while it runs** (the suite, a sweep, cargo-mutants): its log
+  still grows, and no test process has sat at 0% CPU for longer than its test can take. A quiet
+  background job reads the same whether it is working or hung. A tool hung under `runtests.pl`
+  inherits its ignored SIGINT and SIGTERM: end it with `kill -9`.
 - **Poke the live failure before bisecting.** One run against it beats a day of reasoning, and a
   bisect is only as good as its oracle.
 

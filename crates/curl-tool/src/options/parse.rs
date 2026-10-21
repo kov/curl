@@ -63,8 +63,12 @@ pub(crate) fn parse<'a>(
         }
         i += 1;
     }
-    // C rejects `--remote-header-name` with `--continue-at -` here; both
-    // are still unimplemented, which `line.unimplemented` records.
+    // The last operation's name cannot come from both the response and
+    // the file there.
+    let op = line.operations.last().expect("there is always one");
+    if op.remote_header_name && op.resume == Some(super::Resume::FromOutput) {
+        return Err(report(msgs, b":", ParamError::ContdispResumeFrom));
+    }
     Ok(Parsed::Run(line))
 }
 
@@ -393,6 +397,16 @@ mod tests {
             Ok((1, None, None))
         );
         assert_eq!(run(&["x", "--no-clobber"]), Ok((1, None, None)));
+        // The last operation's name cannot come from both the response and
+        // the file there.
+        assert_eq!(
+            run(&["-J", "-C", "-", "x"]),
+            Err(ParamError::ContdispResumeFrom)
+        );
+        assert_eq!(
+            run(&["-J", "-C", "-", "x", "--next", "y"]),
+            Ok((2, None, None))
+        );
         assert_eq!(
             run(&["x", "--remove-on-error"]),
             Ok((1, Some("remove-on-error"), None))

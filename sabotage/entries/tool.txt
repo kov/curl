@@ -475,3 +475,27 @@ witness: curl-tool creates_the_output_directories
         let Err(e) = maker.create(OsStr::from_bytes(dir)) else {
 --- new
         let Err(e) = std::fs::metadata(OsStr::from_bytes(dir)).map(drop) else {
+
+=== a name from the response replaces a file
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::names_the_file_from_the_response
+--- old
+            Clobber::Default if self.server_named => {
+--- new
+            Clobber::Default if false && self.server_named => {
+
+=== header lines are shown before the response names the file
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::names_the_file_from_the_response
+--- old
+        if self.name_from_header.is_some() && self.show_headers {
+--- new
+        if false && self.show_headers {
+
+=== a file name keeps its path
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::reads_a_file_name_as_c_does
+--- old
+    for separator in *b"/\\" {
+--- new
+    for separator in *b"" {

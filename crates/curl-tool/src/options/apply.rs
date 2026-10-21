@@ -116,6 +116,9 @@ pub(crate) struct Operation<'a> {
     pub(crate) remote_time: bool,
     /// `--skip-existing`.
     pub(crate) skip_existing: bool,
+    /// `--remote-header-name`: a file `--remote-name` names takes the name
+    /// the response gives.
+    pub(crate) remote_header_name: bool,
     /// `--create-dirs`: the directories an output file is in are made.
     pub(crate) create_dirs: bool,
     /// `--remote-name-all`: each URL given after it saves to its own name
@@ -750,6 +753,7 @@ pub(crate) fn apply<'a>(
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::CreateDirs => line.current().create_dirs = value.toggle(),
+        Opt::RemoteHeaderName => line.current().remote_header_name = value.toggle(),
         Opt::WriteOut => {
             let format = match value.text().strip_prefix(b"@") {
                 // A file's text, or standard input's, with no line ends
@@ -976,7 +980,6 @@ pub(crate) fn apply<'a>(
         | Opt::RandomFile
         | Opt::Range
         | Opt::Rate
-        | Opt::RemoteHeaderName
         | Opt::RequestTarget
         | Opt::Retry
         | Opt::RetryAllErrors

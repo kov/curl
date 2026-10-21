@@ -14,6 +14,7 @@ use curl_core::version::Protocol;
 use curl_os::fs::{self, Keep};
 
 use crate::msgs::Messages;
+use crate::options::Clobber;
 use crate::os_message;
 use crate::stdout::Stdout;
 
@@ -47,9 +48,15 @@ pub(crate) struct Stream {
     pub(crate) binary_ok: bool,
     /// `--no-buffer`: what is written is flushed at once.
     pub(crate) no_buffer: bool,
-    /// `--no-clobber`: a file that exists is kept, the output going to
-    /// the first free name numbered after it.
-    pub(crate) no_clobber: bool,
+    /// `--clobber` or `--no-clobber`: whether a file that exists is
+    /// emptied, or kept, the output going to the first free name numbered
+    /// after it. A name the server gives is kept by default.
+    pub(crate) clobber: Clobber,
+    /// `--remote-header-name`: the file is named by the response, and the
+    /// header lines to show wait until it is (`honor_cd_filename`).
+    pub(crate) name_from_header: Option<FromHeader>,
+    /// The file's name came from the response (`is_cd_filename`).
+    server_named: bool,
     /// `--dump-header`: where header lines are written too.
     dump: Option<Dump>,
     /// Header lines with a colon in the last response's head
@@ -58,6 +65,40 @@ pub(crate) struct Stream {
     /// The last header line was blank: the next starts a response.
     after_blank: bool,
     msgs: Messages,
+}
+
+/// A name the response is to give the output file, while it has not.
+pub(crate) struct FromHeader {
+    /// `--output-dir`, which the name goes in.
+    pub(crate) dir: Option<Vec<u8>>,
+    /// Header lines to show, held until the file is named (`headlist`).
+    held: Vec<Vec<u8>>,
+}
+
+impl FromHeader {
+    pub(crate) fn new(dir: Option<&[u8]>) -> Result<FromHeader, OutOfMemory> {
+        let dir = match dir {
+            Some(dir) => {
+                let mut owned = Vec::new();
+                owned.try_extend_from_slice(dir)?;
+                Some(owned)
+            }
+            None => None,
+        };
+        Ok(FromHeader {
+            dir,
+            held: Vec::new(),
+        })
+    }
+}
+
+/// What a header line did to a name from the response.
+enum Naming {
+    /// It is held, to be shown once the file is named.
+    Held,
+    /// It goes on as any header line.
+    Shown,
+    Failed,
 }
 
 /// Where `--dump-header` writes, and the name it was given.
@@ -123,7 +164,9 @@ impl Output {
             terminal: false,
             binary_ok: false,
             no_buffer: false,
-            no_clobber: false,
+            clobber: Clobber::Default,
+            name_from_header: None,
+            server_named: false,
             dump: None,
             num_headers: 0,
             after_blank: true,
@@ -320,10 +363,15 @@ impl Stream {
         if file.is_some() {
             return true;
         }
-        let opened = if self.no_clobber {
-            open_unclobbered(name)
-        } else {
-            fs::open_write(Stream::c_name(name), Keep::Nothing, NEW_FILE_MODE)
+        let opened = match self.clobber {
+            Clobber::Never => open_unclobbered(name),
+            // A name the server gives does not replace a file.
+            Clobber::Default if self.server_named => {
+                fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE)
+            }
+            Clobber::Default | Clobber::Always => {
+                fs::open_write(Stream::c_name(name), Keep::Nothing, NEW_FILE_MODE)
+            }
         };
         match opened {
             Ok(f) => {
@@ -362,7 +410,7 @@ impl Stream {
 
     /// `tool_write_cb`.
     fn body(&mut self, body: &[u8]) -> Write {
-        if !self.create() {
+        if !self.create() || self.write_held().is_err() {
             return Write::Fail;
         }
         if self.terminal && self.bytes < BINARY_CHECK && !self.binary_ok && body.contains(&0) {
@@ -410,7 +458,7 @@ impl Stream {
 
     /// The output side of `tool_header_cb`: shown header lines, their
     /// names in bold on a terminal.
-    fn header(&mut self, line: &[u8], protocol: Option<Protocol>) -> Write {
+    fn header(&mut self, line: &[u8], protocol: Option<Protocol>, code: Option<u16>) -> Write {
         if self.after_blank {
             self.num_headers = 0;
         }
@@ -421,9 +469,27 @@ impl Stream {
         if self.dump(line) == Write::Fail {
             return Write::Fail;
         }
+        // A name is taken from a 2xx or 3xx response only.
+        let http = protocol == Some(Protocol::Http);
+        let mut named = false;
+        if http && self.name_from_header.is_some() && code.is_some_and(|c| matches!(c / 100, 2 | 3))
+        {
+            match self.name_from(line, code.unwrap_or(0)) {
+                Naming::Held => return Write::Accepted,
+                Naming::Failed => return Write::Fail,
+                Naming::Shown => named = true,
+            }
+        }
         // C shows them for HTTP, HTTPS, RTSP and FILE.
         if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
             return Write::Accepted;
+        }
+        // An interim response's lines wait for the name too.
+        if http && !named && self.name_from_header.is_some() {
+            return match self.hold(line) {
+                Ok(()) => Write::Accepted,
+                Err(OutOfMemory) => Write::Fail,
+            };
         }
         if !self.create() {
             return Write::Fail;
@@ -445,6 +511,182 @@ impl Stream {
             Err(_) => Write::Fail,
         }
     }
+}
+
+impl Stream {
+    /// The `--remote-header-name` side of `tool_header_cb`
+    /// (`content_disposition`): a 3xx's `Location:` names the file for
+    /// now; `Content-Disposition:` names it for good with its `filename=`,
+    /// and has it made, with the lines held written to it.
+    fn name_from(&mut self, line: &[u8], code: u16) -> Naming {
+        let starts = |prefix: &[u8]| {
+            line.len() > prefix.len() && line[..prefix.len()].eq_ignore_ascii_case(prefix)
+        };
+        if starts(b"Location:") && code / 100 == 3 {
+            let at = 9 + blanks(&line[9..]);
+            if at < line.len()
+                && let Some(name) = file_name_in(&line[at..], None)
+                && !self.rename(name)
+            {
+                return Naming::Failed;
+            }
+        } else if starts(b"Content-disposition:") {
+            match self.disposition(line) {
+                Ok(true) => {}
+                Ok(false) | Err(OutOfMemory) => return Naming::Failed,
+            }
+        }
+        if self.name_from_header.is_some() && self.show_headers {
+            return match self.hold(line) {
+                Ok(()) => Naming::Held,
+                Err(OutOfMemory) => Naming::Failed,
+            };
+        }
+        Naming::Shown
+    }
+
+    /// The `filename=` of a `Content-Disposition:` line, if it has one
+    /// that names a file (encoded ones, `filename*=`, are not read); the
+    /// file is made either way. Whether all went well.
+    fn disposition(&mut self, line: &[u8]) -> Result<bool, OutOfMemory> {
+        let mut at = 20;
+        loop {
+            while at < line.len() && line[at] != 0 && !line[at].is_ascii_alphabetic() {
+                at += 1;
+            }
+            if at + 9 > line.len() {
+                break;
+            }
+            if &line[at..at + 9] != b"filename=" {
+                // Not it: the next parameter.
+                while at < line.len() && line[at] != 0 && line[at] != b';' {
+                    at += 1;
+                }
+                if at < line.len() && line[at] != 0 {
+                    continue;
+                }
+                break;
+            }
+            at += 9;
+            at += blanks(&line[at..]);
+            if let Some(name) = file_name_in(&line[at..], Some(b';')) {
+                if !self.rename(name) {
+                    return Ok(false);
+                }
+                // Named for good: what follows is shown as it comes.
+                let held = self.name_from_header.take().map(|f| f.held);
+                if !self.create() || self.write_lines(held.as_deref().unwrap_or(&[])).is_err() {
+                    return Ok(false);
+                }
+            }
+            break;
+        }
+        Ok(self.create() && self.write_held().is_ok())
+    }
+
+    /// Name the file `name`, in the output directory if one is given,
+    /// as the server says (`set_filename`); not once it is open.
+    fn rename(&mut self, name: Vec<u8>) -> bool {
+        let dir = self
+            .name_from_header
+            .as_ref()
+            .and_then(|f| f.dir.as_deref());
+        let Target::File {
+            name: current,
+            file,
+        } = &mut self.target
+        else {
+            return false;
+        };
+        if file.is_some() {
+            return false;
+        }
+        let mut full = Vec::new();
+        let made = (|| {
+            if let Some(dir) = dir {
+                full.try_extend_from_slice(dir)?;
+                full.try_push(b'/')?;
+            }
+            full.try_extend_from_slice(&name)?;
+            full.try_push(0)
+        })();
+        if made.is_err() {
+            return false;
+        }
+        *current = full;
+        self.server_named = true;
+        true
+    }
+
+    /// Hold `line` until the file is named (`buffer_header`).
+    fn hold(&mut self, line: &[u8]) -> Result<(), OutOfMemory> {
+        let from = self
+            .name_from_header
+            .as_mut()
+            .expect("held only while unnamed");
+        let mut copy = Vec::new();
+        copy.try_extend_from_slice(line)?;
+        from.held.try_push(copy)
+    }
+
+    /// Write the lines held, as they came, and forget them
+    /// (`tool_write_headers`).
+    fn write_held(&mut self) -> std::io::Result<()> {
+        let held = match &mut self.name_from_header {
+            Some(from) => std::mem::take(&mut from.held),
+            None => return Ok(()),
+        };
+        self.write_lines(&held)
+    }
+
+    fn write_lines(&mut self, lines: &[Vec<u8>]) -> std::io::Result<()> {
+        lines.iter().try_for_each(|line| self.write_all(line))
+    }
+}
+
+/// `s` up to the first `at` in it.
+fn cut(s: &[u8], at: u8) -> &[u8] {
+    match s.iter().position(|&b| b == at) {
+        Some(end) => &s[..end],
+        None => s,
+    }
+}
+
+/// How many blanks `s` starts with.
+fn blanks(s: &[u8]) -> usize {
+    s.iter().take_while(|&&b| b == b' ' || b == b'\t').count()
+}
+
+/// The file name in `value`, the rest of a header line (`parse_filename`):
+/// up to `stop`, or the quote it starts with, for `Content-Disposition`;
+/// without a query or fragment for `Location`. Only the part after the
+/// last slash or backslash is kept, up to a line end. Nothing, `.` or
+/// `..` names no file.
+fn file_name_in(value: &[u8], stop: Option<u8>) -> Option<Vec<u8>> {
+    // C reads it as a string.
+    let mut s = &value[..value.iter().position(|&b| b == 0).unwrap_or(value.len())];
+    match stop {
+        Some(mut stop) => {
+            if let Some(&quote @ (b'\'' | b'"')) = s.first() {
+                stop = quote;
+                s = &s[1..];
+            }
+            s = cut(s, stop);
+        }
+        None => s = cut(cut(s, b'?'), b'#'),
+    }
+    for separator in *b"/\\" {
+        if let Some(at) = s.iter().rposition(|&b| b == separator) {
+            s = &s[at + 1..];
+        }
+    }
+    s = cut(cut(s, b'\r'), b'\n');
+    if s.is_empty() || s == b"." || s == b".." {
+        return None;
+    }
+    let mut name = Vec::new();
+    name.try_extend_from_slice(s).ok()?;
+    Some(name)
 }
 
 /// `--stderr`: from now on standard error goes to the file `name`,
@@ -475,13 +717,17 @@ struct Headers(Output);
 
 impl HeaderHandler for Headers {
     fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
-        let protocol = cx.info(cx.me()).and_then(|r| r.protocol());
-        self.0.stream().header(line, protocol)
+        let report = cx.info(cx.me());
+        let protocol = report.and_then(|r| r.protocol());
+        let code = report.and_then(|r| r.response_code());
+        self.0.stream().header(line, protocol, code)
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    use super::*;
 
     /// A number goes before an extension, or after a name without one;
     /// a leading dot or a trailing one is no extension.
@@ -494,7 +740,6 @@ mod tests {
         assert_eq!(name("b.", 4), "b..4\0");
         assert_eq!(name("x.tar.gz", 12), "x.tar-12.gz\0");
     }
-    use super::*;
 
     fn quiet() -> Messages {
         let mut msgs = Messages::new();
@@ -524,7 +769,10 @@ mod tests {
             b"\r\n",
         ];
         for line in lines {
-            assert_eq!(s.header(line, Some(Protocol::Http)), Write::Accepted);
+            assert_eq!(
+                s.header(line, Some(Protocol::Http), Some(200)),
+                Write::Accepted
+            );
         }
         assert_eq!(s.num_headers(), 2);
     }
@@ -554,6 +802,80 @@ mod tests {
         assert_eq!(out.stream().body(b"\0"), Write::Accepted);
     }
 
+    /// `parse_filename`: the last part of a path, up to the stop or the
+    /// quote it starts with, without a URL's query; `.` and `..` are no
+    /// names.
+    #[test]
+    fn reads_a_file_name_as_c_does() {
+        let name =
+            |v: &str, stop| file_name_in(v.as_bytes(), stop).map(|n| String::from_utf8(n).unwrap());
+        let cd = Some(b';');
+        assert_eq!(name("\"a/b.txt\"; x\r\n", cd).as_deref(), Some("b.txt"));
+        assert_eq!(name("'x;y'\r\n", cd).as_deref(), Some("x;y"));
+        assert_eq!(name("n.txt; size=3\r\n", cd).as_deref(), Some("n.txt"));
+        assert_eq!(name("c:\\dos\\f\r\n", cd).as_deref(), Some("f"));
+        assert_eq!(
+            name("/dir/f.html?q=/a#x\r\n", None).as_deref(),
+            Some("f.html")
+        );
+        assert_eq!(name("..\r\n", cd), None);
+        assert_eq!(name("\"\"\r\n", cd), None);
+    }
+
+    /// With `--remote-header-name`, the lines to show wait for the name,
+    /// a 3xx's `Location:` names the file for now and
+    /// `Content-Disposition:` for good; a file there is not replaced.
+    #[test]
+    fn names_the_file_from_the_response() {
+        let dir = scratch("cd");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("url-name");
+        let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+        {
+            let mut s = out.stream();
+            s.show_headers = true;
+            s.name_from_header =
+                Some(FromHeader::new(Some(dir.as_os_str().as_encoded_bytes())).unwrap());
+        }
+        let http = Some(Protocol::Http);
+        let lines: [(&[u8], u16); 5] = [
+            (b"HTTP/1.1 301 Moved\r\n", 301),
+            (b"Location: /a/moved?x\r\n", 301),
+            (b"\r\n", 301),
+            (b"HTTP/1.1 200 OK\r\n", 200),
+            (b"Content-Disposition: inline; filename=\"final\"\r\n", 200),
+        ];
+        for (line, code) in lines {
+            assert_eq!(out.stream().header(line, http, Some(code)), Write::Accepted);
+        }
+        assert_eq!(
+            out.stream().header(b"\r\n", http, Some(200)),
+            Write::Accepted
+        );
+        assert_eq!(out.stream().body(b"body"), Write::Accepted);
+        let final_path = dir.join("final");
+        assert_eq!(
+            out.stream().file_name(),
+            Some(final_path.as_os_str().as_encoded_bytes())
+        );
+        drop(out);
+        let written = std::fs::read(&final_path).unwrap();
+        assert_eq!(
+            written,
+            b"HTTP/1.1 301 Moved\r\nLocation: /a/moved?x\r\n\r\nHTTP/1.1 200 OK\r\n\
+              Content-Disposition: inline; filename=\"final\"\r\n\r\nbody"
+        );
+        assert!(!dir.join("moved").exists() && !path.exists());
+        // A second time the name is taken: the file stays.
+        let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+        out.stream().name_from_header =
+            Some(FromHeader::new(Some(dir.as_os_str().as_encoded_bytes())).unwrap());
+        let line = b"Content-Disposition: inline; filename=final\r\n";
+        assert_eq!(out.stream().header(line, http, Some(200)), Write::Fail);
+        assert_eq!(std::fs::read(&final_path).unwrap(), written);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     fn scratch(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("curl-tool-output-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -570,7 +892,7 @@ mod tests {
             s.show_headers = true;
             s.terminal = terminal;
             for line in lines {
-                assert_eq!(s.header(line, protocol), Write::Accepted);
+                assert_eq!(s.header(line, protocol, None), Write::Accepted);
             }
             assert!(s.create());
         }
@@ -592,7 +914,7 @@ mod tests {
         for (fresh, line) in [(true, &b"A: 1\r\n"[..]), (false, b"B: 2\r\n")] {
             let out = Output::null(quiet()).unwrap();
             assert!(out.dump_to(name, fresh, &stdout).is_ok());
-            assert_eq!(out.stream().header(line, None), Write::Accepted);
+            assert_eq!(out.stream().header(line, None, None), Write::Accepted);
         }
         assert_eq!(std::fs::read(&path).unwrap(), b"A: 1\r\nB: 2\r\n");
         std::fs::remove_file(&path).unwrap();

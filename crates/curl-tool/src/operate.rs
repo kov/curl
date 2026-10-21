@@ -330,6 +330,7 @@ fn transfer(
         Output::Unset if node.remote => Output::Remote,
         output => output,
     };
+    let output_is_remote = output == Output::Remote;
     let to_stdout = matches!(output, Output::Unset | Output::Stdout | Output::File(b"-"));
     // A name given reads the URL's patterns (`glob_match_url`).
     let globbed;
@@ -467,7 +468,18 @@ fn transfer(
         stream.terminal = terminal;
         stream.binary_ok = node.output == Output::File(b"-");
         stream.no_buffer = op.no_buffer;
-        stream.no_clobber = op.clobber == tool::Clobber::Never;
+        stream.clobber = op.clobber;
+        // `--remote-header-name` names only a file `--remote-name` names
+        // (`setup_header_cb`).
+        if op.remote_header_name && output_is_remote {
+            match output::FromHeader::new(op.output_dir) {
+                Ok(from) => stream.name_from_header = Some(from),
+                Err(OutOfMemory) => {
+                    drop(stream);
+                    return failed(&easy, ErrorKind::OutOfMemory);
+                }
+            }
+        }
     }
     // A resumed transfer's bar shows the whole (`progressbarinit`); an
     // upload resumed at the end of what the peer holds learns it there.

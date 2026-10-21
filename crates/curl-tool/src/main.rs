@@ -10,6 +10,7 @@ use curl_alloc::OutOfMemory;
 use curl_core::error::ErrorKind;
 use curl_core::version::version;
 
+mod bar;
 mod config;
 mod help;
 mod msgs;

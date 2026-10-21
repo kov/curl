@@ -306,6 +306,8 @@ pub(crate) struct Global<'a> {
     verbosity: u8,
     /// `--no-progress-meter`.
     pub(crate) no_progress: bool,
+    /// `--progress-bar`: the bar in place of the meter.
+    pub(crate) progress_bar: bool,
 }
 
 /// Where a transfer resumes.
@@ -697,6 +699,7 @@ pub(crate) fn apply<'a>(
             line.current().write_out = format;
         }
         Opt::ProgressMeter => line.global.no_progress = !value.toggle(),
+        Opt::ProgressBar => line.global.progress_bar = value.toggle(),
         Opt::Verbose => verbose(line, msgs, value.toggle()),
         Opt::Trace | Opt::TraceAscii => {
             let file = value.text();
@@ -868,7 +871,6 @@ pub(crate) fn apply<'a>(
         | Opt::Post302
         | Opt::Post303
         | Opt::Preproxy
-        | Opt::ProgressBar
         | Opt::Proxy
         | Opt::ProxyAnyauth
         | Opt::ProxyBasic

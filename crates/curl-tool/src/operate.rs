@@ -17,6 +17,7 @@ use curl_core::options::{self, Method, Progress, UploadSource};
 use curl_core::time::TimeLimit;
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
+use crate::bar::Bar;
 use crate::msgs::Messages;
 use crate::options::{
     self as tool, CommandLine, Fail, Global, HttpVersion, IpVersion, Node, Operation, Output,
@@ -169,7 +170,7 @@ fn transfer(
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
     let failed = |easy: &Easy, e| {
-        let result = finish(op, run, given, easy, &out, Err(e), false);
+        let result = finish(op, run, given, easy, &out, None, Ended::Ran(Err(e)));
         Step::Failed(result.expect_err("a failure stays one"))
     };
     // `setup_headerfile`.
@@ -224,17 +225,32 @@ fn transfer(
         stream.binary_ok = node.output == Output::File(b"-");
         stream.no_buffer = op.no_buffer;
     }
+    // A resumed transfer's bar shows the whole (`progressbarinit`); an
+    // upload resumed at the end of what the peer holds learns it there.
+    let bar = if run.global.progress_bar {
+        let start = match resume {
+            Some(options::Resume::AtEnd) => None,
+            _ => Some(resume_from.unwrap_or(0)),
+        };
+        match Bar::new(start) {
+            Ok(bar) => Some(bar),
+            Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+        }
+    } else {
+        None
+    };
     let config = Config {
         url,
         resume,
         upload: upload.is_some(),
         terminal,
+        bar: bar.as_ref(),
     };
     if configure(&mut easy, op, run, &out, &config).is_err() {
         return failed(&easy, ErrorKind::OutOfMemory);
     }
-    let result = if skip {
-        Ok(())
+    let ended = if skip {
+        Ended::Skipped
     } else {
         if let Some(file) = upload {
             match open_upload(file) {
@@ -248,16 +264,26 @@ fn transfer(
                         given,
                         &easy,
                         &out,
-                        Err(ErrorKind::ReadError),
-                        false,
+                        bar.as_ref(),
+                        Ended::Ran(Err(ErrorKind::ReadError)),
                     );
                     return Step::Unopened(result.expect_err("a failure stays one"));
                 }
             }
         }
-        easy.perform().map_err(|e| e.kind())
+        Ended::Ran(easy.perform().map_err(|e| e.kind()))
     };
-    Step::Ran(finish(op, run, given, &easy, &out, result, skip))
+    Step::Ran(finish(op, run, given, &easy, &out, bar.as_ref(), ended))
+}
+
+/// How a transfer ended.
+#[derive(Clone, Copy)]
+enum Ended {
+    /// With this result.
+    Ran(Result<(), ErrorKind>),
+    /// Never started: its output file exists (`--skip-existing`). It
+    /// succeeds, and only its `--write-out` is written.
+    Skipped,
 }
 
 /// What one transfer is set up with, beyond its operation's options.
@@ -267,6 +293,8 @@ struct Config<'a> {
     upload: bool,
     /// Standard output is a terminal, and the output goes there.
     terminal: bool,
+    /// `--progress-bar`'s.
+    bar: Option<&'a Bar>,
 }
 
 /// Set up the transfer of `config.url` as `config2setopts` sets it.
@@ -277,6 +305,7 @@ fn configure(
     out: &output::Output,
     config: &Config<'_>,
 ) -> Result<(), OutOfMemory> {
+    let bar = config.bar;
     let o = easy.options_mut();
     o.set_url(Some(config.url))?;
     if let Some(protocol) = op.default_protocol {
@@ -290,6 +319,8 @@ fn configure(
     o.resume = config.resume;
     o.progress = if run.global.no_progress || run.msgs.silent || config.terminal {
         Progress::Off
+    } else if let Some(bar) = bar {
+        Progress::Handler(bar.handler()?)
     } else {
         Progress::Meter
     };
@@ -357,10 +388,14 @@ fn finish(
     url: Given<'_>,
     easy: &Easy,
     out: &output::Output,
-    mut result: Result<(), ErrorKind>,
-    skipped: bool,
+    bar: Option<&Bar>,
+    ended: Ended,
 ) -> Result<(), ErrorKind> {
     let msgs = run.msgs;
+    let (mut result, skipped) = match ended {
+        Ended::Ran(result) => (result, false),
+        Ended::Skipped => (Ok(()), true),
+    };
     if !skipped {
         // `post_check_result`: the transfer's reason, or the kind's.
         if let Err(e) = result
@@ -396,6 +431,11 @@ fn finish(
         // still leaves its output file, empty.
         if result.is_ok() && !stream.create() {
             result = Err(ErrorKind::WriteError);
+        }
+        // The bar's line ends once the transfer does.
+        if bar.is_some_and(Bar::shown) {
+            // Nowhere to report a failed write, as in C.
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
         }
         if stream.flush().is_err() && result.is_ok() {
             msgs.error(&[b"Failed writing body"]);

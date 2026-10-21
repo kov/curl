@@ -27,31 +27,13 @@ pub(crate) struct Messages {
 }
 
 impl Messages {
-    /// Messages wrapped at `COLUMNS` when it holds a width over 20, else at
-    /// the terminal's width, else at 79 columns, as `get_terminal_columns`
-    /// decides.
+    /// Messages wrapped at the terminal's width, as it is at the start.
     pub(crate) fn new() -> Self {
-        let columns = std::env::var_os("COLUMNS")
-            .and_then(|c| {
-                let c = c.as_encoded_bytes();
-                let digits = c.iter().take_while(|b| b.is_ascii_digit()).count();
-                std::str::from_utf8(&c[..digits])
-                    .ok()?
-                    .parse::<usize>()
-                    .ok()
-            })
-            .filter(|&n| n > 20 && n <= 10000)
-            .or_else(|| {
-                curl_os::terminal::columns()
-                    .map(usize::from)
-                    .filter(|&n| n > 0 && n < 10000)
-            })
-            .unwrap_or(DEFAULT_COLUMNS);
         Messages {
             silent: false,
             show_error: false,
             tracing: false,
-            columns,
+            columns: terminal_columns(),
         }
     }
 
@@ -147,6 +129,27 @@ impl Messages {
             out.clear();
         }
     }
+}
+
+/// The terminal's width: `COLUMNS` when it holds a width over 20, else
+/// the terminal's own, else 79 columns (`get_terminal_columns`).
+pub(crate) fn terminal_columns() -> usize {
+    std::env::var_os("COLUMNS")
+        .and_then(|c| {
+            let c = c.as_encoded_bytes();
+            let digits = c.iter().take_while(|b| b.is_ascii_digit()).count();
+            std::str::from_utf8(&c[..digits])
+                .ok()?
+                .parse::<usize>()
+                .ok()
+        })
+        .filter(|&n| n > 20 && n <= 10000)
+        .or_else(|| {
+            curl_os::terminal::columns()
+                .map(usize::from)
+                .filter(|&n| n > 0 && n < 10000)
+        })
+        .unwrap_or(DEFAULT_COLUMNS)
 }
 
 /// Write to standard error. A failed write has nowhere to be reported,

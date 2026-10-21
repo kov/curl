@@ -44,6 +44,7 @@ const FEATURES: &[Feature] = &[];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protocol {
     File,
+    Http,
 }
 
 impl Protocol {
@@ -51,6 +52,7 @@ impl Protocol {
     pub fn of_scheme(scheme: &[u8]) -> Option<Protocol> {
         match scheme {
             b"file" => Some(Protocol::File),
+            b"http" => Some(Protocol::Http),
             _ => None,
         }
     }
@@ -59,6 +61,7 @@ impl Protocol {
     pub fn name(self) -> &'static str {
         match self {
             Protocol::File => "file",
+            Protocol::Http => "http",
         }
     }
 }
@@ -106,7 +109,7 @@ static VERSION: VersionInfo = VersionInfo {
     timestamp: curlver::TIMESTAMP,
     host: HOST,
     features: FEATURES,
-    protocols: &[Protocol::File],
+    protocols: &[Protocol::File, Protocol::Http],
 };
 
 #[cfg(target_os = "linux")]
@@ -121,11 +124,15 @@ pub fn version() -> &'static VersionInfo {
 mod tests {
     use super::*;
 
-    /// The protocols are listed by their schemes.
+    /// The protocols are listed by their schemes, in order, as C lists
+    /// them, and each scheme names its protocol.
     #[test]
     fn protocols_are_named_by_their_schemes() {
         let names: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["file"]);
+        assert_eq!(names, ["file", "http"]);
+        for &p in version().protocols {
+            assert_eq!(Protocol::of_scheme(p.name().as_bytes()), Some(p));
+        }
     }
 
     #[test]

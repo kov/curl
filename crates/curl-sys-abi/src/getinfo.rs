@@ -83,6 +83,7 @@ fn secs(d: Duration) -> f64 {
 fn proto_bit(p: Protocol) -> c_long {
     match p {
         Protocol::File => ffi::CURLPROTO_FILE,
+        Protocol::Http => ffi::CURLPROTO_HTTP,
     }
 }
 

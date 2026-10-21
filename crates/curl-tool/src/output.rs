@@ -312,7 +312,7 @@ impl Stream {
             return Write::Fail;
         }
         // C shows them for HTTP, HTTPS, RTSP and FILE.
-        if !self.show_headers || protocol != Some(Protocol::File) {
+        if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
             return Write::Accepted;
         }
         if !self.create() {

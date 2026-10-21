@@ -61,9 +61,9 @@ witness: curl-tool keeps_the_remote_time
 file: crates/curl-tool/src/output.rs
 witness: curl-tool includes_headers
 --- old
-        if !self.show_headers || protocol != Some(Protocol::File) {
+        if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
 --- new
-        if !self.show_headers || protocol == Some(Protocol::File) {
+        if !self.show_headers || !matches!(protocol, Some(Protocol::Http)) {
 
 === an upload that cannot be opened is not reported as a transfer
 file: crates/curl-tool/src/operate.rs
@@ -239,3 +239,11 @@ witness: curl-tool dumps_the_headers
             Err(output::DumpFailed::Open) => return failed(&easy, ErrorKind::WriteError),
 --- new
             Err(output::DumpFailed::Open) => {}
+
+=== `--include` shows no header lines of HTTP
+file: crates/curl-tool/src/output.rs
+witness: curl-tool shows_the_headers_of_http
+--- old
+        if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
+--- new
+        if !self.show_headers || !matches!(protocol, Some(Protocol::File)) {

@@ -100,6 +100,19 @@ fn options_shape_the_request() {
     );
 }
 
+/// `-i` shows the header lines before the body, and `-I` them alone.
+#[test]
+fn shows_the_headers_of_http() {
+    let head = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nA: b\r\n\r\n";
+    let s = Server::new(OK);
+    let run = curl(&["-s", "-i", &s.url()]);
+    assert_eq!(run.stdout, [&head[..], b"-foo-\n"].concat());
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nA: b\r\n\r\n");
+    let run = curl(&["-s", "-I", &s.url()]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &head[..]));
+    assert!(s.request().starts_with("HEAD / HTTP/1.1\r\n"));
+}
+
 /// `-D` writes the header lines, and only those, to its file.
 #[test]
 fn dumps_the_headers() {

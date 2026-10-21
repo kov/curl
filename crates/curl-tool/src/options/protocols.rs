@@ -104,23 +104,26 @@ mod tests {
         msgs
     }
 
-    /// The library speaks `file` alone: every other name is unknown, as
-    /// test 322 checks, and no redirect may go anywhere by default.
+    /// The library speaks `file` and `http`: every other name is unknown,
+    /// as test 322 checks, and a redirect may go to `http` by default.
     #[test]
-    fn with_file_alone() {
+    fn with_file_and_http() {
         let msgs = quiet();
-        let file = Protocols(1);
-        assert_eq!(Protocols::all(), file);
-        assert_eq!(Protocols::redirect_default(), Protocols(0));
+        let (file, http) = (Protocols(1), Protocols(2));
+        let both = Protocols(3);
+        assert_eq!(Protocols::all(), both);
+        assert_eq!(Protocols::redirect_default(), http);
         for (list, want) in [
-            (b"".as_slice(), Ok(file)),
-            (b",,=ALL,", Ok(file)),
-            (b"FILE", Ok(file)),
+            (b"".as_slice(), Ok(both)),
+            (b",,=ALL,", Ok(both)),
+            (b"FILE", Ok(both)),
             (b"=file", Ok(file)),
-            (b"-file", Err(ParamError::BadUse)),
+            (b"-file", Ok(http)),
+            (b"-file,-HTTP", Err(ParamError::BadUse)),
             (b"-all,+file", Ok(file)),
             (b"+-http", Err(ParamError::BadUse)),
-            (b"http", Err(ParamError::BadUse)),
+            (b"=http", Ok(http)),
+            (b"https", Err(ParamError::BadUse)),
             (b"all,x", Err(ParamError::BadUse)),
             (b"+", Err(ParamError::BadUse)),
         ] {

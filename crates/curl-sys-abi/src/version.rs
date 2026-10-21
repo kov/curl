@@ -66,6 +66,7 @@ const MAX_PROTOCOLS: usize = 32;
 fn c_protocol(p: Protocol) -> &'static CStr {
     match p {
         Protocol::File => c"file",
+        Protocol::Http => c"http",
     }
 }
 
@@ -202,7 +203,7 @@ mod tests {
     fn protocols_reach_the_c_struct() {
         let want: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
         assert_eq!(names(info().protocols), want);
-        assert_eq!(want, ["file"]);
+        assert_eq!(want, ["file", "http"]);
     }
 
     /// The features the core reports reach the C struct as bits and as

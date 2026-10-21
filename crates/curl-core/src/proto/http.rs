@@ -349,8 +349,17 @@ impl Request {
         let line = match event {
             None => return Ok(rest),
             Some(HeadEvent::Http09(bytes)) => {
-                // What was taken for a status line is the body's start.
-                pipeline.body(cx, bytes)?;
+                let no_body = cx.easy().options().method == Method::Head;
+                pipeline.expect(Expect {
+                    no_body,
+                    no_head: true,
+                    ..Expect::default()
+                });
+                // What was taken for a status line is the body's start,
+                // unless no body is wanted (`Curl_http_write_resp_hds`).
+                if !no_body {
+                    pipeline.body(cx, bytes)?;
+                }
                 self.stage = Stage::Body(Body::UntilClose);
                 return Ok(rest);
             }
@@ -399,6 +408,7 @@ impl Request {
             size,
             max: size,
             no_body,
+            no_head: false,
         });
         self.stage = match framing {
             Framing::None => Stage::Done,

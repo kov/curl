@@ -113,10 +113,14 @@ witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_receive
         self.accountant.response_started(cx);
         let expect = self.accountant.expect;
         if expect.no_body && !bytes.is_empty() {
-            // A head was read, so the response is fine; the body goes.
+            // The body goes; the response is fine if a head came.
             self.accountant.close = true;
             self.accountant.done = true;
-            return Ok(());
+            return if expect.no_head {
+                Err(ErrorKind::WeirdServerReply)
+            } else {
+                Ok(())
+            };
         }
         let (wanted, excess) = self.accountant.cut(bytes.len());
         let max_filesize = cx.easy().options().limits.max_filesize;
@@ -126,10 +130,14 @@ witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_receive
         self.accountant.response_started(cx);
         let expect = self.accountant.expect;
         if expect.no_body && !bytes.is_empty() {
-            // A head was read, so the response is fine; the body goes.
+            // The body goes; the response is fine if a head came.
             self.accountant.close = true;
             self.accountant.done = true;
-            return Ok(());
+            return if expect.no_head {
+                Err(ErrorKind::WeirdServerReply)
+            } else {
+                Ok(())
+            };
         }
         let (wanted, excess) = self.accountant.cut(bytes.len());
         let max_filesize = cx.easy().options().limits.max_filesize;

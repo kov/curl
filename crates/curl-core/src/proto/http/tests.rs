@@ -10,7 +10,7 @@ use crate::handler::{
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
-use crate::options::Options;
+use crate::options::{Method, Options};
 use crate::proto::http1::fixture;
 use crate::time::{Clock as _, ManualClock};
 
@@ -97,8 +97,8 @@ fn run(path: &str, reply: &[u8], close: bool, set: impl FnOnce(&mut Options)) ->
     let (mut m, talk, clock) = server(&[reply], close);
     let start = clock.now();
     let ran = get(&mut m, path, talk, set);
-    // Each wait found the socket ready: one that timed out instead would
-    // have moved the clock on.
+    // A run over a peer that answers at once takes no time: a wait that
+    // timed out instead would have moved the clock on.
     assert_eq!(clock.now(), start, "the transfer waited on its socket");
     ran
 }
@@ -383,6 +383,26 @@ fn a_bad_head_fails() {
     assert_eq!(
         (ran.result, ran.seen.body()),
         (Ok(()), b"hello\r\nworld".to_vec())
+    );
+}
+
+/// A HEAD answered in HTTP/0.9 has no head to make the body fine: what
+/// was taken for a status line goes unwritten, and a body past it fails
+/// the transfer (`Curl_http_write_resp_hds`, `cw_download_write`).
+#[test]
+fn a_head_answered_in_http_0_9_is_refused() {
+    let head = |reply: &[u8]| {
+        let ran = run("/", reply, true, |o| {
+            o.http.allow_09 = true;
+            o.method = Method::Head;
+        });
+        (ran.result, ran.seen.body())
+    };
+    assert_eq!(head(b"hello\n"), (Err(ErrorKind::GotNothing), vec![]));
+    assert_eq!(head(b"hel"), (Err(ErrorKind::GotNothing), vec![]));
+    assert_eq!(
+        head(b"hello\nworld\n"),
+        (Err(ErrorKind::WeirdServerReply), vec![])
     );
 }
 

@@ -1195,6 +1195,7 @@ fn a_body_past_its_expected_size_is_cut() {
             size: Some(5),
             max: Some(5),
             no_body: false,
+            no_head: false,
         });
         p.body(cx, b"abc").unwrap();
         assert!(!p.body_done());
@@ -1220,6 +1221,7 @@ fn a_body_past_its_expected_size_is_cut() {
             size: Some(3),
             max: Some(3),
             no_body: false,
+            no_head: false,
         });
         p.body(cx, b"abc").unwrap();
         assert_eq!(
@@ -1255,6 +1257,7 @@ fn a_short_body_is_a_partial_file() {
             size: Some(6),
             max: Some(6),
             no_body: false,
+            no_head: false,
         });
         p.body(cx, b"abc").unwrap();
         assert_eq!(p.end(cx), Err(ErrorKind::PartialFile));
@@ -1277,6 +1280,7 @@ fn an_unwanted_body_is_dropped() {
             size: Some(6),
             max: Some(0),
             no_body: true,
+            no_head: false,
         });
         p.body(cx, b"").unwrap();
         assert!(!p.body_closes(), "nothing came");
@@ -1286,6 +1290,13 @@ fn an_unwanted_body_is_dropped() {
             (true, true, 0)
         );
         p.end(cx).unwrap();
+        // Without a head before it, such a body is no response.
+        p.expect(Expect {
+            no_body: true,
+            no_head: true,
+            ..Expect::default()
+        });
+        assert_eq!(p.body(cx, b"abc"), Err(ErrorKind::WeirdServerReply));
     });
     assert_eq!(lengths(&log.borrow(), "write"), [0usize; 0]);
 }

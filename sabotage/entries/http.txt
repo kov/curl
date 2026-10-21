@@ -113,3 +113,21 @@ witness: curl-core proto::http1::response::tests::a_response_has_one_location
             if v.is_empty() || self.location.as_deref() == Some(v) {
 --- new
             if v.is_empty() {
+
+=== a headless body under HEAD is fine
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::an_unwanted_body_is_dropped
+--- old
+            return if expect.no_head {
+--- new
+            return if false {
+
+=== the HTTP/0.9 start is delivered under HEAD
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_head_answered_in_http_0_9_is_refused
+--- old
+                if !no_body {
+                    pipeline.body(cx, bytes)?;
+                }
+--- new
+                pipeline.body(cx, bytes)?;

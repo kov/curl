@@ -107,10 +107,14 @@ impl Pipeline {
         self.accountant.response_started(cx);
         let expect = self.accountant.expect;
         if expect.no_body && !bytes.is_empty() {
-            // A head was read, so the response is fine; the body goes.
+            // The body goes; the response is fine if a head came.
             self.accountant.close = true;
             self.accountant.done = true;
-            return Ok(());
+            return if expect.no_head {
+                Err(ErrorKind::WeirdServerReply)
+            } else {
+                Ok(())
+            };
         }
         let (wanted, excess) = self.accountant.cut(bytes.len());
         let max_filesize = cx.easy().options().limits.max_filesize;
@@ -227,6 +231,8 @@ pub(crate) struct Expect {
     pub(crate) max: Option<u64>,
     /// No body is wanted.
     pub(crate) no_body: bool,
+    /// No head came before the body (HTTP/0.9).
+    pub(crate) no_head: bool,
 }
 
 /// A size as C prints one: -1 for none.

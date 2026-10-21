@@ -37,10 +37,7 @@ const CASES: &[u32] = &[
 
 /// Cases that run but fail for want of a feature, and the step that
 /// brings it.
-const KNOWN: &[(u32, &str)] = &[
-    (367, "Basic auth from the URL's credentials (step 16)"),
-    (1144, "a body with no head under HEAD"),
-];
+const KNOWN: &[(u32, &str)] = &[(367, "Basic auth from the URL's credentials (step 16)")];
 
 /// What a case asks of the transfer, mapped from its command line.
 #[derive(Default)]

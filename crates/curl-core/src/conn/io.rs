@@ -229,6 +229,8 @@ pub enum Peer {
     AcceptsAfter(Duration),
     /// It refuses once the socket is polled (`ECONNREFUSED`).
     Refuses,
+    /// It refuses once this much time has passed.
+    RefusesAfter(Duration),
     /// It never answers.
     Silent,
 }
@@ -481,7 +483,7 @@ impl Net for FakeNet {
         };
         let now = crate::time::Clock::now(&self.clock);
         let ready_at = match peer {
-            Peer::AcceptsAfter(d) => Some(now.after(d)),
+            Peer::AcceptsAfter(d) | Peer::RefusesAfter(d) => Some(now.after(d)),
             Peer::Accepts | Peer::Refuses | Peer::Silent => None,
         };
         let clock = self.clock.clone();
@@ -536,12 +538,15 @@ impl Socket for FakeSocket {
         }
         let mut now = match (self.peer, self.ready_at) {
             (Peer::Accepts | Peer::Refuses, _) => Events::OUT,
-            (Peer::AcceptsAfter(_), Some(at)) if crate::time::Clock::now(&self.clock) >= at => {
+            (Peer::AcceptsAfter(_) | Peer::RefusesAfter(_), Some(at))
+                if crate::time::Clock::now(&self.clock) >= at =>
+            {
                 Events::OUT
             }
-            (Peer::AcceptsAfter(_) | Peer::Silent, _) => Events::NONE,
+            (Peer::AcceptsAfter(_) | Peer::RefusesAfter(_) | Peer::Silent, _) => Events::NONE,
         };
-        if now == Events::OUT && self.peer != Peer::Refuses && wire.readable() {
+        let refuses = matches!(self.peer, Peer::Refuses | Peer::RefusesAfter(_));
+        if now == Events::OUT && !refuses && wire.readable() {
             now = now | Events::IN;
         }
         let later = self.ready_at.filter(|_| now.is_empty());
@@ -550,7 +555,9 @@ impl Socket for FakeSocket {
 
     fn take_error(&self) -> io::Result<Option<io::Error>> {
         Ok(match self.peer {
-            Peer::Refuses => Some(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED)),
+            Peer::Refuses | Peer::RefusesAfter(_) => {
+                Some(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED))
+            }
             Peer::Accepts | Peer::AcceptsAfter(_) | Peer::Silent => None,
         })
     }

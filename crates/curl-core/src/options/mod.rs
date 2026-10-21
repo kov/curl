@@ -9,6 +9,7 @@ pub mod script;
 use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
 use std::num::{NonZeroU16, NonZeroU64};
+use std::time::Duration;
 
 use crate::handler::{
     DebugHandler, Handler, HeaderHandler, ProgressHandler, ReadHandler, Rewind, TextSink,
@@ -184,6 +185,18 @@ pub struct Limits {
     pub low_speed: Option<LowSpeed>,
     /// Which idle connections the transfer may reuse.
     pub reuse: ReuseLimits,
+    pub eyeballs: EyeballsDelay,
+}
+
+/// How long a connect attempt runs before the next starts beside it
+/// (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`): 200 milliseconds unless set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EyeballsDelay(pub Duration);
+
+impl Default for EyeballsDelay {
+    fn default() -> Self {
+        EyeballsDelay(Duration::from_millis(200))
+    }
 }
 
 /// How long a connection may have been idle, and have lived, for a

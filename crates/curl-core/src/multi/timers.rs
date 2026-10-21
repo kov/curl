@@ -34,10 +34,12 @@ pub(crate) enum TimerKind {
     Connect,
     /// The low-speed check's next look (`EXPIRE_SPEEDCHECK`).
     SpeedCheck,
+    /// The next connect attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
+    Eyeballs,
 }
 
 impl TimerKind {
-    const COUNT: usize = 3;
+    const COUNT: usize = 4;
 
     fn slot(self) -> usize {
         self as usize
@@ -105,7 +107,6 @@ impl Deadlines {
         self.armed[kind.slot()] = Some(now.after(ms));
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "protocols clear their timers"))]
     pub(crate) fn clear(&mut self, kind: TimerKind) {
         self.armed[kind.slot()] = None;
     }

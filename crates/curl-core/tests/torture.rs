@@ -562,11 +562,11 @@ fn a_get_takes_no_refusal_for_success() {
 /// removal (`ENGINE.md` 8.1): the multi; the easy's URL, user agent and
 /// handlers; the transfer's place in the multi; then the URL as fetched
 /// and its parts, the URL read back once parsed (as C reads it back), the
-/// target grown by its query, the protocol's state, the destination, the
-/// effective URL kept for the report, the socket, the request head, the
-/// receive buffer, the head parser's line, the header store and the
-/// content type.
-const GET_BUDGET: u64 = 40;
+/// target grown by its query, the protocol's state, the peer, the
+/// effective URL kept for the report, the list of connect attempts, the
+/// socket, the request head, the receive buffer, the head parser's line,
+/// the header store and the content type.
+const GET_BUDGET: u64 = 41;
 
 fn a_get_stays_within_its_allocation_budget() {
     let (clock, net, talk) = test_1_server();

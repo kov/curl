@@ -17,7 +17,7 @@ use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::options::{
-    FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options, Resume, UserHeaders,
+    EyeballsDelay, FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options, Resume, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -239,6 +239,10 @@ fn apply(
         (ffi::CURLOPT_TIMEOUT, Long(n)) => options.limits.total = time_limit(n, 1000)?,
         (ffi::CURLOPT_TIMEOUT_MS, Long(n)) => options.limits.total = time_limit(n, 1)?,
         (ffi::CURLOPT_CONNECTTIMEOUT, Long(n)) => options.limits.connect = time_limit(n, 1000)?,
+        (ffi::CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS, Long(n)) => {
+            let ms = u64::try_from(n).map_err(|_| Refused::Bad)?;
+            options.limits.eyeballs = EyeballsDelay(std::time::Duration::from_millis(ms));
+        }
         (ffi::CURLOPT_IPRESOLVE, Long(n)) => {
             options.ip_version = match n {
                 ffi::CURL_IPRESOLVE_WHATEVER => IpVersion::Any,

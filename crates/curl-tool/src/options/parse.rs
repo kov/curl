@@ -487,6 +487,10 @@ mod tests {
             "1.5",
             "--connect-timeout",
             "2",
+            "--happy-eyeballs-timeout-ms",
+            "0",
+            "-6",
+            "-4",
         ]);
         let op = &l.operations[0];
         assert_eq!(op.headers, [&b"A: 1"[..], b"B;"]);
@@ -496,6 +500,12 @@ mod tests {
         assert!(op.http09 && op.raw && op.ignore_content_length && op.fail && op.no_buffer);
         assert_eq!((op.dump_header, op.max_filesize), (Some(&b"h"[..]), 1536));
         assert_eq!((op.timeout_ms, op.connect_timeout_ms), (1500, 2000));
+        assert_eq!(op.happy_eyeballs_ms, Some(0), "0 is a delay");
+        assert_eq!(
+            op.ip_version,
+            Some(crate::options::IpVersion::V4),
+            "the last"
+        );
         // `;auto` alone sets no referer; a later `-e` without it clears it.
         let op = &line(&["x", "-e", ";auto"]).operations[0];
         assert_eq!((op.referer, op.auto_referer), (None, true));

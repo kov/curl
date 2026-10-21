@@ -402,6 +402,15 @@ fn limits_are_checked_as_in_c() {
         CURLE_OK
     );
     assert_eq!(ip(c), curl_core::options::IpVersion::Any);
+    let he = |c| options(c, |o| o.limits.eyeballs.0);
+    assert_eq!(he(c), std::time::Duration::from_millis(200), "C's default");
+    assert_eq!(long(c, ffi::CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS, 0), CURLE_OK);
+    assert_eq!(he(c), std::time::Duration::ZERO);
+    assert_eq!(
+        long(c, ffi::CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(he(c), std::time::Duration::ZERO);
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

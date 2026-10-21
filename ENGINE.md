@@ -805,13 +805,16 @@ pub(crate) enum ConnectError { Unresolved, Immediate { .. }, Attempt { remote, l
 ```
 
 The enum is the target shape; what is built is a struct with a `Stage { Resolving,
-Resolved(Eyeballs), Racing(Eyeballs, Attempt) }`. Resolving answers what C answers without a
-resolver backend: an IP literal, and the loopback addresses for `localhost` and the names under
-it. `Eyeballs` holds the `Answer` and picks the next address as `cf_ip_ballers_run` does, the
-families alternating, IPv6 first; `IpVersion` limits a name's addresses, never a literal's. One
-attempt runs at a time: an attempt that fails while an address is left is traced and the next
-one starts; the delay that races the second family while the first is still connecting comes
-with happy eyeballs. A drive moves the machine by at most one event and returns it, in
+Racing(Racing) }`. Resolving answers what C answers without a resolver backend: an IP literal,
+and the loopback addresses for `localhost` and the names under it. `Eyeballs` holds the `Answer`
+and picks the next address as `cf_ip_ballers_run` does, the families alternating, IPv6 first;
+`IpVersion` limits a name's addresses, never a literal's. `Racing` runs up to six attempts, oldest
+first (`IP_HE_MAX_CONCURRENT_ATTEMPTS`, the oldest closed to make room): the next starts once
+none runs or the happy eyeballs delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`, passed on each
+drive) has passed since the last started; a failed attempt is traced and dropped; the first to
+connect wins and the others close. `Progress::Waiting { until }` names when the next attempt is
+due, which the transfer arms as `TimerKind::Eyeballs` and clears when the setup ends. Unit 2600's
+cases are a test of the machine over a manual clock. A drive moves the machine by at most one event and returns it, in
 place in its slot (§3.6); the transfer traces it in C's
 words ("  Trying …", "connect to … from … failed: …", "Established connection to … ", then
 `failf`'s "Failed to connect to H:P after N ms: …" or "Could not resolve host: …"). The machine

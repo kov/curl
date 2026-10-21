@@ -303,6 +303,9 @@ fn configure(
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);
     o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
+    if let Some(ms) = op.happy_eyeballs_ms {
+        o.limits.eyeballs = options::EyeballsDelay(Duration::from_millis(ms));
+    }
     o.ip_version = match op.ip_version {
         None => options::IpVersion::Any,
         Some(IpVersion::V4) => options::IpVersion::V4,

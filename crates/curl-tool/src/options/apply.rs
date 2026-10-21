@@ -57,6 +57,13 @@ impl<'a> Value<'a> {
             other => unreachable!("an option of seconds got {other:?}"),
         }
     }
+
+    fn number(self) -> u64 {
+        match self {
+            Value::Number(n) => n,
+            other => unreachable!("a numeric option got {other:?}"),
+        }
+    }
 }
 
 /// What parsing does after an option.
@@ -127,6 +134,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) dump_header: Option<&'a [u8]>,
     /// `--raw`.
     pub(crate) raw: bool,
+    /// `--happy-eyeballs-timeout-ms`, if given.
+    pub(crate) happy_eyeballs_ms: Option<u64>,
     /// `--ipv4` or `--ipv6`, whichever came last.
     pub(crate) ip_version: Option<IpVersion>,
     /// `--ignore-content-length`.
@@ -598,6 +607,7 @@ pub(crate) fn apply<'a>(
             line.current().dump_header = Some(file);
         }
         Opt::Raw => line.current().raw = value.toggle(),
+        Opt::HappyEyeballsTimeoutMs => line.current().happy_eyeballs_ms = Some(value.number()),
         Opt::Ipv4 => line.current().ip_version = Some(IpVersion::V4),
         Opt::Ipv6 => line.current().ip_version = Some(IpVersion::V6),
         Opt::IgnoreContentLength => line.current().ignore_content_length = value.toggle(),
@@ -730,7 +740,6 @@ pub(crate) fn apply<'a>(
         | Opt::FtpSslControl
         | Opt::FtpSslReqd
         | Opt::Get
-        | Opt::HappyEyeballsTimeoutMs
         | Opt::HaproxyClientip
         | Opt::HaproxyProtocol
         | Opt::Hostpubmd5

@@ -1090,6 +1090,10 @@ fn networked() -> (Multi, ManualClock) {
         .with_peer(
             std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 2)),
             Peer::Refuses,
+        )
+        .with_peer(
+            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 4)),
+            Peer::Silent,
         );
     let env = Env {
         clock: Box::new(clock.clone()),
@@ -1485,6 +1489,32 @@ fn localhost_names_are_the_loopback_addresses() {
             "  Trying [::1]:1...\n",
             "Established connection to Foo.LocalHost. (::1 port 1) from ::1 port 40000 \n",
         ]
+    );
+}
+
+/// An address that does not answer gives way to the next once the happy
+/// eyeballs delay has passed: the transfer's timer wakes it then, and
+/// the attempt that connects wins.
+#[test]
+fn a_silent_address_gives_way_after_the_eyeballs_delay() {
+    let (mut m, clock) = networked();
+    let (e, lines) = traced("tcp://localhost:4/");
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(trace_of(&lines).last().unwrap(), "  Trying [::1]:4...\n");
+    assert_eq!(m.timeout(), Some(Duration::from_millis(200)));
+    clock.advance(Duration::from_millis(199));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(trace_of(&lines).len(), 4, "not yet");
+    clock.advance(Duration::from_millis(1));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(trace_of(&lines)[4], "  Trying 127.0.0.1:4...\n");
+    clock.advance(Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines)[5],
+        "Established connection to localhost (127.0.0.1 port 4) from 127.0.0.1 port 40001 \n"
     );
 }
 

@@ -329,8 +329,8 @@ cargo-mutants run on the milestone's diff.
     in place of one socket; a refcounted `Peer` as the one owner of the host, shared by the
     transfer and its connection and matched for reuse as `Curl_peer_equal` does (case, zone);
     `localhost` and its names resolved as C resolves them, the answer reported, its addresses
-    tried in turn and limited by `CURLOPT_IPRESOLVE` (`-4`, `-6`; test 389). To do: the
-    getaddrinfo resolver, happy eyeballs (unit 2600 first), a DNS cache on the multi and
+    limited by `CURLOPT_IPRESOLVE` (`-4`, `-6`; test 389); happy eyeballs, its attempts raced
+    as unit 2600 has them. To do: the getaddrinfo resolver, a DNS cache on the multi and
     the grouping of the multi's tables; `--resolve` and `--connect-to`; the limits left at
     step 11b (MAXCONNECTS eviction, FORBID_REUSE, the per-host and total limits,
     MAXAGE_CONN and MAXLIFETIME_CONN); the resolver's reason in a connect failure.

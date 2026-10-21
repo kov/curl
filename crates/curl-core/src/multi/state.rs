@@ -29,7 +29,7 @@ use crate::version::Protocol;
 
 use super::cx::{EngineRest, TransferCalls};
 use super::sockets::Pollset;
-use super::timers::{Deadlines, Phase, TimeLeft, TimerKind};
+use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
 use super::{Host, TransferId};
 
 /// A transfer from `add` to `remove`.
@@ -718,8 +718,13 @@ fn connecting<H: Host>(
     if StepCx::pause(cx).recv != RecvPause::Running {
         return (TransferState::Connecting(c), Wake::Idle);
     }
+    let delay = cx.easy().options().limits.eyeballs.0;
     let (pool, mut net) = cx.rest.pool_net(cx.me);
-    match pool.connect(&c.lease, &mut net, now) {
+    let connected = pool.connect(&c.lease, &mut net, now, delay);
+    if !matches!(connected, Ok(Connected::Connecting(_))) {
+        run.deadlines.clear(TimerKind::Eyeballs);
+    }
+    match connected {
         Ok(Connected::Connecting(Progress::Resolved)) => {
             cx.mark(Timer::NameLookup);
             report_answer(cx, &c);
@@ -740,7 +745,15 @@ fn connecting<H: Host>(
             }
             (TransferState::Connecting(c), Wake::Again)
         }
-        Ok(Connected::Connecting(Progress::Waiting)) => (TransferState::Connecting(c), Wake::Idle),
+        Ok(Connected::Connecting(Progress::Waiting { until })) => {
+            match until {
+                Some(at) => run
+                    .deadlines
+                    .arm_in(TimerKind::Eyeballs, now, wait_ms(now, at)),
+                None => run.deadlines.clear(TimerKind::Eyeballs),
+            }
+            (TransferState::Connecting(c), Wake::Idle)
+        }
         Ok(Connected::Established { remote, local, at }) => {
             cx.report_mut().timings_mut().mark(Timer::Connect, at);
             let host = Bytes(c.origin.shown());

@@ -196,3 +196,38 @@ witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
                 **peer == **want && (*want_ip == IpVersion::Any || want_ip == ip)
 --- new
                 **peer == **want && want_ip == ip
+
+=== the next attempt waits for the last to fail
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
+--- old
+        let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
+--- new
+        let due = r.attempts.is_empty();
+
+=== attempts run without a cap
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
+--- old
+            if r.attempts.len() == MAX_ATTEMPTS {
+--- new
+            if r.attempts.len() == usize::MAX {
+
+=== the losing attempts stay open
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
+--- old
+                        r.close_all(net);
+                        return Ok(Drove::Established(self.established(won, now)));
+--- new
+                        return Ok(Drove::Established(self.established(won, now)));
+
+=== a transfer is not woken for its next attempt
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_delay
+--- old
+                Some(at) => run
+                    .deadlines
+                    .arm_in(TimerKind::Eyeballs, now, wait_ms(now, at)),
+--- new
+                Some(_) => run.deadlines.clear(TimerKind::Eyeballs),

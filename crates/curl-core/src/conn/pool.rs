@@ -292,19 +292,20 @@ impl Pool {
         }
     }
 
-    /// Move the leased connection's setup on by one event. A connection
-    /// already up says so.
+    /// Move the leased connection's setup on by one event, `delay` its
+    /// happy eyeballs delay. A connection already up says so.
     pub(crate) fn connect(
         &mut self,
         lease: &ConnLease,
         net: &mut dyn Net,
         now: Instant,
+        delay: Duration,
     ) -> Result<Connected, ConnectError> {
         self.conns
             .replace_with(lease.id, |slot| match slot {
                 ConnSlot::Connecting(machine) => {
                     let number = machine.number();
-                    match machine.drive(net, now) {
+                    match machine.drive(net, now, delay) {
                         Ok(Drove::Connecting(m, progress)) => {
                             (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
                         }
@@ -359,16 +360,19 @@ impl Pool {
     /// The sockets of the connection a lease holds: its attempts' while
     /// it is set up, none without a network.
     pub(crate) fn sockets(&self, lease: &ConnLease) -> impl Iterator<Item = &dyn Socket> {
-        match self.conns.get(lease.id) {
-            Some(ConnSlot::Connecting(m)) => m.socket(),
+        let (setup, open) = match self.conns.get(lease.id) {
+            Some(ConnSlot::Connecting(m)) => (Some(m), None),
             Some(ConnSlot::Open(Conn {
                 transport: Transport::Tcp(socket),
                 ..
-            })) => Some(&**socket),
-            Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => None,
+            })) => (None, Some(&**socket)),
+            Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => (None, None),
             None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
-        }
-        .into_iter()
+        };
+        setup
+            .into_iter()
+            .flat_map(ConnectMachine::sockets)
+            .chain(open)
     }
 
     /// Take a lease back and decide the connection's fate as

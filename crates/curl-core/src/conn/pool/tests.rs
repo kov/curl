@@ -13,6 +13,9 @@ const TCP: Scheme = Scheme {
     reuse: true,
 };
 
+/// The happy eyeballs delay, C's default.
+const HE: Duration = Duration::from_millis(200);
+
 const RULES: ReuseRules = ReuseRules {
     max_idle: Some(Duration::from_secs(118)),
     max_age: Some(Duration::from_secs(24 * 3600)),
@@ -41,7 +44,7 @@ fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
 
 /// Drive the setup of `lease` past its name, which must resolve.
 fn resolved(pool: &mut Pool, lease: &ConnLease, net: &mut FakeNet, now: Instant) {
-    let got = pool.connect(lease, net, now).unwrap();
+    let got = pool.connect(lease, net, now, HE).unwrap();
     assert!(
         matches!(got, Connected::Connecting(Progress::Resolved)),
         "{got:?}"
@@ -61,8 +64,8 @@ fn new(pool: &mut Pool, route: Route, net: &mut FakeNet, now: Instant) -> ConnLe
 /// Connect `lease`, whose peer accepts.
 fn up(pool: &mut Pool, lease: &ConnLease, net: &mut FakeNet, now: Instant) {
     resolved(pool, lease, net, now);
-    pool.connect(lease, net, now).unwrap();
-    let established = pool.connect(lease, net, now).unwrap();
+    pool.connect(lease, net, now, HE).unwrap();
+    let established = pool.connect(lease, net, now, HE).unwrap();
     assert!(matches!(established, Connected::Established { .. }));
 }
 
@@ -118,12 +121,12 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
         "nothing open before the first drive"
     );
     resolved(&mut pool, &lease, &mut net, now);
-    let tried = pool.connect(&lease, &mut net, now).unwrap();
+    let tried = pool.connect(&lease, &mut net, now, HE).unwrap();
     let to = SocketAddr::from(([127, 0, 0, 1], 1));
     assert!(matches!(tried, Connected::Connecting(Progress::Trying(a)) if a == to));
     assert_eq!(socket(&pool, &lease), Some(1000), "the attempt's");
     assert!(pool.get_conn(id).is_none(), "not up yet");
-    let up = pool.connect(&lease, &mut net, now).unwrap();
+    let up = pool.connect(&lease, &mut net, now, HE).unwrap();
     let Connected::Established { remote, local, at } = up else {
         panic!("{up:?}");
     };
@@ -131,7 +134,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     assert_eq!(local, Some(SocketAddr::from(([127, 0, 0, 1], 40000))));
     assert_eq!(pool.get_conn(id).map(|c| c.number), Some(ConnNumber(0)));
     assert!(matches!(
-        pool.connect(&lease, &mut net, now),
+        pool.connect(&lease, &mut net, now, HE),
         Ok(Connected::AlreadyUp)
     ));
     assert_eq!(socket(&pool, &lease), Some(1000), "kept once up");
@@ -152,8 +155,8 @@ fn refused_and_silent_attempts() {
     let mut pool = Pool::new().unwrap();
     let refused = new(&mut pool, tcp(2), &mut net, now);
     resolved(&mut pool, &refused, &mut net, now);
-    pool.connect(&refused, &mut net, now).unwrap();
-    let err = pool.connect(&refused, &mut net, now).unwrap_err();
+    pool.connect(&refused, &mut net, now, HE).unwrap();
+    let err = pool.connect(&refused, &mut net, now, HE).unwrap_err();
     let ConnectError::Failed(Failure::Attempt {
         remote,
         local,
@@ -172,10 +175,13 @@ fn refused_and_silent_attempts() {
     );
     let silent = new(&mut pool, tcp(3), &mut net, now);
     resolved(&mut pool, &silent, &mut net, now);
-    pool.connect(&silent, &mut net, now).unwrap();
+    pool.connect(&silent, &mut net, now, HE).unwrap();
     for _ in 0..3 {
-        let waiting = pool.connect(&silent, &mut net, now).unwrap();
-        assert!(matches!(waiting, Connected::Connecting(Progress::Waiting)));
+        let waiting = pool.connect(&silent, &mut net, now, HE).unwrap();
+        assert!(matches!(
+            waiting,
+            Connected::Connecting(Progress::Waiting { .. })
+        ));
     }
     assert_eq!(net.open_sockets(), 1);
     let premature = Finish { premature: true };
@@ -199,11 +205,11 @@ fn unresolved_names_and_immediate_failures() {
     let mut pool = Pool::new().unwrap();
     let named = to(TCP, b"example.com", 80);
     let named = new(&mut pool, named, &mut net, now);
-    let err = pool.connect(&named, &mut net, now).unwrap_err();
+    let err = pool.connect(&named, &mut net, now, HE).unwrap_err();
     assert!(matches!(err, ConnectError::Unresolved), "{err:?}");
     let nobody = new(&mut pool, tcp(9), &mut net, now);
     resolved(&mut pool, &nobody, &mut net, now);
-    let err = pool.connect(&nobody, &mut net, now).unwrap_err();
+    let err = pool.connect(&nobody, &mut net, now, HE).unwrap_err();
     assert!(
         matches!(err, ConnectError::Failed(Failure::Immediate { remote, .. }) if remote.port() == 9),
         "{err:?}"

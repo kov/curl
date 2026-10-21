@@ -9,6 +9,7 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use std::num::NonZeroU32;
 
@@ -34,10 +35,23 @@ pub(crate) struct ConnectMachine {
 enum Stage {
     /// The destination's name is to be resolved.
     Resolving,
-    /// The next attempt is to start.
-    Resolved(Eyeballs),
-    /// An attempt is connecting to an address.
-    Racing(Eyeballs, Attempt),
+    /// Attempts are made to the addresses it resolved to.
+    Racing(Racing),
+}
+
+/// The most attempts running at once (`IP_HE_MAX_CONCURRENT_ATTEMPTS`).
+const MAX_ATTEMPTS: usize = 6;
+
+/// The attempts of a setup (C's `cf_ip_ballers`): each starts when the
+/// one before has failed, or has run the happy eyeballs delay without
+/// connecting, while an address is left.
+#[derive(Debug)]
+struct Racing {
+    eyeballs: Eyeballs,
+    /// The attempts running, oldest first.
+    attempts: Vec<Attempt>,
+    /// When the last attempt started.
+    last_start: Option<Instant>,
 }
 
 /// The addresses a name stands for, in the order the resolver gave them
@@ -148,10 +162,11 @@ pub(crate) enum Progress {
     Resolved,
     /// An attempt started on `0`.
     Trying(SocketAddr),
-    /// An attempt failed, and another address is left to try.
+    /// An attempt failed, and the setup goes on.
     Failed(Failure),
-    /// Nothing until the socket is ready.
-    Waiting,
+    /// Nothing until a socket is ready, or until `until`, when the next
+    /// attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
+    Waiting { until: Option<Instant> },
 }
 
 /// How an attempt failed.
@@ -202,120 +217,148 @@ impl ConnectMachine {
         self.number
     }
 
-    /// The socket of the attempt under way, if one is.
-    pub(crate) fn socket(&self) -> Option<&dyn Socket> {
-        match &self.stage {
-            Stage::Resolving | Stage::Resolved(_) => None,
-            Stage::Racing(_, a) => Some(&*a.socket),
-        }
+    /// The sockets of the attempts running.
+    pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
+        let running = match &self.stage {
+            Stage::Resolving => &[][..],
+            Stage::Racing(r) => &r.attempts[..],
+        };
+        running.iter().map(|a| &*a.socket)
     }
 
     /// The addresses the name resolved to, once it has.
     pub(crate) fn answer(&self) -> Option<&Answer> {
         match &self.stage {
             Stage::Resolving => None,
-            Stage::Resolved(e) | Stage::Racing(e, _) => Some(&e.answer),
+            Stage::Racing(r) => Some(&r.eyeballs.answer),
         }
     }
 
-    /// Move the setup on by one event.
-    pub(crate) fn drive(self, net: &mut dyn Net, now: Instant) -> Result<Drove, ConnectError> {
-        let ConnectMachine {
-            number,
-            peer,
-            ip,
-            created,
-            stage,
-        } = self;
-        let next = |peer, stage, progress| {
-            let m = ConnectMachine {
-                number,
-                peer,
-                ip,
-                created,
-                stage,
-            };
-            Ok(Drove::Connecting(m, progress))
-        };
-        match stage {
+    /// Move the setup on by one event; `delay` is the happy eyeballs
+    /// delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`).
+    pub(crate) fn drive(
+        mut self,
+        net: &mut dyn Net,
+        now: Instant,
+        delay: Duration,
+    ) -> Result<Drove, ConnectError> {
+        let r = match &mut self.stage {
             Stage::Resolving => {
-                let answer = resolve(peer.shown())
+                let answer = resolve(self.peer.shown())
                     .map_err(|OutOfMemory| ConnectError::OutOfMemory)?
                     .ok_or(ConnectError::Unresolved)?;
-                let eyeballs = Eyeballs::new(answer, ip);
+                let eyeballs = Eyeballs::new(answer, self.ip);
                 if !eyeballs.more() {
                     return Err(ConnectError::Unresolved);
                 }
-                next(peer, Stage::Resolved(eyeballs), Progress::Resolved)
+                self.stage = Stage::Racing(Racing {
+                    eyeballs,
+                    attempts: Vec::new(),
+                    last_start: None,
+                });
+                return Ok(Drove::Connecting(self, Progress::Resolved));
             }
-            Stage::Resolved(mut eyeballs) => {
-                let ip = eyeballs.next().expect("an address is left");
-                let remote = SocketAddr::new(ip, peer.port());
-                match net.connect(remote) {
-                    Ok((socket, Connect::InProgress | Connect::Done)) => {
-                        let stage = Stage::Racing(eyeballs, Attempt { remote, socket });
-                        next(peer, stage, Progress::Trying(remote))
+            Stage::Racing(r) => r,
+        };
+        // A running attempt that connected wins; one that failed is
+        // dropped (`cf_ip_ballers_run`).
+        for i in 0..r.attempts.len() {
+            let a = &r.attempts[i];
+            // Writable once the connect is decided, either way
+            // (`SOCKET_WRITABLE(sock, 0)`).
+            let mut watch = [SocketPoll::new(&*a.socket, Events::OUT)];
+            let error = match net.poll(&mut watch, &mut [], Duration::ZERO) {
+                Ok(_) if watch[0].revents().is_empty() => continue,
+                Ok(_) => match a.socket.take_error() {
+                    Ok(None) => {
+                        let won = r.attempts.remove(i);
+                        r.close_all(net);
+                        return Ok(Drove::Established(self.established(won, now)));
                     }
-                    Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
-                        Err(ConnectError::OutOfMemory)
-                    }
-                    Err(error) => {
-                        let failure = Failure::Immediate { remote, error };
-                        if eyeballs.more() {
-                            next(peer, Stage::Resolved(eyeballs), Progress::Failed(failure))
-                        } else {
-                            Err(ConnectError::Failed(failure))
-                        }
-                    }
+                    Ok(Some(error)) | Err(error) => error,
+                },
+                Err(error) => error,
+            };
+            let failure = r.attempts.remove(i).fail(net, error)?;
+            return r.failed(failure).map(|p| Drove::Connecting(self, p));
+        }
+        let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
+        if due && r.eyeballs.more() {
+            if r.attempts.len() == MAX_ATTEMPTS {
+                // The oldest makes room (`cf_ip_ballers_prune`).
+                let oldest = r.attempts.remove(0);
+                net.close(oldest.socket);
+            }
+            if r.attempts.try_reserve(1).is_err() {
+                return Err(ConnectError::OutOfMemory);
+            }
+            let ip = r.eyeballs.next().expect("an address is left");
+            let remote = SocketAddr::new(ip, self.peer.port());
+            r.last_start = Some(now);
+            return match net.connect(remote) {
+                Ok((socket, Connect::InProgress | Connect::Done)) => {
+                    r.attempts
+                        .try_push(Attempt { remote, socket })
+                        .expect("reserved");
+                    Ok(Drove::Connecting(self, Progress::Trying(remote)))
                 }
-            }
-            Stage::Racing(eyeballs, a) => {
-                // Writable once the connect is decided, either way
-                // (`SOCKET_WRITABLE(sock, 0)`).
-                let mut watch = [SocketPoll::new(&*a.socket, Events::OUT)];
-                let polled = net
-                    .poll(&mut watch, &mut [], std::time::Duration::ZERO)
-                    .map(|_| !watch[0].revents().is_empty());
-                let error = match polled {
-                    Ok(false) => {
-                        return next(peer, Stage::Racing(eyeballs, a), Progress::Waiting);
-                    }
-                    Ok(true) => match a.socket.take_error() {
-                        Ok(None) => {
-                            let local = a.socket.local_addr().ok();
-                            return Ok(Drove::Established(Conn {
-                                number,
-                                route: Route::Tcp(peer, ip),
-                                transport: Transport::Tcp(a.socket),
-                                remote: Some(a.remote),
-                                local,
-                                created,
-                                connected_at: now,
-                                use_: Use::Leased(NonZeroU32::MIN),
-                                rx: RecvBuf::default(),
-                                served: false,
-                                close: false,
-                            }));
-                        }
-                        Ok(Some(error)) | Err(error) => error,
-                    },
-                    Err(error) => error,
-                };
-                let failure = a.fail(net, error)?;
-                if eyeballs.more() {
-                    next(peer, Stage::Resolved(eyeballs), Progress::Failed(failure))
-                } else {
-                    Err(ConnectError::Failed(failure))
+                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                    Err(ConnectError::OutOfMemory)
                 }
-            }
+                Err(error) => {
+                    let failure = Failure::Immediate { remote, error };
+                    r.failed(failure).map(|p| Drove::Connecting(self, p))
+                }
+            };
+        }
+        let until = r
+            .last_start
+            .filter(|_| r.eyeballs.more())
+            .map(|at| at.after(delay));
+        Ok(Drove::Connecting(self, Progress::Waiting { until }))
+    }
+
+    /// The connection `won` set up, found connected at `now`.
+    fn established(self, won: Attempt, now: Instant) -> Conn {
+        let local = won.socket.local_addr().ok();
+        Conn {
+            number: self.number,
+            route: Route::Tcp(self.peer, self.ip),
+            transport: Transport::Tcp(won.socket),
+            remote: Some(won.remote),
+            local,
+            created: self.created,
+            connected_at: now,
+            use_: Use::Leased(NonZeroU32::MIN),
+            rx: RecvBuf::default(),
+            served: false,
+            close: false,
         }
     }
 
     /// End the setup, closing what it has open.
     pub(crate) fn close(self, net: &mut dyn Net) {
         match self.stage {
-            Stage::Resolving | Stage::Resolved(_) => {}
-            Stage::Racing(_, a) => net.close(a.socket),
+            Stage::Resolving => {}
+            Stage::Racing(mut r) => r.close_all(net),
+        }
+    }
+}
+
+impl Racing {
+    fn close_all(&mut self, net: &mut dyn Net) {
+        for a in self.attempts.drain(..) {
+            net.close(a.socket);
+        }
+    }
+
+    /// An attempt failed: the setup goes on while an attempt runs or an
+    /// address is left, and fails with it otherwise.
+    fn failed(&self, failure: Failure) -> Result<Progress, ConnectError> {
+        if !self.attempts.is_empty() || self.eyeballs.more() {
+            Ok(Progress::Failed(failure))
+        } else {
+            Err(ConnectError::Failed(failure))
         }
     }
 }
@@ -376,6 +419,171 @@ fn literal(host: &[u8]) -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conn::Scheme;
+    use crate::conn::io::{FakeNet, Peer as FakePeer};
+    use crate::time::{Clock as _, ManualClock};
+
+    /// What a race did, in milliseconds from its start.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Raced {
+        v4_starts: Vec<u64>,
+        v6_starts: Vec<u64>,
+        most_running: usize,
+        failed_at: u64,
+    }
+
+    /// Race a name that resolved to `addrs`, each refusing `fail_ms`
+    /// after its attempt starts, with a happy eyeballs delay of `he_ms`;
+    /// the clock moves a millisecond whenever the setup waits.
+    fn race(addrs: &[&str], ip: IpVersion, he_ms: u64, fail_ms: u64) -> Raced {
+        let clock = ManualClock::new().unwrap();
+        let start = clock.now();
+        let addrs: Vec<IpAddr> = addrs.iter().map(|a| a.parse().unwrap()).collect();
+        let mut net = FakeNet::new(clock.clone());
+        for &a in &addrs {
+            let peer = FakePeer::RefusesAfter(Duration::from_millis(fail_ms));
+            net = net.with_peer(SocketAddr::new(a, 123), peer);
+        }
+        let scheme = Scheme {
+            name: "http",
+            reuse: true,
+        };
+        let peer = Peer::new(scheme, b"abc.test".to_vec(), 123, None);
+        let mut m = ConnectMachine::new(ConnNumber(0), TryRc::try_new(peer).unwrap(), ip, start);
+        m.stage = Stage::Racing(Racing {
+            eyeballs: Eyeballs::new(Answer::Resolved(addrs), ip),
+            attempts: Vec::new(),
+            last_start: None,
+        });
+        let mut raced = Raced {
+            v4_starts: Vec::new(),
+            v6_starts: Vec::new(),
+            most_running: 0,
+            failed_at: 0,
+        };
+        let he = Duration::from_millis(he_ms);
+        for _ in 0..5000 {
+            let ms = u64::try_from(clock.now().since(start).as_millis()).unwrap();
+            match m.drive(&mut net, clock.now(), he) {
+                Ok(Drove::Connecting(next, progress)) => {
+                    m = next;
+                    raced.most_running = raced.most_running.max(m.sockets().count());
+                    match progress {
+                        Progress::Trying(SocketAddr::V4(_)) => raced.v4_starts.push(ms),
+                        Progress::Trying(SocketAddr::V6(_)) => raced.v6_starts.push(ms),
+                        Progress::Failed(_) => {}
+                        Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
+                        Progress::Resolved => unreachable!("resolved already"),
+                    }
+                }
+                Ok(Drove::Established(conn)) => panic!("{conn:?}"),
+                Err(ConnectError::Failed(_)) => {
+                    raced.failed_at = ms;
+                    assert_eq!(net.open_sockets(), 0, "every attempt closed");
+                    return raced;
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        panic!("no end: {raced:?}");
+    }
+
+    /// The attempt that connects wins, and the others are closed.
+    #[test]
+    fn the_winner_closes_the_other_attempts() {
+        let clock = ManualClock::new().unwrap();
+        let (silent, up) = ("[::1]:5".parse().unwrap(), "127.0.0.1:5".parse().unwrap());
+        let mut net = FakeNet::new(clock.clone())
+            .with_peer(silent, FakePeer::Silent)
+            .with_peer(up, FakePeer::AcceptsAfter(Duration::from_millis(10)));
+        let scheme = Scheme {
+            name: "http",
+            reuse: true,
+        };
+        let peer = Peer::new(scheme, b"localhost".to_vec(), 5, None);
+        let peer = TryRc::try_new(peer).unwrap();
+        let mut m = ConnectMachine::new(ConnNumber(0), peer, IpVersion::Any, clock.now());
+        let he = Duration::from_millis(200);
+        let conn = loop {
+            match m.drive(&mut net, clock.now(), he).unwrap() {
+                Drove::Connecting(next, progress) => {
+                    m = next;
+                    if let Progress::Waiting { .. } = progress {
+                        clock.advance(Duration::from_millis(1));
+                    }
+                }
+                Drove::Established(conn) => break conn,
+            }
+        };
+        assert_eq!(conn.remote, Some(up));
+        assert_eq!(net.open_sockets(), 1, "the winner's alone");
+        let Transport::Tcp(socket) = conn.transport else {
+            panic!("over the network");
+        };
+        net.close(socket);
+    }
+
+    /// Unit 2600's cases: how many attempts of each family start, and
+    /// when, how many run at once, and when the setup fails. The next
+    /// attempt starts once the delay has passed since the last one
+    /// started, or once none runs; six run at most, the oldest making
+    /// room.
+    #[test]
+    fn attempts_race_as_unit_2600_has_them() {
+        use IpVersion::{Any, V4, V6};
+        let raced = |v4: &[u64], v6: &[u64], most_running, failed_at| Raced {
+            v4_starts: v4.to_vec(),
+            v6_starts: v6.to_vec(),
+            most_running,
+            failed_at,
+        };
+        // 1 and 2: IPv4 alone; the second starts on the delay.
+        assert_eq!(
+            race(&["192.0.2.1"], Any, 150, 250),
+            raced(&[0], &[], 1, 250)
+        );
+        let two = ["192.0.2.1", "192.0.2.2"];
+        assert_eq!(race(&two, Any, 150, 250), raced(&[0, 150], &[], 2, 400));
+        // 3 and 4: IPv6 alone.
+        assert_eq!(race(&["::1"], Any, 150, 250), raced(&[], &[0], 1, 250));
+        assert_eq!(
+            race(&["::1", "::2"], Any, 150, 250),
+            raced(&[], &[0, 150], 2, 400)
+        );
+        // 5 and 6: IPv6 first, whatever the order; IPv4 on the delay.
+        let mixed = raced(&[150], &[0], 2, 400);
+        assert_eq!(race(&["192.0.2.1", "::1"], Any, 150, 250), mixed);
+        assert_eq!(race(&["::1", "192.0.2.1"], Any, 150, 250), mixed);
+        // 7 and 8: one family only, over its whole time.
+        assert_eq!(
+            race(&["192.0.2.1", "::1"], V4, 150, 500),
+            raced(&[0], &[], 1, 500)
+        );
+        assert_eq!(
+            race(&["::1", "192.0.2.1"], V6, 150, 500),
+            raced(&[], &[0], 1, 500)
+        );
+        // 9: the families alternate while both have addresses.
+        let four = ["::1", "192.0.2.1", "::2", "::3"];
+        assert_eq!(
+            race(&four, Any, 50, 400),
+            raced(&[50], &[0, 100, 150], 4, 550)
+        );
+        // 10: six at most, the oldest discarded for the seventh.
+        let nine = [
+            "::1",
+            "192.0.2.1",
+            "::2",
+            "::3",
+            "::4",
+            "::5",
+            "::6",
+            "::7",
+            "::8",
+        ];
+        let v6 = [0, 40, 60, 80, 100, 120, 140, 160];
+        assert_eq!(race(&nine, Any, 20, 500), raced(&[20], &v6, 6, 660));
+    }
 
     /// The names C answers itself: `localhost` and the names under it.
     #[test]

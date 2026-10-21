@@ -302,12 +302,12 @@ yet meet.
     resume (`-C`, `Range`, the 416 read and dropped) came with them. The 84 ring tests of steps
     16 to 20 pass on both legs.
 21. **abi: the HTTP libtests.** **Done**, but for those that wait on later work. Easy: 566, 1485,
-    1532, 1541, 1556, 1594, 1595, 1649, 1907, 2306, 2308. Multi: 528, 535, 573, 580, 581, 1500,
+    1532, 1541, 1556, 1594, 1595, 1596, 1649, 1907, 2306, 2308. Multi: 528, 535, 573, 580, 581, 1500,
     2405, 2412, 2453. Re-entrancy and events: 1555, 3107, 530. The shim gained the HTTP options,
     the response's infos, `curl_easy_recv`/`curl_easy_send` and the headers API (`headers-api`
-    ON). Waiting: 1596 (a Retry-After date, needs the date parser), 3010
-    (`CURLINFO_REDIRECT_URL`), 1940, 1942 and 1943 (they set `CURLOPT_FOLLOWLOCATION`), all
-    with redirects; 758 needs an HTTPS server.
+    ON); the date parser (`date.rs`, lib517 and unit4781's tables) gives `curl_getdate` (517)
+    and Retry-After dates. Waiting: 3010 (`CURLINFO_REDIRECT_URL`), 1940, 1942 and 1943 (they
+    set `CURLOPT_FOLLOWLOCATION`), all with redirects; 758 needs an HTTPS server.
 
 After the milestone, each ring has its seam: T1 (`-w`, `-m`, `--fail-with-body`, `-#`,
 `--stderr`), pool reuse and limits with the getaddrinfo resolver, redirects, multi-URL, then event

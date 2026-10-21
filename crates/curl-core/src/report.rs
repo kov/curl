@@ -48,9 +48,9 @@ pub struct TransferReport {
     /// The last status line's code and version (`info.httpcode`,
     /// `info.httpversion`).
     response: Option<(u16, ResponseVersion)>,
-    /// The seconds a response asked to wait before trying again, at most
-    /// six hours (`info.retry_after`).
-    retry_after: u64,
+    /// How long the last response to say asked to wait before trying
+    /// again, at most six hours (`info.retry_after`).
+    retry_after: Option<Duration>,
     /// The URL the transfer used, without its credentials, as text.
     url: Option<Vec<u8>>,
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
@@ -132,14 +132,15 @@ impl TransferReport {
         self.response = Some((code, version));
     }
 
-    /// How long a response asked to wait before the next try, in
-    /// seconds (`CURLINFO_RETRY_AFTER`).
-    pub fn retry_after(&self) -> u64 {
+    /// How long a response asked to wait before the next try, in whole
+    /// seconds (`CURLINFO_RETRY_AFTER`); none if no response said. A
+    /// wait it gave as nonsense, or a date passed, is zero.
+    pub fn retry_after(&self) -> Option<Duration> {
         self.retry_after
     }
 
-    pub(crate) fn set_retry_after(&mut self, secs: u64) {
-        self.retry_after = secs;
+    pub(crate) fn set_retry_after(&mut self, wait: Duration) {
+        self.retry_after = Some(wait);
     }
 
     /// The URL the transfer used, its credentials taken out

@@ -547,6 +547,7 @@ impl<H: Host> Multi<H> {
             life: &mut self.life,
             events: ev,
             now,
+            clock: &*self.clock,
         }
     }
 

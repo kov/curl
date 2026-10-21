@@ -303,11 +303,11 @@ witness: curl-core proto::http::tests::the_report_knows_the_response_as_its_line
 
 === Retry-After has no ceiling
 file: crates/curl-core/src/proto/http1/framing.rs
-witness: curl-core proto::http::tests::retry_after_reads_seconds
+witness: curl-core proto::http::tests::retry_after_reads_seconds_and_dates
 --- old
-    Some(secs.min(MAX_RETRY_AFTER))
+    Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER)))
 --- new
-    Some(secs)
+    Some(Duration::from_secs(secs))
 
 === the report's URL keeps its credentials
 file: crates/curl-core/src/report.rs
@@ -355,3 +355,19 @@ witness: curl-core proto::http::tests::the_header_size_counts_interim_heads_and_
             let header_size = &mut cx.report_mut().sizes_mut().header;
 --- new
             let header_size = &mut 0;
+
+=== Retry-After reads a date as a number
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::retry_after_reads_seconds_and_dates
+--- old
+    let secs = match date::parse(v) {
+--- new
+    let secs = match Err::<i64, _>(BadDate) {
+
+=== a Retry-After date counts from 1970
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_retry_after_date_counts_from_the_clock
+--- old
+                if let Some(wait) = framing::retry_after(line.bytes, cx.unix_time()) {
+--- new
+                if let Some(wait) = framing::retry_after(line.bytes, 0) {

@@ -6,11 +6,13 @@
 
 use std::fmt;
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields;
 use super::response::{HttpVersion, Status};
+use crate::date::{self, BadDate};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
 const MAX_CODINGS: u8 = 5;
@@ -455,18 +457,23 @@ impl Meta {
 /// The longest wait `Retry-After` is taken to ask for: six hours.
 const MAX_RETRY_AFTER: u64 = 6 * 3600;
 
-/// The seconds a `Retry-After:` line asks to wait (`http_header_r`): its
-/// leading number, at most six hours; 0 for anything else. A date is
-/// read as a number, which it does not start with: dates wait on a date
-/// parser.
-pub(crate) fn retry_after(line: &[u8]) -> Option<u64> {
+/// How long a `Retry-After:` line asks to wait, the calendar time being
+/// `now` (`http_header_r`): until its date, or its leading number of
+/// seconds, at most six hours; zero for a date passed or anything else.
+/// A date is tried first, as a number may start one.
+pub(crate) fn retry_after(line: &[u8], now: i64) -> Option<Duration> {
     let v = skip_blanks(value_of(line, b"Retry-After:")?);
-    let digits = v.iter().take_while(|b| b.is_ascii_digit()).count();
-    let secs = std::str::from_utf8(&v[..digits])
-        .ok()
-        .and_then(|d| d.parse::<i64>().ok())
-        .map_or(0, |n| n as u64);
-    Some(secs.min(MAX_RETRY_AFTER))
+    let secs = match date::parse(v) {
+        Ok(at) => u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        Err(BadDate) => {
+            let digits = v.iter().take_while(|b| b.is_ascii_digit()).count();
+            std::str::from_utf8(&v[..digits])
+                .ok()
+                .and_then(|d| d.parse::<i64>().ok())
+                .map_or(0, |n| n as u64)
+        }
+    };
+    Some(Duration::from_secs(secs.min(MAX_RETRY_AFTER)))
 }
 
 /// The rest of `line` after its name `name`, which includes the colon

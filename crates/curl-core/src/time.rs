@@ -52,6 +52,11 @@ impl TimeLimit {
 /// Where a multi reads the time.
 pub trait Clock {
     fn now(&self) -> Instant;
+
+    /// The calendar time: whole seconds since 1970-01-01 00:00:00 UTC,
+    /// negative before (`time(NULL)`). Read only where a date is compared
+    /// with the present, never for a time limit.
+    fn unix_time(&self) -> i64;
 }
 
 /// The system's monotonic clock, with its epoch when it was made.
@@ -78,33 +83,63 @@ impl Clock for SystemClock {
     fn now(&self) -> Instant {
         Instant(micros(self.epoch.elapsed()))
     }
+
+    fn unix_time(&self) -> i64 {
+        let secs = |d: Duration| i64::try_from(d.as_secs()).unwrap_or(i64::MAX);
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => secs(after),
+            Err(before) => -secs(before.duration()),
+        }
+    }
 }
 
 /// A clock that moves only when told. Its clones share one time, so a test
 /// keeps one and gives another to the multi.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Clone, Debug)]
-pub struct ManualClock(curl_alloc::TryRc<std::cell::Cell<Instant>>);
+pub struct ManualClock(curl_alloc::TryRc<ManualTime>);
+
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+pub struct ManualTime {
+    now: std::cell::Cell<Instant>,
+    /// The calendar time at the clock's epoch.
+    unix_epoch: std::cell::Cell<i64>,
+}
 
 #[cfg(any(test, feature = "test-util"))]
 impl ManualClock {
-    /// A clock at its epoch.
+    /// A clock at its epoch, which is 1970's.
     pub fn new() -> Result<Self, curl_alloc::OutOfMemory> {
-        Ok(ManualClock(curl_alloc::TryRc::try_new(
-            std::cell::Cell::new(Instant::EPOCH),
-        )?))
+        Ok(ManualClock(curl_alloc::TryRc::try_new(ManualTime {
+            now: std::cell::Cell::new(Instant::EPOCH),
+            unix_epoch: std::cell::Cell::new(0),
+        })?))
     }
 
     /// Move the time `d` forward.
     pub fn advance(&self, d: Duration) {
-        self.0.set(self.0.get().after(d));
+        self.0.now.set(self.0.now.get().after(d));
+    }
+
+    /// Make the calendar time `secs` now; it moves with the clock.
+    pub fn set_unix_time(&self, secs: i64) {
+        self.0.unix_epoch.set(secs - self.elapsed_secs());
+    }
+
+    fn elapsed_secs(&self) -> i64 {
+        i64::try_from(self.0.now.get().since(Instant::EPOCH).as_secs()).expect("u64 µs in i64 s")
     }
 }
 
 #[cfg(any(test, feature = "test-util"))]
 impl Clock for ManualClock {
     fn now(&self) -> Instant {
-        self.0.get()
+        self.0.now.get()
+    }
+
+    fn unix_time(&self) -> i64 {
+        self.0.unix_epoch.get() + self.elapsed_secs()
     }
 }
 

@@ -1,0 +1,77 @@
+# The date parser (`lib/parsedate.c`), witnessed by C's own tables.
+
+=== a leap second is refused
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::lib517_dates
+--- old
+        if secs > 60 {
+--- new
+        if secs >= 60 {
+
+=== an offset's sign is taken as written
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::lib517_dates
+--- old
+        w.zone = Some(if sign == Some(b'+') { -offset } else { offset });
+--- new
+        w.zone = Some(if sign == Some(b'+') { offset } else { -offset });
+
+=== a two-digit year is always this century's
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::lib517_dates
+--- old
+            71..100 => val + 1900,
+--- new
+            71..100 => val + 2000,
+
+=== leap days count the current year before March
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::lib517_dates
+--- old
+    let y = i64::from(year) - i64::from(mon <= 1);
+--- new
+    let y = i64::from(year);
+
+=== a long weekday name is taken by its first three letters
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::unit4781_names
+--- old
+    (word.len() == 3 || word.eq_ignore_ascii_case(DAYS[day])).then_some(day as u8)
+--- new
+    Some(day as u8)
+
+=== a zone name is read in any case
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::unit4781_names
+--- old
+            .find(|(name, _)| *name == word)
+--- new
+            .find(|(name, _)| name.eq_ignore_ascii_case(word))
+
+=== a compact date's month 00 is an error
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::a_compact_date_with_month_00_takes_a_later_month
+--- old
+            .checked_sub(1)
+            .map(|m| u8::try_from(m).expect("below 12"));
+--- new
+            .checked_sub(1)
+            .map(|m| u8::try_from(m).expect("below 12"))
+            .ok_or(BadDate)
+            .map(Some)?;
+
+=== a zero byte is read past
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::a_zero_byte_ends_the_date
+--- old
+    let date = date.split(|&b| b == 0).next().unwrap_or_default();
+--- new
+    let date = date;
+
+=== every part of a date is read
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::six_parts_are_read_and_the_rest_ignored
+--- old
+    for _ in 0..MAX_PARTS {
+--- new
+    for _ in 0..usize::MAX {

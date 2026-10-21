@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
 use std::rc::Rc;
+use std::time::Duration;
 
 use crate::conn::io::{Conversation, FakeNet, Peer};
 use crate::easy::Easy;
@@ -881,20 +882,65 @@ fn the_report_knows_the_response_as_its_lines_arrive() {
     let r = ran.easy.report();
     assert_eq!(r.response_version(), Some(ResponseVersion::Http10));
     // At most six hours.
-    assert_eq!(r.retry_after(), 21600);
+    assert_eq!(r.retry_after(), Some(Duration::from_secs(21600)));
 }
 
-/// `Retry-After` in seconds; what is not a number is 0
-/// (`http_header_r`).
+/// `Retry-After` in seconds or as a date; what is neither, or a date
+/// passed, is 0 (`http_header_r`).
 #[test]
-fn retry_after_reads_seconds() {
-    let after = |line: &[u8]| framing::retry_after(line);
+fn retry_after_reads_seconds_and_dates() {
+    // Sun, 06 Nov 1994 08:49:37 GMT
+    let now = 784_111_777;
+    let after = |line: &[u8]| framing::retry_after(line, now).map(|d| d.as_secs());
     assert_eq!(after(b"Retry-After: 22\r\n"), Some(22));
     assert_eq!(after(b"retry-after:\t 7x\r\n"), Some(7));
     assert_eq!(after(b"Retry-After: soon\r\n"), Some(0));
     assert_eq!(after(b"Retry-After: 99999999999999999999\r\n"), Some(0));
     assert_eq!(after(b"Retry-After: 21601\r\n"), Some(21600));
     assert_eq!(after(b"Retry-Afte: 1\r\n"), None);
+    assert_eq!(
+        after(b"Retry-After: Sun, 06 Nov 1994 08:50:07 GMT\r\n"),
+        Some(30)
+    );
+    assert_eq!(
+        after(b"Retry-After: Sun, 06 Nov 1994 08:49:37 GMT\r\n"),
+        Some(0)
+    );
+    assert_eq!(
+        after(b"Retry-After: Sun, 06 Nov 1994 08:49:36 GMT\r\n"),
+        Some(0)
+    );
+    assert_eq!(
+        after(b"Retry-After: Wed, 31 Dec 2138 02:26:59 GMT\r\n"),
+        Some(21600)
+    );
+    // A number starting a date is read as the date: passed, not 1.
+    assert_eq!(after(b"Retry-After: 01 Nov 1994\r\n"), Some(0));
+}
+
+/// A `Retry-After` date is counted from the multi's calendar time.
+#[test]
+fn a_retry_after_date_counts_from_the_clock() {
+    let reply = b"HTTP/1.1 503 Busy\r\nRetry-After: Sun, 06 Nov 1994 08:50:07 GMT\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, clock) = server(&[reply], false);
+    clock.advance(Duration::from_secs(5));
+    clock.set_unix_time(784_111_777);
+    clock.advance(Duration::from_secs(10));
+    assert_eq!(clock.unix_time(), 784_111_787);
+    let ran = get(&mut m, "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        ran.easy.report().retry_after(),
+        Some(Duration::from_secs(20))
+    );
+    // None asked, none is reported.
+    let ran = run(
+        "/",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        false,
+        |_| {},
+    );
+    assert_eq!(ran.easy.report().retry_after(), None);
 }
 
 /// The report's URL keeps an empty query, as C's does (`CURLU_GET_EMPTY`).

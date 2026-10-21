@@ -244,6 +244,10 @@ impl Clock for LaggingClock {
         self.inner.advance(self.lag.take());
         t
     }
+
+    fn unix_time(&self) -> i64 {
+        self.inner.unix_time()
+    }
 }
 
 fn lagging_multi() -> (Multi, std::rc::Rc<std::cell::Cell<Duration>>) {

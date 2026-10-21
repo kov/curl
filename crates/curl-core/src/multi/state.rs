@@ -390,6 +390,11 @@ impl<H: Host> StepCx<'_, H> {
         self.rest.now
     }
 
+    /// The calendar time, read now (`time(NULL)`).
+    pub(crate) fn unix_time(&self) -> i64 {
+        self.rest.clock.unix_time()
+    }
+
     pub(crate) fn easy_mut(&mut self) -> &mut Easy {
         &mut self
             .rest

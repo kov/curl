@@ -16,7 +16,7 @@ use crate::error::ErrorKind;
 use crate::id::Arena;
 use crate::options::Options;
 use crate::report::TransferReport;
-use crate::time::Instant;
+use crate::time::{Clock, Instant};
 
 use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
@@ -43,6 +43,8 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) events: &'a mut dyn MultiEvents<H>,
     /// The pass's time, read once.
     pub(super) now: Instant,
+    /// For the calendar time, which only a date needs.
+    pub(super) clock: &'a dyn Clock,
 }
 
 impl<H: Host> EngineRest<'_, H> {
@@ -59,6 +61,7 @@ impl<H: Host> EngineRest<'_, H> {
             life: &mut *self.life,
             events: &mut *self.events,
             now: self.now,
+            clock: self.clock,
         }
     }
 

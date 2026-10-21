@@ -424,8 +424,8 @@ impl Request {
                 pipeline.status(cx, line.bytes)?;
             }
             LineKind::Header => {
-                if let Some(secs) = framing::retry_after(line.bytes) {
-                    cx.report_mut().set_retry_after(secs);
+                if let Some(wait) = framing::retry_after(line.bytes, cx.unix_time()) {
+                    cx.report_mut().set_retry_after(wait);
                 }
                 pipeline.header(cx, line.bytes, origin)?;
             }

@@ -2485,20 +2485,24 @@ fn a_share_is_held_and_locked_as_in_c() {
         pointer(one, ffi::CURLOPT_SHARE, ptr::null_mut::<c_void>()),
         CURLE_OK
     );
-    // SAFETY: live handles, not used again.
-    unsafe {
-        curl_easy_cleanup(two);
-        curl_easy_cleanup(copy);
-    }
+    // The one left holds it still.
+    assert_eq!(
+        set(sh, ffi::CURLSHOPT_SHARE, ffi::CURL_LOCK_DATA_DNS),
+        ffi::CURLSHE_IN_USE
+    );
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(two) };
     assert_eq!(
         std::mem::take(&mut *LOCKS.lock().unwrap()),
         [share(one), unshare(one), share(two), unshare(two)]
     );
-    // SAFETY: a live share, held by none; then no share at all.
+    // SAFETY: a live share, held by none, the copy included; then no
+    // share at all; then live handles, not used again.
     unsafe {
         assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
         assert_eq!(curl_share_cleanup(ptr::null_mut()), ffi::CURLSHE_INVALID);
         curl_easy_cleanup(one);
+        curl_easy_cleanup(copy);
     }
     let null = ptr::null_mut();
     assert_eq!(

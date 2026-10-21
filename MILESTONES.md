@@ -325,7 +325,7 @@ cargo-mutants run on the milestone's diff.
     on a fresh one, up to five times a transfer, with C's traces (checked against the C build
     with a libcurl program and a server closing the reused connection). Witnessed by core
     tests; no C test flips by itself.
-23. **conn: resolve names and limit connections.** **In progress.** Done: a list `Pollset`
+23. **conn: resolve names and limit connections.** **Done.** A list `Pollset`
     in place of one socket; a refcounted `Peer` as the one owner of the host, shared by the
     transfer and its connection and matched for reuse as `Curl_peer_equal` does (case, zone);
     `localhost` and its names resolved as C resolves them, the answer reported, its addresses
@@ -336,8 +336,7 @@ cargo-mutants run on the milestone's diff.
     MAXLIFETIME_CONN (tests 1506, 1510, 1542); the per-host and total limits, a transfer
     waiting for room in `Pending` (test 1557); FORBID_REUSE and FRESH_CONNECT; the
     getaddrinfo resolver, with negative answers kept and the resolver's reason in a failure
-    (test 241); `CURLOPT_DNS_CACHE_TIMEOUT`. To do: the grouping of the multi's tables.
-    Tests 3231 and 3232 wait for CONNECT_ONLY.
+    (test 241); `CURLOPT_DNS_CACHE_TIMEOUT`. Tests 3231 and 3232 wait for CONNECT_ONLY.
 24. **tool: the T1 ring.** **To do.** The `-w` variables, `--fail-with-body`, `-#` and
     `--stderr`, with the report fields they read.
 25. **http: send request bodies.** **To do.** Opening commit: `Directions` refreshed by the
@@ -354,7 +353,9 @@ cargo-mutants run on the milestone's diff.
     followlocation family.
 27. **tool: several URLs, then globbing.** **To do.** The tool's transfers share their
     connections and DNS cache, as C's share handle has them (tests 2051, 2052 and 3225 with
-    step 24's `%{num_connects}`). Globbing is refused with exit 125 until then (test 2053).
+    step 24's `%{num_connects}`). Opening commit: the multi's tables that a share can hold in
+    its place (the pool and the DNS cache) grouped, so that `EngineRest`, `Announcing` and
+    `Telling` stop each listing their own subset of them. Globbing is refused with exit 125 until then (test 2053).
 28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a
     transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
     handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`

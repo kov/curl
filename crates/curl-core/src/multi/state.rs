@@ -321,8 +321,8 @@ fn release<H: Host>(
     };
     let now = cx.rest.now;
     let limit = Limit {
-        max: cx.rest.limits.max_connects,
-        attached: cx.rest.slots.len(),
+        max: cx.rest.tell.limits.max_connects,
+        attached: cx.rest.tell.slots.len(),
     };
     let (pool, mut net) = cx.rest.pool_net(cx.me);
     let released = pool.release(lease, finish, limit, &mut net, now);
@@ -429,6 +429,7 @@ impl<H: Host> StepCx<'_, H> {
     pub(crate) fn easy(&self) -> &Easy {
         &self
             .rest
+            .tell
             .slots
             .get(self.me)
             .expect("the stepping transfer")
@@ -444,6 +445,7 @@ impl<H: Host> StepCx<'_, H> {
 
     pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
         self.rest
+            .tell
             .slots
             .get_mut(self.me)
             .expect("the stepping transfer")
@@ -453,6 +455,7 @@ impl<H: Host> StepCx<'_, H> {
 
     pub(crate) fn pause(&self) -> Pause {
         self.rest
+            .tell
             .slots
             .get(self.me)
             .expect("the stepping transfer")
@@ -462,6 +465,7 @@ impl<H: Host> StepCx<'_, H> {
     pub(crate) fn pause_mut(&mut self) -> &mut Pause {
         &mut self
             .rest
+            .tell
             .slots
             .get_mut(self.me)
             .expect("the stepping transfer")
@@ -480,6 +484,7 @@ impl<H: Host> StepCx<'_, H> {
     pub(crate) fn easy_mut(&mut self) -> &mut Easy {
         &mut self
             .rest
+            .tell
             .slots
             .get_mut(self.me)
             .expect("the stepping transfer")
@@ -489,6 +494,7 @@ impl<H: Host> StepCx<'_, H> {
     pub(crate) fn speedometer_mut(&mut self) -> &mut Speedometer {
         &mut self
             .rest
+            .tell
             .slots
             .get_mut(self.me)
             .expect("the stepping transfer")
@@ -499,6 +505,7 @@ impl<H: Host> StepCx<'_, H> {
     pub(crate) fn progress_parts(&mut self) -> (&mut Speedometer, &mut TransferReport) {
         let slot = self
             .rest
+            .tell
             .slots
             .get_mut(self.me)
             .expect("the stepping transfer");
@@ -517,11 +524,11 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     }
 
     fn easy(&self, id: TransferId) -> Option<&Easy> {
-        self.rest.slots.get(id).map(|s| &s.easy)
+        self.rest.tell.slots.get(id).map(|s| &s.easy)
     }
 
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.rest.slots.get_mut(id).map(|s| &mut s.easy)
+        self.rest.tell.slots.get_mut(id).map(|s| &mut s.easy)
     }
 
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
@@ -1710,7 +1717,7 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
 /// let, look for one again (`multi_schedule_pending`): one at a time, as
 /// a connection freed most often makes room for one.
 pub(crate) fn schedule_pending<H: Host>(rest: &mut EngineRest<'_, H>) {
-    wake_pending(rest.slots, rest.dirty, rest.pending_after);
+    wake_pending(rest.tell.slots, rest.dirty, rest.pending_after);
 }
 
 /// As `schedule_pending`, on the multi's tables.
@@ -1793,7 +1800,7 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     };
     let mut notes = Vec::new();
     let now = cx.rest.now;
-    let add = cx.rest.limits.add();
+    let add = cx.rest.tell.limits.add();
     let (pool, mut net) = cx.rest.pool_net(cx.me);
     let acquired = pool.acquire(route, rules, add, &mut net, now, &mut notes)?;
     for note in notes {

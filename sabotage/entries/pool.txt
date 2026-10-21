@@ -290,7 +290,7 @@ witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_full_pool_is_traced_by_the_transfer_filling_it
 --- old
-        max: cx.rest.limits.max_connects,
+        max: cx.rest.tell.limits.max_connects,
 --- new
         max: None,
 
@@ -298,7 +298,7 @@ witness: curl-core multi::tests::a_full_pool_is_traced_by_the_transfer_filling_i
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::the_pool_s_limit_is_guessed_from_the_transfers
 --- old
-        attached: cx.rest.slots.len(),
+        attached: cx.rest.tell.slots.len(),
 --- new
         attached: 0,
 

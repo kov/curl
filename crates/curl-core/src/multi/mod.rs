@@ -32,7 +32,7 @@ use crate::progress::Speedometer;
 use crate::time::{Clock, Instant};
 
 pub use crate::deliver::PauseRequest;
-use cx::EngineRest;
+use cx::{EngineRest, Telling};
 pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
 pub use sched::Counts;
@@ -587,16 +587,18 @@ impl<H: Host> Multi<H> {
     /// call-out.
     fn rest<'a>(&'a mut self, now: Instant, ev: &'a mut dyn MultiEvents<H>) -> EngineRest<'a, H> {
         EngineRest {
-            slots: &mut self.slots,
+            tell: Telling {
+                slots: &mut self.slots,
+                limits: &mut self.limits,
+                notify: &mut self.notify,
+                counts: &self.counts,
+                sockets: &mut self.sockets,
+                life: &mut self.life,
+            },
             caches: &mut self.caches,
-            limits: &mut self.limits,
             pending_after: &mut self.pending_after,
             net: &mut *self.net,
             dirty: &mut self.dirty,
-            sockets: &mut self.sockets,
-            notify: &mut self.notify,
-            counts: &self.counts,
-            life: &mut self.life,
             events: ev,
             now,
             clock: &*self.clock,
@@ -641,7 +643,7 @@ impl<H: Host> Multi<H> {
             &changes,
             id,
             ev,
-            &mut cx::Telling {
+            &mut Telling {
                 slots: &mut self.slots,
                 limits: &mut self.limits,
                 notify: &mut self.notify,
@@ -949,7 +951,7 @@ fn pause_transfer<H: Host>(
     id: TransferId,
     req: PauseRequest,
 ) -> Result<(), ErrorKind> {
-    let Some(slot) = rest.slots.get_mut(id) else {
+    let Some(slot) = rest.tell.slots.get_mut(id) else {
         return Err(ErrorKind::BadFunctionArgument);
     };
     // A run out of its slot is delivering output, so it has a connection.
@@ -986,7 +988,7 @@ fn pause_transfer<H: Host>(
             rest: rest.reborrow(),
         };
         let replayed = state::flush(&mut run, &mut cx);
-        put_back(rest.slots, rest.dirty, id, run);
+        put_back(rest.tell.slots, rest.dirty, id, run);
         return replayed;
     }
     Ok(())

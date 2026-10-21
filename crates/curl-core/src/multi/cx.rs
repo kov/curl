@@ -31,18 +31,13 @@ use super::{
 /// slot: what a step and the callbacks it makes reach everything else
 /// through.
 pub(crate) struct EngineRest<'a, H: Host> {
-    pub(super) slots: &'a mut Slots<H>,
+    /// The transfers, and what the socket callback reaches.
+    pub(super) tell: Telling<'a, H>,
     pub(super) caches: &'a mut Caches,
-    /// `Multi::conn_limits_mut`.
-    pub(super) limits: &'a mut ConnLimits,
     /// The transfer last let look for a connection again.
     pub(super) pending_after: &'a mut Option<TransferId>,
     pub(super) net: &'a mut dyn Net,
     pub(super) dirty: &'a mut RowSet,
-    pub(super) sockets: &'a mut SocketTable<H::Socket>,
-    pub(super) notify: &'a mut NotifyQueue,
-    pub(super) counts: &'a Tally,
-    pub(super) life: &'a mut Life,
     /// What the multi was driven with: the socket callback hears of a
     /// socket closing.
     pub(super) events: &'a mut dyn MultiEvents<H>,
@@ -56,16 +51,11 @@ impl<H: Host> EngineRest<'_, H> {
     /// The same, borrowed again.
     pub(super) fn reborrow(&mut self) -> EngineRest<'_, H> {
         EngineRest {
-            slots: &mut *self.slots,
+            tell: self.tell.reborrow(),
             caches: &mut *self.caches,
-            limits: &mut *self.limits,
             pending_after: &mut *self.pending_after,
             net: &mut *self.net,
             dirty: &mut *self.dirty,
-            sockets: &mut *self.sockets,
-            notify: &mut *self.notify,
-            counts: self.counts,
-            life: &mut *self.life,
             events: &mut *self.events,
             now: self.now,
             clock: self.clock,
@@ -80,12 +70,7 @@ impl<H: Host> EngineRest<'_, H> {
     ) -> (&mut Pool, Announcing<'_, H>, &mut DnsCache) {
         let net = Announcing {
             net: &mut *self.net,
-            sockets: &mut *self.sockets,
-            slots: &mut *self.slots,
-            limits: &mut *self.limits,
-            notify: &mut *self.notify,
-            counts: self.counts,
-            life: &mut *self.life,
+            tell: self.tell.reborrow(),
             events: &mut *self.events,
             who,
         };
@@ -106,12 +91,7 @@ impl<H: Host> EngineRest<'_, H> {
 /// (`Curl_multi_will_close`, before CLOSESOCKETFUNCTION).
 pub(crate) struct Announcing<'a, H: Host> {
     net: &'a mut dyn Net,
-    sockets: &'a mut SocketTable<H::Socket>,
-    slots: &'a mut Slots<H>,
-    limits: &'a mut ConnLimits,
-    notify: &'a mut NotifyQueue,
-    counts: &'a Tally,
-    life: &'a mut Life,
+    tell: Telling<'a, H>,
     events: &'a mut dyn MultiEvents<H>,
     /// The transfer the pool acts for.
     who: TransferId,
@@ -143,34 +123,38 @@ impl<H: Host> Net for Announcing<'_, H> {
 
 impl<H: Host> Announcing<'_, H> {
     fn forget(&mut self, key: SocketKey) {
-        if let Some(change) = self.sockets.forget(key) {
+        if let Some(change) = self.tell.sockets.forget(key) {
             // An abort leaves the multi dead; the socket closes anyway, as
             // C ignores the callback's answer here.
-            let _ = tell(
-                &[change],
-                self.who,
-                &mut *self.events,
-                &mut Telling {
-                    slots: &mut *self.slots,
-                    limits: &mut *self.limits,
-                    notify: &mut *self.notify,
-                    counts: self.counts,
-                    sockets: &mut *self.sockets,
-                    life: &mut *self.life,
-                },
-            );
+            let _ = tell(&[change], self.who, &mut *self.events, &mut self.tell);
         }
     }
 }
 
-/// What telling the socket callback reaches.
-pub(super) struct Telling<'a, H: Host> {
+/// What telling the socket callback reaches: the transfers, and the
+/// tables its `EventCx` may read or change.
+pub(crate) struct Telling<'a, H: Host> {
     pub(super) slots: &'a mut Slots<H>,
+    /// `Multi::conn_limits_mut`.
     pub(super) limits: &'a mut ConnLimits,
     pub(super) notify: &'a mut NotifyQueue,
     pub(super) counts: &'a Tally,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
     pub(super) life: &'a mut Life,
+}
+
+impl<H: Host> Telling<'_, H> {
+    /// The same, borrowed again.
+    pub(super) fn reborrow(&mut self) -> Telling<'_, H> {
+        Telling {
+            slots: &mut *self.slots,
+            limits: &mut *self.limits,
+            notify: &mut *self.notify,
+            counts: self.counts,
+            sockets: &mut *self.sockets,
+            life: &mut *self.life,
+        }
+    }
 }
 
 /// Tell the socket callback of `changes` for transfer `who`, in order,

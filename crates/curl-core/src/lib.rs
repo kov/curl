@@ -19,5 +19,6 @@ mod progress;
 mod proto;
 pub mod report;
 pub mod time;
+mod upload;
 pub mod url;
 pub mod version;

@@ -690,8 +690,9 @@ fn pause_transfer<H: Host>(
     {
         slot.speedometer.start_over();
     }
-    // Unless paused every way it wants (until uploads, only receiving),
-    // the transfer runs again, and is not slow for the time it was not.
+    // Unless paused every way it wants (judged on receiving alone until
+    // the pollset knows the directions, step 11), the transfer runs again,
+    // and is not slow for the time it was not.
     if !slot.pause.recv_paused() {
         slot.speedometer.forget_slow();
         rest.dirty.insert(id.index());

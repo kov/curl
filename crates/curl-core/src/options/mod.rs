@@ -6,12 +6,13 @@
 #[cfg(any(test, feature = "test-util"))]
 pub mod script;
 
-use curl_alloc::{OutOfMemory, TryVec};
+use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
 use std::num::{NonZeroU16, NonZeroU64};
 
 use crate::handler::{
-    DebugHandler, Handler, HeaderHandler, ProgressHandler, TextSink, WriteHandler,
+    DebugHandler, Handler, HeaderHandler, ProgressHandler, ReadHandler, Rewind, TextSink,
+    WriteHandler,
 };
 use crate::time::TimeLimit;
 
@@ -24,6 +25,8 @@ pub struct Options {
     pub output: Output,
     pub callbacks: Callbacks,
     pub progress: Progress,
+    /// What a transfer sends, if its request has a body.
+    pub upload: UploadSource,
     /// What the test protocol `script:` plays.
     #[cfg(any(test, feature = "test-util"))]
     pub script: Option<script::Script>,
@@ -49,6 +52,7 @@ impl Options {
             output: self.output,
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
+            upload: self.upload.clone(),
             #[cfg(any(test, feature = "test-util"))]
             script: self.script.clone(),
         })
@@ -107,6 +111,25 @@ pub struct Callbacks {
     pub debug: Option<Handler<dyn DebugHandler>>,
     /// Text for the user; without one, the process's standard error.
     pub stderr: Option<Handler<dyn TextSink>>,
+}
+
+/// Where the body a transfer sends comes from.
+#[derive(Clone, Debug, Default)]
+pub enum UploadSource {
+    /// Nothing: an empty body.
+    #[default]
+    None,
+    /// These bytes, shared by every copy of the options
+    /// (`CURLOPT_COPYPOSTFIELDS`).
+    Bytes(TryRc<Vec<u8>>),
+    /// What a handler reads, `size` bytes if known (`CURLOPT_READFUNCTION`,
+    /// `CURLOPT_INFILESIZE_LARGE`). Without a rewind, a request that must be
+    /// sent again after reading fails with SendFailRewind.
+    Read {
+        handler: Handler<dyn ReadHandler>,
+        rewind: Option<Handler<dyn Rewind>>,
+        size: Option<u64>,
+    },
 }
 
 /// How a transfer shows its progress.

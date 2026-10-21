@@ -1,0 +1,182 @@
+# What a transfer sends (crates/curl-core/src/upload, the `script:` send
+# pieces), against sendf.c's client readers.
+
+=== a read has room past the known size
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_known_size_bounds_the_reads_and_ends_the_body
+--- old
+            Some(size) => buf
+                .len()
+                .min(usize::try_from(size - self.read).unwrap_or(usize::MAX)),
+--- new
+            Some(_) => buf.len(),
+
+=== the read that completes the size does not end the body
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::the_read_that_completes_the_size_ends_the_body
+--- old
+                let eos = size.is_some_and(|size| self.read >= size);
+--- new
+                let eos = false;
+
+=== an end short of the size is accepted
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::an_end_short_of_the_size_is_a_read_error
+--- old
+                    return Err(ErrorKind::ReadError);
+--- new
+                    self.latch = Latch::Eof;
+                    return Ok(Readout { n: 0, eos: true });
+
+=== a complete size asks the handler again
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::an_empty_size_never_calls_the_handler
+--- old
+        let answer = if room > 0 {
+--- new
+        let answer = if true {
+
+=== the handler is called again after its end
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
+--- old
+            Latch::Eof => return Ok(Readout { n: 0, eos: true }),
+--- new
+            Latch::Eof => {}
+
+=== the handler is called again after it failed
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
+--- old
+            Latch::Errored(e) => return Err(e),
+--- new
+            Latch::Errored(_) => {}
+
+=== a funny length is taken
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
+--- old
+            Read::Data(n) if n.get() > room => Err(self.fail(ErrorKind::ReadError)),
+--- new
+
+=== a read pause does not pause the sending
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_pausing_handler_pauses_the_sending
+--- old
+                cx.pause_mut().send = SendPause::Paused;
+--- new
+
+=== a read pause is taken where none is supported
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_pausing_handler_pauses_the_sending
+--- old
+            Read::Pause if !pausable => Err(ErrorKind::ReadError),
+--- new
+
+=== a paused send piece is not played again
+file: crates/curl-core/src/proto/script.rs
+witness: curl-core upload::tests::a_pausing_handler_pauses_the_sending
+--- old
+        if got.n == 0 && !got.eos {
+            return Ok(None);
+        }
+--- new
+
+=== a send pause does not stop the sending
+file: crates/curl-core/src/proto/script.rs
+witness: curl-core upload::tests::a_pausing_handler_pauses_the_sending
+--- old
+            if (sends && cx.pause().send_paused()) || (!sends && cx.pause().recv_paused()) {
+--- new
+            if !sends && cx.pause().recv_paused() {
+
+=== a rewind leaves the body where it was
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_rewind_sends_the_body_again
+--- old
+        self.read = 0;
+        self.latch = Latch::Open;
+--- new
+        self.latch = Latch::Open;
+
+=== a rewind keeps the end
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_rewind_sends_the_body_again
+--- old
+        self.read = 0;
+        self.latch = Latch::Open;
+--- new
+        self.read = 0;
+
+=== a body never read is rewound
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
+--- old
+            if !self.called {
+                return Ok(());
+            }
+--- new
+
+=== a handler that only paused needs no rewind
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
+--- old
+            self.called = true;
+            handler.read
+--- new
+            handler.read
+
+=== a body without a rewind handler is rewound anyway
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
+--- old
+            let rewind = rewind.clone().ok_or(ErrorKind::SendFailRewind)?;
+            rewind
+                .rewind(&mut TransferCx::new(cx))
+                .map_err(|_| ErrorKind::SendFailRewind)?;
+--- new
+            if let Some(rewind) = rewind.clone() {
+                rewind
+                    .rewind(&mut TransferCx::new(cx))
+                    .map_err(|_| ErrorKind::SendFailRewind)?;
+            }
+
+=== a request with a body is sent at DID
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core upload::tests::a_request_with_a_body_is_sent_when_its_body_is
+--- old
+    if !proto.wants_send(cx.easy().options()) {
+        cx.mark(Timer::PostTransfer);
+    }
+--- new
+    cx.mark(Timer::PostTransfer);
+
+=== sent bytes are not counted
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_known_size_bounds_the_reads_and_ends_the_body
+--- old
+    cx.report_mut().sizes_mut().upload += body.len() as u64;
+--- new
+
+=== the upload size is not announced
+file: crates/curl-core/src/proto/script.rs
+witness: curl-core upload::tests::a_known_size_bounds_the_reads_and_ends_the_body
+--- old
+            upload::announce_size(cx, upload.size());
+--- new
+
+=== progress is not told of uploads
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core upload::tests::progress_counts_what_is_sent
+--- old
+                uploaded: sizes.upload(),
+--- new
+                uploaded: 0,
+
+=== the current speed leaves out the upload
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::both_directions_add_up
+--- old
+            self.current = speeds.download.saturating_add(speeds.upload);
+--- new
+            self.current = speeds.download;

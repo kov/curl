@@ -423,9 +423,11 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     };
     // A connection without a network has its name at once.
     cx.mark(Timer::NameLookup);
-    // DID: about to send, and nothing to send (`mstate_enter_did`).
+    // DID: about to send; sent already, with no body (`mstate_enter_did`).
     cx.mark(Timer::PreTransfer);
-    cx.mark(Timer::PostTransfer);
+    if !proto.wants_send(cx.easy().options()) {
+        cx.mark(Timer::PostTransfer);
+    }
     TransferState::Exchanging(Exchanging { lease, proto })
 }
 

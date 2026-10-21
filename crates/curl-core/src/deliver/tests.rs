@@ -789,6 +789,7 @@ fn a_pause_where_none_is_supported_fails_the_write() {
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut p = Pipeline::new(false);
+        assert!(!p.pausable());
         assert_eq!(p.body(cx, b"x"), Err(ErrorKind::WriteError));
         assert!(!p.holds_output());
     });

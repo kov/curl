@@ -5,6 +5,7 @@
 //! handler is called through `&self` and keeps its state in cells.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 
 use curl_alloc::{OutOfMemory, TryRc, try_box};
@@ -20,6 +21,36 @@ pub enum Write {
     Pause,
     /// The transfer fails with a write error.
     Fail,
+}
+
+/// What a read handler gave (`CURLOPT_READFUNCTION`'s return).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Read {
+    /// This many bytes at the start of the buffer; more than it holds is
+    /// a read error.
+    Data(NonZeroUsize),
+    /// Nothing more to send.
+    Eof,
+    /// Nothing now; the transfer's sending is paused until unpaused
+    /// (`CURL_READFUNC_PAUSE`).
+    Pause,
+    /// The transfer fails with AbortedByCallback (`CURL_READFUNC_ABORT`).
+    Abort,
+}
+
+/// Gives what a transfer sends (`CURLOPT_READFUNCTION`).
+pub trait ReadHandler {
+    fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read;
+}
+
+/// A rewind that could not be done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RewindFailed;
+
+/// Starts what a read handler gives over from the beginning, for a request
+/// sent again (`CURLOPT_SEEKFUNCTION` to 0, `CURLOPT_IOCTLFUNCTION`).
+pub trait Rewind {
+    fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>;
 }
 
 /// Where a header line came from (`CURLH_*`).
@@ -120,6 +151,18 @@ impl Handler<dyn WriteHandler> {
 
 impl Handler<dyn HeaderHandler> {
     pub fn header(handler: impl HeaderHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn ReadHandler> {
+    pub fn read(handler: impl ReadHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn Rewind> {
+    pub fn rewind(handler: impl Rewind + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

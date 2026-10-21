@@ -18,7 +18,11 @@ use crate::time::{Instant, ManualClock};
 
 use super::c_tests::{MAX6OUT, TIME2STR, UNIT1606};
 use super::meter::{self, Dir, Reading};
-use super::{SECOND_US, Speedometer};
+use super::{Moved, SECOND_US, Speedometer};
+
+fn down(n: u64) -> Moved {
+    Moved { down: n, up: 0 }
+}
 
 fn render(f: impl FnOnce(&mut String) -> std::fmt::Result) -> String {
     let mut s = String::new();
@@ -86,14 +90,55 @@ fn the_largest_byte_count_fits_six_columns() {
 fn progress_is_shown_once_a_second() {
     let mut s = Speedometer::default();
     let mut speeds = Speeds::default();
-    assert!(s.take_stock(1000, 100, false, &mut speeds));
+    assert!(s.take_stock(1000, down(100), false, &mut speeds));
     assert_eq!(speeds.download(), 100_000, "the average so far");
     assert_eq!(s.current, 100_000, "the average, to start with");
-    assert!(!s.take_stock(SECOND_US / 2, 200, false, &mut speeds));
+    assert!(!s.take_stock(SECOND_US / 2, down(200), false, &mut speeds));
     assert_eq!(speeds.download(), 400, "averages are taken every pass");
     // A second after the first record, 1000 more bytes: one a second.
-    assert!(s.take_stock(1000 + SECOND_US, 1100, false, &mut speeds));
+    assert!(s.take_stock(1000 + SECOND_US, down(1100), false, &mut speeds));
     assert_eq!(s.current, 1000);
+}
+
+/// Each direction has its average; the current speed is both together.
+#[test]
+fn both_directions_add_up() {
+    let mut s = Speedometer::default();
+    let mut speeds = Speeds::default();
+    s.take_stock(
+        SECOND_US,
+        Moved {
+            down: 1000,
+            up: 500,
+        },
+        false,
+        &mut speeds,
+    );
+    assert_eq!((speeds.download(), speeds.upload()), (1000, 500));
+    assert_eq!(s.current, 1500);
+}
+
+/// An upload's columns: its share, size and speed, and its time.
+#[test]
+fn the_meter_line_shows_an_upload() {
+    let r = Reading {
+        spent_us: 2 * SECOND_US,
+        download: Dir {
+            total: None,
+            cur: 0,
+            speed: 0,
+        },
+        upload: Dir {
+            total: Some(1000),
+            cur: 500,
+            speed: 250,
+        },
+        current_speed: 250,
+    };
+    assert_eq!(
+        render(|s| meter::line(&r, s)),
+        "\r 50   1000   0      0  50    500      0    250   00:04   00:02   00:02    250"
+    );
 }
 
 /// The current speed spans the records of the last five seconds: checked
@@ -106,7 +151,7 @@ fn the_current_speed_spans_five_seconds_of_records() {
     for sec in 0..20u64 {
         let at = 1000 + sec * SECOND_US;
         let amount = sec * 1000 + sec * sec * 37;
-        s.take_stock(at, amount, false, &mut speeds);
+        s.take_stock(at, down(amount), false, &mut speeds);
         all.push((amount, at));
         let latest = all[all.len() - 1];
         let oldest = all[all.len().saturating_sub(6)];
@@ -125,10 +170,10 @@ fn the_current_speed_spans_five_seconds_of_records() {
 fn a_done_request_shows_its_progress_at_once() {
     let mut s = Speedometer::default();
     let mut speeds = Speeds::default();
-    s.take_stock(0, 1000, false, &mut speeds);
-    assert!(s.take_stock(SECOND_US / 2, 1000, true, &mut speeds));
-    assert!(!s.take_stock(SECOND_US + 1, 2000, false, &mut speeds));
-    assert!(s.take_stock(SECOND_US * 2 + 1, 3000, false, &mut speeds));
+    s.take_stock(0, down(1000), false, &mut speeds);
+    assert!(s.take_stock(SECOND_US / 2, down(1000), true, &mut speeds));
+    assert!(!s.take_stock(SECOND_US + 1, down(2000), false, &mut speeds));
+    assert!(s.take_stock(SECOND_US * 2 + 1, down(3000), false, &mut speeds));
 }
 
 /// A finished request without a speed takes its last record from the end;
@@ -137,12 +182,12 @@ fn a_done_request_shows_its_progress_at_once() {
 fn the_end_keeps_the_speed_it_had() {
     let mut s = Speedometer::default();
     let mut speeds = Speeds::default();
-    s.take_stock(0, 0, false, &mut speeds);
-    s.take_stock(SECOND_US, 0, false, &mut speeds);
+    s.take_stock(0, down(0), false, &mut speeds);
+    s.take_stock(SECOND_US, down(0), false, &mut speeds);
     assert_eq!(s.current, 0);
-    s.take_stock(SECOND_US * 3 / 2, 600, true, &mut speeds);
+    s.take_stock(SECOND_US * 3 / 2, down(600), true, &mut speeds);
     assert_eq!(s.current, 400, "600 bytes in a second and a half");
-    s.take_stock(SECOND_US * 7 / 4, 900, true, &mut speeds);
+    s.take_stock(SECOND_US * 7 / 4, down(900), true, &mut speeds);
     assert_eq!(s.current, 400, "kept");
 }
 

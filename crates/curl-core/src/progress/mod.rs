@@ -71,24 +71,26 @@ impl Speedometer {
         self.slow_since = None;
     }
 
-    /// Take stock `elapsed_us` after the start, with `moved` bytes moved
-    /// (down only, until uploads): the average into `speeds`, and the
-    /// current speed.
+    /// Take stock `elapsed_us` after the start, with `moved` bytes moved:
+    /// the averages into `speeds`, and the current speed of both
+    /// directions together.
     /// Whether to show the progress: at the first pass, then once a second,
     /// and whenever the request is `done` (`progress_calc`).
     fn take_stock(
         &mut self,
         elapsed_us: u64,
-        amount: u64,
+        moved: Moved,
         done: bool,
         speeds: &mut Speeds,
     ) -> bool {
-        speeds.download = per_second(amount, elapsed_us);
+        speeds.download = per_second(moved.down, elapsed_us);
+        speeds.upload = per_second(moved.up, elapsed_us);
+        let amount = moved.down.saturating_add(moved.up);
         if self.made == 0 {
             self.records[0] = (amount, elapsed_us);
             self.made = 1;
             // The overall average, to start with.
-            self.current = speeds.download;
+            self.current = speeds.download.saturating_add(speeds.upload);
             self.last_shown = Some(elapsed_us);
             return true;
         }
@@ -154,6 +156,13 @@ fn oldest_record(made: u32, latest: usize) -> usize {
     }
 }
 
+/// Bytes moved so far, each way.
+#[derive(Clone, Copy, Debug)]
+struct Moved {
+    down: u64,
+    up: u64,
+}
+
 /// `bytes` moved in `us` microseconds, a second (`trspeed`).
 fn per_second(bytes: u64, us: u64) -> u64 {
     let per = u128::from(bytes) * u128::from(SECOND_US) / u128::from(us.max(1));
@@ -168,7 +177,10 @@ pub(crate) fn update<H: Host>(cx: &mut StepCx<'_, H>, done: bool) -> Result<(), 
     let report = cx.easy().report();
     let elapsed_us = report.timings().since_start_us(now);
     let sizes = *report.sizes();
-    let moved = sizes.download();
+    let moved = Moved {
+        down: sizes.download(),
+        up: sizes.upload(),
+    };
     let (speedometer, report) = cx.progress_parts();
     report.timings_mut().completed(now);
     let show = speedometer.take_stock(elapsed_us, moved, done, report.speeds_mut());
@@ -179,8 +191,8 @@ pub(crate) fn update<H: Host>(cx: &mut StepCx<'_, H>, done: bool) -> Result<(), 
             let now = ProgressNow {
                 download_total: sizes.download_expected(),
                 downloaded: sizes.download(),
-                upload_total: None,
-                uploaded: 0,
+                upload_total: sizes.upload_expected(),
+                uploaded: sizes.upload(),
             };
             match handler.progress(&mut TransferCx::new(cx), now) {
                 ProgressVerdict::Continue => return Ok(()),
@@ -243,9 +255,9 @@ fn draw<H: Host>(cx: &mut StepCx<'_, H>, elapsed_us: u64) {
             speed: report.speeds().download(),
         },
         upload: meter::Dir {
-            total: None,
-            cur: 0,
-            speed: 0,
+            total: report.sizes().upload_expected(),
+            cur: report.sizes().upload(),
+            speed: report.speeds().upload(),
         },
         current_speed,
     };

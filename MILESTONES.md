@@ -138,13 +138,18 @@ yet meet.
      a wait. Ports units 1606 and 1636 (generated from the C tests). Tests: calls per pass,
      aborts, the meter's once-a-second line and titles once per handle, the speed check and
      pause.
-   - 7f. `Upload` with rewind and resume.
+   - 7f. **Done.** `Upload` from `options.upload` (none, shared bytes, a `ReadHandler` with an
+     optional `Rewind` and size): the length clamp, the EOF and error latches, read pause,
+     rewind; the report's upload size, expected size and speed; POSTTRANSFER when a body is
+     sent; script pieces that send and rewind. Resume is the protocols' (step 8 for file://,
+     the FTP stage): C's reader-level resume is dead code.
    - 7g. The pause torture scenario, every allocation refused in turn while output is held
      (the only test that sees `HeldOutput::append` reserve its entry before it copies).
 8. **proto: add file:// and Easy::perform.** `proto/file.rs` (no pause support: PAUSE is a
    WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`.
    Setup gains `DISALLOW_USER` and `PATH_AS_IS` from their options. Tests:
-   a networkless `Easy::perform` of a file URL, upload and resume.
+   a networkless `Easy::perform` of a file URL, upload and upload resume (skipping the offset
+   in the read loop, as file.c does).
 9. **tool: run file:// transfers through the core.** Map `Operation` to `Easy`: the URL,
    `-o`, `-i`, `-s`/`-S`, `-v`, `--trace-ascii`/`--trace`/`--trace-time` with
    `tool_cb_dbg.c`'s format, the exit code and the "curl: (N) msg" line, `-C`, `-T`, `-w` for the
@@ -168,7 +173,9 @@ yet meet.
     and closing connections' sockets, which `wait` polls and the shim's `fdset` and `waitfds`
     list). `FakeNet` tests: refusal ("Failed
     to connect to … after N ms"), connect timeout under `ManualClock`, REMOVE before the close
-    hook.
+    hook. The pollset's basis says which directions a transfer wants, so a pause blocks it
+    only when every direction it wants is paused (`Curl_xfer_is_blocked`); until then
+    `pause_transfer` judges the receiving direction alone.
 12. **http1: render requests behind the credential gate.** `RequestHead`, `UserHeaders`,
     `render_h1`, `CredentialGate`. Fixture tests compare byte-exactly with the `<protocol>` of 1,
     14, 47, 461, 1121, 1292.

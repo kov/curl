@@ -11,7 +11,7 @@ mod held;
 mod pause;
 
 pub use pause::PauseRequest;
-pub(crate) use pause::{Pause, RecvPause};
+pub(crate) use pause::{Pause, RecvPause, SendPause};
 
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};
@@ -40,6 +40,11 @@ impl Pipeline {
             out: ClientOut::default(),
             pausable,
         }
+    }
+
+    /// Whether the protocol can pause, its input and its output.
+    pub(crate) fn pausable(&self) -> bool {
+        self.pausable
     }
 
     /// Replay held output, unless a handler holds it still.

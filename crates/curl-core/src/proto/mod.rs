@@ -51,6 +51,21 @@ impl ProtoState {
         }
     }
 
+    /// Whether the request has a body to send (C's `CURL_REQ_WANT_SEND`
+    /// at DID).
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(unused_variables, reason = "no protocol is built in before step 8")
+    )]
+    pub(crate) fn wants_send(&self, options: &crate::options::Options) -> bool {
+        match *self {
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Script(_) => script::wants_send(options),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall => false,
+        }
+    }
+
     /// Whether the request holds output for the application.
     #[cfg(debug_assertions)]
     pub(crate) fn holds_output(&self) -> bool {

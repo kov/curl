@@ -328,7 +328,7 @@ last variants.
 
 ```rust
 pub enum Write { Accepted, Pause, Fail }          // the shim maps a short count to Fail
-pub enum Read { Data(usize), Eof, Pause, Abort }   // Data(n > buf.len()) is rejected, not asserted
+pub enum Read { Data(NonZeroUsize), Eof, Pause, Abort } // Data(n > buf.len()) is rejected, not asserted
 pub enum ProgressVerdict { Continue, ContinueWithMeter, Abort }
 pub trait WriteHandler  { fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write; }
 pub trait HeaderHandler { fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write; }
@@ -337,10 +337,7 @@ pub trait DebugHandler  { fn debug(&self, cx: &mut TransferCx<'_>, k: DebugKind,
 pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: ProgressNow) -> ProgressVerdict; }
 pub trait TextSink      { fn write(&self, text: &[u8]); }  // CURLOPT_STDERR; None is the process's
 pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, p: &PrereqInfo) -> Result<(), Abort>; }
-pub trait Rewind {
-    fn rewind(&self, cx: &mut TransferCx<'_>) -> RewindResult;      // Ok | Fail
-    fn seek(&self, cx: &mut TransferCx<'_>, to: u64) -> SeekResult; // Ok | CantSeek | Fail
-}
+pub trait Rewind        { fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>; }
 pub struct Handler<T: ?Sized>(TryRc<Box<T>>);     // Clone shares it; Handler::write(h) etc. box one
 pub trait MultiEvents<H: Host> {
     fn socket(&mut self, cx: &mut EventCx<'_, H>, who: SocketOwner<'_, H>, s: SocketKey,
@@ -987,24 +984,36 @@ limiting is the `throttle: Option<Instant>` deadline on `Exchanging`, armed as T
 ### 5.4 Send side
 
 ```rust
-pub(crate) enum BodySource { Null, Shared(TryRc<Vec<u8>>), Callback(ReadState), Mime(MimeReader) }
-pub(crate) struct Upload { source: BodySource, crlf: Option<LineConv>, chunked: Option<ChunkEncoder>,
-                           known_len: Option<u64>, sent: u64, latch: ReadLatch /* Open|Eof|Errored */ }
+pub(crate) struct Upload { source: Source /* None | Bytes(TryRc<Vec<u8>>) | Read { handler, rewind, size } */,
+                           read: u64, latch: Latch /* Open | Eof | Errored */, called: bool }
 ```
 
+`Upload` is C's client readers (`cr_null`, `cr_buf`, `cr_in`) as one struct, made per request
+from `options.upload` and read by the protocol.
 - The request head is rendered straight into `conn.tx`; body bytes are pulled from `Upload`
   into the remaining space (the first read is reduced by the head length, as C's shared chunk).
   HEADER_OUT and DATA_OUT are traced for the bytes `Net::send` accepted, split at the head
-  length; SIZE_UPLOAD counts accepted body bytes only.
-- The read handler is clamped to `min(free space, remaining length, rate tokens)`, latched at EOF
-  and on error, never called after EOF until a rewind; EOF short of a known length is
-  ReadError "client read function EOF fail, only X/Y of needed bytes read".
-- COPYPOSTFIELDS is `Shared`. Non-copied POSTFIELDS is a shim `ReadHandler` over the app's
+  length; SIZE_UPLOAD counts accepted body bytes only (`upload::sent`).
+- A read handler is given room for `min(free space, what is left of a known size, rate
+  tokens)`. The read that completes a known size ends the body; a size of 0 never calls the
+  handler. It is latched at EOF and on error (Abort is AbortedByCallback; more than the room is
+  ReadError "read function returned funny value") and not called again until a rewind. EOF
+  short of a known size is ReadError "client read function EOF fail, only X/Y of needed bytes
+  read". `Read::Data` carries a `NonZeroUsize`: the shim maps C's 0 to `Eof`.
+- `Read::Pause` pauses the transfer's sending (`SendPause::Paused`) and gives nothing; on a
+  protocol that cannot pause it is ReadError "Read callback asked for PAUSE when not supported".
+- COPYPOSTFIELDS is `Bytes`. Non-copied POSTFIELDS is a shim `ReadHandler` over the app's
   pointer (§7.6); the core never holds a raw borrow, and it reads at transfer time as C does.
-- `Upload::rewind` is a no-op if the source was never read; otherwise `Rewind::rewind` (shim:
-  SEEKFUNCTION, IOCTLFUNCTION, fseek iff the default fread) or SendFailRewind. Resume: `seek`,
-  and on `CantSeek` read and discard in 4 KiB pieces; nothing left → PartialFile "File already
-  completely uploaded".
+  Line-ending conversion (CURLOPT_CRLF, FTP ASCII) and chunked encoding come with the
+  protocols that use them.
+- `Upload::rewind` is a no-op if nothing was read (`Bytes`) or the handler was never called,
+  whatever it answered (`Read`); otherwise `Bytes` starts over and `Read` calls its `Rewind`
+  (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or on its
+  failure SendFailRewind "necessary data rewind was not possible".
+- Resume is the protocols': file:// skips the offset in its read loop, FTP seeks or reads and
+  discards. C's reader-level `resume_from` is never called and is not ported.
+- The protocol announces the body's size (CONTENT_LENGTH_UPLOAD) and, for a request with a
+  body, marks POSTTRANSFER when the body is sent rather than at DID.
 
 ### 5.5 Progress and timings
 

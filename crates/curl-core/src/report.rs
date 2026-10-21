@@ -236,9 +236,22 @@ pub struct Sizes {
     pub(crate) download: u64,
     pub(crate) delivered: u64,
     pub(crate) download_expected: Option<u64>,
+    pub(crate) upload: u64,
+    pub(crate) upload_expected: Option<u64>,
 }
 
 impl Sizes {
+    /// Body bytes sent (`CURLINFO_SIZE_UPLOAD_T`).
+    pub fn upload(&self) -> u64 {
+        self.upload
+    }
+
+    /// The size of the body to send, where the request announced it
+    /// (`CURLINFO_CONTENT_LENGTH_UPLOAD_T`).
+    pub fn upload_expected(&self) -> Option<u64> {
+        self.upload_expected
+    }
+
     /// The body's size as the response announced it
     /// (`CURLINFO_CONTENT_LENGTH_DOWNLOAD_T`).
     pub fn download_expected(&self) -> Option<u64> {
@@ -259,16 +272,21 @@ impl Sizes {
 }
 
 /// Average speeds since the transfer started, in bytes a second, as of
-/// its last progress pass (`CURLINFO_SPEED_DOWNLOAD_T`; upload with the
-/// send side).
+/// its last progress pass (`CURLINFO_SPEED_DOWNLOAD_T`,
+/// `CURLINFO_SPEED_UPLOAD_T`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Speeds {
     pub(crate) download: u64,
+    pub(crate) upload: u64,
 }
 
 impl Speeds {
     pub fn download(&self) -> u64 {
         self.download
+    }
+
+    pub fn upload(&self) -> u64 {
+        self.upload
     }
 }
 

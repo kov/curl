@@ -17,6 +17,12 @@ pub enum Piece {
     Size(u64),
     /// Nothing more until the next step, as if waiting for the network.
     Yield,
+    /// One read of at most this many bytes of the body, sent.
+    Send(usize),
+    /// The rest of the body, read and sent.
+    SendAll,
+    /// The body from its start again, as for a request sent again.
+    Rewind,
 }
 
 /// The pieces, shared by every copy of the options.

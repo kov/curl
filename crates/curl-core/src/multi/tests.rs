@@ -942,7 +942,11 @@ fn a_transfer_failing_before_its_request_gets_the_skipped_times() {
             [us(1); 3]
         );
         assert_eq!(t.namelookup(), Duration::ZERO);
-        assert_eq!(t.total(), Duration::ZERO, "it ended where it began");
+        assert_eq!(
+            t.total(),
+            us(1),
+            "it ended where it began, holding its phases"
+        );
     }
 }
 
@@ -994,8 +998,8 @@ fn every_run_reports_afresh() {
     let mut e = m.remove(id, ev).unwrap().easy;
     assert_eq!(
         e.report().timings().total(),
-        Duration::ZERO,
-        "the second run's"
+        us(1),
+        "the second run's, done in no time, holding its phases"
     );
     assert_eq!(e.report().timings().pretransfer(), us(1));
     e.reset();

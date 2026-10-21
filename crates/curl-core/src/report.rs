@@ -368,9 +368,20 @@ impl Timings {
     }
 
     /// The transfer is over (`Curl_pgrsCompleted`), or a progress pass
-    /// takes stock of it: the total so far.
+    /// takes stock of it: the total so far. A pass reads the clock once,
+    /// so a transfer done within one can take no time, while each phase
+    /// it reached counts at least a microsecond: the total is never less
+    /// than a phase within it.
     pub(crate) fn completed(&mut self, now: Instant) {
-        self.total = self.since_start(now);
+        let phases = [
+            self.namelookup,
+            self.connect,
+            self.appconnect,
+            self.pretransfer,
+            self.starttransfer,
+            self.posttransfer,
+        ];
+        self.total = phases.into_iter().fold(self.since_start(now), u64::max);
     }
 
     /// Microseconds from the transfer's start to `now`.
@@ -601,6 +612,10 @@ mod tests {
         t.mark(Timer::StartSingle, at(5));
         t.mark(Timer::PreTransfer, at(5));
         assert_eq!(t.pretransfer(), Duration::from_micros(1));
+        // Over at once: the total holds the phase.
+        t.mark(Timer::PostTransfer, at(5));
+        t.completed(at(5));
+        assert_eq!(t.total(), Duration::from_micros(1));
     }
 
     /// Queueing time sums over requests, each from when it started queueing.

@@ -214,3 +214,11 @@ witness: curl-core multi::tests::a_url_too_long_to_read_back_fails_its_transfer
         }
     }
     let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
+
+=== the total can be less than a phase within it
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::a_phase_reached_at_its_start_counts_a_microsecond
+--- old
+        self.total = phases.into_iter().fold(self.since_start(now), u64::max);
+--- new
+        self.total = phases.into_iter().fold(self.since_start(now), u64::min);

@@ -1562,7 +1562,8 @@ adapters are its own, installed in place of the ones it was cloned with.
 
 - Detached handle, or no lease → CURLE_BAD_FUNCTION_ARGUMENT.
 - `Added { multi, id }` with a `Transfer` frame → `cx.pause(id, req)`: own transfer or sibling;
-  the timer and socket callbacks run inside, a sibling's write callbacks run inside.
+  a sibling's write callbacks run inside, and the timer and socket callbacks hear of the
+  change at the end of the pass (§7.8).
 - `Event` frame → RECURSIVE_API_CALL (`no_event_cb`).
 - No frame → `Multi::pause(id, req, &mut ShimEvents)`: flush (write callbacks), then the timer
   callback, then the socket callback, inside the call, as easy.c:1187-1236.
@@ -1595,7 +1596,9 @@ adapters are its own, installed in place of the ones it was cloned with.
 - Socket callback: `SocketWhat` → `CURL_POLL_*`; the easy argument is the owner's `ShimEasy`,
   or `conn_easy` for connection-owned and resolver sockets (non-NULL, as C passes its admin
   easy); `socketp` is the `assign`ed value; `-1` → `Abort` → dead multi. `curl_multi_assign`
-  inside the callback goes through `EventCx::assign`.
+  inside the callback goes through `EventCx::assign`. From a transfer's own handler it answers
+  CURLM_BAD_SOCKET, where C assigns: a handler's `TransferCx` does not reach the socket table,
+  and is not generic over the host whose socket value it would store.
 - Timer callback: `TimerChange::Set(d)` → `long` ms capped at INT_MAX; `Clear` → -1.
 - `curl_multi_info_read` writes `CURLMSG_DONE`, the `CURL *` and the mapped code into
   `ShimEasy.msg` and returns a pointer to it: valid until that easy is removed or cleaned up.
@@ -1662,6 +1665,9 @@ Each is either unobservable through the ABI or a fixed bug:
 - `curl_easy_reset` cannot desynchronise socket bookkeeping: the announced pollset lives in the
   multi's slot, not in the easy's meta hash.
 - `curl_easy_nextheader` with a stale `prev` returns NULL instead of reading freed memory.
+- A pause from a transfer's own handler tells the timer and socket callbacks at the end of the
+  pass, not inside `curl_easy_pause`; the announcement still comes before the multi call
+  returns, so an event loop sees the same.
 - `curl_easy_perform_ev` keeps its event state per call, not in a process-wide static. After
   the timer runs out it holds no timer until the multi sets one; C's `wait_or_timeout` sets 0
   there, and polls without waiting until a socket is ready when the multi never set one.

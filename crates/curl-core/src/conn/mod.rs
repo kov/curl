@@ -20,7 +20,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::TryRc;
 
 pub(crate) use self::buf::RecvBuf;
 use self::connect::ConnectMachine;
@@ -62,16 +62,29 @@ pub(crate) enum ConnSlot {
 /// What a transfer needs of a connection, decided once per leg. Two
 /// transfers may use one connection, one after the other, only if their
 /// routes are equal.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug)]
 pub(crate) enum Route {
     /// No network: the protocol does its own I/O (C's
     /// `PROTOPT_NONETWORK`).
     Local,
-    Tcp(Scheme, Destination),
+    /// To a peer, shared by the transfer and the connection.
+    Tcp(TryRc<Peer>),
 }
 
+impl PartialEq for Route {
+    fn eq(&self, other: &Route) -> bool {
+        match (self, other) {
+            (Route::Local, Route::Local) => true,
+            (Route::Tcp(a), Route::Tcp(b)) => **a == **b,
+            (Route::Local, Route::Tcp(_)) | (Route::Tcp(_), Route::Local) => false,
+        }
+    }
+}
+
+impl Eq for Route {}
+
 /// The protocol a connection speaks, as reuse sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Scheme {
     /// Its name, as "Reusing existing tcp: connection" names it.
     pub(crate) name: &'static str,
@@ -80,20 +93,79 @@ pub(crate) struct Scheme {
     pub(crate) reuse: bool,
 }
 
-/// Where a connection goes: the host as the URL holds it, and the port.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Destination {
+/// Who a connection talks to (C's `struct Curl_peer`): the scheme, the
+/// host as the URL names it, the port and the IPv6 zone. The transfer
+/// and its connection share one.
+#[derive(Debug)]
+pub(crate) struct Peer {
+    scheme: Scheme,
+    /// An IPv6 address in brackets (`user_hostname`).
     host: Vec<u8>,
     port: u16,
+    zone: Option<Vec<u8>>,
+    /// The zone as a number, if it is one; 0 if not (`scopeid`).
+    scope: u32,
 }
 
-impl Destination {
-    pub(crate) fn new(host: &[u8], port: u16) -> Result<Destination, OutOfMemory> {
-        let mut owned = Vec::new();
-        owned.try_extend_from_slice(host)?;
-        Ok(Destination { host: owned, port })
+impl Peer {
+    pub(crate) fn new(scheme: Scheme, host: Vec<u8>, port: u16, zone: Option<Vec<u8>>) -> Peer {
+        // A zone that is a plain number is the scope; a name's would be
+        // its interface's index, which is not looked up yet.
+        let scope = zone
+            .as_deref()
+            .filter(|z| !z.is_empty() && z.iter().all(u8::is_ascii_digit))
+            .and_then(|z| std::str::from_utf8(z).ok()?.parse().ok())
+            .unwrap_or(0);
+        Peer {
+            scheme,
+            host,
+            port,
+            zone,
+            scope,
+        }
+    }
+
+    pub(crate) fn scheme(&self) -> Scheme {
+        self.scheme
+    }
+
+    /// The host as the URL names it, an IPv6 address in brackets.
+    pub(crate) fn shown(&self) -> &[u8] {
+        &self.host
+    }
+
+    /// The host without an IPv6 address's brackets (`hostname`).
+    pub(crate) fn name(&self) -> &[u8] {
+        self.host
+            .strip_prefix(b"[")
+            .and_then(|h| h.strip_suffix(b"]"))
+            .unwrap_or(&self.host)
+    }
+
+    /// Whether the host is an IPv6 address.
+    pub(crate) fn ipv6(&self) -> bool {
+        self.host.first() == Some(&b'[')
+    }
+
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 }
+
+/// The same peer (`Curl_peer_equal`): the same scheme, port and IPv6
+/// zone, and the same host in any case.
+impl PartialEq for Peer {
+    fn eq(&self, other: &Peer) -> bool {
+        self.scheme == other.scheme
+            && self.port == other.port
+            && self.ipv6() == other.ipv6()
+            && self.name().eq_ignore_ascii_case(other.name())
+            && self.scope == other.scope
+            && (self.scope != 0 || self.zone == other.zone)
+    }
+}
+
+impl Eq for Peer {}
 
 /// What a connection's bytes travel over.
 #[derive(Debug)]
@@ -193,4 +265,51 @@ enum Use {
     Leased(NonZeroU32),
     /// Leased by no one since this time (C's `lastused`).
     Idle { since: Instant },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HTTP: Scheme = Scheme {
+        name: "http",
+        reuse: true,
+    };
+
+    fn peer(host: &[u8], port: u16, zone: Option<&[u8]>) -> Peer {
+        Peer::new(HTTP, host.to_vec(), port, zone.map(<[u8]>::to_vec))
+    }
+
+    /// Peers are the same as `Curl_peer_equal` finds them: the host in
+    /// any case, the port, the scheme, and the zone by number or name.
+    #[test]
+    fn peers_compare_as_c_compares_them() {
+        assert_eq!(
+            peer(b"Example.COM", 80, None),
+            peer(b"example.com", 80, None)
+        );
+        assert_ne!(
+            peer(b"example.com", 80, None),
+            peer(b"example.com", 81, None)
+        );
+        assert_ne!(
+            peer(b"example.com", 80, None),
+            peer(b"example.org", 80, None)
+        );
+        let other = Scheme {
+            name: "tcp",
+            reuse: true,
+        };
+        let tcp = Peer::new(other, b"example.com".to_vec(), 80, None);
+        assert_ne!(tcp, peer(b"example.com", 80, None));
+        let v6 = |zone| peer(b"[fe80::1]", 80, zone);
+        assert_eq!(v6(Some(b"2")), v6(Some(b"02")), "one scope by number");
+        assert_ne!(v6(Some(b"2")), v6(Some(b"3")));
+        assert_eq!(v6(Some(b"eth0")), v6(Some(b"eth0")));
+        assert_ne!(v6(Some(b"eth0")), v6(Some(b"eth1")), "unnumbered: by name");
+        assert_ne!(v6(Some(b"eth0")), v6(None));
+        assert_eq!(v6(None).name(), b"fe80::1");
+        assert_eq!(v6(None).shown(), b"[fe80::1]");
+        assert!(v6(None).ipv6() && !peer(b"fe80", 80, None).ipv6());
+    }
 }

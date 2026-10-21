@@ -13,15 +13,16 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 
 use super::io::{Connect, Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnNumber, Destination, RecvBuf, Route, Scheme, Transport, Use};
+use curl_alloc::TryRc;
+
+use super::{Conn, ConnNumber, Peer, RecvBuf, Route, Transport, Use};
 use crate::time::Instant;
 
 /// A connection being set up.
 #[derive(Debug)]
 pub(crate) struct ConnectMachine {
     number: ConnNumber,
-    scheme: Scheme,
-    dest: Destination,
+    peer: TryRc<Peer>,
     /// When the setup started (C's `conn->created`).
     created: Instant,
     stage: Stage,
@@ -82,16 +83,10 @@ pub(crate) enum ConnectError {
 }
 
 impl ConnectMachine {
-    pub(crate) fn new(
-        number: ConnNumber,
-        scheme: Scheme,
-        dest: Destination,
-        created: Instant,
-    ) -> ConnectMachine {
+    pub(crate) fn new(number: ConnNumber, peer: TryRc<Peer>, created: Instant) -> ConnectMachine {
         ConnectMachine {
             number,
-            scheme,
-            dest,
+            peer,
             created,
             stage: Stage::Resolving,
         }
@@ -113,22 +108,20 @@ impl ConnectMachine {
     pub(crate) fn drive(self, net: &mut dyn Net, now: Instant) -> Result<Drove, ConnectError> {
         let ConnectMachine {
             number,
-            scheme,
-            dest,
+            peer,
             created,
             stage,
         } = self;
-        let next = |dest, stage| ConnectMachine {
+        let next = |peer, stage| ConnectMachine {
             number,
-            scheme,
-            dest,
+            peer,
             created,
             stage,
         };
         match stage {
             Stage::Resolving => {
-                let ip = literal(&dest.host).ok_or(ConnectError::Unresolved)?;
-                let remote = SocketAddr::new(ip, dest.port);
+                let ip = literal(peer.shown()).ok_or(ConnectError::Unresolved)?;
+                let remote = SocketAddr::new(ip, peer.port());
                 let socket = match net.connect(remote) {
                     Ok((socket, Connect::InProgress | Connect::Done)) => socket,
                     Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
@@ -138,7 +131,7 @@ impl ConnectMachine {
                 };
                 let stage = Stage::Racing(Attempt { remote, socket });
                 Ok(Drove::Connecting(
-                    next(dest, stage),
+                    next(peer, stage),
                     Progress::Trying(remote),
                 ))
             }
@@ -152,7 +145,7 @@ impl ConnectMachine {
                 };
                 if !ready {
                     return Ok(Drove::Connecting(
-                        next(dest, Stage::Racing(a)),
+                        next(peer, Stage::Racing(a)),
                         Progress::Waiting,
                     ));
                 }
@@ -161,7 +154,7 @@ impl ConnectMachine {
                         let local = a.socket.local_addr().ok();
                         Ok(Drove::Established(Conn {
                             number,
-                            route: Route::Tcp(scheme, dest),
+                            route: Route::Tcp(peer),
                             transport: Transport::Tcp(a.socket),
                             remote: Some(a.remote),
                             local,

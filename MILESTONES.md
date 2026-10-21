@@ -325,10 +325,10 @@ cargo-mutants run on the milestone's diff.
     on a fresh one, up to five times a transfer, with C's traces (checked against the C build
     with a libcurl program and a server closing the reused connection). Witnessed by core
     tests; no C test flips by itself.
-23. **conn: resolve names and limit connections.** **To do.** Opening commits: a list
-    `Pollset` in place of one socket, then a refcounted `Peer` as the one owner of the host,
-    matched for reuse as `peer_same_destination` does (case, zone), with `Origin` gone. Then
-    the getaddrinfo resolver, happy eyeballs (unit 2600 first), a DNS cache on the multi and
+23. **conn: resolve names and limit connections.** **In progress.** Done: a list `Pollset`
+    in place of one socket; a refcounted `Peer` as the one owner of the host, shared by the
+    transfer and its connection and matched for reuse as `Curl_peer_equal` does (case, zone).
+    To do: the getaddrinfo resolver, happy eyeballs (unit 2600 first), a DNS cache on the multi and
     the grouping of the multi's tables; `--resolve` and `--connect-to`; the limits left at
     step 11b (MAXCONNECTS eviction, FORBID_REUSE, the per-host and total limits,
     MAXAGE_CONN and MAXLIFETIME_CONN); the resolver's reason in a connect failure.

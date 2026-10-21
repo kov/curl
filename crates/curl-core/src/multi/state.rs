@@ -7,12 +7,12 @@
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
 
-use curl_alloc::{OutOfMemory, TryVec};
+use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
 use crate::conn::io::Events;
 use crate::conn::{
-    Acquired, Conn, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote,
-    Progress, Released, ReuseRules, Route,
+    Acquired, Conn, ConnLease, ConnectError, Connected, Finish, Peer, Pool, PoolNote, Progress,
+    Released, ReuseRules, Route,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -106,32 +106,9 @@ pub(crate) struct Connecting {
     origin: Origin,
 }
 
-/// The host a request is for, as the URL holds it, and its port (C's
-/// `conn->origin`).
-#[derive(Debug)]
-struct Origin {
-    host: Vec<u8>,
-    port: u16,
-}
-
-impl Origin {
-    /// The host as the URL names it, an IPv6 address in brackets (C's
-    /// `user_hostname`).
-    fn shown(&self) -> Bytes<'_> {
-        Bytes(&self.host)
-    }
-
-    /// The host without the brackets of an IPv6 address (C's
-    /// `hostname`).
-    fn name(&self) -> Bytes<'_> {
-        let h = &self.host;
-        Bytes(
-            h.strip_prefix(b"[")
-                .and_then(|h| h.strip_suffix(b"]"))
-                .unwrap_or(h),
-        )
-    }
-}
+/// Who the request is for (C's `conn->origin`), shared with the
+/// connection's route.
+type Origin = TryRc<Peer>;
 
 /// A request holding its connection.
 #[derive(Debug)]
@@ -287,7 +264,7 @@ fn release<H: Host>(
     match pool.release(lease, finish, &mut net, now) {
         Released::Idle(n) => {
             let origin = origin.expect("a connection kept has a host");
-            let (host, port) = (origin.shown(), origin.port);
+            let (host, port) = (Bytes(origin.shown()), origin.port());
             trace::info(
                 cx,
                 format_args!("Connection {n} to host {host}:{port} left intact"),
@@ -759,7 +736,7 @@ fn connecting<H: Host>(
         Ok(Connected::Connecting(Progress::Waiting)) => (TransferState::Connecting(c), Wake::Idle),
         Ok(Connected::Established { remote, local, at }) => {
             cx.report_mut().timings_mut().mark(Timer::Connect, at);
-            let host = c.origin.shown();
+            let host = Bytes(c.origin.shown());
             let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
             let lip = Ip(lip);
             trace::info(
@@ -785,8 +762,8 @@ fn connecting<H: Host>(
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,
 /// `is_connected`).
 fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, origin: &Origin, e: ConnectError) -> ErrorKind {
-    let host = origin.name();
-    let port = origin.port;
+    let host = Bytes(origin.name());
+    let port = origin.port();
     match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Unresolved => {
@@ -1070,7 +1047,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
         Ok(target) => target,
         Err(e) => return TransferState::Init.fail(e),
     };
-    let Some((scheme, host, port)) = target else {
+    let Some(peer) = target else {
         let lease = match acquire(cx, Route::Local) {
             Ok(Acquired::New(lease)) => lease,
             Ok(Acquired::Reused(_)) => unreachable!("a connection without a network is never kept"),
@@ -1084,15 +1061,14 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
             origin: None,
         });
     };
-    let Ok(dest) = Destination::new(&host, port) else {
+    let Ok(origin) = TryRc::try_new(peer) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    let origin = Origin { host, port };
-    let lease = match acquire(cx, Route::Tcp(scheme, dest)) {
+    let lease = match acquire(cx, Route::Tcp(origin.clone())) {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
-            let host = origin.name();
-            let name = scheme.name;
+            let host = Bytes(origin.name());
+            let name = origin.scheme().name;
             trace::info(
                 cx,
                 format_args!("Reusing existing {name}: connection with host {host}"),

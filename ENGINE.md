@@ -144,7 +144,7 @@ curl-core/src/
     cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx
     wait.rs                  wait, the waker, drive_to_completion over Net
   conn/
-    mod.rs                   ConnSlot, Conn, Route, Scheme, Destination, Transport, ConnNumber
+    mod.rs                   ConnSlot, Conn, Route, Scheme, Peer, Transport, ConnNumber
     pool.rs                  Pool, ConnLease, ReuseRules, Lock
     connect.rs               ConnectMachine
     buf.rs                   RecvBuf
@@ -389,6 +389,7 @@ pub(crate) enum TransferState {
     Done(Done),                        // multi_done pending; always holds the lease
     Completed(Completed),              // terminal until remove
 }
+type Origin = TryRc<Peer>;           // the request's peer, shared with its connection's route
 pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, origin: Origin }
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
@@ -900,8 +901,11 @@ pub struct Route {
 }
 ```
 
-Built so far: `enum Route { Local, Tcp(Scheme, Destination) }`, where `Scheme` is the
-protocol's name and whether it keeps connections (`PROTOPT_CONN_REUSE`); matching is `Eq`.
+Built so far: `enum Route { Local, Tcp(TryRc<Peer>) }`. `Peer` is C's `struct Curl_peer`: the
+`Scheme` (the protocol's name and whether it keeps connections, `PROTOPT_CONN_REUSE`), the
+host as the URL names it, the port and the IPv6 zone, made once per leg and shared by the
+transfer, as its origin, and the connection it sets up. Matching is `Peer`'s `Eq`, which is
+`Curl_peer_equal`: the host in any case, and the zone by its number when it is one.
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate

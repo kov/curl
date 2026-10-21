@@ -106,10 +106,10 @@ witness: curl-core conn::pool::tests::the_lock_is_taken_where_c_takes_it
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-            && scheme.reuse
+            && peer.scheme().reuse
             && !finish.premature
 --- new
-            && scheme.reuse
+            && peer.scheme().reuse
 
 === a multi leaves its idle connections open
 file: crates/curl-core/src/multi/mod.rs
@@ -164,3 +164,19 @@ witness: curl-core conn::buf::tests::received_bytes_wait_until_used
         self.bytes.clear();
         let len = self.bytes.len();
         self.bytes.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
+
+=== a peer's host is told apart by case
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::pool::tests::a_host_in_capitals_reuses_the_connection
+--- old
+            && self.name().eq_ignore_ascii_case(other.name())
+--- new
+            && self.name() == other.name()
+
+=== a peer's zone is ignored
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::peers_compare_as_c_compares_them
+--- old
+            && (self.scope != 0 || self.zone == other.zone)
+--- new
+            && self.scope == self.scope

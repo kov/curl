@@ -2,9 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
+use crate::conn::Scheme;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
-use crate::conn::{Destination, Scheme};
 use crate::time::{Clock as _, ManualClock};
+use curl_alloc::TryRc;
 
 const TCP: Scheme = Scheme {
     name: "tcp",
@@ -23,12 +24,18 @@ fn net() -> (FakeNet, ManualClock) {
         .with_peer(at(1), Peer::Accepts)
         .with_peer(at(2), Peer::Refuses)
         .with_peer(at(3), Peer::Silent)
-        .with_peer(at(4), Peer::Accepts);
+        .with_peer(at(4), Peer::Accepts)
+        .with_peer("[::ffff:7f00:1]:5".parse().unwrap(), Peer::Accepts);
     (net, clock)
 }
 
 fn tcp(port: u16) -> Route {
-    Route::Tcp(TCP, Destination::new(b"127.0.0.1", port).unwrap())
+    to(TCP, b"127.0.0.1", port)
+}
+
+fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
+    let peer = crate::conn::Peer::new(scheme, host.to_vec(), port, None);
+    Route::Tcp(TryRc::try_new(peer).unwrap())
 }
 
 /// A connection for `route`, which must be new; the search says nothing.
@@ -176,7 +183,7 @@ fn unresolved_names_and_immediate_failures() {
     let (mut net, clock) = net();
     let now = clock.now();
     let mut pool = Pool::new().unwrap();
-    let named = Route::Tcp(TCP, Destination::new(b"example.com", 80).unwrap());
+    let named = to(TCP, b"example.com", 80);
     let named = new(&mut pool, named, &mut net, now);
     let err = pool.connect(&named, &mut net, now).unwrap_err();
     assert!(matches!(err, ConnectError::Unresolved), "{err:?}");
@@ -238,7 +245,7 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
         name: "once",
         reuse: false,
     };
-    let route = Route::Tcp(once, Destination::new(b"127.0.0.1", 1).unwrap());
+    let route = to(once, b"127.0.0.1", 1);
     let lease = new(&mut pool, route, &mut net, now);
     up(&mut pool, &lease, &mut net, now);
     assert!(matches!(
@@ -570,5 +577,26 @@ fn a_silent_peer_takes_what_it_is_sent() {
     assert!(matches!(sent, Sent::Bytes(n) if n.get() == 18));
     assert!(matches!(conn.recv(64).unwrap(), Recv::WouldBlock));
     assert_eq!(conn.rx_mut().filled(), b"");
+    pool.release(lease, Finish::default(), &mut net, now);
+}
+
+/// A connection serves a route to the same peer however its host is
+/// written: an IPv6 address in capitals is the same address.
+#[test]
+fn a_host_in_capitals_reuses_the_connection() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let lease = new(&mut pool, to(TCP, b"[::ffff:7f00:1]", 5), &mut net, now);
+    up(&mut pool, &lease, &mut net, now);
+    pool.release(lease, Finish::default(), &mut net, now);
+    let mut notes = Vec::new();
+    let route = to(TCP, b"[::FFFF:7F00:1]", 5);
+    let got = pool
+        .acquire(route, RULES, &mut net, now, &mut notes)
+        .unwrap();
+    let Acquired::Reused(lease) = got else {
+        panic!("{got:?}");
+    };
     pool.release(lease, Finish::default(), &mut net, now);
 }

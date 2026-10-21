@@ -14,15 +14,23 @@ pub(crate) mod http1;
 mod script;
 
 use crate::conn::io::Events;
-use crate::conn::{ConnLease, Scheme};
+use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Pause, Pipeline};
 use crate::error::ErrorKind;
+use crate::error::UrlErrorKind;
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
 use crate::options::Options;
-use crate::url::Url;
-#[cfg(any(test, feature = "test-util"))]
-use crate::url::{GetOptions, Part};
+use crate::url::{GetOptions, Part, Url};
+
+/// The URL's IPv6 zone, if it has one.
+fn zone(url: &Url) -> Result<Option<Vec<u8>>, ErrorKind> {
+    match url.get(Part::ZoneId, GetOptions::NONE) {
+        Ok(zone) => Ok(Some(zone)),
+        Err(UrlErrorKind::NoZoneid) => Ok(None),
+        Err(e) => Err(crate::multi::state::url_error(e)),
+    }
+}
 
 /// A protocol's state for one transfer.
 #[derive(Debug)]
@@ -83,7 +91,7 @@ impl ProtoState {
         not(any(test, feature = "test-util")),
         expect(unused_variables, reason = "only the test protocol reads the URL")
     )]
-    pub(crate) fn network(&self, url: &Url) -> Result<Option<(Scheme, Vec<u8>, u16)>, ErrorKind> {
+    pub(crate) fn network(&self, url: &Url) -> Result<Option<Peer>, ErrorKind> {
         match *self {
             ProtoState::File(_) => Ok(None),
             ProtoState::Http(ref r) => {
@@ -92,7 +100,7 @@ impl ProtoState {
                     name: "http",
                     reuse: true,
                 };
-                Ok(Some((scheme, host, port)))
+                Ok(Some(Peer::new(scheme, host, port, zone(url)?)))
             }
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
@@ -109,7 +117,7 @@ impl ProtoState {
                     name: "tcp",
                     reuse: true,
                 };
-                Ok(Some((scheme, host, port)))
+                Ok(Some(Peer::new(scheme, host, port, zone(url)?)))
             }
         }
     }

@@ -203,9 +203,7 @@ impl Pool {
                 served: false,
                 close: false,
             }),
-            Route::Tcp(scheme, dest) => {
-                ConnSlot::Connecting(ConnectMachine::new(number, scheme, dest, now))
-            }
+            Route::Tcp(peer) => ConnSlot::Connecting(ConnectMachine::new(number, peer, now)),
         };
         let id = self.conns.reserve()?.fill(slot);
         self.next_number += 1;
@@ -375,8 +373,8 @@ impl Pool {
         std::mem::forget(lease);
         let _locked = Locked::take(&*self.lock);
         if let Some(ConnSlot::Open(conn)) = self.conns.get_mut(id)
-            && let Route::Tcp(scheme, _) = conn.route
-            && scheme.reuse
+            && let Route::Tcp(peer) = &conn.route
+            && peer.scheme().reuse
             && !finish.premature
             && !conn.close
         {

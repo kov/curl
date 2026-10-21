@@ -1399,7 +1399,9 @@ mod tests {
             show(&u.get(Part::Url, g).unwrap()),
             "https://[::1]/hello.html"
         );
+        u.set(Part::ZoneId, Some(b"eth1"), none).unwrap();
         u.set(Part::Host, Some(b"example.com"), none).unwrap();
+        assert_eq!(u.get(Part::ZoneId, g), Err(UrlErrorKind::NoZoneid));
         u.set(Part::Host, Some(b"[fe80::20c:29ff:fe9c:409b%25eth0]"), none)
             .unwrap();
         assert_eq!(u.get(Part::ZoneId, g).unwrap(), b"eth0");

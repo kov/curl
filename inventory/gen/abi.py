@@ -421,6 +421,43 @@ def strerror_tables():
     return tables
 
 
+def api_call_tables():
+    """
+    Return lib/api.c's rules for calls into the API while one is running.
+
+    Each easy (`eapi`) and multi (`mapi`) function's row gives the columns
+    of its props struct, named as the struct names them; each callback
+    (`cbapi`) says whether it is a multi event callback. The recursion
+    limits are lib/api.h's.
+    """
+    text = common.read("lib/api.c")
+    header = common.read("lib/api.h")
+    tables = {}
+    for kind in ("eapi", "mapi", "cbapi"):
+        struct = re.search(rf"struct Curl_{kind}_fn_props \{{\n(.*?)\}};",
+                           text, re.DOTALL)
+        check(struct is not None, f"lib/api.c: no struct Curl_{kind}_fn_props")
+        columns = re.findall(r"uint8_t (\w+);", struct.group(1))
+        body = re.search(rf"{kind}_fn_props\[[^]]*\] = \{{\n(.*?)^\}};",
+                         text, re.DOTALL | re.MULTILINE)
+        check(body is not None, f"lib/api.c: no {kind}_fn_props table")
+        rows = []
+        for m in re.finditer(r"\{ CURL_\w+?_FN_(\w+),\s*([0-9, ]+?)\s*\},",
+                             body.group(1)):
+            values = [int(v) for v in m.group(2).split(",")]
+            check(len(values) == len(columns),
+                  f"lib/api.c: {m.group(1)} has {len(values)} columns")
+            rows.append({"name": m.group(1), **dict(zip(columns, values))})
+        check(rows, f"lib/api.c: {kind}_fn_props has no rows")
+        tables[kind] = {"columns": columns, "rows": rows}
+    for kind in ("EAPI", "MAPI"):
+        m = re.search(rf"^#define CURL_{kind}_MAX_RECURSION\s+(\d+)", header,
+                      re.MULTILINE)
+        check(m is not None, f"lib/api.h: no CURL_{kind}_MAX_RECURSION")
+        tables[kind.lower()]["max-recursion"] = int(m.group(1))
+    return tables
+
+
 def check_strerror_against_test1538(tables, constants):
     """Compare the parsed tables with test 1538, which prints them all."""
     by_value = {}
@@ -687,6 +724,7 @@ def generate():
     discrepancies += [{"kind": "function-without-man-page", "name": f["name"]}
                       for f in funcs if f["doc"] is None]
     strerrors = strerror_tables()
+    api_calls = api_call_tables()
     check_strerror_against_test1538(strerrors, constants)
 
     deprecated_consts = sum(1 for c in constants if c.get("deprecated")
@@ -711,6 +749,7 @@ def generate():
         "typedefs": sorted(typedefs, key=lambda t: t["name"]),
         "symbol-history": siv,
         "strerror": strerrors,
+        "api-calls": api_calls,
         "lib-defined-curl-functions-not-public-heuristic": leaked,
         "discrepancies": discrepancies,
     }
@@ -765,6 +804,14 @@ def generate():
               [(fn, len(t["messages"]), t["unknown"],
                 t["without-verbose-strings"])
                for fn, t in strerrors.items()]),
+          "## Calls during calls\n",
+          ("`lib/api.c` decides which API functions may be called while "
+           "another runs, or inside a callback.\n"),
+          common.md_table(
+              ["table", "rows", "columns", "recursion limit"],
+              [(k, len(t["rows"]), ", ".join(t["columns"]),
+                t.get("max-recursion", ""))
+               for k, t in api_calls.items()]),
           "## Structs\n"]
     for s, info in data["structs"].items():
         md += [(f"### `{s}` ({info['header']}): size {info['size']}, "
@@ -802,7 +849,8 @@ def generate():
         "include/curl/", "docs/libcurl/symbols-in-versions",
         "lib/libcurl.def", "lib/libcurl.vers.in", "lib/Makefile.soname",
         "lib/CMakeLists.txt", "curl-config.in", "libcurl.pc.in", "lib/",
-        "lib/strerror.c", "tests/data/test1538", "docs/libcurl/"])
+        "lib/strerror.c", "lib/api.c", "lib/api.h", "tests/data/test1538",
+        "docs/libcurl/"])
 
 
 if __name__ == "__main__":

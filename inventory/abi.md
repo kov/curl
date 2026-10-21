@@ -139,6 +139,16 @@ Returned by the `*_strerror` functions in a build with verbose strings (the `ver
 | curl_share_strerror | 6 | CURLSHcode unknown | No error, Error |
 | curl_url_strerror | 33 | CURLUcode unknown | No error, Error |
 
+## Calls during calls
+
+`lib/api.c` decides which API functions may be called while another runs, or inside a callback.
+
+| table | rows | columns | recursion limit |
+|---|---|---|---|
+| eapi | 18 | data_is_killed, recurse, no_event_cb, no_scache_lock | 7 |
+| mapi | 19 | multi_is_killed, recurse, allow_ntfy_cb, no_scache_lock | 15 |
+| cbapi | 26 | is_event_cb |  |
+
 ## Structs
 
 ### `struct CURLMsg` (multi.h): size 24, align 8

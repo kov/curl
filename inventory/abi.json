@@ -1,6 +1,400 @@
 {
  "c-commit": "af01ea6963e393dd401df4279838bf7f9ada0df5",
  "data": {
+  "api-calls": {
+   "cbapi": {
+    "columns": [
+     "is_event_cb"
+    ],
+    "rows": [
+     {
+      "is_event_cb": 0,
+      "name": "easy_chunk_bgn"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_chunk_end"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_closesocket"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_cr_in_read"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_cr_in_resume_from"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_cw_out_cb"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fdebug"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fnmatch_data"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fopensocket"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fprereq"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fprogress"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fread_func"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fsockopt"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fsslctx"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fwrite_rtp"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_fxferinfo"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_ioctl_func"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_resolver_start"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_seek_func"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_ssh_hostkeyfunc"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_ssh_keyfunc"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "easy_trailer_callback"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "multi_ntfy_cb"
+     },
+     {
+      "is_event_cb": 0,
+      "name": "multi_push_cb"
+     },
+     {
+      "is_event_cb": 1,
+      "name": "multi_socket_cb"
+     },
+     {
+      "is_event_cb": 1,
+      "name": "multi_timer_cb"
+     }
+    ]
+   },
+   "eapi": {
+    "columns": [
+     "data_is_killed",
+     "recurse",
+     "no_event_cb",
+     "no_scache_lock"
+    ],
+    "max-recursion": 7,
+    "rows": [
+     {
+      "data_is_killed": 1,
+      "name": "easy_cleanup",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_duphandle",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_getinfo",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_header",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_nextheader",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_pause",
+      "no_event_cb": 1,
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_perform_ev",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_perform",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_recv",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_reset",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_send",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_setopt",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_ssls_export",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_ssls_import",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "easy_upkeep",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "data_is_killed": 0,
+      "name": "ws_recv",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "ws_send",
+      "no_event_cb": 0,
+      "no_scache_lock": 1,
+      "recurse": 1
+     },
+     {
+      "data_is_killed": 0,
+      "name": "ws_start_frame",
+      "no_event_cb": 0,
+      "no_scache_lock": 0,
+      "recurse": 1
+     }
+    ]
+   },
+   "mapi": {
+    "columns": [
+     "multi_is_killed",
+     "recurse",
+     "allow_ntfy_cb",
+     "no_scache_lock"
+    ],
+    "max-recursion": 15,
+    "rows": [
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_add_handle",
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_assign",
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "allow_ntfy_cb": 0,
+      "multi_is_killed": 1,
+      "name": "multi_cleanup",
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_fdset",
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_get_handles",
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_get_offt",
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_info_read",
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_notify_disable",
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_notify_enable",
+      "no_scache_lock": 0,
+      "recurse": 1
+     },
+     {
+      "allow_ntfy_cb": 0,
+      "multi_is_killed": 0,
+      "name": "multi_perform",
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_poll",
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_remove_handle",
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_setopt",
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 0,
+      "multi_is_killed": 0,
+      "name": "multi_socket_action",
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 0,
+      "multi_is_killed": 0,
+      "name": "multi_socket_all",
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 0,
+      "multi_is_killed": 0,
+      "name": "multi_socket",
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_timeout",
+      "no_scache_lock": 1,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_wait",
+      "no_scache_lock": 0,
+      "recurse": 0
+     },
+     {
+      "allow_ntfy_cb": 1,
+      "multi_is_killed": 0,
+      "name": "multi_waitfds",
+      "no_scache_lock": 0,
+      "recurse": 0
+     }
+    ]
+   }
+  },
   "constants": [
    {
     "c-type": "long",
@@ -23838,6 +24232,8 @@
   "lib/",
   "lib/CMakeLists.txt",
   "lib/Makefile.soname",
+  "lib/api.c",
+  "lib/api.h",
   "lib/libcurl.def",
   "lib/libcurl.vers.in",
   "lib/strerror.c",

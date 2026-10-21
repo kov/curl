@@ -1535,7 +1535,9 @@ peer gets a protocol error, not an out-of-memory one.
   `OutOfMemory` (or an earlier clean error), never abort, and leave `track::live_tracked()` where
   it was. The scenarios are harness-free test binaries (`crates/curl-core/tests/torture.rs`), as
   the limit is process-wide. Scenarios: add/perform/remove, a plain GET (a run that succeeds
-  must have sent the whole request), a reused GET, a redirect, pause and replay. The fake
+  must have sent the whole request), a reused GET, a redirect, pause and replay.
+  `track::fail_once_after` refuses one allocation alone, the rest allowed: the GET is also run
+  so, and every such run must fail, for a refusal taken for success is a failure swallowed. The fake
   network and its peer are made untracked and hold room for a test's sockets and requests, so
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They

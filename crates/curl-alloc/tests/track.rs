@@ -12,6 +12,7 @@ static ALLOCATOR: Tracker = Tracker;
 
 fn main() {
     logs_tracked_blocks_and_fails_past_the_limit();
+    one_allocation_is_refused_once();
     track::untracked(|| println!("track: ok"));
 }
 
@@ -38,6 +39,22 @@ fn logs_tracked_blocks_and_fails_past_the_limit() {
         && TryArc::try_new([0u8; 64]).is_err();
     track::untracked(|| check(&path, refused, [tracked_at, grown_at]));
     track::untracked(|| drop(ok));
+}
+
+/// Refusing once lets the allocations after the refused one through, and
+/// puts back the limit that was set before.
+fn one_allocation_is_refused_once() {
+    let (got, refused) = track::fail_once_after(1, || {
+        let first = TryRc::try_new(1u8).is_ok();
+        let second = TryRc::try_new(2u8).is_ok();
+        let third = TryRc::try_new(3u8).is_ok();
+        [first, second, third]
+    });
+    assert_eq!((got, refused), ([true, false, true], true));
+    let ((), refused) = track::fail_once_after(5, || drop(TryRc::try_new(4u8)));
+    assert!(!refused, "within the limit");
+    // The limit spent before is back: everything tracked fails.
+    assert!(TryRc::try_new(5u8).is_err());
 }
 
 /// `refused`: a `Vec`, a `TryRc` and a `TryArc` all failed past the limit.

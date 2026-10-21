@@ -49,6 +49,10 @@ fn main() {
             a_get_survives_every_allocation_failing,
         ),
         (
+            "a_get_takes_no_refusal_for_success",
+            a_get_takes_no_refusal_for_success,
+        ),
+        (
             "a_get_stays_within_its_allocation_budget",
             a_get_stays_within_its_allocation_budget,
         ),
@@ -472,6 +476,46 @@ fn a_get_survives_every_allocation_failing() {
         headers: REPLY.len() as u64 - 6,
     };
     torture(get_scenario, Ok(full));
+}
+
+/// Run `scenario` once for each allocation it makes, that one alone
+/// refused, until a run that refuses nothing: each run with a refusal
+/// must have `failed`, for a refusal taken for success is a failure
+/// swallowed.
+fn refused_alone<T: std::fmt::Debug>(scenario: fn() -> T, failed: fn(&T) -> bool) {
+    let mut limit = 0;
+    loop {
+        let live = track::live_tracked();
+        let (outcome, refused) = track::fail_once_after(limit, scenario);
+        assert_eq!(
+            track::live_tracked(),
+            live,
+            "a run refusing allocation {limit} left blocks behind"
+        );
+        if !refused {
+            assert!(limit > 0, "the scenario allocates nothing");
+            track::untracked(|| eprintln!("torture: {limit} allocations, each refused alone"));
+            return;
+        }
+        if !failed(&outcome) {
+            track::untracked(|| panic!("a run refusing allocation {limit} alone gave {outcome:?}"));
+        }
+        limit += 1;
+        assert!(limit < 100_000, "the scenario never ran to the end");
+    }
+}
+
+fn a_get_takes_no_refusal_for_success() {
+    refused_alone(get_scenario, |got| {
+        matches!(
+            got,
+            Err(OutOfMemory)
+                | Ok(Got {
+                    result: Err(ErrorKind::OutOfMemory),
+                    ..
+                })
+        )
+    });
 }
 
 /// What a plain GET with a query allocates, from a new multi to its

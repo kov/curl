@@ -43,6 +43,8 @@ struct State {
     /// Refusals are not reported on standard error: a torture run makes
     /// one on purpose for every allocation it tries.
     quiet: bool,
+    /// Only one allocation is refused: the limit is lifted after it.
+    once: bool,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -50,6 +52,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     limit: None,
     refused: 0,
     quiet: false,
+    once: false,
 });
 
 /// Tracked blocks not yet freed.
@@ -121,16 +124,28 @@ pub fn untracked<R>(f: impl FnOnce() -> R) -> R {
 /// unlike [`set_limit`], it can be called again. Refusals are not reported
 /// on standard error meanwhile.
 pub fn fail_after<R>(limit: u64, f: impl FnOnce() -> R) -> (R, bool) {
+    refusing(limit, false, f)
+}
+
+/// Run `f` with `limit` more tracked allocations allowed, the next one
+/// refused and the rest allowed again; whether one was refused. For the
+/// torture tests that check a refusal is never taken for success.
+pub fn fail_once_after<R>(limit: u64, f: impl FnOnce() -> R) -> (R, bool) {
+    refusing(limit, true, f)
+}
+
+fn refusing<R>(limit: u64, once: bool, f: impl FnOnce() -> R) -> (R, bool) {
     let (previous, refused) = {
         let mut state = state();
-        let previous = state.limit.replace(limit);
+        let previous = (state.limit.replace(limit), state.once);
         state.quiet = true;
+        state.once = once;
         (previous, state.refused)
     };
     ACTIVE.store(true, Ordering::Release);
     let r = f();
     let mut state = state();
-    state.limit = previous;
+    (state.limit, state.once) = previous;
     state.quiet = false;
     let reached = state.refused > refused;
     (r, reached)
@@ -243,6 +258,9 @@ pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
         None => return false,
     }
     state.refused += 1;
+    if state.once {
+        state.limit = None;
+    }
     let mut line = Line::new();
     line.push(b"LIMIT ");
     source(&mut line);

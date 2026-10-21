@@ -150,7 +150,7 @@ witness: curl-core a_get_survives_every_allocation_failing
 
 === a query that cannot be copied is left out
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core a_get_survives_every_allocation_failing
+witness: curl-core a_get_takes_no_refusal_for_success
 --- old
             Err(UrlErrorKind::NoQuery) => {}
             Err(e) => return Err(url_error(e)),

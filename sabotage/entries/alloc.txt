@@ -1,0 +1,14 @@
+# The memory tracker's refusals, which the torture tests stand on.
+
+=== refusing once refuses everything after
+file: crates/curl-alloc/src/track.rs
+witness: curl-alloc one_allocation_is_refused_once
+features: debug-hooks
+--- old
+    if state.once {
+        state.limit = None;
+    }
+--- new
+    if false {
+        state.limit = None;
+    }

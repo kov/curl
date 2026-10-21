@@ -346,9 +346,9 @@ cargo-mutants run on the milestone's diff.
     and libtest 500 within its memory limit now that a multi's rows hold their transfers
     boxed. The rest of the ring waits on the steps named for it below: `%{method}` and
     `%{referer}` are tested only through redirects.
-25. **http: send request bodies.** **To do.** Opening commit: `Directions` refreshed by the
-    engine from the protocol after each call, its other writers removed and the debug check
-    comparing them. Then the send side's states (`SendSide`), POSTFIELDS, the read callback,
+25. **http: send request bodies.** **In progress.** Opening commit, done: `Directions`
+    derived from the protocol where a pause is judged, no longer stored, a pause from the
+    transfer's own handler judged when its run is back. Then the send side's states (`SendSide`), POSTFIELDS, the read callback,
     PUT, chunked upload, `Expect: 100-continue` with the 417 retry as a second leg, and a
     rewind for a new leg. The method's options (NOBODY, POST, UPLOAD, HTTPGET) combine in the
     shim. T1 tests 1295, 1740, 1741 and 2093.

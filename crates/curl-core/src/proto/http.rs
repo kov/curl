@@ -291,7 +291,6 @@ impl Request {
         self.pipeline.flush(cx)?;
         if self.sending() && self.send(cx, lease)? {
             // Sent after DID: the request is complete from here.
-            cx.directions_mut().send = false;
             cx.mark(Timer::PostTransfer);
         }
         loop {

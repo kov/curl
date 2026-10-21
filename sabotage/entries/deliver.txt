@@ -256,21 +256,21 @@ witness: curl-core deliver::tests::an_unpause_tells_the_timer
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core deliver::tests::an_unpause_tells_the_timer
 --- old
-    if !slot.pause.blocks(slot.directions) {
-        slot.speedometer.forget_slow();
-        rest.dirty.insert(id.index());
-    }
+            if !slot.pause.blocks(run.state.directions(slot.easy.options())) {
+                slot.speedometer.forget_slow();
+                rest.dirty.insert(id.index());
+            }
 --- new
-    rest.dirty.insert(id.index());
+            rest.dirty.insert(id.index());
 
 === an unpaused transfer is not marked to run
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
 --- old
-        slot.speedometer.forget_slow();
-        rest.dirty.insert(id.index());
+                slot.speedometer.forget_slow();
+                rest.dirty.insert(id.index());
 --- new
-        slot.speedometer.forget_slow();
+                slot.speedometer.forget_slow();
 
 === a completed transfer can be paused
 file: crates/curl-core/src/multi/mod.rs

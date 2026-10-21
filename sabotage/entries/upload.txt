@@ -206,8 +206,9 @@ witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_mov
 file: crates/curl-core/src/proto/script.rs
 witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_moves
 --- old
-            cx.directions_mut().send = false;
+        !self.uploaded && wants_send(options)
 --- new
+        wants_send(options)
 
 === a failed read aborts the transfer
 file: crates/curl-core/src/upload/mod.rs

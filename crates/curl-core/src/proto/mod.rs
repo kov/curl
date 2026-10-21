@@ -15,7 +15,7 @@ mod script;
 
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
-use crate::deliver::{Pause, Pipeline};
+use crate::deliver::{Directions, Pause, Pipeline};
 use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
 use crate::multi::Host;
@@ -162,6 +162,27 @@ impl ProtoState {
             ProtoState::Script(_) => script::wants_send(options),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => false,
+        }
+    }
+
+    /// The ways the made request moves bytes now (C's `req.io_flags`):
+    /// receiving while it exchanges, sending while it has more to send.
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(unused_variables, reason = "only the test protocol reads the options")
+    )]
+    pub(crate) fn directions(&self, options: &Options) -> Directions {
+        let send = match *self {
+            ProtoState::File(_) => false,
+            ProtoState::Http(ref r) => r.sending(),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Script(ref p) => p.sending(options),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => false,
+        };
+        Directions {
+            recv: self.exchanges(),
+            send,
         }
     }
 

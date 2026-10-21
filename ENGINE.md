@@ -316,8 +316,8 @@ pub struct Multi<H: Host = NoHost> {
 pub(crate) struct Slot<H: Host> {
     owner: H::Transfer,
     easy: Easy,                      // options + live report; reachable from contexts
-    pause: Pause,                    // these three stay reachable while the run is out,
-    directions: Directions,          //   for the transfer's own handlers (§3.6)
+    pause: Pause,                    // reachable while the run is out (§3.6)
+    judge_pause: bool,               // its own handler paused while it was out
     speedometer: Speedometer,        // beside the pause, which starts it over
     run: Option<Box<Run>>,           // see below
 }
@@ -466,10 +466,9 @@ The pipeline and the done gate belong to the engine. Each protocol owns a `Pipel
 `Done` only when the protocol says `Done` and `holds_output()` is false, so a protocol cannot
 end a request whose paused output is still held, whatever it does with its own stages.
 
-Which ways a request moves bytes (C's `req.io_flags`) is `Directions`, stored in the slot so a
-handler's pause can be judged while the run is out (§3.6). It is written at DID, when the body
-is sent and at done; one writer for it, derived from the protocol's state, is planned before
-the next protocol.
+Which ways a request moves bytes (C's `req.io_flags`) is `Directions`, never stored: it is
+derived from the protocol's state where a pause is judged (`TransferState::directions`), none
+before DID and none from Done on (§3.6).
 
 ### 3.3 Transitions
 
@@ -714,11 +713,12 @@ The rules that keep this sound:
   callback after the step. `me_basis` comes with step 13, the first state that waits on its
   socket while a handler runs.
 - **Whether a pause blocks a transfer** is judged against the ways its request moves bytes,
-  `Directions` (C's `REQ_IO_RECV` and `REQ_IO_SEND`), kept in the slot beside the pause so a
-  handler's pause reaches them while the run is out: none before DID (so a pause never blocks a
-  setup), set at DID from the protocol (receiving if it exchanges, sending if it has a body),
-  sending cleared once the body is sent, all cleared at done. A transfer runs again unless the
-  pause stops every way it moves (`Curl_xfer_is_blocked`).
+  `Directions` (C's `REQ_IO_RECV` and `REQ_IO_SEND`), derived from its protocol when judged:
+  none before DID (so a pause never blocks a setup) and none from Done on; between, receiving
+  if it exchanges and sending while it has more to send. A transfer runs again unless the
+  pause stops every way it moves (`Curl_xfer_is_blocked`). A pause from the transfer's own
+  handler, its run out of the slot, sets `judge_pause`; the engine judges it when the run is
+  back (`put_back`), against the protocol as the step left it.
 - **A call on a sibling transfer** routes to that slot. A sibling's unpause flushes its
   pipeline synchronously by the same rule as a step: its `Box<Run>` is moved out for the flush
   and put back after, so the handlers it calls get a context whose `EngineRest` does not alias

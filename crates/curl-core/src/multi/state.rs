@@ -233,6 +233,16 @@ impl TransferState {
         matches!(self, TransferState::Completed(_))
     }
 
+    /// The ways the transfer's request moves bytes, which its pause is
+    /// judged against: none until the request is made, nor once it is
+    /// over (`xfer_setup`, `Curl_req_stop_send_recv`).
+    pub(crate) fn directions(&self, options: &Options) -> Directions {
+        match self {
+            TransferState::Did(x) | TransferState::Exchanging(x) => x.proto.directions(options),
+            _ => Directions::default(),
+        }
+    }
+
     /// End the transfer with `err`: through `Done` if it holds a
     /// connection, straight to `Completed` if not. A transfer already
     /// finishing keeps its result, as `multi_done` runs once.
@@ -434,15 +444,6 @@ impl<H: Host> StepCx<'_, H> {
             .pause
     }
 
-    pub(crate) fn directions_mut(&mut self) -> &mut Directions {
-        &mut self
-            .rest
-            .slots
-            .get_mut(self.me)
-            .expect("the stepping transfer")
-            .directions
-    }
-
     pub(crate) fn pause_mut(&mut self) -> &mut Pause {
         &mut self
             .rest
@@ -584,11 +585,6 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 if !send {
                     cx.mark(Timer::PostTransfer);
                 }
-                // The ways it moves bytes from here (`xfer_setup`).
-                *cx.directions_mut() = Directions {
-                    recv: x.proto.exchanges(),
-                    send,
-                };
                 (TransferState::Did(x), Wake::Again)
             }
             // A reused connection that died may be the request's
@@ -698,8 +694,6 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let max_age = cx.easy().options().limits.reuse.dns_max_age;
             cx.rest.dns.prune(cx.rest.now, max_age);
             release(cx, d.lease, premature, d.origin.as_ref());
-            // The request moves nothing more (`Curl_req_stop_send_recv`).
-            *cx.directions_mut() = Directions::default();
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();

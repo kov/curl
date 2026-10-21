@@ -49,10 +49,10 @@ witness: curl-core progress::tests::a_transfer_too_slow_for_too_long_times_out
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core progress::tests::an_unpause_forgets_the_slow_time
 --- old
-        slot.speedometer.forget_slow();
-        rest.dirty.insert(id.index());
+                slot.speedometer.forget_slow();
+                rest.dirty.insert(id.index());
 --- new
-        rest.dirty.insert(id.index());
+                rest.dirty.insert(id.index());
 
 === progress is shown at every pass
 file: crates/curl-core/src/progress/mod.rs

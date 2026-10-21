@@ -407,9 +407,9 @@ witness: curl-core multi::tests::a_pause_never_blocks_a_setup
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_moves
 --- old
-    if !slot.pause.blocks(slot.directions) {
+            if !slot.pause.blocks(run.state.directions(slot.easy.options())) {
 --- new
-    if !slot.pause.recv_paused() {
+            if !slot.pause.recv_paused() {
 
 === a transfer table grows with an eighth of its rows still free
 file: crates/curl-core/src/id/mod.rs
@@ -507,3 +507,30 @@ witness: curl-core multi::tests::an_established_connection_forgets_the_next_atte
         run.deadlines.clear(TimerKind::Eyeballs);
     }
 --- new
+
+=== a script's sending outlives its body
+file: crates/curl-core/src/proto/script.rs
+witness: curl-core upload::tests::a_pause_in_the_step_that_sent_the_body_blocks
+--- old
+        !self.uploaded && wants_send(options)
+--- new
+        wants_send(options)
+
+=== a pause asked for in the transfer's own step is never judged
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core upload::tests::a_pause_in_a_step_still_sending_runs_it_again
+--- old
+    if std::mem::take(&mut slot.judge_pause)
+        && !slot.pause.blocks(run.state.directions(slot.easy.options()))
+--- new
+    if std::mem::take(&mut slot.judge_pause)
+        && false
+        && !slot.pause.blocks(run.state.directions(slot.easy.options()))
+
+=== a pause is judged as if the request moved nothing
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_moves
+--- old
+            if !slot.pause.blocks(run.state.directions(slot.easy.options())) {
+--- new
+            if !slot.pause.blocks(crate::deliver::Directions::default()) {

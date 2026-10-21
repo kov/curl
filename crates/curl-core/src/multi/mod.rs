@@ -24,7 +24,7 @@ use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
 use crate::conn::{AddLimits, DnsCache, Pool};
-use crate::deliver::{Directions, Pause, RecvPause};
+use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
@@ -150,9 +150,10 @@ struct Slot<H: Host> {
     easy: Easy,
     /// Reachable while the run is out, for the transfer's own handlers.
     pause: Pause,
-    /// The ways the transfer's request moves bytes, which its pause is
-    /// judged against; kept here for the same reason.
-    directions: Directions,
+    /// The transfer's own handler changed its pause while its run was out:
+    /// whether that blocks it is judged once the run is back, against the
+    /// ways its request then moves bytes.
+    judge_pause: bool,
     /// Beside the pause, which starts it over.
     speedometer: Speedometer,
     /// Out only while the transfer is being stepped.
@@ -349,7 +350,7 @@ impl<H: Host> Multi<H> {
             owner,
             easy,
             pause: Pause::default(),
-            directions: Directions::default(),
+            judge_pause: false,
             speedometer: Speedometer::default(),
             run: Some(run),
         });
@@ -690,7 +691,9 @@ impl<H: Host> Multi<H> {
             rest: self.rest(now, &mut quiet),
         };
         let r = f(&mut cx);
-        self.slots.get_mut(id).expect("still in the multi").run = run;
+        if let Some(run) = run {
+            put_back(&mut self.slots, &mut self.dirty, id, run);
+        }
         r
     }
 
@@ -723,7 +726,7 @@ impl<H: Host> Multi<H> {
         } else {
             self.timers.update(id, run.deadlines.wake_at());
         }
-        self.slots.get_mut(id).expect("still in the multi").run = Some(run);
+        put_back(&mut self.slots, &mut self.dirty, id, run);
         if completed {
             // `Done` never outlasts a step, so this run went through it:
             // done, then its message posted (`mstate_enter_done`,
@@ -960,10 +963,16 @@ fn pause_transfer<H: Host>(
         slot.speedometer.start_over();
     }
     // Unless paused every way it moves bytes, the transfer runs again, and
-    // is not slow for the time it was not (easy.c:1222).
-    if !slot.pause.blocks(slot.directions) {
-        slot.speedometer.forget_slow();
-        rest.dirty.insert(id.index());
+    // is not slow for the time it was not (easy.c:1222). The ways are its
+    // protocol's: a run out of its slot is judged when it is back.
+    match &slot.run {
+        Some(run) => {
+            if !slot.pause.blocks(run.state.directions(slot.easy.options())) {
+                slot.speedometer.forget_slow();
+                rest.dirty.insert(id.index());
+            }
+        }
+        None => slot.judge_pause = true,
     }
     if was_held
         && slot.pause.recv == RecvPause::Running
@@ -974,10 +983,24 @@ fn pause_transfer<H: Host>(
             rest: rest.reborrow(),
         };
         let replayed = state::flush(&mut run, &mut cx);
-        rest.slots.get_mut(id).expect("still in the multi").run = Some(run);
+        put_back(rest.slots, rest.dirty, id, run);
         return replayed;
     }
     Ok(())
+}
+
+/// Put transfer `id`'s run back in its slot, and judge a pause its own
+/// handler asked for while the run was out, as `pause_transfer` judges
+/// one asked for while it is in.
+fn put_back<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, run: Box<Run>) {
+    let slot = slots.get_mut(id).expect("still in the multi");
+    if std::mem::take(&mut slot.judge_pause)
+        && !slot.pause.blocks(run.state.directions(slot.easy.options()))
+    {
+        slot.speedometer.forget_slow();
+        dirty.insert(id.index());
+    }
+    slot.run = Some(run);
 }
 
 impl<H: Host> Drop for Multi<H> {

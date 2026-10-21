@@ -53,6 +53,11 @@ pub(crate) fn wants_send(options: &Options) -> bool {
 }
 
 impl Player {
+    /// The script has body left to send.
+    pub(crate) fn sending(&self, options: &Options) -> bool {
+        !self.uploaded && wants_send(options)
+    }
+
     pub(crate) fn holds_output(&self) -> bool {
         self.pipeline.holds_output()
     }
@@ -145,7 +150,6 @@ impl Player {
         if got.eos && !self.uploaded {
             // The request is sent (`req_set_upload_done`).
             self.uploaded = true;
-            cx.directions_mut().send = false;
             cx.mark(Timer::PostTransfer);
         }
         Ok(Some(got.eos))

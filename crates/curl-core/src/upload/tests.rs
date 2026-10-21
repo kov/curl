@@ -10,7 +10,7 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::{
     DebugHandler, DebugKind, Handler, ProgressHandler, ProgressNow, ProgressVerdict, Read,
-    ReadHandler, Rewind, RewindFailed,
+    ReadHandler, Rewind, RewindFailed, Write, WriteHandler,
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx};
@@ -535,4 +535,60 @@ fn a_pause_blocks_an_upload_only_every_way_it_moves() {
     assert_eq!(m.easy(id).unwrap().report().sizes().upload(), 10, "sent");
     m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
     assert!(!runs_again(&m), "only receiving is left");
+}
+
+/// Pauses receiving at the first write.
+struct PauseOnWrite;
+
+impl WriteHandler for PauseOnWrite {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        cx.pause(cx.me(), PauseRequest::RECV).unwrap();
+        Write::Accepted
+    }
+}
+
+/// A pause from a handler is judged against the ways the request moves
+/// bytes when it asks: a body sent earlier in the same step no longer
+/// counts, so pausing receiving blocks the transfer.
+#[test]
+fn a_pause_in_the_step_that_sent_the_body_blocks() {
+    let (mut m, _clock) = multi();
+    let mut e = script(vec![
+        Piece::SendAll,
+        Piece::Body(b"x".to_vec()),
+        Piece::Body(b"y".to_vec()),
+    ]);
+    e.options_mut().upload = UploadSource::Bytes(TryRc::try_new(b"ab".to_vec()).unwrap());
+    e.options_mut().callbacks.write = Some(Handler::write(PauseOnWrite).unwrap());
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.easy(id).unwrap().report().sizes().upload(), 2, "sent");
+    assert_ne!(
+        m.timeout(),
+        Some(Duration::ZERO),
+        "blocked: nothing to run for"
+    );
+}
+
+/// A handler pausing receiving while its request still sends does not
+/// block it: the transfer runs again, though its step ended waiting.
+#[test]
+fn a_pause_in_a_step_still_sending_runs_it_again() {
+    let (mut m, _clock) = multi();
+    let mut e = script(vec![
+        Piece::Body(b"x".to_vec()),
+        Piece::Send(1),
+        Piece::Yield,
+        Piece::SendAll,
+    ]);
+    e.options_mut().upload = UploadSource::Bytes(TryRc::try_new(b"ab".to_vec()).unwrap());
+    e.options_mut().callbacks.write = Some(Handler::write(PauseOnWrite).unwrap());
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        m.easy(id).unwrap().report().sizes().upload(),
+        1,
+        "at the yield"
+    );
+    assert_eq!(m.timeout(), Some(Duration::ZERO), "still sending");
 }

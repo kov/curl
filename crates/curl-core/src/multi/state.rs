@@ -83,12 +83,31 @@ pub(crate) struct Connecting {
     origin: Origin,
 }
 
-/// The host a request is for, without the brackets of an IPv6 address,
-/// and its port (C's `conn->origin`).
+/// The host a request is for, as the URL holds it, and its port (C's
+/// `conn->origin`).
 #[derive(Debug)]
 struct Origin {
     host: Vec<u8>,
     port: u16,
+}
+
+impl Origin {
+    /// The host as the URL names it, an IPv6 address in brackets (C's
+    /// `user_hostname`).
+    fn shown(&self) -> Bytes<'_> {
+        Bytes(&self.host)
+    }
+
+    /// The host without the brackets of an IPv6 address (C's
+    /// `hostname`).
+    fn name(&self) -> Bytes<'_> {
+        let h = &self.host;
+        Bytes(
+            h.strip_prefix(b"[")
+                .and_then(|h| h.strip_suffix(b"]"))
+                .unwrap_or(h),
+        )
+    }
 }
 
 /// A request holding its connection.
@@ -460,7 +479,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             match rest.pool.release(d.lease, finish, &mut *rest.net, rest.now) {
                 Released::Idle(n) => {
                     let origin = d.origin.as_ref().expect("a connection kept has a host");
-                    let (host, port) = (Bytes(&origin.host), origin.port);
+                    let (host, port) = (origin.shown(), origin.port);
                     trace::info(
                         cx,
                         format_args!("Connection {n} to host {host}:{port} left intact"),
@@ -578,7 +597,7 @@ fn connecting<H: Host>(
         Ok(Connected::Connecting(Progress::Waiting)) => (TransferState::Connecting(c), Wake::Idle),
         Ok(Connected::Established { remote, local, at }) => {
             cx.report_mut().timings_mut().mark(Timer::Connect, at);
-            let host = Bytes(&c.origin.host);
+            let host = c.origin.shown();
             let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
             let lip = Ip(lip);
             trace::info(
@@ -604,7 +623,7 @@ fn connecting<H: Host>(
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,
 /// `is_connected`).
 fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, origin: &Origin, e: ConnectError) -> ErrorKind {
-    let host = Bytes(&origin.host);
+    let host = origin.name();
     let port = origin.port;
     match e {
         ConnectError::Unresolved => {
@@ -811,23 +830,14 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
             origin: None,
         });
     };
-    let shown = host
-        .strip_prefix(b"[")
-        .and_then(|h| h.strip_suffix(b"]"))
-        .unwrap_or(&host);
-    let mut origin = Vec::new();
-    let Ok(dest) = origin
-        .try_extend_from_slice(shown)
-        .map_err(|_| ErrorKind::OutOfMemory)
-        .and_then(|()| Destination::new(&host, port).map_err(|_| ErrorKind::OutOfMemory))
-    else {
+    let Ok(dest) = Destination::new(&host, port) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    let origin = Origin { host: origin, port };
+    let origin = Origin { host, port };
     let lease = match acquire(cx, Route::Tcp(scheme, dest)) {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
-            let host = Bytes(&origin.host);
+            let host = origin.name();
             let name = scheme.name;
             trace::info(
                 cx,

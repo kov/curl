@@ -1040,7 +1040,11 @@ fn networked() -> (Multi, ManualClock) {
         .with_peer(at(1), Peer::Accepts)
         .with_peer(at(2), Peer::Refuses)
         .with_peer(at(3), Peer::Silent)
-        .with_peer(at(4), Peer::AcceptsAfter(Duration::from_millis(5)));
+        .with_peer(at(4), Peer::AcceptsAfter(Duration::from_millis(5)))
+        .with_peer(
+            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 1)),
+            Peer::Accepts,
+        );
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(net),
@@ -1339,4 +1343,35 @@ fn a_multi_closes_its_idle_connections_when_dropped() {
     assert_eq!(closed.get(), 0, "kept");
     drop(m);
     assert_eq!(closed.get(), 1);
+}
+
+/// C names an IPv6 host with its brackets where it shows the URL's host,
+/// and without where it names the host itself: "Reusing existing" and
+/// the connect failure.
+#[test]
+fn an_ipv6_host_is_named_as_c_names_it() {
+    let (mut m, _clock) = networked();
+    let (first, lines) = traced("tcp://[::1]:1/");
+    let first = m.add(first, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "  Trying [::1]:1...\n",
+            "Established connection to [::1] (::1 port 1) from ::1 port 40000 \n",
+            "Connection #0 to host [::1]:1 left intact\n",
+        ]
+    );
+    let (second, lines) = traced("tcp://[::1]:1/");
+    let second = m.add(second, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(second.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "Reusing existing tcp: connection with host ::1\n",
+            "Connection #0 to host [::1]:1 left intact\n",
+        ]
+    );
 }

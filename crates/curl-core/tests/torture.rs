@@ -563,10 +563,12 @@ fn a_get_takes_no_refusal_for_success() {
 /// handlers; the transfer's place in the multi; then the URL as fetched
 /// and its parts, the URL read back once parsed (as C reads it back), the
 /// target grown by its query, the protocol's state, the peer, the
-/// effective URL kept for the report, the list of connect attempts, the
-/// socket, the request head, the receive buffer, the head parser's line,
-/// the header store and the content type.
-const GET_BUDGET: u64 = 41;
+/// effective URL kept for the report, the answer for the host kept in the
+/// DNS cache (its name, its addresses, the answer shared, the cache's
+/// table), the list of connect attempts, the socket, the request head, the
+/// receive buffer, the head parser's line, the header store and the
+/// content type.
+const GET_BUDGET: u64 = 45;
 
 fn a_get_stays_within_its_allocation_budget() {
     let (clock, net, talk) = test_1_server();

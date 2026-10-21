@@ -1282,7 +1282,7 @@ fn removing_a_connecting_transfer_closes_its_socket() {
     m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     drop(m);
-    assert_eq!(trace_of(&lines)[1], "closing connection #1\n");
+    assert_eq!(trace_of(&lines)[2], "closing connection #1\n");
 }
 
 /// A setup does not move on while receiving is paused
@@ -1518,6 +1518,149 @@ fn a_silent_address_gives_way_after_the_eyeballs_delay() {
     );
 }
 
+/// A resolve list is read into the multi's cache when the transfer
+/// starts, once for each time it is set: the name then answers from the
+/// cache, under the entry's name. Set again, it replaces what it gave.
+#[test]
+fn a_resolve_list_is_read_once_for_each_setting() {
+    let (mut m, _clock) = networked();
+    let (mut e, lines) = traced("tcp://Foo.Test:1/");
+    e.options_mut()
+        .resolve
+        .set([&b"foo.test:1:127.0.0.1"[..]])
+        .unwrap();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines)[..6],
+        [
+            "[DNS] added foo.test:1:127.0.0.1 to cache\n",
+            "Hostname Foo.Test was found in DNS cache\n",
+            "Host foo.test:1 was resolved.\n",
+            "IPv6: (none)\n",
+            "IPv4: 127.0.0.1\n",
+            "  Trying 127.0.0.1:1...\n",
+        ]
+    );
+    // The same handle again: the list was read.
+    let e = m.remove(id, &mut NoEvents).unwrap().easy;
+    lines.0.borrow_mut().clear();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+    assert!(
+        !trace_of(&lines).iter().any(|l| l.starts_with("[DNS]")),
+        "not read again: {:?}",
+        trace_of(&lines)
+    );
+    let mut e = m.remove(id, &mut NoEvents).unwrap().easy;
+    lines.0.borrow_mut().clear();
+    e.options_mut().set_url(Some(b"tcp://foo.test:1/")).unwrap();
+    e.options_mut()
+        .resolve
+        .set([&b"foo.test:1:[::1]"[..], b"*:1:127.0.0.1"])
+        .unwrap();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&lines)[..5],
+        [
+            "RESOLVE foo.test:1 - old addresses discarded\n",
+            "[DNS] added foo.test:1:[::1] to cache\n",
+            "[DNS] added *:1:127.0.0.1 to cache\n",
+            "RESOLVE *:1 using wildcard\n",
+            // The connection kept serves the same peer, whatever its
+            // addresses now are.
+            "Reusing existing tcp: connection with host foo.test\n",
+        ]
+    );
+    // Any other name on the port is the wildcard's.
+    let mut e = m.remove(id, &mut NoEvents).unwrap().easy;
+    lines.0.borrow_mut().clear();
+    e.options_mut()
+        .set_url(Some(b"tcp://other.test:1/"))
+        .unwrap();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m).last().unwrap().1, Ok(()));
+    assert_eq!(
+        trace_of(&lines)[..2],
+        [
+            "Hostname other.test was found in DNS cache\n",
+            "Host *:1 was resolved.\n",
+        ]
+    );
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
+/// An answer older than the cache's timeout is not used: one found stale
+/// is dropped, and a transfer's end drops those gone stale by then.
+#[test]
+fn stale_answers_are_dropped() {
+    let (mut m, clock) = networked();
+    let run = |m: &mut Multi, url: &str| {
+        let (e, lines) = traced(url);
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
+            .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(messages(m).last().unwrap().1, Ok(()));
+        m.remove(id, &mut NoEvents).unwrap();
+        trace_of(&lines)
+    };
+    // Each step waits out the idle connection's time too (118 seconds),
+    // so that the name is looked up again.
+    let wait = Duration::from_secs(119);
+    run(&mut m, "tcp://localhost:1/");
+    clock.advance(wait);
+    let again = run(&mut m, "tcp://localhost:1/");
+    let zapped = "Hostname in DNS cache was stale, zapped\n".to_string();
+    assert!(again.contains(&zapped), "{again:?}");
+    clock.advance(wait);
+    // The end of this transfer drops `localhost:1`'s answer, so the next
+    // finds nothing kept.
+    run(&mut m, "tcp://127.0.0.1:4/");
+    let pruned = run(&mut m, "tcp://localhost:1/");
+    assert!(!pruned.contains(&zapped), "{pruned:?}");
+    assert!(pruned.contains(&"Host localhost:1 was resolved.\n".to_string()));
+}
+
+/// An entry the list cannot be read with fails the transfer, and the list
+/// is read again by the next.
+#[test]
+fn a_bad_resolve_entry_fails_the_transfer() {
+    let (mut m, _clock) = networked();
+    let (mut e, lines) = traced("tcp://foo.test:1/");
+    e.options_mut()
+        .resolve
+        .set([&b"foo.test:1:127.0.0.1,example.com"[..]])
+        .unwrap();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::SetoptOptionSyntax), 0)]
+    );
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "Resolve IP address 'example.com' found is illegal\n",
+            "Could not parse CURLOPT_RESOLVE entry 'foo.test:1:127.0.0.1,example.com'\n",
+        ]
+    );
+    let e = m.remove(id, &mut NoEvents).unwrap().easy;
+    lines.0.borrow_mut().clear();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::SetoptOptionSyntax), 0)]
+    );
+    m.remove(id, &mut NoEvents).unwrap();
+}
+
 /// `IpVersion` limits the addresses tried, not those reported, and a
 /// connection kept for any family serves only a transfer that takes any.
 #[test]
@@ -1554,7 +1697,11 @@ fn an_ip_version_limits_the_addresses_tried() {
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(v6.index(), Ok(()), 0)]);
     assert_eq!(
-        trace_of(&lines)[3],
+        trace_of(&lines)[0],
+        "Hostname localhost was found in DNS cache\n"
+    );
+    assert_eq!(
+        trace_of(&lines)[4],
         "  Trying [::1]:1...\n",
         "not the IPv4 one"
     );
@@ -1627,7 +1774,15 @@ fn connections_are_numbered_in_their_traces() {
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.counts().running, 0);
     assert_eq!(
-        trace_of(&b_lines)[1..],
+        trace_of(&b_lines)[..2],
+        [
+            "Hostname 127.0.0.1 was found in DNS cache\n",
+            "  Trying 127.0.0.1:4...\n"
+        ],
+        "the first transfer's answer is kept"
+    );
+    assert_eq!(
+        trace_of(&b_lines)[2..],
         [
             "Established connection to 127.0.0.1 (127.0.0.1 port 4) from 127.0.0.1 port 40001 \n",
             "Connection #1 to host 127.0.0.1:4 left intact\n",
@@ -1641,12 +1796,13 @@ fn connections_are_numbered_in_their_traces() {
     m.add(c, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
-        trace_of(&c_lines)[..5],
+        trace_of(&c_lines)[..6],
         [
             "Connection 0 seems to be dead, terminating\n",
             "shutting down connection #0\n",
             "Connection 1 seems to be dead, terminating\n",
             "shutting down connection #1\n",
+            "Hostname 127.0.0.1 was found in DNS cache\n",
             "  Trying 127.0.0.1:4...\n",
         ]
     );

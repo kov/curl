@@ -146,7 +146,8 @@ curl-core/src/
   conn/
     mod.rs                   ConnSlot, Conn, Route, Scheme, Peer, Transport, ConnNumber
     pool.rs                  Pool, ConnLease, ReuseRules, Lock
-    connect.rs               ConnectMachine
+    connect.rs               ConnectMachine, Eyeballs, Racing
+    dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
   deliver/                   Pipeline, BodyAccountant, ClientOut, HeldOutput;
@@ -163,7 +164,8 @@ curl-core/src/
 ```
 
 Planned, not built: `conn/layer.rs` (Layer, LayerStack, TunnelEvent), `conn/mux.rs`,
-`conn/shutdown.rs` (ShutdownSet, with TLS), `resolve/` (Resolver, DnsCache), `share.rs`,
+`conn/shutdown.rs` (ShutdownSet, with TLS), a `Resolver` for names the cache and the shortcuts
+do not answer, `share.rs`,
 `DebugNet`, the content decoders, the upload chunk encoder, and `http1/follow.rs`.
 
 ### 2.3 Ids and the arena
@@ -1008,10 +1010,19 @@ pub enum Resolve { Answer(DnsAnswer), Pending(ResolveId) }
 ```
 
 `ResolveId` is a generational key into the resolver's own arena; a stale id fails closed (C's
-`Curl_resolv_has_answers` fails open). The first milestone ships `Literal` (IP literals and
-`localhost`, with the resolver-start callback announced for both, 655 and 464), then a
-getaddrinfo resolver, then c-ares. The DNS cache is the multi's or the share's, behind `Lock`;
-CURLOPT_RESOLVE entries are permanent; negative entries only for an authoritative NXDOMAIN.
+`Curl_resolv_has_answers` fails open). The resolvers come in order: the shortcuts (IP literals
+and `localhost`), then getaddrinfo, then c-ares; the resolver-start callback is announced for
+the shortcuts too (655 and 464).
+
+Built so far: the shortcuts and the cache. `DnsCache` is the multi's (the share's, behind
+`Lock`, when shares land): entries by name, in any case, and port, each a `TryRc<Answer>` that
+the connect machine using it shares. A setup looks in the cache first (`hostip_resolv`), then
+asks the shortcuts and keeps what they answer for the cache's timeout (60 seconds; the option
+lands with the resolver). `CURLOPT_RESOLVE` entries are read into the cache when a transfer
+starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
+stamp it last read); they are permanent unless given with `+`, and `*` answers for any name on
+its port. A transfer's end prunes what has gone stale (`multi_done`). Negative entries only for
+an authoritative NXDOMAIN, once a resolver can say so.
 
 ---
 

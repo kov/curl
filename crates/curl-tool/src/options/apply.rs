@@ -118,6 +118,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) write_out: Option<&'a [u8]>,
     /// `--header`, in the order given.
     pub(crate) headers: Vec<&'a [u8]>,
+    /// `--resolve`, in the order given.
+    pub(crate) resolve: Vec<&'a [u8]>,
     /// `--user-agent`.
     pub(crate) user_agent: Option<&'a [u8]>,
     /// `--referer`, without its `;auto`.
@@ -570,6 +572,7 @@ pub(crate) fn apply<'a>(
             }
             line.current().headers.try_push(header)?;
         }
+        Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
         Opt::Referer => {
             let text = value.text();
@@ -845,7 +848,6 @@ pub(crate) fn apply<'a>(
         | Opt::RemoteNameAll
         | Opt::Request
         | Opt::RequestTarget
-        | Opt::Resolve
         | Opt::Retry
         | Opt::RetryAllErrors
         | Opt::RetryConnrefused

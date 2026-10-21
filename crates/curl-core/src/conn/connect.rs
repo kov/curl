@@ -15,6 +15,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
+use super::dns::{Answer, DnsCache, Lookup};
 use super::io::{Connect, Events, Net, Socket, SocketPoll};
 use super::{Conn, ConnNumber, Peer, RecvBuf, Route, Transport, Use};
 use crate::options::IpVersion;
@@ -54,35 +55,31 @@ struct Racing {
     last_start: Option<Instant>,
 }
 
-/// The addresses a name stands for, in the order the resolver gave them
-/// (C's `Curl_dns_entry`).
-#[derive(Debug)]
-pub(crate) enum Answer {
-    /// The name was an address: nothing was resolved to report, or
-    /// allocated.
-    Literal([IpAddr; 1]),
-    Resolved(Vec<IpAddr>),
+/// What a drive needs beyond the network.
+pub(crate) struct Setup<'a> {
+    /// The answers kept from the setups before.
+    pub(crate) dns: &'a mut DnsCache,
+    /// A `*` entry answers for any name (C's `wildcard_resolve`).
+    pub(crate) wildcard: bool,
+    /// The happy eyeballs delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`).
+    pub(crate) delay: Duration,
 }
 
-impl Answer {
-    pub(crate) fn addrs(&self) -> &[IpAddr] {
-        match self {
-            Answer::Literal(a) => a,
-            Answer::Resolved(addrs) => addrs,
-        }
-    }
-
-    /// Whether the name was resolved, rather than an address itself.
-    pub(crate) fn resolved(&self) -> bool {
-        matches!(self, Answer::Resolved(_))
-    }
+/// Where a name's answer came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Found {
+    /// Kept from a setup before.
+    Cached,
+    /// Resolved again: what was kept had gone stale.
+    Stale,
+    Resolved,
 }
 
 /// The attempts to make, over an answer (C's ballers): the families
 /// alternate, IPv6 first, each in the answer's order.
 #[derive(Debug)]
 struct Eyeballs {
-    answer: Answer,
+    answer: TryRc<Answer>,
     /// How many of each family's addresses were tried.
     v6: usize,
     v4: usize,
@@ -93,7 +90,7 @@ struct Eyeballs {
 }
 
 impl Eyeballs {
-    fn new(answer: Answer, ip: IpVersion) -> Eyeballs {
+    fn new(answer: TryRc<Answer>, ip: IpVersion) -> Eyeballs {
         let any = !answer.resolved() || ip == IpVersion::Any;
         Eyeballs {
             answer,
@@ -159,7 +156,7 @@ pub(crate) enum Drove {
 #[derive(Debug)]
 pub(crate) enum Progress {
     /// The name resolved: its answer is the machine's.
-    Resolved,
+    Resolved(Found),
     /// An attempt started on `0`.
     Trying(SocketAddr),
     /// An attempt failed, and the setup goes on.
@@ -227,26 +224,24 @@ impl ConnectMachine {
     }
 
     /// The addresses the name resolved to, once it has.
-    pub(crate) fn answer(&self) -> Option<&Answer> {
+    pub(crate) fn answer(&self) -> Option<&TryRc<Answer>> {
         match &self.stage {
             Stage::Resolving => None,
             Stage::Racing(r) => Some(&r.eyeballs.answer),
         }
     }
 
-    /// Move the setup on by one event; `delay` is the happy eyeballs
-    /// delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`).
+    /// Move the setup on by one event.
     pub(crate) fn drive(
         mut self,
         net: &mut dyn Net,
         now: Instant,
-        delay: Duration,
+        setup: Setup<'_>,
     ) -> Result<Drove, ConnectError> {
+        let delay = setup.delay;
         let r = match &mut self.stage {
             Stage::Resolving => {
-                let answer = resolve(self.peer.shown())
-                    .map_err(|OutOfMemory| ConnectError::OutOfMemory)?
-                    .ok_or(ConnectError::Unresolved)?;
+                let (answer, found) = self.resolve(setup, now)?;
                 let eyeballs = Eyeballs::new(answer, self.ip);
                 if !eyeballs.more() {
                     return Err(ConnectError::Unresolved);
@@ -256,7 +251,7 @@ impl ConnectMachine {
                     attempts: Vec::new(),
                     last_start: None,
                 });
-                return Ok(Drove::Connecting(self, Progress::Resolved));
+                return Ok(Drove::Connecting(self, Progress::Resolved(found)));
             }
             Stage::Racing(r) => r,
         };
@@ -316,6 +311,31 @@ impl ConnectMachine {
             .filter(|_| r.eyeballs.more())
             .map(|at| at.after(delay));
         Ok(Drove::Connecting(self, Progress::Waiting { until }))
+    }
+
+    /// The peer's answer (`hostip_resolv`): what the cache keeps, or what
+    /// the name stands for without asking a resolver, then kept.
+    fn resolve(
+        &self,
+        setup: Setup<'_>,
+        now: Instant,
+    ) -> Result<(TryRc<Answer>, Found), ConnectError> {
+        let (name, port) = (self.peer.name(), self.peer.port());
+        let found = match setup.dns.lookup(name, port, setup.wildcard, now) {
+            Lookup::Found(answer) => return Ok((answer, Found::Cached)),
+            Lookup::Stale => Found::Stale,
+            Lookup::Missing => Found::Resolved,
+        };
+        let oom = |OutOfMemory| ConnectError::OutOfMemory;
+        let answer = shortcut(self.peer.shown(), name)
+            .map_err(oom)?
+            .ok_or(ConnectError::Unresolved)?;
+        let answer = TryRc::try_new(answer).map_err(oom)?;
+        setup
+            .dns
+            .put(answer.clone(), port, now, false)
+            .map_err(oom)?;
+        Ok((answer, found))
     }
 
     /// The connection `won` set up, found connected at `now`.
@@ -381,20 +401,21 @@ impl Attempt {
 }
 
 /// The addresses `host`, as the URL names it, stands for without asking
-/// a resolver (`Curl_resolv`'s shortcuts): an address itself, or the
-/// loopback addresses for `localhost` and the names under it (RFC 6761).
-/// None for any other name, until a resolver lands.
-fn resolve(host: &[u8]) -> Result<Option<Answer>, OutOfMemory> {
+/// a resolver (`hostip_resolv_start`'s shortcuts): an address itself, or
+/// the loopback addresses for `localhost` and the names under it (RFC
+/// 6761). None for any other name, until a resolver lands. The answer is
+/// for `name`, the host without brackets.
+fn shortcut(host: &[u8], name: &[u8]) -> Result<Option<Answer>, OutOfMemory> {
+    let mut addrs = Vec::new();
     if let Some(ip) = literal(host) {
-        return Ok(Some(Answer::Literal([ip])));
-    }
-    if !is_localhost(host) {
+        addrs.try_push(ip)?;
+    } else if is_localhost(host) {
+        addrs.try_push(IpAddr::V6(Ipv6Addr::LOCALHOST))?;
+        addrs.try_push(IpAddr::V4(Ipv4Addr::LOCALHOST))?;
+    } else {
         return Ok(None);
     }
-    let mut addrs = Vec::new();
-    addrs.try_push(IpAddr::V6(Ipv6Addr::LOCALHOST))?;
-    addrs.try_push(IpAddr::V4(Ipv4Addr::LOCALHOST))?;
-    Ok(Some(Answer::Resolved(addrs)))
+    Answer::new(name, addrs).map(Some)
 }
 
 /// `localhost`, or a name under it, with or without the root's dot, in
@@ -451,7 +472,10 @@ mod tests {
         let peer = Peer::new(scheme, b"abc.test".to_vec(), 123, None);
         let mut m = ConnectMachine::new(ConnNumber(0), TryRc::try_new(peer).unwrap(), ip, start);
         m.stage = Stage::Racing(Racing {
-            eyeballs: Eyeballs::new(Answer::Resolved(addrs), ip),
+            eyeballs: Eyeballs::new(
+                TryRc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
+                ip,
+            ),
             attempts: Vec::new(),
             last_start: None,
         });
@@ -464,7 +488,12 @@ mod tests {
         let he = Duration::from_millis(he_ms);
         for _ in 0..5000 {
             let ms = u64::try_from(clock.now().since(start).as_millis()).unwrap();
-            match m.drive(&mut net, clock.now(), he) {
+            let setup = Setup {
+                dns: &mut DnsCache::default(),
+                wildcard: false,
+                delay: he,
+            };
+            match m.drive(&mut net, clock.now(), setup) {
                 Ok(Drove::Connecting(next, progress)) => {
                     m = next;
                     raced.most_running = raced.most_running.max(m.sockets().count());
@@ -473,7 +502,7 @@ mod tests {
                         Progress::Trying(SocketAddr::V6(_)) => raced.v6_starts.push(ms),
                         Progress::Failed(_) => {}
                         Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
-                        Progress::Resolved => unreachable!("resolved already"),
+                        Progress::Resolved(_) => unreachable!("resolved already"),
                     }
                 }
                 Ok(Drove::Established(conn)) => panic!("{conn:?}"),
@@ -504,8 +533,14 @@ mod tests {
         let peer = TryRc::try_new(peer).unwrap();
         let mut m = ConnectMachine::new(ConnNumber(0), peer, IpVersion::Any, clock.now());
         let he = Duration::from_millis(200);
+        let mut dns = DnsCache::default();
         let conn = loop {
-            match m.drive(&mut net, clock.now(), he).unwrap() {
+            let setup = Setup {
+                dns: &mut dns,
+                wildcard: false,
+                delay: he,
+            };
+            match m.drive(&mut net, clock.now(), setup).unwrap() {
                 Drove::Connecting(next, progress) => {
                     m = next;
                     if let Progress::Waiting { .. } = progress {
@@ -604,15 +639,16 @@ mod tests {
         ] {
             assert!(!is_localhost(name), "{name:?}");
         }
-        let answer = resolve(b"localhost").unwrap().unwrap();
+        let answer = shortcut(b"localhost", b"localhost").unwrap().unwrap();
         let loopback = [
             IpAddr::V6(Ipv6Addr::LOCALHOST),
             IpAddr::V4(Ipv4Addr::LOCALHOST),
         ];
         assert_eq!((answer.addrs(), answer.resolved()), (&loopback[..], true));
-        let answer = resolve(b"[::1]").unwrap().unwrap();
+        let answer = shortcut(b"[::1]", b"::1").unwrap().unwrap();
         assert_eq!((answer.addrs(), answer.resolved()), (&loopback[..1], false));
-        assert!(resolve(b"example.com").unwrap().is_none());
+        assert_eq!(answer.name(), b"::1");
+        assert!(shortcut(b"example.com", b"example.com").unwrap().is_none());
     }
 
     /// Attempts alternate the families, IPv6 first, each family in the
@@ -621,7 +657,7 @@ mod tests {
     fn eyeballs_alternate_the_families() {
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
         let addrs = ["1.1.1.1", "::1", "2.2.2.2", "3.3.3.3", "::2"].map(ip);
-        let answer = || Answer::Resolved(addrs.to_vec());
+        let answer = || TryRc::try_new(Answer::new(b"a.test", addrs.to_vec()).unwrap()).unwrap();
         let order = |mut e: Eyeballs| std::iter::from_fn(move || e.next()).collect::<Vec<_>>();
         let all = ["::1", "1.1.1.1", "::2", "2.2.2.2", "3.3.3.3"].map(ip);
         assert_eq!(order(Eyeballs::new(answer(), IpVersion::Any)), all);
@@ -633,7 +669,8 @@ mod tests {
             order(Eyeballs::new(answer(), IpVersion::V6)),
             ["::1", "::2"].map(ip)
         );
-        let literal = Answer::Literal([ip("1.1.1.1")]);
+        let literal =
+            TryRc::try_new(Answer::new(b"1.1.1.1", vec![ip("1.1.1.1")]).unwrap()).unwrap();
         assert_eq!(
             order(Eyeballs::new(literal, IpVersion::V6)),
             [ip("1.1.1.1")]

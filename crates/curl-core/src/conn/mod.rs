@@ -8,10 +8,12 @@
 
 mod buf;
 mod connect;
+mod dns;
 pub mod io;
 mod pool;
 
-pub(crate) use connect::{ConnectError, Failure, Progress};
+pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup};
+pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, parse_entry};
 pub(crate) use pool::{
     Acquired, ConnLease, Connected, Finish, Pool, PoolNote, Released, ReuseRules,
 };

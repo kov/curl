@@ -8,8 +8,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use crate::conn::Pool;
 use crate::conn::io::{Connect, Net, PollFd, Socket, SocketKey, SocketPoll};
+use crate::conn::{DnsCache, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
@@ -32,6 +32,7 @@ use super::{
 pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
     pub(super) pool: &'a mut Pool,
+    pub(super) dns: &'a mut DnsCache,
     pub(super) net: &'a mut dyn Net,
     pub(super) dirty: &'a mut RowSet,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
@@ -53,6 +54,7 @@ impl<H: Host> EngineRest<'_, H> {
         EngineRest {
             slots: &mut *self.slots,
             pool: &mut *self.pool,
+            dns: &mut *self.dns,
             net: &mut *self.net,
             dirty: &mut *self.dirty,
             sockets: &mut *self.sockets,
@@ -65,9 +67,12 @@ impl<H: Host> EngineRest<'_, H> {
         }
     }
 
-    /// The pool, and the network it is to use for transfer `who`: one
-    /// that tells the socket callback of a socket before it closes.
-    pub(crate) fn pool_net(&mut self, who: TransferId) -> (&mut Pool, Announcing<'_, H>) {
+    /// The pool, the network it is to use for transfer `who`, and the
+    /// answers kept, for a connection's setup.
+    pub(crate) fn pool_net_dns(
+        &mut self,
+        who: TransferId,
+    ) -> (&mut Pool, Announcing<'_, H>, &mut DnsCache) {
         let net = Announcing {
             net: &mut *self.net,
             sockets: &mut *self.sockets,
@@ -78,7 +83,14 @@ impl<H: Host> EngineRest<'_, H> {
             events: &mut *self.events,
             who,
         };
-        (&mut *self.pool, net)
+        (&mut *self.pool, net, &mut *self.dns)
+    }
+
+    /// The pool, and the network it is to use for transfer `who`: one
+    /// that tells the socket callback of a socket before it closes.
+    pub(crate) fn pool_net(&mut self, who: TransferId) -> (&mut Pool, Announcing<'_, H>) {
+        let (pool, net, _) = self.pool_net_dns(who);
+        (pool, net)
     }
 }
 

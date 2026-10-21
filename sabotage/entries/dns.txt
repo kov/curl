@@ -1,0 +1,74 @@
+# The DNS cache and the resolve list (crates/curl-core/src/conn/dns.rs,
+# the setup's lookup, and the list read at a transfer's start).
+
+=== a name is kept in its case
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
+--- old
+            .position(|e| e.port == port && e.answer.name.eq_ignore_ascii_case(name))
+--- new
+            .position(|e| e.port == port && e.answer.name[..] == *name)
+
+=== a wildcard answers for nothing
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
+--- old
+            .or_else(|| self.row(b"*", port).filter(|_| wildcard));
+--- new
+            .or_else(|| None.filter(|_| wildcard));
+
+=== an answer never goes stale
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core multi::tests::stale_answers_are_dropped
+--- old
+        !self.permanent && now.since(self.added) >= max_age
+--- new
+        !self.permanent && now.since(self.added) >= max_age * 1000
+
+=== the cache is not looked in
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
+--- old
+            Lookup::Found(answer) => return Ok((answer, Found::Cached)),
+--- new
+            Lookup::Found(_) => Found::Resolved,
+
+=== a name answered without a resolver is not kept
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::connections_are_numbered_in_their_traces
+--- old
+            .put(answer.clone(), port, now, false)
+            .map_err(oom)?;
+        Ok((answer, found))
+--- new
+            .put(answer.clone(), port, now, false)
+            .map_err(oom)?;
+        setup.dns.remove(name, port);
+        Ok((answer, found))
+
+=== a transfer's end drops nothing stale
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::stale_answers_are_dropped
+--- old
+            cx.rest.dns.prune(cx.rest.now);
+            release(cx, d.lease, Finish { premature }, d.origin.as_ref());
+--- new
+            release(cx, d.lease, Finish { premature }, d.origin.as_ref());
+
+=== a resolve list is read by every transfer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
+--- old
+    if list == cx.easy().resolve_read {
+--- new
+    if list == u64::MAX {
+
+=== a resolve list that failed is not read again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
+--- old
+    if read.is_ok() {
+        cx.easy_mut().resolve_read = list;
+--- new
+    if read.is_ok() || read.is_err() {
+        cx.easy_mut().resolve_read = list;

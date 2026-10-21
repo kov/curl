@@ -23,6 +23,11 @@ pub struct Easy {
     report: TransferReport,
     /// The progress meter's titles are out: a handle writes them once.
     pub(crate) meter_titled: bool,
+    /// The setting of `Options::resolve` last read into a cache.
+    pub(crate) resolve_read: u64,
+    /// The last list read had a `*` entry, which answers for any name
+    /// (C's `wildcard_resolve`).
+    pub(crate) wildcard_resolve: bool,
     /// The multi `perform` runs the handle in, kept with its connections
     /// from one to the next; `Multi::add` drops it.
     pub(crate) private: Option<Private>,
@@ -68,6 +73,8 @@ impl Easy {
             options: self.options.try_clone()?,
             report: TransferReport::default(),
             meter_titled: false,
+            resolve_read: 0,
+            wildcard_resolve: false,
             private: None,
         })
     }
@@ -78,6 +85,8 @@ impl Easy {
         self.options = Options::default();
         self.report = self.report.cleared();
         self.meter_titled = false;
+        self.resolve_read = 0;
+        self.wildcard_resolve = false;
     }
 
     /// Run the transfer to its end, blocking (`curl_easy_perform`), in the

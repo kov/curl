@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
-use crate::conn::Pool;
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
+use crate::conn::{DnsCache, Pool};
 use crate::deliver::{Directions, Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -204,6 +204,7 @@ pub struct Multi<H: Host = NoHost> {
     /// Notifications are being delivered.
     delivering: bool,
     pool: Pool,
+    dns: DnsCache,
     sockets: SocketTable<H::Socket>,
     clock: Box<dyn Clock>,
     net: Box<dyn Net>,
@@ -225,6 +226,7 @@ impl<H: Host> Multi<H> {
             notify: NotifyQueue::default(),
             delivering: false,
             pool: Pool::new()?,
+            dns: DnsCache::default(),
             sockets: SocketTable::new(),
             clock: env.clock,
             net: env.net,
@@ -539,6 +541,7 @@ impl<H: Host> Multi<H> {
         EngineRest {
             slots: &mut self.slots,
             pool: &mut self.pool,
+            dns: &mut self.dns,
             net: &mut *self.net,
             dirty: &mut self.dirty,
             sockets: &mut self.sockets,

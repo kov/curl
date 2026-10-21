@@ -306,6 +306,9 @@ fn configure(
     if let Some(ms) = op.happy_eyeballs_ms {
         o.limits.eyeballs = options::EyeballsDelay(Duration::from_millis(ms));
     }
+    if !op.resolve.is_empty() {
+        o.resolve.set(op.resolve.iter().copied())?;
+    }
     o.ip_version = match op.ip_version {
         None => options::IpVersion::Any,
         Some(IpVersion::V4) => options::IpVersion::V4,

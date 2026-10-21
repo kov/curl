@@ -11,13 +11,13 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
 use crate::conn::io::Events;
 use crate::conn::{
-    Acquired, Conn, ConnLease, ConnectError, Connected, Failure, Finish, Peer, Pool, PoolNote,
-    Progress, Released, ReuseRules, Route,
+    Acquired, Answer, BadEntry, Conn, ConnLease, ConnectError, Connected, Failure, Finish, Found,
+    ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route, Setup, parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::options::Options;
+use crate::options::{Options, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Starts, Timer, TransferReport};
@@ -622,6 +622,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 d.result = Err(e);
                 premature |= is_premature(d.result);
             }
+            cx.rest.dns.prune(cx.rest.now);
             release(cx, d.lease, Finish { premature }, d.origin.as_ref());
             // The request moves nothing more (`Curl_req_stop_send_recv`).
             *cx.directions_mut() = Directions::default();
@@ -719,13 +720,29 @@ fn connecting<H: Host>(
         return (TransferState::Connecting(c), Wake::Idle);
     }
     let delay = cx.easy().options().limits.eyeballs.0;
-    let (pool, mut net) = cx.rest.pool_net(cx.me);
-    let connected = pool.connect(&c.lease, &mut net, now, delay);
+    let wildcard = cx.easy().wildcard_resolve;
+    let (pool, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+    let setup = Setup {
+        dns,
+        wildcard,
+        delay,
+    };
+    let connected = pool.connect(&c.lease, &mut net, now, setup);
     if !matches!(connected, Ok(Connected::Connecting(_))) {
         run.deadlines.clear(TimerKind::Eyeballs);
     }
     match connected {
-        Ok(Connected::Connecting(Progress::Resolved)) => {
+        Ok(Connected::Connecting(Progress::Resolved(found))) => {
+            match found {
+                Found::Cached => {
+                    let name = Bytes(c.origin.name());
+                    trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
+                }
+                Found::Stale => {
+                    trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"))
+                }
+                Found::Resolved => {}
+            }
             cx.mark(Timer::NameLookup);
             report_answer(cx, &c);
             (TransferState::Connecting(c), Wake::Again)
@@ -834,22 +851,18 @@ fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
 }
 
 /// The addresses a name resolved to, each family on a line of its own
-/// (`cf_dns_report`); nothing for an address the URL names.
+/// (`cf_dns_report`), under the name it was found for; nothing for an
+/// address the URL names.
 fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
     let (pool, _) = cx.rest.pool_net(cx.me);
     let Some(answer) = pool.answer(&c.lease).filter(|a| a.resolved()) else {
         return;
     };
-    let mut addrs = Vec::new();
-    if addrs.try_extend_from_slice(answer.addrs()).is_err() {
-        // C's "too many IP, cannot show", for want of memory.
-        return;
-    }
-    let host = Bytes(c.origin.name());
+    let host = Bytes(answer.name());
     let port = c.origin.port();
     trace::info(cx, format_args!("Host {host}:{port} was resolved."));
-    trace::info(cx, format_args!("IPv6: {}", Family(&addrs, true)));
-    trace::info(cx, format_args!("IPv4: {}", Family(&addrs, false)));
+    trace::info(cx, format_args!("IPv6: {}", Family(answer.addrs(), true)));
+    trace::info(cx, format_args!("IPv4: {}", Family(answer.addrs(), false)));
 }
 
 /// The addresses of one family, IPv6 if `1`, comma-separated; `(none)`
@@ -983,6 +996,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     }
     run.retries = 0;
     cx.mark(Timer::StartOp);
+    read_resolve(cx)?;
     let options = cx.easy().options();
     match parse_url(options.url().expect("checked above"), options) {
         Ok(url) => Ok(url),
@@ -993,6 +1007,87 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
         )),
         Err(UrlRefused::Failed(kind)) => Err(kind),
     }
+}
+
+/// Read the application's resolve list into the multi's cache, once for
+/// each time it is set (`Curl_loadhostpairs`): a list the cache cannot
+/// take is read again by the next transfer.
+fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    let list = cx.easy().options().resolve.stamp();
+    if list == cx.easy().resolve_read {
+        return Ok(());
+    }
+    // Out of the options while the cache and the trace are reached; put
+    // back however reading it ends.
+    let entries = std::mem::take(&mut cx.easy_mut().options_mut().resolve);
+    let read = read_entries(cx, &entries);
+    cx.easy_mut().options_mut().resolve = entries;
+    if read.is_ok() {
+        cx.easy_mut().resolve_read = list;
+    }
+    read
+}
+
+fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(), ErrorKind> {
+    if list.entries().next().is_none() {
+        return Ok(());
+    }
+    cx.easy_mut().wildcard_resolve = false;
+    let now = cx.rest.now;
+    for line in list.entries() {
+        let (name, port, addrs, permanent, given) = match parse_entry(line) {
+            Ok(None) => continue,
+            Ok(Some(ListEntry::Remove { name, port })) => {
+                cx.rest.dns.remove(name, port);
+                continue;
+            }
+            Ok(Some(ListEntry::Add {
+                name,
+                port,
+                addrs,
+                permanent,
+                given,
+            })) => (name, port, addrs, permanent, given),
+            Err(BadEntry::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+            Err(BadEntry::Syntax { illegal }) => {
+                if let Some(ip) = illegal {
+                    let ip = Bytes(ip);
+                    trace::info(
+                        cx,
+                        format_args!("Resolve IP address '{ip}' found is illegal"),
+                    );
+                }
+                let kind = ErrorKind::SetoptOptionSyntax;
+                let line = Bytes(line);
+                let why = format_args!("Could not parse CURLOPT_RESOLVE entry '{line}'");
+                return Err(trace::fail(cx, kind, why));
+            }
+        };
+        let answer = Answer::new(name, addrs).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let answer = TryRc::try_new(answer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        if cx.rest.dns.remove(name, port) {
+            let name = Bytes(name);
+            trace::info(
+                cx,
+                format_args!("RESOLVE {name}:{port} - old addresses discarded"),
+            );
+        }
+        cx.rest
+            .dns
+            .put(answer, port, now, permanent)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let (shown, given) = (Bytes(name), Bytes(given));
+        let kept = if permanent { "" } else { " (non-permanent)" };
+        trace::info(
+            cx,
+            format_args!("[DNS] added {shown}:{port}:{given} to cache{kept}"),
+        );
+        if name == b"*" {
+            trace::info(cx, format_args!("RESOLVE *:{port} using wildcard"));
+            cx.easy_mut().wildcard_resolve = true;
+        }
+    }
+    Ok(())
 }
 
 /// A request is to be made again: its URL parsed anew, as the follow of a

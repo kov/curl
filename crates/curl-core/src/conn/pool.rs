@@ -5,9 +5,10 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
-use super::connect::{Answer, ConnectError, ConnectMachine, Drove, Progress};
+use super::connect::{ConnectError, ConnectMachine, Drove, Progress, Setup};
+use super::dns::Answer;
 use super::io::{Events, Net, Socket, SocketPoll};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, RecvBuf, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
@@ -292,20 +293,20 @@ impl Pool {
         }
     }
 
-    /// Move the leased connection's setup on by one event, `delay` its
-    /// happy eyeballs delay. A connection already up says so.
+    /// Move the leased connection's setup on by one event. A connection
+    /// already up says so.
     pub(crate) fn connect(
         &mut self,
         lease: &ConnLease,
         net: &mut dyn Net,
         now: Instant,
-        delay: Duration,
+        setup: Setup<'_>,
     ) -> Result<Connected, ConnectError> {
         self.conns
             .replace_with(lease.id, |slot| match slot {
                 ConnSlot::Connecting(machine) => {
                     let number = machine.number();
-                    match machine.drive(net, now, delay) {
+                    match machine.drive(net, now, setup) {
                         Ok(Drove::Connecting(m, progress)) => {
                             (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
                         }
@@ -349,9 +350,9 @@ impl Pool {
 
     /// What the name of a connection being set up resolved to, once it
     /// has.
-    pub(crate) fn answer(&self, lease: &ConnLease) -> Option<&Answer> {
+    pub(crate) fn answer(&self, lease: &ConnLease) -> Option<TryRc<Answer>> {
         match self.conns.get(lease.id) {
-            Some(ConnSlot::Connecting(m)) => m.answer(),
+            Some(ConnSlot::Connecting(m)) => m.answer().cloned(),
             Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => None,
             None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
         }

@@ -1051,7 +1051,13 @@ fn a_request_over_a_reused_connection_that_died_is_made_again() {
             format!("Issue another request to this URL: 'http://u:p@127.0.0.1:{PORT}/b'\n"),
         ]
     );
-    assert_eq!(text[start + 6], format!("  Trying 127.0.0.1:{PORT}...\n"));
+    assert_eq!(
+        text[start + 6..start + 8],
+        [
+            "Hostname 127.0.0.1 was found in DNS cache\n".to_string(),
+            format!("  Trying 127.0.0.1:{PORT}...\n"),
+        ]
+    );
     assert_eq!(
         text.last().unwrap(),
         &format!("Connection #1 to host 127.0.0.1:{PORT} left intact\n")

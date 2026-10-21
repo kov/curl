@@ -37,6 +37,9 @@ pub struct Options {
     /// Which of a name's addresses a connection may use
     /// (`CURLOPT_IPRESOLVE`).
     pub ip_version: IpVersion,
+    /// Addresses given for names ahead of resolving them
+    /// (`CURLOPT_RESOLVE`).
+    pub resolve: ResolveList,
     pub output: Output,
     pub callbacks: Callbacks,
     pub progress: Progress,
@@ -83,6 +86,7 @@ impl Options {
             new_file_mode: self.new_file_mode,
             limits: self.limits,
             ip_version: self.ip_version,
+            resolve: self.resolve.try_clone()?,
             output: self.output,
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
@@ -157,6 +161,53 @@ impl Default for FileMode {
     /// Read and write for the owner, read for the rest.
     fn default() -> FileMode {
         FileMode(0o644)
+    }
+}
+
+/// Entries giving names their addresses (`CURLOPT_RESOLVE`), each as the
+/// application gave it, read into the multi's cache when the next
+/// transfer starts: `HOST:PORT:ADDRESS[,ADDRESS]...`, kept for good, or
+/// for the cache's timeout with a `+` before; `-HOST:PORT` to forget.
+#[derive(Debug, Default)]
+pub struct ResolveList {
+    entries: Vec<Vec<u8>>,
+    /// Which setting of the list this is: a transfer reads each once.
+    stamp: u64,
+}
+
+impl ResolveList {
+    pub fn entries(&self) -> impl Iterator<Item = &[u8]> {
+        self.entries.iter().map(|e| &e[..])
+    }
+
+    /// The list as the application sets it again, replacing what it was:
+    /// read again by the next transfer, even if it is the same.
+    pub fn set<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<(), OutOfMemory> {
+        let mut owned = Vec::new();
+        for e in entries {
+            owned.try_push(copy(e)?)?;
+        }
+        self.entries = owned;
+        self.stamp += 1;
+        Ok(())
+    }
+
+    pub(crate) fn stamp(&self) -> u64 {
+        self.stamp
+    }
+
+    fn try_clone(&self) -> Result<ResolveList, OutOfMemory> {
+        let mut entries = Vec::new();
+        for e in &self.entries {
+            entries.try_push(copy(e)?)?;
+        }
+        Ok(ResolveList {
+            entries,
+            stamp: self.stamp,
+        })
     }
 }
 

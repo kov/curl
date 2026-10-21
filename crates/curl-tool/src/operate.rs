@@ -182,10 +182,30 @@ fn transfer(
         msgs.error(&[b"(43) HTTP upload cannot be resumed"]);
         return Step::Failed(ErrorKind::BadFunctionArgument);
     }
-    let to_stdout = matches!(node.output, Output::Unset | Output::File(b"-"));
-    // A file goes in the output directory (`setup_outfile`).
+    // Where the output goes (`setup_outfile`): a file the URL names, for
+    // `--remote-name`, is never standard output.
+    let output = match node.output {
+        Output::Unset if node.remote => Output::Remote,
+        output => output,
+    };
+    let to_stdout = matches!(output, Output::Unset | Output::Stdout | Output::File(b"-"));
+    let remote_name;
+    let output = match output {
+        Output::Remote => {
+            remote_name = match url_file_name(url, &msgs) {
+                Ok(name) => name,
+                Err(e) => {
+                    msgs.error(&[b"Failed to extract a filename from the URL to use for storage"]);
+                    return Step::Failed(e);
+                }
+            };
+            Output::File(&remote_name)
+        }
+        output => output,
+    };
+    // A file goes in the output directory.
     let in_dir;
-    let output = match (node.output, op.output_dir) {
+    let output = match (output, op.output_dir) {
         (Output::File(name), Some(dir)) if !to_stdout => {
             in_dir = match joined(dir, name) {
                 Ok(path) => path,
@@ -199,7 +219,7 @@ fn transfer(
         Output::Null => output::Output::null(msgs),
         _ if to_stdout => output::Output::stdout(run.stdout, msgs),
         Output::File(name) => output::Output::file(name, msgs),
-        Output::Unset => unreachable!("standard output"),
+        Output::Unset | Output::Stdout | Output::Remote => unreachable!("standard output"),
     };
     let Ok(out) = made else {
         return Step::Failed(ErrorKind::OutOfMemory);
@@ -615,6 +635,40 @@ fn needs_file_name(url: &[u8]) -> Result<bool, ErrorKind> {
         Err(_) => {}
     }
     Ok(path.last().is_none_or(|&b| b == b'/') || !path.contains(&b'/'))
+}
+
+/// The file name `--remote-name` saves `url` to: what its path has after
+/// its last separator, trailing separators left out, or `curl_response`
+/// if it has none (`get_url_file_name`).
+fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
+    let parse = ParseOptions {
+        guess_scheme: true,
+        ..ParseOptions::NONE
+    };
+    let url = Url::parse(url, parse).map_err(url_error)?;
+    let path = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
+    let separator = |b: &u8| matches!(b, b'/' | b'\\');
+    let trailing = path.iter().rev().take_while(|b| separator(b)).count();
+    let path = &path[..path.len() - trailing];
+    // A backslash counts only after the last slash.
+    let slash = path.iter().rposition(|&b| b == b'/');
+    let after = slash.map_or(0, |i| i + 1);
+    let cut = path[after..]
+        .iter()
+        .rposition(|&b| b == b'\\')
+        .map(|i| after + i)
+        .or(slash);
+    let name = match cut {
+        Some(at) => &path[at + 1..],
+        None => {
+            msgs.warn(&[b"No remote filename, uses \"curl_response\""]);
+            b"curl_response"
+        }
+    };
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(name)
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    Ok(copy)
 }
 
 /// A URL's error as the tool's (`urlerr_cvt`).

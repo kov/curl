@@ -116,6 +116,9 @@ pub(crate) struct Operation<'a> {
     pub(crate) remote_time: bool,
     /// `--skip-existing`.
     pub(crate) skip_existing: bool,
+    /// `--remote-name-all`: each URL given after it saves to its own name
+    /// unless told otherwise.
+    pub(crate) remote_name_all: bool,
     /// `--output-dir`: where a file output is written.
     pub(crate) output_dir: Option<&'a [u8]>,
     /// `--write-out`.
@@ -265,7 +268,10 @@ impl<'a> Operation<'a> {
         let at = match self.nodes.iter().position(|n| !taken(n)) {
             Some(at) => at,
             None => {
-                self.nodes.try_push(Node::default())?;
+                self.nodes.try_push(Node {
+                    remote: self.remote_name_all,
+                    ..Node::default()
+                })?;
                 self.nodes.len() - 1
             }
         };
@@ -281,6 +287,9 @@ pub(crate) struct Node<'a> {
     pub(crate) url: Option<&'a [u8]>,
     pub(crate) output: Output<'a>,
     pub(crate) upload: Upload<'a>,
+    /// The output is the URL's own file name if not set: the node was
+    /// made after `--remote-name-all` (`useremote`, from `new_getout`).
+    pub(crate) remote: bool,
 }
 
 /// Where a URL's output goes.
@@ -293,6 +302,10 @@ pub(crate) enum Output<'a> {
     File(&'a [u8]),
     /// `--out-null`: nowhere.
     Null,
+    /// `--remote-name`: a file named as the URL's path ends.
+    Remote,
+    /// `--no-remote-name` after `--remote-name-all`: standard output.
+    Stdout,
 }
 
 /// What a URL uploads.
@@ -741,14 +754,17 @@ pub(crate) fn apply<'a>(
             }
             post.try_extend_from_slice(&data)?;
         }
-        // `--no-remote-name` gives a URL its own output only where
-        // `--remote-name-all` named every URL's, which it cannot yet: off,
-        // both change nothing.
-        Opt::RemoteName | Opt::RemoteNameAll => {
-            if value.toggle() {
-                line.not_implemented(spec, "--");
+        // `--no-remote-name` sets an output only to undo
+        // `--remote-name-all` (`parse_remote_name`).
+        Opt::RemoteName => {
+            let on = value.toggle();
+            let op = line.current();
+            if on || op.remote_name_all {
+                let output = if on { Output::Remote } else { Output::Stdout };
+                op.free_node(|n| n.output != Output::Unset)?.output = output;
             }
         }
+        Opt::RemoteNameAll => line.current().remote_name_all = value.toggle(),
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::WriteOut => {

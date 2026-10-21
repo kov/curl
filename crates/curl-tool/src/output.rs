@@ -37,8 +37,11 @@ pub(crate) struct Output(TryRc<RefCell<Stream>>);
 /// Where output goes, and how (C's `struct OutStruct`).
 pub(crate) struct Stream {
     target: Target,
-    /// Bytes written (`outs->bytes`).
+    /// Bytes written since the file was opened or last kept
+    /// (`outs->bytes`).
     bytes: u64,
+    /// The file's size before them (`outs->init`).
+    init: u64,
     /// Header lines are written too: `--include`.
     pub(crate) show_headers: bool,
     /// Standard output is a terminal: binary output is refused and header
@@ -160,6 +163,7 @@ impl Output {
         let stream = Stream {
             target,
             bytes: 0,
+            init: 0,
             show_headers: false,
             terminal: false,
             binary_ok: false,
@@ -343,6 +347,9 @@ impl Stream {
         };
         match fs::open_write(Stream::c_name(name), Keep::Everything, NEW_FILE_MODE) {
             Ok(f) => {
+                // C takes the size it was told to resume from; it is the
+                // file's, read just before.
+                self.init = f.metadata().map_or(0, |m| m.len());
                 *file = Some(f);
                 true
             }
@@ -377,6 +384,7 @@ impl Stream {
             Ok(f) => {
                 *file = Some(f);
                 self.bytes = 0;
+                self.init = 0;
                 true
             }
             Err(e) => {
@@ -387,6 +395,67 @@ impl Stream {
                 false
             }
         }
+    }
+
+    /// Bytes written since the file was opened or last kept.
+    pub(crate) fn written(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Where the bytes written start in the file.
+    pub(crate) fn start(&self) -> u64 {
+        self.init
+    }
+
+    /// The output is a file, open (`outs->fopened && outs->stream`).
+    pub(crate) fn is_open_file(&self) -> bool {
+        matches!(self.target, Target::File { file: Some(_), .. })
+    }
+
+    /// Keep what was written, for the next attempt to add to: where that
+    /// one starts. `None` past the largest size C can hold.
+    pub(crate) fn keep(&mut self) -> Option<u64> {
+        let end = self
+            .init
+            .checked_add(self.bytes)
+            .filter(|&e| e < i64::MAX as u64)?;
+        self.init = end;
+        self.bytes = 0;
+        Some(end)
+    }
+
+    /// Drop what was written to a regular file, for the next attempt to
+    /// write again (`retrycheck`). Standard output and what cannot be
+    /// truncated keep it. False if the file could not be truncated; said
+    /// already.
+    pub(crate) fn throw_away(&mut self) -> bool {
+        let Target::File {
+            file: Some(file), ..
+        } = &mut self.target
+        else {
+            return true;
+        };
+        if self.bytes == 0 || !file.metadata().is_ok_and(|m| m.is_file()) {
+            return true;
+        }
+        if let Ok(n) = curl_alloc::try_format(format_args!("{}", self.bytes)) {
+            self.msgs
+                .note(&[b"Throwing away ", n.as_bytes(), b" bytes"]);
+        }
+        // The debug test build fails it on request.
+        let fail =
+            cfg!(feature = "debug-hooks") && std::env::var_os("CURL_DBG_TRUNCATE_FAIL").is_some();
+        if fail || file.set_len(self.init).is_err() {
+            self.msgs.error(&[b"Failed to truncate file"]);
+            return false;
+        }
+        // Written on from where it now ends.
+        if std::io::Seek::seek(file, std::io::SeekFrom::End(0)).is_err() {
+            self.msgs.error(&[b"Failed seeking to end of file"]);
+            return false;
+        }
+        self.bytes = 0;
+        true
     }
 
     fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
@@ -874,6 +943,39 @@ mod tests {
         assert_eq!(out.stream().header(line, http, Some(200)), Write::Fail);
         assert_eq!(std::fs::read(&final_path).unwrap(), written);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What an attempt wrote is thrown away back to where the file was
+    /// opened, and the next attempt written after it; or kept, the next
+    /// added to it (`retrycheck`).
+    #[test]
+    fn throws_away_or_keeps_what_an_attempt_wrote() {
+        let path = scratch("retried");
+        std::fs::write(&path, b"held").unwrap();
+        let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+        let mut s = out.stream();
+        assert!(s.open_to_append());
+        assert_eq!(s.start(), 4);
+        assert_eq!(s.body(b"first"), Write::Accepted);
+        assert_eq!(s.written(), 5);
+        assert!(s.throw_away());
+        assert_eq!(s.written(), 0);
+        assert_eq!(std::fs::read(&path).unwrap(), b"held");
+        assert_eq!(s.body(b"again"), Write::Accepted);
+        assert_eq!(s.keep(), Some(9));
+        assert_eq!((s.start(), s.written()), (9, 0));
+        assert_eq!(s.body(b"+more"), Write::Accepted);
+        assert_eq!(std::fs::read(&path).unwrap(), b"heldagain+more");
+        // A file created empty starts at 0, and is written from where it
+        // was cut, not where the last write left off.
+        drop(s);
+        let path = scratch("retried-new");
+        let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+        let mut s = out.stream();
+        assert_eq!(s.body(b"partial"), Write::Accepted);
+        assert!(s.throw_away());
+        assert_eq!(s.body(b"all"), Write::Accepted);
+        assert_eq!(std::fs::read(&path).unwrap(), b"all");
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

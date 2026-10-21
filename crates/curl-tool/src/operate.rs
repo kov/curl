@@ -6,17 +6,19 @@ use std::fs::{File, FileTimes};
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::os::unix::ffi::OsStrExt as _;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
-use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
+use curl_core::handler::{Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed};
 use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
+use curl_core::report::Request as HeaderRequest;
 use curl_core::share::Share;
 use curl_core::time::TimeLimit;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
+use curl_core::version::Protocol;
 
 use crate::bar::Bar;
 use crate::glob::{self, Glob};
@@ -509,35 +511,288 @@ fn transfer(
     let ended = if skip {
         Ended::Skipped
     } else {
-        if let Some(file) = upload {
-            match open_upload(file) {
-                Ok(source) => easy.options_mut().upload = source,
-                Err(Unopened::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
-                Err(Unopened::Io) => {
-                    msgs.help(&[b"cannot open '", file, b"'"]);
-                    let result = finish(
-                        op,
-                        run,
-                        given,
-                        &easy,
-                        &out,
-                        bar.as_ref(),
-                        Ended::Ran(Err(ErrorKind::ReadError)),
-                    );
-                    return Step::Unopened(result.expect_err("a failure stays one"));
+        let mut retrying = Retrying::new(op, resume_from);
+        loop {
+            // Opened for each attempt, from its start.
+            if let Some(file) = upload {
+                match open_upload(file) {
+                    Ok(source) => easy.options_mut().upload = source,
+                    Err(Unopened::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+                    Err(Unopened::Io) => {
+                        msgs.help(&[b"cannot open '", file, b"'"]);
+                        let result = finish(
+                            op,
+                            run,
+                            given,
+                            &easy,
+                            &out,
+                            bar.as_ref(),
+                            Ended::Ran(Err(ErrorKind::ReadError)),
+                        );
+                        return Step::Unopened(result.expect_err("a failure stays one"));
+                    }
                 }
             }
+            let result = easy.perform().map_err(|e| e.kind());
+            let result = settle(op, msgs, &easy, &out, result);
+            let attempt = Attempt {
+                result,
+                upload: upload.is_some(),
+                method,
+            };
+            match retrying.check(op, msgs, &mut easy, &out, attempt) {
+                Again::After(wait) => std::thread::sleep(wait),
+                Again::No(result) => break Ended::Settled(result, retrying.retries),
+            }
         }
-        Ended::Ran(easy.perform().map_err(|e| e.kind()))
     };
     Step::Ran(finish(op, run, given, &easy, &out, bar.as_ref(), ended))
+}
+
+/// The longest wait between attempts, unless the server asks for more
+/// (`RETRY_SLEEP_MAX`).
+const RETRY_WAIT_MAX: u64 = 600_000;
+
+/// What `--retry` keeps across one transfer's attempts (C's
+/// `per_transfer`'s `retry_*`).
+struct Retrying {
+    /// When the first attempt started.
+    start: Instant,
+    /// Attempts made again so far.
+    retries: u64,
+    /// The last wait, in milliseconds; 0 before the first.
+    wait_ms: u64,
+    /// Where the output file was resumed from, if it was.
+    resumed_at: u64,
+}
+
+/// One attempt, as it ended.
+struct Attempt {
+    result: Result<(), ErrorKind>,
+    upload: bool,
+    method: tool::Method,
+}
+
+/// Whether to try again.
+enum Again {
+    /// After this long.
+    After(Duration),
+    /// No: the transfer ends with this result.
+    No(Result<(), ErrorKind>),
+}
+
+/// The wait after `last`, with no wait given: a second first, then twice
+/// the last, up to ten minutes.
+fn backoff(last: u64) -> u64 {
+    match last {
+        0 => 1000,
+        ms => ms.saturating_mul(2),
+    }
+    .min(RETRY_WAIT_MAX)
+}
+
+/// Why an attempt is tried again (C's `retryreason`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reason {
+    AllErrors,
+    Timeout,
+    Http,
+}
+
+impl Reason {
+    fn text(self) -> &'static [u8] {
+        match self {
+            Reason::AllErrors => b"(retrying all errors)",
+            Reason::Timeout => b": timeout",
+            Reason::Http => b": HTTP error",
+        }
+    }
+}
+
+/// Why an attempt that ended with `result`, its last response `code` over
+/// `protocol`, would be tried again, if it would (`retrycheck`): a failure
+/// that may pass, an HTTP response saying so, or with `--retry-all-errors`
+/// any failure. An FTP 4xx (`RETRY_FTP`) and a refused connection
+/// (`RETRY_CONNREFUSED`) join with FTP and `--retry-connrefused`.
+fn reason(
+    op: &Operation<'_>,
+    result: Result<(), ErrorKind>,
+    protocol: Option<Protocol>,
+    code: Option<u16>,
+) -> Option<Reason> {
+    let passing = matches!(
+        result,
+        Err(ErrorKind::OperationTimedout
+            | ErrorKind::CouldntResolveHost
+            | ErrorKind::CouldntResolveProxy
+            | ErrorKind::FtpAcceptTimeout)
+    );
+    let failed_http = op.fail != Fail::Off && result == Err(ErrorKind::HttpReturnedError);
+    let reason = if passing {
+        Some(Reason::Timeout)
+    } else if (result.is_ok() || failed_http)
+        && protocol == Some(Protocol::Http)
+        && matches!(code, Some(408 | 429 | 500 | 502 | 503 | 504 | 522 | 524))
+    {
+        Some(Reason::Http)
+    } else {
+        None
+    };
+    match reason {
+        None if result.is_err() && op.retry_all_errors => Some(Reason::AllErrors),
+        reason => reason,
+    }
+}
+
+impl Retrying {
+    fn new(op: &Operation<'_>, resumed_at: Option<u64>) -> Retrying {
+        Retrying {
+            start: Instant::now(),
+            retries: 0,
+            wait_ms: op.retry_delay_ms,
+            resumed_at: resumed_at.unwrap_or(0),
+        }
+    }
+
+    /// Whether to try `attempt` again, and after how long; the output
+    /// readied for it (`post_per_transfer`'s part, `retrycheck`).
+    fn check(
+        &mut self,
+        op: &Operation<'_>,
+        msgs: Messages,
+        easy: &mut Easy,
+        out: &output::Output,
+        attempt: Attempt,
+    ) -> Again {
+        let result = attempt.result;
+        let elapsed = u64::try_from(self.start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let max = op.retry_max_time_ms;
+        if self.retries >= op.retry || (max > 0 && elapsed >= max) {
+            return Again::No(result);
+        }
+        let report = easy.report();
+        let Some(reason) = reason(op, result, report.protocol(), report.response_code()) else {
+            return Again::No(result);
+        };
+        // `retry_sleep`: what the server asks for, or the wait given, or
+        // one doubled each time from a second.
+        let mut wait = 0;
+        if reason == Reason::Http
+            && let Some(after) = easy.report().retry_after().filter(|d| !d.is_zero())
+        {
+            wait = after
+                .as_secs()
+                .saturating_mul(1000)
+                .min(u64::from(u32::MAX));
+            if max > 0 && elapsed.saturating_add(wait) > max {
+                msgs.warn(&[
+                    b"The Retry-After: time would make this command line exceed \
+                              the maximum allowed time for retries.",
+                ]);
+                return Again::No(result);
+            }
+        }
+        if wait == 0 && op.retry_delay_ms == 0 {
+            self.wait_ms = backoff(self.wait_ms);
+        }
+        if wait == 0 {
+            wait = self.wait_ms;
+        }
+        let left = op.retry - self.retries;
+        let (secs, ms) = (wait / 1000, wait % 1000);
+        let told = if ms == 0 {
+            try_format(format_args!("{secs}"))
+        } else {
+            try_format(format_args!("{secs}.{ms:03}"))
+        };
+        let counts = try_format(format_args!(
+            " second{}. {left} retr{} left.",
+            if wait == 1000 { "" } else { "s" },
+            if left > 1 { "ies" } else { "y" }
+        ));
+        if let (Ok(told), Ok(counts)) = (told, counts) {
+            msgs.warn(&[
+                b"Problem ",
+                reason.text(),
+                b". Retrying in ",
+                told.as_bytes(),
+                counts.as_bytes(),
+            ]);
+        }
+        let mut stream = out.stream();
+        // What came of a GET that can be resumed is kept, and the next
+        // attempt asks for the rest.
+        if self.resumable(op, &stream, &attempt) && answered_resumably(easy, self.resumed_at) {
+            if let Ok(n) = try_format(format_args!("{}", stream.written())) {
+                msgs.note(&[b"Keeping ", n.as_bytes(), b" bytes"]);
+            }
+            let Some(at) = stream.keep() else {
+                if let Ok(why) = try_format(format_args!(
+                    "Exceeded maximum supported file size ({} + {})",
+                    stream.start(),
+                    stream.written()
+                )) {
+                    msgs.error(&[why.as_bytes()]);
+                }
+                return Again::No(Err(ErrorKind::WriteError));
+            };
+            self.resumed_at = at;
+            easy.options_mut().resume = NonZeroU64::new(at).map(options::Resume::At);
+        } else if !stream.throw_away() {
+            return Again::No(Err(ErrorKind::WriteError));
+        }
+        self.retries += 1;
+        Again::After(Duration::from_millis(wait))
+    }
+
+    /// Whether what `attempt` wrote may be kept and resumed from
+    /// (`is_outfile_auto_resumable`): a GET resuming its output file, which
+    /// it wrote to and wrote all it was given of.
+    fn resumable(&self, op: &Operation<'_>, stream: &output::Stream, attempt: &Attempt) -> bool {
+        op.resume == Some(Resume::FromOutput)
+            && stream.start() == self.resumed_at
+            && stream.written() > 0
+            && stream.is_open_file()
+            && op.custom_request.is_none()
+            && !attempt.upload
+            && matches!(attempt.method, tool::Method::Unset | tool::Method::Get)
+            && !matches!(
+                attempt.result,
+                Err(ErrorKind::WriteError | ErrorKind::RangeError)
+            )
+    }
+}
+
+/// The response of `easy`'s attempt says the next may ask for the rest: a
+/// GET answered with a range asked for, or with a whole that says ranges
+/// may be (`retrycheck`).
+fn answered_resumably(easy: &Easy, resumed_at: u64) -> bool {
+    let report = easy.report();
+    if report.protocol() != Some(Protocol::Http) || easy.effective_method() != b"GET" {
+        return false;
+    }
+    match report.response_code() {
+        Some(206) => resumed_at > 0,
+        Some(200) => report
+            .headers()
+            .get(
+                b"Accept-Ranges",
+                0,
+                HeaderOrigin::Header.into(),
+                HeaderRequest::Last,
+            )
+            .is_ok_and(|h| h.value == b"bytes"),
+        _ => false,
+    }
 }
 
 /// How a transfer ended.
 #[derive(Clone, Copy)]
 enum Ended {
-    /// With this result.
+    /// With this result, from the library.
     Ran(Result<(), ErrorKind>),
+    /// With this result, settled, after this many retries.
+    Settled(Result<(), ErrorKind>, u64),
     /// Never started: its output file exists (`--skip-existing`). It
     /// succeeds, and only its `--write-out` is written.
     Skipped,
@@ -696,63 +951,32 @@ fn finish(
     ended: Ended,
 ) -> Result<(), ErrorKind> {
     let msgs = run.msgs;
-    let (mut result, skipped) = match ended {
-        Ended::Ran(result) => (result, false),
-        Ended::Skipped => (Ok(()), true),
+    let (result, retries) = match ended {
+        Ended::Ran(result) => (Some(settle(op, msgs, easy, out, result)), 0),
+        Ended::Settled(result, retries) => (Some(result), retries),
+        Ended::Skipped => (None, 0),
     };
-    if !skipped {
-        // `post_check_result`: the transfer's reason, or the kind's.
-        if let Err(e) = result
-            && let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e)))
-        {
-            match easy.report().failure() {
-                Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
-                None => {
-                    if let Ok(why) = try_format(format_args!("{e}\n")) {
-                        msgs.error_line(&[code.as_bytes(), why.as_bytes()]);
-                    }
-                }
+    // The output is closed once there is no retrying (`post_close_output`).
+    let result = match result {
+        Some(result) => {
+            // The bar's line ends once the transfer does.
+            if bar.is_some_and(Bar::shown) {
+                // Nowhere to report a failed write, as in C.
+                let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
             }
-        }
-        // `--fail-with-body` fails an error response once its body is
-        // written, unless a failure was reported already.
-        let reported = result.is_err() && (!msgs.silent || msgs.show_error);
-        if !reported
-            && op.fail == Fail::WithBody
-            && let Some(status) = easy.report().response_code().filter(|&s| s >= 400)
-        {
-            let kind = ErrorKind::HttpReturnedError;
-            if let Ok(line) = try_format(format_args!(
-                "curl: ({}) The requested URL returned error: {status}\n",
-                exit_code(kind)
-            )) {
-                msgs.error_line(&[line.as_bytes()]);
+            let stream = out.stream();
+            if result.is_ok()
+                && op.remote_time
+                && let Some(name) = stream.file_name()
+                && let Some(t) = easy.report().filetime()
+            {
+                set_file_time(name, t, msgs);
             }
-            result = Err(kind);
+            result
         }
-        let mut stream = out.stream();
-        // `post_output_handling`: a successful transfer that wrote nothing
-        // still leaves its output file, empty.
-        if result.is_ok() && !stream.create() {
-            result = Err(ErrorKind::WriteError);
-        }
-        // The bar's line ends once the transfer does.
-        if bar.is_some_and(Bar::shown) {
-            // Nowhere to report a failed write, as in C.
-            let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
-        }
-        if stream.flush().is_err() && result.is_ok() {
-            msgs.error(&[b"Failed writing body"]);
-            result = Err(ErrorKind::WriteError);
-        }
-        if result.is_ok()
-            && op.remote_time
-            && let Some(name) = stream.file_name()
-            && let Some(t) = easy.report().filetime()
-        {
-            set_file_time(name, t, msgs);
-        }
-    }
+        // A skipped transfer succeeds.
+        None => Ok(()),
+    };
     if let Some(format) = &op.write_out {
         let stream = out.stream();
         let facts = Facts {
@@ -760,11 +984,65 @@ fn finish(
             url: url.text,
             urlnum: url.num,
             num_headers: stream.num_headers(),
+            num_retries: retries,
             filename: stream.file_name(),
             method: easy.effective_method(),
             report: easy.report(),
         };
         write_out::write(format.bytes(), &facts, run.stdout);
+    }
+    result
+}
+
+/// What one attempt's `result` comes to (`post_check_result`,
+/// `post_output_handling`): its failure said, a failing response with
+/// `--fail-with-body` made one, an output file that got nothing created,
+/// and standard output flushed.
+fn settle(
+    op: &Operation<'_>,
+    msgs: Messages,
+    easy: &Easy,
+    out: &output::Output,
+    mut result: Result<(), ErrorKind>,
+) -> Result<(), ErrorKind> {
+    // The transfer's reason, or the kind's.
+    if let Err(e) = result
+        && let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e)))
+    {
+        match easy.report().failure() {
+            Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
+            None => {
+                if let Ok(why) = try_format(format_args!("{e}\n")) {
+                    msgs.error_line(&[code.as_bytes(), why.as_bytes()]);
+                }
+            }
+        }
+    }
+    // `--fail-with-body` fails an error response once its body is
+    // written, unless a failure was reported already.
+    let reported = result.is_err() && (!msgs.silent || msgs.show_error);
+    if !reported
+        && op.fail == Fail::WithBody
+        && let Some(status) = easy.report().response_code().filter(|&s| s >= 400)
+    {
+        let kind = ErrorKind::HttpReturnedError;
+        if let Ok(line) = try_format(format_args!(
+            "curl: ({}) The requested URL returned error: {status}\n",
+            exit_code(kind)
+        )) {
+            msgs.error_line(&[line.as_bytes()]);
+        }
+        result = Err(kind);
+    }
+    let mut stream = out.stream();
+    // A successful transfer that wrote nothing still leaves its output
+    // file, empty.
+    if result.is_ok() && !stream.create() {
+        result = Err(ErrorKind::WriteError);
+    }
+    if stream.flush().is_err() && result.is_ok() {
+        msgs.error(&[b"Failed writing body"]);
+        result = Err(ErrorKind::WriteError);
     }
     result
 }
@@ -982,6 +1260,50 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `retrycheck`'s reasons: failures that may pass, the HTTP codes that
+    /// say so (with `--fail`, as its failure too), and with
+    /// `--retry-all-errors` any failure.
+    #[test]
+    fn retries_for_c_reasons() {
+        let mut op = Operation::default();
+        let http = Some(Protocol::Http);
+        let timed_out = Err(ErrorKind::OperationTimedout);
+        assert_eq!(reason(&op, timed_out, None, None), Some(Reason::Timeout));
+        let resolve = Err(ErrorKind::CouldntResolveHost);
+        assert_eq!(reason(&op, resolve, None, None), Some(Reason::Timeout));
+        for code in [408, 429, 500, 502, 503, 504, 522, 524] {
+            assert_eq!(reason(&op, Ok(()), http, Some(code)), Some(Reason::Http));
+        }
+        for code in [200, 404, 501, 505, 523] {
+            assert_eq!(reason(&op, Ok(()), http, Some(code)), None, "{code}");
+        }
+        assert_eq!(reason(&op, Ok(()), None, Some(503)), None);
+        let failed = Err(ErrorKind::HttpReturnedError);
+        assert_eq!(reason(&op, failed, http, Some(503)), None);
+        op.fail = Fail::WithoutBody;
+        assert_eq!(reason(&op, failed, http, Some(503)), Some(Reason::Http));
+        let refused = Err(ErrorKind::CouldntConnect);
+        assert_eq!(reason(&op, refused, http, None), None);
+        op.retry_all_errors = true;
+        assert_eq!(reason(&op, refused, http, None), Some(Reason::AllErrors));
+        assert_eq!(reason(&op, Ok(()), http, Some(404)), None);
+    }
+
+    /// No wait given: a second, then doubled, up to ten minutes.
+    #[test]
+    fn backs_off_as_c_does() {
+        let waits: Vec<u64> = std::iter::successors(Some(0), |&w| Some(backoff(w)))
+            .skip(1)
+            .take(12)
+            .collect();
+        assert_eq!(
+            waits,
+            [
+                1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000, 512000, 600000, 600000
+            ]
+        );
+    }
 
     /// C's `is_fatal_error`.
     #[test]

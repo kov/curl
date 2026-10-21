@@ -5,9 +5,9 @@
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool an_empty_download_leaves_an_empty_file
 --- old
-        if result.is_ok() && !stream.create() {
+    if result.is_ok() && !stream.create() {
 --- new
-        if false && !stream.create() {
+    if false && !stream.create() {
 
 === `-C -` resumes from the start, not the output file's end
 file: crates/curl-tool/src/operate.rs
@@ -69,17 +69,17 @@ witness: curl-tool includes_headers
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_an_upload_it_cannot_open
 --- old
-                    let result = finish(
-                        op,
-                        run,
-                        given,
-                        &easy,
-                        &out,
-                        bar.as_ref(),
-                        Ended::Ran(Err(ErrorKind::ReadError)),
-                    );
+                        let result = finish(
+                            op,
+                            run,
+                            given,
+                            &easy,
+                            &out,
+                            bar.as_ref(),
+                            Ended::Ran(Err(ErrorKind::ReadError)),
+                        );
 --- new
-                    let result: Result<(), ErrorKind> = Err(ErrorKind::ReadError);
+                        let result: Result<(), ErrorKind> = Err(ErrorKind::ReadError);
 
 === the exit status is the first failure, not the last result
 file: crates/curl-tool/src/operate.rs
@@ -323,9 +323,9 @@ witness: curl-tool options::parse::tests::the_last_fail_option_said_wins
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool fails_on_an_error_code_after_its_body
 --- old
-            && op.fail == Fail::WithBody
+        && op.fail == Fail::WithBody
 --- new
-            && op.fail == Fail::WithoutBody
+        && op.fail == Fail::WithoutBody
 
 === the bar's last draw waits like the others
 file: crates/curl-tool/src/bar.rs
@@ -539,3 +539,52 @@ witness: curl-tool reads_options_from_files
                         e = ParamError::ConfigOptionUnknown;
                     }
 --- new
+
+=== a 429 is not tried again
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::retries_for_c_reasons
+--- old
+        && matches!(code, Some(408 | 429 | 500 | 502 | 503 | 504 | 522 | 524))
+--- new
+        && matches!(code, Some(408 | 500 | 502 | 503 | 504 | 522 | 524))
+
+=== the first wait without one given is two seconds
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::backs_off_as_c_does
+--- old
+        0 => 1000,
+--- new
+        0 => 2000,
+
+=== the retries left are counted after this one
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool retries_a_failure
+--- old
+        let left = op.retry - self.retries;
+--- new
+        let left = op.retry - self.retries - 1;
+
+=== a retried file is cut to nothing
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
+--- old
+        if fail || file.set_len(self.init).is_err() {
+--- new
+        if fail || file.set_len(0).is_err() {
+
+=== what an attempt kept is written over by the next
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
+--- old
+        self.init = end;
+        self.bytes = 0;
+--- new
+        self.bytes = 0;
+
+=== a cut file is written on past its end
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
+--- old
+        if std::io::Seek::seek(file, std::io::SeekFrom::End(0)).is_err() {
+--- new
+        if false {

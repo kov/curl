@@ -48,9 +48,9 @@ features: debug-hooks
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_a_failure
 --- old
-                Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
+            Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
 --- new
-                Some(_) => msgs.error_line(&[code.as_bytes(), b"?\n"]),
+            Some(_) => msgs.error_line(&[code.as_bytes(), b"?\n"]),
 
 === the failure sink hears every reason
 file: crates/curl-core/src/trace.rs

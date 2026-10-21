@@ -168,6 +168,15 @@ pub(crate) struct Operation<'a> {
     pub(crate) connect_timeout_ms: u64,
     /// `--expect100-timeout`, in milliseconds; 0 is the library's default.
     pub(crate) expect100_timeout_ms: u64,
+    /// `--retry`: how many times a transfer that failed for a passing
+    /// reason is tried again.
+    pub(crate) retry: u64,
+    /// `--retry-delay`, in milliseconds; 0 doubles the wait each time.
+    pub(crate) retry_delay_ms: u64,
+    /// `--retry-max-time`, in milliseconds; 0 is no limit.
+    pub(crate) retry_max_time_ms: u64,
+    /// `--retry-all-errors`: any failure is tried again.
+    pub(crate) retry_all_errors: bool,
     /// `--location` and `--follow`.
     pub(crate) follow: Follow,
     /// `--location-trusted`.
@@ -675,6 +684,11 @@ pub(crate) fn apply<'a>(
         Opt::MaxTime => line.current().timeout_ms = value.millis(),
         Opt::ConnectTimeout => line.current().connect_timeout_ms = value.millis(),
         Opt::Expect100Timeout => line.current().expect100_timeout_ms = value.millis(),
+        Opt::Retry => line.current().retry = value.number(),
+        // As C keeps it, in 32 bits.
+        Opt::RetryDelay => line.current().retry_delay_ms = value.millis().min(i32::MAX as u64),
+        Opt::RetryMaxTime => line.current().retry_max_time_ms = value.millis(),
+        Opt::RetryAllErrors => line.current().retry_all_errors = value.toggle(),
         Opt::Location | Opt::LocationTrusted => {
             let on = value.toggle();
             let op = line.current();
@@ -986,11 +1000,7 @@ pub(crate) fn apply<'a>(
         | Opt::Range
         | Opt::Rate
         | Opt::RequestTarget
-        | Opt::Retry
-        | Opt::RetryAllErrors
         | Opt::RetryConnrefused
-        | Opt::RetryDelay
-        | Opt::RetryMaxTime
         | Opt::SaslAuthzid
         | Opt::SaslIr
         | Opt::ServiceName

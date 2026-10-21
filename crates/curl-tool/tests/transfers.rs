@@ -130,6 +130,46 @@ fn umask(dir: &Scratch) -> u32 {
     u32::from_str_radix(String::from_utf8(out.stdout).unwrap().trim(), 8).unwrap()
 }
 
+/// `--retry` tries a failure again as many times as asked, saying how long
+/// it waits and how many tries are left; `--retry-all-errors` makes any
+/// failure one to try again.
+#[test]
+fn retries_a_failure() {
+    let dir = Scratch::new("retry");
+    let missing = dir.url("missing");
+    let w = "%{num_retries}\n";
+    let run = curl(
+        &dir,
+        &["--retry", "2", "--retry-delay", "0.01", "-w", w, &missing],
+    );
+    assert_eq!(run.code, 37, "not one to try again: {}", run.stderr);
+    assert_eq!(run.stdout, b"0\n");
+    let all = [
+        "--retry",
+        "2",
+        "--retry-delay",
+        "0.01",
+        "--retry-all-errors",
+    ];
+    let run = curl(&dir, &[&all[..], &["-w", w, &missing]].concat());
+    assert_eq!(run.code, 37);
+    assert_eq!(run.stdout, b"2\n");
+    // Each attempt's failure is said; the warnings are wrapped as C wraps
+    // them.
+    let failed = format!("curl: (37) Could not open file {}\n", dir.path("missing"));
+    let expected = [
+        &failed[..],
+        "Warning: Problem (retrying all errors). Retrying in 0.010 seconds. 2 retries \n",
+        "Warning: left.\n",
+        &failed,
+        "Warning: Problem (retrying all errors). Retrying in 0.010 seconds. 1 retry \n",
+        "Warning: left.\n",
+        &failed,
+    ]
+    .concat();
+    assert_eq!(run.stderr, expected);
+}
+
 /// `-K` reads options from a file as they are met, one file naming the
 /// next; an error in one is reported at each level that read it.
 #[test]

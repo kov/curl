@@ -133,9 +133,11 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
 - **Typestate is used where C keeps flags.** Examples are a connection before and after its
   handshake, and a response before and after its headers. An operation that is valid in only
   one state exists only on that state's type.
-- **Shared caches live in one owner.** The share handle holds them, and transfers reach them
-  through the share. Locking is a trait: the Rust default is a mutex, and the shim implements
-  it with the application's lock callbacks, which tests observe.
+- **Shared caches live in one owner.** The share handle holds them, and lends them whole to the
+  multi a transfer runs in for the length of its perform. Once transfers on one share run at
+  once, only idle connections and names stay in the share, and a busy connection belongs to its
+  multi; locking is then a trait, taken at C's lock points, which the shim implements with the
+  application's lock callbacks, which tests observe.
 
 ## Types
 

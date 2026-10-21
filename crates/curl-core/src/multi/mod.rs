@@ -577,6 +577,12 @@ impl<H: Host> Multi<H> {
         run_in(&self.slots, id)
     }
 
+    /// Use `caches` in place of the multi's own, which `caches` then
+    /// holds: a share's, lent for one perform.
+    pub(crate) fn swap_caches(&mut self, caches: &mut Caches) {
+        std::mem::swap(&mut self.caches, caches);
+    }
+
     /// Every socket the transfers wait on, and for what, in id order
     /// (`curl_multi_fdset`, `curl_multi_waitfds`).
     pub fn sockets(&self, f: impl FnMut(&dyn Socket, Events)) {

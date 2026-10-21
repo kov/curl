@@ -1441,6 +1441,83 @@ impl Net for Closes {
     }
 }
 
+/// One network behind several owners: a share and the multis it lends
+/// its connections to.
+struct OneNet(std::rc::Rc<std::cell::RefCell<Closes>>);
+
+impl Net for OneNet {
+    fn poll(
+        &mut self,
+        sockets: &mut [crate::conn::io::SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.borrow_mut().poll(sockets, fds, timeout)
+    }
+
+    fn connect(
+        &mut self,
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
+        self.0.borrow_mut().connect(addr)
+    }
+
+    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+        self.0.borrow_mut().close(socket);
+    }
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.0.borrow_mut().resolve(name, family)
+    }
+}
+
+/// Handles given one share use one connection, in multis of their own:
+/// it outlives the multi that made it, and closes with the share
+/// (`curl_share_cleanup`). A perform on a share already lent is refused.
+#[test]
+fn a_share_keeps_connections_across_handles() {
+    use crate::conn::io::Peer;
+    use crate::share::Share;
+    let clock = ManualClock::new().unwrap();
+    let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let net = std::rc::Rc::new(std::cell::RefCell::new(Closes(
+        FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
+        closed.clone(),
+    )));
+    let env = || Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(OneNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
+    let mut connects = Vec::new();
+    for _ in 0..2 {
+        let mut m: Multi = Multi::new(env()).unwrap();
+        let mut e = easy("tcp://127.0.0.1:1/");
+        e.options_mut().share = Some(share.clone());
+        e.perform_in(&mut m).unwrap();
+        connects.push(e.report().connects());
+        drop(m);
+    }
+    assert_eq!(connects, [1, 0], "the second reused the first's");
+    assert_eq!(closed.get(), 0, "kept by the share");
+    let lent = share.lend().unwrap();
+    let mut e = easy("tcp://127.0.0.1:1/");
+    e.options_mut().share = Some(share.clone());
+    let refused = e.perform_in(&mut Multi::new(env()).unwrap());
+    assert_eq!(refused.unwrap_err().kind(), ErrorKind::RecursiveApiCall);
+    share.give_back(lent);
+    drop(e);
+    drop(share);
+    assert_eq!(closed.get(), 1, "closed with the share");
+}
+
 /// The connections left idle are closed with their multi
 /// (`Curl_cpool_destroy`).
 #[test]

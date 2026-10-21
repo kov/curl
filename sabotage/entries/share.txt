@@ -1,0 +1,18 @@
+# The share (crates/curl-core/src/share.rs).
+
+=== a perform ignores its share
+file: crates/curl-core/src/easy.rs
+witness: curl-core multi::tests::a_share_keeps_connections_across_handles
+--- old
+        if let Some(caches) = &mut lent {
+            multi.swap_caches(caches);
+        }
+--- new
+
+=== a share leaves its idle connections open
+file: crates/curl-core/src/share.rs
+witness: curl-core multi::tests::a_share_keeps_connections_across_handles
+--- old
+        caches.pool.close_idle(&mut **self.net.get_mut());
+--- new
+        let _ = caches;

@@ -19,6 +19,7 @@ pub mod options;
 mod progress;
 mod proto;
 pub mod report;
+pub mod share;
 mod text;
 pub mod time;
 mod trace;

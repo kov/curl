@@ -15,6 +15,7 @@ use crate::handler::{
     DebugHandler, Handler, HeaderHandler, ProgressHandler, ReadHandler, Rewind, TextSink,
     TrailerHandler, WriteHandler,
 };
+use crate::share::Share;
 use crate::time::TimeLimit;
 use crate::url::SharedUrl;
 
@@ -26,6 +27,9 @@ pub use crate::proto::http1::request::{UserHeaders, Version as HttpVersion};
 pub struct Options {
     url: Option<Vec<u8>>,
     shared_url: Option<SharedUrl>,
+    /// Where connections and resolved names are kept for the transfers
+    /// after, if not in the handle's own multi (`CURLOPT_SHARE`).
+    pub share: Option<Share>,
     default_protocol: Option<Vec<u8>>,
     /// How the URL is read.
     pub url_rules: UrlRules,
@@ -102,6 +106,7 @@ impl Options {
         Ok(Options {
             url: self.url.as_deref().map(copy).transpose()?,
             shared_url: self.shared_url.clone(),
+            share: self.share.clone(),
             default_protocol: self.default_protocol.as_deref().map(copy).transpose()?,
             url_rules: self.url_rules,
             method: self.method,

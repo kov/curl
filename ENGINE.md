@@ -166,7 +166,7 @@ curl-core/src/
 
 Planned, not built: `conn/layer.rs` (Layer, LayerStack, TunnelEvent), `conn/mux.rs`,
 `conn/shutdown.rs` (ShutdownSet, with TLS), a `Resolver` for names the cache and the shortcuts
-do not answer, `share.rs`,
+do not answer,
 `DebugNet`, the content decoders, the upload chunk encoder, and `http1/follow.rs`.
 
 ### 2.3 Ids and the arena
@@ -330,8 +330,7 @@ pub(crate) struct Run {              // created at add, dropped at removal
 ```
 
 Planned with the steps that need them: an internal owner for transfers the engine makes itself
-(`Owner::Internal`, with server push), the pending cursor (with `WaitReason`), the share's pool
-and DNS cache, the shutdown set, and, in `Run`, the follow, auth and rate-limit state.
+(`Owner::Internal`, with server push), the pending cursor (with `WaitReason`), the shutdown set, and, in `Run`, the follow, auth and rate-limit state.
 
 A row holds its slot boxed: a slot is about a kilobyte, and a table starts with C's sixteen
 rows, which C's limits on a transfer's memory count as pointers (libtest 500).
@@ -1027,6 +1026,28 @@ impl Pool {
   CLOSESOCKETFUNCTION. Every pool path that closes a socket goes through it, so none can skip
   the order.
 
+### 4.6.1 The share
+
+The pool and the DNS cache are one `conn::Caches`, which a multi holds unless a share lends it
+its own. `Share` (`share.rs`, `CURLOPT_SHARE` with `CURL_LOCK_DATA_CONNECT` and
+`CURL_LOCK_DATA_DNS`) keeps a `Caches` and the network its idle connections close through at
+the end, as C's share closes them through its own internal handle, never CLOSESOCKETFUNCTION.
+`Easy::perform` takes the share's caches for the length of the perform, swapped into the
+handle's multi in place of its own, and gives them back with nothing leased: one owner at a
+time, so nothing locks them, and a connection made by one handle's multi is reused by the next
+(tests 2051, 2052, 3225). A perform on a share already lent (from a handler of a transfer using
+it) fails with `RecursiveApiCall`, where C's would go on under the share's lock. A share's idle
+connections close when its last clone drops (`curl_share_cleanup`).
+
+Planned, for transfers on one share running at once in several multis (the shim's `CURLSH`
+across threads, or an application multi given handles with a share): the share keeps only the
+idle connections, the route index and the DNS cache; a connection moves into its multi's table
+for the life of its lease and back at release, as C's `conn->attached_multi` makes a busy
+connection one multi's. The lock is then taken only at the pool's four points, by the `Lock`
+trait the shim maps to the application's callbacks, and `Pool::get(lease)` reads the multi's
+own table. Until then the pool owns busy connections too, the whole `Caches` moves, and the
+share's pool is made with no lock.
+
 ### 4.7 No admin easy
 
 Pruning, health checks, upkeep, shutdown and shutdown pollsets take
@@ -1057,7 +1078,7 @@ Built so far: the shortcuts, the system's resolver and the cache. The resolver i
 trait above: `Net::resolve(name, Family)` asks `getaddrinfo` and waits for its answer, as C's
 synchronous resolver does, so the fake network that stands in for the system's sockets stands
 in for its names too; the trait comes with c-ares, the first resolver that answers later.
-`DnsCache` is the multi's (the share's, behind `Lock`, when shares land): entries by name, in
+`DnsCache` is in the multi's `Caches`, or a share's (section 4.6.1): entries by name, in
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup
 looks in the cache first (`hostip_resolv`), then asks the shortcuts, then the resolver, and

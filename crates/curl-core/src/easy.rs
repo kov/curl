@@ -11,6 +11,7 @@ use crate::id::ArenaPolicy;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode};
 use crate::options::Options;
 use crate::report::TransferReport;
+use crate::share::Lent;
 use crate::time::SystemClock;
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
@@ -116,11 +117,35 @@ impl Easy {
                 try_box(Multi::new(env).map_err(oom)?).map_err(oom)?
             }
         };
+        let result = self.perform_in(&mut multi);
+        self.private = Some(Private(multi));
+        result
+    }
+
+    /// Run the transfer to its end in `multi`, with its share's caches in
+    /// place of the multi's own for the length of it.
+    pub(crate) fn perform_in(&mut self, multi: &mut Multi) -> Result<(), Error> {
         // The easy handle's limit is its multi's (`curl_easy_perform`).
         multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
-        let (result, easy) = run_to_end(&mut multi, std::mem::take(self));
+        let share = self.options.share.clone();
+        let mut lent = match &share {
+            // A perform from a handler of a transfer on the same share.
+            Some(share) => Some(
+                share
+                    .lend()
+                    .map_err(|Lent| Error::from(ErrorKind::RecursiveApiCall))?,
+            ),
+            None => None,
+        };
+        if let Some(caches) = &mut lent {
+            multi.swap_caches(caches);
+        }
+        let (result, easy) = run_to_end(multi, std::mem::take(self));
         *self = easy;
-        self.private = Some(Private(multi));
+        if let (Some(share), Some(mut caches)) = (share, lent) {
+            multi.swap_caches(&mut caches);
+            share.give_back(caches);
+        }
         result.map_err(|kind| Error::with_detail(kind, self.report().failure()))
     }
 }

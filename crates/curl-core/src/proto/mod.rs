@@ -11,6 +11,7 @@ mod file;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 
+use crate::conn::Scheme;
 use crate::deliver::Pipeline;
 use crate::error::ErrorKind;
 use crate::multi::Host;
@@ -80,7 +81,7 @@ impl ProtoState {
             reason = "only the test protocol connects before HTTP"
         )
     )]
-    pub(crate) fn network(&self, url: &Url) -> Result<Option<(Vec<u8>, u16)>, ErrorKind> {
+    pub(crate) fn network(&self, url: &Url) -> Result<Option<(Scheme, Vec<u8>, u16)>, ErrorKind> {
         match *self {
             ProtoState::File(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -94,7 +95,11 @@ impl ProtoState {
                     .ok()
                     .and_then(|p| p.parse().ok())
                     .ok_or(ErrorKind::UrlMalformat)?;
-                Ok(Some((host, port)))
+                let scheme = Scheme {
+                    name: "tcp",
+                    reuse: true,
+                };
+                Ok(Some((scheme, host, port)))
             }
         }
     }

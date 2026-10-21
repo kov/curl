@@ -15,7 +15,7 @@ witness: curl-core multi::tests::completions_are_read_in_id_order
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::removing_a_running_transfer_gives_its_connection_back
 --- old
-        run.state.abandon(&mut self.pool, &mut *self.net);
+        run.state.abandon(&mut self.pool, &mut *self.net, now);
         self.timers.remove(id);
 --- new
         std::mem::forget(run);

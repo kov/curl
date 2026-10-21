@@ -67,9 +67,9 @@ impl<H: Host> Multi<H> {
             "the timer queue holds stale entries"
         );
         assert_eq!(
-            self.pool.len(),
+            self.pool.leased(),
             leases,
-            "the pool holds connections no one leases"
+            "the pool's leased connections are not the transfers' leases"
         );
         let mut row = 0;
         while let Some(r) = self.dirty.first_from(row) {

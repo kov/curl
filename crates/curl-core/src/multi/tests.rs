@@ -1124,7 +1124,7 @@ fn an_accepted_connect_goes_on_to_the_request() {
         [
             "  Trying 127.0.0.1:4...\n",
             "Established connection to 127.0.0.1 (127.0.0.1 port 4) from 127.0.0.1 port 40000 \n",
-            "shutting down connection #0\n",
+            "Connection #0 to host 127.0.0.1:4 left intact\n",
         ]
     );
     let t = m.easy(id).unwrap().report().timings();
@@ -1239,4 +1239,104 @@ fn a_paused_transfer_does_not_connect() {
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+}
+
+/// A transfer to the same host and port reuses the connection the last
+/// one left, with neither a connect nor its times (`Curl_conn_connect`
+/// returns at once); another port gets its own.
+#[test]
+fn the_next_transfer_reuses_the_connection_left() {
+    let (mut m, clock) = networked();
+    let (first, _) = traced("tcp://127.0.0.1:4/");
+    let first = m.add(first, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
+    clock.advance(Duration::from_millis(7));
+    let (second, lines) = traced("tcp://127.0.0.1:4/");
+    let second = m.add(second, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(second.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "Reusing existing tcp: connection with host 127.0.0.1\n",
+            "Connection #0 to host 127.0.0.1:4 left intact\n",
+        ]
+    );
+    let t = m.easy(second).unwrap().report().timings();
+    assert_eq!(
+        (t.namelookup(), t.connect()),
+        (Duration::ZERO, Duration::ZERO)
+    );
+    let (third, lines) = traced("tcp://127.0.0.1:1/");
+    let third = m.add(third, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(third.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines)[0],
+        "  Trying 127.0.0.1:1...\n",
+        "another port, another connection"
+    );
+    assert_eq!(
+        trace_of(&lines)[2],
+        "Connection #1 to host 127.0.0.1:1 left intact\n"
+    );
+}
+
+/// A network that counts the sockets it closes.
+struct Closes(FakeNet, std::rc::Rc<std::cell::Cell<u32>>);
+
+impl Net for Closes {
+    fn poll(
+        &mut self,
+        sockets: &mut [crate::conn::io::SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.poll(sockets, fds, timeout)
+    }
+
+    fn connect(
+        &mut self,
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
+        self.0.connect(addr)
+    }
+
+    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+        self.1.set(self.1.get() + 1);
+        self.0.close(socket);
+    }
+}
+
+/// The connections left idle are closed with their multi
+/// (`Curl_cpool_destroy`).
+#[test]
+fn a_multi_closes_its_idle_connections_when_dropped() {
+    use crate::conn::io::Peer;
+    let clock = ManualClock::new().unwrap();
+    let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let net = Closes(
+        FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
+        closed.clone(),
+    );
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let id = m
+        .add(easy("tcp://127.0.0.1:1/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+    assert_eq!(closed.get(), 0, "kept");
+    drop(m);
+    assert_eq!(closed.get(), 1);
 }

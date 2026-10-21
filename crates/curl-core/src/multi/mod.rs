@@ -272,6 +272,7 @@ impl<H: Host> Multi<H> {
             run: Some(run),
         });
         self.counts.added();
+        self.pool.xfer_init();
         self.dirty.insert(id.index());
         // Inside the add, as C, so the application hears of the 0 ms run.
         if let Err(kind) = self.update_timer(ev) {
@@ -304,7 +305,8 @@ impl<H: Host> Multi<H> {
             .take()
             .expect("no transfer is out while the multi is called");
         self.counts.removed(run.state.is_completed());
-        run.state.abandon(&mut self.pool, &mut *self.net);
+        let now = self.clock.now();
+        run.state.abandon(&mut self.pool, &mut *self.net, now);
         self.timers.remove(id);
         self.dirty.remove(id.index());
         let status = self.update_timer(ev);
@@ -769,14 +771,16 @@ impl<H: Host> Drop for Multi<H> {
     /// Take out every transfer still in the multi, giving back its
     /// connection (`curl_multi_cleanup`).
     fn drop(&mut self) {
+        let now = self.clock.now();
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
             cursor = Some(id);
             let slot = self.slots.get_mut(id).expect("just found");
             if let Some(run) = slot.run.take() {
-                run.state.abandon(&mut self.pool, &mut *self.net);
+                run.state.abandon(&mut self.pool, &mut *self.net, now);
             }
         }
+        self.pool.close_idle(&mut *self.net);
     }
 }
 

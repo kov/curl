@@ -194,9 +194,15 @@ yet meet.
       name and the connect timeout, and the connection's end ("closing connection #N",
       "shutting down connection #N", which `file:` transfers now trace too). `wait` polls the
       connecting sockets. `tcp:` is the test protocol that connects and completes.
-    - **b. Pool semantics.** **To do.** Network routes, reuse and idle connections, leases
-      counted per connection, the connection table's own growth (C doubles it from 16 when
-      full), the four lock points (a recording `Lock` test pins the 1554 sequence).
+    - **b. Pool semantics.** **Done.** Routes with the protocol's reuse flag; a connection
+      finished with stays idle ("left intact") and an equal route reuses it ("Reusing existing
+      tcp: connection", no connect and no times); the search prunes once a second and closes
+      matches too old or not healthy, with C's traces; idle connections close with their multi;
+      the table doubles from 16; the four lock points, pinned by a recording `Lock` test with
+      1554's sequence. Left for the steps that need them: MAXCONNECTS and the pool-full eviction
+      ("Connection pool is full, closing the oldest of N/M"), FORBID_REUSE and the protocol's
+      close mark, the total and per-host limits, and setopt for MAXAGE_CONN and
+      MAXLIFETIME_CONN.
     - **c. The close path.** **To do.** Socket close order, `ShutdownSet`, `Multi::sockets`
       (the transfers' and closing connections' sockets, which `wait` polls and the shim's
       `fdset` and `waitfds` list), REMOVE before the close hook, and the trace of a transfer

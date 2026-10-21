@@ -180,9 +180,17 @@ witness: curl-core proto::file::tests::an_upload_writes_the_file
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
 --- old
-    TransferState::ProtoConnect(Attached { lease, proto })
+        return TransferState::ProtoConnect(Attached {
+            lease,
+            proto,
+            origin: None,
+        });
 --- new
-    TransferState::Do(Attached { lease, proto })
+        return TransferState::Do(Attached {
+            lease,
+            proto,
+            origin: None,
+        });
 
 === a request that fails in DO keeps DID's times unset
 file: crates/curl-core/src/multi/state.rs

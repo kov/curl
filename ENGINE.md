@@ -850,6 +850,9 @@ pub struct Route {
 }
 ```
 
+Built so far: `enum Route { Local, Tcp(Scheme, Destination) }`, where `Scheme` is the
+protocol's name and whether it keeps connections (`PROTOPT_CONN_REUSE`); matching is `Eq`.
+
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate
 asymmetries (a TLS connection may serve the plain scheme, STARTTLS reuse with
@@ -867,18 +870,38 @@ health-checked before reuse; input pending on an idle HTTP/1 connection makes it
 #[must_use]
 pub struct ConnLease { id: ConnId }          // no Clone/Copy; only Pool creates or consumes one
 impl Pool {
-    pub fn xfer_init(&mut self, lock: &dyn Lock);                               // lock point 1
-    pub fn acquire(&mut self, route: &Route, wants: ReuseWants, now: Instant)
-        -> Result<Acquire, Error>;                                               // lock points 2, 3
-    pub fn get(&mut self, lease: &ConnLease) -> &mut ConnSlot;                  // cannot fail
-    pub fn release(&mut self, lease: ConnLease, finish: Finish) -> Released;   // lock point 4
+    pub fn with_lock(lock: Box<dyn Lock>) -> Result<Pool, OutOfMemory>;        // a share's pool
+    pub fn xfer_init(&self);                                                    // lock point 1
+    pub fn acquire(&mut self, route: Route, rules: ReuseRules, net: &mut dyn Net, now: Instant,
+                   notes: &mut Vec<PoolNote>) -> Result<Acquired, OutOfMemory>; // lock points 2, 3
+    pub fn connect(&mut self, lease: &ConnLease, net: &mut dyn Net, now: Instant)
+        -> Result<Connected, ConnectError>;                     // Connecting, Established, AlreadyUp
+    pub fn get(&mut self, lease: &ConnLease) -> &mut Conn;                      // once up
+    pub fn release(&mut self, lease: ConnLease, finish: Finish, net: &mut dyn Net, now: Instant)
+        -> Released;                                                            // lock point 4
     pub fn get_conn(&self, id: ConnId) -> Option<&Conn>;                        // stale: None
+    pub fn close_idle(&mut self, net: &mut dyn Net);                            // multi drop
 }
 ```
 
+- `acquire` searches before it adds (`Curl_cpool_find`): at most once a second it first prunes
+  the idle connections that are not healthy, silently, as C's prune traces to its internal
+  handle; then it takes the first idle connection, in table order, whose route is equal. One
+  alive longer than the searching transfer's `max_age` is closed and passed over; one idle
+  longer than its `max_idle`, or alive too long by the health check, or with anything to read,
+  is closed as dead. What the search did comes back as `PoolNote`s, which the transfer traces in
+  C's words ("Too old connection (…), disconnect it", "Connection N seems to be dead,
+  terminating", "shutting down connection #N"). The rules are the searching transfer's, as C's
+  match and the settings it copies to its internal handle make them. A reused connection is
+  driven like a new one and says `AlreadyUp`, with no trace and no times, as
+  `Curl_conn_connect` returns at once.
 - `release` decides the connection's fate as `multi_done_locked` does, from what the pool knows
   (other leases, the route's reuse rules, a close mark) and what the transfer reports in
-  `Finish` (premature, reuse forbidden): `Released::{InUse, Idle, Closed, Terminated}`.
+  `Finish` (premature, reuse forbidden): `Released::{Idle, Closed, Terminated}` so far, traced as
+  "Connection #N to host H:P left intact", "shutting down connection #N", "closing connection
+  #N". A connection's use is one fact, `Use::{Leased(n), Idle { since }}`.
+- The connection table starts empty and doubles from 16 when full (`ArenaPolicy::DOUBLING`), as
+  `Curl_cpool_add` grows its table.
 - The pool owns every connection, busy or idle. It is the only issuer and consumer of leases,
   so it counts them itself; a connection's lease count, its `Session` users and the transfer's
   variant cannot disagree because only `acquire` and `release` change them. The per-route index
@@ -898,9 +921,10 @@ impl Pool {
 ### 4.7 No admin easy
 
 Pruning, health checks, upkeep, shutdown and shutdown pollsets take
-`ConnCx { now, net, trace, limits: &ConnLimits }`. `ConnLimits` (shutdown timeout, max idle,
-max age, no_signal) are captured per connection at creation from the creating transfer's options
-and the multi's options, instead of C's `Curl_get_admin` copying the last caller's settings.
+`ConnCx { now, net, trace, limits: &ConnLimits }`. `ConnLimits` (shutdown timeout, no_signal) are
+captured per connection at creation from the creating transfer's options and the multi's
+options, instead of C's `Curl_get_admin` copying the last caller's settings. The reuse limits
+(max idle, max age) are the searching transfer's, passed to `acquire`.
 Connection-owned sockets appear in the `SocketTable` with a `SocketOwner::Conn(ConnId)` user.
 
 ### 4.8 Resolver

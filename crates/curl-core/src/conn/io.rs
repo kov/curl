@@ -206,10 +206,16 @@ pub enum Peer {
 pub struct FakeNet {
     clock: crate::time::ManualClock,
     peers: Vec<(SocketAddr, Peer)>,
-    /// Whether each socket number is open, from `FIRST_FAKE`: a closed
-    /// one is handed out again, lowest first, as the kernel does.
-    open: Vec<bool>,
+    /// The sockets open, by number from `FIRST_FAKE`, each with whether
+    /// its peer hung up: a closed number is handed out again, lowest
+    /// first, as the kernel does.
+    open: Vec<Option<HungUp>>,
 }
+
+/// Whether a fake socket's peer hung up, shared by the socket and its
+/// network.
+#[cfg(any(test, feature = "test-util"))]
+type HungUp = curl_alloc::TryRc<std::cell::Cell<bool>>;
 
 /// The first number a fake socket gets: past the descriptors a test
 /// process has open, so that a fake one is never mistaken for them.
@@ -235,19 +241,31 @@ impl FakeNet {
         self
     }
 
-    fn open_number(&mut self) -> io::Result<SocketKey> {
-        let row = match self.open.iter().position(|open| !open) {
+    fn open_number(&mut self, hung_up: HungUp) -> io::Result<SocketKey> {
+        let row = match self.open.iter().position(Option::is_none) {
             Some(row) => row,
             None => {
                 self.open
-                    .try_push(false)
+                    .try_push(None)
                     .map_err(|_| io::ErrorKind::OutOfMemory)?;
                 self.open.len() - 1
             }
         };
-        self.open[row] = true;
+        self.open[row] = Some(hung_up);
         let n = i32::try_from(row).expect("a test opens few sockets");
         Ok(SocketKey(FIRST_FAKE + n))
+    }
+
+    /// The peer of socket `key` closes its side: the socket reads as
+    /// ready, with nothing but the end to read.
+    pub fn hang_up(&self, key: SocketKey) {
+        let row = usize::try_from(key.0 - FIRST_FAKE).expect("a fake socket's number");
+        self.open[row].as_ref().expect("an open socket").set(true);
+    }
+
+    /// How many fake sockets are open.
+    pub fn open_sockets(&self) -> usize {
+        self.open.iter().filter(|s| s.is_some()).count()
     }
 }
 
@@ -289,7 +307,9 @@ impl Net for FakeNet {
         let Some(&(_, peer)) = self.peers.iter().find(|(a, _)| *a == addr) else {
             return Err(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED));
         };
-        let key = self.open_number()?;
+        let hung_up = curl_alloc::TryRc::try_new(std::cell::Cell::new(false))
+            .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        let key = self.open_number(hung_up.clone())?;
         // The port the kernel would have picked.
         let port = 40000 + u16::try_from(key.0 - FIRST_FAKE).expect("a test opens few sockets");
         let local = match addr {
@@ -308,6 +328,7 @@ impl Net for FakeNet {
             local,
             clock,
             ready_at,
+            hung_up,
         };
         let socket: Box<dyn Socket> = try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?;
         Ok((socket, Connect::InProgress))
@@ -316,7 +337,7 @@ impl Net for FakeNet {
     fn close(&mut self, socket: Box<dyn Socket>) {
         let row = usize::try_from(socket.key().0 - FIRST_FAKE).expect("a fake socket's number");
         assert!(
-            std::mem::replace(&mut self.open[row], false),
+            self.open[row].take().is_some(),
             "{:?} closed twice",
             socket.key()
         );
@@ -333,6 +354,7 @@ struct FakeSocket {
     clock: crate::time::ManualClock,
     /// When a peer that answers late answers.
     ready_at: Option<Instant>,
+    hung_up: HungUp,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -342,6 +364,12 @@ impl Socket for FakeSocket {
     }
 
     fn readiness(&self) -> Readiness<'_> {
+        if self.hung_up.get() {
+            return Readiness::Known {
+                now: Events::IN | Events::OUT,
+                later: None,
+            };
+        }
         let now = match (self.peer, self.ready_at) {
             (Peer::Accepts | Peer::Refuses, _) => Events::OUT,
             (Peer::AcceptsAfter(_), Some(at)) if crate::time::Clock::now(&self.clock) >= at => {

@@ -19,12 +19,22 @@ use curl_alloc::{OutOfMemory, TryVec};
 #[rustfmt::skip]
 mod c_order;
 
-/// The size of an arena when made, and how many leading rows it never
-/// hands out.
+/// The size of an arena when made, how many leading rows it never hands
+/// out, and how it grows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArenaPolicy {
     initial: u32,
     reserved: u32,
+    growth: Growth,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Growth {
+    /// As the multi's transfer table grows (`multi_xfers_add`).
+    Transfers,
+    /// Doubled when full, from 16 rows (the connection pool's,
+    /// `Curl_cpool_add`).
+    Doubling,
 }
 
 impl ArenaPolicy {
@@ -32,8 +42,19 @@ impl ArenaPolicy {
     /// C ABI reserves row 0 so that ids equal C's, where an internal
     /// handle holds it. `None` unless some row is left to hand out.
     pub fn new(initial: u32, reserved: u32) -> Option<Self> {
-        (reserved < initial && initial < MAX_ROWS).then_some(ArenaPolicy { initial, reserved })
+        (reserved < initial && initial < MAX_ROWS).then_some(ArenaPolicy {
+            initial,
+            reserved,
+            growth: Growth::Transfers,
+        })
     }
+
+    /// No rows until the first value, then 16, doubled whenever full.
+    pub(crate) const DOUBLING: ArenaPolicy = ArenaPolicy {
+        initial: 0,
+        reserved: 0,
+        growth: Growth::Doubling,
+    };
 }
 
 /// C keeps `UINT_MAX` free as its invalid id.
@@ -101,6 +122,7 @@ pub struct Arena<T, K = T> {
     used: u32,
     /// The row last handed out, where the next search starts.
     last_added: Option<u32>,
+    growth: Growth,
     _keys: PhantomData<fn() -> K>,
 }
 
@@ -111,6 +133,7 @@ impl<T, K> Arena<T, K> {
             reserved: policy.reserved,
             used: policy.reserved,
             last_added: policy.reserved.checked_sub(1),
+            growth: policy.growth,
             _keys: PhantomData,
         };
         arena.grow_to(policy.initial)?;
@@ -134,13 +157,23 @@ impl<T, K> Arena<T, K> {
     }
 
     /// Make sure a row is free for one more value, growing the table as
-    /// `multi_xfers_add` does: by half, at least 128 and at most 2048 rows,
-    /// once fewer than an eighth of the rows (at least 4) are free.
+    /// its policy says: as `multi_xfers_add` does, by half, at least 128
+    /// and at most 2048 rows, once fewer than an eighth of the rows (at
+    /// least 4) are free; or, doubling, by its size and at least 16 once
+    /// full.
     pub fn reserve(&mut self) -> Result<Vacancy<'_, T, K>, OutOfMemory> {
         let capacity = self.capacity();
         let unused = capacity - self.used;
-        if capacity < MAX_ROWS && unused < (capacity >> 3).max(4) {
-            let growth = (capacity >> 1).clamp(128, 2048);
+        let growth = match self.growth {
+            Growth::Transfers if unused < (capacity >> 3).max(4) => {
+                Some((capacity >> 1).clamp(128, 2048))
+            }
+            Growth::Doubling if unused == 0 => Some(capacity.max(16)),
+            Growth::Transfers | Growth::Doubling => None,
+        };
+        if let Some(growth) = growth
+            && capacity < MAX_ROWS
+        {
             self.grow_to(capacity.saturating_add(growth).min(MAX_ROWS))?;
         }
         if self.used == self.capacity() {
@@ -320,6 +353,22 @@ mod tests {
         assert_eq!(arena.remove(old), None);
         assert_eq!(arena.get(new), Some(&"new"));
         assert_eq!(arena.len(), 1);
+    }
+
+    /// A doubling arena has no rows until its first value, then 16, then
+    /// twice as many each time it is full.
+    #[test]
+    fn a_doubling_arena_grows_as_the_connection_pool() {
+        let mut arena: Arena<u32> = Arena::new(ArenaPolicy::DOUBLING).unwrap();
+        assert_eq!(arena.capacity(), 0);
+        let mut seen = Vec::new();
+        for n in 0..40 {
+            arena.reserve().unwrap().fill(n);
+            if seen.last() != Some(&arena.capacity()) {
+                seen.push(arena.capacity());
+            }
+        }
+        assert_eq!(seen, [16, 32, 64]);
     }
 
     /// A value replaced in place keeps its key; a stale key replaces

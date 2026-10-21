@@ -162,6 +162,27 @@ pub struct Limits {
     /// Fail a transfer slower than this for this long
     /// (`CURLOPT_LOW_SPEED_LIMIT`, `CURLOPT_LOW_SPEED_TIME`).
     pub low_speed: Option<LowSpeed>,
+    /// Which idle connections the transfer may reuse.
+    pub reuse: ReuseLimits,
+}
+
+/// How long a connection may have been idle, and have lived, for a
+/// transfer to reuse it; none for no limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReuseLimits {
+    /// `CURLOPT_MAXAGE_CONN`: 118 seconds unless set.
+    pub max_idle: Option<TimeLimit>,
+    /// `CURLOPT_MAXLIFETIME_CONN`: a day unless set.
+    pub max_age: Option<TimeLimit>,
+}
+
+impl Default for ReuseLimits {
+    fn default() -> Self {
+        ReuseLimits {
+            max_idle: TimeLimit::from_millis(118 * 1000),
+            max_age: TimeLimit::from_millis(24 * 3600 * 1000),
+        }
+    }
 }
 
 /// A speed a transfer must keep up, at least once in every `time`.

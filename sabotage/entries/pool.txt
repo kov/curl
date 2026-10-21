@@ -29,9 +29,9 @@ witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-                    Transport::Tcp(socket) => net.close(socket),
+        Transport::Tcp(socket) => net.close(socket),
 --- new
-                    Transport::Tcp(socket) => drop(socket),
+        Transport::Tcp(socket) => drop(socket),
 
 === a setup given back keeps its attempt's socket open
 file: crates/curl-core/src/conn/pool.rs
@@ -53,12 +53,67 @@ witness: curl-core conn::pool::tests::refused_and_silent_attempts
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-                        Ok(Drove::Established(conn)) => {
-                            let up = established(&conn);
                             (ConnSlot::Open(conn), Ok(up))
-                        }
 --- new
-                        Ok(Drove::Established(conn)) => {
-                            let up = established(&conn);
                             (ConnSlot::Failed(conn.number), Ok(up))
-                        }
+
+=== a connection is reused for another route
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
+--- old
+            if conn.route != *route {
+                continue;
+            }
+--- new
+
+=== a leased connection is reused
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
+--- old
+            let Use::Idle { since } = conn.use_ else {
+                continue;
+            };
+--- new
+            let since = match conn.use_ {
+                Use::Idle { since } => since,
+                Use::Leased(_) => conn.created,
+            };
+
+=== an idle connection is reused without its health checked
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_search_closes_what_it_must_not_reuse
+--- old
+                health(conn, since, rules, net, now).map_err(Some)
+--- new
+                Ok(())
+
+=== every search prunes
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_search_prunes_once_a_second
+--- old
+            .is_none_or(|at| now.since(at) >= Duration::from_secs(1))
+--- new
+            .is_none_or(|_| true)
+
+=== a transfer's arrival takes no lock
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::the_lock_is_taken_where_c_takes_it
+--- old
+        drop(Locked::take(&*self.lock));
+--- new
+
+=== a connection cut short is kept
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
+--- old
+            && scheme.reuse
+            && !finish.premature
+--- new
+            && scheme.reuse
+
+=== a multi leaves its idle connections open
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_multi_closes_its_idle_connections_when_dropped
+--- old
+        self.pool.close_idle(&mut *self.net);
+--- new

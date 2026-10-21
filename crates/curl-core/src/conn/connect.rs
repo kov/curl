@@ -10,21 +10,27 @@
 use std::io;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
+use std::num::NonZeroU32;
+
 use super::io::{Connect, Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnNumber, Destination, Transport};
+use super::{Conn, ConnNumber, Destination, Route, Scheme, Transport, Use};
 use crate::time::Instant;
 
 /// A connection being set up.
 #[derive(Debug)]
 pub(crate) struct ConnectMachine {
     number: ConnNumber,
+    scheme: Scheme,
+    dest: Destination,
+    /// When the setup started (C's `conn->created`).
+    created: Instant,
     stage: Stage,
 }
 
 #[derive(Debug)]
 enum Stage {
     /// The destination's name is to be resolved.
-    Resolving(Destination),
+    Resolving,
     /// An attempt is connecting to an address.
     Racing(Attempt),
 }
@@ -74,10 +80,18 @@ pub(crate) enum ConnectError {
 }
 
 impl ConnectMachine {
-    pub(crate) fn new(number: ConnNumber, dest: Destination) -> ConnectMachine {
+    pub(crate) fn new(
+        number: ConnNumber,
+        scheme: Scheme,
+        dest: Destination,
+        created: Instant,
+    ) -> ConnectMachine {
         ConnectMachine {
             number,
-            stage: Stage::Resolving(dest),
+            scheme,
+            dest,
+            created,
+            stage: Stage::Resolving,
         }
     }
 
@@ -88,16 +102,29 @@ impl ConnectMachine {
     /// The socket the setup waits on, and for what.
     pub(crate) fn socket(&self) -> Option<(&dyn Socket, Events)> {
         match &self.stage {
-            Stage::Resolving(_) => None,
+            Stage::Resolving => None,
             Stage::Racing(a) => Some((&*a.socket, Events::OUT)),
         }
     }
 
     /// Move the setup on by one event.
     pub(crate) fn drive(self, net: &mut dyn Net, now: Instant) -> Result<Drove, ConnectError> {
-        let number = self.number;
-        match self.stage {
-            Stage::Resolving(dest) => {
+        let ConnectMachine {
+            number,
+            scheme,
+            dest,
+            created,
+            stage,
+        } = self;
+        let next = |dest, stage| ConnectMachine {
+            number,
+            scheme,
+            dest,
+            created,
+            stage,
+        };
+        match stage {
+            Stage::Resolving => {
                 let ip = literal(&dest.host).ok_or(ConnectError::Unresolved)?;
                 let remote = SocketAddr::new(ip, dest.port);
                 let socket = match net.connect(remote) {
@@ -106,7 +133,7 @@ impl ConnectMachine {
                 };
                 let stage = Stage::Racing(Attempt { remote, socket });
                 Ok(Drove::Connecting(
-                    ConnectMachine { number, stage },
+                    next(dest, stage),
                     Progress::Trying(remote),
                 ))
             }
@@ -119,9 +146,8 @@ impl ConnectMachine {
                     Err(error) => return Err(a.fail(net, error)),
                 };
                 if !ready {
-                    let stage = Stage::Racing(a);
                     return Ok(Drove::Connecting(
-                        ConnectMachine { number, stage },
+                        next(dest, Stage::Racing(a)),
                         Progress::Waiting,
                     ));
                 }
@@ -130,10 +156,13 @@ impl ConnectMachine {
                         let local = a.socket.local_addr().ok();
                         Ok(Drove::Established(Conn {
                             number,
+                            route: Route::Tcp(scheme, dest),
                             transport: Transport::Tcp(a.socket),
                             remote: Some(a.remote),
                             local,
+                            created,
                             connected_at: now,
+                            use_: Use::Leased(NonZeroU32::MIN),
                         }))
                     }
                     Ok(Some(error)) | Err(error) => Err(a.fail(net, error)),
@@ -145,7 +174,7 @@ impl ConnectMachine {
     /// End the setup, closing what it has open.
     pub(crate) fn close(self, net: &mut dyn Net) {
         match self.stage {
-            Stage::Resolving(_) => {}
+            Stage::Resolving => {}
             Stage::Racing(a) => net.close(a.socket),
         }
     }

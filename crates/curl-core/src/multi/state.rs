@@ -7,11 +7,12 @@
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
 
-use curl_alloc::TryVec;
+use curl_alloc::{OutOfMemory, TryVec};
 
 use crate::conn::io::Net;
 use crate::conn::{
-    ConnLease, ConnectError, Connected, Destination, Finish, Pool, Progress, Released, Route,
+    Acquired, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote, Progress,
+    Released, ReuseRules, Route,
 };
 use crate::deliver::{Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -21,7 +22,7 @@ use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Timer, TransferReport};
 use crate::text::Text;
-use crate::time::Instant;
+use crate::time::{Instant, TimeLimit};
 use crate::trace;
 use crate::url::{self, GetOptions, ParseOptions, Part, Url};
 use crate::version::Protocol;
@@ -95,6 +96,8 @@ struct Origin {
 pub(crate) struct Attached {
     lease: ConnLease,
     proto: ProtoState,
+    /// The host connected to; none without a network.
+    origin: Option<Origin>,
 }
 
 #[derive(Debug)]
@@ -104,6 +107,8 @@ pub(crate) struct Done {
     /// Ended before the request was complete.
     premature: bool,
     reached: Reached,
+    /// The host connected to, if any, as a connection kept names it.
+    origin: Option<Origin>,
 }
 
 /// How far a request got.
@@ -193,6 +198,7 @@ impl TransferState {
                 result: Err(err),
                 premature: true,
                 reached: Reached::Unmade,
+                origin: Some(c.origin),
             }),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 TransferState::Done(x.done(Err(err), true, Reached::Unmade))
@@ -206,7 +212,7 @@ impl TransferState {
 
     /// Take the transfer out of the multi before it completed: give back
     /// its connection, as a premature end (`curl_multi_remove_handle`).
-    pub(crate) fn abandon(self, pool: &mut Pool, net: &mut dyn Net) {
+    pub(crate) fn abandon(self, pool: &mut Pool, net: &mut dyn Net, now: Instant) {
         let lease = match self {
             TransferState::Init | TransferState::Completed(_) => return,
             TransferState::Connecting(c) => c.lease,
@@ -216,7 +222,23 @@ impl TransferState {
             | TransferState::Exchanging(x) => x.lease,
             TransferState::Done(d) => d.lease,
         };
-        pool.release(lease, Finish { premature: true }, net);
+        pool.release(lease, Finish { premature: true }, net, now);
+    }
+}
+
+impl Connecting {
+    /// The connection is up: on to the protocol's connect.
+    fn attached(self) -> TransferState {
+        let Connecting {
+            lease,
+            proto,
+            origin,
+        } = self;
+        TransferState::ProtoConnect(Attached {
+            lease,
+            proto,
+            origin: Some(origin),
+        })
     }
 }
 
@@ -227,6 +249,7 @@ impl Attached {
             result,
             premature,
             reached,
+            origin: self.origin,
         }
     }
 }
@@ -433,10 +456,16 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             let premature = d.premature || is_premature(d.result);
             let rest = &mut cx.rest;
-            match rest
-                .pool
-                .release(d.lease, Finish { premature }, &mut *rest.net)
-            {
+            let finish = Finish { premature };
+            match rest.pool.release(d.lease, finish, &mut *rest.net, rest.now) {
+                Released::Idle(n) => {
+                    let origin = d.origin.as_ref().expect("a connection kept has a host");
+                    let (host, port) = (Bytes(&origin.host), origin.port);
+                    trace::info(
+                        cx,
+                        format_args!("Connection {n} to host {host}:{port} left intact"),
+                    );
+                }
                 Released::Closed(n) => {
                     trace::info(cx, format_args!("shutting down connection {n}"));
                 }
@@ -560,12 +589,11 @@ fn connecting<H: Host>(
                     remote.port()
                 ),
             );
-            let Connecting { lease, proto, .. } = c;
-            (
-                TransferState::ProtoConnect(Attached { lease, proto }),
-                Wake::Again,
-            )
+            (c.attached(), Wake::Again)
         }
+        // A reused connection is up: nothing to trace or time
+        // (`Curl_conn_connect` returns before `conn_connect_trace`).
+        Ok(Connected::AlreadyUp) => (c.attached(), Wake::Again),
         Err(e) => {
             let kind = connect_failed(cx, &c.origin, e);
             (TransferState::Connecting(c).fail(kind), Wake::Again)
@@ -769,35 +797,89 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         Ok(target) => target,
         Err(e) => return TransferState::Init.fail(e),
     };
-    let now = cx.rest.now;
-    let Some((host, port)) = target else {
-        let Ok(lease) = cx.rest.pool.acquire(Route::Local, now) else {
+    let Some((scheme, host, port)) = target else {
+        let Ok(Acquired::New(lease)) = acquire(cx, Route::Local) else {
             return TransferState::Init.fail(ErrorKind::OutOfMemory);
         };
         // A connection without a network has its name at once.
         cx.mark(Timer::NameLookup);
-        return TransferState::ProtoConnect(Attached { lease, proto });
+        return TransferState::ProtoConnect(Attached {
+            lease,
+            proto,
+            origin: None,
+        });
     };
     let shown = host
         .strip_prefix(b"[")
         .and_then(|h| h.strip_suffix(b"]"))
         .unwrap_or(&host);
     let mut origin = Vec::new();
-    let Ok(route) = origin
+    let Ok(dest) = origin
         .try_extend_from_slice(shown)
         .map_err(|_| ErrorKind::OutOfMemory)
         .and_then(|()| Destination::new(&host, port).map_err(|_| ErrorKind::OutOfMemory))
     else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    let Ok(lease) = cx.rest.pool.acquire(Route::Tcp(route), now) else {
-        return TransferState::Init.fail(ErrorKind::OutOfMemory);
+    let origin = Origin { host: origin, port };
+    let lease = match acquire(cx, Route::Tcp(scheme, dest)) {
+        Ok(Acquired::New(lease)) => lease,
+        Ok(Acquired::Reused(lease)) => {
+            let host = Bytes(&origin.host);
+            let name = scheme.name;
+            trace::info(
+                cx,
+                format_args!("Reusing existing {name}: connection with host {host}"),
+            );
+            lease
+        }
+        Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
     TransferState::Connecting(Connecting {
         lease,
         proto,
-        origin: Origin { host: origin, port },
+        origin,
     })
+}
+
+/// A connection for the transfer, and the trace of what the search for
+/// one did.
+fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, OutOfMemory> {
+    let limits = cx.easy().options().limits.reuse;
+    let rules = ReuseRules {
+        max_idle: limits.max_idle.map(TimeLimit::duration),
+        max_age: limits.max_age.map(TimeLimit::duration),
+    };
+    let mut notes = Vec::new();
+    let rest = &mut cx.rest;
+    let acquired = rest
+        .pool
+        .acquire(route, rules, &mut *rest.net, rest.now, &mut notes)?;
+    for note in notes {
+        match note {
+            PoolNote::IdleTooLong { idle_ms, max_ms } => trace::info(
+                cx,
+                format_args!(
+                    "Too old connection ({idle_ms} ms idle, max idle is {max_ms} ms), disconnect it"
+                ),
+            ),
+            PoolNote::LivedTooLong { age_ms, max_ms } => trace::info(
+                cx,
+                format_args!(
+                    "Too old connection (created {age_ms} ms ago, max lifetime is {max_ms} ms), disconnect it"
+                ),
+            ),
+            PoolNote::Dead(n) => {
+                let n = n.get();
+                trace::info(
+                    cx,
+                    format_args!("Connection {n} seems to be dead, terminating"),
+                );
+            }
+            PoolNote::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
+        }
+    }
+    Ok(acquired)
 }
 
 /// Why a transfer's URL was not taken.

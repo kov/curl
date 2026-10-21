@@ -470,7 +470,7 @@ mod tests {
             [
                 format!("  Trying 127.0.0.1:{port}...\n"),
                 established,
-                "shutting down connection #0\n".to_owned(),
+                format!("Connection #0 to host 127.0.0.1:{port} left intact\n"),
             ]
         );
     }

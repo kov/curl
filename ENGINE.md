@@ -370,19 +370,21 @@ pub(crate) enum TransferState {
     Init,                              // added, not yet run
     Pending(Pending),                  // waiting for a connection slot
     Connecting(Connecting),            // holds a lease on a ConnSlot::Connecting
-    Protocol(ProtoPhase),              // PROTOCONNECT..DOING_MORE
-    Exchanging(Exchanging),            // DID..PERFORMING, RATELIMITING
+    ProtoConnect(Attached),            // PROTOCONNECT, PROTOCONNECTING
+    Do(Attached),                      // DO..DOING_MORE
+    Did(Attached),                     // DID: one step, to Exchanging or, with nothing to exchange, Done
+    Exchanging(Exchanging),            // PERFORMING, RATELIMITING
     Done(Done),                        // multi_done pending; always holds the lease
     Completed(Completed),              // terminal until remove
 }
 pub(crate) struct Plan { target: Target, leg: Leg }        // the product of C's SETUP
 pub(crate) struct Pending { plan: Plan, reason: WaitReason }
 pub(crate) struct Connecting { plan: Plan, lease: ConnLease }
-pub(crate) struct ProtoPhase { plan: Plan, lease: ConnLease, proto: ProtoState, step: ProtoStep }
+pub(crate) struct Attached { plan: Plan, lease: ConnLease, proto: ProtoState }
 pub(crate) struct Exchanging { plan: Plan, lease: ConnLease, proto: ProtoState, req: Request,
                                throttle: Option<Instant> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), Error>,
-                         premature: bool, next: AfterRequest }
+                         premature: bool, made: bool /* DID's times taken */, next: AfterRequest }
 pub(crate) enum AfterRequest { Complete, Follow(FollowKind, Target), Retry(Target) }
 pub(crate) struct Completed { outcome: Result<(), Error>, message: Message }
 pub(crate) enum Message { Unread, Read }
@@ -432,9 +434,10 @@ sides, not a stored field.
 | Init | Exchanging setup | pretransfer: fresh `TransferReport` (header store empties), cookies and resolve list, `started_op`; on failure `fail` → Completed |
 | (setup) | Connecting / Exchanging / Pending | `started_single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait` |
 | Pending | (setup) | `schedule_pending` (one per call, round robin from `pending_cursor`), dirty while pending, or the expiry sweep finding it late |
-| Connecting | Protocol | the slot became `Open`; not advanced while `recv != Running` |
-| Protocol | Exchanging | protocol connect and DO done; prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send) |
-| Exchanging | yields | at DID, an HTTP-family protocol yields once when more than one transfer is alive (C returns CURLM_OK there) |
+| Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |
+| ProtoConnect | Do | the protocol's connect is done (none has one yet) |
+| Do | Did / Done | `ProtoState::do_it` made the request; prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature, before DID |
+| Did | Exchanging / Done | Done at once if the protocol exchanges nothing more (`file:`, C's DID without sockets); an HTTP-family protocol yields once when more than one transfer is alive (C returns CURLM_OK there) |
 | Exchanging | Done | request complete with output not held: `next` is Complete, Follow or Retry; FOLLOW_FAKE writes `report.would_redirect` |
 | connected | Done(Err) | progress callback abort |
 | any live | fail | an error, a timeout, `remove`, or a dead multi (AbortedByCallback) |

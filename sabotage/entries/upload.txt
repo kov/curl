@@ -145,11 +145,11 @@ witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core upload::tests::a_request_with_a_body_is_sent_when_its_body_is
 --- old
-    if !proto.wants_send(cx.easy().options()) {
-        cx.mark(Timer::PostTransfer);
-    }
+                if !x.proto.wants_send(cx.easy().options()) {
+                    cx.mark(Timer::PostTransfer);
+                }
 --- new
-    cx.mark(Timer::PostTransfer);
+                cx.mark(Timer::PostTransfer);
 
 === sent bytes are not counted
 file: crates/curl-core/src/upload/mod.rs

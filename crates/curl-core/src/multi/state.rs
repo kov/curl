@@ -38,16 +38,24 @@ impl Run {
 pub(crate) enum TransferState {
     /// Added, not yet run.
     Init,
-    /// Holding a connection, the protocol at work.
-    Exchanging(Exchanging),
+    /// Holding a connection, the protocol connecting over it (C's
+    /// PROTOCONNECT).
+    ProtoConnect(Attached),
+    /// Making its request (DO).
+    Do(Attached),
+    /// The request is made (DID).
+    Did(Attached),
+    /// The request and response under way (PERFORMING).
+    Exchanging(Attached),
     /// The request is over; the connection goes back at the next step.
     Done(Done),
     /// Over; its message is read or not. Terminal until removed.
     Completed(Completed),
 }
 
+/// A request holding its connection.
 #[derive(Debug)]
-pub(crate) struct Exchanging {
+pub(crate) struct Attached {
     lease: ConnLease,
     proto: ProtoState,
 }
@@ -58,6 +66,8 @@ pub(crate) struct Done {
     result: Result<(), ErrorKind>,
     /// Ended before the request was complete.
     premature: bool,
+    /// The request was made: DID's times are taken.
+    made: bool,
 }
 
 #[derive(Debug)]
@@ -82,24 +92,38 @@ pub(crate) enum Wake {
 impl TransferState {
     /// Whether the transfer holds a connection lease.
     pub(crate) fn holds_lease(&self) -> bool {
-        matches!(self, TransferState::Exchanging(_) | TransferState::Done(_))
+        self.attached().is_some() || matches!(self, TransferState::Done(_))
+    }
+
+    fn attached(&self) -> Option<&Attached> {
+        match self {
+            TransferState::ProtoConnect(x)
+            | TransferState::Do(x)
+            | TransferState::Did(x)
+            | TransferState::Exchanging(x) => Some(x),
+            _ => None,
+        }
+    }
+
+    fn attached_mut(&mut self) -> Option<&mut Attached> {
+        match self {
+            TransferState::ProtoConnect(x)
+            | TransferState::Do(x)
+            | TransferState::Did(x)
+            | TransferState::Exchanging(x) => Some(x),
+            _ => None,
+        }
     }
 
     /// The output of the request under way, if its protocol delivers any.
     pub(crate) fn pipeline_mut(&mut self) -> Option<&mut Pipeline> {
-        match self {
-            TransferState::Exchanging(x) => x.proto.pipeline_mut(),
-            _ => None,
-        }
+        self.attached_mut()?.proto.pipeline_mut()
     }
 
     /// Whether the request under way holds output for the application.
     #[cfg(debug_assertions)]
     pub(crate) fn holds_output(&self) -> bool {
-        match self {
-            TransferState::Exchanging(x) => x.proto.holds_output(),
-            _ => false,
-        }
+        self.attached().is_some_and(|x| x.proto.holds_output())
     }
 
     pub(crate) fn is_completed(&self) -> bool {
@@ -115,11 +139,12 @@ impl TransferState {
                 outcome: Err(err),
                 message: Message::Unread,
             }),
-            TransferState::Exchanging(x) => TransferState::Done(Done {
-                lease: x.lease,
-                result: Err(err),
-                premature: true,
-            }),
+            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
+                TransferState::Done(x.done(Err(err), true, false))
+            }
+            TransferState::Did(x) | TransferState::Exchanging(x) => {
+                TransferState::Done(x.done(Err(err), true, true))
+            }
             s @ (TransferState::Done(_) | TransferState::Completed(_)) => s,
         }
     }
@@ -129,10 +154,24 @@ impl TransferState {
     pub(crate) fn abandon(self, pool: &mut Pool) {
         let lease = match self {
             TransferState::Init | TransferState::Completed(_) => return,
-            TransferState::Exchanging(x) => x.lease,
+            TransferState::ProtoConnect(x)
+            | TransferState::Do(x)
+            | TransferState::Did(x)
+            | TransferState::Exchanging(x) => x.lease,
             TransferState::Done(d) => d.lease,
         };
         pool.release(lease, Finish { premature: true });
+    }
+}
+
+impl Attached {
+    fn done(self, result: Result<(), ErrorKind>, premature: bool, made: bool) -> Done {
+        Done {
+            lease: self.lease,
+            result,
+            premature,
+            made,
+        }
     }
 }
 
@@ -261,6 +300,31 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             (next, Wake::Again)
         }
+        // No protocol connects over its connection yet.
+        TransferState::ProtoConnect(x) => (TransferState::Do(x), Wake::Again),
+        TransferState::Do(mut x) => match x.proto.do_it(cx) {
+            Ok(()) => {
+                // About to send; sent already, with no body
+                // (`mstate_enter_did`).
+                cx.mark(Timer::PreTransfer);
+                if !x.proto.wants_send(cx.easy().options()) {
+                    cx.mark(Timer::PostTransfer);
+                }
+                (TransferState::Did(x), Wake::Again)
+            }
+            // A failed request is done with, not cut short (`multistate_do`).
+            Err(e) => (
+                TransferState::Done(x.done(Err(e), false, false)),
+                Wake::Again,
+            ),
+        },
+        // Without anything to exchange, the request is over
+        // (`multistate_did`).
+        TransferState::Did(x) if !x.proto.exchanges() => (
+            TransferState::Done(x.done(Ok(()), false, true)),
+            Wake::Again,
+        ),
+        TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
         TransferState::Exchanging(mut x) => {
             let stepped = x.proto.step(cx);
             let expired = matches!(
@@ -284,12 +348,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                 run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
                             }
                             if done {
-                                let done = Done {
-                                    lease: x.lease,
-                                    result: Ok(()),
-                                    premature: false,
-                                };
-                                (TransferState::Done(done), Wake::Again)
+                                (
+                                    TransferState::Done(x.done(Ok(()), false, true)),
+                                    Wake::Again,
+                                )
                             } else {
                                 (TransferState::Exchanging(x), Wake::Idle)
                             }
@@ -320,7 +382,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 message: Message::Unread,
             });
             let now = cx.rest.now;
-            enter_completed(cx.report_mut(), now, false);
+            enter_completed(cx.report_mut(), now, !d.made);
             (completed, Wake::Again)
         }
         s @ TransferState::Completed(_) => (s, Wake::Idle),
@@ -339,14 +401,17 @@ fn progress_after_step<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> (TransferState, Wake) {
     match next {
-        TransferState::Exchanging(mut x) => {
-            let passed = progress::update(cx, false).and_then(|()| match x.proto.pipeline_mut() {
+        mut s @ (TransferState::ProtoConnect(_)
+        | TransferState::Do(_)
+        | TransferState::Did(_)
+        | TransferState::Exchanging(_)) => {
+            let passed = progress::update(cx, false).and_then(|()| match s.pipeline_mut() {
                 Some(p) => p.flush(cx),
                 None => Ok(()),
             });
             match passed {
-                Ok(()) => (TransferState::Exchanging(x), wake),
-                Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
+                Ok(()) => (s, wake),
+                Err(e) => (s.fail(e), Wake::Again),
             }
         }
         TransferState::Done(d) if d.result.is_ok() => match progress::update(cx, true) {
@@ -395,7 +460,8 @@ fn is_premature(result: Result<(), ErrorKind>) -> bool {
 }
 
 /// C's pretransfer, SETUP and CONNECT, which always run in one pass: the
-/// URL, the leg's timers, the protocol and a connection.
+/// URL, the leg's timers, the protocol and a connection, then the protocol
+/// connects over it.
 fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     if cx.easy().options().url().is_none() {
         return TransferState::Init.fail(ErrorKind::UrlMalformat);
@@ -423,12 +489,7 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     };
     // A connection without a network has its name at once.
     cx.mark(Timer::NameLookup);
-    // DID: about to send; sent already, with no body (`mstate_enter_did`).
-    cx.mark(Timer::PreTransfer);
-    if !proto.wants_send(cx.easy().options()) {
-        cx.mark(Timer::PostTransfer);
-    }
-    TransferState::Exchanging(Exchanging { lease, proto })
+    TransferState::ProtoConnect(Attached { lease, proto })
 }
 
 /// A URL's error as a transfer's (`Curl_uc_to_curlcode`).

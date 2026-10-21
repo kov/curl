@@ -156,7 +156,7 @@ witness: curl-core progress::tests::progress_off_calls_nothing_but_takes_stock
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::an_unpause_from_the_progress_handler_replays_at_once
 --- old
-            let passed = progress::update(cx, false).and_then(|()| match x.proto.pipeline_mut() {
+            let passed = progress::update(cx, false).and_then(|()| match s.pipeline_mut() {
                 Some(p) => p.flush(cx),
                 None => Ok(()),
             });

@@ -333,15 +333,19 @@ fn the_handler_is_called_at_each_pass_and_at_the_end() {
         ..known(0)
     };
     let seen: Vec<_> = calls.borrow().iter().map(|c| c.0).collect();
-    // After the setup step; after the receive pass, and after its step.
-    assert_eq!(seen, [unknown, known(400), known(400)]);
+    // After the setup, protocol connect, request and request-made steps;
+    // after the receive pass, and after its step.
+    assert_eq!(
+        seen,
+        [unknown, unknown, unknown, unknown, known(400), known(400)]
+    );
     clock.advance(Duration::from_millis(500));
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(result(&mut m), Some(Ok(())));
-    let seen: Vec<_> = calls.borrow().iter().skip(3).map(|c| c.0).collect();
+    let seen: Vec<_> = calls.borrow().iter().skip(6).map(|c| c.0).collect();
     // The receive pass that ended the request, its step, and the end.
     assert_eq!(seen, [known(1000); 3]);
-    let last = calls.borrow()[5];
+    let last = calls.borrow()[8];
     // It started at the first perform.
     assert_eq!(last.1, Duration::from_millis(500), "the total so far");
     assert_eq!(last.2, 2000);
@@ -396,7 +400,9 @@ fn an_abort_fails_the_transfer_with_no_last_call() {
 /// step's pass (with no last call) or from the last call.
 #[test]
 fn an_abort_after_the_request_fails_the_transfer() {
-    for (abort_at, calls_made) in [(2, 3), (3, 4)] {
+    // Four calls before the request, one at its receive pass, then the
+    // step that ended it, then the last call.
+    for (abort_at, calls_made) in [(5, 6), (6, 7)] {
         let (mut m, _clock) = multi();
         let mut e = script(vec![body(100)]);
         let calls = recorded(&mut e, move |_, n| {
@@ -613,7 +619,7 @@ fn an_unpause_from_the_progress_handler_replays_at_once() {
     m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(*written.borrow(), [10, 10], "paused, then replayed");
-    assert_eq!(calls.borrow().len(), 3);
+    assert_eq!(calls.borrow().len(), 6);
 }
 
 /// A speed back over the limit starts the low-speed time over.

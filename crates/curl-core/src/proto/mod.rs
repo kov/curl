@@ -51,6 +51,23 @@ impl ProtoState {
         }
     }
 
+    /// Make the request (C's `do_it`); none of these has one to make.
+    pub(crate) fn do_it<H: Host>(&mut self, _cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        match *self {
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(()),
+        }
+    }
+
+    /// Whether the request, once made, exchanges anything more: C's
+    /// transfer has a socket to receive or send on.
+    pub(crate) fn exchanges(&self) -> bool {
+        match *self {
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => true,
+        }
+    }
+
     /// Whether the request has a body to send (C's `CURL_REQ_WANT_SEND`
     /// at DID).
     #[cfg_attr(

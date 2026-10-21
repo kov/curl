@@ -189,7 +189,7 @@ impl UserHeaders {
     /// Whether the application's `Transfer-Encoding` asks for the body
     /// chunked; none if it gives no `Transfer-Encoding`
     /// (`http_req_set_TE`).
-    pub(crate) fn asks_chunked(&self) -> Option<bool> {
+    pub fn asks_chunked(&self) -> Option<bool> {
         let te = self.replacing(b"Transfer-Encoding")?;
         Some(fields::header_says(
             &te.line,

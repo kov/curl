@@ -88,13 +88,6 @@ impl Upload {
         }
     }
 
-    /// The body is read to its end, whatever size its source gave.
-    pub(crate) fn forget_size(&mut self) {
-        if let Source::Read { size, .. } = &mut self.source {
-            *size = None;
-        }
-    }
-
     /// The body's size, where known (`Curl_creader_total_length`).
     pub(crate) fn size(&self) -> Option<u64> {
         match &self.source {

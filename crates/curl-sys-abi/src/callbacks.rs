@@ -273,6 +273,12 @@ pub(crate) fn sync_upload(
             let post = unsafe { easy.as_ref() }.post.borrow();
             let size = u64::try_from(post.size).ok();
             match &post.fields {
+                // Read from the read function, a body the application asks
+                // chunked is read to its end whatever its size
+                // (`set_reader`, C's issue 13229).
+                PostFields::None if options.http.headers.asks_chunked() == Some(true) => {
+                    read(None)?
+                }
                 PostFields::None => read(size)?,
                 PostFields::Copied(bytes) => match size.and_then(|n| usize::try_from(n).ok()) {
                     Some(n) if n < bytes.len() => {

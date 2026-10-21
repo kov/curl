@@ -410,6 +410,8 @@ fn apply(
             // Copied: the core reads no list of the application's.
             // SAFETY: the application passes a list or NULL.
             options.http.headers = UserHeaders::new(unsafe { list_lines(p) })?;
+            // A POST's body depends on its `Transfer-Encoding`.
+            callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => {
             // SAFETY: the application passes a list or NULL.

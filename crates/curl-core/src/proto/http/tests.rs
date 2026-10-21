@@ -1478,20 +1478,3 @@ fn the_application_s_transfer_encoding_decides() {
     );
     assert!(!request.contains("Content-Length"), "{request}");
 }
-
-/// A POST from a handler that the application asks chunked is read to its
-/// end, whatever size it gave (C's issue 13229).
-#[test]
-fn a_chunked_post_from_a_handler_ignores_its_size() {
-    let ran = with_body(Method::Post, b"", |o| {
-        let mut source = pieces(&[b"abcde"]);
-        if let crate::options::UploadSource::Read { size, .. } = &mut source {
-            *size = Some(3);
-        }
-        o.upload = source;
-        o.http.headers =
-            UserHeaders::new([&b"Transfer-Encoding: chunked"[..], b"Expect:"]).unwrap();
-    });
-    assert_eq!(ran.result, Ok(()));
-    assert!(ran.request.ends_with(b"\r\n\r\n5\r\nabcde\r\n0\r\n\r\n"));
-}

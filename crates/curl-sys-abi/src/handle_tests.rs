@@ -444,6 +444,23 @@ fn the_post_options_combine_as_in_c() {
         long(c, ffi::CURLOPT_POSTFIELDSIZE, -2),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
+    // From the read function, a body asked chunked is read to its end,
+    // the fields as long as their size.
+    assert_eq!(long(c, ffi::CURLOPT_POSTFIELDSIZE, 5), CURLE_OK);
+    assert_eq!(body(c), Body::Read(Some(5)));
+    let mut te = *b"Transfer-Encoding: chunked\0";
+    // SAFETY: a C string, alive for the call.
+    let list =
+        unsafe { crate::strings::curl_slist_append(ptr::null_mut(), te.as_mut_ptr().cast()) };
+    assert_eq!(pointer(c, ffi::CURLOPT_HTTPHEADER, list), CURLE_OK);
+    assert_eq!(body(c), Body::Read(None));
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_POSTFIELDS, text.as_mut_ptr()),
+        CURLE_OK
+    );
+    assert_eq!(body(c), Body::Read(Some(5)));
+    // SAFETY: made above, copied by the option, not used again.
+    unsafe { crate::strings::curl_slist_free_all(list) };
     assert_eq!(long(c, ffi::CURLOPT_POST, 0), CURLE_OK);
     assert_eq!(method(c), Method::Get);
     // SAFETY: a live handle, not used again.

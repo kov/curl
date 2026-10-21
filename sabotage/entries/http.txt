@@ -567,11 +567,3 @@ witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_
             Some(at) => run.deadlines.arm_in(TimerKind::Proto, now, at.since(now)),
 --- new
             Some(_) => run.deadlines.clear(TimerKind::Proto),
-
-=== a chunked POST from a handler stops at its size
-file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::a_chunked_post_from_a_handler_ignores_its_size
---- old
-            upload.forget_size();
---- new
-            let _ = upload;

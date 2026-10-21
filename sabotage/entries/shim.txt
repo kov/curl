@@ -40,3 +40,11 @@ witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
 --- new
         (ffi::CURLOPT_HTTPGET, Long(n)) => {
             if n == 0 {
+
+=== a chunked POST from the read function stops at its size
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
+--- old
+                PostFields::None if options.http.headers.asks_chunked() == Some(true) => {
+--- new
+                PostFields::None if false => {

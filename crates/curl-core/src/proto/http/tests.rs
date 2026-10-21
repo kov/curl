@@ -879,6 +879,22 @@ fn retry_after_reads_seconds() {
     assert_eq!(after(b"Retry-Afte: 1\r\n"), None);
 }
 
+/// The report's URL keeps an empty query, as C's does (`CURLU_GET_EMPTY`).
+#[test]
+fn the_report_s_url_keeps_an_empty_query() {
+    let ran = run(
+        "/x?",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        false,
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        ran.easy.report().url().unwrap(),
+        format!("http://127.0.0.1:{PORT}/x?").as_bytes()
+    );
+}
+
 /// The report keeps the URL the transfer used, without its credentials.
 #[test]
 fn the_report_s_url_has_no_credentials() {

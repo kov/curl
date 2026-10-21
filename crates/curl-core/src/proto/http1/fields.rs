@@ -179,9 +179,10 @@ mod tests {
     fn says_reads_no_further_than_the_value() {
         let says = |line: &[u8]| header_says(line, b"Connection:", b"close");
         assert!(!says(b"Conn"));
-        assert!(!says(b"Connection:      x,   \r\n"));
-        assert!(!says(b"Connection: a,b"));
-        assert!(!says(b"Connection: a,b\r\n"));
+        // Values at least as long as the token, so the search runs.
+        assert!(!says(b"Connection:      xxxxx,   \r\n"));
+        assert!(!says(b"Connection: abcde,f"));
+        assert!(!says(b"Connection: abcde,f\r\n"));
         assert!(says(b"Connection: a,  close\r\n"));
     }
 

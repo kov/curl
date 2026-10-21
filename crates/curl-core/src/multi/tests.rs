@@ -893,6 +893,18 @@ fn a_url_too_long_to_read_back_fails_its_transfer() {
         trace_of(&lines)
     );
     assert_eq!(m.easy(id).unwrap().report().url(), None);
+    // An empty query is read back with its `?` (`CURLU_GET_EMPTY`): one
+    // byte that takes this URL to the limit.
+    let mut url = b"file:/".to_vec();
+    url.resize(7_999_997, b'a');
+    url.push(b'?');
+    let (e, _) = traced(std::str::from_utf8(&url).unwrap());
+    let id = m.add(e, (), ev).unwrap();
+    m.perform(ev).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::UrlMalformat), 0)]
+    );
 }
 
 /// A transfer that ends before it was about to send gets the times it

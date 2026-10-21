@@ -136,6 +136,7 @@ exclude_re = [
     # grows.
     'proto/http/auth\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Credentials::basic$',
     'proto/http1/request\.rs:.*: replace - with \+ in render_h1$',
+    'url/mod\.rs:.*: replace \+ with \* in Url::whole$',
     'curl-sys-abi/src/(headers|getinfo)\.rs:.*: replace \+ with (-|\*) in (HeaderOut::show|effective_url)$',
     # `Curl_compareheader`'s arithmetic where it cannot change the answer:
     # a line as long as the name has an empty value, which says nothing;

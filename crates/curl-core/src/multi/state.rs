@@ -1268,10 +1268,23 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
 /// none, where a `Location:` would have led kept for the application, as
 /// C's `FOLLOW_FAKE` keeps it at the end of the exchange.
 fn after_exchange<H: Host>(
-    run: &Run,
+    run: &mut Run,
     x: &Attached,
     cx: &mut StepCx<'_, H>,
 ) -> Result<AfterRequest, ErrorKind> {
+    // A 417 has the request made again without `Expect`, as a redirect
+    // to its own URL.
+    if x.proto.expect_refused() {
+        run.inherited.no_expect = true;
+        let mut location = Vec::new();
+        location
+            .try_extend_from_slice(&run.url)
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        return Ok(AfterRequest::Follow {
+            location,
+            code: 417,
+        });
+    }
     if let Some((location, code)) = x.proto.follow() {
         let mut copy = Vec::new();
         copy.try_extend_from_slice(location)

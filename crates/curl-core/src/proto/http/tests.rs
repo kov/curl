@@ -1360,10 +1360,6 @@ fn an_error_response_stops_the_body() {
             .text()
             .contains(&"HTTP error before end of send, keep sending\n".to_string())
     );
-    // A 417 asks for the request again without `Expect`: not yet.
-    let failed = b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n";
-    let (ran, _) = expecting(failed, b"a=b", asked);
-    assert_eq!(ran.result, Err(ErrorKind::NotBuiltIn));
 }
 
 /// A body larger than the send buffer is read again as each buffer goes,
@@ -2019,4 +2015,36 @@ fn a_redirect_s_own_credentials_go_with_it() {
         );
         assert!(!has(&second, b"Basic eDp5"), "the first URL's stay");
     }
+}
+
+/// A 417 to a body held for a 100 has the request made again on the
+/// kept connection, without `Expect`, counted as a redirect; the
+/// library adds no `Expect` after.
+#[test]
+fn a_417_has_the_request_made_again_without_expect() {
+    let refused = b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[refused, OK], false);
+    let body = vec![b'x'; 2 * 1024 * 1024];
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let second = text.rfind("PUT /a HTTP/1.1").unwrap();
+    assert!(text[..second].contains("Expect: 100-continue\r\n"));
+    assert!(text[..second].ends_with("\r\n\r\n"), "no body went first");
+    assert!(
+        !text[second..].contains("Expect:"),
+        "{}",
+        &text[second..second + 200]
+    );
+    assert_eq!(
+        text.len() - text[second..].find("\r\n\r\n").unwrap() - second - 4,
+        2 * 1024 * 1024
+    );
+    let said = ran.seen.text();
+    assert!(said.contains(&"Got HTTP failure 417 while waiting for a 100\n".to_string()));
+    let report = ran.easy.report();
+    assert_eq!((report.redirects(), report.connects()), (1, 1));
 }

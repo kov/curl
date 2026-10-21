@@ -49,6 +49,9 @@ pub(crate) struct Inherited {
     /// A response said HTTP/1.0: so do the requests after it
     /// (`state.http_neg.rcvd_min`).
     pub(crate) http10: bool,
+    /// A 417 refused `Expect: 100-continue`: the library adds it no more
+    /// (`state.disableexpect`).
+    pub(crate) no_expect: bool,
 }
 
 impl Inherited {
@@ -59,6 +62,7 @@ impl Inherited {
             method,
             ignore_custom: false,
             http10: false,
+            no_expect: false,
         }
     }
 }
@@ -246,6 +250,17 @@ impl ProtoState {
             ProtoState::File(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+
+    /// A 417 refused the request's `Expect: 100-continue`: it is to be
+    /// made again without.
+    pub(crate) fn expect_refused(&self) -> bool {
+        match *self {
+            ProtoState::Http(ref r) => r.expect_refused(),
+            ProtoState::File(_) => false,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
         }
     }
 

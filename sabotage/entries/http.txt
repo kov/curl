@@ -60,9 +60,9 @@ witness: curl-core proto::http::tests::a_head_wants_no_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 --- old
-        if head.meta().close() || self.pipeline.body_closes() || self.aborted {
+        if head.meta().close() || self.pipeline.body_closes() || self.closing {
 --- new
-        if self.pipeline.body_closes() || self.aborted {
+        if self.pipeline.body_closes() || self.closing {
 
 === an exchanging transfer waits on nothing
 file: crates/curl-core/src/multi/state.rs
@@ -530,7 +530,7 @@ witness: curl-core proto::http::tests::an_error_response_stops_the_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::an_error_response_stops_the_body
 --- old
-        if head.meta().close() || self.pipeline.body_closes() || self.aborted {
+        if head.meta().close() || self.pipeline.body_closes() || self.closing {
 --- new
         if head.meta().close() || self.pipeline.body_closes() {
 
@@ -820,3 +820,30 @@ witness: curl-core proto::http::tests::a_redirect_s_own_credentials_go_with_it
 --- new
             .zip(gate.trusted())
             .and_then(|(token, trusted)| Basic::new(token, trusted, &http.headers));
+
+=== a 417 is not made again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_expect
+--- old
+    if x.proto.expect_refused() {
+--- new
+    if false {
+
+=== the request made again after a 417 still expects a 100
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_expect
+--- old
+            && !self.no_expect
+--- new
+            && true
+
+=== a 417 while waiting for a 100 closes the connection
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_expect
+--- old
+            self.expect_refused = true;
+            self.aborted = true;
+--- new
+            self.expect_refused = true;
+            self.closing = true;
+            self.aborted = true;

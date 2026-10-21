@@ -69,6 +69,12 @@ pub(crate) struct Request {
     custom: bool,
     /// The HTTP version sent.
     version: HttpVersion,
+    /// The library adds no `Expect: 100-continue`.
+    no_expect: bool,
+    /// A 417 refused the `Expect: 100-continue` sent.
+    expect_refused: bool,
+    /// The connection is not used again (`streamclose`).
+    closing: bool,
     /// What the request sends and has not yet (`req.sendbuf`): the head,
     /// then the body as read, behind it in one buffer of
     /// `UPLOAD_BUFFER` bytes. `out[sent..filled]` is still to go, the
@@ -89,8 +95,7 @@ pub(crate) struct Request {
     sent_all: bool,
     /// Where the body stands behind `Expect: 100-continue`.
     expect: ExpectState,
-    /// Sending stopped short of the body's end (`upload_aborted`): the
-    /// connection is not used again.
+    /// Sending stopped short of the body's end (`upload_aborted`).
     aborted: bool,
     /// Made at DO, once the connection says whether it is reused.
     head: Option<HeadParser>,
@@ -200,6 +205,9 @@ impl Request {
             gate,
             method: inherited.method,
             custom: !inherited.ignore_custom,
+            no_expect: inherited.no_expect,
+            expect_refused: false,
+            closing: false,
             version: if inherited.http10 {
                 HttpVersion::Http10
             } else {
@@ -243,6 +251,11 @@ impl Request {
     pub(crate) fn follow(&self) -> Option<(&[u8], u16)> {
         let head = self.head.as_ref()?;
         Some((head.meta().follow()?, head.status()?.code))
+    }
+
+    /// A 417 refused the request's `Expect: 100-continue`.
+    pub(crate) fn expect_refused(&self) -> bool {
+        self.expect_refused
     }
 
     /// A response to the request said HTTP/1.0.
@@ -353,6 +366,7 @@ impl Request {
         let expects = http.headers.expects_continue();
         let added_expect = content.is_some()
             && expects.is_none()
+            && !self.no_expect
             && self.version == HttpVersion::Http11
             && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
         let expect_state = if content.is_some() && (expects == Some(true) || added_expect) {
@@ -825,9 +839,25 @@ impl Request {
             return Ok(());
         }
         if code == 417 && self.expect != ExpectState::None {
-            // Sending again without `Expect` is a second request, which
-            // comes with redirects.
-            return Err(ErrorKind::NotBuiltIn);
+            // Made again without `Expect`, its body started over if any
+            // went.
+            if self.body_sent == 0 && matches!(self.expect, ExpectState::Awaiting(_)) {
+                trace::info(
+                    cx,
+                    format_args!("Got HTTP failure 417 while waiting for a 100"),
+                );
+            } else {
+                trace::info(cx, format_args!("Got HTTP failure 417 while sending data"));
+                self.closing = true;
+                if self.upload.as_ref().is_some_and(Upload::needs_rewind) {
+                    trace::info(cx, format_args!("Need to rewind upload for next request"));
+                }
+            }
+            self.expect_refused = true;
+            self.aborted = true;
+            self.upload_done(cx);
+            cx.mark(Timer::PostTransfer);
+            return Ok(());
         }
         if cx.easy().options().http.keep_sending_on_error {
             trace::info(
@@ -841,6 +871,7 @@ impl Request {
                 format_args!("HTTP error before end of send, stop sending"),
             );
             self.aborted = true;
+            self.closing = true;
             self.upload_done(cx);
             cx.mark(Timer::PostTransfer);
         }
@@ -992,7 +1023,7 @@ impl Request {
             }
         }
         let head = self.head.as_ref().expect("made at DO");
-        if head.meta().close() || self.pipeline.body_closes() || self.aborted {
+        if head.meta().close() || self.pipeline.body_closes() || self.closing {
             cx.conn(lease).mark_close();
         }
         result?;

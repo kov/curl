@@ -719,7 +719,10 @@ mod tests {
         assert_eq!(run(&["--", "--bogus"]), Ok((1, None, None)));
         assert_eq!(run(&["-hfoo", "http://a/"]), Ok((1, None, None)));
         // A recognised option without its meaning is recorded, not run.
-        assert_eq!(run(&["--retry=3", "x"]), Ok((1, Some("retry"), None)));
+        assert_eq!(
+            run(&["--retry-connrefused", "x"]),
+            Ok((1, Some("retry-connrefused"), None))
+        );
         // Each operation has its own URLs and options.
         assert_eq!(
             run(&["x", "--etag-save", "e", "--next", "y", "z", "-C", "1"]),

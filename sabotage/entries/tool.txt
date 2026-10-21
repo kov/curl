@@ -85,9 +85,9 @@ witness: curl-tool reports_an_upload_it_cannot_open
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_a_failure
 --- old
-                    last = result;
+                    *last = result;
 --- new
-                    last = last.and(result);
+                    *last = last.and(result);
 
 === `--show-error` does not bring back the result line under `--silent`
 file: crates/curl-tool/src/msgs.rs
@@ -264,12 +264,12 @@ witness: curl-tool gives_up_after_the_time_allowed
     o.limits.total = None;
 
 === `--globoff` does not stop globbing
-file: crates/curl-tool/src/options/apply.rs
-witness: curl-tool options::parse::tests::reads_urls_and_operations
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool globs_unless_told_not_to
 --- old
-            .filter(|op| !op.globoff)
+        if op.globoff || !glob::has_patterns(text) {
 --- new
-            .filter(|_| true)
+        if !glob::has_patterns(text) {
 
 === a status code is written without its leading zeroes
 file: crates/curl-tool/src/write_out.rs
@@ -424,9 +424,9 @@ witness: curl-tool uploads_standard_input
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool uploads_standard_input
 --- old
-    if upload.is_some_and(|file| file != b"-") {
+    let given = match upload.filter(|&file| file != b"-") {
 --- new
-    if upload.is_some() {
+    let given = match upload {
 
 === a numbered name goes after the extension
 file: crates/curl-tool/src/output.rs
@@ -435,3 +435,35 @@ witness: curl-tool output::tests::clobber_names_number_as_c_does
         Some(dot) if dot != base && dot + 1 < name.len() => {
 --- new
         Some(dot) if false && dot != base && dot + 1 < name.len() => {
+
+=== the leftmost pattern moves first
+file: crates/curl-tool/src/glob.rs
+witness: curl-tool glob::tests::expands_every_combination
+--- old
+            for item in self.items.iter_mut().rev() {
+--- new
+            for item in self.items.iter_mut() {
+
+=== a globbed number loses its leading zeros
+file: crates/curl-tool/src/glob.rs
+witness: curl-tool glob::tests::expands_every_combination
+--- old
+                let text = try_format(format_args!("{at:0pad$}"))?;
+--- new
+                let text = try_format(format_args!("{at}"))?;
+
+=== an output's #N names the pattern after
+file: crates/curl-tool/src/glob.rs
+witness: curl-tool glob::tests::names_outputs_from_the_patterns
+--- old
+                    && let Some(item) = self.numbered(n as usize)
+--- new
+                    && let Some(item) = self.numbered(n as usize + 1)
+
+=== an upload to a bare path keeps the URL as it is
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::adds_a_file_name_to_a_bare_path
+--- old
+    if slash.is_some_and(|at| at + 1 < path.len()) {
+--- new
+    if true {

@@ -65,7 +65,6 @@ pub(crate) fn parse<'a>(
     }
     // C rejects `--remote-header-name` with `--continue-at -` here; both
     // are still unimplemented, which `line.unimplemented` records.
-    line.note_globs();
     Ok(Parsed::Run(line))
 }
 
@@ -402,17 +401,6 @@ mod tests {
             run(&["x", "--proto", "=file"]),
             Ok((1, Some("proto"), None))
         );
-        // What would need more than one URL, or a pattern of them, is not
-        // run without it.
-        assert_eq!(run(&["x{a,b}"]), Ok((1, Some("URL globbing"), None)));
-        // `--globoff` anywhere in the operation takes them as they are;
-        // in another operation it does not.
-        assert_eq!(run(&["x{a,b}", "-g"]), Ok((1, None, None)));
-        assert_eq!(run(&["-g", "-T", "{a,b}", "x"]), Ok((1, None, None)));
-        assert_eq!(
-            run(&["-g", "x", "--next", "y[1-2]"]),
-            Ok((2, Some("URL globbing"), None))
-        );
         assert_eq!(
             run(&["-T", ".", "x"]),
             Ok((1, Some("uploading standard input without blocking"), None))
@@ -447,11 +435,7 @@ mod tests {
         // `--next` needs a URL in the first node, not just in any.
         assert_eq!(run(&["-o", "a", "--next", "x"]), Err(ParamError::BadUse));
         // A pattern of files to upload.
-        assert_eq!(run(&["-T", "a", "x"]), Ok((1, None, None)));
-        for pattern in ["a[1-2]", "{a,b}"] {
-            let refused = Some("upload file globbing");
-            assert_eq!(run(&["-T", pattern, "x"]), Ok((1, refused, None)));
-        }
+        assert_eq!(run(&["-T", "a[1-2]", "x"]), Ok((1, None, None)));
         // One URL can save its ETag.
         let etag = Some("etag-save");
         assert_eq!(run(&["--etag-save", "e", "x"]), Ok((1, etag, None)));

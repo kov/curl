@@ -16,9 +16,10 @@ use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
 use curl_core::share::Share;
 use curl_core::time::TimeLimit;
-use curl_core::url::{GetOptions, ParseOptions, Part, Url};
+use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 
 use crate::bar::Bar;
+use crate::glob::{self, Glob};
 use crate::msgs::Messages;
 use crate::options::{
     self as tool, CommandLine, Fail, Global, HttpVersion, IpVersion, Node, Operation, Output,
@@ -30,13 +31,9 @@ use crate::stdout::Stdout;
 use crate::trace::Tracer;
 use crate::write_out::{self, Facts};
 
-/// How running the command line ended.
-pub(crate) enum Ending {
-    /// With this result, the last transfer's unless a run was cut short.
-    Done(Result<(), ErrorKind>),
-    /// At something not implemented yet.
-    NotImplemented(&'static str),
-}
+/// How running the command line ended: the last transfer's result,
+/// unless a run was cut short.
+pub(crate) type Ending = Result<(), ErrorKind>;
 
 /// What became of one URL.
 enum Step {
@@ -48,23 +45,22 @@ enum Step {
     /// Its upload could not be opened: nothing more runs, and the result
     /// is the last failure's (C's failed `pre_transfer`).
     Unopened(ErrorKind),
-    NotImplemented(&'static str),
 }
 
 /// Run every operation's transfers in turn (`serial_transfers`).
 pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
     let Ok(stdout) = Stdout::new() else {
-        return Ending::Done(Err(ErrorKind::OutOfMemory));
+        return Err(ErrorKind::OutOfMemory);
     };
     let tracer = match Tracer::new(&line.global, &stdout) {
         Ok(tracer) => tracer,
-        Err(OutOfMemory) => return Ending::Done(Err(ErrorKind::OutOfMemory)),
+        Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
     // The transfers share their connections and resolved names, as C's
     // tool gives each handle its share.
     let share = match Share::new() {
         Ok(share) => share,
-        Err(OutOfMemory) => return Ending::Done(Err(ErrorKind::OutOfMemory)),
+        Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
     let run = Shared {
         global: &line.global,
@@ -90,32 +86,118 @@ fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
     for op in &line.operations {
         if op.nodes.first().and_then(|n| n.url).is_none() {
             msgs.help(&[b"(2) no URL specified"]);
-            return Ending::Done(Err(ErrorKind::FailedInit));
+            return Err(ErrorKind::FailedInit);
         }
-        for (i, node) in op.nodes.iter().enumerate() {
+        let mut first = true;
+        for node in &op.nodes {
             let Some(url) = node.url else {
                 msgs.warn(&[b"Got more output options than URLs"]);
                 break;
             };
-            let this = Given {
+            let given = Given {
                 text: url,
                 num: urlnum,
             };
             urlnum += 1;
-            match transfer(op, run, node, this, i == 0) {
-                Step::Ran(result) => {
-                    last = result;
-                    if result.is_err_and(fatal) {
-                        return Ending::Done(result);
-                    }
-                }
-                Step::Failed(e) => return Ending::Done(Err(e)),
-                Step::Unopened(e) => return Ending::Done(last.and(Err(e))),
-                Step::NotImplemented(what) => return Ending::NotImplemented(what),
+            if let Some(ending) = node_transfers(op, run, node, given, &mut first, &mut last) {
+                return ending;
             }
         }
     }
-    Ending::Done(last)
+    last
+}
+
+/// Run a node's transfers: one for each file its upload pattern names,
+/// times each URL its URL pattern makes, the URL's changing first
+/// (`create_single`). Each has the node's number. `None` if the
+/// operation goes on.
+fn node_transfers(
+    op: &Operation<'_>,
+    run: &Shared<'_, '_>,
+    node: &Node<'_>,
+    given: Given<'_>,
+    first: &mut bool,
+    last: &mut Result<(), ErrorKind>,
+) -> Option<Ending> {
+    let msgs = run.msgs;
+    // A name without patterns still names an output through one, unless
+    // globbing is off (`glob_inuse` is true of a literal).
+    let literal = Glob::literal();
+    let expand = |text: &[u8]| -> Result<Option<Glob>, Ending> {
+        if op.globoff || !glob::has_patterns(text) {
+            return Ok(None);
+        }
+        match Glob::parse(text) {
+            Ok((parsed, _)) => Ok(Some(parsed)),
+            Err(e) => {
+                e.show(text, &msgs);
+                Err(Err(e.kind))
+            }
+        }
+    };
+    let file = match node.upload {
+        Upload::File(file) => Some(file),
+        Upload::Unset | Upload::Nothing => None,
+    };
+    // `setup_input_file`.
+    let mut uploads = match file.map(expand).transpose() {
+        Ok(uploads) => uploads.flatten(),
+        Err(ending) => return Some(ending),
+    };
+    let next = |glob: &mut Option<Glob>, whole: Option<&[u8]>, held: &mut Vec<u8>| match glob {
+        Some(glob) => match glob.next_url() {
+            Ok(Some(next)) => {
+                *held = next;
+                Ok(Some(true))
+            }
+            Ok(None) => Ok(None),
+            Err(OutOfMemory) => Err(Err(ErrorKind::OutOfMemory)),
+        },
+        None => Ok(whole.map(|_| false)),
+    };
+    let mut upload_held = Vec::new();
+    let mut upload_once = true;
+    loop {
+        let upload = match next(&mut uploads, Some(b""), &mut upload_held) {
+            Ok(Some(true)) => Some(&upload_held[..]),
+            Ok(Some(false)) if std::mem::take(&mut upload_once) => file,
+            Ok(_) => break,
+            Err(ending) => return Some(ending),
+        };
+        // `setup_url_pattern`, again for each upload.
+        let mut urls = match expand(given.text) {
+            Ok(urls) => urls,
+            Err(ending) => return Some(ending),
+        };
+        let mut url_held = Vec::new();
+        let mut url_once = true;
+        loop {
+            let text = match next(&mut urls, Some(b""), &mut url_held) {
+                Ok(Some(true)) => &url_held[..],
+                Ok(Some(false)) if std::mem::take(&mut url_once) => given.text,
+                Ok(_) => break,
+                Err(ending) => return Some(ending),
+            };
+            let this = Given { text, ..given };
+            let names = (!op.globoff).then(|| Names {
+                url: urls.as_ref().unwrap_or(&literal),
+                upload: uploads.as_ref(),
+            });
+            let step = transfer(op, run, node, this, upload, names, *first);
+            *first = false;
+            match step {
+                Step::Ran(result) => {
+                    *last = result;
+                    if result.is_err_and(fatal) {
+                        return Some(result);
+                    }
+                }
+                Step::Failed(e) => return Some(Err(e)),
+                Step::Unopened(e) => return Some(last.and(Err(e))),
+            }
+        }
+    }
+    None
 }
 
 /// `dir/name`.
@@ -146,6 +228,14 @@ struct Given<'a> {
     num: u64,
 }
 
+/// The patterns an output name reads: the URL's, or a literal one for a
+/// URL without, and the upload file's.
+#[derive(Clone, Copy)]
+struct Names<'a> {
+    url: &'a Glob,
+    upload: Option<&'a Glob>,
+}
+
 /// What every transfer of the run shares.
 struct Shared<'a, 'l> {
     global: &'a Global<'l>,
@@ -163,14 +253,12 @@ fn transfer(
     run: &Shared<'_, '_>,
     node: &Node<'_>,
     given: Given<'_>,
+    upload: Option<&[u8]>,
+    names: Option<Names<'_>>,
     first: bool,
 ) -> Step {
     let msgs = run.msgs;
     let url = given.text;
-    let upload = match node.upload {
-        Upload::File(file) => Some(file),
-        Upload::Unset | Upload::Nothing => None,
-    };
     // The data of `--data` makes a POST, an upload a PUT, and no other
     // method may be chosen with either (`single_transfer`,
     // `create_single`).
@@ -198,6 +286,25 @@ fn transfer(
         output => output,
     };
     let to_stdout = matches!(output, Output::Unset | Output::Stdout | Output::File(b"-"));
+    // A name given reads the URL's patterns (`glob_match_url`).
+    let globbed;
+    let output = match (output, names) {
+        (Output::File(name), Some(names)) if !to_stdout => {
+            globbed = match names.url.output_name(name, names.upload) {
+                Ok(globbed) => globbed,
+                Err(e) => {
+                    e.show(name, &msgs);
+                    return Step::Failed(e.kind);
+                }
+            };
+            if globbed.is_empty() {
+                msgs.warn(&[b"output glob produces empty string"]);
+                return Step::Failed(ErrorKind::WriteError);
+            }
+            Output::File(&globbed)
+        }
+        (output, _) => output,
+    };
     let remote_name;
     let output = match output {
         Output::Remote => {
@@ -270,14 +377,24 @@ fn transfer(
             return failed(&easy, ErrorKind::WriteError);
         }
     }
-    // Standard input names no file to add (`stdin_upload`).
-    if upload.is_some_and(|file| file != b"-") {
-        match needs_file_name(url) {
-            Ok(false) => {}
-            Ok(true) => return Step::NotImplemented("uploading to a URL without a file name"),
+    // An upload to a path without a name gives it the file's; standard
+    // input names none (`setup_transfer_upload`, `stdin_upload`).
+    let named;
+    let given = match upload.filter(|&file| file != b"-") {
+        Some(file) => match with_file_name(url, file) {
+            Ok(Some(url)) => {
+                named = url;
+                Given {
+                    text: &named,
+                    ..given
+                }
+            }
+            Ok(None) => given,
             Err(e) => return failed(&easy, e),
-        }
-    }
+        },
+        None => given,
+    };
+    let url = given.text;
     let resume = if upload.is_some() && op.resume == Some(Resume::FromOutput) {
         Some(options::Resume::AtEnd)
     } else {
@@ -629,22 +746,48 @@ fn stdout_is_terminal() -> bool {
     std::io::stdout().is_terminal()
 }
 
-/// Whether an upload to `url` needs the local file's name added to its
-/// path, which ends without one (`add_file_name_to_url`).
-fn needs_file_name(url: &[u8]) -> Result<bool, ErrorKind> {
+/// `url` with the name of `file`, the file it uploads, added to its path,
+/// if the path ends without a name of its own and there is no query
+/// (`add_file_name_to_url`): the name is what `file` has after its last
+/// slash or backslash, URL-encoded.
+fn with_file_name(url: &[u8], file: &[u8]) -> Result<Option<Vec<u8>>, ErrorKind> {
     let parse = ParseOptions {
         guess_scheme: true,
         non_support_scheme: true,
         ..ParseOptions::NONE
     };
-    let url = Url::parse(url, parse).map_err(url_error)?;
+    let mut url = Url::parse(url, parse).map_err(url_error)?;
     let path = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
     match url.get(Part::Query, GetOptions::NONE) {
-        Ok(_) => return Ok(false),
+        Ok(_) => return Ok(None),
         Err(UrlErrorKind::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(_) => {}
     }
-    Ok(path.last().is_none_or(|&b| b == b'/') || !path.contains(&b'/'))
+    let slash = path.iter().rposition(|&b| b == b'/');
+    if slash.is_some_and(|at| at + 1 < path.len()) {
+        return Ok(None);
+    }
+    let after = file.iter().rposition(|&b| b == b'/').map_or(0, |at| at + 1);
+    let name = match file[after..].iter().rposition(|&b| b == b'\\') {
+        Some(at) => &file[after + at + 1..],
+        None => &file[after..],
+    };
+    let oom = |OutOfMemory| ErrorKind::OutOfMemory;
+    let name = curl_core::url::escape(name).map_err(oom)?;
+    let mut new_path = Vec::new();
+    new_path.try_extend_from_slice(&path).map_err(oom)?;
+    if slash.is_none() {
+        new_path.try_push(b'/').map_err(oom)?;
+    }
+    new_path.try_extend_from_slice(&name).map_err(oom)?;
+    url.set(Part::Path, Some(&new_path), SetOptions::NONE)
+        .map_err(url_error)?;
+    let shown = GetOptions {
+        default_scheme: true,
+        no_guess_scheme: true,
+        ..GetOptions::NONE
+    };
+    url.get(Part::Url, shown).map(Some).map_err(url_error)
 }
 
 /// The file name `--remote-name` saves `url` to: what its path has after
@@ -797,20 +940,23 @@ mod tests {
     }
 
     /// `add_file_name_to_url`: a path that ends in `/`, or has none, takes
-    /// the file's name; a query keeps the URL as it is.
+    /// the file's name, encoded; a query keeps the URL as it is.
     #[test]
     fn adds_a_file_name_to_a_bare_path() {
-        assert_eq!(needs_file_name(b"file:///dir/"), Ok(true));
-        assert_eq!(needs_file_name(b"file:///dir/f"), Ok(false));
-        assert_eq!(needs_file_name(b"file:///dir/?q"), Ok(false));
-        assert_eq!(needs_file_name(b"http://host"), Ok(true));
-        // Without a scheme one is guessed; one not supported is still read.
-        assert_eq!(needs_file_name(b"host/dir/"), Ok(true));
-        assert_eq!(needs_file_name(b"nosuch://host/f"), Ok(false));
-        assert_eq!(
-            needs_file_name(b"http://[bad/"),
-            Err(ErrorKind::UrlMalformat)
-        );
+        let named = |url: &str, file: &str| {
+            with_file_name(url.as_bytes(), file.as_bytes())
+                .map(|u| u.map(|u| String::from_utf8(u).unwrap()))
+        };
+        let some = |s: &str| Ok(Some(s.to_string()));
+        assert_eq!(named("file:///dir/", "a/b c"), some("file:///dir/b%20c"));
+        assert_eq!(named("file:///dir/f", "a"), Ok(None));
+        assert_eq!(named("file:///dir/?q", "a"), Ok(None));
+        assert_eq!(named("http://host", "x\\y"), some("http://host/y"));
+        // Without a scheme one is guessed, and not shown; one not supported
+        // is still read.
+        assert_eq!(named("host/dir/", "f"), some("host/dir/f"));
+        assert_eq!(named("nosuch://host/f", "a"), Ok(None));
+        assert_eq!(named("http://[bad/", "a"), Err(ErrorKind::UrlMalformat));
     }
 
     /// `urlerr_cvt`.

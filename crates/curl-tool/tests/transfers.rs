@@ -78,6 +78,24 @@ fn curl_env(dir: &Scratch, args: &[&str], env: &[(&str, &str)]) -> Run {
     }
 }
 
+/// A URL's patterns make a transfer each, whose output name reads them;
+/// `--globoff` takes the URL and the name as they are.
+#[test]
+fn globs_unless_told_not_to() {
+    let dir = Scratch::new("glob");
+    dir.write("a1", b"one");
+    dir.write("a2", b"two");
+    dir.write("a[1-2]", b"both");
+    let url = dir.url("a[1-2]");
+    let run = curl(&dir, &[&url, "-o", &dir.path("out#1")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(dir.read("out1"), b"one");
+    assert_eq!(dir.read("out2"), b"two");
+    let run = curl(&dir, &["-g", &url, "-o", &dir.path("out#1")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(dir.read("out#1"), b"both");
+}
+
 #[test]
 fn downloads_to_a_file_or_standard_output() {
     let s = Scratch::new("download");

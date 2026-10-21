@@ -451,26 +451,6 @@ impl<'a> CommandLine<'a> {
             .get_or_insert(Unimplemented::Option(spec, prefix));
     }
 
-    /// Record globbing as not implemented where a URL or an upload would
-    /// be expanded: C expands `{}` and `[]` patterns unless `--globoff` is
-    /// anywhere in the operation.
-    pub(crate) fn note_globs(&mut self) {
-        let pattern = |s: &[u8]| s.iter().any(|&b| b == b'{' || b == b'[');
-        let globbed = self
-            .operations
-            .iter()
-            .filter(|op| !op.globoff)
-            .flat_map(|op| op.nodes.iter())
-            .find_map(|n| match n.upload {
-                _ if n.url.is_some_and(pattern) => Some("URL globbing"),
-                Upload::File(f) if pattern(f) => Some("upload file globbing"),
-                _ => None,
-            });
-        if let Some(feature) = globbed {
-            self.feature_not_implemented(feature);
-        }
-    }
-
     /// Record that `feature` was asked for and is not implemented.
     fn feature_not_implemented(&mut self, feature: &'static str) {
         self.unimplemented

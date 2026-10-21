@@ -12,6 +12,7 @@ use curl_core::version::version;
 
 mod bar;
 mod config;
+mod glob;
 mod help;
 mod msgs;
 mod operate;
@@ -23,7 +24,6 @@ mod trace;
 mod write_out;
 
 use msgs::Messages;
-use operate::Ending;
 use options::{Parsed, Request, Trace, Unimplemented, exit_code};
 
 /// Exit status for anything not implemented yet. No test expects it, so a
@@ -128,12 +128,8 @@ fn main() -> ExitCode {
     }
     msgs.tracing = line.global.trace != Trace::None;
     match operate::run(&line, msgs) {
-        Ending::Done(Ok(())) => ExitCode::SUCCESS,
-        Ending::Done(Err(e)) => ExitCode::from(exit_code(e)),
-        Ending::NotImplemented(what) => {
-            msgs.error(&[what.as_bytes(), b": not implemented yet"]);
-            ExitCode::from(NOT_IMPLEMENTED)
-        }
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => ExitCode::from(exit_code(e)),
     }
 }
 

@@ -379,10 +379,12 @@ cargo-mutants run on the milestone's diff.
     which `EngineRest` and `Announcing` hold; a `Share` lends its `Caches` to each perform, and
     the tool's transfers share one, so they reuse connections and names across URLs (2051,
     2052, 3225, 3226, 1080, 1081); `-O` and `--remote-name-all` (422, 681, 690, 691, 1334-1347,
-    1644, 3008, 3009, 3013), `--no-clobber` (481, 1681, 1683, 4644) and `--output-dir` (1682).
-    To do: globbing, refused with exit 125 until then (2053, 75); `-J`; `-K` (468, 1639);
-    `--retry` (1635); `--create-dirs` (3011). `-R` waits for the date parser (step 30) to read
-    `Last-Modified` (762, 1443).
+    1644, 3008, 3009, 3013), `--no-clobber` (481, 1681, 1683, 4644) and `--output-dir` (1682);
+    URL and upload file globbing, with output names reading the patterns, and an upload's file
+    name added to a URL whose path has none (74, 75, 86, 87, 214, 490-492, 759, 761, 994, 2053
+    and others). To do: `-J`; `-K` (468, 1639); `--retry` (1635); `--create-dirs` (3011); URLs
+    read from a file (2012). `-R` waits for the date parser (step 30) to read `Last-Modified`
+    (762, 1443).
 28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a
     transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
     handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`

@@ -73,7 +73,47 @@ impl Pipeline {
         cx.report_mut().sizes_mut().download_expected = size;
     }
 
-    /// Deliver body bytes, as the protocol decoded them.
+    /// What the response's head says the body comes to.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no protocol reads a head before HTTP")
+    )]
+    pub(crate) fn expect(&mut self, expect: Expect) {
+        self.accountant.expect = expect;
+    }
+
+    /// The body is complete: what more comes is no part of it (C's
+    /// `download_done`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no protocol reads a head before HTTP")
+    )]
+    pub(crate) fn body_done(&self) -> bool {
+        self.accountant.done
+    }
+
+    /// The body showed the connection cannot be reused: more came than was
+    /// expected, or any where none was.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no protocol reads a head before HTTP")
+    )]
+    pub(crate) fn body_closes(&self) -> bool {
+        self.accountant.close
+    }
+
+    /// Body bytes delivered (C's `req.bytecount`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no protocol reads a head before HTTP")
+    )]
+    pub(crate) fn bytecount(&self) -> u64 {
+        self.accountant.bytecount
+    }
+
+    /// Deliver body bytes, as the protocol decoded them (`cw_download`):
+    /// none when none was wanted, and no more than the expected size, what
+    /// is past it noted and the connection given up.
     pub(crate) fn body<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -81,14 +121,33 @@ impl Pipeline {
     ) -> Result<(), ErrorKind> {
         raw_trace(cx, bytes);
         self.accountant.response_started(cx);
+        let expect = self.accountant.expect;
+        if expect.no_body && !bytes.is_empty() {
+            // A head was read, so the response is fine; the body goes.
+            self.accountant.close = true;
+            self.accountant.done = true;
+            return Ok(());
+        }
+        let (wanted, excess) = self.accountant.cut(bytes.len());
         let max_filesize = cx.easy().options().limits.max_filesize;
-        let allowed = self.accountant.allowed(bytes.len(), max_filesize);
+        let allowed = self.accountant.allowed(wanted, max_filesize);
         self.out.body(cx, &bytes[..allowed], self.pausable())?;
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
         self.accountant.bytecount += allowed as u64;
         cx.report_mut().sizes_mut().download += allowed as u64;
-        if allowed < bytes.len() {
+        if excess > 0 {
+            let bytecount = self.accountant.bytecount;
+            trace::info(
+                cx,
+                format_args!(
+                    "Excess found writing body: excess = {excess}, size = {}, maxdownload = {}, bytecount = {bytecount}",
+                    CSize(expect.size),
+                    CSize(expect.max)
+                ),
+            );
+            self.accountant.close = true;
+        } else if allowed < wanted {
             let max = max_filesize.expect("only a limit cuts the body short");
             let bytecount = self.accountant.bytecount;
             return Err(trace::fail(
@@ -100,6 +159,27 @@ impl Pipeline {
             ));
         }
         Ok(())
+    }
+
+    /// The response ended (`CLIENTWRITE_EOS`): a body of a known size must
+    /// be whole.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no protocol reads a head before HTTP")
+    )]
+    pub(crate) fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        let expect = self.accountant.expect;
+        let bytecount = self.accountant.bytecount;
+        match expect.size {
+            Some(size) if expect.max.is_some() && !expect.no_body && size > bytecount => {
+                Err(trace::fail(
+                    cx,
+                    ErrorKind::PartialFile,
+                    format_args!("end of response with {} bytes missing", size - bytecount),
+                ))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Deliver one header line, whole: into the report's header store
@@ -163,6 +243,31 @@ fn raw_trace<H: Host>(cx: &mut StepCx<'_, H>, bytes: &[u8]) {
     }
 }
 
+/// What a response's head says its body comes to (C's `req.size`,
+/// `req.maxdownload` and `req.no_body`); nothing, before a head or
+/// without one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Expect {
+    /// The size the head gives.
+    pub(crate) size: Option<u64>,
+    /// The most body to deliver, past which the rest is excess.
+    pub(crate) max: Option<u64>,
+    /// No body is wanted.
+    pub(crate) no_body: bool,
+}
+
+/// A size as C prints one: -1 for none.
+struct CSize(Option<u64>);
+
+impl std::fmt::Display for CSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(n) => n.fmt(f),
+            None => f.write_str("-1"),
+        }
+    }
+}
+
 /// What a request's body came to, and the limits on it (`cw_download`).
 #[derive(Debug, Default)]
 struct BodyAccountant {
@@ -170,6 +275,11 @@ struct BodyAccountant {
     bytecount: u64,
     /// Something of the response, not of a proxy's CONNECT, has come.
     started: bool,
+    expect: Expect,
+    /// The body is complete.
+    done: bool,
+    /// The connection is not to be reused.
+    close: bool,
 }
 
 impl BodyAccountant {
@@ -179,6 +289,20 @@ impl BodyAccountant {
             self.started = true;
             cx.mark(Timer::StartTransfer);
         }
+    }
+
+    /// How much of `len` more bytes the expected size wants, and how many
+    /// are past it; the body is complete once it has them all.
+    fn cut(&mut self, len: usize) -> (usize, usize) {
+        let Some(max) = self.expect.max else {
+            return (len, 0);
+        };
+        let left = usize::try_from(max.saturating_sub(self.bytecount)).unwrap_or(usize::MAX);
+        let wanted = len.min(left);
+        if wanted == left {
+            self.done = true;
+        }
+        (wanted, len - wanted)
     }
 
     /// How much of `len` more bytes the size limit lets through.

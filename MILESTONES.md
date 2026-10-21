@@ -254,8 +254,11 @@ yet meet.
       trailers, raw mode and the hex and trailer limits. Fixtures 34, 36, 207, 266, 326,
       1116, 1416, 1417, 1482, 1483, 1493 and 2106, fed whole, split at every byte and a byte
       at a time, and the grammar's corners checked against the C binary.
-    - **e. Accounting.** **To do.** The `maxdownload` cut, a short body at its end, a body
-      where none was wanted, GOT_NOTHING.
+    - **e. Accounting.** **Done.** `deliver::Expect` and the accountant's cut at the expected
+      size ("Excess found writing body…", the connection given up), the short body at the end
+      (18), a body where none was wanted dropped with the connection, and
+      `HeadParser::got_nothing`, the interim heads' bytes deducted. Messages checked against the
+      C binary.
 14. **http1: generate the fixture runner from tests/data.** The milestone set's cases without
     servercmd, driven over `FakeNet` and `ManualClock`; armed by breaking a framing rule. Adds the
     plain-GET allocation budget test, set at this design's count.

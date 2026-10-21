@@ -85,9 +85,9 @@ witness: curl-core deliver::tests::failed_output_stays_failed
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_body_over_the_size_limit_is_cut_at_the_limit
 --- old
-        let allowed = self.accountant.allowed(bytes.len(), max_filesize);
+        let allowed = self.accountant.allowed(wanted, max_filesize);
 --- new
-        let allowed = bytes.len();
+        let allowed = wanted;
 
 === included header lines do not count against the size limit
 file: crates/curl-core/src/deliver/mod.rs
@@ -111,13 +111,29 @@ witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_receive
 --- old
         raw_trace(cx, bytes);
         self.accountant.response_started(cx);
+        let expect = self.accountant.expect;
+        if expect.no_body && !bytes.is_empty() {
+            // A head was read, so the response is fine; the body goes.
+            self.accountant.close = true;
+            self.accountant.done = true;
+            return Ok(());
+        }
+        let (wanted, excess) = self.accountant.cut(bytes.len());
         let max_filesize = cx.easy().options().limits.max_filesize;
-        let allowed = self.accountant.allowed(bytes.len(), max_filesize);
+        let allowed = self.accountant.allowed(wanted, max_filesize);
         self.out.body(cx, &bytes[..allowed], self.pausable())?;
 --- new
         self.accountant.response_started(cx);
+        let expect = self.accountant.expect;
+        if expect.no_body && !bytes.is_empty() {
+            // A head was read, so the response is fine; the body goes.
+            self.accountant.close = true;
+            self.accountant.done = true;
+            return Ok(());
+        }
+        let (wanted, excess) = self.accountant.cut(bytes.len());
         let max_filesize = cx.easy().options().limits.max_filesize;
-        let allowed = self.accountant.allowed(bytes.len(), max_filesize);
+        let allowed = self.accountant.allowed(wanted, max_filesize);
         self.out.body(cx, &bytes[..allowed], self.pausable())?;
         raw_trace(cx, bytes);
 
@@ -328,3 +344,40 @@ witness: curl-core deliver::tests::a_handler_s_own_reason_is_the_only_one
         Write::Fail if cx.easy().report().reasons() != reasons && false => {
             Err(ErrorKind::WriteError)
         }
+
+=== excess past the expected size is written
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_body_past_its_expected_size_is_cut
+--- old
+        let wanted = len.min(left);
+--- new
+        let wanted = len;
+
+=== excess keeps the connection
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_body_past_its_expected_size_is_cut
+--- old
+                    CSize(expect.max)
+                ),
+            );
+            self.accountant.close = true;
+--- new
+                    CSize(expect.max)
+                ),
+            );
+
+=== an empty write where no body is wanted closes
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::an_unwanted_body_is_dropped
+--- old
+        if expect.no_body && !bytes.is_empty() {
+--- new
+        if expect.no_body {
+
+=== an unwanted body is missing at the end
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::an_unwanted_body_is_dropped
+--- old
+            Some(size) if expect.max.is_some() && !expect.no_body && size > bytecount => {
+--- new
+            Some(size) if expect.max.is_some() && size > bytecount => {

@@ -1267,7 +1267,13 @@ fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOption
   1.x subversion or an unknown major version is 1, another major version than the request's is
   8, and any other line starting `HTTP/` in some case is a 200 in HTTP/1.0 (the HTTP200ALIASES
   check, which always knows `HTTP/`).
-- GOT_NOTHING is computed in one place from the response-phase byte counts, discounting 1xx.
+- GOT_NOTHING is computed in one place, `HeadParser::got_nothing`, from the request's head
+  bytes and the body's, less the interim heads' up to the last that ended.
+- The pipeline's accountant is told what the final head expects (`Pipeline::expect`: size,
+  most to deliver, no body wanted). Past the most, the rest is excess: traced, not written, and
+  the connection given up, the body complete. A body where none was wanted is dropped, and the
+  connection with it; the response stands, as a head was read. `Pipeline::end` fails a body
+  short of its size with "end of response with N bytes missing" (18).
 
 ### 6.3 Header store
 

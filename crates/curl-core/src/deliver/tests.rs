@@ -14,7 +14,7 @@ use crate::multi::{
 use crate::options::script::{Piece, Script};
 use crate::report::{HeaderCursor, HeaderError, HeaderView, Origins, Request};
 
-use super::{Pipeline, Reach};
+use super::{Expect, Pipeline, Reach};
 use crate::time::ManualClock;
 
 fn multi() -> Multi {
@@ -1167,4 +1167,125 @@ fn output_written_while_held_goes_behind_it() {
             (b"onetwo".to_vec(), Write::Accepted)
         ]
     );
+}
+
+/// A stalled verbose transfer whose writes and trace are kept, for driving
+/// a pipeline by hand.
+fn accounting() -> (Multi, TransferId, Log, Trace) {
+    let mut e = easy("stall://a");
+    let (log, trace) = (Log::default(), Trace::default());
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.write = Some(handler(Recorder::new("write", &log)));
+    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    let mut m = multi();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    (m, id, log, trace)
+}
+
+/// Past the size a head expects, the rest is excess: noted, not written,
+/// and the connection given up; the body is then complete
+/// (`cw_download_write`).
+#[test]
+fn a_body_past_its_expected_size_is_cut() {
+    let (mut m, id, log, trace) = accounting();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(Reach::Network);
+        p.expect(Expect {
+            size: Some(5),
+            max: Some(5),
+            no_body: false,
+        });
+        p.body(cx, b"abc").unwrap();
+        assert!(!p.body_done());
+        p.body(cx, b"defg").unwrap();
+        assert_eq!(
+            (p.body_done(), p.body_closes(), p.bytecount()),
+            (true, true, 5)
+        );
+        p.end(cx).unwrap();
+    });
+    assert_eq!(lengths(&log.borrow(), "write"), [3, 2]);
+    assert_eq!(
+        *trace.0.borrow(),
+        [
+            b"Excess found writing body: excess = 2, size = 5, maxdownload = 5, bytecount = 5\n"
+                .to_vec()
+        ]
+    );
+    let (mut m, id, _, _) = accounting();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(Reach::Network);
+        p.expect(Expect {
+            size: Some(3),
+            max: Some(3),
+            no_body: false,
+        });
+        p.body(cx, b"abc").unwrap();
+        assert_eq!(
+            (p.body_done(), p.body_closes()),
+            (true, false),
+            "exactly the size"
+        );
+    });
+}
+
+/// Without an expected size, nothing is excess and nothing is missing.
+#[test]
+fn a_body_of_no_known_size_is_never_cut() {
+    let (mut m, id, log, trace) = accounting();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(Reach::Network);
+        p.body(cx, b"abcdef").unwrap();
+        assert_eq!((p.body_done(), p.body_closes()), (false, false));
+        p.end(cx).unwrap();
+    });
+    assert_eq!(lengths(&log.borrow(), "write"), [6]);
+    assert_eq!(*trace.0.borrow(), Vec::<Vec<u8>>::new());
+}
+
+/// A response ending short of its expected size fails with what is
+/// missing, after what came was written.
+#[test]
+fn a_short_body_is_a_partial_file() {
+    let (mut m, id, log, trace) = accounting();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(Reach::Network);
+        p.expect(Expect {
+            size: Some(6),
+            max: Some(6),
+            no_body: false,
+        });
+        p.body(cx, b"abc").unwrap();
+        assert_eq!(p.end(cx), Err(ErrorKind::PartialFile));
+    });
+    assert_eq!(lengths(&log.borrow(), "write"), [3]);
+    assert_eq!(
+        *trace.0.borrow(),
+        [b"end of response with 3 bytes missing\n".to_vec()]
+    );
+}
+
+/// A body where none is wanted is dropped, the connection with it; the
+/// response stands (a HEAD's).
+#[test]
+fn an_unwanted_body_is_dropped() {
+    let (mut m, id, log, _) = accounting();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(Reach::Network);
+        p.expect(Expect {
+            size: Some(6),
+            max: Some(0),
+            no_body: true,
+        });
+        p.body(cx, b"").unwrap();
+        assert!(!p.body_closes(), "nothing came");
+        p.body(cx, b"abcdef").unwrap();
+        assert_eq!(
+            (p.body_done(), p.body_closes(), p.bytecount()),
+            (true, true, 0)
+        );
+        p.end(cx).unwrap();
+    });
+    assert_eq!(lengths(&log.borrow(), "write"), [0usize; 0]);
 }

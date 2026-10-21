@@ -206,6 +206,9 @@ pub(crate) struct HeadParser {
     version_seen: bool,
     /// Head bytes of this request's responses (C's `allheadercount`).
     request_bytes: u64,
+    /// Of those, the interim heads' up to the last that ended (C's
+    /// `deductheadercount`).
+    interim_bytes: u64,
     /// What the heads said so far.
     meta: Meta,
     /// The body's framing, once the final head ended.
@@ -225,6 +228,7 @@ impl HeadParser {
             status: None,
             version_seen: false,
             request_bytes: 0,
+            interim_bytes: 0,
             meta: Meta::default(),
             framing: None,
         }
@@ -249,6 +253,17 @@ impl HeadParser {
     /// delivered.
     pub(crate) fn request_bytes(&self) -> u64 {
         self.request_bytes
+    }
+
+    /// Whether the server sent nothing that counts: no head but interim
+    /// ones, and no `body` bytes (`Curl_http_done`'s "Empty reply from
+    /// server").
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no transfer reads a response yet")
+    )]
+    pub(crate) fn got_nothing(&self, body: u64) -> bool {
+        body + self.request_bytes - self.interim_bytes == 0
     }
 
     /// Read from `input`; `transfer_bytes` counts head bytes over every
@@ -424,6 +439,9 @@ impl HeadParser {
             kind
         };
         let counted = self.count(self.line.len() as u64, transfer_bytes);
+        if let LineKind::End { interim } = kind {
+            self.interim_bytes = if interim { self.request_bytes } else { 0 };
+        }
         let then = first
             .and(counted)
             .and_then(|()| (!bad_code).then_some(()).ok_or(HeadError::BadCode));

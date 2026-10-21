@@ -353,6 +353,31 @@ fn a_request_s_head_bytes_are_counted() {
     assert_eq!((p.request_bytes(), transfer, input), (25, 25, &b"rest"[..]));
 }
 
+/// Only interim heads, and no body, is nothing that counts: as the C
+/// tool showed for a lone "100 Continue". A final head's status line
+/// alone is something.
+#[test]
+fn interim_heads_alone_are_nothing() {
+    let fed = |reply: &[u8]| {
+        let mut p = HeadParser::new(PLAIN);
+        let mut transfer = 0;
+        let mut input = reply;
+        while !input.is_empty() {
+            let (used, _) = p.feed(input, &mut transfer).unwrap();
+            input = &input[used..];
+        }
+        p
+    };
+    let p = fed(b"HTTP/1.1 100 Continue\r\n\r\n");
+    assert!(p.got_nothing(0));
+    assert!(!p.got_nothing(1), "a body byte counts");
+    let p = fed(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n");
+    assert!(!p.got_nothing(0));
+    let p = fed(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\n");
+    assert!(!p.got_nothing(0), "a final head ends with nothing deducted");
+    assert!(fed(b"").got_nothing(0));
+}
+
 fn asked(f: impl FnOnce(&mut Asked)) -> Exchange {
     let mut exchange = PLAIN;
     f(&mut exchange.asked);

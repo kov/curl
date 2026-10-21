@@ -86,7 +86,7 @@ impl Request {
     pub(crate) fn do_it<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         match cx.easy().options().method {
             Method::Upload => self.upload(cx),
-            Method::Get | Method::Head => self.download(cx),
+            Method::Get | Method::Head | Method::Post => self.download(cx),
         }
     }
 

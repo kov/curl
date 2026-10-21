@@ -79,6 +79,7 @@ impl DebugHandler for Seen {
             DebugKind::HeaderIn => "in",
             DebugKind::HeaderOut => "out",
             DebugKind::DataIn => "data",
+            DebugKind::DataOut => "dataout",
             _ => "other",
         };
         self.0.borrow_mut().push((what, data.to_vec()));
@@ -1153,4 +1154,126 @@ fn a_response_until_close_over_a_reused_connection_is_whole() {
     let ran = get(&mut m, "/b", talk.clone(), |_| {});
     assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"ab".to_vec()));
     assert!(!ran.seen.text().iter().any(|l| l.contains("retrying")));
+}
+
+/// A request with `body` sent by `method`, its head before it.
+fn with_body(method: Method, body: &[u8], set: impl FnOnce(&mut Options)) -> Ran {
+    let body = body.to_vec();
+    run(
+        "/p",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        false,
+        |o| {
+            o.method = method;
+            o.upload =
+                crate::options::UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+            set(o);
+        },
+    )
+}
+
+/// A POST sends its body behind its head, sized, typed as a form; the
+/// trace has the head and the body apart, and the request's size both.
+#[test]
+fn a_post_sends_its_body_after_its_head() {
+    let ran = with_body(Method::Post, b"a=b", |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let head = format!(
+        "POST /p HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\
+         Content-Length: 3\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n"
+    );
+    assert_eq!(ran.request, [head.as_bytes(), b"a=b"].concat());
+    assert_eq!(ran.seen.of("out"), [head.as_bytes()]);
+    assert_eq!(ran.seen.of("dataout"), [b"a=b"]);
+    let sizes = *ran.easy.report().sizes();
+    assert_eq!(
+        (sizes.upload(), sizes.request()),
+        (3, ran.request.len() as u64)
+    );
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"upload completely sent off: 3 bytes\n".to_string())
+    );
+}
+
+/// A PUT is not typed; an empty body is announced as such.
+#[test]
+fn a_put_is_sized_and_an_empty_body_announced() {
+    let ran = with_body(Method::Upload, b"xyz", |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.request.starts_with(b"PUT /p HTTP/1.1\r\n"));
+    assert!(ran.request.ends_with(b"\r\nContent-Length: 3\r\n\r\nxyz"));
+    let ran = with_body(Method::Post, b"", |_| {});
+    assert!(ran.request.ends_with(
+        b"Content-Length: 0\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n"
+    ));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Request completely sent off\n".to_string())
+    );
+}
+
+/// The application's Content-Length and Content-Type replace the
+/// library's, an empty one dropping it.
+#[test]
+fn the_application_s_content_headers_replace_the_library_s() {
+    let ran = with_body(Method::Post, b"a=b", |o| {
+        o.http.headers =
+            UserHeaders::new([&b"Content-Type: text/plain"[..], b"Content-Length:"]).unwrap();
+    });
+    let request = String::from_utf8(ran.request).unwrap();
+    assert!(!request.contains("Content-Length"), "{request}");
+    assert!(
+        request.contains("\r\nContent-Type: text/plain\r\n\r\na=b"),
+        "{request}"
+    );
+    assert!(!request.contains("x-www-form-urlencoded"), "{request}");
+}
+
+/// What is not sent yet is refused before anything goes: a body to wait
+/// for 100-continue for, or of unknown size; a resumed upload is not
+/// HTTP's.
+#[test]
+fn bodies_not_sent_yet_are_refused() {
+    let big = vec![b'x'; 1024 * 1024 + 1];
+    assert_eq!(
+        with_body(Method::Post, &big, |_| {}).result,
+        Err(ErrorKind::NotBuiltIn)
+    );
+    let asked = with_body(Method::Post, b"a", |o| {
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    });
+    assert_eq!(asked.result, Err(ErrorKind::NotBuiltIn));
+    let chunked = with_body(Method::Upload, b"a", |o| {
+        o.http.headers = UserHeaders::new([&b"Transfer-Encoding: chunked"[..]]).unwrap();
+    });
+    assert_eq!(chunked.result, Err(ErrorKind::NotBuiltIn));
+    let not_asked = with_body(Method::Post, &big, |o| {
+        o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
+    });
+    assert_eq!(not_asked.result, Ok(()), "the application asked for none");
+    assert_eq!(not_asked.easy.report().sizes().upload(), big.len() as u64);
+    let resumed = with_body(Method::Upload, b"a", |o| {
+        o.resume = Some(Resume::At(NonZeroU64::new(1).unwrap()));
+    });
+    assert_eq!(resumed.result, Err(ErrorKind::BadFunctionArgument));
+    assert!(resumed.request.is_empty());
+}
+
+/// A body larger than the send buffer is read again as each buffer goes,
+/// the first buffer shared with the head.
+#[test]
+fn a_body_larger_than_the_buffer_goes_in_buffers() {
+    let body: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+    let ran = with_body(Method::Upload, &body, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.request.ends_with(&body));
+    let head_len = ran.request.len() - body.len();
+    let pieces = ran.seen.of("dataout");
+    assert_eq!(pieces.concat(), body);
+    assert_eq!(pieces[0].len(), 65536 - head_len, "behind the head");
+    assert_eq!(pieces[1].len(), 65536);
+    assert_eq!(ran.easy.report().sizes().upload(), body.len() as u64);
 }

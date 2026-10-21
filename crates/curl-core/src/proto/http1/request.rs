@@ -5,6 +5,8 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::error::ErrorKind;
 
+use super::fields;
+
 /// The most a request head may be, the terminating byte C's buffer keeps
 /// for itself taken off (`DYN_HTTP_REQUEST`).
 const MAX_HEAD: usize = 1024 * 1024 - 1;
@@ -173,6 +175,24 @@ impl UserHeaders {
         self.lines.iter().find(|h| h.replaces(name))
     }
 
+    /// Whether the application's `Expect` asks for `100-continue`; none
+    /// if it gives no `Expect`.
+    pub(crate) fn expects_continue(&self) -> Option<bool> {
+        let expect = self.replacing(b"Expect")?;
+        Some(fields::header_says(
+            &expect.line,
+            b"Expect:",
+            b"100-continue",
+        ))
+    }
+
+    /// Whether the application's `Transfer-Encoding` asks for the body
+    /// chunked (`http_req_set_TE`).
+    pub(crate) fn asks_chunked(&self) -> bool {
+        self.replacing(b"Transfer-Encoding")
+            .is_some_and(|te| fields::header_says(&te.line, b"Transfer-Encoding:", b"chunked"))
+    }
+
     /// The Host the application gave, which goes only to the first origin.
     fn host(&self, _: SameOrigin) -> Option<&UserHeader> {
         self.replacing(b"Host")
@@ -311,7 +331,17 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) basic: Option<Basic<'o>>,
     /// The offset a GET or HEAD asks the rest from.
     pub(crate) range_from: Option<u64>,
+    /// The body the request sends, if it has one.
+    pub(crate) content: Option<Content>,
     pub(crate) headers: &'o UserHeaders,
+}
+
+/// What the head says of a body of known size (`http_add_content_hds`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Content {
+    pub(crate) length: u64,
+    /// A POST's, typed as a form unless the application types it.
+    pub(crate) form: bool,
 }
 
 /// The request head as it goes on the wire, or only its length.
@@ -428,6 +458,17 @@ fn write_h1(
                     out.line(&[b"Referer: ", referer])?;
                 }
             }
+            Part::Content => {
+                if let Some(content) = head.content {
+                    if head.headers.replacing(b"Content-Length").is_none() {
+                        let mut digits = [0u8; 20];
+                        out.line(&[b"Content-Length: ", decimal(content.length, &mut digits)])?;
+                    }
+                    if content.form && head.headers.replacing(b"Content-Type").is_none() {
+                        out.line(&[b"Content-Type: application/x-www-form-urlencoded"])?;
+                    }
+                }
+            }
             Part::Custom => custom(head, gate, out)?,
             Part::Connection => connection(head.headers, out)?,
             Part::End => out.put(b"\r\n")?,
@@ -440,8 +481,7 @@ fn write_h1(
             | Part::AltUsed
             | Part::Upgrade
             | Part::Cookie
-            | Part::Conditionals
-            | Part::Content => {}
+            | Part::Conditionals => {}
         }
     }
     Ok(())
@@ -584,6 +624,7 @@ mod tests {
             referer: None,
             basic: None,
             range_from: None,
+            content: None,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -646,6 +687,7 @@ mod tests {
                 referer: Some(b"http://ref.example/x"),
                 basic: None,
                 range_from: None,
+                content: None,
                 headers: &headers,
             };
             let here = peer(b"127.0.0.1");
@@ -688,6 +730,7 @@ mod tests {
                 referer: None,
                 basic: Basic::new(b"OmV4YW1wbGU=", trusted, &headers),
                 range_from: None,
+                content: None,
                 headers: &headers,
             };
             let mut out = Vec::new();
@@ -842,6 +885,7 @@ mod tests {
             referer: None,
             basic: None,
             range_from: None,
+            content: None,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -887,6 +931,7 @@ mod tests {
                 referer: None,
                 basic: None,
                 range_from: None,
+                content: None,
                 headers: &headers,
             };
             let here = peer(b"h");

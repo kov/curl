@@ -134,6 +134,9 @@ pub enum Method {
     /// To store the body the transfer sends, from `Options::upload`
     /// (`CURLOPT_UPLOAD`).
     Upload,
+    /// To send the body from `Options::upload` for the resource to take
+    /// (`CURLOPT_POST`, `CURLOPT_POSTFIELDS`); `file:` reads the file.
+    Post,
 }
 
 /// Where in the resource a transfer starts (`CURLOPT_RESUME_FROM_LARGE`).

@@ -228,13 +228,6 @@ impl Upload {
 
 /// Body bytes went out: counted, and traced for a verbose transfer
 /// (`xfer_send`'s DATA_OUT). `file:` writes its body itself, untraced.
-#[cfg_attr(
-    not(any(test, feature = "test-util")),
-    expect(
-        dead_code,
-        reason = "only the test protocol sends over a connection before HTTP"
-    )
-)]
 pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, body: &[u8]) {
     if body.is_empty() {
         return;
@@ -245,9 +238,9 @@ pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, body: &[u8]) {
     {
         handler.debug(&mut TransferCx::new(cx), DebugKind::DataOut, body);
     }
-    let sizes = cx.report_mut().sizes_mut();
-    sizes.upload += body.len() as u64;
-    sizes.request += body.len() as u64;
+    // The request's size counts them where the protocol sends them, with
+    // the head and any framing (`Curl_xfer_send`).
+    cx.report_mut().sizes_mut().upload += body.len() as u64;
 }
 
 /// The size of the body to send, as the request announces it, or not

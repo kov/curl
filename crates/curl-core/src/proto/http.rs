@@ -15,6 +15,7 @@ use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
 use crate::options::{HttpVersion, Method, Resume};
 use crate::report::Timer;
 use crate::trace;
+use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, Url};
 
 use super::ProtoStep;
@@ -28,6 +29,21 @@ use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, L
 
 /// The most one read takes (`CURL_MAX_WRITE_SIZE`, BUFFERSIZE's default).
 const READ_SIZE: usize = 16384;
+
+/// The send buffer the head and the body share (`UPLOADBUFFER_DEFAULT`).
+const UPLOAD_BUFFER: usize = 65536;
+
+/// A body larger than this asks `Expect: 100-continue` on HTTP/1.1.
+const EXPECT_100_THRESHOLD: u64 = 1024 * 1024;
+
+/// What a request's body is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyKind {
+    /// A POST's, a form by default (`HTTPREQ_POST`).
+    Form,
+    /// A PUT's.
+    Put,
+}
 
 /// The port a URL without one means.
 const DEFAULT_PORT: u16 = 80;
@@ -43,9 +59,22 @@ pub(crate) struct Request {
     /// What the URL says to authenticate with.
     credentials: Option<Credentials>,
     port: u16,
-    /// The head, rendered at DO, and how much of it went.
+    /// What the request sends and has not yet (`req.sendbuf`): the head,
+    /// then the body as read, behind it in one buffer of
+    /// `UPLOAD_BUFFER` bytes. `out[sent..filled]` is still to go, the
+    /// first `head_left` of it the head's.
     out: Vec<u8>,
+    filled: usize,
     sent: usize,
+    head_left: usize,
+    /// The body, read at DO and as what is read goes.
+    upload: Option<Upload>,
+    /// The body is read to its end (`eos_read`).
+    eos_read: bool,
+    /// Body bytes sent (`writebytecount`).
+    body_sent: u64,
+    /// Everything is sent (`upload_done`); nothing is, before DO.
+    sent_all: bool,
     /// Made at DO, once the connection says whether it is reused.
     head: Option<HeadParser>,
     stage: Stage,
@@ -122,7 +151,13 @@ impl Request {
             credentials,
             port,
             out: Vec::new(),
+            filled: 0,
             sent: 0,
+            head_left: 0,
+            upload: None,
+            eos_read: false,
+            body_sent: 0,
+            sent_all: true,
             head: None,
             stage: Stage::Head,
             interim: false,
@@ -151,9 +186,9 @@ impl Request {
         self.head.as_ref().is_none_or(|h| h.request_bytes() == 0) && self.pipeline.bytecount() == 0
     }
 
-    /// Whether some of the head is still to send.
+    /// Whether some of the request is still to send.
     pub(crate) fn sending(&self) -> bool {
-        self.sent < self.out.len()
+        !self.sent_all
     }
 
     /// What the request waits for on its socket.
@@ -162,7 +197,7 @@ impl Request {
         if !matches!(self.stage, Stage::Done) && !pause.recv_paused() {
             events = events | Events::IN;
         }
-        if self.sending() {
+        if self.sending() && !pause.send_paused() {
             events = events | Events::OUT;
         }
         events
@@ -177,12 +212,43 @@ impl Request {
         let reused = cx.conn(lease).reused();
         let options = cx.easy().options();
         let http = &options.http;
-        let method: &[u8] = match options.method {
-            Method::Get => b"GET",
-            Method::Head => b"HEAD",
-            // A request body is not sent over HTTP yet.
-            Method::Upload => return Err(ErrorKind::NotBuiltIn),
+        let (method, body): (&[u8], _) = match options.method {
+            Method::Get => (b"GET", None),
+            Method::Head => (b"HEAD", None),
+            Method::Post => (b"POST", Some(BodyKind::Form)),
+            Method::Upload => (b"PUT", Some(BodyKind::Put)),
         };
+        if body.is_some() && options.resume.is_some() {
+            return Err(trace::fail(
+                cx,
+                ErrorKind::BadFunctionArgument,
+                format_args!("HTTP upload cannot be resumed"),
+            ));
+        }
+        let upload = body.map(|_| Upload::new(&options.upload));
+        let content = match (body, upload.as_ref().map(Upload::size)) {
+            (None, _) => None,
+            (Some(kind), Some(Some(length))) if !http.headers.asks_chunked() => {
+                Some(request::Content {
+                    length,
+                    form: kind == BodyKind::Form,
+                })
+            }
+            // A body of unknown size goes chunked, as does one the
+            // application asks chunked: neither is sent yet.
+            (Some(_), _) => return Err(ErrorKind::NotBuiltIn),
+        };
+        // `Expect: 100-continue`, asked for or added for a large body on
+        // HTTP/1.1, is not waited for yet (`addexpect`).
+        if let Some(content) = &content {
+            let asked = http.headers.expects_continue();
+            let added = asked.is_none()
+                && http.version == HttpVersion::Http11
+                && content.length > EXPECT_100_THRESHOLD;
+            if asked == Some(true) || added {
+                return Err(ErrorKind::NotBuiltIn);
+            }
+        }
         let resume_from = match options.resume {
             None => None,
             Some(Resume::At(at)) => Some(at.get()),
@@ -216,6 +282,7 @@ impl Request {
             referer: http.referer.as_deref(),
             basic,
             range_from: resume_from,
+            content,
             headers: &http.headers,
         };
         let mut out = Vec::new();
@@ -241,22 +308,67 @@ impl Request {
             let user = self.credentials.as_ref().map_or(&b""[..], |c| c.user());
             trace::info_with(cx, &[b"Server auth using Basic with user '", user, b"'"]);
         }
+        let head_len = out.len();
+        if let Some(content) = &content {
+            // The body goes behind the head, in what is left of one
+            // buffer (`Curl_req_send`).
+            let room = UPLOAD_BUFFER.saturating_sub(head_len);
+            out.try_reserve_exact(room)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            out.try_extend_from_slice(&[0; UPLOAD_BUFFER][..room])
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            upload::announce_size(cx, Some(content.length));
+        }
         self.out = out;
+        self.filled = head_len;
         self.sent = 0;
+        self.head_left = head_len;
+        self.eos_read = upload.is_none();
+        self.upload = upload;
+        self.body_sent = 0;
+        self.sent_all = false;
         self.head = Some(HeadParser::new(exchange));
+        if !self.eos_read && self.filled < self.out.len() && !cx.pause().send_paused() {
+            self.fill(cx)?;
+        }
         // The engine takes the request as sent at DID if it went now.
         self.send(cx, lease).map(drop)
     }
 
-    /// Send what is left of the head, as much as the connection takes:
-    /// whether it all went, the request sent (`req_set_upload_done`).
+    /// Read body into the buffer behind what is there: whether anything
+    /// came or the body ended (`add_from_client`).
+    fn fill<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
+        let pausable = self.pipeline.pausable();
+        let upload = self.upload.as_mut().expect("a body to read");
+        let got = upload.read(cx, &mut self.out[self.filled..], pausable)?;
+        self.filled += got.n;
+        self.eos_read = got.eos;
+        Ok(got.n > 0 || got.eos)
+    }
+
+    /// Send what is left of the request, reading more of its body as
+    /// what was read goes, as much as the connection takes: whether it all
+    /// went, the request sent (`Curl_req_send_more`,
+    /// `req_set_upload_done`).
     fn send<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &ConnLease,
     ) -> Result<bool, ErrorKind> {
         while self.sending() {
-            let sent = cx.conn(lease).send(&self.out[self.sent..]);
+            if self.sent == self.filled {
+                if self.eos_read {
+                    self.sent_all = true;
+                    break;
+                }
+                self.sent = 0;
+                self.filled = 0;
+                if cx.pause().send_paused() || !self.fill(cx)? {
+                    return Ok(false);
+                }
+                continue;
+            }
+            let sent = cx.conn(lease).send(&self.out[self.sent..self.filled]);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(false),
@@ -269,15 +381,38 @@ impl Request {
                     ));
                 }
             };
-            trace::bytes(
-                cx,
-                DebugKind::HeaderOut,
-                &self.out[self.sent..self.sent + n],
-            );
+            // The head's part and the body's are traced apart
+            // (`xfer_send`); both count as the request's.
+            let head = n.min(self.head_left);
+            if head > 0 {
+                trace::bytes(
+                    cx,
+                    DebugKind::HeaderOut,
+                    &self.out[self.sent..self.sent + head],
+                );
+            }
+            upload::sent(cx, &self.out[self.sent + head..self.sent + n]);
             cx.report_mut().sizes_mut().request += n as u64;
+            self.head_left -= head;
+            self.body_sent += (n - head) as u64;
             self.sent += n;
         }
-        trace::info(cx, format_args!("Request completely sent off"));
+        if self.body_sent > 0 {
+            let n = self.body_sent;
+            trace::info(cx, format_args!("upload completely sent off: {n} bytes"));
+        } else if !matches!(self.stage, Stage::Done) {
+            let sized = self
+                .upload
+                .as_ref()
+                .and_then(Upload::size)
+                .is_some_and(|n| n > 0);
+            let said = if sized {
+                "We are completely uploaded and fine"
+            } else {
+                "Request completely sent off"
+            };
+            trace::info(cx, format_args!("{said}"));
+        }
         Ok(true)
     }
 

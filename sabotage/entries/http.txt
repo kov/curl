@@ -387,3 +387,43 @@ witness: curl-core proto::http::tests::the_report_s_url_and_the_request_keep_an_
         match url.get(Part::Query, query) {
 --- new
         match url.get(Part::Query, GetOptions::NONE) {
+
+=== the body is traced as the head
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_post_sends_its_body_after_its_head
+--- old
+            let head = n.min(self.head_left);
+--- new
+            let head = n;
+
+=== the body stops at its first buffer
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_body_larger_than_the_buffer_goes_in_buffers
+--- old
+                if self.eos_read {
+--- new
+                if self.eos_read || self.body_sent > 0 {
+
+=== a form is typed whatever the application says
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::the_application_s_content_headers_replace_the_library_s
+--- old
+                    if content.form && head.headers.replacing(b"Content-Type").is_none() {
+--- new
+                    if content.form {
+
+=== a large body is sent without waiting for 100-continue
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
+--- old
+                && content.length > EXPECT_100_THRESHOLD;
+--- new
+                && content.length > EXPECT_100_THRESHOLD * 2;
+
+=== a body the application asks chunked goes plain
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
+--- old
+            (Some(kind), Some(Some(length))) if !http.headers.asks_chunked() => {
+--- new
+            (Some(kind), Some(Some(length))) => {

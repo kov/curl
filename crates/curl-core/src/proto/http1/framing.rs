@@ -174,10 +174,9 @@ impl Meta {
             return Ok(Some(Note::Http10KeepAlive));
         }
         // A HEAD's or a 304's codings would be the body's it does not have
-        // (RFC 9112, section 6.1).
+        // (RFC 9112, section 6.1); a 304 is bodyless.
         if !self.bodyless
             && !asked.head
-            && status.code != 304
             && let Some(v) = value_of(line, b"Transfer-Encoding:")
         {
             self.codings(v, asked)?;

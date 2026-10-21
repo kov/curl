@@ -181,14 +181,6 @@ witness: curl-core proto::http1::response::tests::a_transfer_coding_overrides_th
 --- new
             && let Some(v) = value_of(line, b"Content-Length:")
 
-=== a 304 stacks its codings
-file: crates/curl-core/src/proto/http1/framing.rs
-witness: curl-core proto::http1::response::tests::some_responses_have_no_body
---- old
-            && status.code != 304
---- new
-            && status.code != 305
-
 === a second length may differ
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http1::response::tests::a_length_is_one_number

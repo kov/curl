@@ -1598,6 +1598,10 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     }
     cx.mark(Timer::StartSingle);
     cx.mark(Timer::PostQueue);
+    // Counted from nothing for each request (`Curl_init_do`).
+    let (speedometer, report) = cx.progress_parts();
+    report.sizes_mut().new_request();
+    speedometer.start_over();
     // Read back once parsed, credentials and all, as C reads it back
     // (`url.c`, `CURLUPART_URL` into `state.url`): one that cannot be,
     // grown past the limit, fails the transfer without a word.

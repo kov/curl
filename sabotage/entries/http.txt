@@ -1155,6 +1155,14 @@ witness: curl-core proto::http::tests::digest_goes_beside_the_application_s_auth
 --- new
                 Authorization::new("Digest", value, c.trusted(), &http.headers)
 
+=== a request counts what the one before it moved
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::each_request_counts_its_own_upload
+--- old
+    report.sizes_mut().new_request();
+--- new
+    let _ = report.sizes_mut();
+
 === the nonce count stays at one
 file: crates/curl-core/src/proto/http/digest.rs
 witness: curl-core proto::http::digest::tests::answers_with_a_qop

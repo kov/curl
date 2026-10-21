@@ -1512,7 +1512,9 @@ stay open across responses and transfers until a pick, as C's `avail` does, so a
 challenge met while Digest is still open is a duplicate and not read (test 2027). The Digest
 challenge read is kept with the origin that sent it and the credentials first answering it,
 and asked for by another origin or with other credentials it is not there. An answered 401
-ends `Follow` to the request's own URL, counted as a redirect, keeping `Options::port`. The hashes Digest computes with (MD5, SHA-256,
+ends `Follow` to the request's own URL, counted as a redirect, keeping `Options::port`. Each
+request counts what it moves from nothing (`Sizes::new_request`, `Curl_pgrsReset`); heads and
+request bytes are counted over the transfer. The hashes Digest computes with (MD5, SHA-256,
 SHA-512/256) are `crate::hash`, fixed state and no allocation, ported from C's built-ins.
 
 ---

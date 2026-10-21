@@ -542,6 +542,17 @@ pub struct Sizes {
 }
 
 impl Sizes {
+    /// A request starts: what it moves is counted from nothing, and its
+    /// sizes are not known yet (`Curl_pgrsReset`). Heads and requests
+    /// are counted over the whole transfer.
+    pub(crate) fn new_request(&mut self) {
+        self.download = 0;
+        self.delivered = 0;
+        self.upload = 0;
+        self.download_expected = None;
+        self.upload_expected = None;
+    }
+
     /// Bytes of every response head and trailer received
     /// (`CURLINFO_HEADER_SIZE`).
     pub fn header(&self) -> u64 {

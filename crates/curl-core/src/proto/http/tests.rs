@@ -1902,6 +1902,15 @@ fn digest_goes_beside_the_application_s_authorization() {
     assert!(second.contains("Authorization: mine\r\n"), "{second}");
 }
 
+/// What a request uploads is counted from nothing: a POST a 307 sends on
+/// reports its body once (`Curl_pgrsReset`, test 579).
+#[test]
+fn each_request_counts_its_own_upload() {
+    let ran = redirected(307, Method::Post, b"a=b", |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().sizes().upload(), 3);
+}
+
 /// A token goes as Bearer when Bearer alone is wanted, its user named
 /// as empty; a 401 offering Bearer again refuses it.
 #[test]

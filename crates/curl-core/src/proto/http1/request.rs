@@ -158,9 +158,14 @@ impl UserHeaders {
         Ok(headers)
     }
 
+    /// The lines, as the application gave them.
+    pub fn lines(&self) -> impl Iterator<Item = &[u8]> {
+        self.lines.iter().map(|h| &h.line[..])
+    }
+
     /// A copy (`curl_easy_duphandle`).
     pub fn try_clone(&self) -> Result<UserHeaders, OutOfMemory> {
-        UserHeaders::new(self.lines.iter().map(|h| &h.line[..]))
+        UserHeaders::new(self.lines())
     }
 
     /// The first line that replaces the library's header `name`.

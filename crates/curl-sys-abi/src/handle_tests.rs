@@ -15,7 +15,7 @@ use std::time::Duration;
 use curl_core::conn::io::Events;
 use curl_core::multi::NotifyKind;
 use curl_core::options::script::{Piece, Script};
-use curl_core::options::{Method, Options, Progress, Resume, UploadSource};
+use curl_core::options::{HttpVersion, Method, Options, Progress, Resume, UploadSource};
 use curl_core::report::TransferReport;
 
 use crate::callbacks::aborts;
@@ -143,12 +143,90 @@ fn boolean_options_take_any_nonzero_value() {
         (ffi::CURLOPT_DISALLOW_USERNAME_IN_URL, |o| {
             o.url_rules.disallow_user
         }),
+        (ffi::CURLOPT_FAILONERROR, |o| o.http.fail_on_error),
+        (ffi::CURLOPT_HTTP09_ALLOWED, |o| o.http.allow_09),
+        (ffi::CURLOPT_IGNORE_CONTENT_LENGTH, |o| {
+            o.http.ignore_content_length
+        }),
+        (ffi::CURLOPT_HTTP_TRANSFER_DECODING, |o| !o.http.raw),
     ] {
         for (v, on) in [(1, true), (0, false), (2, true), (-1, true), (0, false)] {
             assert_eq!(long(c, o, v), CURLE_OK);
             assert_eq!(options(c, get), on, "{} = {v}", o.0);
         }
     }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// The HTTP options' strings and list are copied; NULL takes them away.
+/// HTTP/2 and HTTP/3 are not built in, as in a C build without them.
+#[test]
+fn http_options_reach_the_request() {
+    let c = curl_easy_init();
+    let strings = |c| {
+        options(c, |o| {
+            (
+                o.http.referer.clone(),
+                o.http.user_agent.clone(),
+                o.http
+                    .headers
+                    .lines()
+                    .map(<[u8]>::to_vec)
+                    .collect::<Vec<_>>(),
+            )
+        })
+    };
+    let mut referer = *b"http://r/\0";
+    pointer(c, ffi::CURLOPT_REFERER, referer.as_mut_ptr());
+    // Changed after: the handle kept a copy.
+    referer[0] = b'X';
+    std::hint::black_box(&referer);
+    pointer(c, ffi::CURLOPT_USERAGENT, c"ua/1".as_ptr().cast_mut());
+    let mut list = ptr::null_mut();
+    for line in [c"X-A: 1", c"Accept;"] {
+        // SAFETY: a list made here, and a C string.
+        list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
+    }
+    pointer(c, ffi::CURLOPT_HTTPHEADER, list);
+    // SAFETY: the list made above, which the handle does not keep.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    assert_eq!(
+        strings(c),
+        (
+            Some(b"http://r/".to_vec()),
+            Some(b"ua/1".to_vec()),
+            vec![b"X-A: 1".to_vec(), b"Accept;".to_vec()]
+        )
+    );
+    let null = ptr::null_mut::<c_char>();
+    for o in [
+        ffi::CURLOPT_REFERER,
+        ffi::CURLOPT_USERAGENT,
+        ffi::CURLOPT_HTTPHEADER,
+    ] {
+        assert_eq!(pointer(c, o, null), CURLE_OK);
+    }
+    assert_eq!(strings(c), (None, None, vec![]));
+    let version = |c| options(c, |o| o.http.version);
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTP_VERSION, ffi::CURL_HTTP_VERSION_1_0),
+        CURLE_OK
+    );
+    assert_eq!(version(c), HttpVersion::Http10);
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTP_VERSION, ffi::CURL_HTTP_VERSION_NONE),
+        CURLE_OK
+    );
+    assert_eq!(version(c), HttpVersion::Http11);
+    for (v, code) in [
+        (ffi::CURL_HTTP_VERSION_2_0, ffi::CURLE_UNSUPPORTED_PROTOCOL),
+        (ffi::CURL_HTTP_VERSION_3, ffi::CURLE_UNSUPPORTED_PROTOCOL),
+        (-1, CURLE_BAD_FUNCTION_ARGUMENT),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_HTTP_VERSION, v), code, "{v}");
+    }
+    assert_eq!(version(c), HttpVersion::Http11);
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

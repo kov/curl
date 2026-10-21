@@ -29,3 +29,19 @@ witness: curl-sys-abi handle_tests::infos_answer_from_the_report
     if kept.strip_suffix(b"\0") != Some(&text[..]) {
 --- new
     if true {
+
+=== only the first of the application's header lines is kept
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::http_options_reach_the_request
+--- old
+            options.http.headers = UserHeaders::new(unsafe { list_lines(p) })?;
+--- new
+            options.http.headers = UserHeaders::new(unsafe { list_lines(p) }.take(1))?;
+
+=== HTTP/2 is taken as if it were built in
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::http_options_reach_the_request
+--- old
+        _ => Err(Refused::Unsupported),
+--- new
+        _ => Ok(HttpVersion::Http11),

@@ -15,8 +15,8 @@ use core::ffi::{CStr, VaList, c_char, c_long, c_void};
 use core::num::{NonZeroU16, NonZeroU64};
 use core::ptr::NonNull;
 
-use curl_alloc::OutOfMemory;
-use curl_core::options::{FileMode, LowSpeed, Method, Options, Resume};
+use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_core::options::{FileMode, HttpVersion, LowSpeed, Method, Options, Resume, UserHeaders};
 use curl_core::time::TimeLimit;
 
 use crate::callbacks::{self, CCallbacks, CSettings};
@@ -60,6 +60,8 @@ enum Refused {
     OutOfMemory,
     NotBuiltIn,
     Unknown,
+    /// A protocol, or a version of one, this build leaves out.
+    Unsupported,
 }
 
 impl From<OutOfMemory> for Refused {
@@ -83,6 +85,54 @@ unsafe fn string<'a>(p: *mut c_void) -> Result<Option<&'a [u8]>, Refused> {
         return Err(Refused::Bad);
     }
     Ok(Some(s))
+}
+
+/// The lines of the list at `p`, in order; a node without a string is
+/// passed over.
+///
+/// # Safety
+///
+/// `p` is NULL or a `curl_slist` whose nodes and strings live through
+/// the walk.
+unsafe fn list_lines<'a>(p: *mut c_void) -> impl Iterator<Item = &'a [u8]> {
+    let mut node = p.cast::<ffi::curl_slist>().cast_const();
+    core::iter::from_fn(move || {
+        loop {
+            // SAFETY: as the caller guarantees, `node` is NULL or a node.
+            let here = unsafe { node.as_ref() }?;
+            node = here.next;
+            if !here.data.is_null() {
+                // SAFETY: a node's string is a C string.
+                return Some(unsafe { CStr::from_ptr(here.data) }.to_bytes());
+            }
+        }
+    })
+}
+
+/// The HTTP version a request asks for (`setopt_HTTP_VERSION`): HTTP/2
+/// and HTTP/3 are not in this build.
+fn http_version(n: c_long) -> Result<HttpVersion, Refused> {
+    match n {
+        ffi::CURL_HTTP_VERSION_1_0 => Ok(HttpVersion::Http10),
+        ffi::CURL_HTTP_VERSION_NONE | ffi::CURL_HTTP_VERSION_1_1 => Ok(HttpVersion::Http11),
+        n if n < ffi::CURL_HTTP_VERSION_NONE => Err(Refused::Bad),
+        _ => Err(Refused::Unsupported),
+    }
+}
+
+/// A copy of the string at `p`, or none for NULL.
+///
+/// # Safety
+///
+/// As `string`.
+unsafe fn owned(p: *mut c_void) -> Result<Option<Vec<u8>>, Refused> {
+    // SAFETY: as the caller guarantees.
+    let Some(s) = (unsafe { string(p) })? else {
+        return Ok(None);
+    };
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(s)?;
+    Ok(Some(copy))
 }
 
 /// A time limit of `n` units of `ms` milliseconds (`setopt_set_timeout_*`).
@@ -169,6 +219,13 @@ fn apply(
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_PATH_AS_IS, Long(n)) => options.url_rules.path_as_is = n != 0,
+        (ffi::CURLOPT_FAILONERROR, Long(n)) => options.http.fail_on_error = n != 0,
+        (ffi::CURLOPT_HTTP09_ALLOWED, Long(n)) => options.http.allow_09 = n != 0,
+        (ffi::CURLOPT_IGNORE_CONTENT_LENGTH, Long(n)) => {
+            options.http.ignore_content_length = n != 0;
+        }
+        (ffi::CURLOPT_HTTP_TRANSFER_DECODING, Long(n)) => options.http.raw = n == 0,
+        (ffi::CURLOPT_HTTP_VERSION, Long(n)) => options.http.version = http_version(n)?,
         (ffi::CURLOPT_DISALLOW_USERNAME_IN_URL, Long(n)) => {
             options.url_rules.disallow_user = n != 0;
         }
@@ -205,6 +262,19 @@ fn apply(
         (ffi::CURLOPT_URL, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.set_url(unsafe { string(p) }?)?;
+        }
+        (ffi::CURLOPT_REFERER, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.http.referer = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_USERAGENT, Ptr(p)) => {
+            // SAFETY: as above.
+            options.http.user_agent = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_HTTPHEADER, Ptr(p)) => {
+            // Copied: the core reads no list of the application's.
+            // SAFETY: the application passes a list or NULL.
+            options.http.headers = UserHeaders::new(unsafe { list_lines(p) })?;
         }
         (ffi::CURLOPT_DEFAULT_PROTOCOL, Ptr(p)) => {
             // SAFETY: as above.
@@ -317,6 +387,7 @@ pub unsafe extern "C" fn curl_easy_setopt(
         Ok(Err(Refused::OutOfMemory)) => return CURLE_OUT_OF_MEMORY,
         Ok(Err(Refused::NotBuiltIn)) => return CURLE_NOT_BUILT_IN,
         Ok(Err(Refused::Unknown)) => return CURLE_UNKNOWN_OPTION,
+        Ok(Err(Refused::Unsupported)) => return ffi::CURLE_UNSUPPORTED_PROTOCOL,
         Err(_) => return CURLE_RECURSIVE_API_CALL,
     };
     // Kept only once the change is whole.

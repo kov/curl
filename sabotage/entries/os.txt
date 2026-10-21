@@ -1,4 +1,5 @@
-# Sockets, polling and the waker (crates/curl-os, feature `net`).
+# Sockets, polling and the waker (crates/curl-os, feature `net`), files
+# and directories (feature `fs`).
 
 === a signal ending a poll early is an error
 file: crates/curl-os/src/poll.rs
@@ -99,3 +100,43 @@ witness: curl-os net::tests::descriptors_run_from_zero_to_the_limit
         return Err(io::Error::last_os_error());
     }
 --- new
+
+=== a file kept for appending is emptied
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::opens_files_to_read_and_write
+--- old
+        Keep::Everything => libc::O_APPEND,
+--- new
+        Keep::Everything => libc::O_TRUNC,
+
+=== a file emptied for writing is appended to
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::opens_files_to_read_and_write
+--- old
+        Keep::Nothing => libc::O_TRUNC,
+--- new
+        Keep::Nothing => libc::O_APPEND,
+
+=== a file to write is created with the default permissions
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::opens_files_to_read_and_write
+--- old
+    open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode)
+--- new
+    open(path, libc::O_WRONLY | libc::O_CREAT | keep, 0o644)
+
+=== a listing stops before its end
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::lists_a_directory
+--- old
+        if entry.is_null() {
+--- new
+        if entry.is_null() || unsafe { (*entry).d_name[0] } == b'b' as libc::c_char {
+
+=== a listing leaves its directory open
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::a_listing_closes_its_directory
+--- old
+        unsafe { libc::closedir(self.stream.as_ptr()) };
+--- new
+        let _ = self.stream;

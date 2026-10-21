@@ -12,6 +12,8 @@ publish.workspace = true
 args = []
 # Sockets, polling and the waker, for the transfer engine.
 net = []
+# Files and directories, for `file:` URLs.
+fs = []
 
 [[test]]
 name = "wipe"
@@ -25,7 +27,7 @@ libc = "0.2"
 
 [dev-dependencies]
 # The tests cover every module without asking for it.
-curl-os = { path = ".", features = ["net"] }
+curl-os = { path = ".", features = ["net", "fs"] }
 
 [lints]
 workspace = true

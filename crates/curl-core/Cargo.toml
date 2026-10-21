@@ -15,7 +15,7 @@ test-util = []
 
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
-curl-os = { path = "../curl-os", features = ["net"] }
+curl-os = { path = "../curl-os", features = ["net", "fs"] }
 
 [dev-dependencies]
 curl-alloc = { path = "../curl-alloc", features = ["debug-hooks"] }

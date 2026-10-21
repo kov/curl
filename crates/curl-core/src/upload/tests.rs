@@ -254,6 +254,7 @@ fn the_handler_s_end_and_failures_stick() {
     for (answer, want) in [
         (Read::Eof, Ok(Readout { n: 0, eos: true })),
         (Read::Abort, Err(ErrorKind::AbortedByCallback)),
+        (Read::Fail, Err(ErrorKind::ReadError)),
         (
             Read::Data(NonZeroUsize::new(9).unwrap()),
             Err(ErrorKind::ReadError),

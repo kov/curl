@@ -477,9 +477,12 @@ impl ReadHandler for UploadFile {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
         // C takes a failed read for the end of the file; here it fails
         // the transfer rather than send part of the file as all of it.
-        match self.0.borrow_mut().read(buf) {
-            Ok(n) => NonZeroUsize::new(n).map_or(Read::Eof, Read::Data),
-            Err(_) => Read::Abort,
+        loop {
+            match self.0.borrow_mut().read(buf) {
+                Ok(n) => return NonZeroUsize::new(n).map_or(Read::Eof, Read::Data),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return Read::Fail,
+            }
         }
     }
 }

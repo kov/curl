@@ -304,6 +304,16 @@ fn uploads_a_file() {
     assert_eq!(r.stdout, b"0123456789");
 }
 
+/// A file that opens but cannot be read fails its upload with a read
+/// error; C sends nothing and succeeds.
+#[test]
+fn an_upload_that_cannot_be_read_fails() {
+    let s = Scratch::new("unreadable");
+    std::fs::create_dir(s.0.join("dir")).unwrap();
+    let r = curl(&s, &["-s", "-T", "dir", &s.url("dst"), "-w", "%{exitcode}"]);
+    assert_eq!((r.code, &r.stdout[..]), (26, &b"26"[..]));
+}
+
 /// An upload that cannot be opened stops everything, with C's hint and
 /// its result line.
 #[test]

@@ -208,3 +208,15 @@ witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_mov
 --- old
             cx.directions_mut().send = false;
 --- new
+
+=== a failed read aborts the transfer
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
+--- old
+                Err(self.fail(trace::fail(cx, ErrorKind::ReadError, why)))
+            }
+            Read::Pause if !pausable => {
+--- new
+                Err(self.fail(trace::fail(cx, ErrorKind::AbortedByCallback, why)))
+            }
+            Read::Pause if !pausable => {

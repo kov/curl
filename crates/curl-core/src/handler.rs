@@ -36,6 +36,9 @@ pub enum Read {
     Pause,
     /// The transfer fails with AbortedByCallback (`CURL_READFUNC_ABORT`).
     Abort,
+    /// What there is to send could not be read: the transfer fails with
+    /// ReadError.
+    Fail,
 }
 
 /// Gives what a transfer sends (`CURLOPT_READFUNCTION`).

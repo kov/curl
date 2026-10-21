@@ -158,6 +158,10 @@ impl Upload {
                 let why = format_args!("operation aborted by callback");
                 Err(self.fail(trace::fail(cx, ErrorKind::AbortedByCallback, why)))
             }
+            Read::Fail => {
+                let why = format_args!("client read function failed");
+                Err(self.fail(trace::fail(cx, ErrorKind::ReadError, why)))
+            }
             Read::Pause if !pausable => {
                 let why = format_args!("Read callback asked for PAUSE when not supported");
                 Err(trace::fail(cx, ErrorKind::ReadError, why))

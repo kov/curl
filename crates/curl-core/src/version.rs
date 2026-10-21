@@ -23,6 +23,8 @@ pub enum Feature {
     /// A debug build, for the test suite: never for production.
     #[cfg(feature = "debug-hooks")]
     Debug,
+    /// Connections over IPv6, and its addresses in URLs.
+    Ipv6,
 }
 
 impl Feature {
@@ -31,14 +33,15 @@ impl Feature {
         match self {
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
+            Feature::Ipv6 => "IPv6",
         }
     }
 }
 
 #[cfg(feature = "debug-hooks")]
-const FEATURES: &[Feature] = &[Feature::Debug];
+const FEATURES: &[Feature] = &[Feature::Debug, Feature::Ipv6];
 #[cfg(not(feature = "debug-hooks"))]
-const FEATURES: &[Feature] = &[];
+const FEATURES: &[Feature] = &[Feature::Ipv6];
 
 /// A URL scheme the build can transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

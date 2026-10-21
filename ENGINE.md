@@ -804,8 +804,14 @@ pub(crate) enum Progress { Trying(SocketAddr), Waiting }
 pub(crate) enum ConnectError { Unresolved, Immediate { .. }, Attempt { remote, local, error } }
 ```
 
-The enum is the target shape; what is built is a struct with a `Stage { Resolving, Racing }` of
-one attempt over IP literals. A drive moves the machine by at most one event and returns it, in
+The enum is the target shape; what is built is a struct with a `Stage { Resolving,
+Resolved(Eyeballs), Racing(Eyeballs, Attempt) }`. Resolving answers what C answers without a
+resolver backend: an IP literal, and the loopback addresses for `localhost` and the names under
+it. `Eyeballs` holds the `Answer` and picks the next address as `cf_ip_ballers_run` does, the
+families alternating, IPv6 first; `IpVersion` limits a name's addresses, never a literal's. One
+attempt runs at a time: an attempt that fails while an address is left is traced and the next
+one starts; the delay that races the second family while the first is still connecting comes
+with happy eyeballs. A drive moves the machine by at most one event and returns it, in
 place in its slot (§3.6); the transfer traces it in C's
 words ("  Trying …", "connect to … from … failed: …", "Established connection to … ", then
 `failf`'s "Failed to connect to H:P after N ms: …" or "Could not resolve host: …"). The machine
@@ -813,8 +819,9 @@ never reaches a transfer, so it is driven while the pool holding it is borrowed,
 transfer's handlers run outside that borrow. As `cf_tcp_connect` does, the socket is polled
 with a zero timeout right after its connect starts, so an answer already there is taken in the
 same pass. A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
-connect limit is judged before each drive. Only IP literals resolve until a resolver lands
-(`localhost` needs two attempts).
+connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
+reports it ("Host H:P was resolved.", then each family's addresses), read back from the
+machine through the pool, and NAMELOOKUP is marked when it resolves.
 
 - Each stage owns what the previous stage produced: `Resolving` yields `DnsAnswer`, which
   builds `Eyeballs`; the winning `Attempt`'s `Transport` builds the next stage; each handshake
@@ -901,11 +908,12 @@ pub struct Route {
 }
 ```
 
-Built so far: `enum Route { Local, Tcp(TryRc<Peer>) }`. `Peer` is C's `struct Curl_peer`: the
+Built so far: `enum Route { Local, Tcp(TryRc<Peer>, IpVersion) }`. `Peer` is C's `struct Curl_peer`: the
 `Scheme` (the protocol's name and whether it keeps connections, `PROTOPT_CONN_REUSE`), the
 host as the URL names it, the port and the IPv6 zone, made once per leg and shared by the
-transfer, as its origin, and the connection it sets up. Matching is `Peer`'s `Eq`, which is
-`Curl_peer_equal`: the host in any case, and the zone by its number when it is one.
+transfer, as its origin, and the connection it sets up. Matching is `Route::serves`: `Peer`'s
+`Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its number when it is
+one), and the same `IpVersion` unless the transfer takes any (`url_match_conn`).
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate

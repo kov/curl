@@ -11,8 +11,8 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
 use crate::conn::io::Events;
 use crate::conn::{
-    Acquired, Conn, ConnLease, ConnectError, Connected, Finish, Peer, Pool, PoolNote, Progress,
-    Released, ReuseRules, Route,
+    Acquired, Conn, ConnLease, ConnectError, Connected, Failure, Finish, Peer, Pool, PoolNote,
+    Progress, Released, ReuseRules, Route,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -720,9 +720,16 @@ fn connecting<H: Host>(
     }
     let (pool, mut net) = cx.rest.pool_net(cx.me);
     match pool.connect(&c.lease, &mut net, now) {
-        Ok(Connected::Connecting(Progress::Trying(to))) => {
-            // A literal's name is known at once.
+        Ok(Connected::Connecting(Progress::Resolved)) => {
             cx.mark(Timer::NameLookup);
+            report_answer(cx, &c);
+            (TransferState::Connecting(c), Wake::Again)
+        }
+        Ok(Connected::Connecting(Progress::Failed(failure))) => {
+            trace_failure(cx, failure);
+            (TransferState::Connecting(c), Wake::Again)
+        }
+        Ok(Connected::Connecting(Progress::Trying(to))) => {
             match to {
                 SocketAddr::V4(_) => trace::info(cx, format_args!("  Trying {to}...")),
                 // No address carries a zone yet, which C would show as
@@ -771,14 +778,29 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, origin: &Origin, e: ConnectEr
             let kind = ErrorKind::CouldntResolveHost;
             return trace::fail(cx, kind, format_args!("Could not resolve host: {host}"));
         }
-        ConnectError::Immediate { remote, error } => {
+        ConnectError::Failed(failure) => trace_failure(cx, failure),
+    }
+    let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
+    trace::fail(
+        cx,
+        ErrorKind::CouldntConnect,
+        format_args!(
+            "Failed to connect to {host}:{port} after {ms} ms: Could not connect to server"
+        ),
+    )
+}
+
+/// How an attempt failed, as C traces it.
+fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
+    match failure {
+        Failure::Immediate { remote, error } => {
             let why = OsError(&error);
             trace::info(
                 cx,
                 format_args!("Immediate connect fail for {}: {why}", remote.ip()),
             );
         }
-        ConnectError::Attempt {
+        Failure::Attempt {
             remote,
             local,
             error,
@@ -796,14 +818,40 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, origin: &Origin, e: ConnectEr
             );
         }
     }
-    let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
-    trace::fail(
-        cx,
-        ErrorKind::CouldntConnect,
-        format_args!(
-            "Failed to connect to {host}:{port} after {ms} ms: Could not connect to server"
-        ),
-    )
+}
+
+/// The addresses a name resolved to, each family on a line of its own
+/// (`cf_dns_report`); nothing for an address the URL names.
+fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
+    let (pool, _) = cx.rest.pool_net(cx.me);
+    let Some(answer) = pool.answer(&c.lease).filter(|a| a.resolved()) else {
+        return;
+    };
+    let mut addrs = Vec::new();
+    if addrs.try_extend_from_slice(answer.addrs()).is_err() {
+        // C's "too many IP, cannot show", for want of memory.
+        return;
+    }
+    let host = Bytes(c.origin.name());
+    let port = c.origin.port();
+    trace::info(cx, format_args!("Host {host}:{port} was resolved."));
+    trace::info(cx, format_args!("IPv6: {}", Family(&addrs, true)));
+    trace::info(cx, format_args!("IPv4: {}", Family(&addrs, false)));
+}
+
+/// The addresses of one family, IPv6 if `1`, comma-separated; `(none)`
+/// for none.
+struct Family<'a>(&'a [IpAddr], bool);
+
+impl std::fmt::Display for Family<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut of = self.0.iter().filter(|a| a.is_ipv6() == self.1);
+        let Some(first) = of.next() else {
+            return f.write_str("(none)");
+        };
+        first.fmt(f)?;
+        of.try_for_each(|a| write!(f, ", {a}"))
+    }
 }
 
 /// Bytes shown as text, as C's `%s` shows them.
@@ -1064,7 +1112,8 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
     let Ok(origin) = TryRc::try_new(peer) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    let lease = match acquire(cx, Route::Tcp(origin.clone())) {
+    let ip = cx.easy().options().ip_version;
+    let lease = match acquire(cx, Route::Tcp(origin.clone(), ip)) {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
             let host = Bytes(origin.name());

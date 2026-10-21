@@ -1086,6 +1086,10 @@ fn networked() -> (Multi, ManualClock) {
         .with_peer(
             std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 1)),
             Peer::Accepts,
+        )
+        .with_peer(
+            std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 2)),
+            Peer::Refuses,
         );
     let env = Env {
         clock: Box::new(clock.clone()),
@@ -1433,6 +1437,96 @@ fn an_ipv6_host_is_named_as_c_names_it() {
             "Reusing existing tcp: connection with host ::1\n",
             "Connection #0 to host [::1]:1 left intact\n",
         ]
+    );
+}
+
+/// `localhost` and the names under it are the loopback addresses, IPv6
+/// first, reported as C reports a resolved name; each refused address
+/// is traced, and the setup fails once none is left.
+#[test]
+fn localhost_names_are_the_loopback_addresses() {
+    let (mut m, _clock) = networked();
+    let (refused, lines) = traced("tcp://localhost:2/");
+    let refused = m.add(refused, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(refused.index(), Err(ErrorKind::CouldntConnect), 0)]
+    );
+    assert_eq!(
+        trace_of(&lines)[..7],
+        [
+            "Host localhost:2 was resolved.\n",
+            "IPv6: ::1\n",
+            "IPv4: 127.0.0.1\n",
+            "  Trying [::1]:2...\n",
+            "connect to ::1 port 2 from ::1 port 40000 failed: Connection refused\n",
+            "  Trying 127.0.0.1:2...\n",
+            "connect to 127.0.0.1 port 2 from 127.0.0.1 port 40000 failed: Connection refused\n",
+        ]
+    );
+    assert!(trace_of(&lines)[7].starts_with("Failed to connect to localhost:2 after "));
+    let (named, lines) = traced("tcp://Foo.LocalHost.:1/");
+    let named = m.add(named, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(named.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines)[..5],
+        [
+            "Host Foo.LocalHost.:1 was resolved.\n",
+            "IPv6: ::1\n",
+            "IPv4: 127.0.0.1\n",
+            "  Trying [::1]:1...\n",
+            "Established connection to Foo.LocalHost. (::1 port 1) from ::1 port 40000 \n",
+        ]
+    );
+}
+
+/// `IpVersion` limits the addresses tried, not those reported, and a
+/// connection kept for any family serves only a transfer that takes any.
+#[test]
+fn an_ip_version_limits_the_addresses_tried() {
+    let (mut m, _clock) = networked();
+    let (v4, lines) = traced("tcp://localhost:1/");
+    let mut v4 = v4;
+    v4.options_mut().ip_version = crate::options::IpVersion::V4;
+    let v4 = m.add(v4, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(v4.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines)[..5],
+        [
+            "Host localhost:1 was resolved.\n",
+            "IPv6: ::1\n",
+            "IPv4: 127.0.0.1\n",
+            "  Trying 127.0.0.1:1...\n",
+            "Established connection to localhost (127.0.0.1 port 1) from 127.0.0.1 port 40000 \n",
+        ]
+    );
+    let (any, lines) = traced("tcp://localhost:1/");
+    let any = m.add(any, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(any.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines)[0],
+        "Reusing existing tcp: connection with host localhost\n"
+    );
+    let (v6, lines) = traced("tcp://localhost:1/");
+    let mut v6 = v6;
+    v6.options_mut().ip_version = crate::options::IpVersion::V6;
+    let v6 = m.add(v6, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(v6.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines)[3],
+        "  Trying [::1]:1...\n",
+        "not the IPv4 one"
     );
 }
 

@@ -2,8 +2,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use crate::conn::Scheme;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
+use crate::conn::{Failure, Scheme};
+use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
 use curl_alloc::TryRc;
 
@@ -35,7 +36,16 @@ fn tcp(port: u16) -> Route {
 
 fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
     let peer = crate::conn::Peer::new(scheme, host.to_vec(), port, None);
-    Route::Tcp(TryRc::try_new(peer).unwrap())
+    Route::Tcp(TryRc::try_new(peer).unwrap(), IpVersion::Any)
+}
+
+/// Drive the setup of `lease` past its name, which must resolve.
+fn resolved(pool: &mut Pool, lease: &ConnLease, net: &mut FakeNet, now: Instant) {
+    let got = pool.connect(lease, net, now).unwrap();
+    assert!(
+        matches!(got, Connected::Connecting(Progress::Resolved)),
+        "{got:?}"
+    );
 }
 
 /// A connection for `route`, which must be new; the search says nothing.
@@ -50,6 +60,7 @@ fn new(pool: &mut Pool, route: Route, net: &mut FakeNet, now: Instant) -> ConnLe
 
 /// Connect `lease`, whose peer accepts.
 fn up(pool: &mut Pool, lease: &ConnLease, net: &mut FakeNet, now: Instant) {
+    resolved(pool, lease, net, now);
     pool.connect(lease, net, now).unwrap();
     let established = pool.connect(lease, net, now).unwrap();
     assert!(matches!(established, Connected::Established { .. }));
@@ -106,6 +117,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
         None,
         "nothing open before the first drive"
     );
+    resolved(&mut pool, &lease, &mut net, now);
     let tried = pool.connect(&lease, &mut net, now).unwrap();
     let to = SocketAddr::from(([127, 0, 0, 1], 1));
     assert!(matches!(tried, Connected::Connecting(Progress::Trying(a)) if a == to));
@@ -139,13 +151,14 @@ fn refused_and_silent_attempts() {
     let now = clock.now();
     let mut pool = Pool::new().unwrap();
     let refused = new(&mut pool, tcp(2), &mut net, now);
+    resolved(&mut pool, &refused, &mut net, now);
     pool.connect(&refused, &mut net, now).unwrap();
     let err = pool.connect(&refused, &mut net, now).unwrap_err();
-    let ConnectError::Attempt {
+    let ConnectError::Failed(Failure::Attempt {
         remote,
         local,
         error,
-    } = err
+    }) = err
     else {
         panic!("{err:?}");
     };
@@ -158,6 +171,7 @@ fn refused_and_silent_attempts() {
         "the failed attempt's socket is closed"
     );
     let silent = new(&mut pool, tcp(3), &mut net, now);
+    resolved(&mut pool, &silent, &mut net, now);
     pool.connect(&silent, &mut net, now).unwrap();
     for _ in 0..3 {
         let waiting = pool.connect(&silent, &mut net, now).unwrap();
@@ -188,9 +202,10 @@ fn unresolved_names_and_immediate_failures() {
     let err = pool.connect(&named, &mut net, now).unwrap_err();
     assert!(matches!(err, ConnectError::Unresolved), "{err:?}");
     let nobody = new(&mut pool, tcp(9), &mut net, now);
+    resolved(&mut pool, &nobody, &mut net, now);
     let err = pool.connect(&nobody, &mut net, now).unwrap_err();
     assert!(
-        matches!(err, ConnectError::Immediate { remote, .. } if remote.port() == 9),
+        matches!(err, ConnectError::Failed(Failure::Immediate { remote, .. }) if remote.port() == 9),
         "{err:?}"
     );
     let premature = Finish { premature: true };

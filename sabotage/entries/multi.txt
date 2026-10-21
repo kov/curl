@@ -463,3 +463,36 @@ witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_d
     cx.report_mut().headers_mut().next_request();
 --- new
     cx.report_mut().headers_mut();
+
+=== an IP version is ignored for a name
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
+--- old
+        let any = !answer.resolved() || ip == IpVersion::Any;
+--- new
+        let any = true;
+
+=== an IP version limits an address the URL names
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::connect::tests::eyeballs_alternate_the_families
+--- old
+        let any = !answer.resolved() || ip == IpVersion::Any;
+--- new
+        let any = ip == IpVersion::Any;
+
+=== IPv4 is tried first
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::localhost_names_are_the_loopback_addresses
+--- old
+            last_v4: true,
+--- new
+            last_v4: false,
+
+=== only localhost itself is the loopback
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::localhost_names_are_the_loopback_addresses
+--- old
+    host.eq_ignore_ascii_case(b"localhost")
+        || (host.len() > tail.len() && host[host.len() - tail.len()..].eq_ignore_ascii_case(tail))
+--- new
+    host.eq_ignore_ascii_case(b"localhost")

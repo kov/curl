@@ -11,7 +11,7 @@ mod connect;
 pub mod io;
 mod pool;
 
-pub(crate) use connect::{ConnectError, Progress};
+pub(crate) use connect::{ConnectError, Failure, Progress};
 pub(crate) use pool::{
     Acquired, ConnLease, Connected, Finish, Pool, PoolNote, Released, ReuseRules,
 };
@@ -21,6 +21,8 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 
 use curl_alloc::TryRc;
+
+use crate::options::IpVersion;
 
 pub(crate) use self::buf::RecvBuf;
 use self::connect::ConnectMachine;
@@ -59,29 +61,32 @@ pub(crate) enum ConnSlot {
     Failed(ConnNumber),
 }
 
-/// What a transfer needs of a connection, decided once per leg. Two
-/// transfers may use one connection, one after the other, only if their
-/// routes are equal.
+/// What a transfer needs of a connection, decided once per leg. A
+/// connection serves another transfer only if its route serves the
+/// transfer's.
 #[derive(Clone, Debug)]
 pub(crate) enum Route {
     /// No network: the protocol does its own I/O (C's
     /// `PROTOPT_NONETWORK`).
     Local,
-    /// To a peer, shared by the transfer and the connection.
-    Tcp(TryRc<Peer>),
+    /// To a peer, shared by the transfer and the connection, over the
+    /// addresses of `IpVersion`.
+    Tcp(TryRc<Peer>, IpVersion),
 }
 
-impl PartialEq for Route {
-    fn eq(&self, other: &Route) -> bool {
-        match (self, other) {
-            (Route::Local, Route::Local) => true,
-            (Route::Tcp(a), Route::Tcp(b)) => **a == **b,
-            (Route::Local, Route::Tcp(_)) | (Route::Tcp(_), Route::Local) => false,
+impl Route {
+    /// Whether a connection set up for this route may serve a transfer
+    /// that needs `wanted` (`url_match_conn`): the same peer, and the
+    /// same addresses unless the transfer takes any.
+    pub(crate) fn serves(&self, wanted: &Route) -> bool {
+        match (self, wanted) {
+            (Route::Tcp(peer, ip), Route::Tcp(want, want_ip)) => {
+                **peer == **want && (*want_ip == IpVersion::Any || want_ip == ip)
+            }
+            (Route::Local | Route::Tcp(..), Route::Local | Route::Tcp(..)) => false,
         }
     }
 }
-
-impl Eq for Route {}
 
 /// The protocol a connection speaks, as reuse sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -85,12 +85,8 @@ impl ProtoState {
         }))
     }
 
-    /// The host and port the request connects to, or none for a protocol
-    /// that does its own I/O (C's `PROTOPT_NONETWORK`).
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(unused_variables, reason = "only the test protocol reads the URL")
-    )]
+    /// The peer the request connects to, or none for a protocol that
+    /// does its own I/O (C's `PROTOPT_NONETWORK`).
     pub(crate) fn network(&self, url: &Url) -> Result<Option<Peer>, ErrorKind> {
         match *self {
             ProtoState::File(_) => Ok(None),

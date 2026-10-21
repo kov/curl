@@ -19,8 +19,8 @@ use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
 use crate::msgs::Messages;
 use crate::options::{
-    self as tool, CommandLine, Global, HttpVersion, Node, Operation, Output, Resume, Upload,
-    exit_code,
+    self as tool, CommandLine, Global, HttpVersion, IpVersion, Node, Operation, Output, Resume,
+    Upload, exit_code,
 };
 use crate::os_message;
 use crate::output;
@@ -303,6 +303,11 @@ fn configure(
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);
     o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
+    o.ip_version = match op.ip_version {
+        None => options::IpVersion::Any,
+        Some(IpVersion::V4) => options::IpVersion::V4,
+        Some(IpVersion::V6) => options::IpVersion::V6,
+    };
     Ok(())
 }
 

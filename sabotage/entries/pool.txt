@@ -61,7 +61,7 @@ witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
 --- old
-            if conn.route != *route {
+            if !conn.route.serves(route) {
                 continue;
             }
 --- new
@@ -180,3 +180,19 @@ witness: curl-core conn::tests::peers_compare_as_c_compares_them
             && (self.scope != 0 || self.zone == other.zone)
 --- new
             && self.scope == self.scope
+
+=== a connection for one family is reused for another
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
+--- old
+                **peer == **want && (*want_ip == IpVersion::Any || want_ip == ip)
+--- new
+                **peer == **want
+
+=== a connection for one family serves only that family
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
+--- old
+                **peer == **want && (*want_ip == IpVersion::Any || want_ip == ip)
+--- new
+                **peer == **want && want_ip == ip

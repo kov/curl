@@ -16,7 +16,9 @@ use core::num::{NonZeroU16, NonZeroU64};
 use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
-use curl_core::options::{FileMode, HttpVersion, LowSpeed, Method, Options, Resume, UserHeaders};
+use curl_core::options::{
+    FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options, Resume, UserHeaders,
+};
 use curl_core::time::TimeLimit;
 
 use crate::callbacks::{self, CCallbacks, CSettings};
@@ -237,6 +239,14 @@ fn apply(
         (ffi::CURLOPT_TIMEOUT, Long(n)) => options.limits.total = time_limit(n, 1000)?,
         (ffi::CURLOPT_TIMEOUT_MS, Long(n)) => options.limits.total = time_limit(n, 1)?,
         (ffi::CURLOPT_CONNECTTIMEOUT, Long(n)) => options.limits.connect = time_limit(n, 1000)?,
+        (ffi::CURLOPT_IPRESOLVE, Long(n)) => {
+            options.ip_version = match n {
+                ffi::CURL_IPRESOLVE_WHATEVER => IpVersion::Any,
+                ffi::CURL_IPRESOLVE_V4 => IpVersion::V4,
+                ffi::CURL_IPRESOLVE_V6 => IpVersion::V6,
+                _ => return Err(Refused::Bad),
+            }
+        }
         (ffi::CURLOPT_CONNECTTIMEOUT_MS, Long(n)) => options.limits.connect = time_limit(n, 1)?,
         (ffi::CURLOPT_LOW_SPEED_LIMIT, Long(n)) => {
             if n < 0 {

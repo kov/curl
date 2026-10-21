@@ -33,6 +33,9 @@ pub struct Options {
     /// What a file an upload creates may be opened for.
     pub new_file_mode: FileMode,
     pub limits: Limits,
+    /// Which of a name's addresses a connection may use
+    /// (`CURLOPT_IPRESOLVE`).
+    pub ip_version: IpVersion,
     pub output: Output,
     pub callbacks: Callbacks,
     pub progress: Progress,
@@ -78,6 +81,7 @@ impl Options {
             resume: self.resume,
             new_file_mode: self.new_file_mode,
             limits: self.limits,
+            ip_version: self.ip_version,
             output: self.output,
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
@@ -153,6 +157,16 @@ impl Default for FileMode {
     fn default() -> FileMode {
         FileMode(0o644)
     }
+}
+
+/// Which addresses of a name a connection may use; an address the URL
+/// names is used whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IpVersion {
+    #[default]
+    Any,
+    V4,
+    V6,
 }
 
 /// How long a transfer may take.

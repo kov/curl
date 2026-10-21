@@ -127,6 +127,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) dump_header: Option<&'a [u8]>,
     /// `--raw`.
     pub(crate) raw: bool,
+    /// `--ipv4` or `--ipv6`, whichever came last.
+    pub(crate) ip_version: Option<IpVersion>,
     /// `--ignore-content-length`.
     pub(crate) ignore_content_length: bool,
     /// `--max-filesize`, in bytes; 0 is no limit.
@@ -145,6 +147,13 @@ pub(crate) struct Operation<'a> {
     pub(crate) fail: bool,
     /// `--no-buffer`: output is written as it comes.
     pub(crate) no_buffer: bool,
+}
+
+/// The addresses `--ipv4` and `--ipv6` limit a name to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IpVersion {
+    V4,
+    V6,
 }
 
 /// The HTTP version `--http1.0` and `--http1.1` ask for.
@@ -589,6 +598,8 @@ pub(crate) fn apply<'a>(
             line.current().dump_header = Some(file);
         }
         Opt::Raw => line.current().raw = value.toggle(),
+        Opt::Ipv4 => line.current().ip_version = Some(IpVersion::V4),
+        Opt::Ipv6 => line.current().ip_version = Some(IpVersion::V6),
         Opt::IgnoreContentLength => line.current().ignore_content_length = value.toggle(),
         Opt::MaxFilesize => line.current().max_filesize = number::size(value.text())?,
         Opt::MaxTime => line.current().timeout_ms = value.millis(),
@@ -737,8 +748,6 @@ pub(crate) fn apply<'a>(
         | Opt::Interface
         | Opt::IpTos
         | Opt::IpfsGateway
-        | Opt::Ipv4
-        | Opt::Ipv6
         | Opt::Json
         | Opt::JunkSessionCookies
         | Opt::Keepalive

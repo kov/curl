@@ -379,6 +379,29 @@ fn limits_are_checked_as_in_c() {
         );
     }
     assert_eq!(mode(c), 0o600);
+    let ip = |c| options(c, |o| o.ip_version);
+    assert_eq!(
+        long(c, ffi::CURLOPT_IPRESOLVE, ffi::CURL_IPRESOLVE_V6),
+        CURLE_OK
+    );
+    assert_eq!(ip(c), curl_core::options::IpVersion::V6);
+    for bad in [3, -1] {
+        assert_eq!(
+            long(c, ffi::CURLOPT_IPRESOLVE, bad),
+            CURLE_BAD_FUNCTION_ARGUMENT
+        );
+    }
+    assert_eq!(ip(c), curl_core::options::IpVersion::V6);
+    assert_eq!(
+        long(c, ffi::CURLOPT_IPRESOLVE, ffi::CURL_IPRESOLVE_V4),
+        CURLE_OK
+    );
+    assert_eq!(ip(c), curl_core::options::IpVersion::V4);
+    assert_eq!(
+        long(c, ffi::CURLOPT_IPRESOLVE, ffi::CURL_IPRESOLVE_WHATEVER),
+        CURLE_OK
+    );
+    assert_eq!(ip(c), curl_core::options::IpVersion::Any);
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

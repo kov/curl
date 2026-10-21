@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use super::connect::{ConnectError, ConnectMachine, Drove, Progress};
+use super::connect::{Answer, ConnectError, ConnectMachine, Drove, Progress};
 use super::io::{Events, Net, Socket, SocketPoll};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, RecvBuf, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
@@ -203,7 +203,9 @@ impl Pool {
                 served: false,
                 close: false,
             }),
-            Route::Tcp(peer) => ConnSlot::Connecting(ConnectMachine::new(number, peer, now)),
+            Route::Tcp(peer, ip) => {
+                ConnSlot::Connecting(ConnectMachine::new(number, peer, ip, now))
+            }
         };
         let id = self.conns.reserve()?.fill(slot);
         self.next_number += 1;
@@ -240,7 +242,7 @@ impl Pool {
             let Use::Idle { since } = conn.use_ else {
                 continue;
             };
-            if conn.route != *route {
+            if !conn.route.serves(route) {
                 continue;
             }
             let number = conn.number;
@@ -344,6 +346,16 @@ impl Pool {
         }
     }
 
+    /// What the name of a connection being set up resolved to, once it
+    /// has.
+    pub(crate) fn answer(&self, lease: &ConnLease) -> Option<&Answer> {
+        match self.conns.get(lease.id) {
+            Some(ConnSlot::Connecting(m)) => m.answer(),
+            Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => None,
+            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
+        }
+    }
+
     /// The sockets of the connection a lease holds: its attempts' while
     /// it is set up, none without a network.
     pub(crate) fn sockets(&self, lease: &ConnLease) -> impl Iterator<Item = &dyn Socket> {
@@ -373,7 +385,7 @@ impl Pool {
         std::mem::forget(lease);
         let _locked = Locked::take(&*self.lock);
         if let Some(ConnSlot::Open(conn)) = self.conns.get_mut(id)
-            && let Route::Tcp(peer) = &conn.route
+            && let Route::Tcp(peer, _) = &conn.route
             && peer.scheme().reuse
             && !finish.premature
             && !conn.close

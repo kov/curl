@@ -1213,11 +1213,11 @@ fn removing_a_connecting_transfer_closes_its_socket() {
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     let mut open = 0;
-    m.pool.sockets(|_, _| open += 1);
+    m.sockets(|_, _| open += 1);
     assert_eq!(open, 1);
     m.remove(id, &mut NoEvents).unwrap();
     let mut open = 0;
-    m.pool.sockets(|_, _| open += 1);
+    m.sockets(|_, _| open += 1);
     assert_eq!(open, 0);
     assert_eq!(m.pool.len(), 0);
 }
@@ -1226,21 +1226,26 @@ fn removing_a_connecting_transfer_closes_its_socket() {
 /// (`multistate_connecting`), and does once it is not.
 #[test]
 fn a_paused_transfer_does_not_connect() {
-    let (mut m, _clock) = networked();
+    let (mut m, clock) = networked();
     let id = m
         .add(easy("tcp://127.0.0.1:4/"), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
+    let watched = |m: &Multi| {
+        let mut watched = Vec::new();
+        m.sockets(|s, e| watched.push((s.key().get(), e)));
+        watched
+    };
+    assert_eq!(watched(&m), [(1000, Events::OUT)]);
     m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
-    // The peer answers, but the transfer is not told.
-    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
-        .unwrap();
+    // Paused, it waits on nothing (`mstate_connecting_pollset`).
+    assert_eq!(watched(&m), []);
+    clock.advance(Duration::from_millis(10));
+    // The peer answered, but the transfer is not told.
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.counts().running, 1);
-    let mut connecting = 0;
-    m.pool.sockets(|_, _| connecting += 1);
-    assert_eq!(connecting, 1, "still connecting");
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    assert_eq!(watched(&m), [(1000, Events::OUT)]);
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
 }

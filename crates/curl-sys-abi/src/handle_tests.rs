@@ -1466,3 +1466,97 @@ fn c_numbers_translate_both_ways() {
     );
     assert!(aborts(-1) && !aborts(0) && !aborts(1));
 }
+
+/// `fdset` and `waitfds` list the sockets the transfers wait on, as C's
+/// do: a set bit and the highest descriptor, or an entry per socket and
+/// the count needed.
+#[test]
+fn the_transfers_sockets_are_listed() {
+    use crate::ffi::{
+        CURL_WAIT_POLLOUT, CURLM_BAD_FUNCTION_ARGUMENT, CURLM_OUT_OF_MEMORY, curl_waitfd,
+    };
+    use crate::multi::{ShimMulti, curl_multi_fdset, curl_multi_waitfds};
+    use curl_core::conn::io::{FakeNet, Peer};
+    use curl_core::time::ManualClock;
+
+    let clock = ManualClock::new().unwrap();
+    let silent = std::net::SocketAddr::from(([127, 0, 0, 1], 3));
+    let net = FakeNet::new(clock).with_peer(silent, Peer::Silent);
+    let m: *mut CURLM = ShimMulti::boxed_with(Box::new(net))
+        .unwrap()
+        .as_ptr()
+        .cast();
+    let fdset = |read: &mut libc::fd_set, write: &mut libc::fd_set| {
+        let mut max: c_int = 7;
+        // SAFETY: a live multi and the caller's sets.
+        let rc = unsafe {
+            libc::FD_ZERO(read);
+            libc::FD_ZERO(write);
+            curl_multi_fdset(
+                m,
+                ptr::from_mut(read).cast(),
+                ptr::from_mut(write).cast(),
+                ptr::null_mut(),
+                &raw mut max,
+            )
+        };
+        assert_eq!(rc, CURLM_OK);
+        max
+    };
+    let count = |ufds: *mut curl_waitfd, size: c_uint| {
+        let mut n: c_uint = 99;
+        // SAFETY: a live multi and `size` entries at `ufds`.
+        let rc = unsafe { curl_multi_waitfds(m, ufds, size, &raw mut n) };
+        (rc, n)
+    };
+    // SAFETY: zeroed `fd_set`s are valid; FD_ZERO clears them anyway.
+    let (mut read, mut write) = unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
+    assert_eq!(fdset(&mut read, &mut write), -1, "nothing to wait on");
+    assert_eq!(count(ptr::null_mut(), 0), (CURLM_OK, 0));
+    // SAFETY: a live multi; neither entries nor a count is an error.
+    let rc = unsafe { curl_multi_waitfds(m, ptr::null_mut(), 0, ptr::null_mut()) };
+    assert_eq!(rc, CURLM_BAD_FUNCTION_ARGUMENT);
+
+    let c = curl_easy_init();
+    let url = c"tcp://127.0.0.1:3/";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let mut running_now: c_int = 0;
+    // SAFETY: a fresh handle, added to the live multi and run once.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        assert_eq!(curl_multi_perform(m, &raw mut running_now), CURLM_OK);
+    }
+    assert_eq!(running_now, 1, "connecting");
+    assert_eq!(fdset(&mut read, &mut write), 1000);
+    // SAFETY: the sets `fdset` filled.
+    unsafe {
+        assert!(libc::FD_ISSET(1000, &write));
+        assert!(!libc::FD_ISSET(1000, &read));
+    }
+    assert_eq!(count(ptr::null_mut(), 0), (CURLM_OK, 1));
+    let mut entries = [curl_waitfd {
+        fd: -1,
+        events: 0,
+        revents: 0,
+    }; 2];
+    assert_eq!(
+        count(entries.as_mut_ptr(), 0),
+        (CURLM_OUT_OF_MEMORY, 1),
+        "no room"
+    );
+    assert_eq!(count(entries.as_mut_ptr(), 2), (CURLM_OK, 1));
+    assert_eq!(
+        (entries[0].fd, c_int::from(entries[0].events)),
+        (1000, CURL_WAIT_POLLOUT)
+    );
+    assert_eq!(entries[1].fd, -1, "untouched");
+    // SAFETY: the handle and multi made above, done with.
+    unsafe {
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+    }
+}

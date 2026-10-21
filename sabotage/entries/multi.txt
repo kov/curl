@@ -377,3 +377,12 @@ witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 --- new
             let host = origin.shown();
             let name = scheme.name;
+
+=== a setup paused for receiving still waits to write
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_paused_transfer_does_not_connect
+--- old
+            TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
+--- new
+            TransferState::Connecting(c) => {
+

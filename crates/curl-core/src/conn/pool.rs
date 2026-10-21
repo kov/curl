@@ -347,16 +347,17 @@ impl Pool {
         }
     }
 
-    /// Every socket the pool's connections wait on, and for what.
-    pub(crate) fn sockets<'a>(&'a self, mut f: impl FnMut(&'a dyn Socket, Events)) {
-        let mut cursor = None;
-        while let Some(id) = self.conns.next_after(cursor) {
-            cursor = Some(id);
-            if let Some(ConnSlot::Connecting(m)) = self.conns.get(id)
-                && let Some((socket, events)) = m.socket()
-            {
-                f(socket, events);
-            }
+    /// The socket of the connection a lease holds: its attempt's while
+    /// it is set up, none without a network.
+    pub(crate) fn socket(&self, lease: &ConnLease) -> Option<&dyn Socket> {
+        match self.conns.get(lease.id) {
+            Some(ConnSlot::Connecting(m)) => m.socket(),
+            Some(ConnSlot::Open(Conn {
+                transport: Transport::Tcp(socket),
+                ..
+            })) => Some(&**socket),
+            Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => None,
+            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
         }
     }
 

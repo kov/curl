@@ -109,9 +109,33 @@ witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
 --- old
-        self.pool.sockets(|s, events| {
+        pollsets(&self.slots, &self.pool, |s, events| {
             sockets
                 .try_push(SocketPoll::new(s, events))
                 .expect("reserved");
         });
 --- new
+
+=== fdset sets a writing socket in the read set
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_transfers_sockets_are_listed
+--- old
+            for (wanted, set) in [(Events::IN, read_fd_set), (Events::OUT, write_fd_set)] {
+--- new
+            for (wanted, set) in [(Events::OUT, read_fd_set), (Events::IN, write_fd_set)] {
+
+=== waitfds with too few entries succeeds
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_transfers_sockets_are_listed
+--- old
+    if !ufds.is_null() && need as usize != filled {
+--- new
+    if false {
+
+=== waitfds without entries or a count is no error
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_transfers_sockets_are_listed
+--- old
+    if ufds.is_null() && (size > 0 || fd_count.is_null()) {
+--- new
+    if ufds.is_null() && size > 0 {

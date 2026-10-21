@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use curl_alloc::{OutOfMemory, TryVec};
 
-use crate::conn::io::Net;
+use crate::conn::io::{Events, Net, Socket};
 use crate::conn::{
     Acquired, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote, Progress,
     Released, ReuseRules, Route,
@@ -242,6 +242,25 @@ impl TransferState {
             TransferState::Done(d) => d.lease,
         };
         pool.release(lease, Finish { premature: true }, net, now);
+    }
+}
+
+impl TransferState {
+    /// The socket the transfer waits on, and for what (`Curl_multi_pollset`):
+    /// a setup waits to write, unless receiving is paused
+    /// (`mstate_connecting_pollset`). The later states wait on nothing
+    /// until a protocol waits in one.
+    pub(crate) fn pollset<'p>(
+        &self,
+        pool: &'p Pool,
+        pause: Pause,
+    ) -> Option<(&'p dyn Socket, Events)> {
+        match self {
+            TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
+                pool.socket(&c.lease).map(|s| (s, Events::OUT))
+            }
+            _ => None,
+        }
     }
 }
 

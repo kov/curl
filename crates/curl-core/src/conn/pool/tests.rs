@@ -48,10 +48,8 @@ fn up(pool: &mut Pool, lease: &ConnLease, net: &mut FakeNet, now: Instant) {
     assert!(matches!(established, Connected::Established { .. }));
 }
 
-fn sockets(pool: &Pool) -> usize {
-    let mut n = 0;
-    pool.sockets(|_, _| n += 1);
-    n
+fn socket(pool: &Pool, lease: &ConnLease) -> Option<i32> {
+    pool.socket(lease).map(|s| s.key().get())
 }
 
 #[test]
@@ -96,13 +94,15 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     let mut pool = Pool::new().unwrap();
     let lease = new(&mut pool, tcp(1), &mut net, now);
     let id = lease.id();
-    assert_eq!(sockets(&pool), 0, "nothing open before the first drive");
+    assert_eq!(
+        socket(&pool, &lease),
+        None,
+        "nothing open before the first drive"
+    );
     let tried = pool.connect(&lease, &mut net, now).unwrap();
     let to = SocketAddr::from(([127, 0, 0, 1], 1));
     assert!(matches!(tried, Connected::Connecting(Progress::Trying(a)) if a == to));
-    let mut watched = Vec::new();
-    pool.sockets(|s, e| watched.push((s.key().get(), e)));
-    assert_eq!(watched, [(1000, Events::OUT)]);
+    assert_eq!(socket(&pool, &lease), Some(1000), "the attempt's");
     assert!(pool.get_conn(id).is_none(), "not up yet");
     let up = pool.connect(&lease, &mut net, now).unwrap();
     let Connected::Established { remote, local, at } = up else {
@@ -115,7 +115,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
         pool.connect(&lease, &mut net, now),
         Ok(Connected::AlreadyUp)
     ));
-    assert_eq!(sockets(&pool), 0, "an open connection waits on nothing yet");
+    assert_eq!(socket(&pool, &lease), Some(1000), "kept once up");
     let premature = Finish { premature: true };
     assert_eq!(
         pool.release(lease, premature, &mut net, now),

@@ -99,11 +99,11 @@ impl ConnectMachine {
         self.number
     }
 
-    /// The socket the setup waits on, and for what.
-    pub(crate) fn socket(&self) -> Option<(&dyn Socket, Events)> {
+    /// The socket of the attempt under way, if one is.
+    pub(crate) fn socket(&self) -> Option<&dyn Socket> {
         match &self.stage {
             Stage::Resolving => None,
-            Stage::Racing(a) => Some((&*a.socket, Events::OUT)),
+            Stage::Racing(a) => Some(&*a.socket),
         }
     }
 

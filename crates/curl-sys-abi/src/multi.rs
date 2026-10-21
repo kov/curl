@@ -16,7 +16,7 @@ use std::os::fd::BorrowedFd;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
-use curl_core::conn::io::{Events, PollFd, SystemNet, Waker};
+use curl_core::conn::io::{Events, Net, PollFd, SystemNet, Waker};
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::{
@@ -72,13 +72,17 @@ impl ShimMulti {
     /// A multi with the system's clock and network. Without a waker, which
     /// takes two descriptors, `curl_multi_wakeup` fails, as in C.
     fn new() -> Result<ShimMulti, OutOfMemory> {
+        ShimMulti::with_net(try_box(SystemNet)?)
+    }
+
+    fn with_net(net: Box<dyn Net>) -> Result<ShimMulti, OutOfMemory> {
         let waker = match Waker::new() {
             Ok(w) => Some(TryArc::try_new(w)?),
             Err(_) => None,
         };
         let env = Env {
             clock: try_box(SystemClock::new())?,
-            net: try_box(SystemNet)?,
+            net,
             // Row 0 is C's admin handle's, so ids equal C's.
             arena: ArenaPolicy::new(16, 1).expect("a valid policy"),
             waker: waker.clone(),
@@ -100,6 +104,14 @@ impl ShimMulti {
 
     fn boxed() -> Result<NonNull<ShimMulti>, OutOfMemory> {
         Ok(NonNull::from(Box::leak(try_box(ShimMulti::new()?)?)))
+    }
+
+    /// As `curl_multi_init`, over `net`.
+    #[cfg(test)]
+    pub(crate) fn boxed_with(net: Box<dyn Net>) -> Result<NonNull<ShimMulti>, OutOfMemory> {
+        Ok(NonNull::from(Box::leak(try_box(ShimMulti::with_net(
+            net,
+        )?)?)))
     }
 
     /// The multi `curl_easy_perform` runs a handle in.
@@ -889,8 +901,8 @@ const _: ffi::proto::curl_multi_wakeup = curl_multi_wakeup;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_multi_fdset(
     m: *mut CURLM,
-    _read_fd_set: *mut ffi::fd_set,
-    _write_fd_set: *mut ffi::fd_set,
+    read_fd_set: *mut ffi::fd_set,
+    write_fd_set: *mut ffi::fd_set,
     _exc_fd_set: *mut ffi::fd_set,
     max_fd: *mut c_int,
 ) -> CURLMcode {
@@ -898,9 +910,26 @@ pub unsafe extern "C" fn curl_multi_fdset(
     if let Err(code) = unsafe { enter(m, MultiCall::Fdset) } {
         return code;
     }
-    // No transfer owns a socket before connections exist.
+    // SAFETY: admitted on `m`, which nothing else runs on.
+    let multi = unsafe { multi(m) };
+    let mut highest = -1;
+    // SAFETY: as above.
+    unsafe { multi.core_mut() }.sockets(|socket, events| {
+        let fd = socket.key().get();
+        // One a set cannot hold is left out (`FDSET_SOCK`).
+        if usize::try_from(fd).is_ok_and(|fd| fd < libc::FD_SETSIZE) {
+            for (wanted, set) in [(Events::IN, read_fd_set), (Events::OUT, write_fd_set)] {
+                if events.contains(wanted) && !set.is_null() {
+                    // SAFETY: `set` is the caller's `fd_set`, and `fd` is
+                    // within it.
+                    unsafe { libc::FD_SET(fd, set.cast::<libc::fd_set>()) };
+                }
+            }
+            highest = highest.max(fd);
+        }
+    });
     // SAFETY: as the caller guarantees.
-    unsafe { put(max_fd, -1) };
+    unsafe { put(max_fd, highest) };
     CURLM_OK
 }
 const _: ffi::proto::curl_multi_fdset = curl_multi_fdset;
@@ -919,12 +948,47 @@ pub unsafe extern "C" fn curl_multi_waitfds(
     if let Err(code) = unsafe { enter(m, MultiCall::Waitfds) } {
         return code;
     }
-    if ufds.is_null() && size > 0 {
+    if ufds.is_null() && (size > 0 || fd_count.is_null()) {
         return CURLM_BAD_FUNCTION_ARGUMENT;
     }
-    // No transfer owns a socket before connections exist.
+    // SAFETY: admitted on `m`, which nothing else runs on.
+    let multi = unsafe { multi(m) };
+    let fds = if ufds.is_null() {
+        &mut [][..]
+    } else {
+        // SAFETY: the caller gives `size` entries at `ufds`.
+        unsafe { std::slice::from_raw_parts_mut(ufds, size as usize) }
+    };
+    let mut filled = 0;
+    let mut need: c_uint = 0;
+    // SAFETY: as above.
+    unsafe { multi.core_mut() }.sockets(|socket, events| {
+        let fd = socket.key().get();
+        // A pollset reads and writes, nothing else.
+        let wanted = wait_revents(events);
+        if wanted == 0 {
+            return;
+        }
+        // C folds a socket listed twice into one entry (`cwfds_add_sock`);
+        // no two transfers wait on one socket until connections are
+        // shared.
+        assert!(
+            fds[..filled].iter().all(|e| e.fd != fd),
+            "socket {fd} listed twice"
+        );
+        if let Some(entry) = fds.get_mut(filled) {
+            entry.fd = fd;
+            entry.events = wanted;
+            filled += 1;
+        }
+        need = need.saturating_add(1);
+    });
     // SAFETY: as the caller guarantees.
-    unsafe { put(fd_count, 0) };
+    unsafe { put(fd_count, need) };
+    if !ufds.is_null() && need as usize != filled {
+        // Too few entries: the count says how many are needed.
+        return CURLM_OUT_OF_MEMORY;
+    }
     CURLM_OK
 }
 const _: ffi::proto::curl_multi_waitfds = curl_multi_waitfds;

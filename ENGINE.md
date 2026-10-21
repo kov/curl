@@ -590,8 +590,10 @@ nothing ready. A negative timeout is the shim's BAD_FUNCTION_ARGUMENT. `Net` has
 waits, and `connect` and `close` for connections; a `Socket` says how its readiness is learned:
 a descriptor to poll, or, for a fake one, what it is ready for now and when it will be.
 `FakeNet` polls real descriptors without waiting and, when none is ready, moves the
-`ManualClock` to the first fake socket's answer or on by the whole timeout. The connecting
-sockets are the pool's (`Pool::sockets`), polled for writing. `drive_to_completion` is
+`ManualClock` to the first fake socket's answer or on by the whole timeout. What each transfer
+waits on is one computation, `TransferState::pollset` over `Pool::socket` (C's
+`Curl_multi_pollset`), which `wait`, `Multi::sockets` and the shim's `fdset` and `waitfds` all
+read: a setup waits to write on its attempt's socket unless receiving is paused. `drive_to_completion` is
 `easy_transfer`:
 `wait(Poll, 1 s)`, `perform`, until the transfer completes; its message is read, other
 transfers' are not. A transfer not in the multi, checked every round as a callback may take it

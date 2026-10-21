@@ -21,7 +21,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::Pool;
-use crate::conn::io::{Net, Waker};
+use crate::conn::io::{Events, Net, Socket, Waker};
 use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -470,6 +470,12 @@ impl<H: Host> Multi<H> {
         run_in(&self.slots, id)
     }
 
+    /// Every socket the transfers wait on, and for what, in id order
+    /// (`curl_multi_fdset`, `curl_multi_waitfds`).
+    pub fn sockets(&self, f: impl FnMut(&dyn Socket, Events)) {
+        pollsets(&self.slots, &self.pool, f);
+    }
+
     /// Step one transfer until it waits (`multi_runsingle`).
     /// Call `f` with transfer `id`'s step context, as a step would, its
     /// `Run` out of its slot.
@@ -667,6 +673,27 @@ impl<H: Host> Multi<H> {
             self.life = Life::Dead;
             MultiErrorKind::AbortedByCallback
         })
+    }
+}
+
+/// Every socket the transfers in `slots` wait on, and for what, in id
+/// order: the one computation behind waits, `fdset` and `waitfds`.
+fn pollsets<'a, H: Host>(
+    slots: &'a Arena<Slot<H>, Transfer>,
+    pool: &'a Pool,
+    mut f: impl FnMut(&'a dyn Socket, Events),
+) {
+    let mut cursor = None;
+    while let Some(id) = slots.next_after(cursor) {
+        cursor = Some(id);
+        let slot = slots.get(id).expect("just found");
+        let run = slot
+            .run
+            .as_ref()
+            .expect("no transfer is out while the multi is called");
+        if let Some((socket, events)) = run.state.pollset(pool, slot.pause) {
+            f(socket, events);
+        }
     }
 }
 

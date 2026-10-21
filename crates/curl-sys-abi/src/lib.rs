@@ -33,6 +33,7 @@ mod multi;
 mod printf;
 mod root;
 mod setopt;
+mod share;
 mod strerror;
 mod strings;
 mod url;

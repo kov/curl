@@ -412,14 +412,15 @@ cargo-mutants run on the milestone's diff.
     Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31);
     `http_perhapsrewind`'s early close of a large body, and its "Need to rewind" line on an
     auth reload, with step 34.
-30. **http: cookies.** **In progress.** Done: the jar (ENGINE.md 6.5), the handle's and lent
-    by a share that keeps cookies, as the tool's share does; its files read as each transfer
-    starts; `Set-Cookie:` stored and the request's `Cookie:` sent; `CURLOPT_COOKIE`,
-    `COOKIEFILE`, `COOKIEJAR`, `COOKIESESSION`, `COOKIELIST` and `CURLINFO_COOKIELIST`; the
-    tool's `-b`, `-c` and `-j`; public suffixes through libpsl (`curl-psl`). 44 of the 45
-    cookie and PSL tests the Rust leg runs pass. Next: the shim's `curl_share_*` (test 1905
-    and the libtests sharing cookies, names and connections). Waiting: the proxy tests, with
-    step 31.
+30. **http: cookies.** **Done**, but for what waits on later work. The jar (ENGINE.md 6.5),
+    the handle's or its share's, borrowed per operation, so a share's serves a C multi's
+    transfers too; its files read as each transfer starts; `Set-Cookie:` stored and the
+    request's `Cookie:` sent; `CURLOPT_COOKIE`, `COOKIEFILE`, `COOKIEJAR`, `COOKIESESSION`,
+    `COOKIELIST` and `CURLINFO_COOKIELIST`; the tool's `-b`, `-c` and `-j`; public suffixes
+    through libpsl (`curl-psl`); the shim's `curl_share_*`, with the lock functions called
+    for the share itself. The 45 cookie and PSL tests the Rust leg runs pass. Waiting: the proxy tests, with step 31; the lock
+    functions at the pool's and the jar's sites (1554), with the share's planned split
+    (ENGINE.md 4.6.1); `CONNECT_ONLY` (3234).
 31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
     the proxy options and the scheme table, each trace's host checked on the C leg. Then the
     absolute request target and Proxy-Authorization; then CONNECT, after the dial result is

@@ -24,3 +24,21 @@ witness: curl-core proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_m
     if let Some(share) = easy.share().cloned() {
 --- new
     if let Some(share) = None::<Share> {
+
+=== a held share takes options
+file: crates/curl-sys-abi/src/share.rs
+witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
+--- old
+        self.core.holders() > 1
+--- new
+        self.core.holders() > 2
+
+=== a copy of a handle holds its share
+file: crates/curl-core/src/easy.rs
+witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
+--- old
+            cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            share: None,
+--- new
+            cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            share: self.share.clone(),

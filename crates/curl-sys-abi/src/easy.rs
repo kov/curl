@@ -27,6 +27,7 @@ use crate::ffi::{
 };
 use crate::gate::{EasyCall, EasyStack, Frame, MultiCall, MultiStack, Reach, Recursive};
 use crate::multi::{ShimEvents, ShimMulti};
+use crate::share::ShimShare;
 
 /// C's `CURLEASY_MAGIC_NUMBER`, which tells a live handle.
 const MAGIC: u32 = 0xc0de_dbad;
@@ -47,6 +48,9 @@ pub(crate) struct ShimEasy {
     pub(crate) post: RefCell<callbacks::Post>,
     /// `CURLOPT_ERRORBUFFER`.
     pub(crate) errbuf: Cell<*mut c_char>,
+    /// The share the application gave (`CURLOPT_SHARE`), whose core the
+    /// transfer holds; set only by `share::set` and `share::unlink`.
+    pub(crate) share: Cell<Option<NonNull<ShimShare>>>,
     /// The multi `curl_easy_perform` runs in, between performs.
     private: Cell<Option<NonNull<ShimMulti>>>,
     /// What `curl_multi_info_read` points to.
@@ -121,6 +125,7 @@ impl ShimEasy {
             set: Cell::new(set),
             post: RefCell::new(callbacks::Post::new()),
             errbuf: Cell::new(ptr::null_mut()),
+            share: Cell::new(None),
             private: Cell::new(None),
             // SAFETY: a `CURLMsg` of zeroes is its empty value.
             msg: UnsafeCell::new(unsafe { core::mem::zeroed() }),
@@ -147,6 +152,11 @@ impl ShimEasy {
 
     fn multi_stack(&self) -> Option<&MultiStack> {
         self.multi().map(|m| &m.stack)
+    }
+
+    /// The handle as the application knows it.
+    pub(crate) fn as_curl(&self) -> *mut CURL {
+        ptr::from_ref(self).cast_mut().cast()
     }
 
     /// Admit `call` on the handle.
@@ -328,6 +338,8 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
         EasyRef::Frame(..) => unreachable!("not added to a multi any more"),
     });
     assert!(saved.is_ok(), "the handle is its own");
+    // Then it leaves its share (`Curl_share_easy_unlink`).
+    crate::share::unlink(easy).expect("the handle is its own");
     drop(entry);
     let private = easy.private.take();
     easy.magic.set(0);

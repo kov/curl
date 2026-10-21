@@ -654,6 +654,13 @@ pub unsafe extern "C" fn curl_easy_setopt(
     let Some(arg) = (unsafe { read_arg(option, &mut args) }) else {
         return CURLE_UNKNOWN_OPTION;
     };
+    if let (ffi::CURLOPT_SHARE, Arg::Ptr(sh)) = (option, &arg) {
+        // SAFETY: the application passes a share or NULL.
+        return match unsafe { crate::share::set(easy, *sh) } {
+            Ok(()) => CURLE_OK,
+            Err(_) => CURLE_BAD_FUNCTION_ARGUMENT,
+        };
+    }
     let jar = match (option, &arg) {
         (
             ffi::CURLOPT_COOKIEFILE | ffi::CURLOPT_COOKIEJAR | ffi::CURLOPT_COOKIELIST,

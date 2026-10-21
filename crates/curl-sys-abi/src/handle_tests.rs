@@ -2376,3 +2376,133 @@ fn headers_are_looked_up_and_walked_as_in_c() {
         curl_easy_cleanup(c);
     }
 }
+
+/// The lock functions' calls, as `(lock, data, handle)`.
+static LOCKS: std::sync::Mutex<Vec<(bool, c_int, usize)>> = std::sync::Mutex::new(Vec::new());
+
+unsafe extern "C" fn record_lock(
+    curl: *mut CURL,
+    data: ffi::curl_lock_data,
+    _: ffi::curl_lock_access,
+    _: *mut c_void,
+) {
+    LOCKS
+        .lock()
+        .unwrap()
+        .push((true, data.0 as c_int, curl as usize));
+}
+
+unsafe extern "C" fn record_unlock(curl: *mut CURL, data: ffi::curl_lock_data, _: *mut c_void) {
+    LOCKS
+        .lock()
+        .unwrap()
+        .push((false, data.0 as c_int, curl as usize));
+}
+
+/// The share answers each kind of data as C built like this one does,
+/// refuses changes and its cleanup while a handle holds it, which a reset
+/// keeps and a copy does not, and calls the lock functions for itself as
+/// handles come and go.
+#[test]
+fn a_share_is_held_and_locked_as_in_c() {
+    use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+    let set = |sh, o, data: ffi::curl_lock_data| {
+        // SAFETY: a live share and an int, as the option takes.
+        unsafe { curl_share_setopt(sh, o, data.0 as c_int) }
+    };
+    let sh = curl_share_init();
+    for (data, want) in [
+        (ffi::CURL_LOCK_DATA_COOKIE, ffi::CURLSHE_OK),
+        (ffi::CURL_LOCK_DATA_DNS, ffi::CURLSHE_OK),
+        (ffi::CURL_LOCK_DATA_CONNECT, ffi::CURLSHE_OK),
+        (ffi::CURL_LOCK_DATA_PSL, ffi::CURLSHE_OK),
+        (ffi::CURL_LOCK_DATA_HSTS, ffi::CURLSHE_NOT_BUILT_IN),
+        (ffi::CURL_LOCK_DATA_SSL_SESSION, ffi::CURLSHE_NOT_BUILT_IN),
+        (ffi::CURL_LOCK_DATA_SHARE, ffi::CURLSHE_BAD_OPTION),
+        (ffi::CURL_LOCK_DATA_LAST, ffi::CURLSHE_BAD_OPTION),
+    ] {
+        assert_eq!(set(sh, ffi::CURLSHOPT_SHARE, data), want, "{}", data.0);
+    }
+    assert_eq!(
+        set(sh, ffi::CURLSHOPT_UNSHARE, ffi::CURL_LOCK_DATA_PSL),
+        ffi::CURLSHE_BAD_OPTION
+    );
+    // SAFETY: a live share, and the functions its options take.
+    unsafe {
+        let lock: ffi::curl_lock_function = Some(record_lock);
+        let unlock: ffi::curl_unlock_function = Some(record_unlock);
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_LOCKFUNC, lock),
+            ffi::CURLSHE_OK
+        );
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_UNLOCKFUNC, unlock),
+            ffi::CURLSHE_OK
+        );
+    }
+    let one = curl_easy_init();
+    let two = curl_easy_init();
+    assert_eq!(pointer(one, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+    assert_eq!(pointer(two, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+    let share = |c: *mut CURL| (true, ffi::CURL_LOCK_DATA_SHARE.0 as c_int, c as usize);
+    let unshare = |c: *mut CURL| (false, ffi::CURL_LOCK_DATA_SHARE.0 as c_int, c as usize);
+    assert_eq!(
+        std::mem::take(&mut *LOCKS.lock().unwrap()),
+        [share(one), unshare(one), share(two), unshare(two)]
+    );
+
+    // One jar for both.
+    let line = c"example.com\tFALSE\t/\tFALSE\t0\ta\t1";
+    assert_eq!(
+        pointer(one, ffi::CURLOPT_COOKIELIST, line.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let mut list: *mut ffi::curl_slist = ptr::null_mut();
+    // SAFETY: a live handle, and the list the info takes.
+    let listed = unsafe {
+        assert_eq!(
+            curl_easy_getinfo(two, ffi::CURLINFO_COOKIELIST, &raw mut list),
+            CURLE_OK
+        );
+        let text = CStr::from_ptr((*list).data).to_owned();
+        crate::strings::curl_slist_free_all(list);
+        text
+    };
+    assert_eq!(listed.as_c_str(), line);
+
+    // Held: no changes, no cleanup, through a reset; a copy holds none.
+    // SAFETY: live handles.
+    unsafe { easy::curl_easy_reset(two) };
+    // SAFETY: a live handle.
+    let copy = unsafe { easy::curl_easy_duphandle(two) };
+    assert_eq!(
+        set(sh, ffi::CURLSHOPT_SHARE, ffi::CURL_LOCK_DATA_DNS),
+        ffi::CURLSHE_IN_USE
+    );
+    // SAFETY: a live share.
+    assert_eq!(unsafe { curl_share_cleanup(sh) }, ffi::CURLSHE_IN_USE);
+    assert_eq!(
+        pointer(one, ffi::CURLOPT_SHARE, ptr::null_mut::<c_void>()),
+        CURLE_OK
+    );
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(two);
+        curl_easy_cleanup(copy);
+    }
+    assert_eq!(
+        std::mem::take(&mut *LOCKS.lock().unwrap()),
+        [share(one), unshare(one), share(two), unshare(two)]
+    );
+    // SAFETY: a live share, held by none; then no share at all.
+    unsafe {
+        assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
+        assert_eq!(curl_share_cleanup(ptr::null_mut()), ffi::CURLSHE_INVALID);
+        curl_easy_cleanup(one);
+    }
+    let null = ptr::null_mut();
+    assert_eq!(
+        std::mem::take(&mut *LOCKS.lock().unwrap()),
+        [share(null), unshare(null)]
+    );
+}

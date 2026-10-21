@@ -107,14 +107,15 @@ fn an_empty_download_leaves_an_empty_file() {
     assert!(!s.exists("none"));
 }
 
-/// The result line, muted by `--silent` unless `--show-error`.
+/// The result line, with the library's reason, muted by `--silent`
+/// unless `--show-error`.
 #[test]
 fn reports_a_failure() {
     let s = Scratch::new("failure");
-    let r = curl(&s, &[&s.url("missing")]);
+    let r = curl(&s, &["--no-progress-meter", &s.url("missing")]);
     assert_eq!(r.code, 37);
-    assert!(r.stderr.starts_with("curl: (37) "), "{:?}", r.stderr);
-    assert!(r.stderr.ends_with('\n'), "{:?}", r.stderr);
+    let line = format!("curl: (37) Could not open file {}\n", s.path("missing"));
+    assert_eq!(r.stderr, line);
     let r = curl(&s, &["-s", &s.url("missing")]);
     assert_eq!((r.code, &r.stderr[..]), (37, ""));
     let r = curl(&s, &["-sS", &s.url("missing")]);

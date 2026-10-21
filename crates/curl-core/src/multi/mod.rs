@@ -174,6 +174,9 @@ pub struct Multi<H: Host = NoHost> {
     waker: Option<TryArc<Waker>>,
     counts: Tally,
     life: Life,
+    /// A transfer was told the library is a debug build.
+    #[cfg(feature = "debug-hooks")]
+    warned: bool,
 }
 
 impl<H: Host> Multi<H> {
@@ -191,6 +194,8 @@ impl<H: Host> Multi<H> {
             waker: env.waker,
             counts: Tally::default(),
             life: Life::Alive,
+            #[cfg(feature = "debug-hooks")]
+            warned: false,
         })
     }
 
@@ -252,6 +257,13 @@ impl<H: Host> Multi<H> {
         {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         }
+        #[cfg(feature = "debug-hooks")]
+        let run = {
+            let mut run = run;
+            run.warn = !self.warned;
+            self.warned = true;
+            run
+        };
         let id = vacancy.fill(Slot {
             owner,
             easy,

@@ -99,7 +99,7 @@ impl Easy {
         let (result, easy) = run_to_end(&mut multi, std::mem::take(self));
         *self = easy;
         self.private = Some(Private(multi));
-        result.map_err(Error::from)
+        result.map_err(|kind| Error::with_detail(kind, self.report().failure()))
     }
 }
 
@@ -151,10 +151,11 @@ mod tests {
     use curl_alloc::TryRc;
 
     use super::*;
-    use crate::handler::{Handler, Write, WriteHandler};
+    use crate::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
     use crate::multi::TransferCx;
     use crate::options::{Method, Resume, UploadSource};
     use crate::time::{ManualClock, TimeLimit};
+    use crate::url::{ParseOptions, Url};
     use crate::version::Protocol;
 
     /// A directory of its own for a test, removed after it.
@@ -223,6 +224,111 @@ mod tests {
         e.options_mut().set_url(Some(&s.url("f"))).unwrap();
         assert_eq!(e.perform(), Ok(()));
         assert_eq!(*body.0.borrow(), b"hellohello");
+    }
+
+    /// What a debug handler was given, in order.
+    type Traced = Vec<(DebugKind, Vec<u8>)>;
+
+    #[derive(Clone, Default)]
+    struct Lines(Rc<RefCell<Traced>>);
+
+    impl DebugHandler for Lines {
+        fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+            self.0.borrow_mut().push((kind, data.to_vec()));
+        }
+    }
+
+    /// The reason a transfer fails is the error's detail, in C's words, and
+    /// a verbose transfer traces it.
+    #[test]
+    fn a_failure_says_why() {
+        let s = Scratch::new("why");
+        let missing = s.url("missing");
+        let (mut e, _) = easy(&missing);
+        let lines = Lines::default();
+        e.options_mut().output.verbose = true;
+        e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+        let err = e.perform().unwrap_err();
+        let path = &missing[b"file://".len()..];
+        let why = [&b"Could not open file "[..], path].concat();
+        assert_eq!(err.detail(), Some(&why[..]));
+        assert_eq!(err.to_string().as_bytes(), why);
+        assert_eq!(e.report().failure(), Some(&why[..]));
+        let traced = lines.0.borrow().clone();
+        // The debug build says what it is first (`multi_warn_debug`), once
+        // for the handle's multi.
+        #[cfg(feature = "debug-hooks")]
+        let traced = {
+            assert_eq!(traced[0], (DebugKind::Text, b"!!! WARNING !!!\n".to_vec()));
+            assert_eq!(
+                traced[1],
+                (
+                    DebugKind::Text,
+                    b"This is a debug build of libcurl, do not use in production.\n".to_vec()
+                )
+            );
+            traced[2..].to_vec()
+        };
+        assert_eq!(traced, [(DebugKind::Text, [&why[..], b"\n"].concat())]);
+        lines.0.borrow_mut().clear();
+        e.perform().unwrap_err();
+        assert_eq!(lines.0.borrow().len(), 1, "warned once");
+
+        let why = |url: &[u8]| {
+            let (mut e, _) = easy(url);
+            let err = e.perform().unwrap_err();
+            (
+                err.kind(),
+                String::from_utf8(err.detail().unwrap().to_vec()).unwrap(),
+            )
+        };
+        let mut no_url = Easy::new();
+        let err = no_url.perform().unwrap_err();
+        assert_eq!(err.detail(), Some(&b"No URL set"[..]));
+        assert_eq!(
+            why(b"nosuch://x/"),
+            (
+                ErrorKind::UnsupportedProtocol,
+                "Protocol \"nosuch\" not supported".into()
+            )
+        );
+        assert_eq!(
+            why(b"FTP://x/"),
+            (
+                ErrorKind::UnsupportedProtocol,
+                "Protocol \"ftp\" is disabled".into()
+            )
+        );
+        let bad = b"file://h st/";
+        let parse = ParseOptions {
+            guess_scheme: true,
+            non_support_scheme: true,
+            ..ParseOptions::NONE
+        };
+        let reason = Url::parse(bad, parse).unwrap_err();
+        assert_eq!(
+            why(bad),
+            (ErrorKind::UrlMalformat, format!("URL rejected: {reason}"))
+        );
+        // A handler that fails a write is told of in C's words.
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let mut e = Easy::new();
+        e.options_mut().set_url(Some(&s.url("f"))).unwrap();
+        e.options_mut().callbacks.write = Some(Handler::write(Refuse).unwrap());
+        let err = e.perform().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::WriteError);
+        assert_eq!(
+            err.detail(),
+            Some(&b"client returned ERROR on write of 5 bytes"[..])
+        );
+    }
+
+    struct Refuse;
+
+    impl WriteHandler for Refuse {
+        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+            Write::Fail
+        }
     }
 
     /// A bare path is a file with `file` as the default protocol (test

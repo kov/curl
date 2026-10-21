@@ -20,6 +20,7 @@ mod proto;
 pub mod report;
 mod text;
 pub mod time;
+mod trace;
 mod upload;
 pub mod url;
 pub mod version;

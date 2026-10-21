@@ -15,6 +15,7 @@ use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Timer, TransferReport};
 use crate::time::Instant;
+use crate::trace;
 use crate::url::{self, GetOptions, ParseOptions, Part, Url};
 use crate::version::Protocol;
 
@@ -27,6 +28,10 @@ use super::{Host, TransferId};
 pub(crate) struct Run {
     pub(crate) state: TransferState,
     pub(crate) deadlines: Deadlines,
+    /// The first transfer added to its multi says that the library is a
+    /// debug build (`multi_warn_debug`).
+    #[cfg(feature = "debug-hooks")]
+    pub(crate) warn: bool,
 }
 
 impl Run {
@@ -34,6 +39,8 @@ impl Run {
         Run {
             state: TransferState::Init,
             deadlines: Deadlines::new(now, None, None),
+            #[cfg(feature = "debug-hooks")]
+            warn: false,
         }
     }
 }
@@ -349,10 +356,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             match stepped {
                 Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                 // Out of time at the end of the pass (transfer.c:382).
-                Ok(ProtoStep::Blocked) if expired => (
-                    TransferState::Exchanging(x).fail(ErrorKind::OperationTimedout),
-                    Wake::Again,
-                ),
+                Ok(ProtoStep::Blocked) if expired => {
+                    let kind = timed_out(cx);
+                    (TransferState::Exchanging(x).fail(kind), Wake::Again)
+                }
                 Ok(stepped) => {
                     // The end of a receive pass (`Curl_sendrecv`).
                     let done = stepped == ProtoStep::Done;
@@ -446,6 +453,29 @@ fn progress_after_step<H: Host>(
     }
 }
 
+/// The request ran out of time, with what it received of how much.
+fn timed_out<H: Host>(cx: &mut StepCx<'_, H>) -> ErrorKind {
+    let report = cx.easy().report();
+    let ms = report.timings().since_single_ms(cx.rest.now);
+    let sizes = report.sizes();
+    let got = sizes.download();
+    let kind = ErrorKind::OperationTimedout;
+    match sizes.download_expected() {
+        Some(size) => trace::fail(
+            cx,
+            kind,
+            format_args!(
+                "Operation timed out after {ms} milliseconds with {got} out of {size} bytes received"
+            ),
+        ),
+        None => trace::fail(
+            cx,
+            kind,
+            format_args!("Operation timed out after {ms} milliseconds with {got} bytes received"),
+        ),
+    }
+}
+
 /// The report of a transfer completing, from before the request was
 /// about to be sent or not (`mstate_enter_completed`, `Curl_pgrsCompleted`).
 fn enter_completed(report: &mut TransferReport, now: Instant, before_did: bool) {
@@ -480,8 +510,17 @@ fn is_premature(result: Result<(), ErrorKind>) -> bool {
 /// URL, the leg's timers, the protocol and a connection, then the protocol
 /// connects over it.
 fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
+    #[cfg(feature = "debug-hooks")]
+    if std::mem::take(&mut run.warn) {
+        trace::info(cx, format_args!("!!! WARNING !!!"));
+        trace::info(
+            cx,
+            format_args!("This is a debug build of libcurl, do not use in production."),
+        );
+    }
     if cx.easy().options().url().is_none() {
-        return TransferState::Init.fail(ErrorKind::UrlMalformat);
+        let kind = trace::fail(cx, ErrorKind::UrlMalformat, format_args!("No URL set"));
+        return TransferState::Init.fail(kind);
     }
     cx.mark(Timer::StartOp);
     run.deadlines.start_leg(cx.rest.now);
@@ -490,7 +529,11 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     let options = cx.easy().options();
     let url = match parse_url(options) {
         Ok(url) => url,
-        Err(e) => return TransferState::Init.fail(e),
+        Err(UrlRefused::Rejected(e)) => {
+            let kind = trace::fail(cx, url_error(e), format_args!("URL rejected: {e}"));
+            return TransferState::Init.fail(kind);
+        }
+        Err(UrlRefused::Failed(kind)) => return TransferState::Init.fail(kind),
     };
     let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
         Ok(s) => s,
@@ -498,10 +541,19 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     };
     // Known before the protocol opens anything, as C records it.
     cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
-    let options = cx.easy().options();
-    let proto = match ProtoState::start(&scheme, &url, options) {
+    let proto = match ProtoState::start(&scheme, &url, cx) {
         Ok(Some(proto)) => proto,
-        Ok(None) => return TransferState::Init.fail(ErrorKind::UnsupportedProtocol),
+        Ok(None) => {
+            // A scheme libcurl knows is one this build leaves out.
+            let why: &[u8] = if url::is_known_scheme(&scheme) {
+                b"\" is disabled"
+            } else {
+                b"\" not supported"
+            };
+            let kind = ErrorKind::UnsupportedProtocol;
+            let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why]);
+            return TransferState::Init.fail(kind);
+        }
         Err(e) => return TransferState::Init.fail(e),
     };
     let Ok(lease) = cx.rest.pool.acquire(&Route::LOCAL) else {
@@ -512,9 +564,18 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     TransferState::ProtoConnect(Attached { lease, proto })
 }
 
+/// Why a transfer's URL was not taken.
+#[derive(Debug, PartialEq, Eq)]
+enum UrlRefused {
+    /// The parser's reason, which the transfer gives.
+    Rejected(UrlErrorKind),
+    /// Something else, without a reason given.
+    Failed(ErrorKind),
+}
+
 /// The transfer's URL, parsed, given the default scheme where it has none
 /// (`parseurlandfillconn`).
-fn parse_url(options: &Options) -> Result<Url, ErrorKind> {
+fn parse_url(options: &Options) -> Result<Url, UrlRefused> {
     let url = options.url().expect("checked by the caller");
     let parse = ParseOptions {
         guess_scheme: true,
@@ -524,12 +585,12 @@ fn parse_url(options: &Options) -> Result<Url, ErrorKind> {
         ..ParseOptions::NONE
     };
     let Some(default) = options.default_protocol() else {
-        return Url::parse(url, parse).map_err(url_error);
+        return Url::parse(url, parse).map_err(UrlRefused::Rejected);
     };
     // A path is no URL without `file:`, so for `file` the scheme is looked
     // for before parsing.
     if !default.eq_ignore_ascii_case(b"file") || url::has_scheme(url) {
-        let parsed = Url::parse(url, parse).map_err(url_error)?;
+        let parsed = Url::parse(url, parse).map_err(UrlRefused::Rejected)?;
         let no_guess = GetOptions {
             no_guess_scheme: true,
             ..GetOptions::NONE
@@ -537,16 +598,16 @@ fn parse_url(options: &Options) -> Result<Url, ErrorKind> {
         match parsed.get(Part::Scheme, no_guess) {
             Ok(_) => return Ok(parsed),
             Err(UrlErrorKind::NoScheme) => {}
-            Err(e) => return Err(url_error(e)),
+            Err(e) => return Err(UrlRefused::Failed(url_error(e))),
         }
     }
     let mut with_scheme = Vec::new();
     for part in [default, b"://", url] {
         with_scheme
             .try_extend_from_slice(part)
-            .map_err(|_| ErrorKind::OutOfMemory)?;
+            .map_err(|_| UrlRefused::Failed(ErrorKind::OutOfMemory))?;
     }
-    Url::parse(&with_scheme, parse).map_err(url_error)
+    Url::parse(&with_scheme, parse).map_err(UrlRefused::Rejected)
 }
 
 /// A URL's error as a transfer's (`Curl_uc_to_curlcode`).
@@ -588,7 +649,10 @@ mod tests {
         options
             .set_default_protocol(default.map(str::as_bytes))
             .unwrap();
-        let url = parse_url(&options)?;
+        let url = parse_url(&options).map_err(|e| match e {
+            UrlRefused::Rejected(e) => url_error(e),
+            UrlRefused::Failed(kind) => kind,
+        })?;
         Ok(url.get(Part::Url, GetOptions::NONE).unwrap())
     }
 

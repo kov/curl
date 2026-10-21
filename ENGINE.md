@@ -130,7 +130,7 @@ curl-core/src/
   easy.rs                    Easy, Easy::perform
   report.rs                  TransferReport, Timings, Sizes, HeaderStore, HeaderCursor
   handler.rs                 handler traits, their verdict enums, Handler
-  trace.rs                   infof/debug formatting on a stack buffer
+  trace.rs                   failf/infof: a failure's reason and text lines, on a stack buffer
   multi/
     mod.rs                   Multi<H>, Host, public API
     slot.rs                  Slot, TransferShared, Run, the transition function
@@ -229,8 +229,7 @@ read after it ran something (§3.5). Timing records (`Timings::mark`) take the p
 ### 2.5 Errors and outcomes
 
 ```rust
-pub struct Error { kind: ErrorKind, detail: Option<Box<Detail>> }  // detail dropped on OOM, kind kept;
-                                                                   // the detail arrives with ERRORBUFFER (step 10)
+pub struct Error { kind: ErrorKind, detail: Option<Vec<u8>> }  // detail dropped on OOM, kind kept
 pub enum Recv { Data(NonZeroUsize), Eof, WouldBlock }
 pub enum Sent { Bytes(NonZeroUsize), WouldBlock }
 pub enum Acquire { Ready(ConnLease, Reused), Connecting(ConnLease), Wait(WaitReason) }
@@ -238,6 +237,16 @@ pub enum WaitReason { HostLimit, TotalLimit, Multiplexable(ConnId) }
 pub enum ConnectStep<S> { Pending(Interest, Option<Instant>), Next(S), Restart(RestartReason) }
 pub enum Wake { Again, Idle }          // Again: run this transfer again in the same pass
 ```
+
+A failure's reason is given where it happens: `trace::fail(cx, kind, args)` (`failf`) formats it
+on the stack, at most 255 bytes as `CURL_ERROR_SIZE` allows, keeps the first one a transfer gives
+in its report (`TransferReport::failure`, cleared when the report restarts) and traces every
+one as a text line for a verbose transfer. `Easy::perform`'s `Error` carries a copy; the shim
+copies it into ERRORBUFFER. `trace::info` (`infof`) traces a line only for a verbose transfer,
+cut at 2048 bytes and marked `...` as `trc_end_buf` does, so a quiet transfer formats nothing.
+Text goes to the debug handler, or without one to the STDERR sink after `* `. The debug build's
+"!!! WARNING !!!" lines go to the first transfer added to a multi, at its first step rather than
+inside `add`, which has no transfer context.
 
 C's `CURLE_AGAIN` has three meanings (would-block, "rebuild the sub-chain", "nothing yet") and
 "OK with 0 bytes" means EOF; here they are distinct variants. `NO_CONNECTION_AVAILABLE` is

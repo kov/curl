@@ -91,7 +91,10 @@ witness: curl-core progress::tests::the_handler_is_called_at_each_pass_and_at_th
 file: crates/curl-core/src/progress/mod.rs
 witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_call
 --- old
-                ProgressVerdict::Abort => return Err(ErrorKind::AbortedByCallback),
+                ProgressVerdict::Abort => {
+                    let why = format_args!("Callback aborted");
+                    return Err(trace::fail(cx, ErrorKind::AbortedByCallback, why));
+                }
 --- new
                 ProgressVerdict::Abort => return Ok(()),
 

@@ -175,6 +175,14 @@ fn scheme_of(url: &[u8], guessing: bool) -> Option<&[u8]> {
     }
 }
 
+/// Whether libcurl knows `scheme`, lowercase, built in or not
+/// (`Curl_get_scheme`).
+pub(crate) fn is_known_scheme(scheme: &[u8]) -> bool {
+    schemes::KNOWN
+        .binary_search_by(|k| k.name.as_bytes().cmp(scheme))
+        .is_ok()
+}
+
 /// Whether `url` starts with a scheme, `:` and `/` (`Curl_is_absolute_url`
 /// guessing).
 pub(crate) fn has_scheme(url: &[u8]) -> bool {

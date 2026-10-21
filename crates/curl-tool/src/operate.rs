@@ -267,11 +267,17 @@ fn finish(
 ) -> Result<(), ErrorKind> {
     let msgs = run.msgs;
     if !skipped {
-        // `post_check_result`.
-        if let Err(e) = result {
-            let code = exit_code(e);
-            if let Ok(line) = try_format(format_args!("curl: ({code}) {e}\n")) {
-                msgs.error_line(&[line.as_bytes()]);
+        // `post_check_result`: the transfer's reason, or the kind's.
+        if let Err(e) = result
+            && let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e)))
+        {
+            match easy.report().failure() {
+                Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
+                None => {
+                    if let Ok(why) = try_format(format_args!("{e}\n")) {
+                        msgs.error_line(&[code.as_bytes(), why.as_bytes()]);
+                    }
+                }
             }
         }
         let mut stream = out.stream();

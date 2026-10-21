@@ -23,10 +23,10 @@ witness: curl-core upload::tests::the_read_that_completes_the_size_ends_the_body
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::an_end_short_of_the_size_is_a_read_error
 --- old
-                    return Err(ErrorKind::ReadError);
+                    && self.read < size
 --- new
-                    self.latch = Latch::Eof;
-                    return Ok(Readout { n: 0, eos: true });
+                    && self.read < size
+                    && false
 
 === a complete size asks the handler again
 file: crates/curl-core/src/upload/mod.rs
@@ -56,8 +56,12 @@ witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
 --- old
-            Read::Data(n) if n.get() > room => Err(self.fail(ErrorKind::ReadError)),
+            Read::Data(n) if n.get() > room => {
+                let why = format_args!("read function returned funny value");
+                Err(self.fail(trace::fail(cx, ErrorKind::ReadError, why)))
+            }
 --- new
+
 
 === a read pause does not pause the sending
 file: crates/curl-core/src/upload/mod.rs
@@ -70,8 +74,12 @@ witness: curl-core upload::tests::a_pausing_handler_pauses_the_sending
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::a_pausing_handler_pauses_the_sending
 --- old
-            Read::Pause if !pausable => Err(ErrorKind::ReadError),
+            Read::Pause if !pausable => {
+                let why = format_args!("Read callback asked for PAUSE when not supported");
+                Err(trace::fail(cx, ErrorKind::ReadError, why))
+            }
 --- new
+
 
 === a paused send piece is not played again
 file: crates/curl-core/src/proto/script.rs
@@ -130,16 +138,13 @@ witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
 --- old
-            let rewind = rewind.clone().ok_or(ErrorKind::SendFailRewind)?;
-            rewind
-                .rewind(&mut TransferCx::new(cx))
-                .map_err(|_| ErrorKind::SendFailRewind)?;
+                None => false,
+            };
+            if !rewound {
 --- new
-            if let Some(rewind) = rewind.clone() {
-                rewind
-                    .rewind(&mut TransferCx::new(cx))
-                    .map_err(|_| ErrorKind::SendFailRewind)?;
-            }
+                None => true,
+            };
+            if !rewound {
 
 === a request with a body is sent at DID
 file: crates/curl-core/src/multi/state.rs

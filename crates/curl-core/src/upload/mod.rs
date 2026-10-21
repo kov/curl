@@ -12,6 +12,7 @@ use crate::handler::{DebugKind, Handler, Read, ReadHandler, Rewind};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::options::UploadSource;
+use crate::trace;
 
 /// One request's body to send, read from its source.
 #[derive(Debug)]
@@ -141,23 +142,34 @@ impl Upload {
                 if let Some(size) = size
                     && self.read < size
                 {
-                    // "client read function EOF fail, only %d/%d of needed
-                    // bytes read"
-                    return Err(ErrorKind::ReadError);
+                    let read = self.read;
+                    return Err(trace::fail(
+                        cx,
+                        ErrorKind::ReadError,
+                        format_args!(
+                            "client read function EOF fail, only {read}/{size} of needed bytes read"
+                        ),
+                    ));
                 }
                 self.latch = Latch::Eof;
                 Ok(Readout { n: 0, eos: true })
             }
-            // "operation aborted by callback"
-            Read::Abort => Err(self.fail(ErrorKind::AbortedByCallback)),
-            // "Read callback asked for PAUSE when not supported"
-            Read::Pause if !pausable => Err(ErrorKind::ReadError),
+            Read::Abort => {
+                let why = format_args!("operation aborted by callback");
+                Err(self.fail(trace::fail(cx, ErrorKind::AbortedByCallback, why)))
+            }
+            Read::Pause if !pausable => {
+                let why = format_args!("Read callback asked for PAUSE when not supported");
+                Err(trace::fail(cx, ErrorKind::ReadError, why))
+            }
             Read::Pause => {
                 cx.pause_mut().send = SendPause::Paused;
                 Ok(Readout { n: 0, eos: false })
             }
-            // "read function returned funny value"
-            Read::Data(n) if n.get() > room => Err(self.fail(ErrorKind::ReadError)),
+            Read::Data(n) if n.get() > room => {
+                let why = format_args!("read function returned funny value");
+                Err(self.fail(trace::fail(cx, ErrorKind::ReadError, why)))
+            }
             Read::Data(n) => {
                 self.read += n.get() as u64;
                 let eos = size.is_some_and(|size| self.read >= size);
@@ -190,10 +202,14 @@ impl Upload {
             if !self.called {
                 return Ok(());
             }
-            let rewind = rewind.clone().ok_or(ErrorKind::SendFailRewind)?;
-            rewind
-                .rewind(&mut TransferCx::new(cx))
-                .map_err(|_| ErrorKind::SendFailRewind)?;
+            let rewound = match rewind.clone() {
+                Some(rewind) => rewind.rewind(&mut TransferCx::new(cx)).is_ok(),
+                None => false,
+            };
+            if !rewound {
+                let why = format_args!("necessary data rewind was not possible");
+                return Err(trace::fail(cx, ErrorKind::SendFailRewind, why));
+            }
         }
         self.read = 0;
         self.latch = Latch::Open;

@@ -46,13 +46,13 @@ impl ProtoState {
     /// for `url`: what C's protocols do in their `setup_connection`, and
     /// `file:`'s connect, which opens the file before a connection is
     /// leased.
-    pub(crate) fn start(
+    pub(crate) fn start<H: Host>(
         scheme: &[u8],
         url: &Url,
-        options: &Options,
+        cx: &mut StepCx<'_, H>,
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
-            b"file" => ProtoState::File(file::Request::open(url, options)?),
+            b"file" => ProtoState::File(file::Request::open(url, cx)?),
             #[cfg(any(test, feature = "test-util"))]
             b"null" => ProtoState::Null,
             #[cfg(any(test, feature = "test-util"))]

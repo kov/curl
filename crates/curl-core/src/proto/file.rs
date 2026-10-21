@@ -16,9 +16,10 @@ use crate::error::ErrorKind;
 use crate::handler::HeaderOrigin;
 use crate::multi::Host;
 use crate::multi::state::{StepCx, url_error};
-use crate::options::{Method, Options, Resume};
+use crate::options::{Method, Resume};
 use crate::progress;
 use crate::text::Text;
+use crate::trace;
 use crate::upload::{self, Upload};
 use crate::url::{self, GetOptions, Part, Url};
 
@@ -43,12 +44,12 @@ impl Request {
     /// The path `url` names, opened to read unless the request is an
     /// upload (`file_connect`). The host is not looked at: the URL's
     /// parser allows only this one.
-    pub(crate) fn open(url: &Url, options: &Options) -> Result<Request, ErrorKind> {
+    pub(crate) fn open<H: Host>(url: &Url, cx: &mut StepCx<'_, H>) -> Result<Request, ErrorKind> {
         // C asks for the path URL-encoded, which the parser has made it
         // already.
-        let path = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
+        let encoded = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
         // A zero byte in a path is foul play.
-        let mut path = url::decode_but_zero(&path)
+        let mut path = url::decode_but_zero(&encoded)
             .map_err(url_error)?
             .ok_or(ErrorKind::UrlMalformat)?;
         path.try_push(0).map_err(|_| ErrorKind::OutOfMemory)?;
@@ -57,11 +58,18 @@ impl Request {
             file: None,
             pipeline: Pipeline::new(Reach::Local),
         };
-        if options.method != Method::Upload {
-            // "Could not open file %s"
-            let file =
-                fs::open_read(request.c_path()).map_err(|_| ErrorKind::FileCouldntReadFile)?;
-            request.file = Some(file);
+        if cx.easy().options().method != Method::Upload {
+            match fs::open_read(request.c_path()) {
+                Ok(file) => request.file = Some(file),
+                Err(_) => {
+                    let kind = ErrorKind::FileCouldntReadFile;
+                    return Err(trace::fail_with(
+                        cx,
+                        kind,
+                        &[b"Could not open file ", &encoded],
+                    ));
+                }
+            }
         }
         Ok(request)
     }
@@ -126,8 +134,12 @@ impl Request {
         }
         if resume > 0 {
             if resume > expected {
-                // "failed to resume file:// transfer"
-                return Err(ErrorKind::BadDownloadResume);
+                let kind = ErrorKind::BadDownloadResume;
+                return Err(trace::fail(
+                    cx,
+                    kind,
+                    format_args!("failed to resume file:// transfer"),
+                ));
             }
             expected -= resume;
         }
@@ -235,9 +247,11 @@ impl Request {
             Some(_) => Keep::Everything,
             None => Keep::Nothing,
         };
-        // "cannot open %s for writing"
-        let mut target = fs::open_write(self.c_path(), keep, options.new_file_mode.bits().into())
-            .map_err(|_| ErrorKind::WriteError)?;
+        let mode = options.new_file_mode.bits().into();
+        let Ok(mut target) = fs::open_write(self.c_path(), keep, mode) else {
+            let detail: [&[u8]; 3] = [b"cannot open ", path, b" for writing"];
+            return Err(trace::fail_with(cx, ErrorKind::WriteError, &detail));
+        };
         let resume = options.resume;
         let mut upload = Upload::new(&options.upload);
         if let Some(size) = upload.size() {
@@ -247,8 +261,13 @@ impl Request {
         let mut skip = match resume {
             None => 0,
             Some(Resume::At(n)) => n.get(),
-            // "cannot get the size of %s"
-            Some(Resume::AtEnd) => target.metadata().map_err(|_| ErrorKind::WriteError)?.len(),
+            Some(Resume::AtEnd) => match target.metadata() {
+                Ok(meta) => meta.len(),
+                Err(_) => {
+                    let detail: [&[u8]; 2] = [b"cannot get the size of ", path];
+                    return Err(trace::fail_with(cx, ErrorKind::WriteError, &detail));
+                }
+            },
         };
         let mut buf = Vec::new();
         buf.try_extend_from_slice(&[0; UPLOAD_BUFFER])

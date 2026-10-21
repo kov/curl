@@ -8,6 +8,8 @@ use std::time::Duration;
 
 pub use headers::{HeaderCursor, HeaderError, HeaderStore, HeaderView, Origins, Request};
 
+use curl_alloc::TryVec;
+
 use crate::time::Instant;
 use crate::version::Protocol;
 
@@ -20,6 +22,9 @@ pub struct TransferReport {
     headers: HeaderStore,
     filetime: Option<i64>,
     protocol: Option<Protocol>,
+    /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
+    /// none when keeping it ran out of memory.
+    failure: Option<Vec<u8>>,
 }
 
 impl TransferReport {
@@ -77,6 +82,22 @@ impl TransferReport {
 
     pub(crate) fn set_protocol(&mut self, protocol: Option<Protocol>) {
         self.protocol = protocol;
+    }
+
+    /// Why the transfer failed, in the words of the first reason given.
+    pub fn failure(&self) -> Option<&[u8]> {
+        self.failure.as_deref()
+    }
+
+    /// Keep `detail` as the reason, unless one was given already.
+    pub(crate) fn record_failure(&mut self, detail: &[u8]) {
+        if self.failure.is_some() {
+            return;
+        }
+        let mut kept = Vec::new();
+        if kept.try_extend_from_slice(detail).is_ok() {
+            self.failure = Some(kept);
+        }
     }
 
     pub(crate) fn speeds_mut(&mut self) -> &mut Speeds {
@@ -205,6 +226,12 @@ impl Timings {
         self.since_start(now)
     }
 
+    /// Milliseconds from the last request's start to `now`
+    /// (`Curl_pgrs_since_ms` from `TIMER_STARTSINGLE`).
+    pub(crate) fn since_single_ms(&self, now: Instant) -> u64 {
+        self.since_start(now).saturating_sub(self.startsingle) / 1000
+    }
+
     fn since_start(&self, now: Instant) -> u64 {
         let start = self
             .start
@@ -316,6 +343,18 @@ impl Speeds {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first reason given is kept; a new transfer starts without one.
+    #[test]
+    fn keeps_the_first_failure() {
+        let mut r = TransferReport::default();
+        assert_eq!(r.failure(), None);
+        r.record_failure(b"first");
+        r.record_failure(b"second");
+        assert_eq!(r.failure(), Some(&b"first"[..]));
+        r.restart(Instant::EPOCH);
+        assert_eq!(r.failure(), None);
+    }
 
     fn started(now: Instant) -> Timings {
         let mut r = TransferReport::default();

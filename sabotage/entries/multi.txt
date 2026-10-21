@@ -109,9 +109,11 @@ witness: curl-core multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_m
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::completions_are_read_in_id_order
 --- old
-        Ok(None) => return TransferState::Init.fail(ErrorKind::UnsupportedProtocol),
+            let kind = ErrorKind::UnsupportedProtocol;
+            let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why]);
 --- new
-        Ok(None) => return TransferState::Init.fail(ErrorKind::UrlMalformat),
+            let kind = ErrorKind::UrlMalformat;
+            let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why]);
 
 === a URL that does not parse fails with something other than URL_MALFORMAT
 file: crates/curl-core/src/multi/state.rs

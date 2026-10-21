@@ -133,9 +133,9 @@ witness: curl-core deliver::tests::a_receive_pause_inside_the_replay_lets_it_fin
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
 --- old
-        if !verdict(cx, w, pausable)? {
+        if !verdict(cx, w, piece.len(), pausable)? {
 --- new
-        if !verdict(cx, w, pausable)? || cx.pause().recv_paused() {
+        if !verdict(cx, w, piece.len(), pausable)? || cx.pause().recv_paused() {
 
 === the piece a handler paused on is dropped
 file: crates/curl-core/src/deliver/mod.rs
@@ -198,8 +198,13 @@ witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_pause_where_none_is_supported_fails_the_write
 --- old
-        Write::Pause if !pausable => Err(ErrorKind::WriteError),
+        Write::Pause if !pausable => Err(trace::fail(
+            cx,
+            ErrorKind::WriteError,
+            format_args!("Write callback asked for PAUSE when not supported"),
+        )),
 --- new
+
 
 === the held output has no cap
 file: crates/curl-core/src/deliver/held.rs

@@ -13,6 +13,7 @@ use crate::handler::{DebugKind, HeaderOrigin, Write};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::report::Timer;
+use crate::trace;
 use held::{HeldOutput, OutKind};
 
 /// The most body a write handler is given at once (`CURL_MAX_WRITE_SIZE`).
@@ -88,8 +89,15 @@ impl Pipeline {
         self.accountant.bytecount += allowed as u64;
         cx.report_mut().sizes_mut().download += allowed as u64;
         if allowed < bytes.len() {
-            // "Exceeded the maximum allowed file size"
-            return Err(ErrorKind::FilesizeExceeded);
+            let max = max_filesize.expect("only a limit cuts the body short");
+            let bytecount = self.accountant.bytecount;
+            return Err(trace::fail(
+                cx,
+                ErrorKind::FilesizeExceeded,
+                format_args!(
+                    "Exceeded the maximum allowed file size ({max}) with {bytecount} bytes"
+                ),
+            ));
         }
         Ok(())
     }
@@ -308,7 +316,7 @@ fn deliver<H: Host>(
                 return Ok(bytes.len());
             };
             let w = handler.header(&mut TransferCx::new(cx), bytes, origin);
-            Ok(if verdict(cx, w, pausable)? {
+            Ok(if verdict(cx, w, bytes.len(), pausable)? {
                 bytes.len()
             } else {
                 0
@@ -334,11 +342,15 @@ fn deliver_body<H: Host>(
         if let Some(max) = easy.options().limits.max_filesize
             && piece.len() as u64 > max.get().saturating_sub(so_far)
         {
-            // "Would have exceeded max file size"
-            return Err(ErrorKind::FilesizeExceeded);
+            let kind = ErrorKind::FilesizeExceeded;
+            return Err(trace::fail(
+                cx,
+                kind,
+                format_args!("Would have exceeded max file size"),
+            ));
         }
         let w = handler.write(&mut TransferCx::new(cx), piece);
-        if !verdict(cx, w, pausable)? {
+        if !verdict(cx, w, piece.len(), pausable)? {
             break;
         }
         cx.report_mut().sizes_mut().delivered += piece.len() as u64;
@@ -349,16 +361,28 @@ fn deliver_body<H: Host>(
 
 /// Whether the handler took what it was given; a pause holds the output
 /// from here on.
-fn verdict<H: Host>(cx: &mut StepCx<'_, H>, w: Write, pausable: bool) -> Result<bool, ErrorKind> {
+fn verdict<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    w: Write,
+    len: usize,
+    pausable: bool,
+) -> Result<bool, ErrorKind> {
     match w {
         Write::Accepted => Ok(true),
-        // "Write callback asked for PAUSE when not supported"
-        Write::Pause if !pausable => Err(ErrorKind::WriteError),
+        Write::Pause if !pausable => Err(trace::fail(
+            cx,
+            ErrorKind::WriteError,
+            format_args!("Write callback asked for PAUSE when not supported"),
+        )),
         Write::Pause => {
             cx.pause_mut().recv = RecvPause::Held;
             Ok(false)
         }
-        Write::Fail => Err(ErrorKind::WriteError),
+        Write::Fail => Err(trace::fail(
+            cx,
+            ErrorKind::WriteError,
+            format_args!("client returned ERROR on write of {len} bytes"),
+        )),
     }
 }
 

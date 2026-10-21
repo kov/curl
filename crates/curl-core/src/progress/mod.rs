@@ -20,6 +20,7 @@ use crate::options::{LowSpeed, Progress};
 use crate::report::Speeds;
 use crate::text::Text;
 use crate::time::Instant;
+use crate::trace;
 
 /// How many speed records are kept: one a second, for five seconds
 /// (`CURL_SPEED_RECORDS`).
@@ -135,8 +136,6 @@ impl Speedometer {
         }
         match self.slow_since {
             None => self.slow_since = Some(now),
-            // "Operation too slow. Less than %d bytes/sec transferred the
-            // last %u seconds"
             Some(since) if now.since(since) >= Duration::from_secs(low.time.get().into()) => {
                 return Err(ErrorKind::OperationTimedout);
             }
@@ -197,7 +196,10 @@ pub(crate) fn update<H: Host>(cx: &mut StepCx<'_, H>, done: bool) -> Result<(), 
             };
             match handler.progress(&mut TransferCx::new(cx), now) {
                 ProgressVerdict::Continue => return Ok(()),
-                ProgressVerdict::Abort => return Err(ErrorKind::AbortedByCallback),
+                ProgressVerdict::Abort => {
+                    let why = format_args!("Callback aborted");
+                    return Err(trace::fail(cx, ErrorKind::AbortedByCallback, why));
+                }
                 ProgressVerdict::ContinueWithMeter => {}
             }
         }
@@ -224,7 +226,16 @@ pub(crate) fn check<H: Host>(
         return Ok(None);
     }
     let now = cx.now();
-    cx.speedometer_mut().speed_check(low, now)?;
+    if let Err(kind) = cx.speedometer_mut().speed_check(low, now) {
+        let (limit, time) = (low.limit, low.time);
+        return Err(trace::fail(
+            cx,
+            kind,
+            format_args!(
+                "Operation too slow. Less than {limit} bytes/sec transferred the last {time} seconds"
+            ),
+        ));
+    }
     Ok(Some(SPEED_CHECK_EVERY))
 }
 
@@ -273,7 +284,7 @@ fn draw<H: Host>(cx: &mut StepCx<'_, H>, elapsed_us: u64) {
 
 /// Text for the user, to the handle's sink or the process's standard
 /// error.
-fn to_stderr(sink: Option<&Handler<dyn TextSink>>, text: &[u8]) {
+pub(crate) fn to_stderr(sink: Option<&Handler<dyn TextSink>>, text: &[u8]) {
     match sink {
         Some(sink) => sink.write(text),
         // As C's fprintf: a failed write to standard error has nowhere

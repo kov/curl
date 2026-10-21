@@ -148,17 +148,19 @@ witness: curl-core proto::file::tests::an_upload_resumes_by_appending
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_upload_resumes_by_appending
 --- old
-            Some(Resume::AtEnd) => target.metadata().map_err(|_| ErrorKind::WriteError)?.len(),
+            Some(Resume::AtEnd) => match target.metadata() {
+                Ok(meta) => meta.len(),
 --- new
-            Some(Resume::AtEnd) => 0,
+            Some(Resume::AtEnd) => match target.metadata() {
+                Ok(_) => 0,
 
 === an upload's file has the default permissions
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_upload_writes_the_file
 --- old
-        let mut target = fs::open_write(self.c_path(), keep, options.new_file_mode.bits().into())
+        let mode = options.new_file_mode.bits().into();
 --- new
-        let mut target = fs::open_write(self.c_path(), keep, 0o644)
+        let mode = 0o644;
 
 === an upload is not counted
 file: crates/curl-core/src/proto/file.rs

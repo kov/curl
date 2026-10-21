@@ -1,0 +1,53 @@
+# What a transfer says about itself: the reason it failed, and its trace
+# lines (crates/curl-core/src/trace.rs).
+
+=== a transfer's reason for failing is not kept
+file: crates/curl-core/src/trace.rs
+witness: curl-core easy::tests::a_failure_says_why
+--- old
+    cx.report_mut().record_failure(detail.bytes());
+--- new
+    drop(detail.bytes());
+
+=== a failure is not traced
+file: crates/curl-core/src/trace.rs
+witness: curl-core easy::tests::a_failure_says_why
+--- old
+    if cx.easy().options().output.verbose {
+        let mut line = Text::<{ DETAIL_MAX + 1 }>::new();
+--- new
+    if false {
+        let mut line = Text::<{ DETAIL_MAX + 1 }>::new();
+
+=== a trace line that just fits is cut
+file: crates/curl-core/src/trace.rs
+witness: curl-core trace::tests::ends_lines_as_c
+--- old
+    if line.bytes().len() >= LINE_MAX - 2 {
+--- new
+    if line.bytes().len() >= LINE_MAX - 3 {
+
+=== a scheme libcurl knows is called unsupported
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core easy::tests::a_failure_says_why
+--- old
+            let why: &[u8] = if url::is_known_scheme(&scheme) {
+--- new
+            let why: &[u8] = if !url::is_known_scheme(&scheme) {
+
+=== every transfer warns of the debug build
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core easy::tests::a_failure_says_why
+features: debug-hooks
+--- old
+            run.warn = !self.warned;
+--- new
+            run.warn = true;
+
+=== the tool's result line gives the kind, not the reason
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool reports_a_failure
+--- old
+                Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
+--- new
+                Some(_) => msgs.error_line(&[code.as_bytes(), b"?\n"]),

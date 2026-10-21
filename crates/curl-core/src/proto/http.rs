@@ -371,14 +371,14 @@ impl Request {
         };
         let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
         let gate = self.gate;
-        let token = match (&self.credentials, gate.trusted()) {
-            (Some(c), Some(_)) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
-            _ => None,
+        // The URL's own credentials: the only ones there are yet.
+        let token = match &self.credentials {
+            Some(c) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
+            None => None,
         };
         let basic = token
             .as_deref()
-            .zip(gate.trusted())
-            .and_then(|(token, trusted)| Basic::new(token, trusted, &http.headers));
+            .and_then(|token| Basic::new(token, request::Trusted::own_url(), &http.headers));
         let authenticates = basic.is_some();
         let head = RequestHead {
             method,

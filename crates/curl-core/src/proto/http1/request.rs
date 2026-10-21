@@ -37,6 +37,15 @@ pub(crate) struct SameOrigin(());
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Trusted(());
 
+impl Trusted {
+    /// Credentials the request's own URL carries go to its origin, which
+    /// they were given for, wherever the transfer started
+    /// (`url_set_data_creds`).
+    pub(crate) fn own_url() -> Trusted {
+        Trusted(())
+    }
+}
+
 impl CredentialGate {
     /// The gate for the transfer's first request.
     pub(crate) const FIRST: CredentialGate = CredentialGate {

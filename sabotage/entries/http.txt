@@ -811,3 +811,12 @@ witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_ca
         let _ = referer;
     }
     cx.mark(Timer::StartOp);
+
+=== a URL's own credentials pass the gate
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_redirect_s_own_credentials_go_with_it
+--- old
+            .and_then(|token| Basic::new(token, request::Trusted::own_url(), &http.headers));
+--- new
+            .zip(gate.trusted())
+            .and_then(|(token, trusted)| Basic::new(token, trusted, &http.headers));

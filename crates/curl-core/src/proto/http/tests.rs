@@ -1989,3 +1989,34 @@ fn a_followed_redirect_refers_to_where_it_came_from() {
         assert_eq!(ran.easy.report().referer(), Some(want.as_bytes()));
     }
 }
+
+/// Credentials in the URL a redirect leads to go to its host, wherever
+/// the transfer started; those of the first URL go no further than it.
+#[test]
+fn a_redirect_s_own_credentials_go_with_it() {
+    for (location, sent) in [
+        (format!("http://u:p@other.test:{PORT}/b"), true),
+        (format!("http://other.test:{PORT}/b"), false),
+    ] {
+        let first = Conversation::new(&moved(&location, true), true);
+        let second = Conversation::new(OK, false);
+        let mut m = serving(Peer::Accepts, &[&first, &second]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let url = format!("http://x:y@127.0.0.1:{PORT}/a");
+        let ran = get(&mut m, "/a", first.clone(), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.follow = Follow::All;
+            o.resolve.set([entry.as_bytes()]).unwrap();
+        });
+        assert_eq!(ran.result, Ok(()));
+        let has = |r: &[u8], line: &[u8]| fixture::find(r, line).is_some();
+        assert!(has(&first.received(), b"Authorization: Basic eDp5\r\n"));
+        let second = second.received();
+        assert_eq!(
+            has(&second, b"Authorization: Basic dTpw\r\n"),
+            sent,
+            "{location}"
+        );
+        assert!(!has(&second, b"Basic eDp5"), "the first URL's stay");
+    }
+}

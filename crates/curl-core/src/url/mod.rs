@@ -798,6 +798,12 @@ impl Url {
         self.password = None;
     }
 
+    /// The host as held: an IPv6 address without its brackets or zone.
+    /// Read without a copy, where `get` makes one.
+    pub(crate) fn host_held(&self) -> Option<&[u8]> {
+        self.host.as_deref()
+    }
+
     /// Part `what`, as `curl_url_get` returns it.
     pub fn get(&self, what: Part, opts: GetOptions) -> Result<Bytes, UrlErrorKind> {
         let mut opts = opts;

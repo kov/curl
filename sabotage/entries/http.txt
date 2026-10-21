@@ -870,3 +870,11 @@ witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_abs
 --- old
         run.inherited.allow_port = false;
 --- new
+
+=== a host name over 65535 bytes is looked up
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_host_name_too_long_is_refused
+--- old
+    if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
+--- new
+    if url.host_held().is_some_and(|host| host.len() > MAX_HOST + 1) {

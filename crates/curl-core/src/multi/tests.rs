@@ -1172,6 +1172,30 @@ fn trace_of(lines: &TextLines) -> Vec<String> {
         .collect()
 }
 
+/// A host name longer than 65535 bytes is refused before it is looked up,
+/// as `Curl_peer_from_url` refuses it (test 399).
+#[test]
+fn a_host_name_too_long_is_refused() {
+    let (mut m, _clock) = networked();
+    let long = format!("http://{}/", "a".repeat(0x10000));
+    let (e, lines) = traced(&long);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::UrlMalformat), 0)]
+    );
+    assert_eq!(trace_of(&lines), ["Too long hostname (maximum is 65535)\n"]);
+    // One byte shorter goes on to be looked up.
+    let (e, _) = traced(&format!("http://{}/", "a".repeat(0xffff)));
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_ne!(
+        messages(&mut m)[0],
+        (id.index(), Err(ErrorKind::UrlMalformat), 0)
+    );
+}
+
 /// A connect refused is C's: the attempt's line, then the failure, then
 /// the connection closed (test 1 run against a closed port).
 #[test]

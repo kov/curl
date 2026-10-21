@@ -35,6 +35,9 @@ use super::sockets::Pollset;
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
 use super::{Host, Slots, TransferId};
 
+/// The longest host name a URL may name (`MAX_URL_LEN`).
+const MAX_HOST: usize = 0xffff;
+
 /// A transfer from `add` to `remove`.
 #[derive(Debug)]
 pub(crate) struct Run {
@@ -1623,6 +1626,15 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             return TransferState::Init.fail(e);
         }
     };
+    // A host name may be no longer than C lets a URL be (`MAX_URL_LEN`,
+    // `Curl_peer_from_url`).
+    if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
+        let kind = ErrorKind::UrlMalformat;
+        let kind = trace::fail_with(cx, kind, &[b"Too long hostname (maximum is 65535)"]);
+        // As above.
+        let _kept = cx.report_mut().set_url(url);
+        return TransferState::Init.fail(kind);
+    }
     let target = proto.network(&url);
     // The transfer's URL from here on is the report's.
     if let Err(OutOfMemory) = cx.report_mut().set_url(url) {

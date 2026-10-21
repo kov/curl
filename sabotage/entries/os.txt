@@ -156,3 +156,12 @@ witness: curl-os fs::tests::points_standard_error_at_a_file
     if unsafe { libc::dup2(to.as_fd().as_raw_fd(), libc::STDERR_FILENO) } < 0 {
 --- new
     if unsafe { libc::dup2(to.as_fd().as_raw_fd(), to.as_fd().as_raw_fd()) } < 0 {
+
+=== a fill stops before the buffer's end
+file: crates/curl-os/src/random.rs
+witness: curl-os random::tests::fills_with_different_bytes
+--- old
+        let rest = &mut out[filled..];
+--- new
+        let rest = &mut out[filled..out.len().min(filled + 32)];
+            if filled >= 32 { break; }

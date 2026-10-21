@@ -484,3 +484,32 @@ fn progress_counts_what_is_sent() {
         (500, 0)
     );
 }
+
+/// A pause blocks an upload only when it stops both ways the request
+/// moves bytes, and receiving alone once the body is sent
+/// (`Curl_xfer_is_blocked`): one that does not block runs it again.
+#[test]
+fn a_pause_blocks_an_upload_only_every_way_it_moves() {
+    let (mut m, _clock) = multi();
+    let mut e = script(vec![
+        Piece::Send(4),
+        Piece::Yield,
+        Piece::SendAll,
+        Piece::Yield,
+    ]);
+    fed(&mut e, &[1; 10], None, None, plain);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let runs_again = |m: &Multi| m.timeout() == Some(Duration::ZERO);
+    assert!(!runs_again(&m), "resting at the yield");
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    assert!(runs_again(&m), "still sending");
+    m.perform(&mut NoEvents).unwrap();
+    m.pause(id, PauseRequest::ALL, &mut NoEvents).unwrap();
+    assert!(!runs_again(&m), "both ways stopped");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.easy(id).unwrap().report().sizes().upload(), 10, "sent");
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    assert!(!runs_again(&m), "only receiving is left");
+}

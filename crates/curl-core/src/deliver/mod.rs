@@ -6,7 +6,7 @@ mod held;
 mod pause;
 
 pub use pause::PauseRequest;
-pub(crate) use pause::{Pause, RecvPause, SendPause};
+pub(crate) use pause::{Directions, Pause, RecvPause, SendPause};
 
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};

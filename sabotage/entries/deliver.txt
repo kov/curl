@@ -261,7 +261,7 @@ witness: curl-core deliver::tests::an_unpause_tells_the_timer
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core deliver::tests::an_unpause_tells_the_timer
 --- old
-    if !slot.pause.recv_paused() {
+    if !slot.pause.blocks(slot.directions) {
         slot.speedometer.forget_slow();
         rest.dirty.insert(id.index());
     }

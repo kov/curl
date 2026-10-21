@@ -671,7 +671,16 @@ The rules that keep this sound:
   engine is suspended in the callback) masked by `shared.pause`, which the callback may change.
   So `pause` from a write callback calls `timer_update` and `assess(me)` synchronously, and the
   socket callback runs inside `curl_easy_pause` as in C. For any other transfer the pollset is
-  computed from its `Run`, which is in its slot.
+  computed from its `Run`, which is in its slot. Built so far: neither call happens inside a
+  pause from the transfer's own handler; the timer hears at the end of the pass and the socket
+  callback after the step. `me_basis` comes with step 13, the first state that waits on its
+  socket while a handler runs.
+- **Whether a pause blocks a transfer** is judged against the ways its request moves bytes,
+  `Directions` (C's `REQ_IO_RECV` and `REQ_IO_SEND`), kept in the slot beside the pause so a
+  handler's pause reaches them while the run is out: none before DID (so a pause never blocks a
+  setup), set at DID from the protocol (receiving if it exchanges, sending if it has a body),
+  sending cleared once the body is sent, all cleared at done. A transfer runs again unless the
+  pause stops every way it moves (`Curl_xfer_is_blocked`).
 - **A call on a sibling transfer** routes to that slot. A sibling's unpause flushes its
   pipeline synchronously by the same rule as a step: its `Box<Run>` is moved out for the flush
   and put back after, so the handlers it calls get a context whose `EngineRest` does not alias

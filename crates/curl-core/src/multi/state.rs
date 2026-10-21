@@ -14,7 +14,7 @@ use crate::conn::{
     Acquired, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote, Progress,
     Released, ReuseRules, Route,
 };
-use crate::deliver::{Pause, PauseRequest, Pipeline, RecvPause};
+use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::Options;
@@ -352,6 +352,15 @@ impl<H: Host> StepCx<'_, H> {
             .pause
     }
 
+    pub(crate) fn directions_mut(&mut self) -> &mut Directions {
+        &mut self
+            .rest
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .directions
+    }
+
     pub(crate) fn pause_mut(&mut self) -> &mut Pause {
         &mut self
             .rest
@@ -454,9 +463,15 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 // About to send; sent already, with no body
                 // (`mstate_enter_did`).
                 cx.mark(Timer::PreTransfer);
-                if !x.proto.wants_send(cx.easy().options()) {
+                let send = x.proto.wants_send(cx.easy().options());
+                if !send {
                     cx.mark(Timer::PostTransfer);
                 }
+                // The ways it moves bytes from here (`xfer_setup`).
+                *cx.directions_mut() = Directions {
+                    recv: x.proto.exchanges(),
+                    send,
+                };
                 (TransferState::Did(x), Wake::Again)
             }
             // A failed request is done with, not cut short (`multistate_do`).
@@ -518,6 +533,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             let premature = d.premature || is_premature(d.result);
             release(cx, d.lease, Finish { premature }, d.origin.as_ref());
+            // The request moves nothing more (`Curl_req_stop_send_recv`).
+            *cx.directions_mut() = Directions::default();
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();

@@ -78,6 +78,27 @@ impl Pause {
     pub(crate) fn send_paused(&self) -> bool {
         self.send == SendPause::Paused
     }
+
+    /// Whether the pause stops a request moving bytes the ways it does
+    /// (`Curl_xfer_is_blocked`): every way, or receiving when it only
+    /// receives, or sending when it only sends. One that moves none is
+    /// never blocked.
+    pub(crate) fn blocks(&self, ways: Directions) -> bool {
+        match (ways.recv, ways.send) {
+            (false, false) => false,
+            (true, false) => self.recv_paused(),
+            (false, true) => self.send_paused(),
+            (true, true) => self.recv_paused() && self.send_paused(),
+        }
+    }
+}
+
+/// The ways a request moves bytes, once it is made (C's `REQ_IO_RECV`
+/// and `REQ_IO_SEND`): none before, and each until it is done.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Directions {
+    pub(crate) recv: bool,
+    pub(crate) send: bool,
 }
 
 #[cfg(test)]

@@ -1390,3 +1390,18 @@ fn an_ipv6_host_is_named_as_c_names_it() {
         ]
     );
 }
+
+/// A setup moves no bytes the pause judges, so a pause never blocks it:
+/// the transfer runs again, though it does not connect while receiving
+/// is paused (`Curl_xfer_is_blocked` before `xfer_setup`).
+#[test]
+fn a_pause_never_blocks_a_setup() {
+    let (mut m, _clock) = networked();
+    let id = m
+        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_ne!(m.timeout(), Some(Duration::ZERO));
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    assert_eq!(m.timeout(), Some(Duration::ZERO));
+}

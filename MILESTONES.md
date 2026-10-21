@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 10 are **done**; step 11 is **in progress**; every other step is **to do**.
+Status: steps 1 to 11 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -130,8 +130,8 @@ yet meet.
      `Multi::pause`/`TransferCx::pause`, a sibling's unpause replaying at once. Tests: pause and
      replay with interleaving (3235/3236 shapes), the kept piece, the 64 MiB cap, a pause
      where none is supported, the timer told of an unpause. The timer and socket callbacks
-     inside `TransferCx::pause` (decision 10) come with step 11's sockets; until then the
-     timer hears of it at the end of the pass.
+     inside `TransferCx::pause` (decision 10) come with step 13; until then the timer hears of
+     it at the end of the pass and the socket callback after the step.
    - 7e. **Done.** `Speedometer`, the low-speed check and `SpeedCheck` timer, the progress
      handler (`Progress`, `ProgressNow`, `ProgressVerdict`) and the meter on a `TextSink`; the
      report's speeds, expected download size and running total; script pieces for a size and
@@ -213,12 +213,14 @@ yet meet.
       `MultiEvents::socket`, `socket_action` on a socket, `assign`, each transfer's pollset
       re-assessed after it runs in `socket_action` and inside `remove` and `pause`, and REMOVE
       before a socket closes through the pool's `Announcing` network; the shim's
-      SOCKETFUNCTION, SOCKETDATA and `curl_multi_assign`. Left: the socket callback inside a
-      pause from a transfer's own handler (with e), `curl_multi_assign` from a transfer's
+      SOCKETFUNCTION, SOCKETDATA and `curl_multi_assign`. Left: the timer and socket callbacks
+      inside a pause from a transfer's own handler (step 13, whose responses are the first
+      requests to wait on their socket while a handler runs), `curl_multi_assign` from a transfer's
       handler (BAD_SOCKET until `TransferCx` can reach the table), and `curl_multi_socket_all`.
-    - **e. The pollset's basis.** **To do.** Which directions a transfer wants, so a pause
-      blocks it only when every direction it wants is paused (`Curl_xfer_is_blocked`); until
-      then `pause_transfer` judges the receiving direction alone.
+    - **e. The pollset's basis.** **Done.** `Directions`, the ways a request moves bytes (C's
+      `REQ_IO_*`): none before DID, set there from the protocol, sending cleared once the body
+      is sent. A pause blocks a transfer only when it stops every way it moves
+      (`Curl_xfer_is_blocked`), so it never blocks a setup or `file:`.
 12. **http1: render requests behind the credential gate.** `RequestHead`, `UserHeaders`,
     `render_h1`, `CredentialGate`. Fixture tests compare byte-exactly with the `<protocol>` of 1,
     14, 47, 461, 1121, 1292.

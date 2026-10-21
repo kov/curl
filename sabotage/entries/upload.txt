@@ -150,7 +150,7 @@ witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core upload::tests::a_request_with_a_body_is_sent_when_its_body_is
 --- old
-                if !x.proto.wants_send(cx.easy().options()) {
+                if !send {
                     cx.mark(Timer::PostTransfer);
                 }
 --- new
@@ -193,3 +193,18 @@ witness: curl-core upload::tests::a_rewind_handler_s_reason_is_the_transfer_s
             if !rewound && cx.easy().report().reasons() != reasons {
 --- new
             if !rewound && cx.easy().report().reasons() != reasons && false {
+
+=== a pause of either way blocks an upload
+file: crates/curl-core/src/deliver/pause.rs
+witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_moves
+--- old
+            (true, true) => self.recv_paused() && self.send_paused(),
+--- new
+            (true, true) => self.recv_paused() || self.send_paused(),
+
+=== a sent request still moves bytes both ways
+file: crates/curl-core/src/proto/script.rs
+witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_moves
+--- old
+            cx.directions_mut().send = false;
+--- new

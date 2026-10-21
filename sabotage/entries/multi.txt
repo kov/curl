@@ -392,3 +392,19 @@ witness: curl-core multi::tests::removing_a_connecting_transfer_closes_its_socke
 --- new
         let rest = &mut cx.rest;
         let _ = (origin, rest.pool.release(lease, Finish { premature: true }, &mut *rest.net, rest.now));
+
+=== a pause of receiving blocks a request that moves no bytes yet
+file: crates/curl-core/src/deliver/pause.rs
+witness: curl-core multi::tests::a_pause_never_blocks_a_setup
+--- old
+            (false, false) => false,
+--- new
+            (false, false) => self.recv_paused(),
+
+=== a pause is judged on receiving alone
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_moves
+--- old
+    if !slot.pause.blocks(slot.directions) {
+--- new
+    if !slot.pause.recv_paused() {

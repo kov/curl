@@ -146,6 +146,7 @@ impl Player {
         if got.eos && !self.uploaded {
             // The request is sent (`req_set_upload_done`).
             self.uploaded = true;
+            cx.directions_mut().send = false;
             cx.mark(Timer::PostTransfer);
         }
         Ok(Some(got.eos))

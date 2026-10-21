@@ -23,7 +23,7 @@ use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::Pool;
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
-use crate::deliver::{Pause, RecvPause};
+use crate::deliver::{Directions, Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
@@ -149,6 +149,9 @@ struct Slot<H: Host> {
     easy: Easy,
     /// Reachable while the run is out, for the transfer's own handlers.
     pause: Pause,
+    /// The ways the transfer's request moves bytes, which its pause is
+    /// judged against; kept here for the same reason.
+    directions: Directions,
     /// Beside the pause, which starts it over.
     speedometer: Speedometer,
     /// Out only while the transfer is being stepped.
@@ -302,6 +305,7 @@ impl<H: Host> Multi<H> {
             owner,
             easy,
             pause: Pause::default(),
+            directions: Directions::default(),
             speedometer: Speedometer::default(),
             run: Some(run),
         });
@@ -900,10 +904,9 @@ fn pause_transfer<H: Host>(
     {
         slot.speedometer.start_over();
     }
-    // Unless paused every way it wants (judged on receiving alone until
-    // the pollset knows the directions, step 11), the transfer runs again,
-    // and is not slow for the time it was not.
-    if !slot.pause.recv_paused() {
+    // Unless paused every way it moves bytes, the transfer runs again, and
+    // is not slow for the time it was not (easy.c:1222).
+    if !slot.pause.blocks(slot.directions) {
         slot.speedometer.forget_slow();
         rest.dirty.insert(id.index());
     }

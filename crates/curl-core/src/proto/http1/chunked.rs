@@ -337,6 +337,106 @@ impl ChunkDecoder {
     }
 }
 
+/// The largest chunk the encoder makes (`CURL_CHUNKED_MAXLEN`), and the
+/// least body it asks for at once (`CURL_CHUNKED_MINLEN`).
+const CHUNK_MAX: usize = 64 * 1024;
+const CHUNK_MIN: usize = 1024;
+
+/// The most a chunk's size line takes: eight hex digits and CRLF.
+const SIZE_LINE: usize = 8 + 2;
+
+/// The last chunk, empty, and the end of the trailers (`add_last_chunk`).
+const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
+
+/// A body sent chunked (`cr_chunked`): each piece the body gives becomes a
+/// chunk, and its end the last, empty one. It reads into its own buffer,
+/// which the request's then takes from.
+#[derive(Debug)]
+pub(crate) struct ChunkEncoder {
+    /// Framed bytes not yet taken are `buf[start..end]`; a piece of body
+    /// is read at `SIZE_LINE`, its size line put right before it.
+    buf: Vec<u8>,
+    start: usize,
+    end: usize,
+    /// The body has ended (`read_eos`), and its last chunk has been taken
+    /// as well (`eos`).
+    read_eos: bool,
+    eos: bool,
+}
+
+impl ChunkEncoder {
+    pub(crate) fn new() -> Result<ChunkEncoder, OutOfMemory> {
+        const LEN: usize = SIZE_LINE + CHUNK_MAX + 2 + LAST_CHUNK.len();
+        let mut buf = Vec::new();
+        buf.try_extend_from_slice(&[0; LEN])?;
+        Ok(ChunkEncoder {
+            buf,
+            start: 0,
+            end: 0,
+            read_eos: false,
+            eos: false,
+        })
+    }
+
+    /// Whether the body should be read for `room` bytes of the request's
+    /// buffer, and where to: what is framed is taken first, and the read
+    /// is a decent chunk's worth however little room there is, or what
+    /// will fit framed (`add_chunk`).
+    pub(crate) fn wants(&mut self, room: usize) -> Option<&mut [u8]> {
+        if self.read_eos || self.start < self.end {
+            return None;
+        }
+        let room = room.min(CHUNK_MAX);
+        let n = if room < CHUNK_MIN {
+            CHUNK_MIN
+        } else {
+            room - (SIZE_LINE + 2)
+        };
+        Some(&mut self.buf[SIZE_LINE..SIZE_LINE + n])
+    }
+
+    /// The body gave `n` bytes where `wants` said, and ended if `eos`:
+    /// frame them.
+    pub(crate) fn got(&mut self, n: usize, eos: bool) {
+        assert!(
+            self.start == self.end && !self.read_eos,
+            "read only when wanted"
+        );
+        self.start = SIZE_LINE;
+        self.end = SIZE_LINE;
+        if n > 0 {
+            let mut hex = [0u8; SIZE_LINE];
+            let mut cursor = std::io::Cursor::new(&mut hex[..]);
+            std::io::Write::write_fmt(&mut cursor, format_args!("{n:x}\r\n"))
+                .expect("a chunk's size line fits");
+            let len = cursor.position() as usize;
+            let line = &hex[..len];
+            self.start = SIZE_LINE - line.len();
+            self.buf[self.start..SIZE_LINE].copy_from_slice(line);
+            self.end = SIZE_LINE + n;
+            self.buf[self.end..self.end + 2].copy_from_slice(b"\r\n");
+            self.end += 2;
+        }
+        if eos {
+            self.read_eos = true;
+            self.buf[self.end..self.end + LAST_CHUNK.len()].copy_from_slice(LAST_CHUNK);
+            self.end += LAST_CHUNK.len();
+        }
+    }
+
+    /// Framed bytes into `dest`: how many, and whether the last chunk is
+    /// all taken (`cr_chunked_read`).
+    pub(crate) fn take(&mut self, dest: &mut [u8]) -> (usize, bool) {
+        let n = (self.end - self.start).min(dest.len());
+        dest[..n].copy_from_slice(&self.buf[self.start..self.start + n]);
+        self.start += n;
+        if self.read_eos && self.start == self.end {
+            self.eos = true;
+        }
+        (n, self.eos)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,5 +768,40 @@ mod tests {
             (0, true),
             "not given out raw"
         );
+    }
+
+    /// Each piece of body is a chunk and its end the last; a small room
+    /// still reads a decent chunk, taken over several calls, and a large
+    /// one reads what fits framed.
+    #[test]
+    fn encodes_pieces_as_chunks() {
+        let mut e = ChunkEncoder::new().unwrap();
+        let room = e.wants(10).unwrap();
+        assert_eq!(room.len(), CHUNK_MIN);
+        room[..3].copy_from_slice(b"abc");
+        e.got(3, false);
+        assert!(e.wants(10).is_none(), "framed bytes first");
+        let mut dest = [0u8; 4];
+        assert_eq!(e.take(&mut dest), (4, false));
+        assert_eq!(&dest, b"3\r\na");
+        let mut dest = [0u8; 10];
+        assert_eq!(e.take(&mut dest), (4, false));
+        assert_eq!(&dest[..4], b"bc\r\n");
+        assert_eq!(e.wants(100_000).unwrap().len(), CHUNK_MAX - 12);
+        e.got(0, true);
+        assert!(e.wants(10).is_none(), "ended");
+        assert_eq!(e.take(&mut dest), (5, true));
+        assert_eq!(&dest[..5], b"0\r\n\r\n");
+        let mut e = ChunkEncoder::new().unwrap();
+        let room = e.wants(CHUNK_MAX).unwrap();
+        room.fill(b'x');
+        let n = room.len();
+        e.got(n, true);
+        let mut all = vec![0u8; CHUNK_MAX + 100];
+        let (took, eos) = e.take(&mut all);
+        assert!(eos);
+        assert_eq!(&all[..6], b"fff4\r\n");
+        assert!(all[..took].ends_with(b"x\r\n0\r\n\r\n"));
+        assert_eq!(took, 6 + n + 2 + 5);
     }
 }

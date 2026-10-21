@@ -1233,8 +1233,7 @@ fn the_application_s_content_headers_replace_the_library_s() {
 }
 
 /// What is not sent yet is refused before anything goes: a body to wait
-/// for 100-continue for, or of unknown size; a resumed upload is not
-/// HTTP's.
+/// for 100-continue for, asked or added; a resumed upload is not HTTP's.
 #[test]
 fn bodies_not_sent_yet_are_refused() {
     let big = vec![b'x'; 1024 * 1024 + 1];
@@ -1246,10 +1245,12 @@ fn bodies_not_sent_yet_are_refused() {
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
     });
     assert_eq!(asked.result, Err(ErrorKind::NotBuiltIn));
-    let chunked = with_body(Method::Upload, b"a", |o| {
-        o.http.headers = UserHeaders::new([&b"Transfer-Encoding: chunked"[..]]).unwrap();
-    });
-    assert_eq!(chunked.result, Err(ErrorKind::NotBuiltIn));
+    let unknown = with_body(Method::Upload, b"", |o| o.upload = pieces(&[b"a"]));
+    assert_eq!(
+        unknown.result,
+        Err(ErrorKind::NotBuiltIn),
+        "Expect is added"
+    );
     let not_asked = with_body(Method::Post, &big, |o| {
         o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
     });
@@ -1288,4 +1289,91 @@ fn a_custom_method_is_sent_with_the_body_kept() {
     assert_eq!(ran.result, Ok(()));
     assert!(ran.request.starts_with(b"PATCH /p HTTP/1.1\r\n"));
     assert!(ran.request.ends_with(b"x-www-form-urlencoded\r\n\r\na=b"));
+}
+
+/// A body read in these pieces, of unknown size.
+fn pieces(pieces: &[&[u8]]) -> crate::options::UploadSource {
+    struct Pieces(RefCell<Vec<Vec<u8>>>);
+    impl crate::handler::ReadHandler for Pieces {
+        fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+            let mut left = self.0.borrow_mut();
+            if left.is_empty() {
+                return crate::handler::Read::Eof;
+            }
+            let piece = left.remove(0);
+            buf[..piece.len()].copy_from_slice(&piece);
+            crate::handler::Read::Data(std::num::NonZeroUsize::new(piece.len()).unwrap())
+        }
+    }
+    let left = pieces.iter().map(|p| p.to_vec()).collect();
+    crate::options::UploadSource::Read {
+        handler: Handler::read(Pieces(RefCell::new(left))).unwrap(),
+        rewind: None,
+        size: None,
+    }
+}
+
+/// A body of unknown size goes chunked, each piece read a chunk; the
+/// head says so and gives no length.
+#[test]
+fn a_body_of_unknown_size_goes_chunked() {
+    let ran = with_body(Method::Post, b"", |o| {
+        o.upload = pieces(&[b"abc", b"defgh"]);
+        o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let request = String::from_utf8(ran.request).unwrap();
+    assert!(
+        request.ends_with(
+            "Accept: */*\r\nTransfer-Encoding: chunked\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\n\r\n\
+             3\r\nabc\r\n5\r\ndefgh\r\n0\r\n\r\n"
+        ),
+        "{request}"
+    );
+    assert!(!request.contains("Content-Length"), "{request}");
+    assert_eq!(ran.easy.report().sizes().upload(), 23, "framing counts");
+}
+
+/// HTTP/1.0 cannot send a body of unknown size.
+#[test]
+fn http_1_0_refuses_a_body_of_unknown_size() {
+    let ran = with_body(Method::Upload, b"", |o| {
+        o.upload = pieces(&[b"a"]);
+        o.http.version = crate::options::HttpVersion::Http10;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UploadFailed));
+    assert!(ran.request.is_empty());
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Chunky upload is not supported by HTTP 1.0\n".to_string())
+    );
+}
+
+/// A body the application asks chunked is, sized or not, under its own
+/// header; one that asks some other coding is sent as it is, unsized.
+#[test]
+fn the_application_s_transfer_encoding_decides() {
+    let ran = with_body(Method::Upload, b"abc", |o| {
+        o.http.headers = UserHeaders::new([&b"Transfer-Encoding: chunked"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let request = String::from_utf8(ran.request).unwrap();
+    assert!(
+        request.ends_with("Accept: */*\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"),
+        "{request}"
+    );
+    assert_eq!(request.matches("Transfer-Encoding").count(), 1, "{request}");
+    let ran = with_body(Method::Upload, b"", |o| {
+        o.upload = pieces(&[b"abc"]);
+        o.http.headers = UserHeaders::new([&b"Transfer-Encoding: gzip"[..], b"Expect:"]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let request = String::from_utf8(ran.request).unwrap();
+    assert!(
+        request.ends_with("Transfer-Encoding: gzip\r\n\r\nabc"),
+        "{request}"
+    );
+    assert!(!request.contains("Content-Length"), "{request}");
 }

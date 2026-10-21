@@ -416,17 +416,17 @@ witness: curl-core proto::http::tests::the_application_s_content_headers_replace
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
 --- old
-                && content.length > EXPECT_100_THRESHOLD;
+                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
 --- new
-                && content.length > EXPECT_100_THRESHOLD * 2;
+                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD * 2);
 
 === a body the application asks chunked goes plain
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
+witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decides
 --- old
-            (Some(kind), Some(Some(length))) if !http.headers.asks_chunked() => {
+        let chunked = asked.unwrap_or(size_unknown);
 --- new
-            (Some(kind), Some(Some(length))) => {
+        let chunked = size_unknown;
 
 === the custom method is not sent
 file: crates/curl-core/src/proto/http.rs
@@ -435,3 +435,53 @@ witness: curl-core proto::http::tests::a_custom_method_is_sent_with_the_body_kep
         let method = http.custom_method.as_deref().unwrap_or(method);
 --- new
         let method = method;
+
+=== a chunk's size is written in decimal
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::encodes_pieces_as_chunks
+--- old
+            std::io::Write::write_fmt(&mut cursor, format_args!("{n:x}\r\n"))
+--- new
+            std::io::Write::write_fmt(&mut cursor, format_args!("{n}\r\n"))
+
+=== a small room reads a small chunk
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::encodes_pieces_as_chunks
+--- old
+        let n = if room < CHUNK_MIN {
+            CHUNK_MIN
+--- new
+        let n = if room < CHUNK_MIN {
+            room
+
+=== HTTP/1.0 sends a body of unknown size chunked
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::http_1_0_refuses_a_body_of_unknown_size
+--- old
+        if asked.is_none() && size_unknown && http.version == HttpVersion::Http10 {
+--- new
+        if false && size_unknown && http.version == HttpVersion::Http10 {
+
+=== the library says chunked beside the application
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decides
+--- old
+            chunked: chunked && asked.is_none(),
+--- new
+            chunked,
+
+=== a chunked body is sized too
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decides
+--- old
+            length: size.filter(|_| !chunked),
+--- new
+            length: size,
+
+=== a body of unknown size is sent without waiting for 100-continue
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
+--- old
+                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+--- new
+                && size.is_some_and(|n| n > EXPECT_100_THRESHOLD);

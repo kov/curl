@@ -349,9 +349,9 @@ cargo-mutants run on the milestone's diff.
 25. **http: send request bodies.** **In progress.** Done: `Directions` derived from the
     protocol where a pause is judged, no longer stored; a body of known size sent behind the
     head from one 64 KiB send buffer, with its `Content-Length`, a POST's form type and C's
-    end-of-send trace; `CURLOPT_CUSTOMREQUEST`; the tool's `-d` family, `--json` and `-X`.
-    To do: the send side's states (`SendSide`), chunked upload for an unknown size,
-    `Expect: 100-continue` with the 417 retry as a second leg, an error response before the
+    end-of-send trace; a body of unknown size, or one the application asks so, sent chunked;
+    `CURLOPT_CUSTOMREQUEST`; the tool's `-d` family, `--json`, `-X` and `-T -`.
+    To do: the send side's states (`SendSide`), `Expect: 100-continue` with the 417 retry as a second leg, an error response before the
     body is sent (`KEEP_SENDING_ON_ERROR`), and a rewind for a new leg. The method's options
     (NOBODY, POST, POSTFIELDS, UPLOAD, HTTPGET) combine in the shim. T1 test 2093.
 26. **http: follow redirects.** **To do.** Opening commit: relative URL resolution and the

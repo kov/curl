@@ -1186,7 +1186,8 @@ from `options.upload` and read by the protocol.
   request, measured first so that it takes one allocation; body bytes are pulled from `Upload`
   into the remaining space (the first read is reduced by the head length, as C's shared chunk).
   HEADER_OUT and DATA_OUT are traced for the bytes `Net::send` accepted, split at the head
-  length; SIZE_UPLOAD counts accepted body bytes only (`upload::sent`).
+  length; SIZE_UPLOAD counts accepted body bytes only (`upload::sent`), as sent: a chunked
+  body's framing included.
 - A read handler is given room for `min(free space, what is left of a known size, rate
   tokens)`. The read that completes a known size ends the body; a size of 0 never calls the
   handler. It is latched at EOF and on error (Abort is AbortedByCallback; more than the room is
@@ -1197,8 +1198,11 @@ from `options.upload` and read by the protocol.
   protocol that cannot pause it is ReadError "Read callback asked for PAUSE when not supported".
 - COPYPOSTFIELDS is `Bytes`. Non-copied POSTFIELDS is a shim `ReadHandler` over the app's
   pointer (§7.6); the core never holds a raw borrow, and it reads at transfer time as C does.
-  Line-ending conversion (CURLOPT_CRLF, FTP ASCII) and chunked encoding come with the
-  protocols that use them.
+  Line-ending conversion (CURLOPT_CRLF, FTP ASCII) comes with the protocols that use it.
+- HTTP/1's chunked coding is `ChunkEncoder` (`http1/chunked.rs`, C's `cr_chunked`), between
+  `Upload` and the send buffer: once what it framed is taken, it reads the body into its own
+  buffer, at least 1 KiB however little room the send buffer has, otherwise what fits framed
+  (at most 64 KiB); each read is a chunk, and the body's end `0\r\n\r\n`.
 - `Upload::rewind` is a no-op if nothing was read (`Bytes`) or the handler was never called,
   whatever it answered (`Read`); otherwise `Bytes` starts over and `Read` calls its `Rewind`
   (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or on its

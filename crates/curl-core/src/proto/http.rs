@@ -12,14 +12,14 @@ use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
-use crate::options::{HttpVersion, Method, Resume};
+use crate::options::{HttpVersion, Method, Resume, UploadSource};
 use crate::report::Timer;
 use crate::trace;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, Url};
 
 use super::ProtoStep;
-use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
+use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing};
 use super::http1::request::{self, Basic, CredentialGate, RequestHead};
 use auth::{Credentials, CredentialsError};
@@ -69,6 +69,8 @@ pub(crate) struct Request {
     head_left: usize,
     /// The body, read at DO and as what is read goes.
     upload: Option<Upload>,
+    /// The body is sent chunked, framed here as it is read.
+    chunks: Option<ChunkEncoder>,
     /// The body is read to its end (`eos_read`).
     eos_read: bool,
     /// Body bytes sent (`writebytecount`).
@@ -155,6 +157,7 @@ impl Request {
             sent: 0,
             head_left: 0,
             upload: None,
+            chunks: None,
             eos_read: false,
             body_sent: 0,
             sent_all: true,
@@ -226,26 +229,37 @@ impl Request {
                 format_args!("HTTP upload cannot be resumed"),
             ));
         }
-        let upload = body.map(|_| Upload::new(&options.upload));
-        let content = match (body, upload.as_ref().map(Upload::size)) {
-            (None, _) => None,
-            (Some(kind), Some(Some(length))) if !http.headers.asks_chunked() => {
-                Some(request::Content {
-                    length,
-                    form: kind == BodyKind::Form,
-                })
-            }
-            // A body of unknown size goes chunked, as does one the
-            // application asks chunked: neither is sent yet.
-            (Some(_), _) => return Err(ErrorKind::NotBuiltIn),
-        };
-        // `Expect: 100-continue`, asked for or added for a large body on
-        // HTTP/1.1, is not waited for yet (`addexpect`).
-        if let Some(content) = &content {
+        let mut upload = body.map(|_| Upload::new(&options.upload));
+        let size = upload.as_ref().and_then(Upload::size);
+        // The application's Transfer-Encoding decides whether the body is
+        // chunked; otherwise one of unknown size is, which HTTP/1.0 cannot
+        // send (`http_req_set_TE`).
+        let size_unknown = upload.is_some() && size.is_none();
+        let asked = http.headers.asks_chunked();
+        if asked.is_none() && size_unknown && http.version == HttpVersion::Http10 {
+            return Err(trace::fail(
+                cx,
+                ErrorKind::UploadFailed,
+                format_args!("Chunky upload is not supported by HTTP 1.0"),
+            ));
+        }
+        let chunked = asked.unwrap_or(size_unknown);
+        // Even a request without a body sends a last chunk if chunked.
+        if chunked && upload.is_none() {
+            upload = Some(Upload::new(&UploadSource::None));
+        }
+        let content = body.map(|kind| request::Content {
+            length: size.filter(|_| !chunked),
+            form: kind == BodyKind::Form,
+        });
+        // `Expect: 100-continue`, asked for or added on HTTP/1.1 for a
+        // body large or of unknown size, is not waited for yet
+        // (`addexpect`).
+        if content.is_some() {
             let asked = http.headers.expects_continue();
             let added = asked.is_none()
                 && http.version == HttpVersion::Http11
-                && content.length > EXPECT_100_THRESHOLD;
+                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
             if asked == Some(true) || added {
                 return Err(ErrorKind::NotBuiltIn);
             }
@@ -284,6 +298,7 @@ impl Request {
             basic,
             range_from: resume_from,
             content,
+            chunked: chunked && asked.is_none(),
             headers: &http.headers,
         };
         let mut out = Vec::new();
@@ -310,7 +325,7 @@ impl Request {
             trace::info_with(cx, &[b"Server auth using Basic with user '", user, b"'"]);
         }
         let head_len = out.len();
-        if let Some(content) = &content {
+        if upload.is_some() {
             // The body goes behind the head, in what is left of one
             // buffer (`Curl_req_send`).
             let room = UPLOAD_BUFFER.saturating_sub(head_len);
@@ -318,7 +333,7 @@ impl Request {
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             out.try_extend_from_slice(&[0; UPLOAD_BUFFER][..room])
                 .map_err(|_| ErrorKind::OutOfMemory)?;
-            upload::announce_size(cx, Some(content.length));
+            upload::announce_size(cx, content.and_then(|c| c.length));
         }
         self.out = out;
         self.filled = head_len;
@@ -326,6 +341,11 @@ impl Request {
         self.head_left = head_len;
         self.eos_read = upload.is_none();
         self.upload = upload;
+        self.chunks = if chunked {
+            Some(ChunkEncoder::new().map_err(|_| ErrorKind::OutOfMemory)?)
+        } else {
+            None
+        };
         self.body_sent = 0;
         self.sent_all = false;
         self.head = Some(HeadParser::new(exchange));
@@ -341,7 +361,18 @@ impl Request {
     fn fill<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
         let pausable = self.pipeline.pausable();
         let upload = self.upload.as_mut().expect("a body to read");
-        let got = upload.read(cx, &mut self.out[self.filled..], pausable)?;
+        let dest = &mut self.out[self.filled..];
+        let got = match &mut self.chunks {
+            None => upload.read(cx, dest, pausable)?,
+            Some(chunks) => {
+                if let Some(room) = chunks.wants(dest.len()) {
+                    let got = upload.read(cx, room, pausable)?;
+                    chunks.got(got.n, got.eos);
+                }
+                let (n, eos) = chunks.take(dest);
+                upload::Readout { n, eos }
+            }
+        };
         self.filled += got.n;
         self.eos_read = got.eos;
         Ok(got.n > 0 || got.eos)

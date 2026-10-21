@@ -187,10 +187,15 @@ impl UserHeaders {
     }
 
     /// Whether the application's `Transfer-Encoding` asks for the body
-    /// chunked (`http_req_set_TE`).
-    pub(crate) fn asks_chunked(&self) -> bool {
-        self.replacing(b"Transfer-Encoding")
-            .is_some_and(|te| fields::header_says(&te.line, b"Transfer-Encoding:", b"chunked"))
+    /// chunked; none if it gives no `Transfer-Encoding`
+    /// (`http_req_set_TE`).
+    pub(crate) fn asks_chunked(&self) -> Option<bool> {
+        let te = self.replacing(b"Transfer-Encoding")?;
+        Some(fields::header_says(
+            &te.line,
+            b"Transfer-Encoding:",
+            b"chunked",
+        ))
     }
 
     /// The Host the application gave, which goes only to the first origin.
@@ -333,13 +338,17 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) range_from: Option<u64>,
     /// The body the request sends, if it has one.
     pub(crate) content: Option<Content>,
+    /// The library says the body is chunked (`http_req_set_TE`); one the
+    /// application asks chunked, its own header says.
+    pub(crate) chunked: bool,
     pub(crate) headers: &'o UserHeaders,
 }
 
-/// What the head says of a body of known size (`http_add_content_hds`).
+/// What the head says of a body (`http_add_content_hds`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Content {
-    pub(crate) length: u64,
+    /// Its size, unless it goes chunked or its end is the connection's.
+    pub(crate) length: Option<u64>,
     /// A POST's, typed as a form unless the application types it.
     pub(crate) form: bool,
 }
@@ -460,13 +469,20 @@ fn write_h1(
             }
             Part::Content => {
                 if let Some(content) = head.content {
-                    if head.headers.replacing(b"Content-Length").is_none() {
+                    if let Some(length) = content.length
+                        && head.headers.replacing(b"Content-Length").is_none()
+                    {
                         let mut digits = [0u8; 20];
-                        out.line(&[b"Content-Length: ", decimal(content.length, &mut digits)])?;
+                        out.line(&[b"Content-Length: ", decimal(length, &mut digits)])?;
                     }
                     if content.form && head.headers.replacing(b"Content-Type").is_none() {
                         out.line(&[b"Content-Type: application/x-www-form-urlencoded"])?;
                     }
+                }
+            }
+            Part::TransferEncoding => {
+                if head.chunked {
+                    out.line(&[b"Transfer-Encoding: chunked"])?;
                 }
             }
             Part::Custom => custom(head, gate, out)?,
@@ -477,7 +493,6 @@ fn write_h1(
             | Part::Te
             | Part::AcceptEncoding
             | Part::ProxyConnection
-            | Part::TransferEncoding
             | Part::AltUsed
             | Part::Upgrade
             | Part::Cookie
@@ -625,6 +640,7 @@ mod tests {
             basic: None,
             range_from: None,
             content: None,
+            chunked: false,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -688,6 +704,7 @@ mod tests {
                 basic: None,
                 range_from: None,
                 content: None,
+                chunked: false,
                 headers: &headers,
             };
             let here = peer(b"127.0.0.1");
@@ -731,6 +748,7 @@ mod tests {
                 basic: Basic::new(b"OmV4YW1wbGU=", trusted, &headers),
                 range_from: None,
                 content: None,
+                chunked: false,
                 headers: &headers,
             };
             let mut out = Vec::new();
@@ -886,6 +904,7 @@ mod tests {
             basic: None,
             range_from: None,
             content: None,
+            chunked: false,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -932,6 +951,7 @@ mod tests {
                 basic: None,
                 range_from: None,
                 content: None,
+                chunked: false,
                 headers: &headers,
             };
             let here = peer(b"h");

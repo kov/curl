@@ -15,7 +15,6 @@ use crate::conn::{DnsCache, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
-use crate::id::Arena;
 use crate::options::Options;
 use crate::report::TransferReport;
 use crate::time::{Clock, Instant};
@@ -24,15 +23,15 @@ use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
 use super::sockets::{Change, SocketTable, SocketWhat, UnknownSocket};
 use super::{
-    Abort, AddError, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed, Slot,
-    Transfer, TransferId, read_message,
+    Abort, AddError, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed, Slots,
+    TransferId, read_message,
 };
 
 /// The multi minus the transfer being stepped, whose `Run` is out of its
 /// slot: what a step and the callbacks it makes reach everything else
 /// through.
 pub(crate) struct EngineRest<'a, H: Host> {
-    pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
+    pub(super) slots: &'a mut Slots<H>,
     pub(super) pool: &'a mut Pool,
     pub(super) dns: &'a mut DnsCache,
     /// `Multi::conn_limits_mut`.
@@ -109,7 +108,7 @@ impl<H: Host> EngineRest<'_, H> {
 pub(crate) struct Announcing<'a, H: Host> {
     net: &'a mut dyn Net,
     sockets: &'a mut SocketTable<H::Socket>,
-    slots: &'a mut Arena<Slot<H>, Transfer>,
+    slots: &'a mut Slots<H>,
     limits: &'a mut ConnLimits,
     notify: &'a mut NotifyQueue,
     counts: &'a Tally,
@@ -167,7 +166,7 @@ impl<H: Host> Announcing<'_, H> {
 
 /// What telling the socket callback reaches.
 pub(super) struct Telling<'a, H: Host> {
-    pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
+    pub(super) slots: &'a mut Slots<H>,
     pub(super) limits: &'a mut ConnLimits,
     pub(super) notify: &'a mut NotifyQueue,
     pub(super) counts: &'a Tally,
@@ -274,7 +273,7 @@ pub(crate) trait TransferCalls {
 /// The multi as the timer callback sees it: only the calls api.c lets
 /// recurse into a running multi call.
 pub struct EventCx<'a, H: Host> {
-    pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
+    pub(super) slots: &'a mut Slots<H>,
     pub(super) limits: &'a mut ConnLimits,
     pub(super) notify: &'a mut NotifyQueue,
     pub(super) counts: Counts,

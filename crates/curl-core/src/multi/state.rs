@@ -32,8 +32,7 @@ use super::cx::{EngineRest, TransferCalls};
 use super::sched::RowSet;
 use super::sockets::Pollset;
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
-use super::{Host, Slot, Transfer, TransferId};
-use crate::id::Arena;
+use super::{Host, Slots, TransferId};
 
 /// A transfer from `add` to `remove`.
 #[derive(Debug)]
@@ -1432,11 +1431,11 @@ pub(crate) fn schedule_pending<H: Host>(rest: &mut EngineRest<'_, H>) {
 
 /// As `schedule_pending`, on the multi's tables.
 pub(super) fn wake_pending<H: Host>(
-    slots: &mut Arena<Slot<H>, Transfer>,
+    slots: &mut Slots<H>,
     dirty: &mut RowSet,
     after: &mut Option<TransferId>,
 ) {
-    let waiting = |slots: &Arena<Slot<H>, Transfer>, id| {
+    let waiting = |slots: &Slots<H>, id| {
         slots
             .get(id)
             .and_then(|slot| slot.run.as_ref())

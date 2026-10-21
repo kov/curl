@@ -222,8 +222,13 @@ impl ConnLimits {
     }
 }
 
+/// The transfers, each in a row as C's ids number them. A row holds its
+/// slot boxed, as C's holds a pointer: a table's empty rows cost little,
+/// and C's limits on a transfer's memory count them.
+type Slots<H> = Arena<Box<Slot<H>>, Transfer>;
+
 pub struct Multi<H: Host = NoHost> {
-    slots: Arena<Slot<H>, Transfer>,
+    slots: Slots<H>,
     dirty: RowSet,
     timers: TimerQueue<Transfer>,
     announce: TimerAnnounce,
@@ -340,7 +345,7 @@ impl<H: Host> Multi<H> {
             self.warned = true;
             run
         };
-        let id = vacancy.fill(Slot {
+        let slot = curl_alloc::try_box_or_back(Slot {
             owner,
             easy,
             pause: Pause::default(),
@@ -348,6 +353,11 @@ impl<H: Host> Multi<H> {
             speedometer: Speedometer::default(),
             run: Some(run),
         });
+        let slot = match slot {
+            Ok(slot) => slot,
+            Err(slot) => return refuse(MultiErrorKind::OutOfMemory, slot.easy),
+        };
+        let id = vacancy.fill(slot);
         self.counts.added();
         self.pool.xfer_init();
         self.dirty.insert(id.index());
@@ -862,7 +872,7 @@ impl<H: Host> Multi<H> {
 /// Every socket the transfers in `slots` wait on, and for what, in id
 /// order: the one computation behind waits, `fdset` and `waitfds`.
 fn pollsets<'a, H: Host>(
-    slots: &'a Arena<Slot<H>, Transfer>,
+    slots: &'a Slots<H>,
     pool: &'a Pool,
     mut f: impl FnMut(&'a dyn Socket, Events),
 ) {
@@ -881,7 +891,7 @@ fn pollsets<'a, H: Host>(
 }
 
 /// The lowest-id unread completion, marked read (`curl_multi_info_read`).
-fn read_message<H: Host>(slots: &mut Arena<Slot<H>, Transfer>) -> Option<Message<'_, H>> {
+fn read_message<H: Host>(slots: &mut Slots<H>) -> Option<Message<'_, H>> {
     let mut found = None;
     let mut remaining = 0;
     let mut cursor = None;
@@ -915,7 +925,7 @@ fn read_message<H: Host>(slots: &mut Arena<Slot<H>, Transfer>) -> Option<Message
     })
 }
 
-fn run_in<H: Host>(slots: &Arena<Slot<H>, Transfer>, id: TransferId) -> &Run {
+fn run_in<H: Host>(slots: &Slots<H>, id: TransferId) -> &Run {
     let slot = slots.get(id).expect("a transfer in the multi");
     slot.run
         .as_ref()

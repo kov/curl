@@ -966,7 +966,8 @@ impl Pool {
 }
 ```
 
-- `acquire` searches before it adds (`Curl_cpool_find`): at most once a second it first prunes
+- `acquire` searches before it adds (`Curl_cpool_find`), unless the transfer wants a fresh
+  connection (`CURLOPT_FRESH_CONNECT`, but for a redirect's request): at most once a second it first prunes
   the idle connections that are not healthy, silently, as C's prune traces to its internal
   handle; then it takes the first idle connection, in table order, whose route is equal. One
   alive longer than the searching transfer's `max_age` is closed and passed over before its
@@ -984,7 +985,8 @@ impl Pool {
   counts toward the total.
 - `release` decides the connection's fate as `multi_done_locked` does, from what the pool knows
   (other leases, the route's reuse rules, a close mark) and what the transfer reports in
-  `Finish` (premature, reuse forbidden): `Released::{Idle, Evicted, Closed, Terminated}` so far,
+  `Finish` (premature, reuse forbidden by `CURLOPT_FORBID_REUSE`):
+  `Released::{Idle, Evicted, Closed, Terminated}` so far,
   traced as "Connection #N to host H:P left intact", nothing, "shutting down connection #N",
   "closing connection #N". A connection kept idle may leave the pool over its `Limit`
   (`cpool_conn_now_idle`): the multi's `max_connects` (`CURLMOPT_MAXCONNECTS`; an easy

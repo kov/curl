@@ -1689,6 +1689,39 @@ fn a_full_pool_is_traced_by_the_transfer_filling_it() {
     assert_eq!(m.pool.len(), 1);
 }
 
+/// A transfer that forbids reuse closes its connection when done with it,
+/// and one that wants a fresh one does not look for an idle one
+/// (`multi_conn_should_close`, `reuse_fresh`).
+#[test]
+fn a_transfer_can_refuse_to_share_its_connection() {
+    let (mut m, _clock) = networked();
+    let mut run = |forbid, fresh| {
+        let (mut e, lines) = traced("tcp://127.0.0.1:1/");
+        e.options_mut().limits.reuse.forbid = forbid;
+        e.options_mut().limits.reuse.fresh = fresh;
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        m.remove(id, &mut NoEvents).unwrap();
+        trace_of(&lines)
+    };
+    let closed = run(true, false);
+    assert_eq!(closed.last().unwrap(), "shutting down connection #0\n");
+    run(false, false);
+    let fresh = run(false, true);
+    assert_eq!(
+        fresh[..2],
+        [
+            "Hostname 127.0.0.1 was found in DNS cache\n",
+            "  Trying 127.0.0.1:1...\n"
+        ]
+    );
+    assert_eq!(
+        fresh.last().unwrap(),
+        "Connection #2 to host 127.0.0.1:1 left intact\n"
+    );
+    assert_eq!(m.pool.len(), 2, "#1 kept too");
+}
+
 /// A transfer that would pass the host limit waits, running not at all,
 /// until a connection is given back; then it looks again, and reuses it
 /// (`multistate_connect`, `multi_schedule_pending`).

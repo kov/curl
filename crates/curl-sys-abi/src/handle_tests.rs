@@ -236,6 +236,11 @@ fn http_options_reach_the_request() {
         long(c, ffi::CURLOPT_MAXAGE_CONN, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
+    assert_eq!(long(c, ffi::CURLOPT_FORBID_REUSE, 2), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_FRESH_CONNECT, 1), CURLE_OK);
+    assert!(reuse(c).forbid && reuse(c).fresh);
+    assert_eq!(long(c, ffi::CURLOPT_FORBID_REUSE, 0), CURLE_OK);
+    assert!(!reuse(c).forbid);
     let mut list = ptr::null_mut();
     for line in [c"::a:1", c"b:2:c:3"] {
         // SAFETY: a list made here, and a C string.

@@ -39,6 +39,7 @@ fn connect(
 const RULES: ReuseRules = ReuseRules {
     max_idle: Some(Duration::from_secs(118)),
     max_age: Some(Duration::from_secs(24 * 3600)),
+    fresh: false,
 };
 
 fn net() -> (FakeNet, ManualClock) {
@@ -118,7 +119,10 @@ fn local_connections_are_numbered_and_closed_when_released() {
     );
     assert!(pool.get_conn(a_id).is_none());
     assert_eq!(pool.get_conn(b.id()).map(|c| c.number), Some(ConnNumber(1)));
-    let premature = Finish { premature: true };
+    let premature = Finish {
+        premature: true,
+        forbid_reuse: false,
+    };
     assert_eq!(
         pool.release(b, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(1))
@@ -311,7 +315,10 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
         Ok(Connected::AlreadyUp)
     ));
     assert_eq!(socket(&pool, &lease), Some(1000), "kept once up");
-    let premature = Finish { premature: true };
+    let premature = Finish {
+        premature: true,
+        forbid_reuse: false,
+    };
     assert_eq!(
         pool.release(lease, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(0))
@@ -357,7 +364,10 @@ fn refused_and_silent_attempts() {
         ));
     }
     assert_eq!(net.open_sockets(), 1);
-    let premature = Finish { premature: true };
+    let premature = Finish {
+        premature: true,
+        forbid_reuse: false,
+    };
     assert_eq!(
         pool.release(refused, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(0))
@@ -387,7 +397,10 @@ fn unresolved_names_and_immediate_failures() {
         matches!(err, ConnectError::Failed(Failure::Immediate { remote, .. }) if remote.port() == 9),
         "{err:?}"
     );
-    let premature = Finish { premature: true };
+    let premature = Finish {
+        premature: true,
+        forbid_reuse: false,
+    };
     for lease in [named, nobody] {
         assert!(matches!(
             pool.release(lease, premature, UNLIMITED, &mut net, now),
@@ -435,7 +448,10 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     assert_eq!((again.id(), notes), (id, vec![]));
     // Leased again: a third transfer cannot have it.
     let third = new(&mut pool, tcp(1), &mut net, now);
-    let premature = Finish { premature: true };
+    let premature = Finish {
+        premature: true,
+        forbid_reuse: false,
+    };
     for lease in [other, third] {
         pool.release(lease, premature, UNLIMITED, &mut net, now);
     }
@@ -532,6 +548,7 @@ fn a_search_closes_what_it_must_not_reuse() {
     let short = ReuseRules {
         max_idle: Some(Duration::from_millis(400)),
         max_age: None,
+        fresh: false,
     };
     let (got, notes) = search(&mut pool, &mut net, short);
     assert!(matches!(got, Acquired::New(_)), "{got:?}");
@@ -551,7 +568,10 @@ fn a_search_closes_what_it_must_not_reuse() {
     };
     pool.release(
         lease,
-        Finish { premature: true },
+        Finish {
+            premature: true,
+            forbid_reuse: false,
+        },
         UNLIMITED,
         &mut net,
         clock.now(),
@@ -562,6 +582,7 @@ fn a_search_closes_what_it_must_not_reuse() {
     let young = ReuseRules {
         max_idle: None,
         max_age: Some(Duration::from_millis(5)),
+        fresh: false,
     };
     let (got, notes) = search(&mut pool, &mut net, young);
     assert!(matches!(got, Acquired::New(_)), "{got:?}");
@@ -571,7 +592,10 @@ fn a_search_closes_what_it_must_not_reuse() {
     };
     pool.release(
         lease,
-        Finish { premature: true },
+        Finish {
+            premature: true,
+            forbid_reuse: false,
+        },
         UNLIMITED,
         &mut net,
         clock.now(),
@@ -610,7 +634,10 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
             Acquired::New(lease) => {
                 pool.release(
                     lease,
-                    Finish { premature: true },
+                    Finish {
+                        premature: true,
+                        forbid_reuse: false,
+                    },
                     UNLIMITED,
                     net,
                     clock.now(),
@@ -626,6 +653,7 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
     let idle = |max| ReuseRules {
         max_idle: Some(max),
         max_age: None,
+        fresh: false,
     };
     clock.advance(Duration::from_micros(400_500));
     assert_eq!(search(&mut pool, &mut net, idle(ms(400))), (true, vec![]));
@@ -647,6 +675,7 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
     let age = |max| ReuseRules {
         max_idle: None,
         max_age: Some(max),
+        fresh: false,
     };
     clock.advance(Duration::from_micros(1_000_500));
     assert_eq!(
@@ -692,7 +721,16 @@ fn a_search_prunes_once_a_second() {
     let Acquired::New(other) = got else {
         panic!("{got:?}")
     };
-    pool.release(other, Finish { premature: true }, UNLIMITED, &mut net, now);
+    pool.release(
+        other,
+        Finish {
+            premature: true,
+            forbid_reuse: false,
+        },
+        UNLIMITED,
+        &mut net,
+        now,
+    );
     clock.advance(Duration::from_secs(1));
     let now = clock.now();
     let got = pool
@@ -710,7 +748,16 @@ fn a_search_prunes_once_a_second() {
     let Acquired::New(lease) = got else {
         panic!("{got:?}")
     };
-    pool.release(lease, Finish { premature: true }, UNLIMITED, &mut net, now);
+    pool.release(
+        lease,
+        Finish {
+            premature: true,
+            forbid_reuse: false,
+        },
+        UNLIMITED,
+        &mut net,
+        now,
+    );
 }
 
 /// The pool's lock is taken at the four places C takes it, one critical

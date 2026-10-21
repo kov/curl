@@ -354,3 +354,20 @@ witness: curl-core multi::tests::a_waiting_transfer_runs_out_of_time
         }
 --- new
         TimeLeft::Expired(_) => (TransferState::Pending(plan), Wake::Idle),
+
+=== a connection forbidden reuse is kept
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
+--- old
+            && !finish.premature
+            && !finish.forbid_reuse
+--- new
+            && !finish.premature
+
+=== a transfer wanting a fresh connection reuses one
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
+--- old
+            && !rules.fresh
+--- new
+            && !rules.fresh.then_some(()).is_some_and(|()| false)

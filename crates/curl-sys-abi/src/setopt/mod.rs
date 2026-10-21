@@ -244,6 +244,8 @@ fn apply(
         (ffi::CURLOPT_MAXLIFETIME_CONN, Long(n)) => {
             options.limits.reuse.max_age = time_limit(n, 1000)?;
         }
+        (ffi::CURLOPT_FORBID_REUSE, Long(n)) => options.limits.reuse.forbid = n != 0,
+        (ffi::CURLOPT_FRESH_CONNECT, Long(n)) => options.limits.reuse.fresh = n != 0,
         (ffi::CURLOPT_MAXCONNECTS, Long(n)) => {
             // Negative refused, past `INT_MAX` taken as it, 0 the default.
             let n = u32::try_from(n.min(c_long::from(c_int::MAX))).map_err(|_| Refused::Bad)?;

@@ -51,9 +51,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
             cx.rest.dns.prune(cx.rest.now);
-            release(cx, d.lease, Finish { premature }, d.origin.as_ref());
+            release(cx, d.lease, premature, d.origin.as_ref());
 --- new
-            release(cx, d.lease, Finish { premature }, d.origin.as_ref());
+            release(cx, d.lease, premature, d.origin.as_ref());
 
 === a resolve list is read by every transfer
 file: crates/curl-core/src/multi/state.rs

@@ -388,10 +388,12 @@ witness: curl-core multi::tests::a_paused_transfer_does_not_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::removing_a_connecting_transfer_closes_its_socket
 --- old
-        release(cx, lease, Finish { premature: true }, origin.as_ref());
+        release(cx, lease, true, origin.as_ref());
 --- new
         let rest = &mut cx.rest;
-        let _ = (origin, rest.pool.release(lease, Finish { premature: true }, &mut *rest.net, rest.now));
+        let finish = Finish { premature: true, forbid_reuse: false };
+        let limit = Limit { max: None, attached: 0 };
+        let _ = (origin, rest.pool.release(lease, finish, limit, &mut *rest.net, rest.now));
 
 === a pause of receiving blocks a request that moves no bytes yet
 file: crates/curl-core/src/deliver/pause.rs

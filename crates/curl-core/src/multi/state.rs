@@ -279,7 +279,7 @@ impl TransferState {
             | TransferState::Exchanging(x) => (x.lease, x.origin),
             TransferState::Done(d) => (d.lease, d.origin),
         };
-        release(cx, lease, Finish { premature: true }, origin.as_ref());
+        release(cx, lease, true, origin.as_ref());
     }
 }
 
@@ -288,9 +288,13 @@ impl TransferState {
 fn release<H: Host>(
     cx: &mut StepCx<'_, H>,
     lease: ConnLease,
-    finish: Finish,
+    premature: bool,
     origin: Option<&Origin>,
 ) {
+    let finish = Finish {
+        premature,
+        forbid_reuse: cx.easy().options().limits.reuse.forbid,
+    };
     let now = cx.rest.now;
     let limit = Limit {
         max: cx.rest.limits.max_connects,
@@ -693,7 +697,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 premature |= is_premature(d.result);
             }
             cx.rest.dns.prune(cx.rest.now);
-            release(cx, d.lease, Finish { premature }, d.origin.as_ref());
+            release(cx, d.lease, premature, d.origin.as_ref());
             // The request moves nothing more (`Curl_req_stop_send_recv`).
             *cx.directions_mut() = Directions::default();
             // Held output went with the request; a pause the application
@@ -1468,6 +1472,8 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     let rules = ReuseRules {
         max_idle: limits.max_idle.map(TimeLimit::duration),
         max_age: limits.max_age.map(TimeLimit::duration),
+        // A redirect's request would reuse one anyway.
+        fresh: limits.fresh,
     };
     let mut notes = Vec::new();
     let now = cx.rest.now;

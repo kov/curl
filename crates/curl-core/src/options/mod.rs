@@ -291,6 +291,11 @@ pub struct ReuseLimits {
     /// `CURLOPT_MAXCONNECTS`: 5 unless set. A multi's own limit is the
     /// multi's.
     pub max_connects: NonZeroU32,
+    /// `CURLOPT_FORBID_REUSE`: the connection is closed once the
+    /// transfer is done with it.
+    pub forbid: bool,
+    /// `CURLOPT_FRESH_CONNECT`: a new connection, not an idle one.
+    pub fresh: bool,
 }
 
 impl Default for ReuseLimits {
@@ -299,6 +304,8 @@ impl Default for ReuseLimits {
             max_idle: TimeLimit::from_millis(118 * 1000),
             max_age: TimeLimit::from_millis(24 * 3600 * 1000),
             max_connects: NonZeroU32::new(5).expect("not zero"),
+            forbid: false,
+            fresh: false,
         }
     }
 }

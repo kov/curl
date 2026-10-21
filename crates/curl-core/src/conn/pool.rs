@@ -83,6 +83,8 @@ impl Drop for Locked<'_> {
 pub(crate) struct ReuseRules {
     pub(crate) max_idle: Option<Duration>,
     pub(crate) max_age: Option<Duration>,
+    /// No idle connection is to be reused (`reuse_fresh`).
+    pub(crate) fresh: bool,
 }
 
 /// How the transfer holding a lease finished with the connection
@@ -92,6 +94,9 @@ pub(crate) struct Finish {
     /// The transfer stopped before its request was complete, so the
     /// connection's state is unknown.
     pub(crate) premature: bool,
+    /// The application forbade the connection's reuse
+    /// (`CURLOPT_FORBID_REUSE`).
+    pub(crate) forbid_reuse: bool,
 }
 
 /// What the pool did with a connection given back (`multi_done_locked`).
@@ -223,6 +228,7 @@ impl Pool {
         notes: &mut Vec<PoolNote>,
     ) -> Result<Acquired, OutOfMemory> {
         if let Route::Tcp(..) = route
+            && !rules.fresh
             && let Some(lease) = self.find(&route, rules, net, now, notes)?
         {
             return Ok(Acquired::Reused(lease));
@@ -439,6 +445,7 @@ impl Pool {
             && let Route::Tcp(tcp) = &conn.route
             && tcp.origin.scheme().reuse
             && !finish.premature
+            && !finish.forbid_reuse
             && !conn.close
         {
             assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");

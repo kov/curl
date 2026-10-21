@@ -746,6 +746,8 @@ fn a_rewind_asks_the_application() {
         let c = curl_easy_init();
         pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
         long(c, ffi::CURLOPT_UPLOAD, 1);
+        // A read taken for a pause would wait for ever: fail instead.
+        long(c, ffi::CURLOPT_TIMEOUT, 5);
         pointer(c, ffi::CURLOPT_ERRORBUFFER, buf.as_mut_ptr());
         options(c, |o| {
             o.script =

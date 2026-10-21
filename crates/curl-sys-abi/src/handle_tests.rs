@@ -1824,3 +1824,41 @@ fn cleanup_removes_the_sockets_the_socket_function_was_told() {
         ]
     );
 }
+
+/// Without a `CURLOPT_CONNECT_ONLY` connection there is nothing to read
+/// or write: `CURLE_UNSUPPORTED_PROTOCOL`, nothing moved; a missing count
+/// or buffer is a bad argument (`curl_easy_recv`, `curl_easy_send`).
+#[test]
+fn recv_and_send_need_a_connect_only_connection() {
+    use crate::easy::{curl_easy_recv, curl_easy_send};
+    let c = curl_easy_init();
+    let mut buf = [0u8; 4];
+    let mut n = 9;
+    // SAFETY: a live handle, a buffer of 4 bytes and a count to write.
+    unsafe {
+        assert_eq!(
+            curl_easy_recv(c, buf.as_mut_ptr().cast(), 4, &raw mut n),
+            ffi::CURLE_UNSUPPORTED_PROTOCOL
+        );
+        assert_eq!(n, 0);
+        n = 9;
+        assert_eq!(
+            curl_easy_send(c, buf.as_ptr().cast(), 4, &raw mut n),
+            ffi::CURLE_UNSUPPORTED_PROTOCOL
+        );
+        assert_eq!(n, 0);
+        assert_eq!(
+            curl_easy_recv(c, ptr::null_mut(), 4, &raw mut n),
+            CURLE_BAD_FUNCTION_ARGUMENT
+        );
+        assert_eq!(
+            curl_easy_send(c, buf.as_ptr().cast(), 4, ptr::null_mut()),
+            CURLE_BAD_FUNCTION_ARGUMENT
+        );
+        assert_eq!(
+            curl_easy_recv(ptr::null_mut(), buf.as_mut_ptr().cast(), 4, &raw mut n),
+            CURLE_BAD_FUNCTION_ARGUMENT
+        );
+        curl_easy_cleanup(c);
+    }
+}

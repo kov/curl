@@ -45,3 +45,13 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
         _ => Err(Refused::Unsupported),
 --- new
         _ => Ok(HttpVersion::Http11),
+
+=== recv and send succeed without a connection
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::recv_and_send_need_a_connect_only_connection
+--- old
+    unsafe { n.write(0) };
+    ffi::CURLE_UNSUPPORTED_PROTOCOL
+--- new
+    unsafe { n.write(0) };
+    CURLE_OK

@@ -89,7 +89,12 @@ impl Request {
             .and_then(|p| p.parse().ok())
             .ok_or(ErrorKind::UrlMalformat)?;
         let mut target = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
-        match url.get(Part::Query, GetOptions::NONE) {
+        // An empty query keeps its `?`, as C asks with `CURLU_GET_EMPTY`.
+        let query = GetOptions {
+            get_empty: true,
+            ..GetOptions::NONE
+        };
+        match url.get(Part::Query, query) {
             Ok(query) => {
                 target.try_push(b'?').map_err(|_| ErrorKind::OutOfMemory)?;
                 target

@@ -943,9 +943,10 @@ fn a_retry_after_date_counts_from_the_clock() {
     assert_eq!(ran.easy.report().retry_after(), None);
 }
 
-/// The report's URL keeps an empty query, as C's does (`CURLU_GET_EMPTY`).
+/// The report's URL and the request keep an empty query, as C's do
+/// (`CURLU_GET_EMPTY`).
 #[test]
-fn the_report_s_url_keeps_an_empty_query() {
+fn the_report_s_url_and_the_request_keep_an_empty_query() {
     let ran = run(
         "/x?",
         b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
@@ -957,6 +958,7 @@ fn the_report_s_url_keeps_an_empty_query() {
         ran.easy.report().url().unwrap(),
         format!("http://127.0.0.1:{PORT}/x?").as_bytes()
     );
+    assert_eq!(ran.request, request_of("/x?"));
 }
 
 /// The report keeps the URL the transfer used, without its credentials.

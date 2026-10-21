@@ -379,3 +379,11 @@ witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_d
         if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
 --- new
         if !premature && head.got_nothing(self.pipeline.bytecount())
+
+=== the request drops an empty query's question mark
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_report_s_url_and_the_request_keep_an_empty_query
+--- old
+        match url.get(Part::Query, query) {
+--- new
+        match url.get(Part::Query, GetOptions::NONE) {

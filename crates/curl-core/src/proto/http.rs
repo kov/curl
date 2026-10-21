@@ -523,6 +523,10 @@ impl Request {
         if cx.easy().options().http.raw {
             // Passed on as it came; the decoder only finds the end.
             pipeline.body(cx, input)?;
+        } else {
+            // Traced as it came, chunk lines, trailers and what follows the
+            // last chunk with it, as C traces it before decoding.
+            pipeline.trace_raw(cx, input);
         }
         let mut piece = input;
         while !piece.is_empty() {
@@ -531,7 +535,7 @@ impl Request {
                 Err(e) => return Err(chunks_failed(cx, &e)),
             };
             match event {
-                Some(ChunkEvent::Data(data)) => pipeline.body(cx, data)?,
+                Some(ChunkEvent::Data(data)) => pipeline.decoded(cx, data)?,
                 Some(ChunkEvent::Trailer { line, then }) => {
                     if let Err(e) = pipeline.header(cx, line, HeaderOrigin::Trailer) {
                         return Err(trace::fail(

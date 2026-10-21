@@ -615,12 +615,15 @@ fn a_head_cut_short_misses_its_body() {
 }
 
 /// Bytes after the last chunk are left over, and said so; none, nothing
-/// is said.
+/// is said. The body is traced as it came, chunk lines and leftovers
+/// with it, before decoding (`cw_raw_write`, as the C tool's `-v` shows
+/// it).
 #[test]
 fn bytes_after_the_chunks_are_left_over() {
     let chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n";
     let ran = run("/", format!("{chunked}extra").as_bytes(), false, |_| {});
     assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"ok".to_vec()));
+    assert_eq!(ran.seen.of("data").concat(), b"2\r\nok\r\n0\r\n\r\nextra");
     let leftovers = |ran: &Ran| {
         ran.seen
             .text()

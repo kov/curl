@@ -339,3 +339,11 @@ witness: curl-core proto::http::tests::a_paused_last_piece_waits_to_be_delivered
                     let done = stepped == ProtoStep::Done && !x.proto.holds_output();
 --- new
                     let done = stepped == ProtoStep::Done;
+
+=== a chunked body is traced as decoded
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::bytes_after_the_chunks_are_left_over
+--- old
+                Some(ChunkEvent::Data(data)) => pipeline.decoded(cx, data)?,
+--- new
+                Some(ChunkEvent::Data(data)) => pipeline.body(cx, data)?,

@@ -91,18 +91,34 @@ impl Pipeline {
         self.accountant.bytecount
     }
 
-    /// Deliver body bytes, as the protocol decoded them (`cw_download`):
-    /// none when none was wanted, and no more than the expected size, what
-    /// is past it noted and the connection given up.
+    /// Deliver body bytes as they came, traced first (`cw_raw_write`,
+    /// then `decoded`).
     pub(crate) fn body<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
-        let expect = self.accountant.expect;
-        if !expect.ignore {
+        self.trace_raw(cx, bytes);
+        self.decoded(cx, bytes)
+    }
+
+    /// Trace body bytes as they came, before a decoder takes them
+    /// (`cw_raw_write`); an ignored body is not traced.
+    pub(crate) fn trace_raw<H: Host>(&self, cx: &mut StepCx<'_, H>, bytes: &[u8]) {
+        if !self.accountant.expect.ignore {
             raw_trace(cx, bytes);
         }
+    }
+
+    /// Deliver body bytes as a decoder made them of bytes already traced
+    /// (`cw_download`): none when none was wanted, and no more than the
+    /// expected size, what is past it noted and the connection given up.
+    pub(crate) fn decoded<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        bytes: &[u8],
+    ) -> Result<(), ErrorKind> {
+        let expect = self.accountant.expect;
         self.accountant.response_started(cx);
         if expect.no_body && !bytes.is_empty() {
             // The body goes; the response is fine if a head came.

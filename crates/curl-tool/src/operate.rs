@@ -609,7 +609,17 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
     } else {
         let file = File::open(OsStr::from_bytes(name)).map_err(|_| Unopened::Io)?;
         let meta = file.metadata().map_err(|_| Unopened::Io)?;
-        let size = meta.is_file().then_some(meta.len());
+        #[cfg_attr(not(feature = "debug-hooks"), expect(unused_mut))]
+        let mut size = meta.is_file().then_some(meta.len());
+        // The debug test build takes the size from `CURL_UPLOAD_SIZE`,
+        // as if the file had grown since (`pre_transfer`).
+        #[cfg(feature = "debug-hooks")]
+        if let Some(n) = std::env::var_os("CURL_UPLOAD_SIZE")
+            .as_deref()
+            .and_then(crate::memlimit)
+        {
+            size = Some(n);
+        }
         (file, size)
     };
     let file = curl_alloc::TryRc::try_new(std::cell::RefCell::new(file))

@@ -1425,7 +1425,7 @@ measurement says it matters.
 
 ### 6.4 Redirects and auth
 
-The HTTP request keeps a response's `Location:` as the server gave it (`http_header_l`), on any
+The head parser keeps a response's `Location:` as the server gave it (`http_header_l`), on any
 response, interim ones too, checked before the line is traced: an empty one or a repeat is
 ignored, a different second one fails WeirdServerReply. Where it leads is resolved by
 `http1::follow` against the request's URL, parsed again from `Run::url` as C's `state.uh` was

@@ -425,6 +425,11 @@ impl Meta {
         self.trailer
     }
 
+    /// Where the response points, as the server gave it.
+    pub(crate) fn location(&self) -> Option<&[u8]> {
+        self.location.as_deref()
+    }
+
     /// The body is read and dropped.
     pub(crate) fn ignore_body(&self) -> bool {
         self.ignore_body
@@ -442,12 +447,6 @@ impl Meta {
 pub(crate) fn content_type(line: &[u8]) -> Option<&[u8]> {
     value_of(line, b"Content-Type:")?;
     fields::header_value(line).filter(|v| !v.is_empty())
-}
-
-/// Where a `Location:` line points, its blanks trimmed, perhaps empty.
-pub(crate) fn location(line: &[u8]) -> Option<&[u8]> {
-    value_of(line, b"Location:")?;
-    fields::header_value(line)
 }
 
 /// The longest wait `Retry-After` is taken to ask for: six hours.

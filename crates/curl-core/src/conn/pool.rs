@@ -247,7 +247,7 @@ impl Pool {
             // (`CPOOL_MATCH_TOO_OLD`); one not healthy is reported.
             let verdict = if rules
                 .max_age
-                .is_some_and(|max| now.since(conn.created) > max)
+                .is_some_and(|max| past(now.since(conn.created), max))
             {
                 Err(None)
             } else {
@@ -470,7 +470,7 @@ fn health(
 ) -> Result<(), Option<PoolNote>> {
     let idle = now.since(idle_since);
     if let Some(max) = rules.max_idle
-        && idle > max
+        && past(idle, max)
     {
         return Err(Some(PoolNote::IdleTooLong {
             idle_ms: whole_ms(idle),
@@ -480,7 +480,7 @@ fn health(
     // Only the prune meets one alive too long here, and says nothing.
     if rules
         .max_age
-        .is_some_and(|max| now.since(conn.created) > max)
+        .is_some_and(|max| past(now.since(conn.created), max))
     {
         return Err(None);
     }
@@ -492,6 +492,12 @@ fn health(
         Ok(_) if watch[0].revents().is_empty() => Ok(()),
         Ok(_) | Err(_) => Err(None),
     }
+}
+
+/// Whether `elapsed` is past the limit `max`, counted in whole
+/// milliseconds as C counts them (`age_ms > conn_max_idle_ms`).
+fn past(elapsed: Duration, max: Duration) -> bool {
+    whole_ms(elapsed) > whole_ms(max)
 }
 
 fn whole_ms(d: Duration) -> u64 {

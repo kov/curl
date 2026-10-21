@@ -349,6 +349,73 @@ fn a_search_closes_what_it_must_not_reuse() {
     assert_eq!(net.open_sockets(), 0);
 }
 
+/// The limits are counted in whole milliseconds, and a connection at its
+/// limit is within it, for the search and for the prune alike.
+#[test]
+fn a_limit_is_passed_a_whole_millisecond_after_it() {
+    let (mut net, clock) = net();
+    let mut pool = Pool::new().unwrap();
+    let start = clock.now();
+    let lease = new(&mut pool, tcp(1), &mut net, start);
+    up(&mut pool, &lease, &mut net, start);
+    pool.release(lease, Finish::default(), &mut net, start);
+    let ms = Duration::from_millis;
+    let search = |pool: &mut Pool, net: &mut FakeNet, rules| {
+        let mut notes = Vec::new();
+        let got = pool
+            .acquire(tcp(1), rules, net, clock.now(), &mut notes)
+            .unwrap();
+        let reused = match got {
+            Acquired::Reused(lease) => {
+                pool.release(lease, Finish::default(), net, clock.now());
+                true
+            }
+            Acquired::New(lease) => {
+                pool.release(lease, Finish { premature: true }, net, clock.now());
+                false
+            }
+        };
+        (reused, notes)
+    };
+    // Idle: 400.5 ms is 400 whole ones, at the limit; 401 is past it. The
+    // first search prunes, and its limit keeps the connection too.
+    let idle = |max| ReuseRules {
+        max_idle: Some(max),
+        max_age: None,
+    };
+    clock.advance(Duration::from_micros(400_500));
+    assert_eq!(search(&mut pool, &mut net, idle(ms(400))), (true, vec![]));
+    clock.advance(ms(401));
+    let (reused, notes) = search(&mut pool, &mut net, idle(ms(400)));
+    assert!(!reused);
+    assert_eq!(
+        notes[0],
+        PoolNote::IdleTooLong {
+            idle_ms: 401,
+            max_ms: 400
+        }
+    );
+    // Alive: a new connection, at its limit when the prune is due.
+    let born = clock.now();
+    let lease = new(&mut pool, tcp(1), &mut net, born);
+    up(&mut pool, &lease, &mut net, born);
+    pool.release(lease, Finish::default(), &mut net, born);
+    let age = |max| ReuseRules {
+        max_idle: None,
+        max_age: Some(max),
+    };
+    clock.advance(Duration::from_micros(1_000_500));
+    assert_eq!(
+        search(&mut pool, &mut net, age(ms(1000))),
+        (true, vec![]),
+        "neither the prune nor the search passes it over"
+    );
+    // A second on, past it: the prune closes it without a word.
+    clock.advance(ms(1000));
+    assert_eq!(search(&mut pool, &mut net, age(ms(1000))), (false, vec![]));
+    assert_eq!(net.open_sockets(), 0);
+}
+
 /// The prune closes idle connections not healthy without a word, at most
 /// once a second.
 #[test]

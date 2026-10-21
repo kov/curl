@@ -117,3 +117,23 @@ witness: curl-core multi::tests::a_multi_closes_its_idle_connections_when_droppe
 --- old
         self.pool.close_idle(&mut *self.net);
 --- new
+
+=== a limit is compared to the exact time, not whole milliseconds
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_after_it
+--- old
+    whole_ms(elapsed) > whole_ms(max)
+--- new
+    elapsed > max
+
+=== a connection at its age limit is pruned
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_after_it
+--- old
+        .is_some_and(|max| past(now.since(conn.created), max))
+    {
+        return Err(None);
+--- new
+        .is_some_and(|max| whole_ms(now.since(conn.created)) >= whole_ms(max))
+    {
+        return Err(None);

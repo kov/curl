@@ -303,3 +303,27 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
         let room = (rows as usize).saturating_mul(2);
 --- new
         let room = rows as usize / 2;
+
+=== a path under the default `file` is parsed before its scheme is given
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::state::tests::a_url_without_a_scheme_takes_the_default
+--- old
+    if !default.eq_ignore_ascii_case(b"file") || url::has_scheme(url) {
+--- new
+    if true {
+
+=== a URL without a scheme keeps the guessed one over the default
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::state::tests::a_url_without_a_scheme_takes_the_default
+--- old
+            Err(UrlErrorKind::NoScheme) => {}
+--- new
+            Err(UrlErrorKind::NoScheme) => return Ok(parsed),
+
+=== a duplicate drops the default protocol
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core easy::tests::performs_a_path_with_the_default_protocol
+--- old
+            default_protocol: self.default_protocol.as_deref().map(copy).transpose()?,
+--- new
+            default_protocol: None,

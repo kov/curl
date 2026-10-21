@@ -448,6 +448,11 @@ sides, not a stored field.
 "Setup" is not a resting state: C's SETUP and CONNECT always run in the same pass, so they are
 one step that produces `Pending`, `Connecting` or `Exchanging`.
 
+Setup parses the URL as `parseurlandfillconn` does: with the URL rules, guessing a scheme, and
+accepting one libcurl does not know (the protocol lookup refuses it next). A default protocol is
+given to a URL that has no scheme of its own; for `file` the scheme is looked for before parsing,
+since a bare path is no URL.
+
 Timeout errors come from one function on the state, producing C's texts: in `Connecting`,
 "Resolving timed out after N milliseconds" or "Connection timed out after N milliseconds";
 elsewhere "Operation timed out after N milliseconds with X out of Y bytes received".

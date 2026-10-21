@@ -4,15 +4,18 @@
 //! the moment a transfer has a connection until `Done` gives it back, and
 //! only `Done` gives it back.
 
+use curl_alloc::TryVec;
+
 use crate::conn::{ConnLease, Finish, Pool, Route};
 use crate::deliver::{Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
+use crate::options::Options;
 use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Timer, TransferReport};
 use crate::time::Instant;
-use crate::url::{GetOptions, ParseOptions, Part, Url};
+use crate::url::{self, GetOptions, ParseOptions, Part, Url};
 
 use super::cx::{EngineRest, TransferCalls};
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind};
@@ -471,22 +474,13 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     cx.mark(Timer::StartSingle);
     cx.mark(Timer::PostQueue);
     let options = cx.easy().options();
-    let url = options.url().expect("checked above");
-    let parse = ParseOptions {
-        guess_scheme: true,
-        non_support_scheme: true,
-        disallow_user: options.url_rules.disallow_user,
-        path_as_is: options.url_rules.path_as_is,
-        ..ParseOptions::NONE
+    let url = match parse_url(options) {
+        Ok(url) => url,
+        Err(e) => return TransferState::Init.fail(e),
     };
-    let url = Url::parse(url, parse);
-    let scheme = url
-        .as_ref()
-        .map_err(|e| *e)
-        .and_then(|u| u.get(Part::Scheme, GetOptions::NONE));
-    let (url, scheme) = match (url, scheme) {
-        (Ok(u), Ok(s)) => (u, s),
-        (Err(e), _) | (_, Err(e)) => return TransferState::Init.fail(url_error(e)),
+    let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
+        Ok(s) => s,
+        Err(e) => return TransferState::Init.fail(url_error(e)),
     };
     let proto = match ProtoState::start(&scheme, &url, options) {
         Ok(Some(proto)) => proto,
@@ -499,6 +493,43 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     // A connection without a network has its name at once.
     cx.mark(Timer::NameLookup);
     TransferState::ProtoConnect(Attached { lease, proto })
+}
+
+/// The transfer's URL, parsed, given the default scheme where it has none
+/// (`parseurlandfillconn`).
+fn parse_url(options: &Options) -> Result<Url, ErrorKind> {
+    let url = options.url().expect("checked by the caller");
+    let parse = ParseOptions {
+        guess_scheme: true,
+        non_support_scheme: true,
+        disallow_user: options.url_rules.disallow_user,
+        path_as_is: options.url_rules.path_as_is,
+        ..ParseOptions::NONE
+    };
+    let Some(default) = options.default_protocol() else {
+        return Url::parse(url, parse).map_err(url_error);
+    };
+    // A path is no URL without `file:`, so for `file` the scheme is looked
+    // for before parsing.
+    if !default.eq_ignore_ascii_case(b"file") || url::has_scheme(url) {
+        let parsed = Url::parse(url, parse).map_err(url_error)?;
+        let no_guess = GetOptions {
+            no_guess_scheme: true,
+            ..GetOptions::NONE
+        };
+        match parsed.get(Part::Scheme, no_guess) {
+            Ok(_) => return Ok(parsed),
+            Err(UrlErrorKind::NoScheme) => {}
+            Err(e) => return Err(url_error(e)),
+        }
+    }
+    let mut with_scheme = Vec::new();
+    for part in [default, b"://", url] {
+        with_scheme
+            .try_extend_from_slice(part)
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+    }
+    Url::parse(&with_scheme, parse).map_err(url_error)
 }
 
 /// A URL's error as a transfer's (`Curl_uc_to_curlcode`).
@@ -530,6 +561,46 @@ mod tests {
         assert_eq!(
             url_error(UrlErrorKind::BadHostname),
             ErrorKind::UrlMalformat
+        );
+    }
+
+    /// The URL a transfer with `default` as its default protocol fetches.
+    fn with_default(default: Option<&str>, url: &str) -> Result<Vec<u8>, ErrorKind> {
+        let mut options = Options::default();
+        options.set_url(Some(url.as_bytes())).unwrap();
+        options
+            .set_default_protocol(default.map(str::as_bytes))
+            .unwrap();
+        let url = parse_url(&options)?;
+        Ok(url.get(Part::Url, GetOptions::NONE).unwrap())
+    }
+
+    /// A URL without a scheme gets the default one; `file`, under which a
+    /// path is no URL, is given before parsing (`parseurlandfillconn`).
+    #[test]
+    fn a_url_without_a_scheme_takes_the_default() {
+        let url = |d, u| with_default(d, u).map(|u| String::from_utf8(u).unwrap());
+        assert_eq!(url(None, "example.com/x").unwrap(), "http://example.com/x");
+        assert_eq!(
+            url(Some("ftp"), "example.com/x").unwrap(),
+            "ftp://example.com/x"
+        );
+        assert_eq!(url(Some("ftp"), "http://h/x").unwrap(), "http://h/x");
+        assert_eq!(url(Some("file"), "/dir/f").unwrap(), "file:///dir/f");
+        assert_eq!(url(Some("FILE"), "/dir/f").unwrap(), "file:///dir/f");
+        assert_eq!(url(Some("file"), "http://h/x").unwrap(), "http://h/x");
+        // Test 4040: the first path segment becomes a host `file:` refuses.
+        assert_eq!(
+            url(Some("file"), "remote.example/etc/passwd"),
+            Err(ErrorKind::UrlMalformat)
+        );
+        // Without `file`, the scheme is looked for once the URL is parsed:
+        // one it cannot parse fails as it is.
+        assert_eq!(url(Some("ftp"), "/dir/f"), Err(ErrorKind::UrlMalformat));
+        // An unknown scheme is refused by the protocol lookup after.
+        assert_eq!(
+            url(Some("nosuch"), "example.com/x").unwrap(),
+            "nosuch://example.com/x"
         );
     }
 }

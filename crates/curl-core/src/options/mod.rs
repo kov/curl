@@ -21,6 +21,7 @@ use crate::time::TimeLimit;
 #[derive(Debug, Default)]
 pub struct Options {
     url: Option<Vec<u8>>,
+    default_protocol: Option<Vec<u8>>,
     /// How the URL is read.
     pub url_rules: UrlRules,
     /// What the request asks for.
@@ -52,10 +53,22 @@ impl Options {
         Ok(())
     }
 
+    /// The scheme a URL without one is given (`CURLOPT_DEFAULT_PROTOCOL`),
+    /// as given: an unknown one fails the transfer when it starts.
+    pub fn default_protocol(&self) -> Option<&[u8]> {
+        self.default_protocol.as_deref()
+    }
+
+    pub fn set_default_protocol(&mut self, scheme: Option<&[u8]>) -> Result<(), OutOfMemory> {
+        self.default_protocol = scheme.map(copy).transpose()?;
+        Ok(())
+    }
+
     /// A copy (`curl_easy_duphandle`).
     pub fn try_clone(&self) -> Result<Options, OutOfMemory> {
         Ok(Options {
             url: self.url.as_deref().map(copy).transpose()?,
+            default_protocol: self.default_protocol.as_deref().map(copy).transpose()?,
             url_rules: self.url_rules,
             method: self.method,
             resume: self.resume,

@@ -175,6 +175,12 @@ fn scheme_of(url: &[u8], guessing: bool) -> Option<&[u8]> {
     }
 }
 
+/// Whether `url` starts with a scheme, `:` and `/` (`Curl_is_absolute_url`
+/// guessing).
+pub(crate) fn has_scheme(url: &[u8]) -> bool {
+    scheme_of(url, true).is_some()
+}
+
 /// The scheme `name` if libcurl knows it, built in or not.
 fn known(name: &[u8]) -> Option<&'static schemes::Known> {
     schemes::KNOWN

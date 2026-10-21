@@ -218,6 +218,22 @@ mod tests {
         assert_eq!(*body.0.borrow(), b"hellohello");
     }
 
+    /// A bare path is a file with `file` as the default protocol (test
+    /// 1146).
+    #[test]
+    fn performs_a_path_with_the_default_protocol() {
+        let s = Scratch::new("default");
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let path = s.0.join("f");
+        let (mut e, body) = easy(path.as_os_str().as_encoded_bytes());
+        assert_eq!(e.perform().unwrap_err().kind(), ErrorKind::UrlMalformat);
+        e.options_mut().set_default_protocol(Some(b"file")).unwrap();
+        assert_eq!(e.perform(), Ok(()));
+        assert_eq!(*body.0.borrow(), b"hello");
+        let copy = e.try_clone().unwrap();
+        assert_eq!(copy.options().default_protocol(), Some(&b"file"[..]));
+    }
+
     /// An upload writes the file; resumed, it appends past the resume
     /// point.
     #[test]

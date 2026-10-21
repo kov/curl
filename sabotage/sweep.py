@@ -19,6 +19,7 @@ Entry format, one or more per file:
   === <the invariant, broken, as a sentence>
   file: <path from the repository root>
   witness: <package> <exact test name>
+  features: <cargo features the witness needs>      (optional)
   --- old
   <text, exactly as in the file, found exactly once>
   --- new
@@ -56,6 +57,7 @@ class Entry:
         if not self.file or len(witness) != 2:
             sys.exit(f"{source}: entry '{name}' needs file: and witness: <package> <test>")
         self.package, self.test = witness
+        self.features = fields.get("features")
 
 
 def parse(path):
@@ -100,7 +102,8 @@ def stale(entries):
 
 def run(e, timeout):
     """Run the witness; (verdict, detail)."""
-    cmd = CAP + ["cargo", "test", "-p", e.package, "--", "--exact", e.test]
+    features = ["--features", e.features] if e.features else []
+    cmd = CAP + ["cargo", "test", "-p", e.package, *features, "--", "--exact", e.test]
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, start_new_session=True)
     try:
@@ -145,14 +148,14 @@ def main():
     # budget for a sabotaged one.
     budget = {}
     for e in chosen:
-        if (e.package, e.test) in budget:
+        if (e.package, e.features, e.test) in budget:
             continue
         run(e, None)  # build
         t = time.monotonic()
         verdict, out = run(e, None)
         if verdict != "passed" or not ran_witness(out, e.test):
             sys.exit(f"witness {e.package} {e.test} does not pass on a clean tree:\n{out[-2000:]}")
-        budget[(e.package, e.test)] = max(180.0, 8 * (time.monotonic() - t))
+        budget[(e.package, e.features, e.test)] = max(180.0, 8 * (time.monotonic() - t))
 
     holes = 0
     for e in chosen:
@@ -163,7 +166,7 @@ def main():
         end = start + e.new.count("\n")
         try:
             path.write_text(original.replace(e.old, e.new, 1))
-            verdict, out = run(e, budget[(e.package, e.test)])
+            verdict, out = run(e, budget[(e.package, e.features, e.test)])
         finally:
             path.write_text(original)
         if verdict == "hung":

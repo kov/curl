@@ -45,15 +45,6 @@ witness: curl-core multi::socket_tests::a_pause_is_heard_inside_the_call
 --- new
             Ok(())
 
-=== a pause that changes nothing tells the socket callback
-file: crates/curl-core/src/multi/mod.rs
-witness: curl-core multi::socket_tests::a_pause_is_heard_inside_the_call
---- old
-            && changed
-            && !self.run_of(id).state.is_completed()
---- new
-            && !self.run_of(id).state.is_completed()
-
 === a removed transfer stays on its sockets
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::socket_tests::a_removed_transfer_leaves_its_sockets

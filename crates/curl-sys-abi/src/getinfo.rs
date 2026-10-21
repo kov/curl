@@ -152,6 +152,11 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
             Some(media) => string(kept(&easy.content_type, media)),
             None => Value::Ptr(core::ptr::null_mut()),
         },
+        // None when no request sent one.
+        ffi::CURLINFO_REFERER => match r.referer() {
+            Some(referer) => string(kept(&easy.referer, referer)),
+            None => Value::Ptr(core::ptr::null_mut()),
+        },
         // None when no response pointed elsewhere, or one was followed.
         ffi::CURLINFO_REDIRECT_URL => match r.redirect_url() {
             Some(url) => string(kept(&easy.redirect_url, url)),

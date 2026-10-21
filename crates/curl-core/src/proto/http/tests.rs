@@ -1960,3 +1960,32 @@ fn a_retried_request_rewinds_its_body() {
         String::from_utf8_lossy(&sent)
     );
 }
+
+/// A redirect followed with the auto-referer sends the URL it came from,
+/// without credentials or fragment, in place of the application's
+/// referer; without it, the application's goes again.
+#[test]
+fn a_followed_redirect_refers_to_where_it_came_from() {
+    for auto in [false, true] {
+        let first = redirect(302, "/b");
+        let (mut m, talk, _) = server(&[&first, OK], false);
+        let url = format!("http://u:p@127.0.0.1:{PORT}/a?q#frag");
+        let ran = get(&mut m, "/a", talk, |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.http.follow = Follow::All;
+            o.http.auto_referer = auto;
+            o.http.referer = Some(b"given".to_vec());
+        });
+        assert_eq!(ran.result, Ok(()));
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        let (first, second) = text.split_at(text.find("GET /b ").unwrap());
+        assert!(first.contains("Referer: given\r\n"), "{first}");
+        let want = if auto {
+            format!("http://127.0.0.1:{PORT}/a?q")
+        } else {
+            "given".to_string()
+        };
+        assert!(second.contains(&format!("Referer: {want}\r\n")), "{second}");
+        assert_eq!(ran.easy.report().referer(), Some(want.as_bytes()));
+    }
+}

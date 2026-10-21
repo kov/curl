@@ -337,6 +337,7 @@ fn apply(
                 post303: n & 4 != 0,
             };
         }
+        (ffi::CURLOPT_AUTOREFERER, Long(n)) => options.http.auto_referer = n != 0,
         (ffi::CURLOPT_UNRESTRICTED_AUTH, Long(n)) => options.http.unrestricted_auth = n != 0,
         (ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, Long(n)) => {
             // Negative refused, past 65535 taken as it (`value_range`).

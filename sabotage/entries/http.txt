@@ -781,3 +781,33 @@ witness: curl-core proto::http::tests::a_response_in_http_1_0_makes_the_next_req
 --- old
                 run.inherited.http10 = true;
 --- new
+
+=== a redirect's referer is not kept
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_came_from
+--- old
+            Ok(referer) => cx.report_mut().set_referer(referer),
+--- new
+            Ok(_) => {}
+
+=== a redirect's referer keeps the fragment
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_came_from
+--- old
+    url.set(Part::Fragment, None, none)
+        .and_then(|()| url.set(Part::User, None, none))
+--- new
+    url.set(Part::Options, None, none)
+        .and_then(|()| url.set(Part::User, None, none))
+
+=== the application's referer is not sent
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_came_from
+--- old
+        cx.report_mut().set_referer(referer);
+    }
+    cx.mark(Timer::StartOp);
+--- new
+        let _ = referer;
+    }
+    cx.mark(Timer::StartOp);

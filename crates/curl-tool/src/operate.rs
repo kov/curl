@@ -372,6 +372,7 @@ fn configure(
     http.follow = op.follow;
     http.unrestricted_auth = op.unrestricted_auth;
     http.post_redirect = op.post_redirect;
+    http.auto_referer = op.auto_referer;
     // As `CURLOPT_MAXREDIRS` takes it: -1 no limit, at most 32767.
     http.max_redirects = options::MaxRedirects(match op.max_redirs.unwrap_or(50) {
         -1 => None,

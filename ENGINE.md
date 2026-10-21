@@ -1453,7 +1453,9 @@ redirect, in C's order: the old request's body is rewound (`Curl_req_soft_reset`
 another request" is said, `FIRSTONLY` drops the custom method, `follow::switches_to_get`
 decides from `(code, method, POSTREDIR)` and `switch_to_get` applies it (a HEAD stays one).
 A failed rewind fails the transfer unless the next request is a GET. A retry rewinds the same
-way.
+way. The referer a request sends is the report's (`state.referer`): the application's, copied
+at the transfer's start, until a redirect followed with AUTOREFERER replaces it with the URL it
+came from, without credentials or fragment.
 Auth is `AuthState` on the `Run`: `input(challenge)`, `act(status) -> Option<Retry>`,
 `output(&CredentialGate) -> AuthHeaders`; stage 3 covers Basic, Digest and Bearer.
 

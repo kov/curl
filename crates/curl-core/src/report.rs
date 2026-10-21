@@ -78,6 +78,9 @@ pub struct TransferReport {
     /// The method of the last request, a redirect having perhaps changed
     /// it (`state.httpreq`).
     method: Method,
+    /// The referer the last request sent: the application's, or the URL
+    /// a followed redirect came from (`state.referer`).
+    referer: Option<Vec<u8>>,
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
     /// none when keeping it ran out of memory.
     failure: Option<Vec<u8>>,
@@ -207,6 +210,15 @@ impl TransferReport {
 
     pub(crate) fn set_method(&mut self, method: Method) {
         self.method = method;
+    }
+
+    /// The referer the last request sent (`CURLINFO_REFERER`).
+    pub fn referer(&self) -> Option<&[u8]> {
+        self.referer.as_deref()
+    }
+
+    pub(crate) fn set_referer(&mut self, referer: Vec<u8>) {
+        self.referer = Some(referer);
     }
 
     /// How long a response asked to wait before the next try, in whole

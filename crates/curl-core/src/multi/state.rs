@@ -26,7 +26,7 @@ use crate::report::{Ends, Starts, Timer, TransferReport};
 use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
 use crate::trace;
-use crate::url::{self, GetOptions, ParseOptions, Part, Url};
+use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
 use super::cx::{EngineRest, TransferCalls};
@@ -1161,6 +1161,14 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     }
     run.retries = 0;
     run.inherited = Inherited::new(cx.easy().options().method);
+    // The application's referer, until a redirect gives another.
+    if let Some(given) = &cx.easy().options().http.referer {
+        let mut referer = Vec::new();
+        referer
+            .try_extend_from_slice(given)
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        cx.report_mut().set_referer(referer);
+    }
     cx.mark(Timer::StartOp);
     read_resolve(cx)?;
     let options = cx.easy().options();
@@ -1330,6 +1338,12 @@ fn follow_leg<H: Host>(
         return TransferState::Init.fail(trace::fail(cx, ErrorKind::TooManyRedirects, why));
     }
     cx.report_mut().count_redirect();
+    if cx.easy().options().http.auto_referer {
+        match referer_of(&run.url) {
+            Ok(referer) => cx.report_mut().set_referer(referer),
+            Err(e) => return TransferState::Init.fail(e),
+        }
+    }
     let url = match follow::resolve(base, location, path_as_is) {
         Ok(url) => url,
         Err(e) => {
@@ -1413,6 +1427,19 @@ fn retry_leg<H: Host>(
         return TransferState::Init.fail(e);
     }
     next_leg(run, cx, url)
+}
+
+/// `url`, a request's, without credentials or fragment, as the referer
+/// of the redirect it got (`set_auto_referer`); C takes any failure for
+/// a lack of memory.
+fn referer_of(url: &[u8]) -> Result<Vec<u8>, ErrorKind> {
+    let none = SetOptions::NONE;
+    let mut url = Url::parse(url, ParseOptions::NONE).map_err(|_| ErrorKind::OutOfMemory)?;
+    url.set(Part::Fragment, None, none)
+        .and_then(|()| url.set(Part::User, None, none))
+        .and_then(|()| url.set(Part::Password, None, none))
+        .and_then(|()| url.get(Part::Url, GetOptions::NONE))
+        .map_err(|_| ErrorKind::OutOfMemory)
 }
 
 /// The next request asks for a GET (`http_switch_to_get`): traced and the

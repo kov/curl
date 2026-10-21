@@ -387,7 +387,7 @@ impl Request {
             host: &self.host,
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
-            referer: http.referer.as_deref(),
+            referer: cx.easy().report().referer(),
             basic,
             range_from: resume_from,
             content,

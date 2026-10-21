@@ -388,6 +388,9 @@ pub struct Http {
     pub max_redirects: MaxRedirects,
     /// Which redirects keep a POST a POST (`CURLOPT_POSTREDIR`).
     pub post_redirect: PostRedir,
+    /// A followed redirect sends the URL it came from as its referer
+    /// (`CURLOPT_AUTOREFERER`).
+    pub auto_referer: bool,
     /// What the application said for the first origin goes to any a
     /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
     pub unrestricted_auth: bool,
@@ -447,6 +450,7 @@ impl Http {
             follow: self.follow,
             max_redirects: self.max_redirects,
             post_redirect: self.post_redirect,
+            auto_referer: self.auto_referer,
             unrestricted_auth: self.unrestricted_auth,
         })
     }

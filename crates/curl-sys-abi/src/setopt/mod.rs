@@ -220,6 +220,9 @@ fn apply(
         }
         (ffi::CURLOPT_PATH_AS_IS, Long(n)) => options.url_rules.path_as_is = n != 0,
         (ffi::CURLOPT_FAILONERROR, Long(n)) => options.http.fail_on_error = n != 0,
+        (ffi::CURLOPT_SSL_VERIFYPEER, Long(n)) => options.tls.verify_peer = n != 0,
+        // 1 is taken as 2, as C takes it.
+        (ffi::CURLOPT_SSL_VERIFYHOST, Long(n)) => options.tls.verify_host = n != 0,
         // Nothing here raises or catches a signal: it is kept to.
         (ffi::CURLOPT_NOSIGNAL, Long(_)) => {}
         (ffi::CURLOPT_HTTP09_ALLOWED, Long(n)) => options.http.allow_09 = n != 0,

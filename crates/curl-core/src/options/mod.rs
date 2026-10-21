@@ -39,6 +39,7 @@ pub struct Options {
     /// What a transfer sends, if its request has a body.
     pub upload: UploadSource,
     pub http: Http,
+    pub tls: Tls,
     /// What the test protocol `script:` plays.
     #[cfg(any(test, feature = "test-util"))]
     pub script: Option<script::Script>,
@@ -82,6 +83,7 @@ impl Options {
             progress: self.progress.clone(),
             upload: self.upload.clone(),
             http: self.http.try_clone()?,
+            tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]
             script: self.script.clone(),
         })
@@ -237,6 +239,25 @@ impl Http {
             referer: self.referer.as_deref().map(copy).transpose()?,
             fail_on_error: self.fail_on_error,
         })
+    }
+}
+
+/// How a TLS peer is checked. No TLS layer reads these yet; they are kept
+/// as an application sets them, for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tls {
+    /// The peer's certificate must verify (`CURLOPT_SSL_VERIFYPEER`).
+    pub verify_peer: bool,
+    /// The certificate must name the host (`CURLOPT_SSL_VERIFYHOST`).
+    pub verify_host: bool,
+}
+
+impl Default for Tls {
+    fn default() -> Self {
+        Tls {
+            verify_peer: true,
+            verify_host: true,
+        }
     }
 }
 

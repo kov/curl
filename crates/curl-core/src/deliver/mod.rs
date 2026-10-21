@@ -2,11 +2,6 @@
 //! client writer chain (`lib/sendf.c`, `lib/cw-out.c`) as one struct, in
 //! the order of its fields.
 
-#![cfg_attr(
-    not(any(test, feature = "test-util")),
-    expect(dead_code, reason = "no protocol is built in before step 8")
-)]
-
 mod held;
 mod pause;
 
@@ -23,37 +18,50 @@ use held::{HeldOutput, OutKind};
 /// The most body a write handler is given at once (`CURL_MAX_WRITE_SIZE`).
 pub(crate) const MAX_WRITE: usize = 16384;
 
+/// Where a protocol's output comes from (C's `PROTOPT_NONETWORK`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// A connection: its input can stop while output is held, so a write
+    /// may pause, and its header lines are kept for the headers API.
+    Network,
+    /// The local machine: a pausing write fails, and header lines are not
+    /// kept.
+    Local,
+}
+
 /// One request's output, from the protocol to the handlers.
 #[derive(Debug)]
 pub(crate) struct Pipeline {
     accountant: BodyAccountant,
     out: ClientOut,
-    /// The protocol can stop its input while output is held; one that
-    /// cannot fails a pausing write (C's `PROTOPT_NONETWORK`).
-    pausable: bool,
+    reach: Reach,
 }
 
 impl Pipeline {
-    pub(crate) fn new(pausable: bool) -> Pipeline {
+    pub(crate) fn new(reach: Reach) -> Pipeline {
         Pipeline {
             accountant: BodyAccountant::default(),
             out: ClientOut::default(),
-            pausable,
+            reach,
         }
     }
 
     /// Whether the protocol can pause, its input and its output.
     pub(crate) fn pausable(&self) -> bool {
-        self.pausable
+        self.reach == Reach::Network
     }
 
     /// Replay held output, unless a handler holds it still.
     pub(crate) fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-        self.out.flush(cx, self.pausable)
+        self.out.flush(cx, self.pausable())
     }
 
     /// Whether output is held: the request cannot be over until it is
     /// delivered.
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "only the test protocol holds output before HTTP")
+    )]
     pub(crate) fn holds_output(&self) -> bool {
         self.out.holds_output()
     }
@@ -74,7 +82,7 @@ impl Pipeline {
         self.accountant.response_started(cx);
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(bytes.len(), max_filesize);
-        self.out.body(cx, &bytes[..allowed], self.pausable)?;
+        self.out.body(cx, &bytes[..allowed], self.pausable())?;
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
         self.accountant.bytecount += allowed as u64;
@@ -86,21 +94,30 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Deliver one header line, whole: into the report's header store,
-    /// then to the write handler if the headers are included in the
-    /// output, then to the header handler.
+    /// Deliver one header line, whole: into the report's header store
+    /// from a network, then to the write handler if the headers are
+    /// included in the output, then to the header handler.
     pub(crate) fn header<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         line: &[u8],
         origin: HeaderOrigin,
     ) -> Result<(), ErrorKind> {
-        cx.report_mut().headers_mut().push(line, origin)?;
+        if self.reach == Reach::Network {
+            cx.report_mut().headers_mut().push(line, origin)?;
+        }
         self.head_line(cx, line, origin)
     }
 
     /// Deliver a response's status line, as a header line the store does
     /// not keep (`CLIENTWRITE_STATUS`).
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(
+            dead_code,
+            reason = "only the test protocol writes a status line before HTTP"
+        )
+    )]
     pub(crate) fn status<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -120,9 +137,9 @@ impl Pipeline {
         }
         // An included line is body, to be held and replayed with it.
         if cx.easy().options().output.include_header {
-            self.out.body(cx, line, self.pausable)?;
+            self.out.body(cx, line, self.pausable())?;
         }
-        self.out.header(cx, line, origin, self.pausable)
+        self.out.header(cx, line, origin, self.pausable())
     }
 }
 
@@ -266,6 +283,10 @@ impl ClientOut {
         result
     }
 
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "only the test protocol holds output before HTTP")
+    )]
     fn holds_output(&self) -> bool {
         matches!(self, ClientOut::Held(_))
     }

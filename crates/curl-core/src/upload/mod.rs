@@ -1,11 +1,6 @@
 //! What a transfer sends: C's client readers (`lib/sendf.c`'s `cr_in`,
 //! `cr_buf` and `cr_null`) as one struct, read by the protocol.
 
-#![cfg_attr(
-    not(any(test, feature = "test-util")),
-    expect(dead_code, reason = "no protocol is built in before step 8")
-)]
-
 #[cfg(test)]
 mod tests;
 
@@ -36,6 +31,13 @@ enum Source {
     Bytes(TryRc<Vec<u8>>),
     Read {
         handler: Handler<dyn ReadHandler>,
+        #[cfg_attr(
+            not(any(test, feature = "test-util")),
+            expect(
+                dead_code,
+                reason = "only the test protocol sends a body again before HTTP"
+            )
+        )]
         rewind: Option<Handler<dyn Rewind>>,
         size: Option<u64>,
     },
@@ -176,6 +178,13 @@ impl Upload {
     /// was called, whatever it answered, needs its rewind: without one, or
     /// if it fails, SendFailRewind ("necessary data rewind was not
     /// possible").
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(
+            dead_code,
+            reason = "only the test protocol sends a body again before HTTP"
+        )
+    )]
     pub(crate) fn rewind<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         if let Source::Read { rewind, .. } = &self.source {
             if !self.called {
@@ -194,7 +203,14 @@ impl Upload {
 }
 
 /// Body bytes went out: counted, and traced for a verbose transfer
-/// (`xfer_send`'s DATA_OUT).
+/// (`xfer_send`'s DATA_OUT). `file:` writes its body itself, untraced.
+#[cfg_attr(
+    not(any(test, feature = "test-util")),
+    expect(
+        dead_code,
+        reason = "only the test protocol sends over a connection before HTTP"
+    )
+)]
 pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, body: &[u8]) {
     if body.is_empty() {
         return;

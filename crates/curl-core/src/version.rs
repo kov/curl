@@ -42,12 +42,16 @@ const FEATURES: &[Feature] = &[];
 
 /// A URL scheme the build can transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Protocol {}
+pub enum Protocol {
+    File,
+}
 
 impl Protocol {
     /// The scheme, in lowercase.
     pub fn name(self) -> &'static str {
-        match self {}
+        match self {
+            Protocol::File => "file",
+        }
     }
 }
 
@@ -94,7 +98,7 @@ static VERSION: VersionInfo = VersionInfo {
     timestamp: curlver::TIMESTAMP,
     host: HOST,
     features: FEATURES,
-    protocols: &[],
+    protocols: &[Protocol::File],
 };
 
 #[cfg(target_os = "linux")]
@@ -108,6 +112,13 @@ pub fn version() -> &'static VersionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The protocols are listed by their schemes.
+    #[test]
+    fn protocols_are_named_by_their_schemes() {
+        let names: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
+        assert_eq!(names, ["file"]);
+    }
 
     #[test]
     fn version_matches_its_parts() {

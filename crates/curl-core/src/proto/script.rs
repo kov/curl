@@ -3,7 +3,7 @@
 
 use curl_alloc::TryVec;
 
-use crate::deliver::Pipeline;
+use crate::deliver::{Pipeline, Reach};
 use crate::error::ErrorKind;
 use crate::handler::HeaderOrigin;
 use crate::multi::Host;
@@ -34,7 +34,7 @@ impl Default for Player {
     fn default() -> Player {
         Player {
             next: 0,
-            pipeline: Pipeline::new(true),
+            pipeline: Pipeline::new(Reach::Network),
             upload: None,
             send_buffer: Vec::new(),
             uploaded: false,

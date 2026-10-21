@@ -470,19 +470,28 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
     run.deadlines.start_leg(cx.rest.now);
     cx.mark(Timer::StartSingle);
     cx.mark(Timer::PostQueue);
-    let url = cx.easy().options().url().expect("checked above");
+    let options = cx.easy().options();
+    let url = options.url().expect("checked above");
     let parse = ParseOptions {
         guess_scheme: true,
         non_support_scheme: true,
+        disallow_user: options.url_rules.disallow_user,
+        path_as_is: options.url_rules.path_as_is,
         ..ParseOptions::NONE
     };
-    let scheme = Url::parse(url, parse).and_then(|u| u.get(Part::Scheme, GetOptions::NONE));
-    let scheme = match scheme {
-        Ok(s) => s,
-        Err(e) => return TransferState::Init.fail(url_error(e)),
+    let url = Url::parse(url, parse);
+    let scheme = url
+        .as_ref()
+        .map_err(|e| *e)
+        .and_then(|u| u.get(Part::Scheme, GetOptions::NONE));
+    let (url, scheme) = match (url, scheme) {
+        (Ok(u), Ok(s)) => (u, s),
+        (Err(e), _) | (_, Err(e)) => return TransferState::Init.fail(url_error(e)),
     };
-    let Some(proto) = ProtoState::for_scheme(&scheme) else {
-        return TransferState::Init.fail(ErrorKind::UnsupportedProtocol);
+    let proto = match ProtoState::start(&scheme, &url, options) {
+        Ok(Some(proto)) => proto,
+        Ok(None) => return TransferState::Init.fail(ErrorKind::UnsupportedProtocol),
+        Err(e) => return TransferState::Init.fail(e),
     };
     let Ok(lease) = cx.rest.pool.acquire(&Route::LOCAL) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
@@ -493,7 +502,7 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
 }
 
 /// A URL's error as a transfer's (`Curl_uc_to_curlcode`).
-fn url_error(e: UrlErrorKind) -> ErrorKind {
+pub(crate) fn url_error(e: UrlErrorKind) -> ErrorKind {
     match e {
         UrlErrorKind::UnsupportedScheme => ErrorKind::UnsupportedProtocol,
         UrlErrorKind::OutOfMemory => ErrorKind::OutOfMemory,

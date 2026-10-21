@@ -1,0 +1,655 @@
+//! `file:` transfers on a scratch directory, against what C's do: each
+//! expectation of headers, sizes, calls and results was read off the C
+//! build running the same transfer.
+
+use std::cell::RefCell;
+use std::num::{NonZeroU64, NonZeroUsize};
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::time::{Duration, SystemTime};
+
+use curl_alloc::TryRc;
+
+use crate::conn::io::FakeNet;
+use crate::easy::Easy;
+use crate::error::ErrorKind;
+use crate::handler::{
+    Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow, ProgressVerdict, Read,
+    ReadHandler, Write, WriteHandler,
+};
+use crate::id::ArenaPolicy;
+use crate::multi::{Env, Multi, NoEvents, TransferCx};
+use crate::options::{FileMode, Method, Progress, Resume, UploadSource};
+use crate::report::{HeaderError, Origins, Request};
+use crate::text::Text;
+use crate::time::ManualClock;
+
+use super::last_modified;
+
+/// A directory of its own for a test, removed after it.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(name: &str) -> Scratch {
+        let dir =
+            std::env::temp_dir().join(format!("curl-core-file-{}-{name}", std::process::id()));
+        // Left over from a run that did not finish.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        Scratch(dir)
+    }
+
+    fn url(&self, name: &str) -> Vec<u8> {
+        format!("file://{}/{name}", self.0.display()).into_bytes()
+    }
+
+    /// `name` holding `content`, modified at `mtime` seconds after the
+    /// epoch.
+    fn file(&self, name: &str, content: &[u8], mtime: u64) {
+        let path = self.0.join(name);
+        std::fs::write(&path, content).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(mtime))
+            .unwrap();
+    }
+
+    fn read(&self, name: &str) -> Vec<u8> {
+        std::fs::read(self.0.join(name)).unwrap()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+/// 2000-01-01 12:00:00 UTC, a Saturday.
+const Y2K_NOON: u64 = 946_728_000;
+
+/// What a transfer's handlers saw, in order.
+#[derive(Clone, Default)]
+struct Seen(Rc<RefCell<Vec<Event>>>);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Event {
+    Header(Vec<u8>),
+    Body(Vec<u8>),
+    Progress(ProgressNow),
+}
+
+impl WriteHandler for Seen {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        self.0.borrow_mut().push(Event::Body(body.to_vec()));
+        Write::Accepted
+    }
+}
+
+impl HeaderHandler for Seen {
+    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write {
+        assert_eq!(o, HeaderOrigin::Header);
+        self.0.borrow_mut().push(Event::Header(line.to_vec()));
+        Write::Accepted
+    }
+}
+
+impl ProgressHandler for Seen {
+    fn progress(&self, _: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
+        self.0.borrow_mut().push(Event::Progress(now));
+        ProgressVerdict::Continue
+    }
+}
+
+impl Seen {
+    fn events(&self) -> Vec<Event> {
+        self.0.borrow().clone()
+    }
+
+    fn headers(&self) -> Vec<Vec<u8>> {
+        self.filter(|e| match e {
+            Event::Header(h) => Some(h.clone()),
+            _ => None,
+        })
+    }
+
+    fn body(&self) -> Vec<u8> {
+        self.filter(|e| match e {
+            Event::Body(b) => Some(b.clone()),
+            _ => None,
+        })
+        .concat()
+    }
+
+    fn progress(&self) -> Vec<ProgressNow> {
+        self.filter(|e| match e {
+            Event::Progress(p) => Some(*p),
+            _ => None,
+        })
+    }
+
+    fn filter<T>(&self, f: impl Fn(&Event) -> Option<T>) -> Vec<T> {
+        self.0.borrow().iter().filter_map(f).collect()
+    }
+}
+
+/// An easy handle for `url`, its output and progress seen.
+fn easy(url: &[u8]) -> (Easy, Seen) {
+    let mut e = Easy::new();
+    e.options_mut().set_url(Some(url)).unwrap();
+    let seen = Seen::default();
+    let cb = &mut e.options_mut().callbacks;
+    cb.write = Some(Handler::write(seen.clone()).unwrap());
+    cb.header = Some(Handler::header(seen.clone()).unwrap());
+    e.options_mut().progress = Progress::Handler(Handler::progress(seen.clone()).unwrap());
+    (e, seen)
+}
+
+/// Run `e` to its end in a multi of its own; its result and the handle.
+fn run(e: Easy) -> (Result<(), ErrorKind>, Easy) {
+    let clock = ManualClock::new().unwrap();
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(FakeNet::new(clock)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    assert_eq!(m.perform(&mut NoEvents).unwrap(), 0, "over in one pass");
+    let result = m.info_read().expect("a message").result;
+    (result, m.remove(id, &mut NoEvents).unwrap().easy)
+}
+
+fn down(total: Option<u64>, now: u64) -> ProgressNow {
+    ProgressNow {
+        download_total: total,
+        downloaded: now,
+        upload_total: None,
+        uploaded: 0,
+    }
+}
+
+fn up(now: u64) -> ProgressNow {
+    ProgressNow {
+        uploaded: now,
+        ..down(None, 0)
+    }
+}
+
+const SMALL_HEADERS: [&[u8]; 4] = [
+    b"Content-Length: 5\r\n",
+    b"Accept-ranges: bytes\r\n",
+    b"Last-Modified: Sat, 01 Jan 2000 12:00:00 GMT\r\n",
+    b"\r\n",
+];
+
+/// A file's headers, then its body; progress twice before the request,
+/// after the body's write and at its end, then after DO, after DID and in
+/// DONE. The headers are not kept for the headers API.
+#[test]
+fn a_file_is_its_headers_then_its_body() {
+    let s = Scratch::new("small");
+    s.file("small", b"hello", Y2K_NOON);
+    let (e, seen) = easy(&s.url("small"));
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    let mut want: Vec<Event> = vec![Event::Progress(down(None, 0)); 2];
+    want.extend(SMALL_HEADERS.map(|h| Event::Header(h.to_vec())));
+    want.push(Event::Body(b"hello".to_vec()));
+    want.extend(vec![Event::Progress(down(Some(5), 5)); 5]);
+    assert_eq!(seen.events(), want);
+    let report = e.report();
+    assert_eq!(report.filetime(), Some(Y2K_NOON as i64));
+    assert_eq!(report.sizes().download_expected(), Some(5));
+    assert_eq!(report.sizes().download(), 5);
+    let stored = report
+        .headers()
+        .get(b"Content-Length", 0, Origins::ALL, Request::Last);
+    assert_eq!(stored.err(), Some(HeaderError::NoHeaders));
+}
+
+/// With the headers included, the write handler gets them before the
+/// body.
+#[test]
+fn included_headers_are_written_before_the_body() {
+    let s = Scratch::new("include");
+    s.file("f", b"hello", Y2K_NOON);
+    let (mut e, seen) = easy(&s.url("f"));
+    e.options_mut().output.include_header = true;
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(
+        seen.body(),
+        [&SMALL_HEADERS.concat()[..], b"hello"].concat()
+    );
+}
+
+/// A file larger than the buffer is read in pieces one byte short of it,
+/// progress checked after each.
+#[test]
+fn a_large_file_is_read_in_pieces() {
+    let s = Scratch::new("big");
+    s.file("big", &[7; 40000], Y2K_NOON);
+    let (e, seen) = easy(&s.url("big"));
+    assert_eq!(run(e).0, Ok(()));
+    let writes: Vec<usize> = seen
+        .events()
+        .iter()
+        .filter_map(|e| match e {
+            Event::Body(b) => Some(b.len()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, [16383, 16383, 7234]);
+    let total = Some(40000);
+    let mut want = vec![down(None, 0); 2];
+    want.extend([down(total, 16383), down(total, 32766)]);
+    want.extend(vec![down(total, 40000); 5]);
+    assert_eq!(seen.progress(), want);
+}
+
+/// A file is read as far as it was when the transfer looked at it, though
+/// it grows during the transfer.
+#[test]
+fn a_file_is_read_as_far_as_its_size() {
+    struct Grower {
+        path: PathBuf,
+        seen: Seen,
+    }
+    impl WriteHandler for Grower {
+        fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
+            if self.seen.body().is_empty() {
+                use std::io::Write as _;
+                let mut f = std::fs::File::options()
+                    .append(true)
+                    .open(&self.path)
+                    .unwrap();
+                f.write_all(b"0123456789").unwrap();
+            }
+            self.seen.write(cx, body)
+        }
+    }
+    let s = Scratch::new("grow");
+    s.file("f", &[0; 20000], Y2K_NOON);
+    let (mut e, seen) = easy(&s.url("f"));
+    let grower = Grower {
+        path: s.0.join("f"),
+        seen: seen.clone(),
+    };
+    e.options_mut().callbacks.write = Some(Handler::write(grower).unwrap());
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(seen.body(), [0; 20000]);
+}
+
+/// An empty file has its headers and nothing more: progress at the end of
+/// the read, not after a write.
+#[test]
+fn an_empty_file_is_its_headers() {
+    let s = Scratch::new("empty");
+    s.file("empty", b"", Y2K_NOON);
+    let (e, seen) = easy(&s.url("empty"));
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(seen.headers()[0], b"Content-Length: 0\r\n");
+    assert_eq!(seen.body(), b"");
+    // Its size is known: nothing.
+    let mut want = vec![down(None, 0); 2];
+    want.extend(vec![down(Some(0), 0); 4]);
+    assert_eq!(seen.progress(), want);
+}
+
+/// A directory is its names, a line each, but those starting with a dot,
+/// without a size; progress only at the end of the listing.
+#[test]
+fn a_directory_is_its_names() {
+    let s = Scratch::new("dir");
+    std::fs::create_dir(s.0.join("d")).unwrap();
+    for name in ["a", ".hidden", "bb"] {
+        std::fs::write(s.0.join("d").join(name), b"").unwrap();
+    }
+    let (e, seen) = easy(&s.url("d/"));
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    let headers = seen.headers();
+    assert_eq!(headers.len(), 2);
+    assert!(headers[0].starts_with(b"Last-Modified: "), "{headers:?}");
+    assert_eq!(headers[1], b"\r\n");
+    let body = seen.body();
+    let mut names: Vec<&[u8]> = body.split_inclusive(|&b| b == b'\n').collect();
+    names.sort();
+    assert_eq!(names, [&b"a\n"[..], b"bb\n"]);
+    let mut want = vec![down(None, 0); 2];
+    want.extend(vec![down(None, 5); 4]);
+    assert_eq!(seen.progress(), want);
+    assert_eq!(e.report().sizes().download_expected(), None);
+}
+
+/// A file that cannot be opened ends the transfer before a connection,
+/// without progress, every time taken at the end.
+#[test]
+fn a_missing_file_cannot_be_read() {
+    let s = Scratch::new("missing");
+    let (e, seen) = easy(&s.url("missing"));
+    let (r, e) = run(e);
+    assert_eq!(r, Err(ErrorKind::FileCouldntReadFile));
+    assert_eq!(seen.events(), []);
+    let t = e.report().timings();
+    assert_eq!(t.namelookup(), Duration::ZERO, "never connected");
+    assert_eq!(t.pretransfer(), Duration::from_micros(1));
+    assert_eq!(t.starttransfer(), Duration::from_micros(1));
+}
+
+/// A zero byte in the path is a malformed URL; other control bytes are
+/// part of the name.
+#[test]
+fn a_zero_byte_in_the_path_is_malformed() {
+    let s = Scratch::new("zero");
+    let (e, _) = easy(&s.url("a%00b"));
+    assert_eq!(run(e).0, Err(ErrorKind::UrlMalformat));
+    s.file("a\x01b", b"x", Y2K_NOON);
+    let (e, seen) = easy(&s.url("a%01b"));
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(seen.body(), b"x");
+}
+
+/// A head request is the headers, and the size, alone.
+#[test]
+fn a_head_request_is_the_headers() {
+    let s = Scratch::new("head");
+    s.file("f", b"hello", Y2K_NOON);
+    let (mut e, seen) = easy(&s.url("f"));
+    e.options_mut().method = Method::Head;
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.headers(), SMALL_HEADERS);
+    assert_eq!(seen.body(), b"");
+    let mut want = vec![down(None, 0); 2];
+    want.extend(vec![down(Some(5), 0); 3]);
+    assert_eq!(seen.progress(), want);
+    assert_eq!(e.report().sizes().download_expected(), Some(5));
+}
+
+fn resumed(s: &Scratch, name: &str, resume: Resume) -> (Result<(), ErrorKind>, Seen, Easy) {
+    let (mut e, seen) = easy(&s.url(name));
+    e.options_mut().resume = Some(resume);
+    let (r, e) = run(e);
+    (r, seen, e)
+}
+
+fn at(n: u64) -> Resume {
+    Resume::At(NonZeroU64::new(n).unwrap())
+}
+
+/// A resumed download skips into the file, its headers still the whole
+/// file's: to its end is nothing; past it, after the headers, no resume.
+#[test]
+fn a_download_resumes_into_the_file() {
+    let s = Scratch::new("resume");
+    s.file("f", b"hello", Y2K_NOON);
+    let (r, seen, e) = resumed(&s, "f", at(2));
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.headers(), SMALL_HEADERS);
+    assert_eq!(seen.body(), b"llo");
+    assert_eq!(e.report().sizes().download_expected(), Some(3));
+    let (r, seen, e) = resumed(&s, "f", at(5));
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.body(), b"");
+    assert_eq!(
+        e.report().sizes().download_expected(),
+        Some(5),
+        "unknown is not announced"
+    );
+    let (r, seen, e) = resumed(&s, "f", at(9));
+    assert_eq!(r, Err(ErrorKind::BadDownloadResume));
+    assert_eq!(seen.headers(), SMALL_HEADERS);
+    // Twice before the request, and once as it is done with.
+    let mut want = vec![down(None, 0); 2];
+    want.push(down(Some(5), 0));
+    assert_eq!(seen.progress(), want);
+    // Ended in DO: DID's time is taken at the end.
+    assert_eq!(e.report().timings().pretransfer(), Duration::from_micros(1));
+}
+
+/// Resuming at the end is the last byte, as C's -1 is the range "-1-";
+/// an empty file's is nothing, announced as a byte.
+#[test]
+fn a_download_resumed_at_the_end_is_the_last_byte() {
+    let s = Scratch::new("end");
+    s.file("f", b"hello", Y2K_NOON);
+    let (r, seen, e) = resumed(&s, "f", Resume::AtEnd);
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.body(), b"o");
+    assert_eq!(e.report().sizes().download_expected(), Some(1));
+    s.file("empty", b"", Y2K_NOON);
+    let (r, seen, e) = resumed(&s, "empty", Resume::AtEnd);
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.body(), b"");
+    assert_eq!(e.report().sizes().download_expected(), Some(1));
+}
+
+/// A directory cannot be resumed into.
+#[test]
+fn a_directory_cannot_be_resumed() {
+    let s = Scratch::new("dirresume");
+    std::fs::create_dir(s.0.join("d")).unwrap();
+    for resume in [at(3), Resume::AtEnd] {
+        let (r, seen, _) = resumed(&s, "d/", resume);
+        assert_eq!(r, Err(ErrorKind::BadDownloadResume), "{resume:?}");
+        assert_eq!(seen.body(), b"");
+    }
+}
+
+/// A write handler cannot pause a file: there is no input to stop.
+#[test]
+fn a_pausing_write_fails() {
+    struct Pauser;
+    impl WriteHandler for Pauser {
+        fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+            Write::Pause
+        }
+    }
+    let s = Scratch::new("pause");
+    s.file("f", b"hello", Y2K_NOON);
+    let (mut e, _) = easy(&s.url("f"));
+    e.options_mut().callbacks.write = Some(Handler::write(Pauser).unwrap());
+    assert_eq!(run(e).0, Err(ErrorKind::WriteError));
+}
+
+/// Reads `left` bytes of `u`, as much as each read has room for.
+struct Feeder {
+    left: std::cell::Cell<usize>,
+}
+
+impl ReadHandler for Feeder {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
+        let n = self.left.get().min(buf.len());
+        buf[..n].fill(b'u');
+        self.left.set(self.left.get() - n);
+        NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
+    }
+}
+
+fn upload(url: &[u8], source: UploadSource) -> (Easy, Seen) {
+    let (mut e, seen) = easy(url);
+    e.options_mut().method = Method::Upload;
+    e.options_mut().upload = source;
+    (e, seen)
+}
+
+fn fed(n: usize) -> UploadSource {
+    UploadSource::Read {
+        handler: Handler::read(Feeder {
+            left: std::cell::Cell::new(n),
+        })
+        .unwrap(),
+        rewind: None,
+        size: None,
+    }
+}
+
+fn bytes(b: &[u8]) -> UploadSource {
+    UploadSource::Bytes(TryRc::try_new(b.to_vec()).unwrap())
+}
+
+/// An upload writes the body to the file, created or emptied, in pieces of
+/// the upload buffer; progress after each piece written and at the end.
+#[test]
+fn an_upload_writes_the_file() {
+    let s = Scratch::new("upload");
+    let (mut e, seen) = upload(&s.url("new"), fed(70000));
+    e.options_mut().new_file_mode = FileMode::new(0o600).unwrap();
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(s.read("new"), [b'u'; 70000]);
+    let mode = std::fs::metadata(s.0.join("new"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    let mut want = vec![up(0); 2];
+    want.push(up(65536));
+    want.extend(vec![up(70000); 5]);
+    assert_eq!(seen.progress(), want);
+    assert_eq!(e.report().sizes().upload(), 70000);
+    assert_eq!(e.report().sizes().upload_expected(), None);
+    // An existing file is emptied first.
+    let (e, _) = upload(&s.url("new"), bytes(b"short"));
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(s.read("new"), b"short");
+    assert_eq!(e.report().sizes().upload_expected(), Some(5));
+}
+
+/// A resumed upload appends what of the body is past the resume point; at
+/// the end, past what the file holds already.
+#[test]
+fn an_upload_resumes_by_appending() {
+    let s = Scratch::new("upresume");
+    s.file("f", b"0123456789", Y2K_NOON);
+    let (mut e, _) = upload(&s.url("f"), bytes(b"abcdefghijXYZ"));
+    e.options_mut().resume = Some(at(10));
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(s.read("f"), b"0123456789XYZ");
+    assert_eq!(e.report().sizes().upload(), 3);
+    let (mut e, _) = upload(&s.url("f"), bytes(b"abcdefghijklmnop"));
+    e.options_mut().resume = Some(Resume::AtEnd);
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(s.read("f"), b"0123456789XYZnop");
+    assert_eq!(e.report().sizes().upload(), 3);
+    // A resume point past a piece skips all of it, and the next one too.
+    let (mut e, _) = upload(&s.url("g"), fed(70000));
+    e.options_mut().resume = Some(at(69990));
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(s.read("g"), [b'u'; 10]);
+}
+
+/// An upload to a path that cannot be written is a write error; to the
+/// root, which names nothing, a read error, as C has it.
+#[test]
+fn an_upload_needs_a_file_to_write() {
+    let s = Scratch::new("upfail");
+    let (e, _) = upload(&s.url("missing/f"), bytes(b"x"));
+    assert_eq!(run(e).0, Err(ErrorKind::WriteError));
+    let (e, _) = upload(b"file:///", bytes(b"x"));
+    assert_eq!(run(e).0, Err(ErrorKind::FileCouldntReadFile));
+    // A slash after the first is something: the root again, which cannot
+    // be written as a file.
+    let (e, _) = upload(b"file:////", bytes(b"x"));
+    assert_eq!(run(e).0, Err(ErrorKind::WriteError));
+}
+
+/// The URL rules reach the parser: a user name refused, a path kept as
+/// it is.
+#[test]
+fn the_url_rules_apply_to_a_file_url() {
+    let s = Scratch::new("rules");
+    s.file("f", b"x", Y2K_NOON);
+    // A file URL has no room for a user: another scheme shows the rule.
+    let (e, _) = easy(b"script://user@a");
+    assert_eq!(run(e).0, Ok(()));
+    let (mut e, _) = easy(b"script://user@a");
+    e.options_mut().url_rules.disallow_user = true;
+    assert_eq!(run(e).0, Err(ErrorKind::LoginDenied));
+    // Through a directory that is not there: resolved, the path is the
+    // file; as it is, it is not found.
+    let dotted = s.url("missing/../f");
+    let (e, seen) = easy(&dotted);
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(seen.body(), b"x");
+    let (mut e, _) = easy(&dotted);
+    e.options_mut().url_rules.path_as_is = true;
+    assert_eq!(run(e).0, Err(ErrorKind::FileCouldntReadFile));
+}
+
+/// A read handler cannot pause an upload to a file.
+#[test]
+fn a_pausing_read_fails() {
+    struct Pauser;
+    impl ReadHandler for Pauser {
+        fn read(&self, _: &mut TransferCx<'_>, _: &mut [u8]) -> Read {
+            Read::Pause
+        }
+    }
+    let s = Scratch::new("readpause");
+    let source = UploadSource::Read {
+        handler: Handler::read(Pauser).unwrap(),
+        rewind: None,
+        size: None,
+    };
+    let (e, _) = upload(&s.url("f"), source);
+    assert_eq!(run(e).0, Err(ErrorKind::ReadError));
+}
+
+fn modified(t: i64) -> Result<String, ErrorKind> {
+    let mut out = Text::<80>::new();
+    last_modified(t, &mut out)?;
+    Ok(String::from_utf8(out.bytes().to_vec()).unwrap())
+}
+
+/// The modification time, in UTC, before and after the epoch.
+#[test]
+fn the_modification_time_is_a_date() {
+    let line = |s: &str| Ok(format!("Last-Modified: {s} GMT\r\n"));
+    assert_eq!(modified(0), line("Thu, 01 Jan 1970 00:00:00"));
+    assert_eq!(modified(Y2K_NOON as i64), line("Sat, 01 Jan 2000 12:00:00"));
+    assert_eq!(modified(951_825_599), line("Tue, 29 Feb 2000 11:59:59"));
+    assert_eq!(modified(-1), line("Wed, 31 Dec 1969 23:59:59"));
+    assert_eq!(modified(-62_135_596_800), line("Mon, 01 Jan    1 00:00:00"));
+    assert_eq!(
+        modified(253_402_300_800),
+        line("Sat, 01 Jan 10000 00:00:00")
+    );
+    // A year past C's `int` years.
+    assert_eq!(modified(i64::MAX), Err(ErrorKind::BadFunctionArgument));
+    // The last year `struct tm` holds, and the first it does not.
+    assert_eq!(
+        modified(67_768_036_160_140_800),
+        line("Wed, 01 Jan 2147485547 00:00:00")
+    );
+    assert_eq!(
+        modified(67_768_036_191_676_800),
+        Err(ErrorKind::BadFunctionArgument)
+    );
+}
+
+/// The leap years of the Gregorian calendar: every fourth, but not every
+/// hundredth, but every four hundredth.
+#[test]
+fn the_calendar_has_its_leap_years() {
+    let line = |s: &str| Ok(format!("Last-Modified: {s} GMT\r\n"));
+    for (t, date) in [
+        (-2_203_977_600, "Wed, 28 Feb 1900 00:00:00"),
+        (-2_203_891_200, "Thu, 01 Mar 1900 00:00:00"),
+        (4_107_542_399, "Sun, 28 Feb 2100 23:59:59"),
+        (4_107_542_400, "Mon, 01 Mar 2100 00:00:00"),
+        (13_574_606_400, "Tue, 29 Feb 2400 12:00:00"),
+        (13_569_465_599, "Fri, 31 Dec 2399 23:59:59"),
+        (-11_670_998_400, "Tue, 29 Feb 1600 00:00:00"),
+        (-11_644_473_600, "Mon, 01 Jan 1601 00:00:00"),
+        (253_402_300_799, "Fri, 31 Dec 9999 23:59:59"),
+        (-86_400, "Wed, 31 Dec 1969 00:00:00"),
+    ] {
+        assert_eq!(modified(t), line(date), "{t}");
+    }
+}

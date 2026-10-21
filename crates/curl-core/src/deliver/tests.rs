@@ -14,7 +14,7 @@ use crate::multi::{
 use crate::options::script::{Piece, Script};
 use crate::report::{HeaderCursor, HeaderError, HeaderView, Origins, Request};
 
-use super::Pipeline;
+use super::{Pipeline, Reach};
 use crate::time::ManualClock;
 
 fn multi() -> Multi {
@@ -424,7 +424,7 @@ fn failed_output_stays_failed() {
     // Exchanging, as a protocol delivering output is.
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
-        let mut p = Pipeline::new(true);
+        let mut p = Pipeline::new(Reach::Network);
         assert_eq!(p.body(cx, b"one"), Err(ErrorKind::WriteError));
         assert_eq!(
             p.header(cx, b"a: b\r\n", HeaderOrigin::Header),
@@ -788,7 +788,7 @@ fn a_pause_where_none_is_supported_fails_the_write() {
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
-        let mut p = Pipeline::new(false);
+        let mut p = Pipeline::new(Reach::Local);
         assert!(!p.pausable());
         assert_eq!(p.body(cx, b"x"), Err(ErrorKind::WriteError));
         assert!(!p.holds_output());
@@ -1046,7 +1046,7 @@ fn output_written_while_held_goes_behind_it() {
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
-        let mut p = Pipeline::new(true);
+        let mut p = Pipeline::new(Reach::Network);
         p.body(cx, b"one").unwrap();
         assert!(p.holds_output());
         cx.pause_mut().recv = super::RecvPause::Running;

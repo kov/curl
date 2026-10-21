@@ -100,6 +100,16 @@ pub(super) fn reencode(out: &mut Bytes, mut s: &[u8], query: Query) -> Result<()
 /// `s` with `%xx` escapes decoded, rejecting control bytes whether escaped
 /// or not (`Curl_urldecode` with `REJECT_CTRL`). `None` on such a byte.
 pub(super) fn decode(s: &[u8]) -> Result<Option<Bytes>, UrlErrorKind> {
+    decode_rejecting(s, |b| b < 0x20)
+}
+
+/// `s` with `%xx` escapes decoded, rejecting a zero byte whether escaped
+/// or not (`Curl_urldecode` with `REJECT_ZERO`). `None` on one.
+pub(crate) fn decode_but_zero(s: &[u8]) -> Result<Option<Bytes>, UrlErrorKind> {
+    decode_rejecting(s, |b| b == 0)
+}
+
+fn decode_rejecting(s: &[u8], reject: fn(u8) -> bool) -> Result<Option<Bytes>, UrlErrorKind> {
     let mut out = Bytes::new();
     out.try_reserve_exact(s.len())
         .map_err(|_| UrlErrorKind::OutOfMemory)?;
@@ -114,7 +124,7 @@ pub(super) fn decode(s: &[u8]) -> Result<Option<Bytes>, UrlErrorKind> {
             Some(v) => (v, 3),
             None => (b, 1),
         };
-        if byte < 0x20 {
+        if reject(byte) {
             return Ok(None);
         }
         // Within the capacity reserved above: no allocation.
@@ -174,6 +184,12 @@ mod tests {
         assert_eq!(decode(b"a%41%4a%%2").unwrap().unwrap(), b"aAJ%%2");
         assert_eq!(decode(b"a%0a").unwrap(), None);
         assert_eq!(decode(b"a\tb").unwrap(), None);
+        assert_eq!(
+            decode_but_zero(b"a%01%41\tb").unwrap().unwrap(),
+            b"a\x01A\tb"
+        );
+        assert_eq!(decode_but_zero(b"a%00b").unwrap(), None);
+        assert_eq!(decode_but_zero(b"a\0b").unwrap(), None);
         assert_eq!(escape(b"a b/~").unwrap(), b"a%20b%2F~");
     }
 

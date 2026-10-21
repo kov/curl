@@ -1,0 +1,213 @@
+# file:// (crates/curl-core/src/proto/file.rs), against the C build's
+# file:// transfers.
+
+=== a directory announces a length
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_directory_is_its_names
+--- old
+        if !is_dir {
+            write!(line, "Content-Length: {st_size}\r\n").expect("a header fits");
+--- new
+        if true {
+            write!(line, "Content-Length: {st_size}\r\n").expect("a header fits");
+
+=== a directory lists its dot names
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_directory_is_its_names
+--- old
+            if name.first() == Some(&b'.') {
+--- new
+            if name.first() == Some(&b'_') {
+
+=== the file time is not reported
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
+--- old
+        cx.report_mut().set_filetime(meta.mtime());
+--- new
+
+=== a local protocol keeps its headers
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
+--- old
+        if self.reach == Reach::Network {
+            cx.report_mut().headers_mut().push(line, origin)?;
+--- new
+        if true {
+            cx.report_mut().headers_mut().push(line, origin)?;
+
+=== a local protocol's write may pause
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::file::tests::a_pausing_write_fails
+--- old
+        self.reach == Reach::Network
+--- new
+        true
+
+=== the body is not checked after each piece
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_large_file_is_read_in_pieces
+--- old
+            self.pipeline.body(cx, &buf[..n])?;
+            progress::check(cx, false)?;
+--- new
+            self.pipeline.body(cx, &buf[..n])?;
+
+=== DO ends without a progress update
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_empty_file_is_its_headers
+--- old
+            self.read_body(cx, known)?;
+        }
+        progress::update(cx, false)
+--- new
+            self.read_body(cx, known)?;
+        }
+        Ok(())
+
+=== a file is read past its size
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_is_read_as_far_as_its_size
+--- old
+            let want = left.map_or(READ_BUFFER, |n| {
+--- new
+            let want = None::<u64>.map_or(READ_BUFFER, |n| {
+
+=== a resumed download announces the whole size
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_download_resumes_into_the_file
+--- old
+            expected -= resume;
+--- new
+
+=== a resumed download reads from the start
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_download_resumes_into_the_file
+--- old
+            && file.seek(SeekFrom::Start(at)).ok() != Some(at)
+--- new
+            && file.seek(SeekFrom::Start(0)).ok() != Some(0)
+
+=== a download resumes past its end
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_download_resumes_into_the_file
+--- old
+            if resume > expected {
+--- new
+            if resume > i64::MAX {
+
+=== resuming at the end is not the last byte's range
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_download_resumed_at_the_end_is_the_last_byte
+--- old
+            Some(Resume::AtEnd) => (-1, Some(1)),
+--- new
+            Some(Resume::AtEnd) => (-1, None),
+
+=== a head request reads the body
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_head_request_is_the_headers
+--- old
+        if options.method == Method::Head {
+--- new
+        if options.method == Method::Upload {
+
+=== a zero byte in the path is a name
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core proto::file::tests::a_zero_byte_in_the_path_is_malformed
+--- old
+    decode_rejecting(s, |b| b == 0)
+--- new
+    decode_rejecting(s, |_| false)
+
+=== an upload to the root is opened
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_needs_a_file_to_write
+--- old
+            .is_some_and(|slash| slash + 1 < path.len())
+--- new
+            .is_some_and(|slash| slash < path.len())
+
+=== a resumed upload empties the file
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_resumes_by_appending
+--- old
+            Some(_) => Keep::Everything,
+--- new
+            Some(_) => Keep::Nothing,
+
+=== a resumed upload skips nothing
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_resumes_by_appending
+--- old
+            let skipped = usize::try_from(skip).map_or(got.n, |s| s.min(got.n));
+--- new
+            let skipped = 0;
+
+=== an upload resumed at the end skips nothing
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_resumes_by_appending
+--- old
+            Some(Resume::AtEnd) => target.metadata().map_err(|_| ErrorKind::WriteError)?.len(),
+--- new
+            Some(Resume::AtEnd) => 0,
+
+=== an upload's file has the default permissions
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_writes_the_file
+--- old
+        let mut target = fs::open_write(self.c_path(), keep, options.new_file_mode.bits().into())
+--- new
+        let mut target = fs::open_write(self.c_path(), keep, 0o644)
+
+=== an upload is not counted
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_writes_the_file
+--- old
+            cx.report_mut().sizes_mut().upload += body.len() as u64;
+--- new
+
+=== an upload's size is not announced
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_writes_the_file
+--- old
+            upload::announce_size(cx, Some(size));
+--- new
+
+=== a request skips the protocol-connect step
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
+--- old
+    TransferState::ProtoConnect(Attached { lease, proto })
+--- new
+    TransferState::Do(Attached { lease, proto })
+
+=== a request that fails in DO keeps DID's times unset
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::a_download_resumes_into_the_file
+--- old
+                TransferState::Done(x.done(Err(e), false, false)),
+--- new
+                TransferState::Done(x.done(Err(e), false, true)),
+
+=== a request with nothing to exchange is exchanged
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
+--- old
+        TransferState::Did(x) if !x.proto.exchanges() => (
+--- new
+        TransferState::Did(x) if false => (
+
+=== the user rule does not reach the parser
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::the_url_rules_apply_to_a_file_url
+--- old
+        disallow_user: options.url_rules.disallow_user,
+--- new
+
+=== the path rule does not reach the parser
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::the_url_rules_apply_to_a_file_url
+--- old
+        path_as_is: options.url_rules.path_as_is,
+--- new

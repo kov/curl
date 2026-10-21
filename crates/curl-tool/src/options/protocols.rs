@@ -96,40 +96,42 @@ mod tests {
         msgs
     }
 
-    /// The library speaks no protocol yet, so every name is unknown, as
-    /// test 322 checks, and every list leaves no protocol.
+    /// The library speaks `file` alone: every other name is unknown, as
+    /// test 322 checks, and no redirect may go anywhere by default.
     #[test]
-    fn with_no_protocols() {
+    fn with_file_alone() {
         let msgs = quiet();
-        assert_eq!(Protocols::all(), Protocols(0));
+        let file = Protocols(1);
+        assert_eq!(Protocols::all(), file);
         assert_eq!(Protocols::redirect_default(), Protocols(0));
-        for list in [
-            b"".as_slice(),
-            b",,=ALL,",
-            b"+-http".as_slice(),
-            b"http",
-            b"=https",
-            b"-ftp",
-            b"all,x",
-            b"+",
+        for (list, want) in [
+            (b"".as_slice(), Ok(file)),
+            (b",,=ALL,", Ok(file)),
+            (b"FILE", Ok(file)),
+            (b"=file", Ok(file)),
+            (b"-file", Err(ParamError::BadUse)),
+            (b"-all,+file", Ok(file)),
+            (b"+-http", Err(ParamError::BadUse)),
+            (b"http", Err(ParamError::BadUse)),
+            (b"all,x", Err(ParamError::BadUse)),
+            (b"+", Err(ParamError::BadUse)),
         ] {
-            assert_eq!(
-                parse(Protocols::all(), list, &msgs),
-                Err(ParamError::BadUse),
-                "{list:?}"
-            );
+            assert_eq!(parse(Protocols::all(), list, &msgs), want, "{list:?}");
         }
     }
 
-    /// What a list leaves of a set it starts from, whatever the library
-    /// speaks.
+    /// A list that leaves no protocol is rejected, whatever it starts
+    /// from.
     #[test]
     fn rejects_an_empty_result() {
         let msgs = quiet();
-        let some = Protocols(0b101);
-        assert_eq!(parse(some, b"", &msgs), Ok(some));
-        assert_eq!(parse(some, b",,", &msgs), Ok(some));
-        assert_eq!(parse(some, b"-all", &msgs), Err(ParamError::BadUse));
-        assert_eq!(parse(some, b"=all", &msgs), Err(ParamError::BadUse));
+        let none = Protocols(0);
+        assert_eq!(parse(none, b"", &msgs), Err(ParamError::BadUse));
+        assert_eq!(parse(none, b"=all", &msgs), Ok(Protocols::all()));
+        assert_eq!(
+            parse(Protocols::all(), b"-all", &msgs),
+            Err(ParamError::BadUse)
+        );
+        assert_eq!(parse(Protocols::all(), b",,", &msgs), Ok(Protocols::all()));
     }
 }

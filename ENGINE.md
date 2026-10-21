@@ -1013,8 +1013,8 @@ from `options.upload` and read by the protocol.
   whatever it answered (`Read`); otherwise `Bytes` starts over and `Read` calls its `Rewind`
   (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or on its
   failure SendFailRewind "necessary data rewind was not possible".
-- Resume is the protocols': file:// skips the offset in its read loop, FTP seeks or reads and
-  discards. C's reader-level `resume_from` is never called and is not ported.
+- Resume is the protocols': a file:// upload skips the offset in its read loop (§5.6), FTP seeks
+  or reads and discards. C's reader-level `resume_from` is never called and is not ported.
 - The protocol announces the body's size (CONTENT_LENGTH_UPLOAD) and, for a request with a
   body, marks POSTTRANSFER when the body is sent rather than at DID.
 
@@ -1043,8 +1043,9 @@ over the last five one-second records. The handler is called, or the meter drawn
 - after every receive/send pass, with the low-speed check unless the request is done or either
   direction is paused; while `LowSpeed` is set the check re-arms `SpeedCheck` for a second;
 - after every step that went well while holding a connection (the tail of `multi_runsingle`'s
-  loop), with held output a handler unpaused replayed at once. One step here may be several C
-  states; the count before the first byte is pinned against C with file:// (step 8);
+  loop), with held output a handler unpaused replayed at once. Every C state from CONNECT on
+  that holds a connection is a step of its own, so the counts are C's: file:// pins them,
+  two before DO and three after it;
 - in throttled states (with rate limits);
 - a last call from the `Done` step, shown whatever the time but only if the request is done or a
   second has passed, unless the outcome is AbortedByCallback. An `Abort` there fails a transfer
@@ -1057,6 +1058,29 @@ low-speed check is unit 1606's. Its "Resuming transfer from byte position" line 
 resume (7f).
 
 ---
+
+### 5.6 `file:`
+
+`proto/file.rs` is `lib/file.c`: no network (`Reach::Local`: a pausing write is WriteError, a
+pausing read ReadError, header lines are not kept for the headers API), and no exchange after
+DO, so `Did` goes straight to `Done`.
+- **At setup**, before a connection is leased (`file_connect`): the path, URL-encoded then
+  decoded with only a zero byte rejected (UrlMalformat), is opened to read unless the request
+  is an upload; a failure is FileCouldntReadFile, ending the transfer from `Init`.
+- **Download, all in DO:** the file's status gives the file time, the headers (Content-Length
+  and Accept-ranges for a file, Last-Modified in UTC, the blank line) and the announced size;
+  a head request stops there. Resume is C's range arithmetic in signed offsets (`setup_range`,
+  `Curl_range`): `At(n)` skips n, BadDownloadResume past the size; `AtEnd` is C's -1, the
+  last byte. The body is read in pieces of the transfer buffer less one, no further than the
+  size at the status, a progress check after each; a directory is its names but those
+  starting with a dot, a line each, without checks. A last progress update ends DO.
+- **Upload, all in DO:** a path with nothing after its first slash is FileCouldntReadFile;
+  the file is opened emptied, or appended to on resume, with `new_file_mode` (WriteError).
+  The body is read through `Upload` in 64 KiB pieces, the resume point (`AtEnd`: the file's
+  size) skipped, each piece written (SendError), counted without a DATA_OUT trace and
+  checked; a last update ends DO.
+- Files are opened and directories listed through `curl_os::fs`, which copies neither the
+  path nor an entry's name.
 
 ## 6. HTTP/1.x
 
@@ -1325,6 +1349,9 @@ Each is either unobservable through the ABI or a fixed bug:
 - `curl_easy_perform_ev` keeps its event state per call, not in a process-wide static.
 - A transfer without a URL starts a fresh report. C fails it in `Curl_pretransfer` before
   `Curl_pgrsStart`, so it completes on the previous transfer's start time, or on a zero one.
+- file:// fails with ReadError where reading the file, its status or its directory fails; C
+  ends the transfer successfully at a failed read or listing, and reads a file it cannot stat.
+  Its descriptors are opened close-on-exec.
 
 ---
 

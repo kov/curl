@@ -11,7 +11,7 @@ use core::fmt::{self, Write};
 use core::ptr;
 use std::sync::OnceLock;
 
-use curl_core::version::{Feature, version};
+use curl_core::version::{Feature, Protocol, version};
 
 use crate::ffi::{self, CURLVERSION_NOW, CURLversion, curl_version_info_data};
 
@@ -59,8 +59,17 @@ unsafe impl<const N: usize> Sync for CList<N> {}
 // SAFETY: as for `Sync`; nothing in it is tied to a thread.
 unsafe impl<const N: usize> Send for CList<N> {}
 
-/// Empty until the core reports protocols.
-static EMPTY: CList<1> = CList([ptr::null()]);
+/// Room for every protocol C knows, and the NULL after them.
+const MAX_PROTOCOLS: usize = 32;
+
+/// A protocol's name, as `curl_version_info_data` lists it.
+fn c_protocol(p: Protocol) -> &'static CStr {
+    match p {
+        Protocol::File => c"file",
+    }
+}
+
+static PROTOCOL_NAMES: OnceLock<CList<{ MAX_PROTOCOLS + 1 }>> = OnceLock::new();
 
 /// Room for every feature C knows, and the NULL after them.
 const MAX_FEATURES: usize = 64;
@@ -91,7 +100,17 @@ static INFO: OnceLock<Data> = OnceLock::new();
 
 fn info() -> &'static curl_version_info_data {
     let v = version();
-    assert!(v.protocols.is_empty(), "not translated yet");
+    let protocol_names = PROTOCOL_NAMES.get_or_init(|| {
+        let mut names = CList([ptr::null(); MAX_PROTOCOLS + 1]);
+        assert!(
+            v.protocols.len() <= MAX_PROTOCOLS,
+            "room for every protocol"
+        );
+        for (slot, &p) in names.0.iter_mut().zip(v.protocols) {
+            *slot = c_protocol(p).as_ptr();
+        }
+        names
+    });
     let feature_names = FEATURE_NAMES.get_or_init(|| {
         let mut names = CList([ptr::null(); MAX_FEATURES + 1]);
         assert!(v.features.len() <= MAX_FEATURES, "room for every feature");
@@ -117,7 +136,7 @@ fn info() -> &'static curl_version_info_data {
                 ssl_version: ptr::null(),
                 ssl_version_num: 0,
                 libz_version: ptr::null(),
-                protocols: EMPTY.0.as_ptr(),
+                protocols: protocol_names.0.as_ptr(),
                 ares: ptr::null(),
                 ares_num: 0,
                 libidn: ptr::null(),
@@ -162,22 +181,36 @@ const _: ffi::proto::curl_version_info = curl_version_info;
 mod tests {
     use super::*;
 
-    /// The features the core reports reach the C struct as bits and as
-    /// names, the names NULL-terminated.
-    #[test]
-    fn features_reach_the_c_struct() {
-        let info = info();
+    /// The names in a NULL-terminated list of C strings.
+    fn names(list: *const *const c_char) -> Vec<&'static str> {
         let mut names = Vec::new();
         for i in 0.. {
             // SAFETY: the list is NULL-terminated, and stops being read at
             // the NULL.
-            let p = unsafe { info.feature_names.wrapping_add(i).read() };
+            let p = unsafe { list.wrapping_add(i).read() };
             if p.is_null() {
                 break;
             }
             // SAFETY: each entry is a static C string.
             names.push(unsafe { CStr::from_ptr(p) }.to_str().unwrap());
         }
+        names
+    }
+
+    /// The protocols the core reports reach the C struct as names.
+    #[test]
+    fn protocols_reach_the_c_struct() {
+        let want: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
+        assert_eq!(names(info().protocols), want);
+        assert_eq!(want, ["file"]);
+    }
+
+    /// The features the core reports reach the C struct as bits and as
+    /// names, the names NULL-terminated.
+    #[test]
+    fn features_reach_the_c_struct() {
+        let info = info();
+        let names = names(info.feature_names);
         let want: Vec<_> = version().features.iter().map(|f| f.name()).collect();
         assert_eq!(names, want);
         let bits = version()

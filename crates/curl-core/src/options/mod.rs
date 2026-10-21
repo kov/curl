@@ -21,6 +21,14 @@ use crate::time::TimeLimit;
 #[derive(Debug, Default)]
 pub struct Options {
     url: Option<Vec<u8>>,
+    /// How the URL is read.
+    pub url_rules: UrlRules,
+    /// What the request asks for.
+    pub method: Method,
+    /// Where in the resource the transfer starts.
+    pub resume: Option<Resume>,
+    /// What a file an upload creates may be opened for.
+    pub new_file_mode: FileMode,
     pub limits: Limits,
     pub output: Output,
     pub callbacks: Callbacks,
@@ -48,6 +56,10 @@ impl Options {
     pub fn try_clone(&self) -> Result<Options, OutOfMemory> {
         Ok(Options {
             url: self.url.as_deref().map(copy).transpose()?,
+            url_rules: self.url_rules,
+            method: self.method,
+            resume: self.resume,
+            new_file_mode: self.new_file_mode,
             limits: self.limits,
             output: self.output,
             callbacks: self.callbacks.clone(),
@@ -63,6 +75,65 @@ fn copy(s: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut v = Vec::new();
     v.try_extend_from_slice(s)?;
     Ok(v)
+}
+
+/// What a URL may hold, beyond what parsing it always allows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UrlRules {
+    /// A user name or password in it is an error
+    /// (`CURLOPT_DISALLOW_USERNAME_IN_URL`).
+    pub disallow_user: bool,
+    /// `.` and `..` in its path are kept, not resolved
+    /// (`CURLOPT_PATH_AS_IS`).
+    pub path_as_is: bool,
+}
+
+/// What a request asks for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Method {
+    /// The resource.
+    #[default]
+    Get,
+    /// What is known of the resource, without its body
+    /// (`CURLOPT_NOBODY`).
+    Head,
+    /// To store the body the transfer sends, from `Options::upload`
+    /// (`CURLOPT_UPLOAD`).
+    Upload,
+}
+
+/// Where in the resource a transfer starts (`CURLOPT_RESUME_FROM_LARGE`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resume {
+    /// This many bytes in: a download skips them; an upload skips them of
+    /// its body and appends the rest to what is stored.
+    At(NonZeroU64),
+    /// At the end (C's -1): a download gets the last byte; an upload skips
+    /// as much of its body as is stored already and appends the rest.
+    AtEnd,
+}
+
+/// The permission bits of a file a transfer creates, before the umask
+/// (`CURLOPT_NEW_FILE_PERMS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileMode(u16);
+
+impl FileMode {
+    /// `bits`, if they are permission bits alone.
+    pub fn new(bits: u16) -> Option<FileMode> {
+        (bits <= 0o777).then_some(FileMode(bits))
+    }
+
+    pub fn bits(self) -> u16 {
+        self.0
+    }
+}
+
+impl Default for FileMode {
+    /// Read and write for the owner, read for the rest.
+    fn default() -> FileMode {
+        FileMode(0o644)
+    }
 }
 
 /// How long a transfer may take.

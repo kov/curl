@@ -9,6 +9,8 @@
 //! relative URL against a base, and appending to the query.
 
 mod encode;
+
+pub(crate) use encode::decode_but_zero;
 mod host;
 mod path;
 #[rustfmt::skip]

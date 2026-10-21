@@ -143,33 +143,3 @@ pub(crate) fn max6out(bytes: u64, out: &mut impl fmt::Write) -> fmt::Result {
         write!(out, "{n:3}.{}{}", rest * 10 / 1024, UNITS[k])
     }
 }
-
-/// Text written into a fixed buffer, so drawing the meter allocates
-/// nothing.
-pub(crate) struct Text {
-    buf: [u8; 256],
-    len: usize,
-}
-
-impl Text {
-    pub(crate) fn new() -> Text {
-        Text {
-            buf: [0; 256],
-            len: 0,
-        }
-    }
-
-    pub(crate) fn bytes(&self) -> &[u8] {
-        &self.buf[..self.len]
-    }
-}
-
-impl fmt::Write for Text {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let end = self.len + s.len();
-        let dest = self.buf.get_mut(self.len..end).ok_or(fmt::Error)?;
-        dest.copy_from_slice(s.as_bytes());
-        self.len = end;
-        Ok(())
-    }
-}

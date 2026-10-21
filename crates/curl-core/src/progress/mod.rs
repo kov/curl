@@ -18,6 +18,7 @@ use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::options::{LowSpeed, Progress};
 use crate::report::Speeds;
+use crate::text::Text;
 use crate::time::Instant;
 
 /// How many speed records are kept: one a second, for five seconds
@@ -265,7 +266,7 @@ fn draw<H: Host>(cx: &mut StepCx<'_, H>, elapsed_us: u64) {
     if first {
         to_stderr(sink, meter::HEADER.as_bytes());
     }
-    let mut text = meter::Text::new();
+    let mut text = Text::<256>::new();
     meter::line(&reading, &mut text).expect("a meter line fits its buffer");
     to_stderr(sink, text.bytes());
 }

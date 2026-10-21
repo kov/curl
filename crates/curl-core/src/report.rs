@@ -17,6 +17,7 @@ pub struct TransferReport {
     sizes: Sizes,
     speeds: Speeds,
     headers: HeaderStore,
+    filetime: Option<i64>,
 }
 
 impl TransferReport {
@@ -54,6 +55,16 @@ impl TransferReport {
 
     pub fn speeds(&self) -> &Speeds {
         &self.speeds
+    }
+
+    /// When the resource was last modified, in seconds since the epoch,
+    /// where the protocol says (`CURLINFO_FILETIME_T`).
+    pub fn filetime(&self) -> Option<i64> {
+        self.filetime
+    }
+
+    pub(crate) fn set_filetime(&mut self, t: i64) {
+        self.filetime = Some(t);
     }
 
     pub(crate) fn speeds_mut(&mut self) -> &mut Speeds {

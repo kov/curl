@@ -263,6 +263,15 @@ impl Request {
             ));
         }
         let mut upload = body.map(|_| Upload::new(&options.upload));
+        // A POST read from a handler that the application asks chunked is
+        // read to its end, whatever its size (`set_reader`, C's issue
+        // 13229).
+        if body == Some(BodyKind::Form)
+            && http.headers.asks_chunked() == Some(true)
+            && let Some(upload) = &mut upload
+        {
+            upload.forget_size();
+        }
         let size = upload.as_ref().and_then(Upload::size);
         // The application's Transfer-Encoding decides whether the body is
         // chunked; otherwise one of unknown size is, which HTTP/1.0 cannot

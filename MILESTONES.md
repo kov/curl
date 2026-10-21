@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 15 are **done**; every other step is **to do**.
+Status: steps 1 to 16 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -285,9 +285,11 @@ yet meet.
     gained the referer and failing on error codes. `--tr-encoding` and `-H @file` stay refused.
     Test 1 as runtests.pl runs it makes 60 allocations and 41357 bytes at most (the C tool 95
     and 126805), within its 140/136000.
-16. **version: report http**, as soon as the basic GET works. Ring A flips: 1, 14, 22, 23, 47, 59, 151, 260, 334, 367, 461, 1109,
-    1121, 1292 and the `-A`/`-e`/`-0` cases. Tests 1, 497, 747 and 767 also need their
-    `<limits>`.
+16. **version: report http.** **Done.** `curl -V` lists `http`; the tool shows HTTP headers
+    for `-i`/`-I` and maps `-m`, `--connect-timeout` and `-g` (runtests.pl checks its servers
+    with them); the request sends Basic credentials from the URL (367). Ring A (1, 14, 22, 23,
+    47, 59, 151, 260, 334, 367, 461, 1109, 1121, 1292) passes through runtests.pl on the Rust
+    leg, test 1 within its `<limits>`; 497, 747 and 767's limits are checked with their rings.
 17. **Ring B, chunked and transfer codings:** 34, 207, 266, 319, 326, 365, 1116, 1416, 1417,
     1482, 1483, 1493–1496, 1722, 1723, 2106, 2119, 2918.
 18. **Ring C, response errors and limits:** 30, 37, 282, 1665; 178, 262, 394, 398, 415, 1473,

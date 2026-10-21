@@ -90,6 +90,33 @@ unsafe fn string<'a>(p: *mut c_void) -> Result<Option<&'a [u8]>, Refused> {
     Ok(Some(s))
 }
 
+/// A `CURLAUTH_*` mask as methods (`httpauth`): the legacy Digest bit
+/// read as Digest; NTLM, Negotiate, AWS SigV4 and HTTP signatures, which
+/// this build lacks, left out; none left of a mask that had some, not
+/// built in.
+fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMethods, Refused> {
+    use curl_core::options::AuthMethods;
+    if mask == ffi::CURLAUTH_NONE {
+        return Ok(AuthMethods::NONE);
+    }
+    let digest = ffi::CURLAUTH_DIGEST | ffi::CURLAUTH_DIGEST_IE;
+    let mut methods = AuthMethods::NONE;
+    for (bits, method) in [
+        (ffi::CURLAUTH_BASIC, AuthMethods::BASIC),
+        (digest, AuthMethods::DIGEST),
+        (ffi::CURLAUTH_BEARER, AuthMethods::BEARER),
+        (ffi::CURLAUTH_ONLY, AuthMethods::ONLY),
+    ] {
+        if mask & bits != 0 {
+            methods = methods | method;
+        }
+    }
+    if (methods & !AuthMethods::ONLY).is_empty() {
+        return Err(Refused::NotBuiltIn);
+    }
+    Ok(methods)
+}
+
 /// The lines of the list at `p`, in order; a node without a string is
 /// passed over.
 ///
@@ -339,6 +366,11 @@ fn apply(
         }
         (ffi::CURLOPT_AUTOREFERER, Long(n)) => options.http.auto_referer = n != 0,
         (ffi::CURLOPT_UNRESTRICTED_AUTH, Long(n)) => options.http.unrestricted_auth = n != 0,
+        (ffi::CURLOPT_HTTPAUTH, Long(n)) => {
+            // The mask as C reads it, an `unsigned long`.
+            options.http.auth =
+                curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong)?);
+        }
         (ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, Long(n)) => {
             // Negative refused, past 65535 taken as it (`value_range`).
             let ms = u64::try_from(n).map_err(|_| Refused::Bad)?.min(0xffff);

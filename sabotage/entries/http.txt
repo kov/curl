@@ -203,17 +203,16 @@ witness: curl-core proto::http::tests::a_head_s_end_fails_around_its_blank_line
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_failing_code_ends_the_transfer_at_its_head
 --- old
-    asked.fail_on_error && code >= 400 && !(asked.resume_from.is_some() && code == 416)
+        && code >= 400
 --- new
-    asked.fail_on_error && code >= 500 && !(asked.resume_from.is_some() && code == 416)
+        && code >= 500
 
 === a resumed GET fails on 416
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http1::response::tests::error_codes_fail_when_asked
 --- old
-    asked.fail_on_error && code >= 400 && !(asked.resume_from.is_some() && code == 416)
+        && !(asked.resume_from.is_some() && code == 416)
 --- new
-    asked.fail_on_error && code >= 400
 
 === the referer is sent over the application's own
 file: crates/curl-core/src/proto/http1/request.rs
@@ -620,7 +619,7 @@ witness: curl-core proto::http1::follow::tests::resolves_against_the_request_wit
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_redirect_is_followed_on_the_kept_connection
 --- old
-        self.ignore_body = self.follow || (resume_from.is_some() && status.code == 416);
+        self.ignore_body = again || (resume_from.is_some() && status.code == 416);
 --- new
         self.ignore_body = resume_from.is_some() && status.code == 416;
 
@@ -904,3 +903,64 @@ witness: curl-core proto::http::auth::tests::composes_the_login_and_the_url_s_as
         let (user, password) = match pair.iter().position(|&b| b == b':') {
 --- new
         let (user, password) = match pair.iter().rposition(|&b| b == b':') {
+
+=== a 401 to be answered delivers its body
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
+--- old
+        let again = self.follow || self.auth.reload;
+--- new
+        let again = self.follow;
+
+=== a 401 to be answered is not made again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
+--- old
+        if act.reload {
+--- new
+        if act.reload && false {
+
+=== a 401 to be answered fails a request that fails on errors
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
+--- old
+        && auth.fails(code, &asked.auth)
+--- new
+
+=== credentials offered again are taken as accepted
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::a_401_to_credentials_sent_is_the_answer
+--- old
+                    if asked.picked == method {
+--- new
+                    if asked.picked == method && asked.done {
+
+=== a method's name matches a longer word
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::reads_challenges_as_c
+--- old
+        && !value.get(name.len()).is_some_and(u8::is_ascii_alphanumeric)
+--- new
+
+=== more than one method wanted sends one before a server asks
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
+--- old
+        let sent = match self.picked.single() {
+--- new
+        let sent = match Some(self.picked & AuthMethods::BASIC).filter(|m| !m.is_empty()) {
+
+=== the method chosen outlives the methods wanted
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::the_method_chosen_is_kept_for_the_next_transfer
+--- old
+        self.picked = self.picked & want;
+--- new
+
+=== a 401 picks a method not wanted
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
+--- old
+            let open = challenges.open & asked.want & !AuthMethods::BEARER;
+--- new
+            let open = challenges.open & !AuthMethods::BEARER;

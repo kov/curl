@@ -1183,6 +1183,8 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     }
     run.retries = 0;
     run.inherited = Inherited::new(cx.easy().options().method);
+    let want = cx.easy().options().http.auth.0;
+    cx.easy_mut().auth.start(want);
     // The application's referer, until a redirect gives another.
     if let Some(given) = &cx.easy().options().http.referer {
         let mut referer = Vec::new();
@@ -1311,6 +1313,23 @@ fn after_exchange<H: Host>(
             location,
             code: 417,
         });
+    }
+    // A 401 whose challenge the request can answer has it made again.
+    if let Some((challenges, act, code)) = x.proto.auth() {
+        cx.report_mut().add_auth_offered(challenges.offered);
+        if let Some(picked) = act.picked
+            && !picked.is_empty()
+        {
+            cx.report_mut().set_auth_used(picked);
+        }
+        cx.easy_mut().auth.apply(&act);
+        if act.reload {
+            let mut location = Vec::new();
+            location
+                .try_extend_from_slice(&run.url)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            return Ok(AfterRequest::Follow { location, code });
+        }
     }
     if let Some((location, code)) = x.proto.follow() {
         let mut copy = Vec::new();

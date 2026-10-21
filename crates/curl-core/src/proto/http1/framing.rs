@@ -13,6 +13,8 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::fields;
 use super::response::{HttpVersion, Status};
 use crate::date::{self, BadDate};
+use crate::options::AuthMethods;
+use crate::proto::http::auth::{AuthAct, AuthAsked, Challenges};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
 const MAX_CODINGS: u8 = 5;
@@ -38,6 +40,8 @@ pub(crate) struct Asked {
     pub(crate) resume_from: Option<u64>,
     /// A redirect's `Location:` is followed (`CURLOPT_FOLLOWLOCATION`).
     pub(crate) follow: bool,
+    /// What the request knows of authenticating, for a 401 to act on.
+    pub(crate) auth: AuthAsked,
 }
 
 /// How the body after a final head ends.
@@ -64,6 +68,8 @@ pub(crate) enum Note {
     AlreadyDownloaded,
     SizeWhileIgnoring,
     IgnoringBody,
+    /// A challenge asked again for the method the request used.
+    AuthProblem(AuthMethods),
 }
 
 /// What C says of a line before it delivers it: at most two notes.
@@ -95,6 +101,9 @@ impl fmt::Display for Note {
             Note::AlreadyDownloaded => "The entire document is already downloaded",
             Note::SizeWhileIgnoring => "setting size while ignoring",
             Note::IgnoringBody => "Ignoring the response-body",
+            Note::AuthProblem(method) => {
+                return write!(f, "{} authentication problem, ignoring.", method.name());
+            }
         })
     }
 }
@@ -173,11 +182,13 @@ impl From<OutOfMemory> for FramingError {
     }
 }
 
-/// Whether a final response with `code` fails the request
-/// (`http_should_fail`). No credentials are sent yet, so a 401 or 407
-/// fails as one to a request without them.
-fn should_fail(code: u16, asked: &Asked) -> bool {
-    asked.fail_on_error && code >= 400 && !(asked.resume_from.is_some() && code == 416)
+/// Whether a final response with `code` fails the request, once what it
+/// led to in authenticating is known (`http_should_fail`).
+fn should_fail(code: u16, asked: &Asked, auth: &AuthAct) -> bool {
+    asked.fail_on_error
+        && code >= 400
+        && !(asked.resume_from.is_some() && code == 416)
+        && auth.fails(code, &asked.auth)
 }
 
 /// What a request's response heads said so far.
@@ -209,6 +220,10 @@ pub(crate) struct Meta {
     /// The body is read and dropped: a 416 to a resumed GET
     /// (`ignorebody`).
     ignore_body: bool,
+    /// What a 401's challenges offered.
+    challenges: Challenges,
+    /// What the final head led to in authenticating.
+    auth: AuthAct,
 }
 
 impl Meta {
@@ -285,6 +300,11 @@ impl Meta {
         }
         if value_of(line, b"Trailer:").is_some() {
             self.trailer = true;
+        }
+        if status.code == 401 && value_of(line, b"WWW-Authenticate:").is_some() {
+            let v = fields::header_value(line).unwrap_or(&[]);
+            let refused = self.challenges.read(v, &asked.auth);
+            return Ok(refused.map(Note::AuthProblem));
         }
         Ok(None)
     }
@@ -396,16 +416,18 @@ impl Meta {
             self.close = true;
             note.push(Note::AssumeClose);
         }
-        if should_fail(status.code, asked) {
+        self.auth = AuthAct::of(status.code, &self.challenges, &asked.auth);
+        if should_fail(status.code, asked, &self.auth) {
             return (note, Err(FramingError::Returned(status.code)));
         }
         if self.length_void || self.chunked {
             self.size = None;
         }
-        // `http_firstwrite`: a response to follow is read no further than
-        // its head on a connection that closes, and its body is dropped
-        // on one kept.
-        if self.follow && self.close {
+        // `http_firstwrite`: a response to follow, or to make again with
+        // credentials, is read no further than its head on a connection
+        // that closes, and its body is dropped on one kept.
+        let again = self.follow || self.auth.reload;
+        if again && self.close {
             if let Some(size) = self.size
                 && asked.max_filesize.is_some_and(|max| size > max.get())
             {
@@ -414,8 +436,8 @@ impl Meta {
             return (note, Ok(Framing::Abandoned));
         }
         let resume_from = asked.resume_from.filter(|_| !self.whole);
-        self.ignore_body = self.follow || (resume_from.is_some() && status.code == 416);
-        if self.follow {
+        self.ignore_body = again || (resume_from.is_some() && status.code == 416);
+        if again {
             note.push(Note::IgnoringBody);
         }
         if let Some(from) = resume_from
@@ -474,6 +496,16 @@ impl Meta {
     /// Where the response redirects to, if it is followed.
     pub(crate) fn follow(&self) -> Option<&[u8]> {
         self.location.as_deref().filter(|_| self.follow)
+    }
+
+    /// What the 401's challenges offered.
+    pub(crate) fn challenges(&self) -> &Challenges {
+        &self.challenges
+    }
+
+    /// What the final head led to in authenticating.
+    pub(crate) fn auth(&self) -> &AuthAct {
+        &self.auth
     }
 
     /// The body is read and dropped.

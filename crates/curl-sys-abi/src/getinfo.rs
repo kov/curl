@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_core::options::AuthMethods;
 use curl_core::report::{ResponseVersion, TransferReport};
 use curl_core::version::Protocol;
 
@@ -85,6 +86,18 @@ fn secs(d: Duration) -> f64 {
 }
 
 /// C's protocol bit (`CURLPROTO_*`).
+/// Methods as a `CURLAUTH_*` mask.
+pub(crate) fn auth_mask(methods: AuthMethods) -> c_long {
+    [
+        (AuthMethods::BASIC, ffi::CURLAUTH_BASIC),
+        (AuthMethods::DIGEST, ffi::CURLAUTH_DIGEST),
+        (AuthMethods::BEARER, ffi::CURLAUTH_BEARER),
+    ]
+    .into_iter()
+    .filter(|&(method, _)| methods.contains(method))
+    .fold(0, |mask, (_, bit)| mask | bit as c_long)
+}
+
 fn proto_bit(p: Protocol) -> c_long {
     match p {
         Protocol::File => ffi::CURLPROTO_FILE,
@@ -182,6 +195,8 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         })),
         ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
         ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),
+        ffi::CURLINFO_HTTPAUTH_AVAIL => Value::Long(auth_mask(r.auth_offered())),
+        ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used())),
         ffi::CURLINFO_REQUEST_SIZE => {
             Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))
         }

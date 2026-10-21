@@ -8,6 +8,7 @@ pub mod script;
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
+use std::fmt;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
@@ -453,6 +454,99 @@ pub struct Http {
     /// What the application said for the first origin goes to any a
     /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
     pub unrestricted_auth: bool,
+    pub auth: HttpAuth,
+}
+
+/// The methods a request may authenticate with (`CURLOPT_HTTPAUTH`): one
+/// is used at once, more are chosen from as a server asks. Basic unless
+/// set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HttpAuth(pub AuthMethods);
+
+impl Default for HttpAuth {
+    fn default() -> Self {
+        HttpAuth(AuthMethods::BASIC)
+    }
+}
+
+/// HTTP authentication methods, as a set (`CURLAUTH_*`); empty unless
+/// set.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct AuthMethods(u8);
+
+impl AuthMethods {
+    pub const NONE: AuthMethods = AuthMethods(0);
+    pub const BASIC: AuthMethods = AuthMethods(1);
+    pub const DIGEST: AuthMethods = AuthMethods(2);
+    pub const BEARER: AuthMethods = AuthMethods(4);
+    /// Not a method: with one, that one is used only once a server asks
+    /// for it (`CURLAUTH_ONLY`).
+    pub const ONLY: AuthMethods = AuthMethods(0x80);
+    /// Every method there is, chosen from as a server asks
+    /// (`CURLAUTH_ANY`).
+    pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 0x80);
+
+    pub fn contains(self, other: AuthMethods) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The one method this is, if it is exactly one; with `ONLY`, none.
+    pub(crate) fn single(self) -> Option<AuthMethods> {
+        (self.0.count_ones() == 1 && self.0 & Self::ONLY.0 == 0).then_some(self)
+    }
+
+    /// The method's name, as an `Authorization` line starts.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::BASIC => "Basic",
+            Self::DIGEST => "Digest",
+            Self::BEARER => "Bearer",
+            _ => unreachable!("one method: {self:?}"),
+        }
+    }
+}
+
+impl std::ops::BitOr for AuthMethods {
+    type Output = AuthMethods;
+    fn bitor(self, other: AuthMethods) -> AuthMethods {
+        AuthMethods(self.0 | other.0)
+    }
+}
+
+impl std::ops::BitAnd for AuthMethods {
+    type Output = AuthMethods;
+    fn bitand(self, other: AuthMethods) -> AuthMethods {
+        AuthMethods(self.0 & other.0)
+    }
+}
+
+impl std::ops::Not for AuthMethods {
+    type Output = AuthMethods;
+    fn not(self) -> AuthMethods {
+        AuthMethods(!self.0 & Self::ANY.0)
+    }
+}
+
+impl fmt::Debug for AuthMethods {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names = [
+            (Self::BASIC, "BASIC"),
+            (Self::DIGEST, "DIGEST"),
+            (Self::BEARER, "BEARER"),
+            (Self::ONLY, "ONLY"),
+        ];
+        let mut set = f.debug_set();
+        for (bit, name) in names {
+            if self.contains(bit) {
+                set.entry(&format_args!("{name}"));
+            }
+        }
+        set.finish()
+    }
 }
 
 /// Which redirects keep a POST a POST (`CURLOPT_POSTREDIR`): unless set,
@@ -511,6 +605,7 @@ impl Http {
             post_redirect: self.post_redirect,
             auto_referer: self.auto_referer,
             unrestricted_auth: self.unrestricted_auth,
+            auth: self.auth,
         })
     }
 }

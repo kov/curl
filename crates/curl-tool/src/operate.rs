@@ -924,6 +924,9 @@ fn configure(
     if let Some(pair) = op.user {
         o.login = options::Login::from_pair(pair)?;
     }
+    if !op.auth.is_empty() {
+        http.auth = options::HttpAuth(op.auth);
+    }
     http.allow_09 = op.http09;
     http.raw = op.raw;
     http.ignore_content_length = op.ignore_content_length;

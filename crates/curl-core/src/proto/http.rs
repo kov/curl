@@ -13,7 +13,7 @@ use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
-use crate::options::{Follow, HttpVersion, Method, Resume, UploadSource};
+use crate::options::{AuthMethods, Follow, HttpVersion, Method, Resume, UploadSource};
 use crate::report::Timer;
 use crate::time::Instant;
 use crate::trace;
@@ -26,7 +26,7 @@ use super::http1::request::{self, Basic, CredentialGate, RequestHead};
 use super::{Inherited, ProtoStep};
 use auth::{Credentials, CredentialsError};
 
-mod auth;
+pub(crate) mod auth;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
 /// The most one read takes (`CURL_MAX_WRITE_SIZE`, BUFFERSIZE's default).
@@ -254,6 +254,14 @@ impl Request {
         Some((head.meta().follow()?, head.status()?.code))
     }
 
+    /// What the final response's challenges offered, what they led to,
+    /// and the response's code.
+    pub(crate) fn auth(&self) -> Option<(auth::Challenges, auth::AuthAct, u16)> {
+        let head = self.head.as_ref()?;
+        let meta = head.meta();
+        Some((*meta.challenges(), *meta.auth(), head.status()?.code))
+    }
+
     /// A 417 refused the request's `Expect: 100-continue`.
     pub(crate) fn expect_refused(&self) -> bool {
         self.expect_refused
@@ -320,6 +328,15 @@ impl Request {
         lease: &ConnLease,
     ) -> Result<(), ErrorKind> {
         let reused = cx.conn(lease).reused();
+        let get_or_head = matches!(self.method, Method::Get | Method::Head);
+        let custom_auth = cx.easy().options().http.headers.replaces(b"Authorization");
+        let credentials = self.credentials.as_ref();
+        let auth = cx
+            .easy_mut()
+            .auth
+            .output(credentials, custom_auth, get_or_head);
+        let auth_asked = cx.easy().auth.asked(credentials, auth.probe, get_or_head);
+        cx.report_mut().set_auth_used(auth.used);
         let options = cx.easy().options();
         let http = &options.http;
         let method = self.method.name();
@@ -386,9 +403,9 @@ impl Request {
         };
         let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
         let gate = self.gate;
-        let token = match &self.credentials {
-            Some(c) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
-            None => None,
+        let token = match (&self.credentials, auth.sent) {
+            (Some(c), Some(AuthMethods::BASIC)) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
+            _ => None,
         };
         let basic = match (&self.credentials, token.as_deref()) {
             (Some(c), Some(token)) => Basic::new(token, c.trusted(), &http.headers),
@@ -427,6 +444,7 @@ impl Request {
                 fail_on_error: http.fail_on_error,
                 resume_from: resume_from.filter(|_| self.method == Method::Get),
                 follow: http.follow != Follow::No,
+                auth: auth_asked,
             },
         };
         if authenticates {

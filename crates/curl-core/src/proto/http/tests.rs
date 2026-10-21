@@ -13,7 +13,8 @@ use crate::handler::{
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx, drive_to_completion};
 use crate::options::{
-    Follow, MaxRedirects, Method, Options, PostRedir, Resume, UploadSource, UserHeaders,
+    AuthMethods, Follow, MaxRedirects, Method, Options, PostRedir, Resume, UploadSource,
+    UserHeaders,
 };
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
@@ -1713,6 +1714,104 @@ fn the_login_stays_with_the_first_origin() {
             &second[at..end]
         });
         assert_eq!(sent, second_has, "{location}, unrestricted {unrestricted}");
+    }
+}
+
+const CHALLENGE: &[u8] = b"HTTP/1.1 401 Who\r\n\
+    WWW-Authenticate: X-Other realm=\"a\", Basic realm=\"b\"\r\n\
+    Content-Length: 5\r\n\r\nnope\n";
+
+/// Wanting more than one method, a request goes without credentials; a
+/// 401 offering one it can answer has it made again with them, counted
+/// as a redirect, its body not delivered, and fail-on-error not failing
+/// it. The report says what was offered and used.
+#[test]
+fn a_401_is_answered_with_a_method_it_offers() {
+    for fail_on_error in [false, true] {
+        let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
+        let ran = get(&mut m, "/a", talk.clone(), |o| {
+            o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+            o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
+            o.http.fail_on_error = fail_on_error;
+        });
+        assert_eq!(ran.result, Ok(()));
+        let received = talk.received();
+        let second = fixture::find(&received, b"GET /a")
+            .map(|at| at + 1)
+            .unwrap();
+        let second = second + fixture::find(&received[second..], b"GET /a").unwrap();
+        assert!(fixture::find(&received[..second], b"Authorization").is_none());
+        assert!(fixture::find(&received[second..], b"Authorization: Basic dTpw\r\n").is_some());
+        assert_eq!(ran.seen.body(), b"ok\n");
+        let report = ran.easy.report();
+        assert_eq!(report.redirects(), 1);
+        assert_eq!(report.auth_offered(), AuthMethods::BASIC);
+        assert_eq!(report.auth_used(), AuthMethods::BASIC);
+        assert!(
+            ran.seen
+                .text()
+                .contains(&"Ignoring the response-body\n".to_string())
+        );
+    }
+}
+
+/// The method a 401 chose is kept for the handle's next transfer, and
+/// used at once, while it is among those wanted.
+#[test]
+fn the_method_chosen_is_kept_for_the_next_transfer() {
+    let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let mut easy = ran.easy;
+    for (want, sent) in [(AuthMethods::ANY, true), (AuthMethods::DIGEST, false)] {
+        let (mut m, talk, _) = server(&[OK], false);
+        easy.options_mut().http.auth = crate::options::HttpAuth(want);
+        let id = m.add(easy, (), &mut NoEvents).unwrap();
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()));
+        easy = m.remove(id, &mut NoEvents).unwrap().easy;
+        let received = talk.received();
+        assert_eq!(
+            fixture::find(&received, b"Authorization: Basic dTpw").is_some(),
+            sent,
+            "{want:?}"
+        );
+    }
+}
+
+/// Basic sent and offered again is refused: the 401 is the answer, and
+/// fails a request that asked to fail on errors. Without credentials, a
+/// 401 is no different from any other error.
+#[test]
+fn a_401_to_credentials_sent_is_the_answer() {
+    for (login, fail_on_error, result) in [
+        (true, false, Ok(())),
+        (true, true, Err(ErrorKind::HttpReturnedError)),
+        (false, true, Err(ErrorKind::HttpReturnedError)),
+        (false, false, Ok(())),
+    ] {
+        let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
+        let ran = get(&mut m, "/a", talk.clone(), |o| {
+            if login {
+                o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+            }
+            o.http.fail_on_error = fail_on_error;
+        });
+        assert_eq!(ran.result, result, "login {login}, -f {fail_on_error}");
+        let received = talk.received();
+        assert_eq!(
+            fixture::find(&received, b"Authorization: Basic dTpw").is_some(),
+            login
+        );
+        assert_eq!(ran.easy.report().redirects(), 0);
+        let problem = "Basic authentication problem, ignoring.\n".to_string();
+        assert_eq!(ran.seen.text().contains(&problem), login);
+        if !fail_on_error {
+            assert_eq!(ran.seen.body(), b"nope\n");
+        }
     }
 }
 

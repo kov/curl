@@ -15,7 +15,7 @@ use crate::time::Instant;
 use curl_alloc::OutOfMemory;
 
 use crate::error::UrlErrorKind;
-use crate::options::Method;
+use crate::options::{AuthMethods, Method};
 use crate::url::{GetOptions, Part, Url};
 use crate::version::Protocol;
 
@@ -86,6 +86,12 @@ pub struct TransferReport {
     failure: Option<Vec<u8>>,
     /// How many reasons were given, the first among them.
     reasons: u32,
+    /// The methods the server's challenges offered
+    /// (`info.httpauthavail`).
+    auth_offered: AuthMethods,
+    /// The method the last request authenticated with, or was chosen
+    /// for the next (`info.httpauthpicked`).
+    auth_used: AuthMethods,
 }
 
 impl TransferReport {
@@ -196,6 +202,26 @@ impl TransferReport {
     /// How many redirects the transfer followed (`CURLINFO_REDIRECT_COUNT`).
     pub fn redirects(&self) -> u32 {
         self.redirects
+    }
+
+    /// The methods the server's challenges offered
+    /// (`CURLINFO_HTTPAUTH_AVAIL`).
+    pub fn auth_offered(&self) -> AuthMethods {
+        self.auth_offered
+    }
+
+    pub(crate) fn add_auth_offered(&mut self, methods: AuthMethods) {
+        self.auth_offered = self.auth_offered | methods;
+    }
+
+    /// The method the last request authenticated with, or that was chosen
+    /// for the next one (`CURLINFO_HTTPAUTH_USED`).
+    pub fn auth_used(&self) -> AuthMethods {
+        self.auth_used
+    }
+
+    pub(crate) fn set_auth_used(&mut self, method: AuthMethods) {
+        self.auth_used = method;
     }
 
     pub(crate) fn count_redirect(&mut self) {

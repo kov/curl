@@ -169,6 +169,12 @@ impl UserHeaders {
         UserHeaders::new(self.lines())
     }
 
+    /// Whether a line replaces the library's header `name`
+    /// (`Curl_checkheaders`).
+    pub(crate) fn replaces(&self, name: &[u8]) -> bool {
+        self.replacing(name).is_some()
+    }
+
     /// The first line that replaces the library's header `name`.
     fn replacing(&self, name: &[u8]) -> Option<&UserHeader> {
         self.lines.iter().find(|h| h.replaces(name))

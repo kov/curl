@@ -9,7 +9,7 @@
 //! rather than run without it.
 
 use curl_alloc::TryVec;
-use curl_core::options::{Follow, PostRedir};
+use curl_core::options::{AuthMethods, Follow, PostRedir};
 use curl_core::version::Protocol;
 
 use super::protocols::{self, Protocols};
@@ -142,6 +142,9 @@ pub(crate) struct Operation<'a> {
     pub(crate) user_agent: Option<&'a [u8]>,
     /// `-u`: `user:password`, or a user alone.
     pub(crate) user: Option<&'a [u8]>,
+    /// The methods to authenticate with; none for the library's default
+    /// (C's `authtype`).
+    pub(crate) auth: AuthMethods,
     /// `--request`.
     pub(crate) custom_request: Option<&'a [u8]>,
     /// `--referer`, without its `;auto`.
@@ -653,6 +656,15 @@ pub(crate) fn apply<'a>(
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
         Opt::User => line.current().user = Some(value.text()),
+        Opt::Anyauth => line.current().auth = AuthMethods::ANY,
+        Opt::Basic => {
+            let op = line.current();
+            op.auth = if value.toggle() {
+                op.auth | AuthMethods::BASIC
+            } else {
+                op.auth & !AuthMethods::BASIC
+            };
+        }
         Opt::OutputDir => {
             let text = value.text();
             if text.is_empty() {
@@ -880,10 +892,8 @@ pub(crate) fn apply<'a>(
         Opt::AbstractUnixSocket
         | Opt::Alpn
         | Opt::AltSvc
-        | Opt::Anyauth
         | Opt::Append
         | Opt::AwsSigv4
-        | Opt::Basic
         | Opt::CaNative
         | Opt::Cacert
         | Opt::Capath

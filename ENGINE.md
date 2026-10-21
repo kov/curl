@@ -1489,8 +1489,16 @@ parsed URL; it is reached only inside a closure, so no borrow of it outlives the
 leads to an absolute URL (`Inherited::allow_port`). The referer a request sends is the report's (`state.referer`): the application's, copied
 at the transfer's start, until a redirect followed with AUTOREFERER replaces it with the URL it
 came from, without credentials or fragment.
-Auth is `AuthState` on the `Run`: `input(challenge)`, `act(status) -> Option<Retry>`,
-`output(&CredentialGate) -> AuthHeaders`; stage 3 covers Basic, Digest and Bearer.
+Authenticating with the origin is `HostAuth`, on the `Easy` as C keeps `state.authhost` on
+the handle: the method picked outlives the transfer, cut to the methods wanted as the next
+one starts (`start`). Each request asks it what to send (`output`, from the request's
+`Credentials`): one method wanted is sent at once, more wait for a server to choose. The
+request hands its response's head parser an `AuthAsked`, and the parser reads a 401's
+`WWW-Authenticate:` lines into `Challenges` as they come, as it reads `Location:`, so that at
+the head's end it knows, before the End line is delivered, whether the response is answered
+again (`AuthAct`: its body dropped as a followed redirect's is) and whether fail-on-error lets
+it through. The exchange's end applies the act to `HostAuth` and the report, and an answered
+401 ends `Follow` to the request's own URL, counted as a redirect, keeping `Options::port`.
 
 ---
 

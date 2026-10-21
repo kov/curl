@@ -10,6 +10,7 @@ use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::id::ArenaPolicy;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::Options;
+use crate::proto::http::auth::HostAuth;
 use crate::report::TransferReport;
 use crate::share::Lent;
 use crate::time::SystemClock;
@@ -32,6 +33,8 @@ pub struct Easy {
     /// The multi `perform` runs the handle in, kept with its connections
     /// from one to the next; `Multi::add` drops it.
     pub(crate) private: Option<Private>,
+    /// Authenticating with the origin, from one transfer to the next.
+    pub(crate) auth: HostAuth,
 }
 
 /// A handle's own multi (C's `multi_easy`).
@@ -87,6 +90,7 @@ impl Easy {
             meter_titled: false,
             resolve_read: 0,
             wildcard_resolve: false,
+            auth: HostAuth::default(),
             private: None,
         })
     }
@@ -99,6 +103,7 @@ impl Easy {
         self.meter_titled = false;
         self.resolve_read = 0;
         self.wildcard_resolve = false;
+        self.auth = HostAuth::default();
     }
 
     /// Run the transfer to its end, blocking (`curl_easy_perform`), in the

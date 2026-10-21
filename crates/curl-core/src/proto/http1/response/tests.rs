@@ -13,6 +13,7 @@ const ASKED: Asked = Asked {
     fail_on_error: false,
     resume_from: None,
     follow: false,
+    auth: crate::proto::http::auth::AuthAsked::DEFAULT,
 };
 
 const PLAIN: Exchange = Exchange {

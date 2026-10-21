@@ -224,6 +224,31 @@ fn http_options_reach_the_request() {
     assert_eq!(login(c), (some(b"x"), None));
     pointer(c, ffi::CURLOPT_USERPWD, ptr::null_mut::<c_char>());
     assert_eq!(login(c), (None, None));
+    use curl_core::options::AuthMethods as M;
+    let auth = |c| options(c, |o| o.http.auth.0);
+    assert_eq!(auth(c), M::BASIC, "Basic unless set");
+    let mask = |bits: core::ffi::c_ulong| bits as c_long;
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTPAUTH, mask(ffi::CURLAUTH_ANY)),
+        CURLE_OK
+    );
+    assert_eq!(auth(c), M::ANY);
+    assert_eq!(crate::getinfo::auth_mask(auth(c)), 1 | 2 | 64);
+    let ie = ffi::CURLAUTH_DIGEST_IE | ffi::CURLAUTH_NTLM;
+    assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, mask(ie)), CURLE_OK);
+    assert_eq!(
+        auth(c),
+        M::DIGEST,
+        "the legacy bit is Digest; NTLM is not built in"
+    );
+    let lacking = ffi::CURLAUTH_NTLM | ffi::CURLAUTH_ONLY;
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTPAUTH, mask(lacking)),
+        ffi::CURLE_NOT_BUILT_IN
+    );
+    assert_eq!(auth(c), M::DIGEST, "unchanged");
+    assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, 0), CURLE_OK);
+    assert_eq!(auth(c), M::NONE);
     let reuse = |c| options(c, |o| o.limits.reuse);
     let max = |c| reuse(c).max_connects.get();
     assert_eq!(long(c, ffi::CURLOPT_MAXCONNECTS, 3), CURLE_OK);

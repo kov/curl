@@ -250,3 +250,67 @@ witness: curl-core url::tests::unit1395_dot_segments
         [b'%', b'2', e, rest @ ..] if e | 0x20 == b'e' => Some(rest),
 --- new
         [b'%', b'2', e, rest @ ..] if false => Some(rest),
+
+=== a relative URL's query is not one
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::tests::sets_parts_as_c_does
+--- old
+                    query = Query::Yes;
+--- new
+                    query = Query::No;
+
+=== an appended query has no ampersand
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_append
+--- old
+            push(&mut joined, b"&")?;
+--- new
+            push(&mut joined, b"")?;
+
+=== a relative path replaces the base's whole path
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_set_url
+--- old
+                        .map(|i| host_at + i + 1);
+--- new
+                        .map(|_| host_at);
+
+=== an empty relative URL keeps the fragment
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_set_url
+--- old
+                    self.fragment = None;
+--- new
+                    {}
+
+=== an empty part encoded is set empty
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_set_parts
+--- old
+        let text = if url_encode && enc.is_empty() {
+--- new
+        let text = if false {
+
+=== a host set alone keeps the old zone id
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::sets_parts_as_c_does
+--- old
+            Part::Host => self.zone_id = None,
+--- new
+            Part::Host => {}
+
+=== a scheme set alone need not be built
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::sets_parts_as_c_does
+--- old
+    if !any && !found.is_some_and(|k| k.built) {
+--- new
+    if !any && found.is_none() {
+
+=== a host set alone is not checked
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::lib1560_set_parts
+--- old
+        host::check_name(&plain).map_err(bad)?;
+--- new
+        let _ = bad;

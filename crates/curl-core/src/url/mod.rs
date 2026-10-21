@@ -2,11 +2,11 @@
 //! (`lib/urlapi.c`), so that the C ABI's `curl_url_*` and every transfer
 //! read a URL the same way C does.
 //!
-//! Implemented: parsing a whole URL with every flag `curl_url_set` takes
-//! for it, and getting any part back with every flag of `curl_url_get`
-//! except the IDN conversions (`CURLU_PUNYCODE`, `CURLU_PUNY2IDN`), which
-//! need an IDN library. Not yet: setting single parts, resolving a
-//! relative URL against a base, and appending to the query.
+//! Implemented: parsing a whole URL, resolving a relative one against it,
+//! setting, clearing and appending to single parts, with every flag
+//! `curl_url_set` takes, and getting any part back with every flag of
+//! `curl_url_get` except the IDN conversions (`CURLU_PUNYCODE`,
+//! `CURLU_PUNY2IDN`), which need an IDN library.
 
 mod encode;
 
@@ -78,6 +78,27 @@ impl ParseOptions {
     };
 }
 
+/// How `Url::set` takes a part: the `CURLU_*` flags of `curl_url_set`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetOptions {
+    /// How a whole URL is parsed; `url_encode` also encodes a part set
+    /// alone.
+    pub parse: ParseOptions,
+    /// `CURLU_APPENDQUERY`: a query is added to the one there, after a `&`.
+    pub append_query: bool,
+    /// How the URL a relative one is resolved against is read back: C
+    /// reads it with the flags it was given to set with.
+    pub get: GetOptions,
+}
+
+impl SetOptions {
+    pub const NONE: SetOptions = SetOptions {
+        parse: ParseOptions::NONE,
+        append_query: false,
+        get: GetOptions::NONE,
+    };
+}
+
 /// How a part is returned: the `CURLU_*` flags of `curl_url_get`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GetOptions {
@@ -134,6 +155,18 @@ struct Scheme {
     guessed: bool,
 }
 
+/// A query or a fragment that is there: its separator alone, or text
+/// (C's `query_present` or `fragment_present`, and the text or NULL).
+#[derive(Debug, PartialEq, Eq)]
+enum Tail {
+    /// The separator with nothing after it: a fragment parsed from a bare
+    /// `#`, or a part set empty with `url_encode`.
+    Bare,
+    /// What follows the separator; empty for a query parsed from a bare
+    /// `?`, or a part set empty.
+    Text(Bytes),
+}
+
 /// A parsed URL: each part as `struct Curl_URL` holds it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Url {
@@ -145,10 +178,8 @@ pub struct Url {
     zone_id: Option<Bytes>,
     port: Option<u16>,
     path: Option<Bytes>,
-    /// Empty when the URL had a `?` and nothing after it.
-    query: Option<Bytes>,
-    /// Empty when the URL had a `#` and nothing after it.
-    fragment: Option<Bytes>,
+    query: Option<Tail>,
+    fragment: Option<Tail>,
 }
 
 impl Drop for Url {
@@ -231,21 +262,25 @@ impl Url {
         // The path still holds the query and the fragment.
         let mut path = path;
         if let Some(at) = path.iter().position(|&b| b == b'#') {
-            u.fragment = Some(part_after(
-                &path[at..],
-                opts,
-                Query::No,
-                UrlErrorKind::BadFragment,
-            )?);
+            u.fragment = Some(if path.len() - at <= 1 {
+                Tail::Bare
+            } else {
+                Tail::Text(part_after(
+                    &path[at..],
+                    opts,
+                    Query::No,
+                    UrlErrorKind::BadFragment,
+                )?)
+            });
             path = &path[..at];
         }
         if let Some(at) = path.iter().position(|&b| b == b'?') {
-            u.query = Some(part_after(
+            u.query = Some(Tail::Text(part_after(
                 &path[at..],
                 opts,
                 Query::Yes,
                 UrlErrorKind::BadQuery,
-            )?);
+            )?));
             path = &path[..at];
         }
         u.path = path_part(path, opts, is_file)?;
@@ -446,12 +481,263 @@ impl Url {
         Ok(at + 1)
     }
 
-    /// Take out the user and the password, the password cleared first.
-    pub(crate) fn forget_credentials(&mut self) {
+    /// Set part `what` to `value`, or clear it if `None`, as `curl_url_set`
+    /// does. A whole URL replaces this one, or, if relative, is resolved
+    /// against it. A part set alone is encoded or not, but not checked,
+    /// but for the scheme, the port and the host.
+    pub fn set(
+        &mut self,
+        what: Part,
+        value: Option<&[u8]>,
+        opts: SetOptions,
+    ) -> Result<(), UrlErrorKind> {
+        let Some(value) = value else {
+            self.clear(what);
+            return Ok(());
+        };
+        // C sees a NUL-terminated string.
+        if value.len() > MAX_INPUT || value.contains(&0) {
+            return Err(UrlErrorKind::MalformedInput);
+        }
+        match what {
+            Part::Url => return self.set_url(value, opts),
+            Part::Port => {
+                self.port = Some(port_number(value)?);
+                return Ok(());
+            }
+            Part::Scheme => {
+                check_scheme(value, opts.parse.non_support_scheme)?;
+                self.scheme = Some(Scheme {
+                    name: copy(value)?,
+                    guessed: false,
+                });
+                return Ok(());
+            }
+            // Gone whether or not the host is taken.
+            Part::Host => self.zone_id = None,
+            _ => {}
+        }
+        let url_encode = opts.parse.url_encode;
+        let mut enc = Bytes::new();
+        if what == Part::Path && value.first() != Some(&b'/') {
+            push(&mut enc, b"/")?;
+        }
+        if url_encode {
+            let query = what == Part::Query;
+            let path = what == Part::Path;
+            encode::encode_part(&mut enc, value, query, path, query && opts.append_query)?;
+        } else {
+            encode::uppercase_hex(&mut enc, value)?;
+        }
+        // C's buffer is no string until something is written to it: an
+        // empty part encoded is set as missing.
+        let text = if url_encode && enc.is_empty() {
+            None
+        } else {
+            Some(enc)
+        };
+        match what {
+            Part::Query => match text {
+                Some(q) if opts.append_query => self.append_query(&q)?,
+                Some(q) => self.query = Some(Tail::Text(q)),
+                None => self.query = Some(Tail::Bare),
+            },
+            Part::Fragment => self.fragment = Some(text.map_or(Tail::Bare, Tail::Text)),
+            Part::Host => {
+                let host = match text {
+                    Some(h) if !h.is_empty() => Some(self.checked_host(h, url_encode)?),
+                    _ if !opts.parse.no_authority => return Err(UrlErrorKind::BadHostname),
+                    empty => empty,
+                };
+                self.host = host;
+            }
+            Part::Password => {
+                self.forget_password();
+                self.password = text;
+            }
+            Part::User => self.user = text,
+            Part::Options => self.options = text,
+            Part::ZoneId => self.zone_id = text,
+            Part::Path => self.path = text,
+            Part::Url | Part::Port | Part::Scheme => unreachable!("set above"),
+        }
+        Ok(())
+    }
+
+    /// `urlset_clear`.
+    fn clear(&mut self, what: Part) {
+        match what {
+            Part::Url => *self = Url::default(),
+            Part::Scheme => self.scheme = None,
+            Part::User => self.user = None,
+            Part::Password => {
+                self.forget_password();
+                self.password = None;
+            }
+            Part::Options => self.options = None,
+            Part::Host => self.host = None,
+            Part::ZoneId => self.zone_id = None,
+            Part::Port => self.port = None,
+            Part::Path => self.path = None,
+            Part::Query => self.query = None,
+            Part::Fragment => self.fragment = None,
+        }
+    }
+
+    /// `set_url`: a URL replaces this one, or a relative one is resolved
+    /// against it.
+    fn set_url(&mut self, url: &[u8], opts: SetOptions) -> Result<(), UrlErrorKind> {
+        if url.is_empty() {
+            // The same URL without its fragment (RFC 3986 section
+            // 5.2.2), if this one is whole.
+            return match self.get(Part::Url, opts.get) {
+                Ok(_) => {
+                    self.fragment = None;
+                    Ok(())
+                }
+                Err(UrlErrorKind::OutOfMemory) => Err(UrlErrorKind::OutOfMemory),
+                Err(_) => Err(UrlErrorKind::MalformedInput),
+            };
+        }
+        let guessing = opts.parse.guess_scheme || opts.parse.default_scheme;
+        if scheme_of(url, guessing).is_some() {
+            *self = Url::parse(url, opts.parse)?;
+            return Ok(());
+        }
+        // Empty separators are kept: they change where the relative URL
+        // goes.
+        let base_opts = GetOptions {
+            get_empty: true,
+            no_guess_scheme: false,
+            ..opts.get
+        };
+        match self.get(Part::Url, base_opts) {
+            Ok(base) => self.resolve(&base, url, opts.parse),
+            Err(UrlErrorKind::OutOfMemory) => Err(UrlErrorKind::OutOfMemory),
+            // Not whole: nothing to be relative to.
+            Err(_) => {
+                *self = Url::parse(url, opts.parse)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// `redirect_url`: `rel` resolved against `base`, this URL as text,
+    /// replaces this one.
+    fn resolve(&mut self, base: &[u8], rel: &[u8], opts: ParseOptions) -> Result<(), UrlErrorKind> {
+        let scheme = self.scheme.as_ref().map_or(DEFAULT_SCHEME, |s| &s.name[..]);
+        // Where the authority starts, after `scheme://`, which the base
+        // was read back with.
+        let host_at = scheme.len() + 3;
+        assert!(base.len() >= host_at, "a whole URL starts with its scheme");
+        let find = |b: u8| {
+            base[host_at..]
+                .iter()
+                .position(|&c| c == b)
+                .map(|i| host_at + i)
+        };
+        let (cutoff, rel, new_host) = match rel {
+            [b'/', b'/', rest @ ..] => (Some(host_at), rest, true),
+            [b'/', ..] => (find(b'/'), rel, false),
+            [b'#', ..] => (self.fragment.as_ref().and_then(|_| find(b'#')), rel, false),
+            _ => {
+                let mut cutoff = if self.query.is_some() {
+                    find(b'?')
+                } else if self.fragment.is_some() {
+                    find(b'#')
+                } else {
+                    None
+                };
+                if rel[0] != b'?' {
+                    // After the last slash of the path.
+                    let end = cutoff.unwrap_or(base.len());
+                    cutoff = base[host_at..end]
+                        .iter()
+                        .rposition(|&c| c == b'/')
+                        .map(|i| host_at + i + 1);
+                }
+                (cutoff, rel, false)
+            }
+        };
+        let keep = cutoff.unwrap_or(base.len());
+        let mut url = Bytes::new();
+        let built = (|| {
+            push(&mut url, &base[..keep])?;
+            let mut rest = rel;
+            if new_host {
+                let host_end = host_sep(rel);
+                push(&mut url, &rel[..host_end])?;
+                rest = &rel[host_end..];
+            }
+            encode::reencode(&mut url, rest, Query::NotYet)
+        })();
+        // C reports any failure to build it as out of memory.
+        built.map_err(|_| UrlErrorKind::OutOfMemory)?;
+        let opts = ParseOptions {
+            path_as_is: false,
+            ..opts
+        };
+        *self = Url::parse(&url, opts)?;
+        Ok(())
+    }
+
+    /// `url_append_query`: `q` after the query there and a `&`, unless it
+    /// ends with one.
+    fn append_query(&mut self, q: &[u8]) -> Result<(), UrlErrorKind> {
+        let old = match &self.query {
+            Some(Tail::Text(old)) if !old.is_empty() => old,
+            _ => {
+                self.query = Some(Tail::Text(copy(q)?));
+                return Ok(());
+            }
+        };
+        let mut joined = Bytes::new();
+        push(&mut joined, old)?;
+        if old.last() != Some(&b'&') {
+            push(&mut joined, b"&")?;
+        }
+        push(&mut joined, q)?;
+        self.query = Some(Tail::Text(joined));
+        Ok(())
+    }
+
+    /// `url_sethost`: `host` checked, as given or decoded, and an IPv4
+    /// address in any form C reads written as four decimals. A bracketed
+    /// address's zone id is taken; the host keeps its own text.
+    fn checked_host(&mut self, host: Bytes, encoded: bool) -> Result<Bytes, UrlErrorKind> {
+        let bad = |_| UrlErrorKind::BadHostname;
+        let plain = if encoded {
+            copy(&host)?
+        } else {
+            encode::decode(&host)?.ok_or(UrlErrorKind::BadHostname)?
+        };
+        if plain.first() == Some(&b'[') {
+            let mut addr = plain;
+            self.zone_id = host::ipv6(&mut addr).map_err(bad)?;
+            return Ok(host);
+        }
+        host::check_name(&plain).map_err(bad)?;
+        match host::ipv4(&plain) {
+            Some(a) => {
+                let mut dotted = Bytes::new();
+                host::ipv4_text(&mut dotted, a)?;
+                Ok(dotted)
+            }
+            None => Ok(host),
+        }
+    }
+
+    /// Zero the password before it goes, as C does.
+    fn forget_password(&mut self) {
         if let Some(p) = &mut self.password {
             p.fill(0);
             std::hint::black_box(p);
         }
+    }
+
+    /// Take out the user and the password, the password cleared first.
+    pub(crate) fn forget_credentials(&mut self) {
+        self.forget_password();
         self.user = None;
         self.password = None;
     }
@@ -489,15 +775,18 @@ impl Url {
                 UrlErrorKind::UnknownPart,
             ),
             Part::Query => (
-                self.query
-                    .as_deref()
-                    .filter(|q| !q.is_empty() || opts.get_empty),
+                match &self.query {
+                    Some(Tail::Text(q)) if !q.is_empty() || opts.get_empty => Some(&q[..]),
+                    _ => None,
+                },
                 UrlErrorKind::NoQuery,
             ),
             Part::Fragment => (
-                self.fragment
-                    .as_deref()
-                    .filter(|f| !f.is_empty() || opts.get_empty),
+                match &self.fragment {
+                    Some(Tail::Text(f)) => Some(&f[..]),
+                    Some(Tail::Bare) if opts.get_empty => Some(&b""[..]),
+                    _ => None,
+                },
                 UrlErrorKind::NoFragment,
             ),
         };
@@ -540,14 +829,17 @@ impl Url {
 
     /// The whole URL (`urlget_url`).
     fn whole(&self, opts: GetOptions) -> Result<Bytes, UrlErrorKind> {
-        let fragment = self
-            .fragment
-            .as_deref()
-            .filter(|f| !f.is_empty() || opts.get_empty);
-        let query = self
-            .query
-            .as_deref()
-            .filter(|q| !q.is_empty() || opts.get_empty);
+        // Each shown with its separator, or not at all.
+        let fragment = match &self.fragment {
+            Some(Tail::Text(f)) => Some(&f[..]),
+            Some(Tail::Bare) if opts.get_empty => Some(&b""[..]),
+            _ => None,
+        };
+        let query = match &self.query {
+            Some(Tail::Text(q)) if !q.is_empty() || opts.get_empty => Some(&q[..]),
+            Some(Tail::Bare) if opts.get_empty => Some(&b""[..]),
+            _ => None,
+        };
         // Room for the parts as they are and their separators, so a URL
         // that needs no encoding is read back in one allocation.
         let parts = [
@@ -576,12 +868,14 @@ impl Url {
             }
             Ok(())
         };
-        if self.scheme.as_ref().is_some_and(|s| s.name == b"file") {
+        if self
+            .scheme
+            .as_ref()
+            .is_some_and(|s| s.name.eq_ignore_ascii_case(b"file"))
+        {
             push(&mut out, b"file://")?;
-            push(
-                &mut out,
-                self.path.as_deref().expect("a file: URL has a path"),
-            )?;
+            // A path cleared or never set prints as C prints a NULL.
+            push(&mut out, self.path.as_deref().unwrap_or(b"(nil)"))?;
             tail(&mut out)?;
             return Ok(out);
         }
@@ -648,6 +942,55 @@ impl Url {
         tail(&mut out)?;
         Ok(out)
     }
+}
+
+/// Where the host of `url` ends, after any `//`: at its first `/` or `?`
+/// (`find_host_sep`).
+fn host_sep(url: &[u8]) -> usize {
+    let start = url
+        .windows(2)
+        .position(|w| w == b"//")
+        .map_or(0, |at| at + 2);
+    start
+        + url[start..]
+            .iter()
+            .position(|&b| matches!(b, b'/' | b'?'))
+            .unwrap_or(url.len() - start)
+}
+
+/// A port set alone: decimal digits, at most 65535 (`set_url_port`).
+fn port_number(s: &[u8]) -> Result<u16, UrlErrorKind> {
+    if s.is_empty() || !s.iter().all(u8::is_ascii_digit) {
+        return Err(UrlErrorKind::BadPortNumber);
+    }
+    let mut port: u32 = 0;
+    for &d in s {
+        port = port * 10 + u32::from(d - b'0');
+        if port > 0xffff {
+            return Err(UrlErrorKind::BadPortNumber);
+        }
+    }
+    Ok(u16::try_from(port).expect("checked above"))
+}
+
+/// A scheme set alone (`set_url_scheme`): one this build implements, or
+/// with `any` one well formed, `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`.
+fn check_scheme(s: &[u8], any: bool) -> Result<(), UrlErrorKind> {
+    if s.is_empty() || s.len() > MAX_SCHEME {
+        return Err(UrlErrorKind::BadScheme);
+    }
+    let found = known(s);
+    if !any && !found.is_some_and(|k| k.built) {
+        return Err(UrlErrorKind::UnsupportedScheme);
+    }
+    let well_formed = s[0].is_ascii_alphabetic()
+        && s[1..]
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
+    if found.is_none() && !well_formed {
+        return Err(UrlErrorKind::BadScheme);
+    }
+    Ok(())
 }
 
 /// `p` in decimal, in `buf`.
@@ -871,6 +1214,294 @@ mod tests {
             failed.len(),
             c_tests::URLS.len(),
             failed.join("\n")
+        );
+    }
+
+    /// lib1560's `updateurl`: each `part=value,` of `cmds` set in turn,
+    /// `NULL` clearing the part and `""` setting it empty; the first error.
+    fn updateurl(u: &mut Url, cmds: &[u8], opts: SetOptions) -> Result<(), UrlErrorKind> {
+        let mut rest = cmds;
+        // A command counts only with its comma, as C reads them.
+        while let Some(comma) = rest.iter().position(|&b| b == b',') {
+            let cmd = &rest[..comma];
+            rest = &rest[comma + 1..];
+            // `sscanf("%79[^=]=%79[^,]")`: both sides not empty.
+            let Some(eq) = cmd.iter().position(|&b| b == b'=') else {
+                continue;
+            };
+            let (name, value) = (&cmd[..eq], &cmd[eq + 1..]);
+            if name.is_empty() || value.is_empty() {
+                continue;
+            }
+            assert!(name.len() < 80 && value.len() < 80, "C reads at most 79");
+            let part = match name {
+                b"url" => Part::Url,
+                b"scheme" => Part::Scheme,
+                b"user" => Part::User,
+                b"password" => Part::Password,
+                b"options" => Part::Options,
+                b"host" => Part::Host,
+                b"port" => Part::Port,
+                b"path" => Part::Path,
+                b"query" => Part::Query,
+                b"fragment" => Part::Fragment,
+                b"zoneid" => Part::ZoneId,
+                other => panic!("unknown part {}", show(other)),
+            };
+            let value = match value {
+                b"NULL" => None,
+                b"\"\"" => Some(&b""[..]),
+                v => Some(v),
+            };
+            u.set(part, value, opts)?;
+        }
+        Ok(())
+    }
+
+    /// lib1560's `set_url`: a URL, relative or not, set on one.
+    #[test]
+    fn lib1560_set_url() {
+        let mut failed = Vec::new();
+        for case in c_tests::REDIRECTS {
+            let mut u = Url::default();
+            let got = match u.set(Part::Url, Some(case.url), case.url_flags) {
+                Ok(()) => u
+                    .set(Part::Url, Some(case.rel), case.set_flags)
+                    .and_then(|()| {
+                        let get_empty = GetOptions {
+                            get_empty: true,
+                            ..GetOptions::NONE
+                        };
+                        u.get(Part::Url, get_empty)
+                    }),
+                Err(e) if Some(e) == case.code => continue,
+                Err(e) => Err(e),
+            };
+            if got.as_deref() != Ok(case.expect) {
+                failed.push(format!(
+                    "{:?} + {:?}: got {:?}, C {:?}",
+                    show(case.url),
+                    show(case.rel),
+                    got.map(|p| show(&p)),
+                    show(case.expect)
+                ));
+            }
+        }
+        assert!(
+            failed.is_empty(),
+            "{} rows differ:\n{}",
+            failed.len(),
+            failed.join("\n")
+        );
+    }
+
+    /// lib1560's `set_parts` and `setget_parts`: parts set on a URL, and
+    /// the URL or the parts got back.
+    #[test]
+    fn lib1560_set_parts() {
+        let mut failed = Vec::new();
+        let tables = [(c_tests::SET_PARTS, false), (c_tests::SETGET_PARTS, true)];
+        for (case, parts) in tables
+            .iter()
+            .flat_map(|(t, p)| t.iter().map(move |c| (c, *p)))
+        {
+            let mut u = Url::default();
+            let set = match case.url {
+                Some(url) => u.set(Part::Url, Some(url), case.url_flags),
+                None => Ok(()),
+            };
+            let got = match set {
+                Err(e) if Some(e) == case.url_code => continue,
+                Err(e) => Err(e),
+                Ok(()) => match updateurl(&mut u, case.cmds, case.set_flags) {
+                    Err(e) if Some(e) == case.code => continue,
+                    Err(e) => Err(e),
+                    Ok(()) if parts => Ok(checkparts(&u, case.get)),
+                    Ok(()) => u.get(Part::Url, GetOptions::NONE),
+                },
+            };
+            let ok = case.code.is_none() && got.as_deref() == Ok(case.expect);
+            if !ok {
+                failed.push(format!(
+                    "{:?} with {:?}: got {:?}, C {:?}",
+                    case.url.map(show),
+                    show(case.cmds),
+                    got.map(|p| show(&p)),
+                    case.code.ok_or_else(|| show(case.expect))
+                ));
+            }
+        }
+        assert!(
+            failed.is_empty(),
+            "{} rows differ:\n{}",
+            failed.len(),
+            failed.join("\n")
+        );
+    }
+
+    /// lib1560's `append`: a query appended to a URL's.
+    #[test]
+    fn lib1560_append() {
+        for case in c_tests::APPENDS {
+            let mut u = Url::default();
+            u.set(Part::Url, Some(case.url), case.url_flags).unwrap();
+            let set = u.set(Part::Query, Some(case.query), case.set_flags);
+            assert_eq!(set.err(), case.code, "{}", show(case.url));
+            if case.code.is_none() {
+                let got = u.get(Part::Url, GetOptions::NONE).unwrap();
+                assert_eq!(show(&got), show(case.expect), "{}", show(case.url));
+            }
+        }
+    }
+
+    /// lib1560's `clear_url`: every part gone with the URL cleared.
+    #[test]
+    fn lib1560_clear_url() {
+        let mut u = Url::default();
+        for c in c_tests::CLEARS {
+            u.set(c.part, Some(c.value), SetOptions::NONE).unwrap();
+            u.set(Part::Url, None, SetOptions::NONE).unwrap();
+            let got = u.get(c.part, GetOptions::NONE);
+            assert_eq!(got.as_ref().err().copied(), c.code, "{:?}", c.part);
+            if let (Ok(got), Some(expect)) = (got, c.expect) {
+                assert_eq!(got, expect, "{:?}", c.part);
+            }
+        }
+    }
+
+    /// lib1560's `get_nothing` and `scopeid`, and what C gives where its
+    /// tables do not look.
+    #[test]
+    fn sets_parts_as_c_does() {
+        let none = SetOptions::NONE;
+        let g = GetOptions::NONE;
+        let u = Url::default();
+        for (part, missing) in [
+            (Part::Scheme, UrlErrorKind::NoScheme),
+            (Part::Host, UrlErrorKind::NoHost),
+            (Part::User, UrlErrorKind::NoUser),
+            (Part::Password, UrlErrorKind::NoPassword),
+            (Part::Options, UrlErrorKind::NoOptions),
+            (Part::Query, UrlErrorKind::NoQuery),
+            (Part::Fragment, UrlErrorKind::NoFragment),
+            (Part::ZoneId, UrlErrorKind::NoZoneid),
+        ] {
+            assert_eq!(u.get(part, g), Err(missing), "{part:?}");
+        }
+        assert_eq!(u.get(Part::Path, g).unwrap(), b"/");
+
+        let mut u = Url::default();
+        let zoned = b"https://[fe80::20c:29ff:fe9c:409b%25eth0]/hello.html";
+        u.set(Part::Url, Some(zoned), none).unwrap();
+        u.set(Part::Host, Some(b"[::1]"), none).unwrap();
+        assert_eq!(u.get(Part::ZoneId, g), Err(UrlErrorKind::NoZoneid));
+        assert_eq!(
+            show(&u.get(Part::Url, g).unwrap()),
+            "https://[::1]/hello.html"
+        );
+        u.set(Part::Host, Some(b"example.com"), none).unwrap();
+        u.set(Part::Host, Some(b"[fe80::20c:29ff:fe9c:409b%25eth0]"), none)
+            .unwrap();
+        assert_eq!(u.get(Part::ZoneId, g).unwrap(), b"eth0");
+        // The host keeps its text, zone and all, as C's does.
+        assert_eq!(
+            show(&u.get(Part::Url, g).unwrap()),
+            "https://[fe80::20c:29ff:fe9c:409b%25eth0%25eth0]/hello.html"
+        );
+        u.set(Part::ZoneId, Some(b"clown"), none).unwrap();
+        assert_eq!(u.get(Part::ZoneId, g).unwrap(), b"clown");
+
+        // An IPv4 address in any form is written in decimal.
+        u.set(Part::Host, Some(b"0x7f.1"), none).unwrap();
+        assert_eq!(u.get(Part::Host, g).unwrap(), b"127.0.0.1");
+        // A port set alone: digits only, at most 65535.
+        assert_eq!(u.set(Part::Port, Some(b"00080"), none), Ok(()));
+        assert_eq!(u.get(Part::Port, g).unwrap(), b"80");
+        for bad in [&b""[..], b"65536", b"8o", b" 80", b"+80"] {
+            assert_eq!(
+                u.set(Part::Port, Some(bad), none),
+                Err(UrlErrorKind::BadPortNumber),
+                "{}",
+                show(bad)
+            );
+        }
+        // A scheme set alone must be built, unless any is allowed.
+        let any = SetOptions {
+            parse: ParseOptions {
+                non_support_scheme: true,
+                ..ParseOptions::NONE
+            },
+            ..none
+        };
+        assert_eq!(
+            u.set(Part::Scheme, Some(b"socks5"), none),
+            Err(UrlErrorKind::UnsupportedScheme)
+        );
+        assert_eq!(u.set(Part::Scheme, Some(b"socks5"), any), Ok(()));
+        assert_eq!(u.set(Part::Scheme, Some(b"x-y.z+1"), any), Ok(()));
+        for bad in [&b"1x"[..], b"x_y", b"", &[b'a'; 41][..]] {
+            assert_eq!(
+                u.set(Part::Scheme, Some(bad), any),
+                Err(UrlErrorKind::BadScheme),
+                "{}",
+                show(bad)
+            );
+        }
+        assert_eq!(u.set(Part::Scheme, Some(b"HTTP"), none), Ok(()));
+        assert_eq!(u.get(Part::Scheme, g).unwrap(), b"HTTP", "as given");
+
+        // A part set empty with encoding is missing, its separator kept.
+        let encode = SetOptions {
+            parse: ParseOptions {
+                url_encode: true,
+                ..ParseOptions::NONE
+            },
+            ..none
+        };
+        let get_empty = GetOptions {
+            get_empty: true,
+            ..g
+        };
+        let mut u = Url::parse(b"http://h/p?q#f", ParseOptions::NONE).unwrap();
+        u.set(Part::Query, Some(b""), encode).unwrap();
+        u.set(Part::Fragment, Some(b""), encode).unwrap();
+        u.set(Part::User, Some(b""), encode).unwrap();
+        assert_eq!(u.get(Part::Query, get_empty), Err(UrlErrorKind::NoQuery));
+        assert_eq!(u.get(Part::Fragment, get_empty).unwrap(), b"");
+        assert_eq!(u.get(Part::User, g), Err(UrlErrorKind::NoUser));
+        assert_eq!(show(&u.get(Part::Url, get_empty).unwrap()), "http://h/p?#");
+        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "http://h/p");
+        // Without, it is there and empty: a fragment shows its `#`.
+        u.set(Part::Fragment, Some(b""), none).unwrap();
+        assert_eq!(u.get(Part::Fragment, g).unwrap(), b"");
+        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "http://h/p#");
+
+        // A file: URL without a path prints C's NULL.
+        let mut u = Url::parse(b"http://h", ParseOptions::NONE).unwrap();
+        u.set(Part::Scheme, Some(b"FILE"), none).unwrap();
+        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "file://(nil)");
+
+        // A relative URL resolved against a base read with the flags
+        // given: the default port is written into the result.
+        let default_port = SetOptions {
+            get: GetOptions {
+                default_port: true,
+                ..g
+            },
+            ..none
+        };
+        let mut u = Url::parse(b"http://h/a/b", ParseOptions::NONE).unwrap();
+        u.set(Part::Url, Some(b"c d?e f"), default_port).unwrap();
+        assert_eq!(
+            show(&u.get(Part::Url, g).unwrap()),
+            "http://h:80/a/c%20d?e+f"
+        );
+        // A new host is taken as it is, the rest encoded.
+        u.set(Part::Url, Some(b"//other/x y"), none).unwrap();
+        assert_eq!(show(&u.get(Part::Url, g).unwrap()), "http://other/x%20y");
+        assert_eq!(
+            u.set(Part::Url, Some(b"//bad host/x y"), none),
+            Err(UrlErrorKind::BadHostname)
         );
     }
 

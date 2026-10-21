@@ -39,6 +39,8 @@ pub(super) enum Query {
     No,
     /// A query: a space is `+`.
     Yes,
+    /// Not a query until a `?`, which starts one (`QUERY_NOT_YET`).
+    NotYet,
 }
 
 const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
@@ -58,7 +60,11 @@ fn escaped_byte(s: &[u8]) -> Option<u8> {
 /// Re-encode `s` onto `out` as `urlencode_str` does for a relative part:
 /// encode what has to be, leave valid escapes as they are and uppercase
 /// their hex.
-pub(super) fn reencode(out: &mut Bytes, mut s: &[u8], query: Query) -> Result<(), UrlErrorKind> {
+pub(super) fn reencode(
+    out: &mut Bytes,
+    mut s: &[u8],
+    mut query: Query,
+) -> Result<(), UrlErrorKind> {
     while let Some(&b) = s.first() {
         if b == b' ' {
             push(out, if query == Query::Yes { b"+" } else { b"%20" })?;
@@ -84,14 +90,75 @@ pub(super) fn reencode(out: &mut Bytes, mut s: &[u8], query: Query) -> Result<()
             )?;
             s = &s[3..];
         } else {
-            let run = (1..s.len())
-                .find(|&i| {
-                    let c = s[i];
-                    c == b' ' || !(b' '..0x7f).contains(&c) || escaped_byte(&s[i..]).is_some()
-                })
-                .unwrap_or(s.len());
+            let mut run = 0;
+            while let Some(&c) = s.get(run) {
+                let escape = run > 0 && escaped_byte(&s[run..]).is_some();
+                if c == b' ' || !(b' '..0x7f).contains(&c) || escape {
+                    break;
+                }
+                run += 1;
+                if c == b'?' && query == Query::NotYet {
+                    query = Query::Yes;
+                    break;
+                }
+            }
             push(out, &s[..run])?;
             s = &s[run..];
+        }
+    }
+    Ok(())
+}
+
+/// `s` onto `out` with every byte but letters, digits and `-._~` escaped,
+/// as `url_encode_part` encodes a part set alone: a space as `+` if
+/// `plus`, a path's own punctuation kept if `path`, and the first `=`
+/// kept if `equals`. Not limited in length, as C sizes the buffer for the
+/// worst case.
+pub(super) fn encode_part(
+    out: &mut Bytes,
+    s: &[u8],
+    plus: bool,
+    path: bool,
+    mut equals: bool,
+) -> Result<(), UrlErrorKind> {
+    for &b in s {
+        let kept = b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'.' | b'_' | b'~')
+            || (path && b"!$&'(){}[]*+,;=:@/".contains(&b))
+            || (b == b'=' && equals);
+        let res = if b == b' ' && plus {
+            out.try_push(b'+')
+        } else if kept {
+            if b == b'=' {
+                equals = false;
+            }
+            out.try_push(b)
+        } else {
+            out.try_extend_from_slice(&[
+                b'%',
+                UPPER_HEX[usize::from(b >> 4)],
+                UPPER_HEX[usize::from(b & 0xf)],
+            ])
+        };
+        res.map_err(|_| UrlErrorKind::OutOfMemory)?;
+    }
+    Ok(())
+}
+
+/// `s` onto `out` with the hex of its `%xx` escapes uppercase
+/// (`url_uppercasehex_part`).
+pub(super) fn uppercase_hex(out: &mut Bytes, s: &[u8]) -> Result<(), UrlErrorKind> {
+    let start = out.len();
+    out.try_extend_from_slice(s)
+        .map_err(|_| UrlErrorKind::OutOfMemory)?;
+    let mut i = start;
+    while i < out.len() {
+        if escaped_byte(&out[i..]).is_some() {
+            out[i + 1].make_ascii_uppercase();
+            out[i + 2].make_ascii_uppercase();
+            i += 3;
+        } else {
+            i += 1;
         }
     }
     Ok(())
@@ -173,6 +240,11 @@ mod tests {
         );
         assert_eq!(reencoded(b"a b", Query::Yes), b"a+b");
         assert_eq!(
+            reencoded(b"a b?c d?e f", Query::NotYet),
+            b"a%20b?c+d?e+f",
+            "a query from the first `?`"
+        );
+        assert_eq!(
             reencoded(b"%zz%", Query::No),
             b"%zz%",
             "invalid escapes stay"
@@ -191,6 +263,21 @@ mod tests {
         assert_eq!(decode_but_zero(b"a%00b").unwrap(), None);
         assert_eq!(decode_but_zero(b"a\0b").unwrap(), None);
         assert_eq!(escape(b"a b/~").unwrap(), b"a%20b%2F~");
+    }
+
+    #[test]
+    fn encodes_a_part_set_alone() {
+        let enc = |s: &[u8], plus, path, equals| {
+            let mut out = Vec::new();
+            encode_part(&mut out, s, plus, path, equals).unwrap();
+            out
+        };
+        assert_eq!(enc(b"a b/=", false, false, false), b"a%20b%2F%3D");
+        assert_eq!(enc(b"a b/=", true, true, false), b"a+b/=");
+        assert_eq!(enc(b"a==b", false, false, true), b"a=%3Db");
+        let mut out = Vec::new();
+        uppercase_hex(&mut out, b"%2f%zz%a%41x%e9").unwrap();
+        assert_eq!(out, b"%2F%zz%a%41x%E9");
     }
 
     #[test]

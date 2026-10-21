@@ -1,0 +1,23 @@
+# The easy handle on its own (crates/curl-core/src/easy.rs).
+
+=== a perform forgets its multi
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::performs_a_file_url_on_its_own
+--- old
+        self.private = Some(Private(multi));
+--- new
+
+=== an added handle keeps its own multi
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core easy::tests::adding_a_handle_drops_its_own_multi
+--- old
+        easy.private = None;
+--- new
+
+=== a perform's result is always success
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::performs_a_file_url_on_its_own
+--- old
+                    break msg.result;
+--- new
+                    break Ok(());

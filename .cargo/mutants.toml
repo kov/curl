@@ -35,10 +35,18 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # A new descriptor is 0 only with standard input closed, which no test
+    # process can afford.
+    'curl-os/src/fs\.rs:.*: replace < with <= in open$',
+    # A debug format nothing reads.
+    'easy\.rs:.*: replace <impl fmt::Debug for Private>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    # Seeking a file just opened to its start changes nothing.
+    'proto/file\.rs:.*: replace > with >= in Request::download$',
     # Joining parts whose bits cannot overlap: `|` and `^` agree.
     'url/host\.rs:.*: replace \| with \^ in (ipv4|pton6)$',
     'url/encode\.rs:.*: replace \| with \^ in (escaped_byte|decode)$',
     'curl-os/src/net\.rs:.*: replace \| with \^ in connect$',
+    'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.
     'url/host\.rs:.*: replace < with <= in invalid_host_byte$',
     # `ipv4` is only given a host that starts with a digit, so it never
@@ -74,7 +82,7 @@ exclude_re = [
     'multi/mod\.rs:.*: replace \+ with \* in Multi<H>::run_dirty$',
     # A premature end only picks `Released::Terminated` over `Closed`,
     # which nothing observes until connections do I/O (milestone 1,
-    # step 8).
+    # step 11).
     'multi/state\.rs:.*: replace \|\| with && in step$',
     'multi/state\.rs:.*: replace is_premature -> bool with (true|false)$',
     # Reserving more than needed.

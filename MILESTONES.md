@@ -146,21 +146,24 @@ yet meet.
    - 7g. **Done.** The pause torture scenario: a transfer whose handlers pause again and again,
      replayed by unpauses from outside while it sends a body and reports progress, run with
      every allocation refused in turn.
-8. **proto: add file:// and Easy::perform.** `proto/file.rs` (no pause support: PAUSE is a
-   WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`.
-   Setup gains `DISALLOW_USER` and `PATH_AS_IS` from their options. Tests:
-   a networkless `Easy::perform` of a file URL, upload and upload resume (skipping the offset
-   in the read loop, as file.c does).
+8. **proto: add file:// and Easy::perform.** **Done.** The PROTOCONNECT, DO and DID steps, with
+   progress counts pinned against C on file://; `curl_os::fs`; `proto/file.rs` (downloads,
+   directory listings, head, resume, uploads and upload resume; no pause support: PAUSE is a
+   WriteError, READFUNC_PAUSE a ReadError); `url_rules` (DISALLOW_USER, PATH_AS_IS) in setup;
+   `version` reporting `file`; `Easy::perform` in a private multi, returning `Error`. RANGE and
+   TIMECONDITION, which file.c honours, come with the options that set them.
 9. **tool: run file:// transfers through the core.** Map `Operation` to `Easy`: the URL,
    `-o`, `-i`, `-s`/`-S`, `-v`, `--trace-ascii`/`--trace`/`--trace-time` with
    `tool_cb_dbg.c`'s format, the exit code and the "curl: (N) msg" line, `-C`, `-T`, `-w` for the
-   fields the file tests use. Measure the tool's whole-process allocation count for a file
-   transfer and record it. Flips: 200, 201, 203, 1145, 1146, 1220, 2071, 2072, 231, 3016, 3203,
+   fields the file tests use; `--proto-default` with DEFAULT_PROTOCOL in setup (C's
+   `Curl_is_absolute_url` and scheme prepending). Measure the tool's whole-process allocation
+   count for a file transfer and record it. Flips: 200, 201, 203, 1145, 1146, 1220, 2071, 2072, 231, 3016, 3203,
    1445, 1491; then 204, 205, 1490 (upload); then 1440, 1441, 1442 (`-w`). 202 waits for
    multi-URL support.
 10. **abi: add easy and multi handles.** `ShimEasy`, `ShimMulti`, the `with_multi`/`with_easy`
     gate, `TABLE` generated from `lib/api.c` with its comparison test, `ShimEvents`, the callback
-    adapters, generated setopt for the options so far, getinfo, `curl_easy_perform`, `pause`,
+    adapters, generated setopt for the options so far, getinfo, the error detail for
+    ERRORBUFFER, `curl_easy_perform`, `pause`,
     `perform_ev`, the multi entry points (`fdset` and `waitfds` list no sockets until step 11's
     `Multi::sockets`, as no transfer owns one before then). Flips: 1508, 3105, 1564, 2414 (and any `file://`-only
     libtests the inventory lists).

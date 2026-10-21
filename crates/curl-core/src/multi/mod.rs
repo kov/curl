@@ -235,6 +235,10 @@ impl<H: Host> Multi<H> {
             self.life = Life::Alive;
             self.dirty.clear();
         }
+        // A handle that performed on its own runs here from now on: its
+        // private multi goes.
+        let mut easy = easy;
+        easy.private = None;
         let Ok(run) = try_box(Run::new(self.clock.now())) else {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         };

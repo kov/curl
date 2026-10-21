@@ -229,7 +229,8 @@ read after it ran something (§3.5). Timing records (`Timings::mark`) take the p
 ### 2.5 Errors and outcomes
 
 ```rust
-pub struct Error { kind: ErrorKind, detail: Option<Box<Detail>> }  // detail dropped on OOM, kind kept
+pub struct Error { kind: ErrorKind, detail: Option<Box<Detail>> }  // detail dropped on OOM, kind kept;
+                                                                   // the detail arrives with ERRORBUFFER (step 10)
 pub enum Recv { Data(NonZeroUsize), Eof, WouldBlock }
 pub enum Sent { Bytes(NonZeroUsize), WouldBlock }
 pub enum Acquire { Ready(ConnLease, Reused), Connecting(ConnLease), Wait(WaitReason) }

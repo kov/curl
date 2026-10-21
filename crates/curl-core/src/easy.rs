@@ -1,12 +1,21 @@
 //! The easy handle: one transfer's configuration, added to a multi to run.
 
-use curl_alloc::OutOfMemory;
+use std::fmt;
+use std::time::Duration;
 
+use curl_alloc::{OutOfMemory, try_box};
+
+use crate::conn::io::SystemNet;
+use crate::error::{Error, ErrorKind, MultiErrorKind};
+use crate::id::ArenaPolicy;
+use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode};
 use crate::options::Options;
 use crate::report::TransferReport;
+use crate::time::SystemClock;
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
-/// and `Multi::remove` gives it back. The default allocates nothing.
+/// and `Multi::remove` gives it back; `perform` runs it on its own. The
+/// default allocates nothing.
 #[derive(Debug, Default)]
 pub struct Easy {
     options: Options,
@@ -14,7 +23,22 @@ pub struct Easy {
     report: TransferReport,
     /// The progress meter's titles are out: a handle writes them once.
     pub(crate) meter_titled: bool,
+    /// The multi `perform` runs the handle in, kept with its connections
+    /// from one to the next; `Multi::add` drops it.
+    pub(crate) private: Option<Private>,
 }
+
+/// A handle's own multi (C's `multi_easy`).
+pub(crate) struct Private(Box<Multi>);
+
+impl fmt::Debug for Private {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Private")
+    }
+}
+
+/// How long a perform waits for something to happen before looking again.
+const POLL: Duration = Duration::from_millis(1000);
 
 impl Easy {
     pub fn new() -> Easy {
@@ -44,22 +68,210 @@ impl Easy {
             options: self.options.try_clone()?,
             report: TransferReport::default(),
             meter_titled: false,
+            private: None,
         })
     }
 
     /// Every option back to its default, and the report with them
-    /// (`curl_easy_reset`).
+    /// (`curl_easy_reset`). The private multi stays.
     pub fn reset(&mut self) {
         self.options = Options::default();
         self.report = self.report.cleared();
         self.meter_titled = false;
     }
+
+    /// Run the transfer to its end, blocking (`curl_easy_perform`), in the
+    /// handle's own multi, made the first time with the system's clock
+    /// and network.
+    pub fn perform(&mut self) -> Result<(), Error> {
+        let mut multi = match self.private.take() {
+            Some(Private(multi)) => multi,
+            None => {
+                let env = Env {
+                    clock: try_box(SystemClock::new()).map_err(oom)?,
+                    net: try_box(SystemNet).map_err(oom)?,
+                    arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+                    waker: None,
+                };
+                try_box(Multi::new(env).map_err(oom)?).map_err(oom)?
+            }
+        };
+        let (result, easy) = run_to_end(&mut multi, std::mem::take(self));
+        *self = easy;
+        self.private = Some(Private(multi));
+        result.map_err(Error::from)
+    }
+}
+
+fn oom(_: OutOfMemory) -> ErrorKind {
+    ErrorKind::OutOfMemory
+}
+
+/// Add `easy` to `multi`, drive it to its end, and take it out again
+/// (`easy_transfer`): its result, and the handle.
+fn run_to_end(multi: &mut Multi, easy: Easy) -> (Result<(), ErrorKind>, Easy) {
+    let id = match multi.add(easy, (), &mut NoEvents) {
+        Ok(id) => id,
+        Err(AddError { kind, easy }) => return (Err(multi_error(kind)), easy),
+    };
+    let result = loop {
+        if let Err(e) = multi.wait(&mut [], POLL, WaitMode::Poll) {
+            break Err(multi_error(e));
+        }
+        match multi.perform(&mut NoEvents) {
+            Err(e) => break Err(multi_error(e)),
+            Ok(0) => {
+                if let Some(msg) = multi.info_read() {
+                    break msg.result;
+                }
+            }
+            Ok(_) => {}
+        }
+    };
+    let removed = multi.remove(id, &mut NoEvents).expect("added above");
+    (result, removed.easy)
+}
+
+/// A multi's failure as the transfer's: out of memory, or something that
+/// should never happen.
+fn multi_error(e: MultiErrorKind) -> ErrorKind {
+    match e {
+        MultiErrorKind::OutOfMemory => ErrorKind::OutOfMemory,
+        _ => ErrorKind::BadFunctionArgument,
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::num::NonZeroU64;
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    use curl_alloc::TryRc;
+
     use super::*;
-    use crate::time::TimeLimit;
+    use crate::handler::{Handler, Write, WriteHandler};
+    use crate::multi::TransferCx;
+    use crate::options::{Method, Resume, UploadSource};
+    use crate::time::{ManualClock, TimeLimit};
+
+    /// A directory of its own for a test, removed after it.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Scratch {
+            let dir =
+                std::env::temp_dir().join(format!("curl-core-easy-{}-{name}", std::process::id()));
+            // Left over from a run that did not finish.
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn url(&self, name: &str) -> Vec<u8> {
+            format!("file://{}/{name}", self.0.display()).into_bytes()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Body(Rc<RefCell<Vec<u8>>>);
+
+    impl WriteHandler for Body {
+        fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+            self.0.borrow_mut().extend_from_slice(body);
+            Write::Accepted
+        }
+    }
+
+    fn easy(url: &[u8]) -> (Easy, Body) {
+        let mut e = Easy::new();
+        e.options_mut().set_url(Some(url)).unwrap();
+        let body = Body::default();
+        e.options_mut().callbacks.write = Some(Handler::write(body.clone()).unwrap());
+        (e, body)
+    }
+
+    /// A file downloads on the handle's own, which keeps its multi for the
+    /// next transfer; a failure is the transfer's.
+    #[test]
+    fn performs_a_file_url_on_its_own() {
+        let s = Scratch::new("download");
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let (mut e, body) = easy(&s.url("f"));
+        assert_eq!(e.perform(), Ok(()));
+        assert_eq!(*body.0.borrow(), b"hello");
+        assert_eq!(e.report().sizes().download(), 5);
+        assert!(e.private.is_some(), "kept");
+        e.options_mut().set_url(Some(&s.url("missing"))).unwrap();
+        let err = e.perform().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::FileCouldntReadFile);
+        assert!(e.private.is_some(), "kept after a failure");
+        e.options_mut().set_url(Some(&s.url("f"))).unwrap();
+        assert_eq!(e.perform(), Ok(()));
+        assert_eq!(*body.0.borrow(), b"hellohello");
+    }
+
+    /// An upload writes the file; resumed, it appends past the resume
+    /// point.
+    #[test]
+    fn performs_an_upload_and_resumes_it() {
+        let s = Scratch::new("upload");
+        let (mut e, _) = easy(&s.url("f"));
+        e.options_mut().method = Method::Upload;
+        let body = |b: &[u8]| UploadSource::Bytes(TryRc::try_new(b.to_vec()).unwrap());
+        e.options_mut().upload = body(b"01234");
+        assert_eq!(e.perform(), Ok(()));
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"01234");
+        e.options_mut().upload = body(b"0123456789");
+        e.options_mut().resume = Some(Resume::At(NonZeroU64::new(5).unwrap()));
+        assert_eq!(e.perform(), Ok(()));
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"0123456789");
+        assert_eq!(e.report().sizes().upload(), 5);
+    }
+
+    /// A multi's own failure is the transfer's out of memory, or a bad
+    /// argument; the error shows its kind's message.
+    #[test]
+    fn errors_read_as_their_kinds() {
+        assert_eq!(
+            multi_error(MultiErrorKind::OutOfMemory),
+            ErrorKind::OutOfMemory
+        );
+        assert_eq!(
+            multi_error(MultiErrorKind::BadEasyHandle),
+            ErrorKind::BadFunctionArgument
+        );
+        let e = Error::from(ErrorKind::FileCouldntReadFile);
+        assert_eq!(e.to_string(), ErrorKind::FileCouldntReadFile.to_string());
+        assert!(!e.to_string().is_empty());
+    }
+
+    /// A handle added to a multi leaves its own multi behind.
+    #[test]
+    fn adding_a_handle_drops_its_own_multi() {
+        let s = Scratch::new("add");
+        std::fs::write(s.0.join("f"), b"x").unwrap();
+        let (mut e, _) = easy(&s.url("f"));
+        e.perform().unwrap();
+        let clock = ManualClock::new().unwrap();
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(crate::conn::io::FakeNet::new(clock)),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let e = m.remove(id, &mut NoEvents).unwrap().easy;
+        assert!(e.private.is_none());
+    }
 
     #[test]
     fn clones_options_and_resets_them() {

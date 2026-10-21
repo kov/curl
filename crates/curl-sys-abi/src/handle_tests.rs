@@ -1663,3 +1663,73 @@ fn the_socket_function_is_called_as_c_calls_it() {
     // (`mev_sh_entry_update` returns before marking it announced).
     assert_eq!(log.calls.len(), 1);
 }
+
+/// `curl_multi_cleanup` with a transfer still connecting removes its
+/// socket through the socket function (`multi_done`, then
+/// `Curl_multi_will_close`); without a socket function the multi records
+/// no socket, so `curl_multi_assign` knows none.
+#[test]
+fn cleanup_removes_the_sockets_the_socket_function_was_told() {
+    use crate::ffi::{CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT, CURLM_BAD_SOCKET};
+    use crate::multi::{ShimMulti, curl_multi_assign, curl_multi_socket_action};
+    use curl_core::conn::io::{FakeNet, Peer};
+    use curl_core::time::ManualClock;
+
+    let multi = || -> *mut CURLM {
+        let clock = ManualClock::new().unwrap();
+        let silent = std::net::SocketAddr::from(([127, 0, 0, 1], 3));
+        let net = FakeNet::new(clock).with_peer(silent, Peer::Silent);
+        ShimMulti::boxed_with(Box::new(net))
+            .unwrap()
+            .as_ptr()
+            .cast()
+    };
+    let c = curl_easy_init();
+    let url = c"tcp://127.0.0.1:3/";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let mut running: c_int = -1;
+    let unwatched = multi();
+    // SAFETY: a live multi and handle.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(unwatched, c), CURLM_OK);
+        let rc = curl_multi_socket_action(unwatched, CURL_SOCKET_TIMEOUT, 0, &raw mut running);
+        assert_eq!((rc, running), (CURLM_OK, 1));
+        assert_eq!(
+            curl_multi_assign(unwatched, 1000, ptr::null_mut()),
+            CURLM_BAD_SOCKET
+        );
+        assert_eq!(curl_multi_remove_handle(unwatched, c), CURLM_OK);
+        assert_eq!(curl_multi_cleanup(unwatched), CURLM_OK);
+    }
+    let m = multi();
+    let mut log = SocketLog {
+        m,
+        calls: Vec::new(),
+        abort: false,
+    };
+    let me: *mut c_void = ptr::from_mut(&mut log).cast();
+    // SAFETY: a live multi and handle; the log outlives the multi.
+    unsafe {
+        let f: ffi::curl_socket_callback = Some(socket_fn);
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_SOCKETFUNCTION, f),
+            CURLM_OK
+        );
+        assert_eq!(curl_multi_setopt(m, ffi::CURLMOPT_SOCKETDATA, me), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        let rc = curl_multi_socket_action(m, CURL_SOCKET_TIMEOUT, 0, &raw mut running);
+        assert_eq!((rc, running), (CURLM_OK, 1));
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+        curl_easy_cleanup(c);
+    }
+    assert_eq!(
+        log.calls,
+        [
+            (c, 1000, CURL_POLL_OUT, ptr::null_mut()),
+            (c, 1000, CURL_POLL_REMOVE, me),
+        ]
+    );
+}

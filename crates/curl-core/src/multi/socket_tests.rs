@@ -28,6 +28,10 @@ struct Sockets {
     closed: Rc<Cell<u32>>,
     tag: u32,
     abort_at: Option<usize>,
+    /// Whether the timer callback aborts.
+    abort_timer: bool,
+    /// What `assign` gave inside each notification.
+    assigned_in_notify: Vec<Result<(), UnknownSocket>>,
 }
 
 impl MultiEvents<Tagged> for Sockets {
@@ -53,6 +57,22 @@ impl MultiEvents<Tagged> for Sockets {
 
     fn wants_sockets(&self) -> bool {
         true
+    }
+
+    fn timer(&mut self, _: &mut EventCx<'_, Tagged>, _: TimerChange) -> Result<(), Abort> {
+        if self.abort_timer {
+            return Err(Abort);
+        }
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+
+    fn notify(&mut self, cx: &mut NotifyCx<'_, Tagged>, _: Notification) {
+        self.assigned_in_notify
+            .push(cx.assign(SocketKey::new(7), Some(0)));
     }
 }
 
@@ -276,4 +296,41 @@ fn a_removed_transfer_leaves_its_sockets() {
         [(id.index(), 1000, Remove, Some(1), 0)],
         "the connection stays open"
     );
+}
+
+/// Without a socket callback the multi records no socket, as C keeps
+/// none, so there is none to assign a value to.
+#[test]
+fn without_a_socket_callback_no_socket_is_recorded() {
+    let (mut m, _clock, _) = networked();
+    m.add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut NoEvents)
+        .unwrap();
+    assert_eq!(m.assign(SocketKey::new(1000), Some(1)), Err(UnknownSocket));
+}
+
+/// A timer callback that aborts inside a pause ends it before the socket
+/// callback hears of the change (easy.c:1233).
+#[test]
+fn a_timer_abort_inside_a_pause_tells_the_sockets_nothing() {
+    let (mut m, _clock, mut ev) = networked();
+    let id = m.add(easy("tcp://127.0.0.1:3/"), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    ev.abort_timer = true;
+    assert_eq!(
+        m.pause(id, PauseRequest::RECV, &mut ev),
+        Err(ErrorKind::AbortedByCallback)
+    );
+    assert_eq!(ev.calls, [(id.index(), 1000, Out, None, 0)]);
+}
+
+/// A notification's handler assigns through its context, as anywhere.
+#[test]
+fn a_notification_assigns_as_the_multi_does() {
+    let (mut m, _clock, mut ev) = networked();
+    m.set_notify(NotifyKind::EasyDone, true);
+    m.add(easy("tcp://127.0.0.1:2/"), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(ev.assigned_in_notify, [Err(UnknownSocket)]);
 }

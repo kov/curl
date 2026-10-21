@@ -139,3 +139,11 @@ witness: curl-sys-abi handle_tests::the_transfers_sockets_are_listed
     if ufds.is_null() && (size > 0 || fd_count.is_null()) {
 --- new
     if ufds.is_null() && size > 0 {
+
+=== a wait on a transfer's socket alone does not watch the waker
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::a_wake_ends_a_wait_on_a_transfer_s_socket
+--- old
+        let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
+--- new
+        let watch_waker = mode == WaitMode::Poll || !extra.is_empty();

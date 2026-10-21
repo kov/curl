@@ -1405,3 +1405,108 @@ fn a_pause_never_blocks_a_setup() {
     m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
     assert_eq!(m.timeout(), Some(Duration::ZERO));
 }
+
+/// A fake network the test reaches while the multi holds it.
+struct SharedNet(std::rc::Rc<std::cell::RefCell<FakeNet>>);
+
+impl Net for SharedNet {
+    fn poll(
+        &mut self,
+        sockets: &mut [crate::conn::io::SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.borrow_mut().poll(sockets, fds, timeout)
+    }
+
+    fn connect(
+        &mut self,
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
+        self.0.borrow_mut().connect(addr)
+    }
+
+    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+        self.0.borrow_mut().close(socket);
+    }
+}
+
+/// Connections are numbered in the order they are made, and one found
+/// dead is named by its number as C names it, without the `#`.
+#[test]
+fn connections_are_numbered_in_their_traces() {
+    use crate::conn::io::{Peer, SocketKey};
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 4));
+    let net = std::rc::Rc::new(std::cell::RefCell::new(
+        FakeNet::new(clock.clone()).with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5))),
+    ));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(SharedNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let url = "tcp://127.0.0.1:4/";
+    let (a, _) = traced(url);
+    let (b, b_lines) = traced(url);
+    m.add(a, (), &mut NoEvents).unwrap();
+    m.add(b, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.counts().running, 0);
+    assert_eq!(
+        trace_of(&b_lines)[1..],
+        [
+            "Established connection to 127.0.0.1 (127.0.0.1 port 4) from 127.0.0.1 port 40001 \n",
+            "Connection #1 to host 127.0.0.1:4 left intact\n",
+        ]
+    );
+    // Both hang up while idle; the next search, within the second of the
+    // last prune, finds each dead.
+    net.borrow().hang_up(SocketKey::new(1000));
+    net.borrow().hang_up(SocketKey::new(1001));
+    let (c, c_lines) = traced(url);
+    m.add(c, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&c_lines)[..5],
+        [
+            "Connection 0 seems to be dead, terminating\n",
+            "shutting down connection #0\n",
+            "Connection 1 seems to be dead, terminating\n",
+            "shutting down connection #1\n",
+            "  Trying 127.0.0.1:4...\n",
+        ]
+    );
+}
+
+/// A wake ends a wait on a transfer's socket, with no descriptors of the
+/// application's beside it.
+#[test]
+fn a_wake_ends_a_wait_on_a_transfer_s_socket() {
+    use crate::conn::io::Peer;
+    let clock = ManualClock::new().unwrap();
+    let waker = TryArc::try_new(Waker::new().unwrap()).unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 3));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(FakeNet::new(clock.clone()).with_peer(at, Peer::Silent)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: Some(waker.clone()),
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    m.add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    waker.wake().unwrap();
+    let took = slept(&clock, || {
+        assert_eq!(
+            m.wait(&mut [], Duration::from_secs(3), WaitMode::Wait),
+            Ok(0)
+        );
+    });
+    assert_eq!(took, Duration::ZERO, "woken");
+}

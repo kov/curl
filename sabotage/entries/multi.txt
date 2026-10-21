@@ -408,3 +408,18 @@ witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_mov
     if !slot.pause.blocks(slot.directions) {
 --- new
     if !slot.pause.recv_paused() {
+
+=== a transfer table grows with an eighth of its rows still free
+file: crates/curl-core/src/id/mod.rs
+witness: curl-core id::tests::a_transfer_table_grows_once_few_rows_are_free
+--- old
+            Growth::Transfers if unused < (capacity >> 3).max(4) => {
+--- new
+            Growth::Transfers if unused <= (capacity >> 3).max(4) => {
+
+=== a dead connection is named with its `#`
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::connections_are_numbered_in_their_traces
+--- old
+                let n = n.get();
+--- new

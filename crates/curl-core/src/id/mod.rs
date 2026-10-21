@@ -171,9 +171,8 @@ impl<T, K> Arena<T, K> {
             Growth::Doubling if unused == 0 => Some(capacity.max(16)),
             Growth::Transfers | Growth::Doubling => None,
         };
-        if let Some(growth) = growth
-            && capacity < MAX_ROWS
-        {
+        // A table at its largest grows to the size it has.
+        if let Some(growth) = growth {
             self.grow_to(capacity.saturating_add(growth).min(MAX_ROWS))?;
         }
         if self.used == self.capacity() {
@@ -353,6 +352,21 @@ mod tests {
         assert_eq!(arena.remove(old), None);
         assert_eq!(arena.get(new), Some(&"new"));
         assert_eq!(arena.len(), 1);
+    }
+
+    /// A transfer table grows by at least 128 rows once fewer than an
+    /// eighth of its rows, and at least 4, are free: 16 rows hold 12 values
+    /// and one more before it grows.
+    #[test]
+    fn a_transfer_table_grows_once_few_rows_are_free() {
+        let mut arena: Arena<u32> = Arena::new(ArenaPolicy::new(16, 0).unwrap()).unwrap();
+        let mut seen = Vec::new();
+        for n in 0..14 {
+            arena.reserve().unwrap().fill(n);
+            seen.push(arena.capacity());
+        }
+        assert_eq!(seen[12], 16, "four rows free at the thirteenth");
+        assert_eq!(seen[13], 144, "three at the fourteenth");
     }
 
     /// A doubling arena has no rows until its first value, then 16, then

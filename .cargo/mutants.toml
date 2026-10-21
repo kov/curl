@@ -66,6 +66,23 @@ exclude_re = [
     'multi/mod\.rs:.*: replace MultiEvents::timer -> Result<\(\), Abort> with Ok\(\(\)\)$',
     'multi/mod\.rs:.*: replace MultiEvents::wants_timer -> bool with true$',
     'multi/mod\.rs:.*: replace MultiEvents::notify with \(\)$',
+    # The default `socket` is already `Ok(())`.
+    'multi/mod\.rs:.*: replace MultiEvents::socket -> Result<\(\), Abort> with Ok\(\(\)\)$',
+    # Closing a real socket is dropping it, which the moved-in box does
+    # anyway.
+    'conn/io\.rs:.*: replace <impl Net for SystemNet>::close with \(\)$',
+    # Only a fake socket's readiness is known without a poll, and the fake
+    # network polls with no timeout; the sum only sizes a reservation.
+    'conn/io\.rs:.*: replace (> with (==|>=|<)|\+ with (-|\*)) in poll_together$',
+    # A fake socket ready exactly at the timeout is reported or not; a real
+    # poll may do either.
+    'conn/io\.rs:.*: replace < with <= in <impl Net for FakeNet>::poll$',
+    # The walk feeds only the debug build's invariant check.
+    'multi/sockets\.rs:.*: replace SocketTable<S>::each_user with \(\)$',
+    # The count only sizes a reservation.
+    'multi/wait\.rs:.*: replace \+= with \*= in Multi<H>::wait$',
+    # With no socket function what the table records goes with the multi.
+    'curl-sys-abi/src/multi\.rs:.*: replace <impl MultiEvents<CHost> for Cleanup<._>>::wants_sockets -> bool with true$',
     # The debug build's invariant check fails only on a broken invariant;
     # the sabotage entries witnessed by the property test show it does.
     'multi/(mod|check)\.rs:.*: replace Multi<H>::check(_invariants)? with \(\)$',

@@ -200,3 +200,61 @@ fn update<S: Copy>(entry: &Entry<S>) -> Option<Change<S>> {
 /// A socket the table does not know (`CURLM_BAD_SOCKET`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnknownSocket;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::id::{Arena, ArenaPolicy};
+
+    fn ids() -> (TransferId, TransferId) {
+        let mut arena: Arena<(), super::super::Transfer> =
+            Arena::new(ArenaPolicy::new(4, 0).unwrap()).unwrap();
+        (
+            arena.reserve().unwrap().fill(()),
+            arena.reserve().unwrap().fill(()),
+        )
+    }
+
+    fn whats(changes: &[Change<u8>]) -> Vec<(i32, SocketWhat, Option<u8>)> {
+        changes
+            .iter()
+            .map(|c| (c.key.get(), c.what, c.removed_with))
+            .collect()
+    }
+
+    /// What a user waits for replaces what it waited for; the socket is
+    /// waited on for what all its users want, told when that changes, and
+    /// removed with its value when the last goes.
+    #[test]
+    fn a_socket_is_waited_on_for_what_its_users_want() {
+        let (a, b) = ids();
+        let k = SocketKey::new(5);
+        let mut t: SocketTable<u8> = SocketTable::new();
+        let assess = |t: &mut SocketTable<u8>, id, wants: &[(SocketKey, Events)]| {
+            let mut changes = Vec::new();
+            t.assess(id, wants, &mut changes).unwrap();
+            for c in &changes {
+                t.told(c.key, c.what);
+            }
+            whats(&changes)
+        };
+        assert_eq!(
+            assess(&mut t, a, &[(k, Events::OUT)]),
+            [(5, SocketWhat::Out, None)]
+        );
+        t.assign(k, Some(9)).unwrap();
+        assert_eq!(t.assigned(k), Some(9));
+        assert_eq!(
+            assess(&mut t, a, &[(k, Events::IN)]),
+            [(5, SocketWhat::In, None)]
+        );
+        assert_eq!(
+            assess(&mut t, b, &[(k, Events::OUT)]),
+            [(5, SocketWhat::InOut, None)]
+        );
+        assert_eq!(t.users(k).collect::<Vec<_>>(), [a, b]);
+        assert_eq!(assess(&mut t, a, &[]), [(5, SocketWhat::Out, None)]);
+        assert_eq!(assess(&mut t, b, &[]), [(5, SocketWhat::Remove, Some(9))]);
+        assert_eq!(t.assign(k, None), Err(UnknownSocket));
+    }
+}

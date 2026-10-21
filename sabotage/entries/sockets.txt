@@ -66,3 +66,29 @@ witness: curl-sys-abi handle_tests::the_socket_function_is_called_as_c_calls_it
             SocketWhat::Out => ffi::CURL_POLL_OUT,
 --- new
             SocketWhat::Out => ffi::CURL_POLL_IN,
+
+=== a pause tells the sockets after the timer aborted
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::socket_tests::a_timer_abort_inside_a_pause_tells_the_sockets_nothing
+--- old
+        let sockets = if result.is_ok()
+            && timer.is_ok()
+--- new
+        let sockets = if result.is_ok()
+
+=== a user's new wants are added beside its old
+file: crates/curl-core/src/multi/sockets.rs
+witness: curl-core multi::sockets::tests::a_socket_is_waited_on_for_what_its_users_want
+--- old
+            match entry.users.iter_mut().find(|(user, _)| *user == id) {
+--- new
+            match entry.users.iter_mut().find(|(user, _)| *user == id && false) {
+
+=== cleanup tells the socket function nothing
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::cleanup_removes_the_sockets_the_socket_function_was_told
+--- old
+        self.0.socket(cx, who, s, what, assigned)
+--- new
+        let _ = (cx, who, s, what, assigned);
+        Ok(())

@@ -299,14 +299,15 @@ impl<H: Host> Multi<H> {
         id: TransferId,
         ev: &mut dyn MultiEvents<H>,
     ) -> Option<Removed<H>> {
-        let mut slot = self.slots.remove(id)?;
-        let run = slot
+        let run = self
+            .slots
+            .get_mut(id)?
             .run
             .take()
             .expect("no transfer is out while the multi is called");
         self.counts.removed(run.state.is_completed());
-        let now = self.clock.now();
-        run.state.abandon(&mut self.pool, &mut *self.net, now);
+        self.abandon(id, run);
+        let slot = self.slots.remove(id).expect("still in the multi");
         self.timers.remove(id);
         self.dirty.remove(id.index());
         let status = self.update_timer(ev);
@@ -474,6 +475,24 @@ impl<H: Host> Multi<H> {
     /// (`curl_multi_fdset`, `curl_multi_waitfds`).
     pub fn sockets(&self, f: impl FnMut(&dyn Socket, Events)) {
         pollsets(&self.slots, &self.pool, f);
+    }
+
+    /// Give back the connection of transfer `id`, whose `Run` is out of
+    /// its slot, as a premature end: traced to the transfer, as C's
+    /// `multi_done` runs with it still attached.
+    fn abandon(&mut self, id: TransferId, run: Box<Run>) {
+        let now = self.clock.now();
+        let mut cx = StepCx {
+            me: id,
+            rest: EngineRest {
+                slots: &mut self.slots,
+                pool: &mut self.pool,
+                net: &mut *self.net,
+                dirty: &mut self.dirty,
+                now,
+            },
+        };
+        run.state.abandon(&mut cx);
     }
 
     /// Step one transfer until it waits (`multi_runsingle`).
@@ -798,13 +817,12 @@ impl<H: Host> Drop for Multi<H> {
     /// Take out every transfer still in the multi, giving back its
     /// connection (`curl_multi_cleanup`).
     fn drop(&mut self) {
-        let now = self.clock.now();
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
             cursor = Some(id);
             let slot = self.slots.get_mut(id).expect("just found");
             if let Some(run) = slot.run.take() {
-                run.state.abandon(&mut self.pool, &mut *self.net, now);
+                self.abandon(id, run);
             }
         }
         self.pool.close_idle(&mut *self.net);

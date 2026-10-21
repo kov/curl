@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use curl_alloc::{OutOfMemory, TryVec};
 
-use crate::conn::io::{Events, Net, Socket};
+use crate::conn::io::{Events, Socket};
 use crate::conn::{
     Acquired, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote, Progress,
     Released, ReuseRules, Route,
@@ -231,17 +231,40 @@ impl TransferState {
 
     /// Take the transfer out of the multi before it completed: give back
     /// its connection, as a premature end (`curl_multi_remove_handle`).
-    pub(crate) fn abandon(self, pool: &mut Pool, net: &mut dyn Net, now: Instant) {
-        let lease = match self {
+    pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
+        let (lease, origin) = match self {
             TransferState::Init | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => c.lease,
+            TransferState::Connecting(c) => (c.lease, Some(c.origin)),
             TransferState::ProtoConnect(x)
             | TransferState::Do(x)
             | TransferState::Did(x)
-            | TransferState::Exchanging(x) => x.lease,
-            TransferState::Done(d) => d.lease,
+            | TransferState::Exchanging(x) => (x.lease, x.origin),
+            TransferState::Done(d) => (d.lease, d.origin),
         };
-        pool.release(lease, Finish { premature: true }, net, now);
+        release(cx, lease, Finish { premature: true }, origin.as_ref());
+    }
+}
+
+/// Give the transfer's connection back, and trace its fate
+/// (`Curl_cpool_return`, `cpool_conn_close`).
+fn release<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    lease: ConnLease,
+    finish: Finish,
+    origin: Option<&Origin>,
+) {
+    let rest = &mut cx.rest;
+    match rest.pool.release(lease, finish, &mut *rest.net, rest.now) {
+        Released::Idle(n) => {
+            let origin = origin.expect("a connection kept has a host");
+            let (host, port) = (origin.shown(), origin.port);
+            trace::info(
+                cx,
+                format_args!("Connection {n} to host {host}:{port} left intact"),
+            );
+        }
+        Released::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
+        Released::Terminated(n) => trace::info(cx, format_args!("closing connection {n}")),
     }
 }
 
@@ -493,22 +516,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 d.result = Err(e);
             }
             let premature = d.premature || is_premature(d.result);
-            let rest = &mut cx.rest;
-            let finish = Finish { premature };
-            match rest.pool.release(d.lease, finish, &mut *rest.net, rest.now) {
-                Released::Idle(n) => {
-                    let origin = d.origin.as_ref().expect("a connection kept has a host");
-                    let (host, port) = (origin.shown(), origin.port);
-                    trace::info(
-                        cx,
-                        format_args!("Connection {n} to host {host}:{port} left intact"),
-                    );
-                }
-                Released::Closed(n) => {
-                    trace::info(cx, format_args!("shutting down connection {n}"));
-                }
-                Released::Terminated(n) => trace::info(cx, format_args!("closing connection {n}")),
-            }
+            release(cx, d.lease, Finish { premature }, d.origin.as_ref());
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();

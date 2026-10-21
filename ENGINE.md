@@ -555,7 +555,9 @@ inside `curl_multi_add_handle` (multi.c:550). On OOM nothing is left behind and 
 returned.
 
 **`remove`**: a transfer that is not `Completed` gives back its lease as a premature end and
-leaves no message, as `curl_multi_remove_handle` (multi.c:780); forget its socket interest (socket callback REMOVE inside the call, multi.c:821); release the
+leaves no message, as `curl_multi_remove_handle` (multi.c:780), with its slot still in place so
+the connection's end is traced to it ("closing connection #N", as `multi_done` runs attached);
+forget its socket interest (socket callback REMOVE inside the call, multi.c:821); release the
 timer entry; remove the row; `schedule_pending`; `timer_update` (multi.c:868). The `Easy` and the
 owner value come back even when the timer callback aborts; `status` carries the abort. Removing
 an id that is not in this multi returns `None`, which the shim maps to `CURLM_OK` (3105).

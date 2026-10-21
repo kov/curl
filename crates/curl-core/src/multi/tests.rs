@@ -1204,13 +1204,13 @@ fn unresolved_and_immediate_failures() {
     );
 }
 
-/// Removing a transfer while it connects closes its socket.
+/// Removing a transfer while it connects closes its socket, traced to the
+/// transfer as `multi_done` traces it.
 #[test]
 fn removing_a_connecting_transfer_closes_its_socket() {
     let (mut m, _clock) = networked();
-    let id = m
-        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
-        .unwrap();
+    let (e, lines) = traced("tcp://127.0.0.1:3/");
+    let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let mut open = 0;
     m.sockets(|_, _| open += 1);
@@ -1220,6 +1220,16 @@ fn removing_a_connecting_transfer_closes_its_socket() {
     m.sockets(|_, _| open += 1);
     assert_eq!(open, 0);
     assert_eq!(m.pool.len(), 0);
+    assert_eq!(
+        trace_of(&lines),
+        ["  Trying 127.0.0.1:3...\n", "closing connection #0\n"]
+    );
+    // So too when the multi goes with the transfer in it.
+    let (e, lines) = traced("tcp://127.0.0.1:3/");
+    m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    drop(m);
+    assert_eq!(trace_of(&lines)[1], "closing connection #1\n");
 }
 
 /// A setup does not move on while receiving is paused

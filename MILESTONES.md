@@ -185,7 +185,7 @@ yet meet.
 
 **HTTP/1.1 GET**
 
-11. **conn: add plain TCP connections to the pool**, in four parts.
+11. **conn: add plain TCP connections to the pool**, in five parts.
     - **a. The connect path.** **Done.** `TransferState::Connecting` holds a lease on a
       `ConnSlot::Connecting`, whose `ConnectMachine` goes `Resolving` (IP literals only) →
       `Racing` (one attempt) → established in the slot it started in, or `Failed`. `Net` has
@@ -203,11 +203,17 @@ yet meet.
       ("Connection pool is full, closing the oldest of N/M"), FORBID_REUSE and the protocol's
       close mark, the total and per-host limits, and setopt for MAXAGE_CONN and
       MAXLIFETIME_CONN.
-    - **c. The close path.** **To do.** Socket close order, `ShutdownSet`, `Multi::sockets`
-      (the transfers' and closing connections' sockets, which `wait` polls and the shim's
-      `fdset` and `waitfds` list), REMOVE before the close hook, and the trace of a transfer
-      removed mid-connection.
-    - **d. The pollset's basis.** **To do.** Which directions a transfer wants, so a pause
+    - **c. The transfers' sockets.** **Done.** One pollset per transfer, from its state and its
+      connection's socket (a setup waits to write unless receiving is paused), behind `wait`,
+      `Multi::sockets` and the shim's `fdset` and `waitfds`; a transfer removed, or left in a
+      multi that goes, traces "closing connection #N". Plain TCP closes at once, as
+      `cf_socket_shutdown` is done in one call, so `ShutdownSet` comes with TLS; the 1 KB drain
+      before the close comes with step 12's reads.
+    - **d. The socket callback.** **To do.** `SocketTable`, `Host::Socket`,
+      `MultiEvents::socket`, `socket_action` on a socket, `assign`, each transfer's pollset
+      re-assessed after it runs in `socket_action` and inside `remove` and `pause`, and REMOVE
+      before a socket closes (`Curl_multi_will_close`, before CLOSESOCKETFUNCTION).
+    - **e. The pollset's basis.** **To do.** Which directions a transfer wants, so a pause
       blocks it only when every direction it wants is paused (`Curl_xfer_is_blocked`); until
       then `pause_transfer` judges the receiving direction alone.
 12. **http1: render requests behind the credential gate.** `RequestHead`, `UserHeaders`,

@@ -15,11 +15,11 @@ witness: curl-core multi::tests::completions_are_read_in_id_order
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::removing_a_running_transfer_gives_its_connection_back
 --- old
-        run.state.abandon(&mut self.pool, &mut *self.net, now);
-        self.timers.remove(id);
+        self.abandon(id, run);
+        let slot = self.slots.remove(id).expect("still in the multi");
 --- new
         std::mem::forget(run);
-        self.timers.remove(id);
+        let slot = self.slots.remove(id).expect("still in the multi");
 
 === the timer callback is not called inside add
 file: crates/curl-core/src/multi/mod.rs
@@ -364,9 +364,9 @@ witness: curl-core multi::tests::a_refused_connect_fails_as_c_says
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 --- old
-                    let (host, port) = (origin.shown(), origin.port);
+            let (host, port) = (origin.shown(), origin.port);
 --- new
-                    let (host, port) = (origin.name(), origin.port);
+            let (host, port) = (origin.name(), origin.port);
 
 === a reused IPv6 connection is named with its brackets
 file: crates/curl-core/src/multi/state.rs
@@ -386,3 +386,11 @@ witness: curl-core multi::tests::a_paused_transfer_does_not_connect
 --- new
             TransferState::Connecting(c) => {
 
+=== a transfer taken out mid-connect gives its connection back untraced
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::removing_a_connecting_transfer_closes_its_socket
+--- old
+        release(cx, lease, Finish { premature: true }, origin.as_ref());
+--- new
+        let rest = &mut cx.rest;
+        let _ = (origin, rest.pool.release(lease, Finish { premature: true }, &mut *rest.net, rest.now));

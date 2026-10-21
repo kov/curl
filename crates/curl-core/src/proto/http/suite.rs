@@ -2,7 +2,8 @@
 //! network: the case's reply played by the fake server, its command line
 //! mapped to options, and the request the server got, the output and the
 //! error compared with what the case expects, as `runtests.pl` compares
-//! them (it adds `--include`, so the output holds the headers).
+//! them (it adds `--include` unless the case says not to, so the output
+//! holds the headers).
 //!
 //! A case the runner cannot map (a server command, more than one reply, an
 //! option not built, a check it cannot make) is listed with why, not run.
@@ -53,6 +54,9 @@ struct Command {
     user_agent: Option<Vec<u8>>,
     /// `-D`: where the header lines go.
     dump: Option<Vec<u8>>,
+    /// The header lines go to the output too, as runtests.pl's
+    /// `--include` puts them.
+    include: bool,
 }
 
 /// Why a case is not run.
@@ -85,10 +89,14 @@ fn words(line: &[u8]) -> Vec<Vec<u8>> {
 /// The command line of `test`, mapped, or why it cannot be.
 fn command(test: u32) -> Result<Command, Skip> {
     let line = fixture::section(test, "client", "command").ok_or("no command")?;
-    if !line.attrs.ends_with(b"<command>") {
+    let no_include = line.has("option", "no-include");
+    if !line.attrs.ends_with(b"<command>") && !no_include {
         return Err(format!("command {}", String::from_utf8_lossy(&line.attrs)));
     }
-    let mut c = Command::default();
+    let mut c = Command {
+        include: !no_include,
+        ..Command::default()
+    };
     let mut urls = 0;
     let mut words = words(&line.text).into_iter();
     while let Some(w) = words.next() {
@@ -98,7 +106,8 @@ fn command(test: u32) -> Result<Command, Skip> {
                 .ok_or_else(|| format!("{} needs an argument", show(&w)))
         };
         match &w[..] {
-            b"-i" | b"--include" | b"-s" | b"--silent" | b"-S" | b"--show-error" | b"-sS" => {}
+            b"-i" | b"--include" => c.include = true,
+            b"-s" | b"--silent" | b"-S" | b"--show-error" | b"-sS" => {}
             b"-I" | b"--head" => c.head = true,
             b"-0" | b"--http1.0" => c.version = HttpVersion::Http10,
             b"--http1.1" => c.version = HttpVersion::Http11,
@@ -206,23 +215,28 @@ fn expected(test: u32, c: &Command) -> Result<Expected, Skip> {
     })
 }
 
-/// What a case's transfer wrote: the output as the tool writes it with
-/// `-i`, header lines from its header handler and the body in the order
-/// they came, and the header lines alone, as `-D` writes them.
+/// What a case's transfer wrote: the output as the tool writes it, with
+/// `-i` the header lines from its header handler and the body in the
+/// order they came, and the header lines alone, as `-D` writes them.
 #[derive(Clone, Default)]
-struct Got(Rc<RefCell<(Vec<u8>, Vec<u8>)>>);
+struct Got {
+    include: bool,
+    written: Rc<RefCell<(Vec<u8>, Vec<u8>)>>,
+}
 
 impl WriteHandler for Got {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
-        self.0.borrow_mut().0.extend_from_slice(body);
+        self.written.borrow_mut().0.extend_from_slice(body);
         Write::Accepted
     }
 }
 
 impl HeaderHandler for Got {
     fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
-        let mut got = self.0.borrow_mut();
-        got.0.extend_from_slice(line);
+        let mut got = self.written.borrow_mut();
+        if self.include {
+            got.0.extend_from_slice(line);
+        }
         got.1.extend_from_slice(line);
         Write::Accepted
     }
@@ -275,7 +289,10 @@ fn run(test: u32) -> Result<Result<(), String>, Skip> {
     };
     let mut m: Multi = Multi::new(env).unwrap();
     let mut e = Easy::new();
-    let got = Got::default();
+    let got = Got {
+        include: c.include,
+        ..Got::default()
+    };
     let o: &mut Options = e.options_mut();
     o.set_url(Some(&c.url)).unwrap();
     o.limits.total = TimeLimit::from_millis(10_000);
@@ -295,7 +312,7 @@ fn run(test: u32) -> Result<Result<(), String>, Skip> {
     let id = m.add(e, (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let code = result.err().map_or(0, code_of);
-    let (output, headers) = got.0.borrow().clone();
+    let (output, headers) = got.written.borrow().clone();
     let mut wrong = Vec::new();
     if code != want.code {
         wrong.push(format!("exit {code}, not {}", want.code));
@@ -370,7 +387,7 @@ fn the_milestone_s_http_cases() {
             "test {known} passes now: drop it from KNOWN ({why})"
         );
     }
-    for must in [1, 34, 207, 1416, 2106, 457, 1154] {
+    for must in [1, 34, 207, 326, 1274, 1416, 1417, 2106, 457, 1154] {
         assert!(ran.contains(&must), "test {must} did not run");
     }
 }

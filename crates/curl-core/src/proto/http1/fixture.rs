@@ -42,7 +42,8 @@ pub(crate) fn section(test: u32, outer: &str, tag: &str) -> Option<Section> {
     let within = &file[from..to];
     let open = tag_at(within, tag)?;
     let body_at = open + find(&within[open..], b">").unwrap() + 1;
-    let attrs = within[open..body_at].to_vec();
+    // The whole case is substituted, its attributes too.
+    let attrs = substitute(&within[open..body_at], test);
     let close = body_at + find(&within[body_at..], format!("</{tag}>").as_bytes()).unwrap();
     // The section's own lines start after the tag's line end.
     let mut text = within[body_at..close].to_vec();
@@ -53,10 +54,7 @@ pub(crate) fn section(test: u32, outer: &str, tag: &str) -> Option<Section> {
     if find(&attrs, b"crlf=\"yes\"").is_some() {
         text = replace(&text, b"\n", b"\r\n");
     } else if find(&attrs, b"crlf=\"headers\"").is_some() {
-        let end = find(&text, b"\n\n").map_or(text.len(), |e| e + 2);
-        let mut head = replace(&text[..end], b"\n", b"\r\n");
-        head.extend_from_slice(&text[end..]);
-        text = head;
+        text = header_lines_crlf(&text);
     }
     if find(&attrs, b"nonewline=\"yes\"").is_some() && text.last() == Some(&b'\n') {
         text.pop();
@@ -65,6 +63,98 @@ pub(crate) fn section(test: u32, outer: &str, tag: &str) -> Option<Section> {
         }
     }
     Some(Section { attrs, text })
+}
+
+/// `text` with the lines that look like a head's given CRLF endings, and
+/// a blank line right after one (`subnewlines` in `tests/testutil.pm`).
+fn header_lines_crlf(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut after_update = false;
+    for line in text.split_inclusive(|&b| b == b'\n') {
+        if looks_like_head(line) {
+            // `s/\x0d*\x0a/\x0d\x0a/`: a line with no newline is left.
+            match line.strip_suffix(b"\n") {
+                Some(content) => {
+                    let cr = content.iter().rev().take_while(|&&b| b == b'\r').count();
+                    out.extend_from_slice(&content[..content.len() - cr]);
+                    out.extend_from_slice(b"\r\n");
+                }
+                None => out.extend_from_slice(line),
+            }
+            after_update = true;
+        } else {
+            if line == b"\n" && after_update {
+                out.extend_from_slice(b"\r\n");
+            } else {
+                out.extend_from_slice(line);
+            }
+            after_update = false;
+        }
+    }
+    out
+}
+
+/// Whether `line` is a status line, a request line or a header with no
+/// carriage return in it, as `subnewlines` matches them.
+fn looks_like_head(line: &[u8]) -> bool {
+    let no_cr = |rest: &[u8]| !rest.contains(&b'\r');
+    for version in [&b"1.1"[..], b"1.0", b"2", b"3"] {
+        if let Some(rest) = line
+            .strip_prefix(b"HTTP/")
+            .and_then(|r| r.strip_prefix(version))
+            .and_then(|r| r.strip_prefix(b" "))
+            && let [code, rest @ ..] = rest
+            && matches!(code, b'1'..=b'5' | b'9')
+            && no_cr(rest)
+        {
+            return true;
+        }
+    }
+    for method in [
+        &b"GET"[..],
+        b"HEAD",
+        b"POST",
+        b"PUT",
+        b"DELETE",
+        b"CONNECT",
+        b"SETUP",
+        b"GET_PARAMETER",
+        b"OPTIONS",
+        b"ANNOUNCE",
+        b"DESCRIBE",
+    ] {
+        if let Some(rest) = line.strip_prefix(method).and_then(|r| r.strip_prefix(b" ")) {
+            let target = rest.iter().take_while(|b| !b.is_ascii_whitespace()).count();
+            let proto: &[u8] = if method.len() > 6 || matches!(method, b"SETUP") {
+                b" RTSP/"
+            } else {
+                b" HTTP/"
+            };
+            if target > 0
+                && rest[target..].starts_with(proto)
+                && rest
+                    .get(target + proto.len())
+                    .is_some_and(u8::is_ascii_digit)
+            {
+                return true;
+            }
+        }
+    }
+    let name = line
+        .iter()
+        .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        .count();
+    name > 0 && line[name..].starts_with(b": ") && no_cr(&line[name + 2..]) && !is_curl_error(line)
+}
+
+/// `curl: (N) `, which `subnewlines` leaves as it is.
+fn is_curl_error(line: &[u8]) -> bool {
+    line.strip_prefix(b"curl: (")
+        .map(|r| {
+            let digits = r.iter().take_while(|b| b.is_ascii_digit()).count();
+            digits > 0 && r[digits..].starts_with(b") ")
+        })
+        .unwrap_or(false)
 }
 
 /// Where `<tag` starts in `within` as a whole tag name, not a prefix of a

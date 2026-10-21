@@ -273,9 +273,9 @@ yet meet.
       binary. Not yet: a request body, retrying a reused connection that delivered nothing,
       C's debug-build-only trace lines.
     - **c. The fixture runner.** **Done.** `proto/http/suite.rs` reads the milestone set's
-      cases from `tests/data` and runs them over `FakeNet` and `ManualClock`: 66 of 81 run
-      (the rest need a server command, several replies, `-f`, `-o` or a stderr check), and
-      all but 367 (Basic auth from the URL) pass; armed by breaking a framing rule. It found
+      cases from `tests/data` and runs them over `FakeNet` and `ManualClock`: 72 of 81 run
+      (the rest need a server command, `-f`, `-o`, a stderr check, or a reply where 419 has
+      none), and all but 367 (Basic auth from the URL) pass; armed by breaking a framing rule. It found
       the second `Location` (772) and HEAD over HTTP/0.9 (1144). The plain-GET torture
       scenario and allocation budget (38) are in `tests/torture.rs`; the scenario found memory
       failures reported as `UrlMalformat`, `CouldntConnect` and `RecvError`.

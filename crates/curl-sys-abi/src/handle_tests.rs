@@ -659,6 +659,8 @@ fn infos_answer_from_the_report() {
     assert_eq!(info::<f64>(c, ffi::CURLINFO_SIZE_DOWNLOAD), 5.0);
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_SIZE_DOWNLOAD_T), 5);
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_SIZE_DELIVERED), 5);
+    // A file has no head.
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_HEADER_SIZE), 0);
     assert_eq!(info::<f64>(c, ffi::CURLINFO_SIZE_UPLOAD), 0.0);
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_SIZE_UPLOAD_T), 0);
     assert_eq!(

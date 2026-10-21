@@ -35,6 +35,7 @@ enum Var {
     /// The output file, if any.
     FilenameEffective,
     SizeDownload,
+    SizeHeader,
     SizeUpload,
 }
 
@@ -82,7 +83,7 @@ const VARIABLES: &[Variable] = &[
     known("scheme"),
     known("size_delivered"),
     written("size_download", Var::SizeDownload),
-    known("size_header"),
+    written("size_header", Var::SizeHeader),
     known("size_request"),
     written("size_upload", Var::SizeUpload),
     known("speed_download"),
@@ -137,6 +138,7 @@ pub(crate) struct Facts<'a> {
     pub(crate) url: &'a [u8],
     pub(crate) filename: Option<&'a [u8]>,
     pub(crate) size_download: u64,
+    pub(crate) size_header: u64,
     pub(crate) size_upload: u64,
 }
 
@@ -256,6 +258,9 @@ pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
                 }
                 Var::SizeDownload => {
                     let _ = write!(out, "{}", facts.size_download);
+                }
+                Var::SizeHeader => {
+                    let _ = write!(out, "{}", facts.size_header);
                 }
                 Var::SizeUpload => {
                     let _ = write!(out, "{}", facts.size_upload);

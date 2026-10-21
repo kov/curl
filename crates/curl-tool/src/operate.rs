@@ -365,6 +365,7 @@ fn finish(
             url,
             filename: stream.file_name(),
             size_download: easy.report().sizes().download(),
+            size_header: easy.report().sizes().header(),
             size_upload: easy.report().sizes().upload(),
         };
         write_out::write(format, &facts, run.stdout);

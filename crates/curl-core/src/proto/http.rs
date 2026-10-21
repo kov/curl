@@ -51,8 +51,6 @@ pub(crate) struct Request {
     stage: Stage,
     /// The current response is interim (1xx).
     interim: bool,
-    /// Head bytes over the transfer's requests (C's `info.header_size`).
-    transfer_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -123,7 +121,6 @@ impl Request {
             head: None,
             stage: Stage::Head,
             interim: false,
-            transfer_bytes: 0,
         })
     }
 
@@ -382,12 +379,11 @@ impl Request {
             pipeline,
             head,
             interim,
-            transfer_bytes,
             ..
         } = self;
         let head = head.as_mut().expect("made at DO");
         let (used, event) = head
-            .feed(input, transfer_bytes)
+            .feed(input, &mut cx.report_mut().sizes_mut().header)
             .map_err(|e| head_failed(cx, &e))?;
         let rest = &input[used..];
         let line = match event {
@@ -512,10 +508,7 @@ impl Request {
         input: &'i [u8],
     ) -> Result<&'i [u8], ErrorKind> {
         let Request {
-            pipeline,
-            stage,
-            transfer_bytes,
-            ..
+            pipeline, stage, ..
         } = self;
         let Stage::Body(Body::Chunked(decoder)) = stage else {
             unreachable!("reading chunks");
@@ -530,7 +523,8 @@ impl Request {
         }
         let mut piece = input;
         while !piece.is_empty() {
-            let (used, event) = match decoder.feed(piece, transfer_bytes) {
+            let header_size = &mut cx.report_mut().sizes_mut().header;
+            let (used, event) = match decoder.feed(piece, header_size) {
                 Ok(fed) => fed,
                 Err(e) => return Err(chunks_failed(cx, &e)),
             };
@@ -613,7 +607,8 @@ impl Request {
             // C ignores what comes of it.
             if self.pipeline.header(cx, &line, origin).is_ok() {
                 let head = self.head.as_mut().expect("made at DO");
-                let _counted = head.count_held(line.len() as u64, &mut self.transfer_bytes);
+                let _counted =
+                    head.count_held(line.len() as u64, &mut cx.report_mut().sizes_mut().header);
             }
         }
         let head = self.head.as_ref().expect("made at DO");

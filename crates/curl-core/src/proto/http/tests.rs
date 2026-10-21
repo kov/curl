@@ -614,6 +614,21 @@ fn a_head_cut_short_misses_its_body() {
     assert_eq!(head.result, Ok(()));
 }
 
+/// The header size counts every head line and trailer received, an
+/// interim response's with them, as C's (`CURLINFO_HEADER_SIZE`): the C
+/// tool's `-w %{size_header}` says 92 for this reply.
+#[test]
+fn the_header_size_counts_interim_heads_and_trailers() {
+    let ran = run(
+        "/",
+        b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X\r\n\r\n2\r\nok\r\n0\r\nX: yes\r\n\r\n",
+        false,
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().sizes().header(), 92);
+}
+
 /// Bytes after the last chunk are left over, and said so; none, nothing
 /// is said. The body is traced as it came, chunk lines and leftovers
 /// with it, before decoding (`cw_raw_write`, as the C tool's `-v` shows

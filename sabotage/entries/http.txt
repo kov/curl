@@ -347,3 +347,11 @@ witness: curl-core proto::http::tests::bytes_after_the_chunks_are_left_over
                 Some(ChunkEvent::Data(data)) => pipeline.decoded(cx, data)?,
 --- new
                 Some(ChunkEvent::Data(data)) => pipeline.body(cx, data)?,
+
+=== trailers are left out of the header size
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_header_size_counts_interim_heads_and_trailers
+--- old
+            let header_size = &mut cx.report_mut().sizes_mut().header;
+--- new
+            let header_size = &mut 0;

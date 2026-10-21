@@ -396,6 +396,9 @@ impl Timings {
 /// counted from zero again for every request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sizes {
+    /// Head and trailer bytes received over every request, against the
+    /// transfer's limit (`info.header_size`).
+    pub(crate) header: u64,
     pub(crate) download: u64,
     pub(crate) delivered: u64,
     pub(crate) download_expected: Option<u64>,
@@ -404,6 +407,12 @@ pub struct Sizes {
 }
 
 impl Sizes {
+    /// Bytes of every response head and trailer received
+    /// (`CURLINFO_HEADER_SIZE`).
+    pub fn header(&self) -> u64 {
+        self.header
+    }
+
     /// Body bytes sent (`CURLINFO_SIZE_UPLOAD_T`).
     pub fn upload(&self) -> u64 {
         self.upload

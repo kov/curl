@@ -1055,7 +1055,8 @@ over the last five one-second records. The handler is called, or the meter drawn
 - in throttled states (with rate limits);
 - a last call from the `Done` step, shown whatever the time but only if the request is done or a
   second has passed, unless the outcome is AbortedByCallback. An `Abort` there fails a transfer
-  that had succeeded.
+  that had succeeded. "Done" is C's `req.done`: the exchange ran to its end (`Reached::Exchanged`).
+  A request with nothing to exchange, as file://'s, never is, so a quick one draws its meter once.
 An unpause of a direction starts the records over; any unpause that leaves the transfer
 running forgets the slow time. The meter's titles are written once per handle, its line is
 drawn at most once a second and at the end, and only `Meter` ends the line with a newline

@@ -16,7 +16,7 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::{
     Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow, ProgressVerdict, Read,
-    ReadHandler, Write, WriteHandler,
+    ReadHandler, TextSink, Write, WriteHandler,
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx};
@@ -652,4 +652,35 @@ fn the_calendar_has_its_leap_years() {
     ] {
         assert_eq!(modified(t), line(date), "{t}");
     }
+}
+
+/// Text for the user, kept.
+#[derive(Clone, Default)]
+struct Stderr(Rc<RefCell<Vec<u8>>>);
+
+impl TextSink for Stderr {
+    fn write(&self, text: &[u8]) {
+        self.0.borrow_mut().extend_from_slice(text);
+    }
+}
+
+/// The meter of a file's transfer, over within a second, is drawn once,
+/// at the start, and its line ended: the request never exchanges, so its
+/// last pass shows nothing new (C's `req.done` stays false), as C's
+/// `curl -o O file://...` prints.
+#[test]
+fn a_file_draws_its_meter_once() {
+    let s = Scratch::new("meter");
+    s.file("f", b"hello", Y2K_NOON);
+    let (mut e, _) = easy(&s.url("f"));
+    let stderr = Stderr::default();
+    e.options_mut().progress = Progress::Meter;
+    e.options_mut().callbacks.stderr = Some(Handler::text(stderr.clone()).unwrap());
+    let (result, _) = run(e);
+    assert_eq!(result, Ok(()));
+    let drawn = String::from_utf8(stderr.0.borrow().clone()).unwrap();
+    assert_eq!(
+        drawn,
+        "  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\n                                 Dload  Upload  Total   Spent   Left   Speed\n\r  0      0   0      0   0      0      0      0                              0\n"
+    );
 }

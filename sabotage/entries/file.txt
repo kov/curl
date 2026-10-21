@@ -186,9 +186,9 @@ witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::file::tests::a_download_resumes_into_the_file
 --- old
-                TransferState::Done(x.done(Err(e), false, false)),
+                TransferState::Done(x.done(Err(e), false, Reached::Unmade)),
 --- new
-                TransferState::Done(x.done(Err(e), false, true)),
+                TransferState::Done(x.done(Err(e), false, Reached::Made)),
 
 === a request with nothing to exchange is exchanged
 file: crates/curl-core/src/multi/state.rs

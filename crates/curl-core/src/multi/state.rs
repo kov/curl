@@ -70,8 +70,19 @@ pub(crate) struct Done {
     result: Result<(), ErrorKind>,
     /// Ended before the request was complete.
     premature: bool,
-    /// The request was made: DID's times are taken.
-    made: bool,
+    reached: Reached,
+}
+
+/// How far a request got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reached {
+    /// It was not made: DID's times are not taken.
+    Unmade,
+    /// It was made; any exchange after did not run to its end.
+    Made,
+    /// Its exchange ran to its end (C's `req.done`): the last progress
+    /// pass shows the meter however soon it comes.
+    Exchanged,
 }
 
 #[derive(Debug)]
@@ -144,10 +155,10 @@ impl TransferState {
                 message: Message::Unread,
             }),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
-                TransferState::Done(x.done(Err(err), true, false))
+                TransferState::Done(x.done(Err(err), true, Reached::Unmade))
             }
             TransferState::Did(x) | TransferState::Exchanging(x) => {
-                TransferState::Done(x.done(Err(err), true, true))
+                TransferState::Done(x.done(Err(err), true, Reached::Made))
             }
             s @ (TransferState::Done(_) | TransferState::Completed(_)) => s,
         }
@@ -169,12 +180,12 @@ impl TransferState {
 }
 
 impl Attached {
-    fn done(self, result: Result<(), ErrorKind>, premature: bool, made: bool) -> Done {
+    fn done(self, result: Result<(), ErrorKind>, premature: bool, reached: Reached) -> Done {
         Done {
             lease: self.lease,
             result,
             premature,
-            made,
+            reached,
         }
     }
 }
@@ -318,14 +329,14 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             // A failed request is done with, not cut short (`multistate_do`).
             Err(e) => (
-                TransferState::Done(x.done(Err(e), false, false)),
+                TransferState::Done(x.done(Err(e), false, Reached::Unmade)),
                 Wake::Again,
             ),
         },
         // Without anything to exchange, the request is over
         // (`multistate_did`).
         TransferState::Did(x) if !x.proto.exchanges() => (
-            TransferState::Done(x.done(Ok(()), false, true)),
+            TransferState::Done(x.done(Ok(()), false, Reached::Made)),
             Wake::Again,
         ),
         TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
@@ -353,7 +364,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                             }
                             if done {
                                 (
-                                    TransferState::Done(x.done(Ok(()), false, true)),
+                                    TransferState::Done(x.done(Ok(()), false, Reached::Exchanged)),
                                     Wake::Again,
                                 )
                             } else {
@@ -368,7 +379,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // A last progress pass, unless a callback aborted already
             // (`multi_done`).
             if d.result != Err(ErrorKind::AbortedByCallback)
-                && let Err(e) = progress::finish(cx, !d.premature)
+                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
                 && d.result.is_ok()
             {
                 d.result = Err(e);
@@ -386,7 +397,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 message: Message::Unread,
             });
             let now = cx.rest.now;
-            enter_completed(cx.report_mut(), now, !d.made);
+            enter_completed(cx.report_mut(), now, d.reached == Reached::Unmade);
             (completed, Wake::Again)
         }
         s @ TransferState::Completed(_) => (s, Wake::Idle),
@@ -418,17 +429,19 @@ fn progress_after_step<H: Host>(
                 Err(e) => (s.fail(e), Wake::Again),
             }
         }
-        TransferState::Done(d) if d.result.is_ok() => match progress::update(cx, true) {
-            Ok(()) => (TransferState::Done(d), wake),
-            // An abort ends the request early, closing its connection.
-            Err(e) => (
-                TransferState::Done(Done {
-                    result: Err(e),
-                    ..d
-                }),
-                Wake::Again,
-            ),
-        },
+        TransferState::Done(d) if d.result.is_ok() => {
+            match progress::update(cx, d.reached == Reached::Exchanged) {
+                Ok(()) => (TransferState::Done(d), wake),
+                // An abort ends the request early, closing its connection.
+                Err(e) => (
+                    TransferState::Done(Done {
+                        result: Err(e),
+                        ..d
+                    }),
+                    Wake::Again,
+                ),
+            }
+        }
         s => (s, wake),
     }
 }

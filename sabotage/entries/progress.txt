@@ -100,9 +100,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_call
 --- old
             if d.result != Err(ErrorKind::AbortedByCallback)
-                && let Err(e) = progress::finish(cx, !d.premature)
+                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 --- new
-            if let Err(e) = progress::finish(cx, !d.premature)
+            if let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 
 === the last progress call's abort is ignored
 file: crates/curl-core/src/multi/state.rs
@@ -116,7 +116,7 @@ witness: curl-core progress::tests::an_abort_after_the_request_fails_the_transfe
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::a_transfer_cut_short_ends_the_meter_without_drawing_it
 --- old
-                && let Err(e) = progress::finish(cx, !d.premature)
+                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 --- new
                 && let Err(e) = progress::finish(cx, true)
 
@@ -167,12 +167,12 @@ witness: curl-core progress::tests::an_unpause_from_the_progress_handler_replays
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::an_abort_after_the_request_fails_the_transfer
 --- old
-                TransferState::Done(Done {
-                    result: Err(e),
-                    ..d
-                }),
+                    TransferState::Done(Done {
+                        result: Err(e),
+                        ..d
+                    }),
 --- new
-                TransferState::Done(Done { ..d }),
+                    TransferState::Done(Done { ..d }),
 
 === an unpause keeps the speed records
 file: crates/curl-core/src/multi/mod.rs
@@ -212,3 +212,19 @@ witness: curl-core progress::tests::the_meter_estimates_only_with_a_speed
         Some(total) if d.speed > 0 => (to_i64(total / d.speed), percent(total, d.cur)),
 --- new
         Some(total) => (to_i64(total / d.speed.max(1)), percent(total, d.cur)),
+
+=== a request with nothing to exchange forces its last meter line
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::a_file_draws_its_meter_once
+--- old
+                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
+--- new
+                && let Err(e) = progress::finish(cx, d.reached != Reached::Unmade)
+
+=== the pass after a request without an exchange counts it as done
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::a_file_draws_its_meter_once
+--- old
+            match progress::update(cx, d.reached == Reached::Exchanged) {
+--- new
+            match progress::update(cx, true) {

@@ -227,7 +227,7 @@ witness: curl-tool options_shape_the_request
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool fails_on_an_error_code
 --- old
-    http.fail_on_error = op.fail;
+    http.fail_on_error = op.fail == Fail::WithoutBody;
 --- new
     http.fail_on_error = false;
 
@@ -308,3 +308,21 @@ witness: curl-tool output::tests::counts_the_last_responses_header_lines
         if self.after_blank && self.num_headers == u64::MAX {
             self.num_headers = 0;
         }
+
+=== the fail options are two choices
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::the_last_fail_option_said_wins
+--- old
+            op.fail = if on { this } else { Fail::Off };
+--- new
+            if on || op.fail == this {
+                op.fail = if on { this } else { Fail::Off };
+            }
+
+=== `--fail-with-body` lets an error response succeed
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool fails_on_an_error_code_after_its_body
+--- old
+            && op.fail == Fail::WithBody
+--- new
+            && op.fail == Fail::WithoutBody

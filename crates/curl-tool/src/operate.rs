@@ -19,8 +19,8 @@ use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
 use crate::msgs::Messages;
 use crate::options::{
-    self as tool, CommandLine, Global, HttpVersion, IpVersion, Node, Operation, Output, Resume,
-    Upload, exit_code,
+    self as tool, CommandLine, Fail, Global, HttpVersion, IpVersion, Node, Operation, Output,
+    Resume, Upload, exit_code,
 };
 use crate::os_message;
 use crate::output;
@@ -322,7 +322,7 @@ fn configure(
     http.allow_09 = op.http09;
     http.raw = op.raw;
     http.ignore_content_length = op.ignore_content_length;
-    http.fail_on_error = op.fail;
+    http.fail_on_error = op.fail == Fail::WithoutBody;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);
     o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
@@ -374,6 +374,22 @@ fn finish(
                     }
                 }
             }
+        }
+        // `--fail-with-body` fails an error response once its body is
+        // written, unless a failure was reported already.
+        let reported = result.is_err() && (!msgs.silent || msgs.show_error);
+        if !reported
+            && op.fail == Fail::WithBody
+            && let Some(status) = easy.report().response_code().filter(|&s| s >= 400)
+        {
+            let kind = ErrorKind::HttpReturnedError;
+            if let Ok(line) = try_format(format_args!(
+                "curl: ({}) The requested URL returned error: {status}\n",
+                exit_code(kind)
+            )) {
+                msgs.error_line(&[line.as_bytes()]);
+            }
+            result = Err(kind);
         }
         let mut stream = out.stream();
         // `post_output_handling`: a successful transfer that wrote nothing

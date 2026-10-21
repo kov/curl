@@ -156,8 +156,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) no_body: bool,
     /// The HTTP method the options chose (C's `config->httpreq`).
     pub(crate) method: Method,
-    /// `--fail`.
-    pub(crate) fail: bool,
+    /// `--fail` or `--fail-with-body`, the last one said.
+    pub(crate) fail: Fail,
     /// `--no-buffer`: output is written as it comes.
     pub(crate) no_buffer: bool,
 }
@@ -315,6 +315,18 @@ pub(crate) enum Resume {
     At(u64),
     /// Where the output file ends: `--continue-at -`.
     FromOutput,
+}
+
+/// What an HTTP error response makes of the transfer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Fail {
+    /// Nothing: it succeeds.
+    #[default]
+    Off,
+    /// `--fail`: the library fails it, and no body is written.
+    WithoutBody,
+    /// `--fail-with-body`: the body is written, and the tool fails it.
+    WithBody,
 }
 
 /// Whether an output file that exists is overwritten.
@@ -621,7 +633,27 @@ pub(crate) fn apply<'a>(
         Opt::MaxTime => line.current().timeout_ms = value.millis(),
         Opt::ConnectTimeout => line.current().connect_timeout_ms = value.millis(),
         Opt::Globoff => line.current().globoff = value.toggle(),
-        Opt::Fail => line.current().fail = value.toggle(),
+        Opt::Fail | Opt::FailWithBody => {
+            let (this, other, deselects) = if spec.opt == Opt::Fail {
+                (
+                    Fail::WithoutBody,
+                    Fail::WithBody,
+                    &b"--fail deselects --fail-with-body here"[..],
+                )
+            } else {
+                (
+                    Fail::WithBody,
+                    Fail::WithoutBody,
+                    &b"--fail-with-body deselects --fail here"[..],
+                )
+            };
+            let on = value.toggle();
+            let op = line.current();
+            if on && op.fail == other {
+                msgs.warn(&[deselects]);
+            }
+            op.fail = if on { this } else { Fail::Off };
+        }
         Opt::Buffer => line.current().no_buffer = !value.toggle(),
         Opt::Stderr => crate::output::redirect_stderr(value.text(), msgs),
         // `--no-remote-name` gives a URL its own output only where
@@ -755,7 +787,6 @@ pub(crate) fn apply<'a>(
         | Opt::Epsv
         | Opt::Expect100Timeout
         | Opt::FailEarly
-        | Opt::FailWithBody
         | Opt::FalseStart
         | Opt::Follow
         | Opt::Form

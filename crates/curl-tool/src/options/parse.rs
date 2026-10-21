@@ -458,6 +458,18 @@ mod tests {
         assert_eq!(run(&["x", "--etag-save", "e"]), Ok((1, etag, None)));
     }
 
+    /// `--fail` and `--fail-with-body` are one choice, the last said; off,
+    /// either turns both off.
+    #[test]
+    fn the_last_fail_option_said_wins() {
+        use crate::options::Fail;
+        let fail = |args: &[&str]| line(args).operations[0].fail;
+        assert_eq!(fail(&["x", "--fail-with-body", "-f"]), Fail::WithoutBody);
+        assert_eq!(fail(&["x", "-f", "--fail-with-body"]), Fail::WithBody);
+        assert_eq!(fail(&["x", "-f", "--no-fail-with-body"]), Fail::Off);
+        assert_eq!(fail(&["x"]), Fail::Off);
+    }
+
     #[test]
     fn reads_the_http_options() {
         let l = line(&[
@@ -494,7 +506,8 @@ mod tests {
         assert_eq!(op.user_agent, Some(&b"ua"[..]));
         assert_eq!((op.referer, op.auto_referer), (Some(&b"r"[..]), true));
         assert_eq!(op.http_version, Some(crate::options::HttpVersion::Http10));
-        assert!(op.http09 && op.raw && op.ignore_content_length && op.fail && op.no_buffer);
+        assert!(op.http09 && op.raw && op.ignore_content_length && op.no_buffer);
+        assert_eq!(op.fail, crate::options::Fail::WithoutBody);
         assert_eq!((op.dump_header, op.max_filesize), (Some(&b"h"[..]), 1536));
         assert_eq!((op.timeout_ms, op.connect_timeout_ms), (1500, 2000));
         assert_eq!(op.happy_eyeballs_ms, Some(0), "0 is a delay");

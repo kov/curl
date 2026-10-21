@@ -161,6 +161,21 @@ fn fails_on_an_error_code() {
     );
 }
 
+/// `--fail-with-body` writes the error response's body, then fails.
+#[test]
+fn fails_on_an_error_code_after_its_body() {
+    let s = Server::new(b"HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\n\r\nabcde");
+    let run = curl(&["-sS", "--fail-with-body", &s.url()]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (
+            22,
+            &b"abcde"[..],
+            "curl: (22) The requested URL returned error: 404\n"
+        )
+    );
+}
+
 /// `--max-filesize` takes a unit; a body announced larger fails at once.
 #[test]
 fn limits_the_file_size() {

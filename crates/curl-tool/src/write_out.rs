@@ -17,6 +17,7 @@ use curl_core::report::{ResponseVersion, TransferReport};
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
 use crate::options::exit_code;
+use crate::slurp::{self, ReadFailed};
 use crate::stdout::Stdout;
 
 /// C's limit on a variable's name, its terminating zero included: a longer
@@ -209,14 +210,6 @@ pub(crate) enum Format<'a> {
     Read(Vec<u8>),
 }
 
-/// Why a format's file was not read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ReadFailed {
-    Open,
-    Read,
-    OutOfMemory,
-}
-
 impl Format<'_> {
     pub(crate) fn bytes(&self) -> &[u8] {
         match self {
@@ -228,28 +221,7 @@ impl Format<'_> {
     /// The text of file `name`, or of standard input for `-`, its
     /// carriage returns and line feeds left out (`file2string`).
     pub(crate) fn read(name: &[u8]) -> Result<Format<'static>, ReadFailed> {
-        use std::io::Read as _;
-        let mut file: Box<dyn std::io::Read> = if name == b"-" {
-            curl_alloc::try_box(std::io::stdin()).map_err(|_| ReadFailed::OutOfMemory)?
-        } else {
-            let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name);
-            let file = std::fs::File::open(path).map_err(|_| ReadFailed::Open)?;
-            curl_alloc::try_box(file).map_err(|_| ReadFailed::OutOfMemory)?
-        };
-        let mut text = Vec::new();
-        let mut buf = [0; 4096];
-        loop {
-            let n = match file.read(&mut buf) {
-                Ok(0) => return Ok(Format::Read(text)),
-                Ok(n) => n,
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                Err(_) => return Err(ReadFailed::Read),
-            };
-            for line in buf[..n].split(|&b| b == b'\r' || b == b'\n') {
-                text.try_extend_from_slice(line)
-                    .map_err(|_| ReadFailed::OutOfMemory)?;
-            }
-        }
+        slurp::read(name, slurp::As::Text).map(Format::Read)
     }
 }
 

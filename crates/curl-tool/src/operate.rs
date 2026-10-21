@@ -8,7 +8,7 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::os::unix::ffi::OsStrExt as _;
 use std::time::{Duration, UNIX_EPOCH};
 
-use curl_alloc::{OutOfMemory, TryVec as _, try_format};
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
@@ -153,8 +153,25 @@ fn transfer(
         Upload::Unset | Upload::Nothing => None,
     };
     // An upload is a PUT, which no other method may be chosen with.
-    if upload.is_some() && op.method.allows(tool::Method::Put, &msgs).is_err() {
+    // The data of `--data` makes a POST, an upload a PUT, and no other
+    // method may be chosen with either (`single_transfer`,
+    // `create_single`).
+    let mut method = op.method;
+    if op.post.is_some() && method.choose(tool::Method::Post, &msgs).is_err() {
         return Step::Failed(ErrorKind::FailedInit);
+    }
+    if upload.is_some() && method.choose(tool::Method::Put, &msgs).is_err() {
+        return Step::Failed(ErrorKind::FailedInit);
+    }
+    // `check_post_resume`: data is not resumed, and C says so itself.
+    let resumed = match op.resume {
+        Some(Resume::FromOutput) => true,
+        Some(Resume::At(n)) => n > 0,
+        None => false,
+    };
+    if method == tool::Method::Post && resumed {
+        msgs.error(&[b"(43) HTTP upload cannot be resumed"]);
+        return Step::Failed(ErrorKind::BadFunctionArgument);
     }
     let to_stdout = matches!(node.output, Output::Unset | Output::File(b"-"));
     let made = match node.output {
@@ -243,6 +260,7 @@ fn transfer(
         url,
         resume,
         upload: upload.is_some(),
+        method,
         terminal,
         bar: bar.as_ref(),
     };
@@ -291,6 +309,8 @@ struct Config<'a> {
     url: &'a [u8],
     resume: Option<options::Resume>,
     upload: bool,
+    /// The HTTP method the options chose for it.
+    method: tool::Method,
     /// Standard output is a terminal, and the output goes there.
     terminal: bool,
     /// `--progress-bar`'s.
@@ -313,6 +333,12 @@ fn configure(
     }
     if config.upload {
         o.method = Method::Upload;
+    } else if let Some(post) = &op.post {
+        // `setopt_post`'s POSTFIELDS.
+        let mut body = Vec::new();
+        body.try_extend_from_slice(post)?;
+        o.method = Method::Post;
+        o.upload = options::UploadSource::Bytes(TryRc::try_new(body)?);
     } else if op.no_body {
         o.method = Method::Head;
     }
@@ -332,8 +358,33 @@ fn configure(
     o.callbacks.header = Some(out.header_handler()?);
     // `credentials_and_headers_setopts` and `http_setopts`.
     let http = &mut o.http;
-    http.headers = options::UserHeaders::new(op.headers.iter().copied())?;
+    // `--json` types the request and accepts JSON, unless the headers
+    // say otherwise (`get_args`).
+    let json = [
+        (&b"Content-Type"[..], &b"Content-Type: application/json"[..]),
+        (b"Accept", b"Accept: application/json"),
+    ]
+    .map(|(name, line)| (op.json && !in_list(&op.headers, name)).then_some(line));
+    http.headers =
+        options::UserHeaders::new(op.headers.iter().copied().chain(json.into_iter().flatten()))?;
     http.referer = op.referer.map(copy).transpose()?;
+    http.custom_method = op.custom_request.map(copy).transpose()?;
+    // `customrequest_helper`.
+    if let Some(custom) = op.custom_request {
+        let implied = config.method.implied();
+        if custom.eq_ignore_ascii_case(implied) {
+            run.msgs.note(&[
+                b"Unnecessary use of -X or --request, ",
+                implied,
+                b" is already inferred.",
+            ]);
+        } else if custom.eq_ignore_ascii_case(b"head") {
+            run.msgs.warn(&[
+                b"Setting custom HTTP method to HEAD with -X/--request may not work the way \
+                  you want. Consider using -I/--head instead.",
+            ]);
+        }
+    }
     http.user_agent = Some(match op.user_agent {
         Some(agent) => copy(agent)?,
         None => copy(
@@ -585,6 +636,16 @@ impl Rewind for UploadFile {
             Err(_) => Err(RewindFailed),
         }
     }
+}
+
+/// Whether a header line names `name`, followed by a colon or a
+/// semicolon (`inlist`).
+fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
+    headers.iter().any(|h| {
+        h.len() > name.len()
+            && h[..name.len()].eq_ignore_ascii_case(name)
+            && matches!(h[name.len()], b':' | b';')
+    })
 }
 
 #[cfg(test)]

@@ -54,6 +54,19 @@ fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File>
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
+/// Standard input, read through a descriptor of its own: no buffer
+/// stays behind, as `std::io::stdin`'s does until the process ends.
+pub fn stdin() -> io::Result<File> {
+    // SAFETY: `fcntl` reads descriptor 0 only for the call, and makes a
+    // new descriptor, closed on exec, or fails.
+    let fd = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_DUPFD_CLOEXEC, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is the new descriptor, owned by nothing else.
+    Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
 /// Make standard error write where `to` writes, as `freopen` of `stderr`
 /// does: every later write to descriptor 2, from anywhere in the process,
 /// goes there.

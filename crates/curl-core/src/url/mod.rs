@@ -26,6 +26,12 @@ use encode::{Query, bad_octets, copy, push};
 /// URL text: bytes, valid UTF-8 or not, without a terminating zero.
 type Bytes = Vec<u8>;
 
+/// `bytes` with every byte but letters, digits and `-._~` escaped as
+/// `%XX` (`curl_easy_escape`).
+pub fn escape(bytes: &[u8]) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
+    encode::escape(bytes).map_err(|_| curl_alloc::OutOfMemory)
+}
+
 /// The longest URL C accepts (`CURL_MAX_INPUT_LENGTH`); its buffers also
 /// stop just short of it.
 const MAX_INPUT: usize = 8_000_000;

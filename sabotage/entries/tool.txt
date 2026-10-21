@@ -235,7 +235,7 @@ witness: curl-tool fails_on_an_error_code
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool takes_one_method
 --- old
-    if upload.is_some() && op.method.allows(tool::Method::Put, &msgs).is_err() {
+    if upload.is_some() && method.choose(tool::Method::Put, &msgs).is_err() {
 --- new
     if false {
 
@@ -293,9 +293,9 @@ witness: curl-tool write_out::tests::writes_values_as_c
 file: crates/curl-tool/src/write_out.rs
 witness: curl-tool write_out::tests::reads_a_format_file_without_line_ends
 --- old
-            for line in buf[..n].split(|&b| b == b'\r' || b == b'\n') {
+        slurp::read(name, slurp::As::Text).map(Format::Read)
 --- new
-            for line in buf[..n].split(|&b| b == 0) {
+        slurp::read(name, slurp::As::Binary).map(Format::Read)
 
 === the header count runs on across responses
 file: crates/curl-tool/src/output.rs
@@ -355,3 +355,59 @@ witness: curl-tool write_out::tests::writes_to_the_file_output_names
 --- new
                 if append {
                     open.write(true).truncate(true);
+
+=== data joins without separators
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool posts_the_data_given
+--- old
+            if !post.is_empty() && spec.opt != Opt::Json {
+--- new
+            if false {
+
+=== --data-urlencode keeps its spaces encoded
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool posts_the_data_given
+--- old
+        if let Some(after) = rest.strip_prefix(b"%20") {
+--- new
+        if let Some(after) = rest.strip_prefix(b"%2020") {
+
+=== --json's Accept is added over the user's
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool posts_json
+--- old
+    .map(|(name, line)| (op.json && !in_list(&op.headers, name)).then_some(line));
+--- new
+    .map(|(_, line)| op.json.then_some(line));
+
+=== data may come with an upload
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool takes_one_method
+--- old
+    if op.post.is_some() && method.choose(tool::Method::Post, &msgs).is_err() {
+--- new
+    if false {
+
+=== data is resumed
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool sends_the_method_asked_for
+--- old
+    if method == tool::Method::Post && resumed {
+--- new
+    if false && resumed {
+
+=== an implied -X goes without a note
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool sends_the_method_asked_for
+--- old
+        if custom.eq_ignore_ascii_case(implied) {
+--- new
+        if custom.eq_ignore_ascii_case(b"x") {
+
+=== a text data file keeps its zero bytes
+file: crates/curl-tool/src/slurp.rs
+witness: curl-tool slurp::tests::reads_text_and_binary
+--- old
+                .split(|&b| matches!(b, b'\r' | b'\n' | 0))
+--- new
+                .split(|&b| matches!(b, b'\r' | b'\n'))

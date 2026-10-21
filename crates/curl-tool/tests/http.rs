@@ -219,6 +219,98 @@ fn takes_one_method() {
         "Warning: You can only select one HTTP request method! You asked for both PUT \n\
          Warning: (-T, --upload-file) and HEAD (-I, --head).\n"
     );
+    let run = curl(&["-d", "x", "-T", "/dev/null", "http://127.0.0.1:1/"]);
+    assert_eq!(run.code, 2);
+    assert_eq!(
+        run.stderr,
+        "Warning: You can only select one HTTP request method! You asked for both PUT \n\
+         Warning: (-T, --upload-file) and POST (-d, --data).\n"
+    );
+}
+
+/// `-d` and its kin join their data with `&` into a POST's body, typed
+/// as a form; `--data-urlencode` encodes, its spaces as `+`.
+#[test]
+fn posts_the_data_given() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&[
+        "-sS",
+        "-d",
+        "a=b",
+        "--data-raw",
+        "@c d",
+        "--data-urlencode",
+        "n=x y&",
+        &s.url(),
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(request.starts_with("POST / HTTP/1.1\r\n"), "{request}");
+    let body = "a=b&@c d&n=x+y%26";
+    assert!(
+        request.ends_with(&format!(
+            "Content-Length: {}\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n{body}",
+            body.len()
+        )),
+        "{request}"
+    );
+}
+
+/// `-X` sends its method, noting when it is the one implied; data is
+/// not resumed.
+#[test]
+fn sends_the_method_asked_for() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&[
+        "-v",
+        "--no-progress-meter",
+        "-X",
+        "POST",
+        "-d",
+        "x",
+        &s.url(),
+    ]);
+    assert_eq!(run.code, 0);
+    assert!(
+        run.stderr
+            .starts_with("Note: Unnecessary use of -X or --request, POST is already inferred.\n"),
+        "{}",
+        run.stderr
+    );
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&["-sS", "-X", "DELETE", &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    assert!(s.request().starts_with("DELETE / HTTP/1.1\r\n"));
+    let run = curl(&["-d", "x", "-C", "-", "http://127.0.0.1:1/"]);
+    assert_eq!(
+        (run.code, &run.stderr[..]),
+        (43, "curl: (43) HTTP upload cannot be resumed\n")
+    );
+}
+
+/// `--json` types the request and accepts JSON unless `-H` says
+/// otherwise, and joins its data with nothing.
+#[test]
+fn posts_json() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&[
+        "-sS",
+        "--json",
+        "{",
+        "--json",
+        "}",
+        "-H",
+        "accept: text/x",
+        &s.url(),
+    ]);
+    assert_eq!(run.code, 0);
+    let request = s.request();
+    assert!(
+        request.contains("\r\naccept: text/x\r\nContent-Type: application/json\r\n"),
+        "{request}"
+    );
+    assert!(!request.contains("Accept: application/json"), "{request}");
+    assert!(request.ends_with("\r\n\r\n{}"), "{request}");
 }
 
 /// `-H` warns of a header with neither colon nor semicolon, and a second

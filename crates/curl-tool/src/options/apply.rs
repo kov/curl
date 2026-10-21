@@ -15,6 +15,7 @@ use super::protocols::{self, Protocols};
 use super::table::Opt;
 use super::{ParamError, Spec, number};
 use crate::msgs::Messages;
+use crate::slurp::{As, ReadFailed};
 use crate::write_out;
 
 /// An option's argument, read according to its kind.
@@ -124,6 +125,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) connect_to: Vec<&'a [u8]>,
     /// `--user-agent`.
     pub(crate) user_agent: Option<&'a [u8]>,
+    /// `--request`.
+    pub(crate) custom_request: Option<&'a [u8]>,
     /// `--referer`, without its `;auto`.
     pub(crate) referer: Option<&'a [u8]>,
     /// `--referer` ending in `;auto`: a redirect sends the URL it came
@@ -160,6 +163,11 @@ pub(crate) struct Operation<'a> {
     pub(crate) fail: Fail,
     /// `--no-buffer`: output is written as it comes.
     pub(crate) no_buffer: bool,
+    /// What `--data` and its kin give, joined: the body a POST sends (C's
+    /// `postdata`), empty if they gave nothing.
+    pub(crate) post: Option<Vec<u8>>,
+    /// `--json` was given: the request is typed and accepts JSON.
+    pub(crate) json: bool,
 }
 
 /// The addresses `--ipv4` and `--ipv6` limit a name to.
@@ -183,6 +191,7 @@ pub(crate) enum Method {
     Unset,
     Get,
     Head,
+    Post,
     Put,
 }
 
@@ -193,16 +202,20 @@ impl Method {
             Method::Unset => b"",
             Method::Get => b"GET (-G, --get)",
             Method::Head => b"HEAD (-I, --head)",
+            Method::Post => b"POST (-d, --data)",
             Method::Put => b"PUT (-T, --upload-file)",
         }
     }
 
-    /// Whether `wanted` could be chosen after this one, warning if not,
-    /// without choosing it: the transfer side of `SetHTTPrequest`, which
-    /// C runs on the operation's configuration as it creates a transfer.
-    pub(crate) fn allows(self, wanted: Method, msgs: &Messages) -> Result<(), ()> {
-        let mut method = self;
-        method.choose(wanted, msgs)
+    /// The method the request is sent with when none is asked for
+    /// (`customrequest_helper`'s list).
+    pub(crate) fn implied(self) -> &'static [u8] {
+        match self {
+            Method::Unset | Method::Get => b"GET",
+            Method::Head => b"HEAD",
+            Method::Post => b"POST",
+            Method::Put => b"PUT",
+        }
     }
 
     /// Choose `wanted`, unless another method was chosen already
@@ -591,6 +604,13 @@ pub(crate) fn apply<'a>(
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
+        Opt::Request => {
+            let text = value.text();
+            if text.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().custom_request = Some(text);
+        }
         Opt::Referer => {
             let text = value.text();
             let op = line.current();
@@ -658,6 +678,22 @@ pub(crate) fn apply<'a>(
         }
         Opt::Buffer => line.current().no_buffer = !value.toggle(),
         Opt::Stderr => crate::output::redirect_stderr(value.text(), msgs),
+        Opt::Data
+        | Opt::DataAscii
+        | Opt::DataBinary
+        | Opt::DataRaw
+        | Opt::DataUrlencode
+        | Opt::Json => {
+            let data = data(spec.opt, value.text(), msgs)?;
+            let op = line.current();
+            op.json |= spec.opt == Opt::Json;
+            let post = op.post.get_or_insert_with(Vec::new);
+            // `--json` adds no separator.
+            if !post.is_empty() && spec.opt != Opt::Json {
+                post.try_push(b'&')?;
+            }
+            post.try_extend_from_slice(&data)?;
+        }
         // `--no-remote-name` gives a URL its own output only where
         // `--remote-name-all` named every URL's, which it cannot yet: off,
         // both change nothing.
@@ -680,12 +716,14 @@ pub(crate) fn apply<'a>(
                             None
                         }
                         Ok(format) => Some(format),
-                        Err(write_out::ReadFailed::OutOfMemory) => return Err(ParamError::NoMem),
-                        Err(write_out::ReadFailed::Open) => {
+                        Err(crate::slurp::ReadFailed::OutOfMemory) => {
+                            return Err(ParamError::NoMem);
+                        }
+                        Err(crate::slurp::ReadFailed::Open) => {
                             msgs.error(&[b"Failed to open ", shown]);
                             return Err(ParamError::ReadError);
                         }
-                        Err(write_out::ReadFailed::Read) => return Err(ParamError::ReadError),
+                        Err(crate::slurp::ReadFailed::Read) => return Err(ParamError::ReadError),
                     }
                 }
                 None => Some(write_out::Format::Given(value.text())),
@@ -766,11 +804,6 @@ pub(crate) fn apply<'a>(
         | Opt::Crlf
         | Opt::Crlfile
         | Opt::Curves
-        | Opt::Data
-        | Opt::DataAscii
-        | Opt::DataBinary
-        | Opt::DataRaw
-        | Opt::DataUrlencode
         | Opt::Delegation
         | Opt::Digest
         | Opt::DisableEprt
@@ -826,7 +859,6 @@ pub(crate) fn apply<'a>(
         | Opt::Interface
         | Opt::IpTos
         | Opt::IpfsGateway
-        | Opt::Json
         | Opt::JunkSessionCookies
         | Opt::Keepalive
         | Opt::KeepaliveCnt
@@ -909,7 +941,6 @@ pub(crate) fn apply<'a>(
         | Opt::Range
         | Opt::Rate
         | Opt::RemoteHeaderName
-        | Opt::Request
         | Opt::RequestTarget
         | Opt::Retry
         | Opt::RetryAllErrors
@@ -1002,4 +1033,81 @@ fn verbose(line: &mut CommandLine<'_>, msgs: &Messages, on: bool) {
         msgs.warn(&[b"-v, --verbose overrides an earlier trace option"]);
     }
     g.trace = Trace::Plain;
+}
+
+/// What one of the `--data` options gives (`set_data`): its text, or the
+/// file `@` names (`-` standard input) for all but `--data-raw`, read as
+/// text but for `--data-binary` and `--json`; `--data-urlencode` encodes.
+fn data(opt: Opt, text: &[u8], msgs: &Messages) -> Result<Vec<u8>, ParamError> {
+    if opt == Opt::DataUrlencode {
+        return url_encoded(text, msgs);
+    }
+    let mut data = Vec::new();
+    match text.strip_prefix(b"@").filter(|_| opt != Opt::DataRaw) {
+        Some(name) => {
+            let how = if matches!(opt, Opt::DataBinary | Opt::Json) {
+                As::Binary
+            } else {
+                As::Text
+            };
+            data = read_named(name, how, msgs)?;
+        }
+        None => data.try_extend_from_slice(text)?,
+    }
+    Ok(data)
+}
+
+/// `--data-urlencode`'s `[name]=content` or `[name]@file`, the content
+/// escaped and its spaces made `+` (`data_urlencode`).
+fn url_encoded(text: &[u8], msgs: &Messages) -> Result<Vec<u8>, ParamError> {
+    let at = text
+        .iter()
+        .position(|&b| b == b'=')
+        .or_else(|| text.iter().position(|&b| b == b'@'));
+    let (name, content) = match at {
+        Some(at) if text[at] == b'@' => {
+            (&text[..at], read_named(&text[at + 1..], As::Binary, msgs)?)
+        }
+        Some(at) => {
+            let mut content = Vec::new();
+            content.try_extend_from_slice(&text[at + 1..])?;
+            (&text[..at], content)
+        }
+        None => {
+            let mut content = Vec::new();
+            content.try_extend_from_slice(text)?;
+            (&text[..0], content)
+        }
+    };
+    let escaped = curl_core::url::escape(&content)?;
+    let mut out = Vec::new();
+    if !name.is_empty() {
+        out.try_extend_from_slice(name)?;
+        out.try_push(b'=')?;
+    }
+    let mut rest = &escaped[..];
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix(b"%20") {
+            out.try_push(b'+')?;
+            rest = after;
+        } else {
+            out.try_push(rest[0])?;
+            rest = &rest[1..];
+        }
+    }
+    Ok(out)
+}
+
+/// The file `name` (`-` standard input), or C's error for one that does
+/// not open.
+fn read_named(name: &[u8], how: As, msgs: &Messages) -> Result<Vec<u8>, ParamError> {
+    match crate::slurp::read(name, how) {
+        Ok(data) => Ok(data),
+        Err(ReadFailed::Open) => {
+            msgs.error(&[b"Failed to open ", name]);
+            Err(ParamError::ReadError)
+        }
+        Err(ReadFailed::Read) => Err(ParamError::ReadError),
+        Err(ReadFailed::OutOfMemory) => Err(ParamError::NoMem),
+    }
 }

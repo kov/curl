@@ -346,12 +346,14 @@ cargo-mutants run on the milestone's diff.
     and libtest 500 within its memory limit now that a multi's rows hold their transfers
     boxed. The rest of the ring waits on the steps named for it below: `%{method}` and
     `%{referer}` are tested only through redirects.
-25. **http: send request bodies.** **In progress.** Opening commit, done: `Directions`
-    derived from the protocol where a pause is judged, no longer stored, a pause from the
-    transfer's own handler judged when its run is back. Then the send side's states (`SendSide`), POSTFIELDS, the read callback,
-    PUT, chunked upload, `Expect: 100-continue` with the 417 retry as a second leg, and a
-    rewind for a new leg. The method's options (NOBODY, POST, UPLOAD, HTTPGET) combine in the
-    shim. T1 tests 1295, 1740, 1741 and 2093.
+25. **http: send request bodies.** **In progress.** Done: `Directions` derived from the
+    protocol where a pause is judged, no longer stored; a body of known size sent behind the
+    head from one 64 KiB send buffer, with its `Content-Length`, a POST's form type and C's
+    end-of-send trace; `CURLOPT_CUSTOMREQUEST`; the tool's `-d` family, `--json` and `-X`.
+    To do: the send side's states (`SendSide`), chunked upload for an unknown size,
+    `Expect: 100-continue` with the 417 retry as a second leg, an error response before the
+    body is sent (`KEEP_SENDING_ON_ERROR`), and a rewind for a new leg. The method's options
+    (NOBODY, POST, POSTFIELDS, UPLOAD, HTTPGET) combine in the shim. T1 test 2093.
 26. **http: follow redirects.** **To do.** Opening commit: relative URL resolution and the
     part setters (the rest of lib1560). Then FOLLOWLOCATION, MAXREDIRS, 301/302/303 method
     changes, the credential gate's first origin kept in `Run`, credentials and a custom Host

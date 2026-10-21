@@ -33,8 +33,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-alloc/src/track.rs`: the debug test build's global allocator and memory tracker.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place.
-- `crates/curl-os/src/fs.rs`: opening files, listing directories, and pointing standard error
-  at a file.
+- `crates/curl-os/src/fs.rs`: opening files, listing directories, reading standard input
+  unbuffered, and pointing standard error at a file.
 - `crates/curl-os/src/net.rs`: opening and connecting sockets.
 - `crates/curl-os/src/poll.rs`: `poll(2)`.
 - `crates/curl-os/src/resolve.rs`: the system's resolver, `getaddrinfo`.

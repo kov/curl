@@ -274,6 +274,11 @@ impl Conversation {
             then_close,
             ..Wire::default()
         };
+        // Room for the requests a test sends, made now so that sending
+        // them allocates nothing the library would be charged for.
+        wire.received
+            .try_reserve(REQUESTS_ROOM)
+            .expect("a test's requests fit");
         for reply in replies {
             let mut copy = Vec::new();
             copy.try_extend_from_slice(reply)
@@ -319,15 +324,26 @@ pub struct FakeNet {
 #[cfg(any(test, feature = "test-util"))]
 const FIRST_FAKE: i32 = 1000;
 
+/// The sockets, and the bytes of requests, a fake holds without growing.
+#[cfg(any(test, feature = "test-util"))]
+const SOCKETS_ROOM: usize = 16;
+#[cfg(any(test, feature = "test-util"))]
+const REQUESTS_ROOM: usize = 4096;
+
 #[cfg(any(test, feature = "test-util"))]
 impl FakeNet {
     /// A network whose waits move `clock`.
     pub fn new(clock: crate::time::ManualClock) -> FakeNet {
+        // The socket numbers a test uses, made now so that opening a
+        // socket allocates nothing the library would be charged for.
+        let mut open = Vec::new();
+        open.try_reserve(SOCKETS_ROOM)
+            .expect("a test's sockets fit");
         FakeNet {
             clock,
             peers: Vec::new(),
             conversations: Vec::new(),
-            open: Vec::new(),
+            open,
         }
     }
 

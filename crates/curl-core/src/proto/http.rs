@@ -5,13 +5,13 @@
 
 use curl_alloc::TryVec as _;
 
-use crate::conn::ConnLease;
 use crate::conn::io::{Events, Recv, Sent};
+use crate::conn::{ConnLease, RecvFailed};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
-use crate::error::ErrorKind;
+use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
-use crate::multi::state::{OsError, StepCx};
+use crate::multi::state::{OsError, StepCx, url_error};
 use crate::options::{HttpVersion, Method};
 use crate::report::Timer;
 use crate::trace;
@@ -71,8 +71,7 @@ enum Body {
 impl Request {
     /// A request for `url`, whose scheme is `http`.
     pub(crate) fn new(url: &Url) -> Result<Request, ErrorKind> {
-        let malformed = |_| ErrorKind::UrlMalformat;
-        let host = url.get(Part::Host, GetOptions::NONE).map_err(malformed)?;
+        let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
         let port = url
             .get(
                 Part::Port,
@@ -81,17 +80,21 @@ impl Request {
                     ..GetOptions::NONE
                 },
             )
-            .map_err(malformed)?;
+            .map_err(url_error)?;
         let port = std::str::from_utf8(&port)
             .ok()
             .and_then(|p| p.parse().ok())
             .ok_or(ErrorKind::UrlMalformat)?;
-        let mut target = url.get(Part::Path, GetOptions::NONE).map_err(malformed)?;
-        if let Ok(query) = url.get(Part::Query, GetOptions::NONE) {
-            target.try_push(b'?').map_err(|_| ErrorKind::OutOfMemory)?;
-            target
-                .try_extend_from_slice(&query)
-                .map_err(|_| ErrorKind::OutOfMemory)?;
+        let mut target = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
+        match url.get(Part::Query, GetOptions::NONE) {
+            Ok(query) => {
+                target.try_push(b'?').map_err(|_| ErrorKind::OutOfMemory)?;
+                target
+                    .try_extend_from_slice(&query)
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+            }
+            Err(UrlErrorKind::NoQuery) => {}
+            Err(e) => return Err(url_error(e)),
         }
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
@@ -269,7 +272,8 @@ impl Request {
                     *cx.conn(lease).rx_mut() = rx;
                     fed?;
                 }
-                Err(e) => {
+                Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+                Err(RecvFailed::Os(e)) => {
                     let why = OsError(&e);
                     return Err(trace::fail(
                         cx,

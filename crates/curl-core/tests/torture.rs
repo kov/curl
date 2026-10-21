@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use curl_alloc::track::{self, Tracker};
 use curl_alloc::{OutOfMemory, TryArc, TryRc, try_box};
-use curl_core::conn::io::{FakeNet, Net, Waker};
+use curl_core::conn::io::{Conversation, FakeNet, Net, Peer, Waker};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{
@@ -43,6 +43,10 @@ fn main() {
         (
             "pausing_and_replaying_survives_every_allocation_failing",
             pausing_and_replaying_survives_every_allocation_failing,
+        ),
+        (
+            "a_get_survives_every_allocation_failing",
+            a_get_survives_every_allocation_failing,
         ),
     ] {
         // Reported as libtest does, the name before the run, so that a run
@@ -95,7 +99,7 @@ struct Outcome {
 fn scenario() -> Result<Outcome, OutOfMemory> {
     let clock = ManualClock::new()?;
     let boxed: Box<dyn Clock> = try_box(clock.clone())?;
-    let net: Box<dyn Net> = try_box(FakeNet::new(clock.clone()))?;
+    let net: Box<dyn Net> = try_box(fake_net(&clock))?;
     let waker = TryArc::try_new(Waker::new().expect("a socket pair"))?;
     let env = Env {
         clock: boxed,
@@ -164,6 +168,12 @@ fn add_perform_remove_survives_every_allocation_failing() {
         removed: TRANSFERS,
     };
     torture(scenario, Ok(full));
+}
+
+/// A network over `clock`, made untracked: the test's fake is not the
+/// library's to account for.
+fn fake_net(clock: &ManualClock) -> FakeNet {
+    track::untracked(|| FakeNet::new(clock.clone()))
 }
 
 /// Run `scenario` once for each allocation it makes, that one and every
@@ -255,7 +265,7 @@ fn pause_scenario() -> Result<Paused, OutOfMemory> {
     let clock = ManualClock::new()?;
     let env = Env {
         clock: try_box(clock.clone())?,
-        net: try_box(FakeNet::new(clock))?,
+        net: try_box(fake_net(&clock))?,
         arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
         waker: None,
     };
@@ -347,4 +357,115 @@ fn pausing_and_replaying_survives_every_allocation_failing() {
         sent: 300,
     };
     torture(pause_scenario, Ok(full));
+}
+
+/// Test 1's reply.
+const REPLY: &[u8] = b"HTTP/1.1 200 OK\r\nDate: Tue, 09 Nov 2010 14:49:00 GMT\r\n\
+Server: test-server/fake\r\nContent-Length: 6\r\nContent-Type: text/html\r\n\r\n-foo-\n";
+
+/// What a GET got through: its result, and what its handlers took.
+#[derive(Debug, PartialEq, Eq)]
+struct Got {
+    result: Result<(), ErrorKind>,
+    body: u64,
+    headers: u64,
+}
+
+/// What a handler took.
+#[derive(Default)]
+struct Took {
+    body: Cell<u64>,
+    headers: Cell<u64>,
+}
+
+struct Taker(TryRc<Took>);
+
+impl WriteHandler for Taker {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        self.0.body.set(self.0.body.get() + body.len() as u64);
+        Write::Accepted
+    }
+}
+
+impl HeaderHandler for Taker {
+    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+        self.0.headers.set(self.0.headers.get() + line.len() as u64);
+        Write::Accepted
+    }
+}
+
+/// The request the GET sends.
+const REQUEST: &[u8] =
+    b"GET /1?q HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n";
+
+/// A network with a server at port 80 answering test 1's reply, and the
+/// server, made untracked: the test's peer is not the library's to
+/// account for.
+fn test_1_server() -> (ManualClock, FakeNet, Conversation) {
+    track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
+        let talk = Conversation::new(REPLY, false);
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        (clock, net, talk)
+    })
+}
+
+/// A plain GET over `net` to `talk`, from a new multi to its removal.
+/// `Err` where setting up refused; the transfer itself may fail for
+/// memory, and nothing else, and when it succeeds it sent the whole
+/// request.
+fn get(clock: ManualClock, net: FakeNet, talk: &Conversation) -> Result<Got, OutOfMemory> {
+    let env = Env {
+        clock: try_box(clock)?,
+        net: try_box(net)?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env)?;
+    let mut easy = Easy::new();
+    let o = easy.options_mut();
+    o.set_url(Some(b"http://127.0.0.1/1?q"))?;
+    o.http.user_agent = Some(b"curl/test".to_vec_fallible()?);
+    let took = TryRc::try_new(Took::default())?;
+    o.callbacks.write = Some(Handler::write(Taker(took.clone()))?);
+    o.callbacks.header = Some(Handler::header(Taker(took.clone()))?);
+    let id = match m.add(easy, (), &mut NoEvents) {
+        Ok(id) => id,
+        Err(AddError {
+            kind: MultiErrorKind::OutOfMemory,
+            ..
+        }) => return Err(OutOfMemory),
+        Err(e) => panic!("add refused with {:?}, not for memory", e.kind),
+    };
+    let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+        .expect("the transfer is in the multi");
+    if !matches!(result, Ok(()) | Err(ErrorKind::OutOfMemory)) {
+        track::untracked(|| panic!("the GET ended with {result:?}"));
+    }
+    if result.is_ok() {
+        track::untracked(|| assert_eq!(talk.received(), REQUEST, "the request sent"));
+    }
+    m.remove(id, &mut NoEvents).expect("in the multi");
+    Ok(Got {
+        result,
+        body: took.body.get(),
+        headers: took.headers.get(),
+    })
+}
+
+fn get_scenario() -> Result<Got, OutOfMemory> {
+    let (clock, net, talk) = test_1_server();
+    get(clock, net, &talk)
+}
+
+fn a_get_survives_every_allocation_failing() {
+    let full = Got {
+        result: Ok(()),
+        body: 6,
+        headers: REPLY.len() as u64 - 6,
+    };
+    torture(get_scenario, Ok(full));
 }

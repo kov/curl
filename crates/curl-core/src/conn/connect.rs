@@ -77,6 +77,8 @@ pub(crate) enum ConnectError {
         local: Option<SocketAddr>,
         error: io::Error,
     },
+    /// Memory for a socket ran out: no failure of the peer's.
+    OutOfMemory,
 }
 
 impl ConnectMachine {
@@ -129,6 +131,9 @@ impl ConnectMachine {
                 let remote = SocketAddr::new(ip, dest.port);
                 let socket = match net.connect(remote) {
                     Ok((socket, Connect::InProgress | Connect::Done)) => socket,
+                    Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                        return Err(ConnectError::OutOfMemory);
+                    }
                     Err(error) => return Err(ConnectError::Immediate { remote, error }),
                 };
                 let stage = Stage::Racing(Attempt { remote, socket });
@@ -189,6 +194,9 @@ impl Attempt {
     fn fail(self, net: &mut dyn Net, error: io::Error) -> ConnectError {
         let local = self.socket.local_addr().ok();
         net.close(self.socket);
+        if error.kind() == io::ErrorKind::OutOfMemory {
+            return ConnectError::OutOfMemory;
+        }
         ConnectError::Attempt {
             remote: self.remote,
             local,

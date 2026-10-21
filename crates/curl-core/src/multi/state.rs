@@ -686,6 +686,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, origin: &Origin, e: ConnectEr
     let host = origin.name();
     let port = origin.port;
     match e {
+        ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Unresolved => {
             trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
             let kind = ErrorKind::CouldntResolveHost;

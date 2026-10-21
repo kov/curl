@@ -131,3 +131,37 @@ witness: curl-core proto::http::tests::a_head_answered_in_http_0_9_is_refused
                 }
 --- new
                 pipeline.body(cx, bytes)?;
+
+=== a socket's memory failure is a connect failure
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core a_get_survives_every_allocation_failing
+--- old
+                    Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+--- new
+                    Err(error) if false => {
+
+=== a receive buffer's memory failure is a read failure
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core a_get_survives_every_allocation_failing
+--- old
+                Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+--- new
+                Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::RecvError),
+
+=== a query that cannot be copied is left out
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core a_get_survives_every_allocation_failing
+--- old
+            Err(UrlErrorKind::NoQuery) => {}
+            Err(e) => return Err(url_error(e)),
+--- new
+            Err(_) => {}
+
+=== a host that cannot be copied is a malformed URL
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core a_get_survives_every_allocation_failing
+--- old
+        let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
+--- new
+        let host = url.get(Part::Host, GetOptions::NONE).map_err(|_| ErrorKind::UrlMalformat)?;
+

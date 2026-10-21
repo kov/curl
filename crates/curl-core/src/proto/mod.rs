@@ -98,9 +98,9 @@ impl ProtoState {
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Tcp => {
-                let malformed = |_| ErrorKind::UrlMalformat;
-                let host = url.get(Part::Host, GetOptions::NONE).map_err(malformed)?;
-                let port = url.get(Part::Port, GetOptions::NONE).map_err(malformed)?;
+                let url_error = crate::multi::state::url_error;
+                let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
+                let port = url.get(Part::Port, GetOptions::NONE).map_err(url_error)?;
                 let port = std::str::from_utf8(&port)
                     .ok()
                     .and_then(|p| p.parse().ok())

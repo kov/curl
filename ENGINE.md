@@ -1531,8 +1531,10 @@ peer gets a protocol error, not an out-of-memory one.
   allocations allowed, for n = 0, 1, … until a run has nothing refused; every run must end in
   `OutOfMemory` (or an earlier clean error), never abort, and leave `track::live_tracked()` where
   it was. The scenarios are harness-free test binaries (`crates/curl-core/tests/torture.rs`), as
-  the limit is process-wide. Scenarios: add/perform/remove, a plain GET, a
-  reused GET, a redirect, pause and replay.
+  the limit is process-wide. Scenarios: add/perform/remove, a plain GET (a run that succeeds
+  must have sent the whole request), a reused GET, a redirect, pause and replay. The fake
+  network and its peer are made untracked and hold room for a test's sockets and requests, so
+  that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
   `FakeNet`, is fixed when that commit lands and recorded beside the test.

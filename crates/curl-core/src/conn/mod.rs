@@ -150,17 +150,14 @@ impl Conn {
 
     /// Read once from the network, up to `max` bytes, behind what `rx`
     /// holds.
-    pub(crate) fn recv(&mut self, max: usize) -> std::io::Result<Recv> {
+    pub(crate) fn recv(&mut self, max: usize) -> Result<Recv, RecvFailed> {
         let socket = match &self.transport {
             Transport::Tcp(socket) => &**socket,
             Transport::Local => unreachable!("a local connection moves no bytes"),
         };
         // Borrowed apart from `rx`, which the read fills.
-        let room = self
-            .rx
-            .room(max)
-            .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
-        let got = socket.recv(room);
+        let room = self.rx.room(max).map_err(|_| RecvFailed::OutOfMemory)?;
+        let got = socket.recv(room).map_err(RecvFailed::Os);
         let n = match got {
             Ok(Recv::Data(n)) => n.get(),
             Ok(Recv::Eof) => {
@@ -178,6 +175,15 @@ impl Conn {
     pub(crate) fn send(&mut self, bytes: &[u8]) -> std::io::Result<Sent> {
         self.socket().send(bytes)
     }
+}
+
+/// Why reading from a connection failed.
+#[derive(Debug)]
+pub(crate) enum RecvFailed {
+    /// No room could be made for what is read.
+    OutOfMemory,
+    /// The socket failed.
+    Os(std::io::Error),
 }
 
 /// Whether a connection is leased.

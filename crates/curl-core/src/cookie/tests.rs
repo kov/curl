@@ -230,14 +230,15 @@ fn replaces_in_place_of_time_and_keeps_live_cookies() {
         NOW,
     )
     .unwrap();
-    // The server's replaces the file's, keeping its creation time.
+    set(&mut jar, b"example.com", b"/", b"b=1");
+    // The server's replaces the file's, keeping its creation time: older
+    // than `b`, it goes after it.
     let said = set(&mut jar, b"example.com", b"/", b"a=live");
     assert_eq!(
         said.as_deref(),
         Some("Replaced cookie a=\"live\" for domain example.com, path /, expire 0")
     );
-    assert_eq!(jar.len(), 1);
-    set(&mut jar, b"example.com", b"/", b"b=1");
+    assert_eq!(jar.len(), 2);
     assert_eq!(sent(&jar, b"example.com", b"/", false), ["b=1", "a=live"]);
     // A file read again does not replace what a server set.
     jar.load(
@@ -321,6 +322,15 @@ fn matches_hosts_paths_and_security_as_c() {
     assert_eq!(sent(&jar, b"a.example.com", b"/", true), ["d=1"]);
     assert_eq!(sent(&jar, b"WWW.EXAMPLE.COM", b"", false), ["h=1", "d=1"]);
     assert!(sent(&jar, b"badexample.com", b"/", true).is_empty());
+    // A host that ends in the domain, but not after a dot, is not in it;
+    // it hashes with the domain, so the jar looks at the cookie.
+    set(
+        &mut jar,
+        b"www.example.com",
+        b"/",
+        b"w=1; domain=www.example.com",
+    );
+    assert_eq!(sent(&jar, b"awww.example.com", b"/", true), ["d=1"]);
 }
 
 #[test]

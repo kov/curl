@@ -8,6 +8,7 @@
 //! connected.
 
 mod file;
+mod http1;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 

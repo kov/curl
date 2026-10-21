@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 11 are **done**; every other step is **to do**.
+Status: steps 1 to 12 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -221,9 +221,13 @@ yet meet.
       `REQ_IO_*`): none before DID, set there from the protocol, sending cleared once the body
       is sent. A pause blocks a transfer only when it stops every way it moves
       (`Curl_xfer_is_blocked`), so it never blocks a setup or `file:`.
-12. **http1: render requests behind the credential gate.** `RequestHead`, `UserHeaders`,
-    `render_h1`, `CredentialGate`. Fixture tests compare byte-exactly with the `<protocol>` of 1,
-    14, 47, 461, 1121, 1292.
+12. **http1: render requests behind the credential gate.** **Done.** `RequestHead`,
+    `UserHeaders`, `render_h1`, `CredentialGate` in `proto/http1/request.rs`. Fixture tests
+    compare byte-exactly with the `<protocol>` of 1, 14, 47, 461, 1121, 1292; the application's
+    headers, Connection, the gate and the 1 MiB cap have their own. The parts no option asks for
+    yet (authentication, range, cookies, conditionals, content headers and the rest) render
+    nothing, and the options that feed a head (`-H`, the user agent, the version) come with the
+    protocol in step 14.
 13. **http1: parse responses and decide framing.** `ResponseHeadParser`, `decide_framing`,
     `ChunkDecoder`, trailers, GOT_NOTHING, every limit, the accountant's `maxdownload` cut and
     short-body end ("end of response with N bytes missing"). Byte-fed tests at every split point from

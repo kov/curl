@@ -1174,31 +1174,35 @@ DO, so `Did` goes straight to `Done`.
 ### 6.1 Request
 
 ```rust
-pub struct RequestHead<'o> {
-    method: Method<'o>, target: RequestTarget<'o>, version: HttpVersion,
-    builtin: EnumMap<BuiltinHeader, Builtin<'o>>, user: &'o UserHeaders,
+pub(crate) struct RequestHead<'o> {
+    method: &'o [u8], target: &'o [u8], version: Version,
+    host: &'o [u8], port: Option<u16>, user_agent: Option<&'o [u8]>, headers: &'o UserHeaders,
 }
-pub enum Builtin<'o> { Default, Suppressed, Replaced(&'o [u8]) }
-pub struct UserHeaders { text: Vec<u8>, index: Vec<UserHeader> }   // built once at setopt
-pub enum UserHeader { Value { name: Range<u32>, value: Range<u32> }, Blank { name: Range<u32> },
-                      Remove { name: Range<u32> } }
-pub fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut SendBuf)
-    -> Result<HeadLen, Error>;                                         // > 1 MiB: TooLarge
+pub struct UserHeaders { lines: Vec<UserHeader> }      // each line classified once, when given
+struct UserHeader { line: Vec<u8>, name: (usize, usize) /* trimmed */, asks: Asks }
+enum Asks { Value, Blank, Nothing }
+pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut Vec<u8>)
+    -> Result<(), ErrorKind>;                         // past 1 MiB less a byte: TooLarge
 ```
 
-- **Order is the declaration order of `BuiltinHeader`**, so rendering iterates the enum and the
-  sequence of http.c:2899 is a property of the type: request line, Host, Proxy-Authorization,
+- **Order is the declaration order of `Part`**, which rendering walks, so the sequence of
+  `http_hd_t` is a property of the type: request line, Host, Proxy-Authorization,
   Authorization, Range, User-Agent, Accept, TE, Accept-Encoding, Referer, Proxy-Connection,
   Transfer-Encoding, Alt-Used, Upgrade, Cookie, conditionals, custom headers in the order given,
-  Content-Length, Content-Type, Expect, Connection, blank line.
-- **`UserHeaders` is indexed once**, replacing about 15 linear `Curl_checkheaders` scans per
-  request. Its constructor holds the rules: `Name;` sends an empty header, `Name:` removes it,
-  colon-less lines are dropped, the first Host wins (1121), `-H host:` removes Host (461),
-  `Host;`/`Accept;` send blanks (1292), the name is trimmed so `Authorization :` is recognised.
-- **One credential gate.** `CredentialGate::for_target(&Target)` compares the current origin with
-  the initial origin once per request. Authorization, Cookie and a custom Host render only
-  through methods that take the gate's `SameOrigin` token, so a new emit site cannot skip the
-  check.
+  content headers, Connection, blank line. A part no option asks for yet renders nothing.
+- **`UserHeaders` classifies each line once**: `Name;` sends an empty header, a line with no
+  colon or nothing after it sends nothing, any other goes as given. Two lookups stay distinct, as
+  in C: whether a line *replaces* a library header is a case-blind prefix of the untrimmed line
+  followed by `:` or `;` (`Curl_checkheaders`), so `Accept:` drops the default Accept but
+  `Accept :x` does not; what a line *is* for the gate and the skips uses the trimmed name, so
+  `Authorization :` is still an Authorization. A custom Host is `Host:` plus the bytes after the
+  name (1121, 1292), and `Host:` alone removes it (461); every other duplicate goes in order.
+  Connection is assembled last: the first with a value, trimmed, then the rest as given.
+- **One credential gate.** `CredentialGate::new(initial, now, other_hosts)` compares the origins
+  once per request (`Curl_peer_equal`). A custom Host is reached only through
+  `UserHeaders::host(SameOrigin)`, and Authorization and Cookie lines only through
+  `UserHeaders::sendable(Option<Trusted>)`, where `Trusted` is the same origin or
+  `CURLOPT_UNRESTRICTED_AUTH`: a new emit site cannot skip the gate.
 - **One typed request for every version.** h2 and h3 (stage 5) encode the same `RequestHead`;
   C's render-to-HTTP/1-then-reparse (`Curl_h1_req_parse_read`) has no counterpart, and the H1
   request parser survives only as test support (unit 2603).

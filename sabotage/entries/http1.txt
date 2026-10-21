@@ -1,0 +1,64 @@
+# The HTTP/1 request head: what goes, in which order, and what the gate
+# holds back.
+
+=== the default Accept goes before the User-Agent
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::requests_are_what_the_tests_expect
+--- old
+        Part::UserAgent,
+        Part::Accept,
+--- new
+        Part::Accept,
+        Part::UserAgent,
+
+=== a header's name is not trimmed
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::the_gate_holds_back_what_was_said_for_the_first_origin
+--- old
+    let stop = line[..end]
+        .iter()
+        .rposition(|&b| !is_blank(b))
+--- new
+    let stop = line[..end]
+        .iter()
+        .rposition(|_| true)
+
+=== credentials go to any origin
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::the_gate_holds_back_what_was_said_for_the_first_origin
+--- old
+            .filter(move |h| trusted.is_some() || !(h.is(b"Authorization") || h.is(b"Cookie")))
+--- new
+            .filter(move |h| trusted.is_none() || !(h.is(b"Authorization") || h.is(b"Cookie")))
+
+=== Host: alone sends an empty Host
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::requests_are_what_the_tests_expect
+--- old
+                Some(h) if h.line.eq_ignore_ascii_case(b"Host:") => {}
+--- new
+                Some(h) if h.line == b"Host:" => {}
+
+=== a header replaces the library's only by its name, without a separator
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::the_application_s_headers_replace_and_add
+--- old
+            && matches!(self.line[name.len()], b':' | b';')
+--- new
+            && matches!(self.line[name.len()], b':' | b';' | b' ')
+
+=== the head may fill the whole mebibyte
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::a_head_is_at_most_a_mebibyte_less_a_byte
+--- old
+        if self.0.len() + bytes.len() > MAX_HEAD {
+--- new
+        if self.0.len() + bytes.len() > MAX_HEAD + 1 {
+
+=== the first Connection header goes untrimmed
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::connection_headers_come_last
+--- old
+        out.line(&[b"Connection: ", first.value().expect("filtered on it")])?;
+--- new
+        out.line(&[&first.line])?;

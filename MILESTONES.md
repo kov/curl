@@ -398,7 +398,7 @@ cargo-mutants run on the milestone's diff.
     reaches the handle. Waiting: `curl_multi_assign` from a transfer's own handler, for a
     `TransferCx` that reaches the socket table; the timer and socket callbacks inside a pause
     from a transfer's own handler, which come at the end of the pass instead (ENGINE.md 7.8).
-29. **http: authenticate.** **In progress.** Basic from the options, then netrc, Bearer and
+29. **http: authenticate.** **Done**, but for what waits on later work. Basic from the options, then netrc, Bearer and
     Digest, and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15)
     with it. T1 tests 1876 and 1877. Done: the login (`CURLOPT_USERPWD`, `USERNAME`,
     `PASSWORD`, `XOAUTH2_BEARER`, the tool's `-u` and `--oauth2-bearer`) composed with the
@@ -408,9 +408,10 @@ cargo-mutants run on the milestone's diff.
     second request, FAILONERROR's 401 exception, `CURLINFO_HTTPAUTH_AVAIL` and `_USED`; Basic,
     Bearer and Digest (`--digest`; MD5, SHA-256 and SHA-512/256) with its body-less probe. T1
     tests 1876 and 1877 pass; the 44 Digest tests pass on both legs, though `runtests.pl` skips
-    them on the Rust leg, which claims no NTLM, Kerberos or SPNEGO and so no `crypto`. To do:
-    `http_perhapsrewind`'s early close of a large body not yet sent, on a 401.
-    Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31).
+    them on the Rust leg, which claims no NTLM, Kerberos or SPNEGO and so no `crypto`.
+    Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31);
+    `http_perhapsrewind`'s early close of a large body, and its "Need to rewind" line on an
+    auth reload, with step 34.
 30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
     share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`;
     then `-R` (step 27) on the date parser.
@@ -426,6 +427,14 @@ cargo-mutants run on the milestone's diff.
     for `curl_easy_header` and `curl_easy_nextheader`, by origin and request across step 26's
     redirects; the tool's `%header{}` and `%{header_json}` read from them (T1 tests 421, 764,
     765, 1670, 1671). Then `-z` and `CURLOPT_TIMECONDITION` (T1 test 1239).
+34. **core: read the response while the body goes.** **To do**, a change to the exchange
+    loop's order to be confirmed first. `Request::step` sends until the socket blocks, then
+    reads; C's `Curl_sendrecv` reads first and sends one buffer a pass. Measured 2026-10-21,
+    a 30 MB PUT to a server that answers 401 before reading the body: C reads the 401 after
+    about 320 KB, says "close instead of sending 29672430 more bytes" and reloads on a new
+    connection; the Rust leg sends all 30 MB, then reloads on the same one. With `Expect:
+    100-continue` both close before any body goes, and only the info line differs. No suite
+    test sees it. With it, step 29's early close (`http_perhapsrewind`).
 
 Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
 generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting

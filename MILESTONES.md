@@ -405,9 +405,11 @@ cargo-mutants run on the milestone's diff.
     URL's per request, gated to the first origin; `.netrc` files (`CURLOPT_NETRC`,
     `NETRC_FILE`, `--netrc`, `--netrc-optional`, `--netrc-file`); the methods asked for
     (`CURLOPT_HTTPAUTH`, `--basic`, `--anyauth`), a 401's challenges read and answered as a
-    second request, FAILONERROR's 401 exception, `CURLINFO_HTTPAUTH_AVAIL` and `_USED`; Basic
-    and Bearer. T1 tests 1876 and 1877 pass. To do: Digest and its body-less probe;
-    `http_perhapsrewind`'s early close of a large body not yet sent, on a 401 or a redirect.
+    second request, FAILONERROR's 401 exception, `CURLINFO_HTTPAUTH_AVAIL` and `_USED`; Basic,
+    Bearer and Digest (`--digest`; MD5, SHA-256 and SHA-512/256) with its body-less probe. T1
+    tests 1876 and 1877 pass; the 44 Digest tests pass on both legs, though `runtests.pl` skips
+    them on the Rust leg, which claims no NTLM, Kerberos or SPNEGO and so no `crypto`. To do:
+    `http_perhapsrewind`'s early close of a large body not yet sent, on a 401.
     Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31).
 30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
     share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`;

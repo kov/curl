@@ -14,7 +14,7 @@ use super::fields;
 use super::response::{HttpVersion, Status};
 use crate::date::{self, BadDate};
 use crate::options::AuthMethods;
-use crate::proto::http::auth::{AuthAct, AuthAsked, Challenges};
+use crate::proto::http::auth::{AuthAct, AuthAsked, Challenges, Heard, HeardNote};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
 const MAX_CODINGS: u8 = 5;
@@ -68,8 +68,14 @@ pub(crate) enum Note {
     AlreadyDownloaded,
     SizeWhileIgnoring,
     IgnoringBody,
-    /// A challenge asked again for the method the request used.
+    /// A challenge asked again for the method the request used, or
+    /// could not be read.
     AuthProblem(AuthMethods),
+    /// A second Digest challenge, not read.
+    DuplicateDigest,
+    /// What a challenge line has C say, given out one by one by
+    /// `Notes::iter`.
+    Heard(Heard),
 }
 
 /// What C says of a line before it delivers it: at most two notes.
@@ -86,8 +92,19 @@ impl Notes {
         *free.expect("at most two notes to a line") = Some(note);
     }
 
+    /// The notes, a challenge line's one by one.
     pub(crate) fn iter(&self) -> impl Iterator<Item = Note> + '_ {
-        self.0.iter().flatten().copied()
+        self.0.iter().flatten().flat_map(|&note| {
+            let (one, heard) = match note {
+                Note::Heard(heard) => (None, Some(heard)),
+                note => (Some(note), None),
+            };
+            let heard = heard.into_iter().flat_map(Heard::notes).map(|n| match n {
+                HeardNote::Problem(method) => Note::AuthProblem(method),
+                HeardNote::DuplicateDigest => Note::DuplicateDigest,
+            });
+            one.into_iter().chain(heard)
+        })
     }
 }
 
@@ -104,6 +121,8 @@ impl fmt::Display for Note {
             Note::AuthProblem(method) => {
                 return write!(f, "{} authentication problem, ignoring.", method.name());
             }
+            Note::DuplicateDigest => "Ignoring duplicate digest auth header.",
+            Note::Heard(_) => unreachable!("given out one by one by `Notes::iter`"),
         })
     }
 }
@@ -303,8 +322,8 @@ impl Meta {
         }
         if status.code == 401 && value_of(line, b"WWW-Authenticate:").is_some() {
             let v = fields::header_value(line).unwrap_or(&[]);
-            let refused = self.challenges.read(v, &asked.auth);
-            return Ok(refused.map(Note::AuthProblem));
+            let heard = self.challenges.read(v, &asked.auth)?;
+            return Ok((!heard.is_empty()).then_some(Note::Heard(heard)));
         }
         Ok(None)
     }
@@ -498,9 +517,9 @@ impl Meta {
         self.location.as_deref().filter(|_| self.follow)
     }
 
-    /// What the 401's challenges offered.
-    pub(crate) fn challenges(&self) -> &Challenges {
-        &self.challenges
+    /// The 401's challenges, taken for the handle to keep.
+    pub(crate) fn take_challenges(&mut self) -> Challenges {
+        std::mem::take(&mut self.challenges)
     }
 
     /// What the final head led to in authenticating.

@@ -13,7 +13,7 @@ use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
-use crate::options::{Follow, HttpVersion, Method, Resume, UploadSource};
+use crate::options::{Follow, Http, HttpVersion, Method, Resume, UploadSource};
 use crate::report::Timer;
 use crate::time::Instant;
 use crate::trace;
@@ -25,11 +25,13 @@ use super::http1::framing::{self, Asked, Framing};
 use super::http1::request::{self, Authorization, CredentialGate, RequestHead};
 use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
+use crate::options::AuthMethods;
 use crate::options::NetrcMode;
-use auth::{Credentials, CredentialsError, NetrcLookup};
+use auth::{AuthRequest, Credentials, CredentialsError, NetrcLookup, OutputError};
 use std::ffi::CStr;
 
 pub(crate) mod auth;
+pub(crate) mod digest;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
 /// The most one read takes (`CURL_MAX_WRITE_SIZE`, BUFFERSIZE's default).
@@ -59,11 +61,11 @@ pub(crate) struct Request {
     pipeline: Pipeline,
     /// The path and query the request asks for.
     target: Vec<u8>,
-    /// The host as the URL names it, and its port.
-    host: Vec<u8>,
     /// What the URL says to authenticate with.
     credentials: Option<Credentials>,
-    port: u16,
+    /// The scheme, the host as the URL names it, and the port the
+    /// request goes to.
+    peer: Peer,
     /// What of the application's may go to the request's origin.
     gate: CredentialGate,
     /// The method, as the requests before it left it.
@@ -240,15 +242,12 @@ impl Request {
             Err(UrlErrorKind::NoQuery) => {}
             Err(e) => return Err(url_error(e)),
         }
+        let peer = Peer::new(super::HTTP, host, port, super::zone(url)?);
         let gate = match inherited.first.as_deref() {
             None => CredentialGate::FIRST,
             Some(first) => {
-                let mut name = Vec::new();
-                name.try_extend_from_slice(&host)
-                    .map_err(|_| ErrorKind::OutOfMemory)?;
-                let here = Peer::new(super::HTTP, name, port, super::zone(url)?);
                 let other_hosts = cx.easy().options().http.unrestricted_auth;
-                CredentialGate::new(first, &here, other_hosts)
+                CredentialGate::new(first, &peer, other_hosts)
             }
         };
         let login = &cx.easy().options().login;
@@ -263,13 +262,12 @@ impl Request {
                 ));
             }
         };
-        let credentials = with_netrc(credentials, &host, cx)?;
+        let credentials = with_netrc(credentials, peer.shown(), cx)?;
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,
-            host,
             credentials,
-            port,
+            peer,
             gate,
             method: inherited.method,
             custom: !inherited.ignore_custom,
@@ -301,9 +299,9 @@ impl Request {
     /// The host and port the request connects to.
     pub(crate) fn origin(&self) -> Result<(Vec<u8>, u16), ErrorKind> {
         let mut host = Vec::new();
-        host.try_extend_from_slice(&self.host)
+        host.try_extend_from_slice(self.peer.shown())
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        Ok((host, self.port))
+        Ok((host, self.peer.port()))
     }
 
     pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
@@ -323,10 +321,12 @@ impl Request {
 
     /// What the final response's challenges offered, what they led to,
     /// and the response's code.
-    pub(crate) fn auth(&self) -> Option<(auth::Challenges, auth::AuthAct, u16)> {
-        let head = self.head.as_ref()?;
-        let meta = head.meta();
-        Some((*meta.challenges(), *meta.auth(), head.status()?.code))
+    /// The challenges are taken out, for the handle to keep.
+    pub(crate) fn auth(&mut self) -> Option<(auth::Challenges, auth::AuthAct, u16)> {
+        let head = self.head.as_mut()?;
+        let code = head.status()?.code;
+        let act = *head.meta().auth();
+        Some((head.meta_mut().take_challenges(), act, code))
     }
 
     /// A 417 refused the request's `Expect: 100-continue`.
@@ -388,6 +388,13 @@ impl Request {
         events
     }
 
+    /// The method the request line names: the application's own, unless
+    /// a follow dropped it.
+    fn method_line<'o>(&self, http: &'o Http) -> &'o [u8] {
+        let custom = http.custom_method.as_deref().filter(|_| self.custom);
+        custom.unwrap_or(self.method.name())
+    }
+
     /// Render the head and send what the connection takes now (`Curl_http`).
     pub(crate) fn do_it<H: Host>(
         &mut self,
@@ -396,24 +403,36 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         let reused = cx.conn(lease).reused();
         let get_or_head = matches!(self.method, Method::Get | Method::Head);
-        let custom_auth = cx.easy().options().http.headers.replaces(b"Authorization");
         let credentials = self.credentials.as_ref();
-        let auth = cx
-            .easy_mut()
+        let (host_auth, options) = cx.easy_mut().auth_with_options();
+        let http = &options.http;
+        let method = self.method_line(http);
+        let request = AuthRequest {
+            origin: &self.peer,
+            method,
+            uri: &self.target,
+            get_or_head,
+        };
+        let custom_auth = http.headers.replaces(b"Authorization");
+        let random = |bytes: &mut [u8; 12]| curl_os::random::fill(bytes).map_err(|_| ());
+        let auth = match host_auth.output(credentials, custom_auth, &request, random) {
+            Ok(auth) => auth,
+            Err(OutputError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+            Err(OutputError::Random) => return Err(ErrorKind::FailedInit),
+        };
+        let auth_asked = cx
+            .easy()
             .auth
-            .output(credentials, custom_auth, get_or_head);
-        let auth_asked = cx.easy().auth.asked(credentials, auth.probe, get_or_head);
+            .asked(credentials, auth.probe, get_or_head, &self.peer);
         cx.report_mut().set_auth_used(auth.used);
         let options = cx.easy().options();
         let http = &options.http;
-        let method = self.method.name();
+        let method = self.method_line(http);
         let body = match self.method {
             Method::Get | Method::Head => None,
             Method::Post => Some(BodyKind::Form),
             Method::Upload => Some(BodyKind::Put),
         };
-        let custom = http.custom_method.as_deref().filter(|_| self.custom);
-        let method = custom.unwrap_or(method);
         if body.is_some() && options.resume.is_some() {
             return Err(trace::fail(
                 cx,
@@ -421,8 +440,16 @@ impl Request {
                 format_args!("HTTP upload cannot be resumed"),
             ));
         }
-        let mut upload = body.map(|_| Upload::new(&options.upload));
-        let size = upload.as_ref().and_then(Upload::size);
+        // A probe goes without its body, saying it has none
+        // (`Curl_creader_set_null`).
+        let mut upload = body
+            .filter(|_| !auth.probe)
+            .map(|_| Upload::new(&options.upload));
+        let size = if auth.probe {
+            Some(0)
+        } else {
+            upload.as_ref().and_then(Upload::size)
+        };
         // The application's Transfer-Encoding decides whether the body is
         // chunked; otherwise one of unknown size is, which HTTP/1.0 cannot
         // send (`http_req_set_TE`).
@@ -454,11 +481,12 @@ impl Request {
             && !self.no_expect
             && self.version == HttpVersion::Http11
             && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
-        let expect_state = if content.is_some() && (expects == Some(true) || added_expect) {
-            ExpectState::Head
-        } else {
-            ExpectState::None
-        };
+        let expect_state =
+            if content.is_some() && !auth.probe && (expects == Some(true) || added_expect) {
+                ExpectState::Head
+            } else {
+                ExpectState::None
+            };
         if let Some(content) = &mut content {
             content.expect = added_expect;
         }
@@ -468,26 +496,26 @@ impl Request {
             // C's -1, which for a download names no range a server knows.
             Some(Resume::AtEnd) => return Err(ErrorKind::NotBuiltIn),
         };
-        let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
+        let port = self.peer.port();
+        let shown_port = (port != DEFAULT_PORT).then_some(port);
         let gate = self.gate;
-        let value = match (&self.credentials, auth.sent) {
-            (Some(c), Some(method)) => c
-                .authorization(method)
-                .map_err(|_| ErrorKind::OutOfMemory)?,
-            _ => None,
-        };
-        let authorization = match (&self.credentials, auth.sent, value.as_deref()) {
-            (Some(c), Some(method), Some(value)) => {
+        let authorization = match (&self.credentials, &auth.header) {
+            // Digest goes beside the application's own Authorization, as
+            // C's does (`H1_HD_AUTH`).
+            (Some(c), Some((AuthMethods::DIGEST, value))) => {
+                Some(Authorization::alongside("Digest", value, c.trusted()))
+            }
+            (Some(c), Some((method, value))) => {
                 Authorization::new(method.name(), value, c.trusted(), &http.headers)
             }
             _ => None,
         };
-        let authenticated = auth.sent.filter(|_| authorization.is_some());
+        let authenticated = (!auth.used.is_empty()).then_some(auth.used);
         let head = RequestHead {
             method,
             target: &self.target,
             version: self.version,
-            host: &self.host,
+            host: self.peer.shown(),
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: cx.easy().report().referer(),
@@ -495,6 +523,7 @@ impl Request {
             range_from: resume_from,
             content,
             chunked: chunked && asked.is_none(),
+            probe: auth.probe,
             headers: &http.headers,
         };
         let mut out = Vec::new();

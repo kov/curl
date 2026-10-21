@@ -429,9 +429,9 @@ witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decid
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_custom_method_is_sent_with_the_body_kept
 --- old
-        let method = custom.unwrap_or(method);
+        custom.unwrap_or(self.method.name())
 --- new
-        let method = method;
+        self.method.name()
 
 === a chunk's size is written in decimal
 file: crates/curl-core/src/proto/http1/chunked.rs
@@ -656,9 +656,9 @@ witness: curl-core proto::http::tests::a_redirect_to_a_file_is_refused
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-                CredentialGate::new(first, &here, other_hosts)
+                CredentialGate::new(first, &peer, other_hosts)
 --- new
-                CredentialGate::new(&here, &here, other_hosts)
+                CredentialGate::new(&peer, &peer, other_hosts)
 
 === the first origin is each request's own
 file: crates/curl-core/src/multi/state.rs
@@ -944,24 +944,25 @@ witness: curl-core proto::http::auth::tests::reads_challenges_as_c
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
 --- old
-        let sent = match self.picked.single() {
+        let (active, value) = match self.picked.methods().single() {
 --- new
-        let sent = match Some(self.picked & AuthMethods::BASIC).filter(|m| !m.is_empty()) {
+        let (active, value) = match Some(self.picked.methods() & AuthMethods::BASIC).filter(|m| !m.is_empty()) {
 
 === the method chosen outlives the methods wanted
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::tests::the_method_chosen_is_kept_for_the_next_transfer
 --- old
-        self.picked = self.picked & want;
+        let kept = self.picked.methods() & want;
 --- new
+        let kept = self.picked.methods();
 
 === a 401 picks a method not wanted
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 --- old
-            let mut open = challenges.open & asked.want;
+            let mut open = challenges.open(asked) & asked.want;
 --- new
-            let mut open = challenges.open;
+            let mut open = challenges.open(asked);
 
 === the application's token goes to any origin
 file: crates/curl-core/src/proto/http/auth.rs
@@ -992,9 +993,9 @@ witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::tests::a_token_goes_as_bearer
 --- old
-                (credentials.has_bearer() && !custom).then_some(AuthMethods::BEARER)
+                let value = if custom || !credentials.has_bearer() {
 --- new
-                None
+                let value = if true {
 
 === a netrc file overrides the application's login
 file: crates/curl-core/src/proto/http/auth.rs
@@ -1063,3 +1064,117 @@ witness: curl-core netrc::tests::reads_the_rest_of_the_grammar
                 self.at += 1;
             }
             while self.peek().is_some_and(|b| b == b'\r' || blank(b)) {
+
+=== a probe let through is not made again
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_probe_as_c
+--- old
+        if !act.reload && code < 300 && !asked.done && asked.probe && !asked.get_or_head {
+--- new
+        if act.picked.is_none() && code < 300 && !asked.done && asked.probe && !asked.get_or_head {
+
+=== Digest without a nonce counts as done
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
+--- old
+                self.done = value.is_some();
+--- new
+                self.done = true;
+
+=== a response not acted on closes what it offered
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::keeps_digest_for_its_origin_and_credentials
+--- old
+            None => challenges.open.unwrap_or(self.avail),
+--- new
+            None => AuthMethods::NONE,
+
+=== a pick of nothing falls back to the methods wanted
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::a_probe_let_through_is_made_again_with_its_body
+--- old
+                Picked::Nothing
+            } else {
+--- new
+                Picked::NotYet
+            } else {
+
+=== a Digest challenge answers any origin
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::keeps_digest_for_its_origin_and_credentials
+--- old
+            *s.origin != *request.origin
+--- new
+            false
+
+=== a Digest challenge answers with any credentials
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::keeps_digest_for_its_origin_and_credentials
+--- old
+                    .is_some_and(|a| !credentials.answers_as(a))
+--- new
+                    .is_some_and(|_| false)
+
+=== a Digest challenge left open is read again
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::reads_digest_challenges_as_c
+--- old
+        if open.contains(AuthMethods::DIGEST) {
+--- new
+        if false {
+
+=== Basic is preferred to Digest
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
+--- old
+            } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password {
+--- new
+            } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password && !open.contains(AuthMethods::BASIC) {
+
+=== a probe sends the application's Content-Length
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
+--- old
+        if head.probe && h.is(b"Content-Length") {
+--- new
+        if false && h.is(b"Content-Length") {
+
+=== a probe sends its body
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
+--- old
+            .filter(|_| !auth.probe)
+--- new
+            .filter(|_| true)
+
+=== Digest gives way to the application's Authorization
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::digest_goes_beside_the_application_s_authorization
+--- old
+                Some(Authorization::alongside("Digest", value, c.trusted()))
+--- new
+                Authorization::new("Digest", value, c.trusted(), &http.headers)
+
+=== the nonce count stays at one
+file: crates/curl-core/src/proto/http/digest.rs
+witness: curl-core proto::http::digest::tests::answers_with_a_qop
+--- old
+            self.nc = self.nc.wrapping_add(1);
+--- new
+            self.nc = self.nc.max(1);
+
+=== a new nonce not called stale is taken
+file: crates/curl-core/src/proto/http/digest.rs
+witness: curl-core proto::http::tests::a_digest_answer_refused_ends_the_transfer
+--- old
+            if had_nonce && !d.stale || d.nonce.is_none() || d.session && d.qop.is_none() {
+--- new
+            if d.nonce.is_none() || d.session && d.qop.is_none() {
+
+=== a quote in a quoted string goes unescaped
+file: crates/curl-core/src/proto/http/digest.rs
+witness: curl-core proto::http::digest::tests::quotes_and_hashes_the_user
+--- old
+                b'"' | b'\\' => &[b'\\', b],
+--- new
+                b'\\' => &[b'\\', b],

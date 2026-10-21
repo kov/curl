@@ -699,6 +699,14 @@ pub(crate) fn apply<'a>(
                 op.auth & !AuthMethods::BASIC
             };
         }
+        Opt::Digest => {
+            let op = line.current();
+            op.auth = if value.toggle() {
+                op.auth | AuthMethods::DIGEST
+            } else {
+                op.auth & !AuthMethods::DIGEST
+            };
+        }
         Opt::OutputDir => {
             let text = value.text();
             if text.is_empty() {
@@ -944,7 +952,6 @@ pub(crate) fn apply<'a>(
         | Opt::Crlfile
         | Opt::Curves
         | Opt::Delegation
-        | Opt::Digest
         | Opt::DisableEprt
         | Opt::DisableEpsv
         | Opt::DisallowUsernameInUrl

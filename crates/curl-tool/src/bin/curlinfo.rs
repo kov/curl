@@ -11,7 +11,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("cookies", false),
     ("basic-auth", true),
     ("bearer-auth", true),
-    ("digest", false),
+    ("digest", true),
     ("negotiate-auth", false),
     ("aws", false),
     ("httpsig", false),
@@ -34,7 +34,7 @@ const TOGGLES: &[(&str, bool)] = &[
     // `time_t` and `curl_off_t` are 64 bits wide.
     ("large-time", true),
     ("large-size", true),
-    ("sha512-256", false),
+    ("sha512-256", true),
     ("win32-ca-searchpath", false),
     ("win32-ca-search-safe", false),
     ("--libcurl", false),

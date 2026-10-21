@@ -58,6 +58,11 @@ impl Easy {
         &self.options
     }
 
+    /// The authentication state, beside the options it reads.
+    pub(crate) fn auth_with_options(&mut self) -> (&mut HostAuth, &Options) {
+        (&mut self.auth, &self.options)
+    }
+
     pub fn options_mut(&mut self) -> &mut Options {
         &mut self.options
     }

@@ -13,6 +13,7 @@ mod deliver;
 pub mod easy;
 pub mod error;
 pub mod handler;
+mod hash;
 pub mod id;
 pub mod multi;
 mod netrc;

@@ -92,6 +92,15 @@ impl<'a> Authorization<'a> {
     ) -> Option<Authorization<'a>> {
         (!headers.replaces(b"Authorization")).then_some(Authorization { method, value })
     }
+
+    /// A line that goes even beside the application's own Authorization.
+    pub(crate) fn alongside(
+        method: &'static str,
+        value: &'a [u8],
+        _: Trusted,
+    ) -> Authorization<'a> {
+        Authorization { method, value }
+    }
 }
 
 /// What one of the application's header lines asks for, decided once when
@@ -352,6 +361,9 @@ pub(crate) struct RequestHead<'o> {
     /// The library says the body is chunked (`http_req_set_TE`); one the
     /// application asks chunked, its own header says.
     pub(crate) chunked: bool,
+    /// The body is left out to probe for authentication (`authneg`): the
+    /// library's `Content-Length: 0` goes in place of the application's.
+    pub(crate) probe: bool,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -484,7 +496,7 @@ fn write_h1(
             Part::Content => {
                 if let Some(content) = head.content {
                     if let Some(length) = content.length
-                        && head.headers.replacing(b"Content-Length").is_none()
+                        && (head.probe || head.headers.replacing(b"Content-Length").is_none())
                     {
                         let mut digits = [0u8; 20];
                         out.line(&[b"Content-Length: ", decimal(length, &mut digits)])?;
@@ -560,6 +572,9 @@ fn custom(
         // Host goes as its own part or not at all, Connection with the
         // library's.
         if h.asks == Asks::Nothing || h.is(b"Host") || h.is(b"Connection") {
+            continue;
+        }
+        if head.probe && h.is(b"Content-Length") {
             continue;
         }
         match h.asks {
@@ -660,6 +675,7 @@ mod tests {
             range_from: None,
             content: None,
             chunked: false,
+            probe: false,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -724,6 +740,7 @@ mod tests {
                 range_from: None,
                 content: None,
                 chunked: false,
+                probe: false,
                 headers: &headers,
             };
             let here = peer(b"127.0.0.1");
@@ -768,6 +785,7 @@ mod tests {
                 range_from: None,
                 content: None,
                 chunked: false,
+                probe: false,
                 headers: &headers,
             };
             let mut out = Vec::new();
@@ -929,6 +947,7 @@ mod tests {
             range_from: None,
             content: None,
             chunked: false,
+            probe: false,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -972,6 +991,7 @@ mod tests {
                 range_from: None,
                 content: None,
                 chunked: false,
+                probe: false,
                 headers: &headers,
             };
             let here = peer(b"h");

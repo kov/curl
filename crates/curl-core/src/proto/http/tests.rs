@@ -1782,6 +1782,126 @@ fn the_method_chosen_is_kept_for_the_next_transfer() {
     }
 }
 
+const DIGEST_CHALLENGE: &[u8] = b"HTTP/1.1 401 Who\r\n\
+    WWW-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\nContent-Length: 0\r\n\r\n";
+
+/// A POST with Digest wanted probes without its body, saying
+/// `Content-Length: 0` in place of the application's own; the challenge
+/// has it made again with the body and the answer (tests 175 and 1284).
+#[test]
+fn a_digest_post_probes_without_its_body() {
+    let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(b"a=b".to_vec()).unwrap());
+        o.http.headers = UserHeaders::new([&b"Content-Length: 3"[..]]).unwrap();
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let probe = format!(
+        "POST /a HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\
+         Content-Length: 0\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n"
+    );
+    let answered = format!(
+        "POST /a HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nAuthorization: Digest username=\"u\", \
+         realm=\"r\", nonce=\"n\", uri=\"/a\", response=\"266f94b66eec4bb4c8730502a50fcec6\"\r\n\
+         User-Agent: curl/test\r\nAccept: */*\r\nContent-Length: 3\r\n\
+         Content-Type: application/x-www-form-urlencoded\r\n\r\na=b"
+    );
+    assert_eq!(text, probe + &answered);
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let report = ran.easy.report();
+    assert_eq!(report.auth_used(), AuthMethods::DIGEST);
+    assert_eq!(report.sizes().upload(), 3);
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Server auth using Digest with user 'u'\n".to_string())
+    );
+}
+
+/// A probe a server lets through without asking for credentials is made
+/// again with its body, and authenticates no further (test 175).
+#[test]
+fn a_probe_let_through_is_made_again_with_its_body() {
+    let (mut m, talk, _) = server(&[OK, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(b"a=b".to_vec()).unwrap());
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert_eq!(text.matches("POST /a ").count(), 2, "{text}");
+    assert!(text.contains("Content-Length: 0\r\n"), "{text}");
+    assert!(text.contains("Content-Length: 3\r\n"), "{text}");
+    assert!(text.ends_with("\r\n\r\na=b"), "{text}");
+    assert!(!text.contains("Authorization"), "{text}");
+    assert_eq!(ran.seen.body(), b"ok\n");
+}
+
+/// A second 401 with a new nonce not called stale refuses the answer:
+/// the transfer ends there with the 401. Called stale, the request is
+/// answered again, the count started over (tests 65 and 153).
+#[test]
+fn a_digest_answer_refused_ends_the_transfer() {
+    let again = b"HTTP/1.1 401 No\r\nWWW-Authenticate: Digest realm=\"r\", nonce=\"m\"\r\n\
+        Content-Length: 3\r\n\r\nno\n";
+    let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, again, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert_eq!(text.matches("GET /a ").count(), 2, "{text}");
+    assert!(
+        text.contains("nonce=\"n\", uri=\"/a\", response=\"544c035f0f40d9ebf0295157d8041f8c\"")
+    );
+    assert_eq!(ran.seen.body(), b"no\n");
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Digest authentication problem, ignoring.\n".to_string())
+    );
+
+    let stale = b"HTTP/1.1 401 No\r\nWWW-Authenticate: Digest realm=\"r\", nonce=\"m\", \
+        stale=true\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, stale, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert_eq!(text.matches("GET /a ").count(), 3, "{text}");
+    assert!(text.contains("nonce=\"m\""), "{text}");
+    assert_eq!(ran.seen.body(), b"ok\n");
+}
+
+/// Digest goes beside the application's own Authorization, as C's does:
+/// only Basic and Bearer give way to it.
+#[test]
+fn digest_goes_beside_the_application_s_authorization() {
+    let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.http.headers = UserHeaders::new([&b"Authorization: mine"[..]]).unwrap();
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let second = &text[text.rfind("GET /a ").unwrap()..];
+    assert!(
+        second.contains("Authorization: Digest username=\"u\""),
+        "{second}"
+    );
+    assert!(second.contains("Authorization: mine\r\n"), "{second}");
+}
+
 /// A token goes as Bearer when Bearer alone is wanted, its user named
 /// as empty; a 401 offering Bearer again refuses it.
 #[test]

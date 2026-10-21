@@ -237,6 +237,10 @@ impl HeadParser {
         &self.meta
     }
 
+    pub(crate) fn meta_mut(&mut self) -> &mut Meta {
+        &mut self.meta
+    }
+
     /// The final head's status, once it ended.
     pub(crate) fn status(&self) -> Option<Status> {
         self.status.filter(|_| self.phase == Phase::Done)

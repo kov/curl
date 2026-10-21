@@ -248,9 +248,9 @@ impl ProtoState {
     }
 
     /// Where the response redirects to, if it is followed, and its code.
-    pub(crate) fn auth(&self) -> Option<(http::auth::Challenges, http::auth::AuthAct, u16)> {
+    pub(crate) fn auth(&mut self) -> Option<(http::auth::Challenges, http::auth::AuthAct, u16)> {
         match *self {
-            ProtoState::Http(ref r) => r.auth(),
+            ProtoState::Http(ref mut r) => r.auth(),
             ProtoState::File(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,

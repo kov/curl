@@ -1,0 +1,25 @@
+# The hashes HTTP Digest computes with (crates/curl-core/src/hash.rs).
+
+=== SHA-512/256 starts from SHA-512's values
+file: crates/curl-core/src/hash.rs
+witness: curl-core hash::tests::hashes_as_c
+--- old
+                0x22312194fc2bf72c,
+--- new
+                0x6a09e667f3bcc908,
+
+=== a length that leaves no room for its own is padded in one block
+file: crates/curl-core/src/hash.rs
+witness: curl-core hash::tests::pads_at_every_length
+--- old
+        if self.filled > N - len_bytes {
+--- new
+        if self.filled > N - len_bytes + 1 {
+
+=== MD5 reads its words big-endian
+file: crates/curl-core/src/hash.rs
+witness: curl-core hash::tests::hashes_as_c
+--- old
+        *word = u32::from_le_bytes(block[i * 4..i * 4 + 4].try_into().expect("four bytes"));
+--- new
+        *word = u32::from_be_bytes(block[i * 4..i * 4 + 4].try_into().expect("four bytes"));

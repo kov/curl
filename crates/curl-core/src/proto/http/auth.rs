@@ -1,11 +1,14 @@
 //! Authenticating HTTP requests (`lib/http.c`'s `Curl_http_output_auth`,
-//! `Curl_http_input_auth` and `Curl_http_auth_act`): Basic, with the
-//! credentials the options or the URL carry (`url_set_data_creds`), sent
-//! at once or once a server's challenge asks for it.
+//! `Curl_http_input_auth` and `Curl_http_auth_act`): Basic, Bearer and
+//! Digest, with the credentials the options or the URL carry
+//! (`url_set_data_creds`), sent at once or once a server's challenge asks
+//! for it.
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
+use super::digest::{Digest, DigestError};
 use super::request::Trusted;
+use crate::conn::Peer;
 use crate::error::UrlErrorKind;
 use crate::netrc::Found;
 use crate::options::{AuthMethods, Login, NetrcMode};
@@ -17,25 +20,98 @@ use crate::url::{GetOptions, Part, Url, decode_but_zero};
 pub(crate) struct HostAuth {
     /// The methods the transfer may use.
     want: AuthMethods,
-    /// The method chosen; before a server asked, the wanted set. Kept
-    /// from one transfer to the next, as the handle keeps it.
-    picked: AuthMethods,
+    /// The method chosen. Kept from one transfer to the next, as the
+    /// handle keeps it.
+    picked: Picked,
     /// Authenticating is as far as it goes.
     done: bool,
     /// The credentials were refused, or none fit the challenge.
     problem: bool,
+    /// The last Digest challenge read (C's `state.digest`).
+    digest: Option<DigestState>,
+    /// The methods offered and not yet picked from (`avail`): a response
+    /// whose challenges are not acted on leaves them for the next, of
+    /// this transfer or a later one.
+    avail: AuthMethods,
+}
+
+/// The method chosen (C's `picked`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Picked {
+    /// None yet: the wanted set stands in until a server asks.
+    #[default]
+    NotYet,
+    /// The wanted set, before a server asks; the one method, after.
+    Methods(AuthMethods),
+    /// A server asked and nothing wanted fits (`CURLAUTH_PICKNONE`):
+    /// nothing goes until the next transfer.
+    Nothing,
+}
+
+impl Picked {
+    fn methods(self) -> AuthMethods {
+        match self {
+            Picked::Methods(m) => m,
+            Picked::NotYet | Picked::Nothing => AuthMethods::NONE,
+        }
+    }
+}
+
+/// A Digest challenge, kept for the origin that sent it and the
+/// credentials it answers with (`digest_flush_stale`): asked of by any
+/// other origin it is not there, and other credentials start it over.
+#[derive(Debug)]
+struct DigestState {
+    origin: TryRc<Peer>,
+    answered: Option<Answered>,
+    digest: Digest,
+}
+
+/// The credentials a Digest challenge was answered with, to tell when
+/// they change (`Curl_creds_same`).
+#[derive(Debug)]
+struct Answered {
+    user: Vec<u8>,
+    password: Vec<u8>,
+    bearer: Vec<u8>,
+}
+
+/// What a request is, for its credentials to answer.
+#[derive(Debug)]
+pub(crate) struct AuthRequest<'r> {
+    pub(crate) origin: &'r Peer,
+    /// The method as the request line names it.
+    pub(crate) method: &'r [u8],
+    /// The path and query, as the URL holds them.
+    pub(crate) uri: &'r [u8],
+    pub(crate) get_or_head: bool,
 }
 
 /// What a request sends to authenticate.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Output {
-    /// The method whose header goes, if any.
-    pub(crate) sent: Option<AuthMethods>,
-    /// The method chosen so far, for the report (`info.httpauthpicked`).
+    /// The method whose `Authorization` goes, and what follows its name.
+    pub(crate) header: Option<(AuthMethods, Vec<u8>)>,
+    /// The method in use, though it may send nothing yet, for the report
+    /// (`info.httpauthpicked`).
     pub(crate) used: AuthMethods,
     /// The request goes without its body, a probe for a method that
     /// takes more than one (`req.authneg`).
     pub(crate) probe: bool,
+}
+
+/// Why a request's authentication could not be made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputError {
+    OutOfMemory,
+    /// No random bytes for Digest's client nonce.
+    Random,
+}
+
+impl From<OutOfMemory> for OutputError {
+    fn from(_: OutOfMemory) -> Self {
+        OutputError::OutOfMemory
+    }
 }
 
 impl HostAuth {
@@ -43,67 +119,121 @@ impl HostAuth {
     pub(crate) fn start(&mut self, want: AuthMethods) {
         self.problem = false;
         self.want = want;
-        self.picked = self.picked & want;
+        let kept = self.picked.methods() & want;
+        self.picked = if kept.is_empty() {
+            Picked::NotYet
+        } else {
+            Picked::Methods(kept)
+        };
     }
 
-    /// What a request with `credentials` sends to authenticate with the
-    /// origin (`Curl_http_output_auth`, `output_auth_headers`). `custom`
-    /// says the application sends its own Authorization, which Basic
-    /// does not replace.
+    /// What `request`, with `credentials`, sends to authenticate with
+    /// the origin (`Curl_http_output_auth`, `output_auth_headers`).
+    /// `custom` says the application sends its own Authorization, which
+    /// Basic and Bearer do not replace; Digest goes beside it, as C's
+    /// does. `random` makes Digest's client nonce.
     pub(crate) fn output(
         &mut self,
         credentials: Option<&Credentials>,
         custom: bool,
-        get_or_head: bool,
-    ) -> Output {
-        let nothing = Output {
-            sent: None,
-            used: AuthMethods::NONE,
-            probe: false,
-        };
+        request: &AuthRequest<'_>,
+        random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
+    ) -> Result<Output, OutputError> {
         let Some(credentials) = credentials else {
             self.done = true;
-            return nothing;
+            return Ok(Output {
+                header: None,
+                used: AuthMethods::NONE,
+                probe: false,
+            });
         };
-        if !self.want.is_empty() && self.picked.is_empty() {
+        if !self.want.is_empty() && self.picked == Picked::NotYet {
             // Before a server asks: one method wanted is used at once.
-            self.picked = self.want;
+            self.picked = Picked::Methods(self.want);
         }
-        let sent = match self.picked.single() {
+        // Whether the method is in use, and what it sends.
+        let (active, value) = match self.picked.methods().single() {
             Some(AuthMethods::BASIC) => {
                 self.done = true;
-                (credentials.has_user_or_password() && !custom).then_some(AuthMethods::BASIC)
+                let value = if custom { None } else { credentials.basic()? };
+                (value.is_some(), value)
             }
             Some(AuthMethods::BEARER) => {
                 self.done = true;
-                (credentials.has_bearer() && !custom).then_some(AuthMethods::BEARER)
+                let value = if custom || !credentials.has_bearer() {
+                    None
+                } else {
+                    Some(copy(&credentials.bearer)?)
+                };
+                (value.is_some(), value)
             }
-            _ => None,
+            Some(AuthMethods::DIGEST) => {
+                // In use from the start; done once a challenge is answered.
+                let value = self.answer_digest(credentials, request, random)?;
+                self.done = value.is_some();
+                (true, value)
+            }
+            _ => (false, None),
         };
-        // A method that takes more than one request, not done, probes
-        // without the body; none does yet.
-        let multipass = sent.is_some() && !self.done;
-        Output {
-            sent,
-            used: if sent.is_some() {
-                self.picked
-            } else {
-                AuthMethods::NONE
-            },
-            probe: multipass && !get_or_head,
-        }
+        let picked = self.picked.methods();
+        Ok(Output {
+            header: value.map(|v| (picked, v)),
+            used: if active { picked } else { AuthMethods::NONE },
+            // A method that takes more than one request, not done, probes
+            // without the body.
+            probe: active && !self.done && !request.get_or_head,
+        })
     }
 
-    /// What a request asks of its response's challenges.
+    /// The `Authorization: Digest` value answering the challenge kept for
+    /// `request`'s origin, if one with a nonce is (`Curl_output_digest`).
+    fn answer_digest(
+        &mut self,
+        credentials: &Credentials,
+        request: &AuthRequest<'_>,
+        random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
+    ) -> Result<Option<Vec<u8>>, OutputError> {
+        let stale = self.digest.as_ref().is_some_and(|s| {
+            *s.origin != *request.origin
+                || s.answered
+                    .as_ref()
+                    .is_some_and(|a| !credentials.answers_as(a))
+        });
+        if stale {
+            self.digest = None;
+        }
+        let Some(state) = self.digest.as_mut() else {
+            return Ok(None);
+        };
+        state.answered = Some(credentials.answered()?);
+        if !state.digest.has_nonce() {
+            return Ok(None);
+        }
+        let mut failed = false;
+        let value = state.digest.response(
+            &credentials.user,
+            &credentials.password,
+            request.method,
+            request.uri,
+            |bytes| failed = random(bytes).is_err(),
+        )?;
+        if failed {
+            return Err(OutputError::Random);
+        }
+        Ok(Some(value))
+    }
+
+    /// What a request to `origin` asks of its response's challenges.
     pub(crate) fn asked(
         &self,
         credentials: Option<&Credentials>,
         probe: bool,
         get_or_head: bool,
+        origin: &Peer,
     ) -> AuthAsked {
         AuthAsked {
             want: self.want,
-            picked: self.picked,
+            picked: self.picked.methods(),
             credentials: credentials.is_some(),
             user_or_password: credentials.is_some_and(Credentials::has_user_or_password),
             bearer: credentials.is_some_and(Credentials::has_bearer),
@@ -111,16 +241,39 @@ impl HostAuth {
             probe,
             get_or_head,
             problem: self.problem,
+            avail: self.avail,
+            digest_nonce: self
+                .digest
+                .as_ref()
+                .is_some_and(|s| *s.origin == *origin && s.digest.has_nonce()),
         }
     }
 
-    /// What a response's challenges led to (`Curl_http_auth_act`).
-    pub(crate) fn apply(&mut self, act: &AuthAct) {
+    /// What a response from `origin` offered, and what its challenges led
+    /// to (`Curl_http_auth_act`). A Digest challenge read replaces the
+    /// one kept, refused or not, as C's does (`Curl_input_digest`).
+    pub(crate) fn apply(&mut self, act: &AuthAct, challenges: Challenges, origin: TryRc<Peer>) {
         if let Some(picked) = act.picked {
-            self.picked = picked;
+            self.picked = if picked.is_empty() {
+                Picked::Nothing
+            } else {
+                Picked::Methods(picked)
+            };
         }
         self.problem = act.problem;
         self.done |= act.done;
+        // A pick takes from what was open, and leaves nothing open.
+        self.avail = match act.picked {
+            Some(_) => AuthMethods::NONE,
+            None => challenges.open.unwrap_or(self.avail),
+        };
+        if let Some(digest) = challenges.digest {
+            self.digest = Some(DigestState {
+                origin,
+                answered: None,
+                digest,
+            });
+        }
     }
 }
 
@@ -137,6 +290,10 @@ pub(crate) struct AuthAsked {
     probe: bool,
     get_or_head: bool,
     problem: bool,
+    /// The methods offered before and not picked from.
+    avail: AuthMethods,
+    /// A Digest nonce from the origin was answered already.
+    digest_nonce: bool,
 }
 
 impl AuthAsked {
@@ -151,6 +308,8 @@ impl AuthAsked {
         probe: false,
         get_or_head: true,
         problem: false,
+        avail: AuthMethods::NONE,
+        digest_nonce: false,
     };
 }
 
@@ -161,32 +320,75 @@ impl Default for AuthAsked {
 }
 
 /// What the challenges of a response offered (`Curl_http_input_auth`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub(crate) struct Challenges {
-    /// The methods offered that are still open: a refusal closes them.
-    open: AuthMethods,
+    /// The methods offered and still open, those left from before among
+    /// them: a refusal closes them all (C's `avail`). None until a
+    /// challenge is read.
+    open: Option<AuthMethods>,
     /// Every method offered, for the report (`info.httpauthavail`).
     pub(crate) offered: AuthMethods,
-    /// The method used was offered again: the credentials were refused.
+    /// The credentials were refused, or a challenge could not be read.
     refused: bool,
+    /// The Digest challenge, read whether or not Digest is wanted.
+    digest: Option<Digest>,
+}
+
+/// What C says as it reads one challenge line, in order (`infof`): at
+/// most `HEARD` notes, any more left unsaid, so that a line cannot make
+/// the head's notes grow without bound.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Heard([Option<HeardNote>; HEARD]);
+
+const HEARD: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeardNote {
+    /// "<method> authentication problem, ignoring."
+    Problem(AuthMethods),
+    /// A second Digest challenge in one response.
+    DuplicateDigest,
+}
+
+impl Heard {
+    fn push(&mut self, note: HeardNote) {
+        if let Some(free) = self.0.iter_mut().find(|n| n.is_none()) {
+            *free = Some(note);
+        }
+    }
+
+    pub(crate) fn notes(self) -> impl Iterator<Item = HeardNote> {
+        self.0.into_iter().flatten()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0[0].is_none()
+    }
 }
 
 impl Challenges {
     /// A `WWW-Authenticate:` value, its methods one after another,
-    /// separated by commas. Gives the method whose credentials it
-    /// refuses, if it does.
-    pub(crate) fn read(&mut self, mut value: &[u8], asked: &AuthAsked) -> Option<AuthMethods> {
-        let mut refused = None;
+    /// separated by commas; what C says of it.
+    pub(crate) fn read(
+        &mut self,
+        mut value: &[u8],
+        asked: &AuthAsked,
+    ) -> Result<Heard, OutOfMemory> {
+        let mut heard = Heard::default();
+        let mut open = self.open(asked);
         while !value.is_empty() {
+            if names(value, AuthMethods::DIGEST.name()) {
+                self.digest_challenge(value, asked, &mut open, &mut heard)?;
+            }
             for method in [AuthMethods::BASIC, AuthMethods::BEARER] {
                 if names(value, method.name()) {
                     self.offered = self.offered | method;
-                    self.open = self.open | method;
+                    open = open | method;
                     if asked.picked == method {
                         // Asked for and offered again anyway: refused.
-                        self.open = AuthMethods::NONE;
+                        open = AuthMethods::NONE;
                         self.refused = true;
-                        refused = Some(method);
+                        heard.push(HeardNote::Problem(method));
                     }
                 }
             }
@@ -200,7 +402,54 @@ impl Challenges {
                 .count();
             value = &value[blanks..];
         }
-        refused
+        self.open = Some(open);
+        Ok(heard)
+    }
+
+    /// The methods open: those left from before, until a challenge is
+    /// read.
+    fn open(&self, asked: &AuthAsked) -> AuthMethods {
+        self.open.unwrap_or(asked.avail)
+    }
+
+    /// `Digest` and what follows it to the line's end (`auth_digest`,
+    /// `Curl_input_digest`): read only if Digest is not open already,
+    /// though it was offered before this response, as C's `avail` has it.
+    fn digest_challenge(
+        &mut self,
+        value: &[u8],
+        asked: &AuthAsked,
+        open: &mut AuthMethods,
+        heard: &mut Heard,
+    ) -> Result<(), OutOfMemory> {
+        self.offered = self.offered | AuthMethods::DIGEST;
+        if open.contains(AuthMethods::DIGEST) {
+            heard.push(HeardNote::DuplicateDigest);
+            return Ok(());
+        }
+        *open = *open | AuthMethods::DIGEST;
+        let rest = &value[AuthMethods::DIGEST.name().len()..];
+        let (digest, read) = match rest.first() {
+            Some(b' ' | b'\t') => {
+                let blanks = rest
+                    .iter()
+                    .take_while(|&&b| b == b' ' || b == b'\t')
+                    .count();
+                Digest::decode(&rest[blanks..], asked.digest_nonce)
+            }
+            // Nothing after the name, or a comma: no challenge.
+            _ => (Digest::default(), Err(DigestError::Bad)),
+        };
+        match read {
+            Ok(()) => {}
+            Err(DigestError::OutOfMemory) => return Err(OutOfMemory),
+            Err(DigestError::Bad) => {
+                self.refused = true;
+                heard.push(HeardNote::Problem(AuthMethods::DIGEST));
+            }
+        }
+        self.digest = Some(digest);
+        Ok(())
     }
 }
 
@@ -236,13 +485,15 @@ impl AuthAct {
             return act;
         }
         if asked.credentials && (code == 401 || asked.probe && code < 300) {
-            let mut open = challenges.open & asked.want;
+            let mut open = challenges.open(asked) & asked.want;
             if !asked.bearer {
                 open = open & !AuthMethods::BEARER;
             }
             // In C's order of preference.
             let picked = if open.contains(AuthMethods::BEARER) {
                 AuthMethods::BEARER
+            } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password {
+                AuthMethods::DIGEST
             } else if open.contains(AuthMethods::BASIC) && asked.user_or_password {
                 AuthMethods::BASIC
             } else {
@@ -251,7 +502,10 @@ impl AuthAct {
             act.picked = Some(picked);
             act.problem = picked.is_empty();
             act.reload = !picked.is_empty();
-        } else if code < 300 && !asked.done && asked.probe && !asked.get_or_head {
+        }
+        // A probe let through without a method picked is made again
+        // with its body, authenticating as far as it goes.
+        if !act.reload && code < 300 && !asked.done && asked.probe && !asked.get_or_head {
             act.reload = true;
             act.done = true;
         }
@@ -439,18 +693,22 @@ impl Credentials {
         !self.bearer.is_empty()
     }
 
-    /// What follows the name of `method` in the `Authorization` line
-    /// these send: Basic's encoded pair, Bearer's token. None where they
-    /// hold nothing for it.
-    pub(crate) fn authorization(
-        &self,
-        method: AuthMethods,
-    ) -> Result<Option<Vec<u8>>, OutOfMemory> {
-        match method {
-            AuthMethods::BASIC => self.basic(),
-            AuthMethods::BEARER if self.has_bearer() => copy(&self.bearer).map(Some),
-            _ => Ok(None),
-        }
+    /// These, kept to tell whether a Digest challenge answered with them
+    /// is answered with others.
+    fn answered(&self) -> Result<Answered, OutOfMemory> {
+        Ok(Answered {
+            user: copy(&self.user)?,
+            password: copy(&self.password)?,
+            bearer: copy(&self.bearer)?,
+        })
+    }
+
+    /// Whether these are those `answered` kept (`Curl_creds_same`, whose
+    /// comparisons take the same time whatever the bytes).
+    fn answers_as(&self, answered: &Answered) -> bool {
+        same_secret(&self.user, &answered.user)
+            & same_secret(&self.password, &answered.password)
+            & same_secret(&self.bearer, &answered.bearer)
     }
 
     /// The leave to send these to the request's origin.
@@ -480,10 +738,16 @@ fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     Ok(v)
 }
 
+/// Whether two secrets are the same, their bytes all compared whatever
+/// the first difference (`Curl_timestrcmp`).
+fn same_secret(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0, |d, (x, y)| d | (x ^ y)) == 0
+}
+
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// `len` bytes from `bytes` in base64 with padding, into `out`.
-fn base64(
+pub(crate) fn base64(
     mut bytes: impl Iterator<Item = u8>,
     len: usize,
     out: &mut Vec<u8>,
@@ -652,8 +916,16 @@ mod tests {
                 ..AuthAsked::DEFAULT
             };
             let mut c = Challenges::default();
-            let refused: Vec<_> = values.iter().filter_map(|v| c.read(v, &asked)).collect();
-            (c.open, c.offered, refused)
+            let mut refused = Vec::new();
+            for v in values {
+                for note in c.read(v, &asked).unwrap().notes() {
+                    match note {
+                        HeardNote::Problem(m) => refused.push(m),
+                        HeardNote::DuplicateDigest => unreachable!("no Digest here"),
+                    }
+                }
+            }
+            (c.open.unwrap(), c.offered, refused)
         };
         let none = AuthMethods::NONE;
         let (b, br) = (AuthMethods::BASIC, AuthMethods::BEARER);
@@ -666,15 +938,92 @@ mod tests {
         assert_eq!(read(&[b"Basic", b"Bearer"], b), (br, b | br, vec![b]));
     }
 
+    /// A Digest challenge is read whole, the first in a response only,
+    /// and kept even where it is refused; one without a blank after the
+    /// name, or a new nonce not called stale, is a problem.
+    #[test]
+    fn reads_digest_challenges_as_c() {
+        let read = |values: &[&[u8]], had_nonce| {
+            let asked = AuthAsked {
+                digest_nonce: had_nonce,
+                ..AuthAsked::DEFAULT
+            };
+            let mut c = Challenges::default();
+            let mut notes = Vec::new();
+            for v in values {
+                notes.extend(c.read(v, &asked).unwrap().notes());
+            }
+            (c, notes)
+        };
+        let d = AuthMethods::DIGEST;
+        let (c, notes) = read(&[b"Digest realm=\"r\", nonce=\"1\", Basic"], false);
+        assert_eq!(
+            (c.open.unwrap(), c.offered, c.refused),
+            (d | AuthMethods::BASIC, d | AuthMethods::BASIC, false)
+        );
+        assert!(notes.is_empty() && c.digest.as_ref().is_some_and(Digest::has_nonce));
+        let (c, notes) = read(&[b"Digest nonce=\"1\"", b"Digest nonce=\"2\""], false);
+        assert_eq!(notes, [HeardNote::DuplicateDigest]);
+        assert!(!c.refused);
+        for bad in [&b"Digest"[..], b"Digest,nonce=1", b"Digest realm=\"r\""] {
+            let (c, notes) = read(&[bad], false);
+            assert_eq!(
+                (c.refused, notes),
+                (true, vec![HeardNote::Problem(d)]),
+                "{bad:?}"
+            );
+            assert!(c.digest.is_some(), "kept anyway");
+        }
+        let (c, _) = read(&[b"Digest nonce=\"2\""], true);
+        assert!(c.refused, "a nonce answered, and a new one not stale");
+        let (c, _) = read(&[b"Digest nonce=\"2\", stale=true"], true);
+        assert!(!c.refused);
+        // However many a line has, what it says is bounded.
+        let mut many = b"Digest nonce=1".to_vec();
+        for _ in 0..20 {
+            many.extend_from_slice(b", Digest");
+        }
+        let (_, notes) = read(&[&many], false);
+        assert_eq!(notes.len(), HEARD);
+        // Left open by an earlier response not acted on, a Digest
+        // challenge is not read again (test 2027).
+        let leftover = AuthAsked {
+            avail: d,
+            ..AuthAsked::DEFAULT
+        };
+        let mut c = Challenges::default();
+        let notes: Vec<_> = c
+            .read(b"Digest nonce=\"9\"", &leftover)
+            .unwrap()
+            .notes()
+            .collect();
+        assert_eq!(notes, [HeardNote::DuplicateDigest]);
+        assert!(c.digest.is_none());
+        // A refusal closes it, and the next is read.
+        let basic = AuthAsked {
+            picked: AuthMethods::BASIC,
+            ..leftover
+        };
+        let mut c = Challenges::default();
+        let notes: Vec<_> = c
+            .read(b"Basic, Digest nonce=\"9\"", &basic)
+            .unwrap()
+            .notes()
+            .collect();
+        assert_eq!(notes, [HeardNote::Problem(AuthMethods::BASIC)]);
+        assert!(c.digest.is_some());
+    }
+
     /// A 401 with credentials picks Basic if offered and wanted, else is
     /// a problem; with none, nothing is picked. Only a 401 the request
     /// can still answer escapes fail-on-error.
     #[test]
     fn acts_on_a_401_as_c() {
         let offered = |m| Challenges {
-            open: m,
+            open: Some(m),
             offered: m,
             refused: false,
+            digest: None,
         };
         let asked = AuthAsked {
             want: AuthMethods::ANY,
@@ -719,6 +1068,134 @@ mod tests {
         assert_eq!(act, AuthAct::default());
         assert!(act.fails(401, &without));
         assert!(AuthAct::of(200, &offered(AuthMethods::BASIC), &asked) == AuthAct::default());
+        // Digest after Bearer, before Basic, and only with a user or a
+        // password.
+        let all = offered(AuthMethods::BASIC | AuthMethods::DIGEST | AuthMethods::BEARER);
+        assert_eq!(
+            AuthAct::of(401, &all, &asked).picked,
+            Some(AuthMethods::DIGEST)
+        );
+        assert_eq!(
+            AuthAct::of(401, &all, &token).picked,
+            Some(AuthMethods::BEARER)
+        );
+        let digest = offered(AuthMethods::DIGEST);
+        assert!(AuthAct::of(401, &digest, &empty).problem);
+        // A 401 with no challenge picks from what was left open.
+        let leftover = AuthAsked {
+            avail: AuthMethods::DIGEST,
+            ..asked
+        };
+        let act = AuthAct::of(401, &Challenges::default(), &leftover);
+        assert_eq!(act.picked, Some(AuthMethods::DIGEST));
+    }
+
+    /// A probe a server lets through unasked is made again with its
+    /// body, done, though no method was picked (test 175); one asked to
+    /// authenticate picks as a 401 does.
+    #[test]
+    fn acts_on_a_probe_as_c() {
+        let probe = AuthAsked {
+            want: AuthMethods::DIGEST,
+            credentials: true,
+            user_or_password: true,
+            probe: true,
+            get_or_head: false,
+            ..AuthAsked::DEFAULT
+        };
+        let act = AuthAct::of(200, &Challenges::default(), &probe);
+        assert_eq!(
+            (act.picked, act.reload, act.done, act.problem),
+            (Some(AuthMethods::NONE), true, true, true)
+        );
+        let get = AuthAsked {
+            get_or_head: true,
+            ..probe
+        };
+        assert!(!AuthAct::of(200, &Challenges::default(), &get).reload);
+        let done = AuthAsked {
+            done: true,
+            ..probe
+        };
+        assert!(!AuthAct::of(200, &Challenges::default(), &done).reload);
+        let digest = Challenges {
+            open: Some(AuthMethods::DIGEST),
+            offered: AuthMethods::DIGEST,
+            ..Challenges::default()
+        };
+        let act = AuthAct::of(401, &digest, &probe);
+        assert_eq!(
+            (act.picked, act.reload, act.done),
+            (Some(AuthMethods::DIGEST), true, false)
+        );
+    }
+
+    /// A Digest challenge answers only the origin that sent it, and only
+    /// with the credentials it was first answered with; a response not
+    /// acted on leaves what it offered open for the next (`avail`).
+    #[test]
+    fn keeps_digest_for_its_origin_and_credentials() {
+        let peer = |host: &[u8]| Peer::new(crate::proto::HTTP, host.to_vec(), 80, None);
+        let creds = |password: &[u8]| Credentials {
+            user: b"u".to_vec(),
+            password: password.to_vec(),
+            bearer: Vec::new(),
+            source: Source::Options,
+            trusted: Trusted::own_url(),
+        };
+        let read = |auth: &mut HostAuth| {
+            let (digest, read) = Digest::decode(b"realm=\"r\", nonce=\"n\"", false);
+            read.unwrap();
+            let challenges = Challenges {
+                open: Some(AuthMethods::DIGEST),
+                offered: AuthMethods::DIGEST,
+                refused: false,
+                digest: Some(digest),
+            };
+            auth.apply(
+                &AuthAct::default(),
+                challenges,
+                TryRc::try_new(peer(b"a")).unwrap(),
+            );
+        };
+        let answers = |auth: &mut HostAuth, at: &Peer, c: &Credentials| {
+            let request = AuthRequest {
+                origin: at,
+                method: b"GET",
+                uri: b"/",
+                get_or_head: true,
+            };
+            let out = auth.output(Some(c), false, &request, |_| Ok(())).unwrap();
+            out.header.is_some()
+        };
+        let (a, b, right) = (peer(b"A"), peer(b"b"), creds(b"p"));
+        let mut auth = HostAuth::default();
+        auth.start(AuthMethods::DIGEST);
+        read(&mut auth);
+        assert_eq!(auth.asked(None, false, true, &a).avail, AuthMethods::DIGEST);
+        assert!(auth.asked(None, false, true, &a).digest_nonce);
+        assert!(!auth.asked(None, false, true, &b).digest_nonce);
+        assert!(
+            answers(&mut auth, &a, &right),
+            "its own origin, in any case"
+        );
+        assert!(answers(&mut auth, &a, &right), "and again");
+        assert!(!answers(&mut auth, &a, &creds(b"q")), "other credentials");
+        assert!(!answers(&mut auth, &a, &right), "start it over");
+        read(&mut auth);
+        assert!(!answers(&mut auth, &b, &right), "another origin");
+        assert!(!answers(&mut auth, &a, &right), "starts it over too");
+        // A pick leaves nothing open.
+        let act = AuthAct {
+            picked: Some(AuthMethods::DIGEST),
+            ..AuthAct::default()
+        };
+        auth.apply(
+            &act,
+            Challenges::default(),
+            TryRc::try_new(peer(b"a")).unwrap(),
+        );
+        assert_eq!(auth.asked(None, false, true, &a).avail, AuthMethods::NONE);
     }
 
     /// The values the C tool sends, and RFC 4648's vectors.

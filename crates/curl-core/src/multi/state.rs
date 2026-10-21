@@ -688,7 +688,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                     Wake::Again,
                                 )
                             } else if done {
-                                match after_exchange(run, &x, cx) {
+                                match after_exchange(run, &mut x, cx) {
                                     Ok(next) => (
                                         TransferState::Done(Done {
                                             next,
@@ -1298,7 +1298,7 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
 /// C's `FOLLOW_FAKE` keeps it at the end of the exchange.
 fn after_exchange<H: Host>(
     run: &mut Run,
-    x: &Attached,
+    x: &mut Attached,
     cx: &mut StepCx<'_, H>,
 ) -> Result<AfterRequest, ErrorKind> {
     // A 417 has the request made again without `Expect`, as a redirect
@@ -1322,7 +1322,8 @@ fn after_exchange<H: Host>(
         {
             cx.report_mut().set_auth_used(picked);
         }
-        cx.easy_mut().auth.apply(&act);
+        let origin = x.origin.clone().expect("an HTTP request has an origin");
+        cx.easy_mut().auth.apply(&act, challenges, origin);
         if act.reload {
             let mut location = Vec::new();
             location

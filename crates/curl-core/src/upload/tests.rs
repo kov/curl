@@ -275,6 +275,28 @@ fn the_handler_s_end_and_failures_stick() {
     }
 }
 
+/// An abort skips the last progress pass (`multi_done`), so the
+/// transfer's total time is taken at its end alone
+/// (`Curl_pgrsCompleted`): the time spent paused counts.
+#[test]
+fn an_aborting_read_is_timed_to_its_end() {
+    let (mut m, clock) = multi();
+    let mut e = script(vec![Piece::Send(5), Piece::SendAll]);
+    fed(&mut e, b"hello", None, None, |n| {
+        Some(if n == 0 { Read::Pause } else { Read::Abort })
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(result(&mut m), None, "paused");
+    clock.advance(Duration::from_millis(700));
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(result(&mut m), Some(Err(ErrorKind::AbortedByCallback)));
+    let total = m.easy(id).unwrap().report().timings().total();
+    assert_eq!(total, Duration::from_millis(700));
+}
+
 /// A pause from the handler pauses sending: the piece waits, and plays
 /// again, the same read, once unpaused. Where the protocol cannot pause,
 /// it is a read error.

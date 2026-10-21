@@ -1161,6 +1161,9 @@ fn a_silent_peer_times_out_at_the_connect_limit() {
         messages(&mut m),
         [(id.index(), Err(ErrorKind::OperationTimedout), 0)]
     );
+    // Timed from its first run to the timeout.
+    let total = m.easy(id).unwrap().report().timings().total();
+    assert_eq!(total, Duration::from_millis(1500));
     assert_eq!(
         trace_of(&lines),
         [

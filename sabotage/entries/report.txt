@@ -51,7 +51,7 @@ witness: curl-core multi::tests::a_transfer_a_dead_multi_ends_unstarted_gets_a_r
 
 === the total time is never taken
 file: crates/curl-core/src/multi/state.rs
-witness: curl-core multi::tests::a_report_times_the_phases_a_transfer_reached
+witness: curl-core upload::tests::an_aborting_read_is_timed_to_its_end
 --- old
     t.completed(now);
 --- new

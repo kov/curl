@@ -250,7 +250,10 @@ yet meet.
       178, 394, 282, 262, 398, 415, 2105, 129 and 1473, and the cases no fixture pins checked
       against the C binary. Decoding codings other than chunked, Content-Encoding,
       Content-Range and Location come with the steps that use them.
-    - **d. Chunks and trailers.** **To do.** `ChunkDecoder`, trailers, `--raw`, its limits.
+    - **d. Chunks and trailers.** **Done.** `proto/http1/chunked.rs`: `ChunkDecoder` with
+      trailers, raw mode and the hex and trailer limits. Fixtures 34, 36, 207, 266, 326,
+      1116, 1416, 1417, 1482, 1483, 1493 and 2106, fed whole, split at every byte and a byte
+      at a time, and the grammar's corners checked against the C binary.
     - **e. Accounting.** **To do.** The `maxdownload` cut, a short body at its end, a body
       where none was wanted, GOT_NOTHING.
 14. **http1: generate the fixture runner from tests/data.** The milestone set's cases without

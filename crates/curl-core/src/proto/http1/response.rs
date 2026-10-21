@@ -435,32 +435,45 @@ impl HeadParser {
         }))
     }
 
-    /// Count a delivered line against the limits (`Curl_bump_headersize`):
-    /// 300 KiB for a request's heads, twenty times that for the
-    /// transfer's.
     fn count(&mut self, len: u64, transfer_bytes: &mut u64) -> Result<(), HeadError> {
-        let max = MAX_HEADERS as u64;
-        if len >= max {
-            return Err(HeadError::TooLarge {
-                bytes: self.request_bytes + len,
-                max,
-            });
-        }
-        *transfer_bytes += len;
-        self.request_bytes += len;
-        if self.request_bytes > max {
-            Err(HeadError::TooLarge {
-                bytes: self.request_bytes,
-                max,
-            })
-        } else if *transfer_bytes > max * 20 {
-            Err(HeadError::TooLarge {
-                bytes: *transfer_bytes,
-                max: max * 20,
-            })
-        } else {
-            Ok(())
-        }
+        count_head(len, &mut self.request_bytes, transfer_bytes)
+    }
+
+    /// Lines of the final head given out, its status line among them.
+    pub(crate) fn lines(&self) -> u32 {
+        self.lines
+    }
+}
+
+/// Count a delivered head line, or trailer, against the limits
+/// (`Curl_bump_headersize`): 300 KiB for a request's heads, twenty times
+/// that for the transfer's.
+pub(crate) fn count_head(
+    len: u64,
+    request_bytes: &mut u64,
+    transfer_bytes: &mut u64,
+) -> Result<(), HeadError> {
+    let max = MAX_HEADERS as u64;
+    if len >= max {
+        return Err(HeadError::TooLarge {
+            bytes: *request_bytes + len,
+            max,
+        });
+    }
+    *transfer_bytes += len;
+    *request_bytes += len;
+    if *request_bytes > max {
+        Err(HeadError::TooLarge {
+            bytes: *request_bytes,
+            max,
+        })
+    } else if *transfer_bytes > max * 20 {
+        Err(HeadError::TooLarge {
+            bytes: *transfer_bytes,
+            max: max * 20,
+        })
+    } else {
+        Ok(())
     }
 }
 

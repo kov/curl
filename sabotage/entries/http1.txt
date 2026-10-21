@@ -142,9 +142,9 @@ witness: curl-core proto::http1::response::tests::status_lines_are_read_as_c_rea
 file: crates/curl-core/src/proto/http1/response.rs
 witness: curl-core proto::http1::response::tests::heads_are_counted_against_their_limits
 --- old
-        } else if *transfer_bytes > max * 20 {
+    } else if *transfer_bytes > max * 20 {
 --- new
-        } else if *transfer_bytes > max * 200 {
+    } else if *transfer_bytes > max * 200 {
 
 === a line may be a byte past C's line buffer
 file: crates/curl-core/src/proto/http1/response.rs
@@ -259,3 +259,64 @@ witness: curl-core proto::http1::response::tests::a_transfer_coding_overrides_th
                 if asked.raw_codings {
 --- new
                 if asked.raw_codings && false {
+
+=== a chunk size may have eighteen digits
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::the_grammar_s_corners
+--- old
+                        if self.hex_len >= MAX_HEX {
+--- new
+                        if self.hex_len > MAX_HEX {
+
+=== a chunk's size line keeps its extension
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::chunks_are_joined_into_the_body
+--- old
+                State::Lf => {
+                    if b == b'\n' {
+--- new
+                State::Lf => {
+                    if b != b';' && b != b' ' && b != b'\r' && b != b'\n' {
+                        return Err(ChunkError::Malformed);
+                    }
+                    if b == b'\n' {
+
+=== a chunk's data may end in anything
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::the_grammar_s_corners
+--- old
+                    } else if b != b'\r' {
+--- new
+                    } else if b == 0 {
+
+=== trailers are not verified
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::bad_chunks_are_refused
+--- old
+                        fields::verify_line(&self.trailer, self.head_lines)
+--- new
+                        fields::verify_line(b"A: b\r\n", self.head_lines)
+
+=== a trailer line may be 4 KiB
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::a_trailer_is_at_most_4_kib
+--- old
+                    if self.trailer.len() + 1 > MAX_TRAILER {
+--- new
+                    if self.trailer.len() + 1 > MAX_TRAILER + 3 {
+
+=== raw chunks are given out decoded too
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::raw_chunks_go_on_as_they_came
+--- old
+                    if !self.raw {
+--- new
+                    if true {
+
+=== a CR after a trailer line is another trailer
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::the_grammar_s_corners
+--- old
+                    if b != b'\r' && b != b'\n' {
+--- new
+                    if b != b'\n' {

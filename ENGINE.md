@@ -1253,9 +1253,16 @@ fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOption
 - **Every peer limit is an `Error`**: 100 KiB per line, 300 KiB per response and 20× that per
   transfer (one counter per limit in `HeaderBudget`), 5000 stored headers, 17 hex digits per
   chunk size, 4 KiB per trailer line, 5 codings.
-- **`ChunkDecoder`** is C's HEX/LF/DATA/POSTLF/TRAILER/STOP/DONE machine as an enum. The
-  chunk-extension state swallows bytes up to LF on purpose and says so. Trailers go to the sink
-  as `HeaderOrigin::Trailer`; `--raw` passes the bytes through while still parsing.
+- **`ChunkDecoder`** (`chunked.rs`) is C's HEX/LF/DATA/POSTLF/TRAILER/STOP/DONE machine as an
+  enum, fed like the head parser and giving out data from the input, a trailer line (CRLF
+  ended, verified as a header with the final head's line count, counted against the head limit
+  in its `then`) or the end. The size state swallows everything up to its LF, extensions
+  included. Raw (`--raw`), the driver delivers each piece of input as it came and the decoder
+  only reads the body to its end. Its errors say what C says: a reason where C gives one, then
+  "… in chunked-encoding"; the input ending first is 18. A failure delivering data or a trailer
+  (the header store refusing a colon-less fold, say) is reported by the driver as the delivery's
+  own error, then "Failed reading the chunked-encoded stream"; input left after the end is traced
+  as "Leftovers after chunking: N bytes".
 - The status line: `HTTP/1.[01] DDD` and anything after, `HTTP/2 DDD ` and `HTTP/3 DDD `; a bad
   1.x subversion or an unknown major version is 1, another major version than the request's is
   8, and any other line starting `HTTP/` in some case is a 200 in HTTP/1.0 (the HTTP200ALIASES

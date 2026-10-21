@@ -75,9 +75,25 @@ pub(crate) enum FramingError {
     OutOfMemory,
 }
 
+/// Bytes shown as text, what is not UTF-8 as U+FFFD, without
+/// allocating.
+pub(crate) struct Lossy<'b>(pub(crate) &'b [u8]);
+
+impl fmt::Display for Lossy<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for chunk in self.0.utf8_chunks() {
+            f.write_str(chunk.valid())?;
+            if !chunk.invalid().is_empty() {
+                f.write_str("\u{FFFD}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl fmt::Display for FramingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = |n: &[u8]| String::from_utf8_lossy(n).into_owned();
+        let name = |n| Lossy(n);
         match self {
             FramingError::BadLength => f.write_str("Invalid Content-Length: value"),
             FramingError::FileTooLarge => f.write_str("Maximum file size exceeded"),

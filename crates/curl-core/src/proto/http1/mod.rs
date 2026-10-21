@@ -6,6 +6,7 @@
     expect(dead_code, reason = "no transfer makes a request yet")
 )]
 
+pub(crate) mod chunked;
 pub(crate) mod fields;
 #[cfg(test)]
 mod fixture;

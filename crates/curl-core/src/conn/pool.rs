@@ -97,12 +97,29 @@ pub(crate) struct Finish {
 /// What the pool did with a connection given back (`multi_done_locked`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Released {
-    /// Kept for another transfer.
-    Idle(ConnNumber),
+    /// Kept for another transfer; the pool was `full`, if it was, and
+    /// closed another.
+    Idle {
+        number: ConnNumber,
+        full: Option<Full>,
+    },
+    /// Kept, then closed at once: the pool was full, and it was the
+    /// oldest idle connection.
+    Evicted(Full),
     /// Closed, gracefully where the connection has a way to.
     Closed(ConnNumber),
     /// Closed at once: the transfer ended prematurely.
     Terminated(ConnNumber),
+}
+
+/// The pool had more connections than it keeps when one went idle, and
+/// closed the idle one longest unused, if any was.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Full {
+    /// Connections in the pool, busy or idle, before the close.
+    pub(crate) conns: u32,
+    /// How many it keeps.
+    pub(crate) max: u32,
 }
 
 /// A connection for a transfer.
@@ -376,11 +393,13 @@ impl Pool {
 
     /// Take a lease back and decide the connection's fate as
     /// `multi_done_locked` does: kept idle if its protocol allows reuse
-    /// and the transfer finished with it, else closed.
+    /// and the transfer finished with it, else closed. A connection kept
+    /// may leave the pool over its limit (`cpool_conn_now_idle`).
     pub(crate) fn release(
         &mut self,
         lease: ConnLease,
         finish: Finish,
+        limit: Limit,
         net: &mut dyn Net,
         now: Instant,
     ) -> Released {
@@ -396,7 +415,14 @@ impl Pool {
             assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");
             conn.use_ = Use::Idle { since: now };
             conn.served = true;
-            return Released::Idle(conn.number);
+            let number = conn.number;
+            return match over_limit(&mut self.conns, limit, net, now) {
+                Some((full, closed)) if closed == Some(id) => Released::Evicted(full),
+                full => Released::Idle {
+                    number,
+                    full: full.map(|(full, _)| full),
+                },
+            };
         }
         let slot = self
             .conns
@@ -444,6 +470,63 @@ impl Pool {
         }
         leased
     }
+}
+
+/// How many connections a pool keeps once one goes idle
+/// (`CURLMOPT_MAXCONNECTS`); with none set, a guess from the transfers.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limit {
+    pub(crate) max: Option<NonZeroU32>,
+    /// The transfers in the multi (`Curl_multi_xfers_attached`).
+    pub(crate) attached: u32,
+}
+
+/// With more connections than `limit` keeps, close the idle one longest
+/// unused (`cpool_conn_now_idle`, `cpool_get_oldest_idle`). Without a
+/// limit set, the pool keeps twice the transfers, and closes only a
+/// connection idle for a second.
+fn over_limit(
+    conns: &mut Arena<ConnSlot>,
+    limit: Limit,
+    net: &mut dyn Net,
+    now: Instant,
+) -> Option<(Full, Option<ConnId>)> {
+    let (max, min_idle_ms) = match limit.max {
+        Some(max) => (max.get(), 0),
+        None => (limit.attached.saturating_mul(2), 1000),
+    };
+    if max == 0 || max == u32::MAX {
+        return None;
+    }
+    let mut count = 0;
+    let mut oldest = None;
+    let mut cursor = None;
+    while let Some(id) = conns.next_after(cursor) {
+        cursor = Some(id);
+        match conns.get(id) {
+            Some(ConnSlot::Failed(_)) | None => continue,
+            Some(ConnSlot::Open(Conn {
+                use_: Use::Idle { since },
+                ..
+            })) => {
+                // In C's milliseconds: of two as old, the first.
+                let idle_ms = now.since(*since).as_millis();
+                if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms > ms) {
+                    oldest = Some((id, idle_ms));
+                }
+            }
+            Some(ConnSlot::Open(_) | ConnSlot::Connecting(_)) => {}
+        }
+        count += 1;
+    }
+    if count <= max {
+        return None;
+    }
+    let closed = oldest.map(|(id, _)| id);
+    if let Some(id) = closed {
+        close(conns, id, net);
+    }
+    Some((Full { conns: count, max }, closed))
 }
 
 /// Close the idle connections that are not healthy, saying nothing: C's

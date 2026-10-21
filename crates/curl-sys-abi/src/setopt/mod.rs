@@ -11,13 +11,14 @@
 #[rustfmt::skip]
 mod known;
 
-use core::ffi::{CStr, VaList, c_char, c_long, c_void};
-use core::num::{NonZeroU16, NonZeroU64};
+use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
+use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::options::{
-    EyeballsDelay, FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options, Resume, UserHeaders,
+    EyeballsDelay, FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options, Resume,
+    ReuseLimits, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -239,6 +240,16 @@ fn apply(
         (ffi::CURLOPT_TIMEOUT, Long(n)) => options.limits.total = time_limit(n, 1000)?,
         (ffi::CURLOPT_TIMEOUT_MS, Long(n)) => options.limits.total = time_limit(n, 1)?,
         (ffi::CURLOPT_CONNECTTIMEOUT, Long(n)) => options.limits.connect = time_limit(n, 1000)?,
+        (ffi::CURLOPT_MAXAGE_CONN, Long(n)) => options.limits.reuse.max_idle = time_limit(n, 1000)?,
+        (ffi::CURLOPT_MAXLIFETIME_CONN, Long(n)) => {
+            options.limits.reuse.max_age = time_limit(n, 1000)?;
+        }
+        (ffi::CURLOPT_MAXCONNECTS, Long(n)) => {
+            // Negative refused, past `INT_MAX` taken as it, 0 the default.
+            let n = u32::try_from(n.min(c_long::from(c_int::MAX))).map_err(|_| Refused::Bad)?;
+            options.limits.reuse.max_connects =
+                NonZeroU32::new(n).unwrap_or(ReuseLimits::default().max_connects);
+        }
         (ffi::CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS, Long(n)) => {
             let ms = u64::try_from(n).map_err(|_| Refused::Bad)?;
             options.limits.eyeballs = EyeballsDelay(std::time::Duration::from_millis(ms));

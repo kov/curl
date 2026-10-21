@@ -17,6 +17,7 @@ pub(crate) mod state;
 mod timers;
 mod wait;
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
@@ -205,6 +206,8 @@ pub struct Multi<H: Host = NoHost> {
     delivering: bool,
     pool: Pool,
     dns: DnsCache,
+    /// How many connections the pool keeps once one goes idle.
+    max_connects: Option<NonZeroU32>,
     sockets: SocketTable<H::Socket>,
     clock: Box<dyn Clock>,
     net: Box<dyn Net>,
@@ -227,6 +230,7 @@ impl<H: Host> Multi<H> {
             delivering: false,
             pool: Pool::new()?,
             dns: DnsCache::default(),
+            max_connects: None,
             sockets: SocketTable::new(),
             clock: env.clock,
             net: env.net,
@@ -236,6 +240,14 @@ impl<H: Host> Multi<H> {
             #[cfg(feature = "debug-hooks")]
             warned: false,
         })
+    }
+
+    /// How many connections the multi keeps once one goes idle
+    /// (`CURLMOPT_MAXCONNECTS`): past it, the one longest unused is
+    /// closed. None, the default, keeps twice the transfers added, and
+    /// closes only a connection unused for a second.
+    pub fn set_max_connects(&mut self, max: Option<NonZeroU32>) {
+        self.max_connects = max;
     }
 
     /// Add a transfer, to run at the next `perform` (`curl_multi_add_handle`).
@@ -542,6 +554,7 @@ impl<H: Host> Multi<H> {
             slots: &mut self.slots,
             pool: &mut self.pool,
             dns: &mut self.dns,
+            max_connects: &mut self.max_connects,
             net: &mut *self.net,
             dirty: &mut self.dirty,
             sockets: &mut self.sockets,
@@ -594,6 +607,7 @@ impl<H: Host> Multi<H> {
             ev,
             &mut cx::Telling {
                 slots: &mut self.slots,
+                max_connects: &mut self.max_connects,
                 notify: &mut self.notify,
                 counts: &self.counts,
                 sockets: &mut self.sockets,
@@ -805,6 +819,7 @@ impl<H: Host> Multi<H> {
         };
         let mut cx = EventCx {
             slots: &mut self.slots,
+            max_connects: &mut self.max_connects,
             notify: &mut self.notify,
             counts: self.counts.get(),
             sockets: &mut self.sockets,

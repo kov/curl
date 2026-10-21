@@ -1661,6 +1661,70 @@ fn a_bad_resolve_entry_fails_the_transfer() {
     m.remove(id, &mut NoEvents).unwrap();
 }
 
+/// A transfer that leaves the pool over the multi's limit says so before
+/// it keeps its connection, the idle one longest unused closed
+/// (`cpool_conn_now_idle`).
+#[test]
+fn a_full_pool_is_traced_by_the_transfer_filling_it() {
+    let (mut m, _clock) = networked();
+    m.set_max_connects(NonZeroU32::new(1));
+    let (a, a_lines) = traced("tcp://127.0.0.1:1/");
+    let (b, b_lines) = traced("tcp://localhost:1/");
+    m.add(a, (), &mut NoEvents).unwrap();
+    m.add(b, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.counts().running, 0);
+    assert_eq!(
+        trace_of(&a_lines).last().unwrap(),
+        "Connection #0 to host 127.0.0.1:1 left intact\n"
+    );
+    let b_lines = trace_of(&b_lines);
+    assert_eq!(
+        b_lines[b_lines.len() - 2..],
+        [
+            "Connection pool is full, closing the oldest of 2/1\n",
+            "Connection #1 to host localhost:1 left intact\n",
+        ]
+    );
+    assert_eq!(m.pool.len(), 1);
+}
+
+/// With no limit set, the pool keeps twice the transfers in the multi,
+/// and closes only a connection idle for a second.
+#[test]
+fn the_pool_s_limit_is_guessed_from_the_transfers() {
+    let (mut m, clock) = networked();
+    let mut run = |url: &str| {
+        let (e, lines) = traced(url);
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        m.remove(id, &mut NoEvents).unwrap();
+        clock.advance(Duration::from_secs(1));
+        trace_of(&lines)
+    };
+    run("tcp://127.0.0.1:1/");
+    run("tcp://localhost:1/");
+    // A third, with one transfer in the multi: one too many.
+    let third = run("tcp://[::1]:1/");
+    assert_eq!(
+        third[third.len() - 2..],
+        [
+            "Connection pool is full, closing the oldest of 3/2\n",
+            "Connection #2 to host [::1]:1 left intact\n",
+        ]
+    );
+    let (e, lines) = traced("tcp://127.0.0.1:1/");
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&lines)[0],
+        "Hostname 127.0.0.1 was found in DNS cache\n",
+        "#0, the oldest, was closed: {:?}",
+        trace_of(&lines)
+    );
+}
+
 /// A connect-to entry sends the connection to its peer, and the
 /// connection serves only transfers going through that same peer
 /// (`url_match_conn`, `url_match_destination`).

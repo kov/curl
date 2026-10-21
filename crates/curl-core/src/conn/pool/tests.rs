@@ -3,10 +3,17 @@ use std::rc::Rc;
 
 use super::*;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
-use crate::conn::{DnsCache, Failure, Scheme, Setup, Tcp};
+use crate::conn::{DnsCache, Failure, Limit, Scheme, Setup, Tcp};
+
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
 use curl_alloc::TryRc;
+
+/// No limit: with no transfers, nothing to guess one from.
+const UNLIMITED: Limit = Limit {
+    max: None,
+    attached: 0,
+};
 
 const TCP: Scheme = Scheme {
     name: "tcp",
@@ -103,14 +110,14 @@ fn local_connections_are_numbered_and_closed_when_released() {
     assert_eq!(pool.len(), 2);
     let a_id = a.id();
     assert_eq!(
-        pool.release(a, Finish::default(), &mut net, now),
+        pool.release(a, Finish::default(), UNLIMITED, &mut net, now),
         Released::Closed(ConnNumber(0))
     );
     assert!(pool.get_conn(a_id).is_none());
     assert_eq!(pool.get_conn(b.id()).map(|c| c.number), Some(ConnNumber(1)));
     let premature = Finish { premature: true };
     assert_eq!(
-        pool.release(b, premature, &mut net, now),
+        pool.release(b, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(1))
     );
     assert_eq!(pool.len(), 0);
@@ -118,9 +125,88 @@ fn local_connections_are_numbered_and_closed_when_released() {
     let c = new(&mut pool, Route::Local, &mut net, now);
     assert_eq!(pool.get(&c).number.to_string(), "#2");
     assert_eq!(
-        pool.release(c, Finish::default(), &mut net, now),
+        pool.release(c, Finish::default(), UNLIMITED, &mut net, now),
         Released::Closed(ConnNumber(2))
     );
+}
+
+/// Past its limit when one goes idle, the pool closes the idle connection
+/// longest unused (`cpool_conn_now_idle`): another, or the one released.
+/// Without a limit it keeps twice the transfers, and closes only one idle
+/// for a second.
+#[test]
+fn a_full_pool_closes_its_oldest_idle_connection() {
+    let (mut net, clock) = net();
+    let mut pool = Pool::new().unwrap();
+    let open = |pool: &mut Pool, net: &mut FakeNet, port| {
+        let lease = new(pool, tcp(port), net, clock.now());
+        up(pool, &lease, net, clock.now());
+        lease
+    };
+    let ms = Duration::from_millis(1);
+    let full = Some(Full { conns: 3, max: 2 });
+    let two = Limit {
+        max: NonZeroU32::new(2),
+        attached: 1,
+    };
+    let a = open(&mut pool, &mut net, 1);
+    let b = open(&mut pool, &mut net, 4);
+    let c = open(&mut pool, &mut net, 1);
+    // The only idle one is the one released.
+    assert_eq!(
+        pool.release(a, Finish::default(), two, &mut net, clock.now()),
+        Released::Evicted(Full { conns: 3, max: 2 })
+    );
+    clock.advance(ms);
+    assert_eq!(
+        pool.release(b, Finish::default(), two, &mut net, clock.now()),
+        Released::Idle {
+            number: ConnNumber(1),
+            full: None
+        }
+    );
+    let d = open(&mut pool, &mut net, 1);
+    clock.advance(ms);
+    assert_eq!(
+        pool.release(c, Finish::default(), two, &mut net, clock.now()),
+        Released::Idle {
+            number: ConnNumber(2),
+            full
+        },
+        "#1, idle longer, is closed"
+    );
+    assert_eq!(pool.len(), 2);
+    let guess = Limit {
+        max: None,
+        attached: 1,
+    };
+    let e = open(&mut pool, &mut net, 4);
+    clock.advance(ms);
+    assert_eq!(
+        pool.release(d, Finish::default(), guess, &mut net, clock.now()),
+        Released::Idle {
+            number: ConnNumber(3),
+            full
+        },
+    );
+    assert_eq!(pool.len(), 3, "none idle for a second");
+    clock.advance(Duration::from_secs(1));
+    assert_eq!(
+        pool.release(e, Finish::default(), guess, &mut net, clock.now()),
+        Released::Idle {
+            number: ConnNumber(4),
+            full
+        },
+    );
+    assert_eq!(pool.len(), 2, "#2 is closed");
+    // The one left to port 1 is #3.
+    let mut notes = Vec::new();
+    let got = pool.acquire(tcp(1), RULES, &mut net, clock.now(), &mut notes);
+    let Ok(Acquired::Reused(kept)) = got else {
+        panic!("{got:?}");
+    };
+    assert_eq!(pool.get(&kept).number, ConnNumber(3));
+    pool.release(kept, Finish::default(), UNLIMITED, &mut net, clock.now());
 }
 
 /// A setup tries its address, waits, and is established in the slot it
@@ -157,7 +243,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     assert_eq!(socket(&pool, &lease), Some(1000), "kept once up");
     let premature = Finish { premature: true };
     assert_eq!(
-        pool.release(lease, premature, &mut net, now),
+        pool.release(lease, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(0))
     );
     assert_eq!(net.open_sockets(), 0, "its socket was closed");
@@ -203,11 +289,11 @@ fn refused_and_silent_attempts() {
     assert_eq!(net.open_sockets(), 1);
     let premature = Finish { premature: true };
     assert_eq!(
-        pool.release(refused, premature, &mut net, now),
+        pool.release(refused, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(0))
     );
     assert_eq!(
-        pool.release(silent, premature, &mut net, now),
+        pool.release(silent, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(1))
     );
     assert_eq!(net.open_sockets(), 0);
@@ -234,7 +320,7 @@ fn unresolved_names_and_immediate_failures() {
     let premature = Finish { premature: true };
     for lease in [named, nobody] {
         assert!(matches!(
-            pool.release(lease, premature, &mut net, now),
+            pool.release(lease, premature, UNLIMITED, &mut net, now),
             Released::Terminated(_)
         ));
     }
@@ -252,8 +338,11 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     up(&mut pool, &first, &mut net, now);
     let id = first.id();
     assert_eq!(
-        pool.release(first, Finish::default(), &mut net, now),
-        Released::Idle(ConnNumber(0))
+        pool.release(first, Finish::default(), UNLIMITED, &mut net, now),
+        Released::Idle {
+            number: ConnNumber(0),
+            full: None
+        }
     );
     assert_eq!(net.open_sockets(), 1, "kept open");
     // Another port is another route.
@@ -271,10 +360,10 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     let third = new(&mut pool, tcp(1), &mut net, now);
     let premature = Finish { premature: true };
     for lease in [other, third] {
-        pool.release(lease, premature, &mut net, now);
+        pool.release(lease, premature, UNLIMITED, &mut net, now);
     }
     assert_eq!(
-        pool.release(again, premature, &mut net, now),
+        pool.release(again, premature, UNLIMITED, &mut net, now),
         Released::Terminated(ConnNumber(0))
     );
     assert_eq!((pool.len(), net.open_sockets()), (0, 0));
@@ -287,7 +376,7 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     let lease = new(&mut pool, route, &mut net, now);
     up(&mut pool, &lease, &mut net, now);
     assert!(matches!(
-        pool.release(lease, Finish::default(), &mut net, now),
+        pool.release(lease, Finish::default(), UNLIMITED, &mut net, now),
         Released::Closed(_)
     ));
 }
@@ -306,7 +395,7 @@ fn a_search_closes_what_it_must_not_reuse() {
         let now = clock.now();
         let lease = new(pool, tcp(1), net, now);
         up(pool, &lease, net, now);
-        pool.release(lease, Finish::default(), net, now);
+        pool.release(lease, Finish::default(), UNLIMITED, net, now);
     };
     let search = |pool: &mut Pool, net: &mut FakeNet, rules| {
         let mut notes = Vec::new();
@@ -324,7 +413,7 @@ fn a_search_closes_what_it_must_not_reuse() {
     });
     let keys = leases.each_ref().map(|l| key(&mut pool, l));
     for lease in leases {
-        pool.release(lease, Finish::default(), &mut net, now);
+        pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
     }
     // The first search prunes, and finds all healthy; the first is taken.
     let (got, notes) = search(&mut pool, &mut net, RULES);
@@ -332,7 +421,7 @@ fn a_search_closes_what_it_must_not_reuse() {
         panic!("{got:?}");
     };
     assert_eq!((pool.get(&lease).number, notes), (ConnNumber(0), vec![]));
-    pool.release(lease, Finish::default(), &mut net, clock.now());
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, clock.now());
     // Hung up while idle: found dead by the next search, which does not
     // prune within a second of the last.
     net.hang_up(keys[0]);
@@ -353,7 +442,7 @@ fn a_search_closes_what_it_must_not_reuse() {
         unreachable!()
     };
     assert_eq!(pool.get(&lease).number, ConnNumber(2));
-    pool.release(lease, Finish::default(), &mut net, clock.now());
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, clock.now());
     // Idle too long, by the transfer's rule.
     clock.advance(Duration::from_millis(500));
     let short = ReuseRules {
@@ -376,7 +465,13 @@ fn a_search_closes_what_it_must_not_reuse() {
     let Acquired::New(lease) = got else {
         unreachable!()
     };
-    pool.release(lease, Finish { premature: true }, &mut net, clock.now());
+    pool.release(
+        lease,
+        Finish { premature: true },
+        UNLIMITED,
+        &mut net,
+        clock.now(),
+    );
     // Alive too long is passed over without a word but its end.
     kept(&mut pool, &mut net);
     clock.advance(Duration::from_millis(10));
@@ -390,7 +485,13 @@ fn a_search_closes_what_it_must_not_reuse() {
     let Acquired::New(lease) = got else {
         unreachable!()
     };
-    pool.release(lease, Finish { premature: true }, &mut net, clock.now());
+    pool.release(
+        lease,
+        Finish { premature: true },
+        UNLIMITED,
+        &mut net,
+        clock.now(),
+    );
     assert_eq!(net.open_sockets(), 0);
 }
 
@@ -403,7 +504,7 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
     let start = clock.now();
     let lease = new(&mut pool, tcp(1), &mut net, start);
     up(&mut pool, &lease, &mut net, start);
-    pool.release(lease, Finish::default(), &mut net, start);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, start);
     let ms = Duration::from_millis;
     let search = |pool: &mut Pool, net: &mut FakeNet, rules| {
         let mut notes = Vec::new();
@@ -412,11 +513,17 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
             .unwrap();
         let reused = match got {
             Acquired::Reused(lease) => {
-                pool.release(lease, Finish::default(), net, clock.now());
+                pool.release(lease, Finish::default(), UNLIMITED, net, clock.now());
                 true
             }
             Acquired::New(lease) => {
-                pool.release(lease, Finish { premature: true }, net, clock.now());
+                pool.release(
+                    lease,
+                    Finish { premature: true },
+                    UNLIMITED,
+                    net,
+                    clock.now(),
+                );
                 false
             }
         };
@@ -444,7 +551,7 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
     let born = clock.now();
     let lease = new(&mut pool, tcp(1), &mut net, born);
     up(&mut pool, &lease, &mut net, born);
-    pool.release(lease, Finish::default(), &mut net, born);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, born);
     let age = |max| ReuseRules {
         max_idle: None,
         max_age: Some(max),
@@ -474,7 +581,7 @@ fn a_search_prunes_once_a_second() {
         Transport::Tcp(s) => s.key(),
         Transport::Local => unreachable!(),
     };
-    pool.release(lease, Finish::default(), &mut net, now);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
     net.hang_up(key);
     let mut notes = Vec::new();
     // The search for the first connection pruned; the next prune is a
@@ -486,7 +593,7 @@ fn a_search_prunes_once_a_second() {
     let Acquired::New(other) = got else {
         panic!("{got:?}")
     };
-    pool.release(other, Finish { premature: true }, &mut net, now);
+    pool.release(other, Finish { premature: true }, UNLIMITED, &mut net, now);
     clock.advance(Duration::from_secs(1));
     let now = clock.now();
     let got = pool
@@ -497,7 +604,7 @@ fn a_search_prunes_once_a_second() {
     let Acquired::New(lease) = got else {
         panic!("{got:?}")
     };
-    pool.release(lease, Finish { premature: true }, &mut net, now);
+    pool.release(lease, Finish { premature: true }, UNLIMITED, &mut net, now);
 }
 
 /// The pool's lock is taken at the four places C takes it, one critical
@@ -534,7 +641,7 @@ fn the_lock_is_taken_where_c_takes_it() {
     assert_eq!(sections(&log), 3);
     up(&mut pool, &lease, &mut net, now);
     assert_eq!(sections(&log), 0, "the setup takes no lock");
-    pool.release(lease, Finish::default(), &mut net, now);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
     assert_eq!(sections(&log), 1);
     // The next one: added, and finds it.
     pool.xfer_init();
@@ -546,12 +653,12 @@ fn the_lock_is_taken_where_c_takes_it() {
     let Acquired::Reused(lease) = got else {
         panic!("{got:?}")
     };
-    pool.release(lease, Finish::default(), &mut net, now);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
     assert_eq!(sections(&log), 1);
     // A networkless connection is added without a search.
     let local = new(&mut pool, Route::Local, &mut net, now);
     assert_eq!(sections(&log), 1);
-    pool.release(local, Finish::default(), &mut net, now);
+    pool.release(local, Finish::default(), UNLIMITED, &mut net, now);
     pool.close_idle(&mut net);
     assert_eq!((pool.len(), net.open_sockets()), (0, 0));
 }
@@ -599,7 +706,7 @@ fn a_connection_moves_bytes_both_ways() {
     assert_eq!(conn.rx_mut().filled(), b"HTTP/1.1 200 OK\r\n\r\nhi");
     assert!(matches!(conn.recv(64).unwrap(), Recv::Eof));
     assert_eq!(conn.rx_mut().filled().len(), 21, "the end adds nothing");
-    pool.release(lease, Finish::default(), &mut net, now);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
 }
 
 /// Without a conversation, a peer says nothing and takes what it is sent.
@@ -615,7 +722,7 @@ fn a_silent_peer_takes_what_it_is_sent() {
     assert!(matches!(sent, Sent::Bytes(n) if n.get() == 18));
     assert!(matches!(conn.recv(64).unwrap(), Recv::WouldBlock));
     assert_eq!(conn.rx_mut().filled(), b"");
-    pool.release(lease, Finish::default(), &mut net, now);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
 }
 
 /// A connection serves a route to the same peer however its host is
@@ -627,7 +734,7 @@ fn a_host_in_capitals_reuses_the_connection() {
     let mut pool = Pool::new().unwrap();
     let lease = new(&mut pool, to(TCP, b"[::ffff:7f00:1]", 5), &mut net, now);
     up(&mut pool, &lease, &mut net, now);
-    pool.release(lease, Finish::default(), &mut net, now);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
     let mut notes = Vec::new();
     let route = to(TCP, b"[::FFFF:7F00:1]", 5);
     let got = pool
@@ -636,5 +743,5 @@ fn a_host_in_capitals_reuses_the_connection() {
     let Acquired::Reused(lease) = got else {
         panic!("{got:?}");
     };
-    pool.release(lease, Finish::default(), &mut net, now);
+    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
 }

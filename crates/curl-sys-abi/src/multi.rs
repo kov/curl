@@ -9,7 +9,8 @@
 #![allow(unsafe_code)]
 
 use core::cell::{Cell, UnsafeCell};
-use core::ffi::{c_int, c_long, c_uint, c_void};
+use core::ffi::{c_int, c_long, c_uint, c_ulong, c_void};
+use core::num::NonZeroU32;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::os::fd::BorrowedFd;
@@ -808,12 +809,34 @@ pub unsafe extern "C" fn curl_multi_setopt(
     mut args: ...
 ) -> CURLMcode {
     // SAFETY: as the caller guarantees.
-    let _entry = match unsafe { enter(m, MultiCall::Setopt) } {
+    let entry = match unsafe { enter(m, MultiCall::Setopt) } {
         Ok(entry) => entry,
         Err(code) => return code,
     };
     // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
+    if option == ffi::CURLMOPT_MAXCONNECTS {
+        // SAFETY: the application passes a long, the option's type.
+        let n = unsafe { args.next_arg::<c_ulong>() };
+        // Past `UINT32_MAX` changes nothing; 0 is the guess.
+        if let Ok(n) = u32::try_from(n) {
+            let max = NonZeroU32::new(n);
+            match entry.reach {
+                // SAFETY: the reach is direct.
+                Reach::Direct => unsafe { multi.core_mut() }.set_max_connects(max),
+                Reach::Frame(Frame::Event(cx)) => {
+                    // SAFETY: as in `curl_multi_info_read`.
+                    unsafe { &mut *cx.as_ptr() }.set_max_connects(max);
+                }
+                Reach::Frame(Frame::Notify(cx)) => {
+                    // SAFETY: as above.
+                    unsafe { &mut *cx.as_ptr() }.set_max_connects(max);
+                }
+                Reach::Frame(Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
+            }
+        }
+        return CURLM_OK;
+    }
     let mut cb = multi.cb.get();
     // SAFETY: the application passes a pointer, the type of each of these
     // options, and a function of the option's type.

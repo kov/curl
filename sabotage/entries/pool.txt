@@ -239,3 +239,59 @@ witness: curl-core multi::tests::a_connection_serves_only_the_peer_it_goes_throu
                     && have.via.as_deref() == want.via.as_deref()
 --- new
                     && true
+
+=== a full pool closes the newest idle connection
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connection
+--- old
+                if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms > ms) {
+--- new
+                if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms < ms) {
+
+=== the guessed limit closes connections just idle
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connection
+--- old
+        None => (limit.attached.saturating_mul(2), 1000),
+--- new
+        None => (limit.attached.saturating_mul(2), 0),
+
+=== a set limit spares a connection just idle
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connection
+--- old
+        Some(max) => (max.get(), 0),
+--- new
+        Some(max) => (max.get(), 1000),
+
+=== the pool keeps one more than its limit
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connection
+--- old
+    if count <= max {
+--- new
+    if count <= max + 1 {
+
+=== a connection closed as the oldest is said to be kept
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connection
+--- old
+                Some((full, closed)) if closed == Some(id) => Released::Evicted(full),
+--- new
+                Some((full, closed)) if closed == Some(id) && false => Released::Evicted(full),
+
+=== the multi's limit is never set
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_full_pool_is_traced_by_the_transfer_filling_it
+--- old
+        self.max_connects = max;
+--- new
+        let _ = max;
+
+=== the guess counts no transfers
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_pool_s_limit_is_guessed_from_the_transfers
+--- old
+        attached: cx.rest.slots.len(),
+--- new
+        attached: 0,

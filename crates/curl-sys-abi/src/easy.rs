@@ -423,6 +423,12 @@ fn perform(easy: &ShimEasy) -> CURLcode {
     easy.private.set(Some(multi));
     // SAFETY: the handle owns its private multi.
     let m = unsafe { multi.as_ref() };
+    // The handle's limit is its multi's (`easy_perform`).
+    let max = easy
+        .with_options(|o| o.limits.reuse.max_connects)
+        .expect("perform is not called from a callback");
+    // SAFETY: nothing else runs on the private multi.
+    unsafe { m.core_mut() }.set_max_connects(Some(max));
     // Nothing but this call runs on the private multi.
     if let Err(e) = crate::multi::add(m, Reach::Direct, easy) {
         return match e {

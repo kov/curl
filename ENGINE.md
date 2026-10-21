@@ -949,8 +949,8 @@ impl Pool {
     pub fn connect(&mut self, lease: &ConnLease, net: &mut dyn Net, now: Instant)
         -> Result<Connected, ConnectError>;                     // Connecting, Established, AlreadyUp
     pub fn get(&mut self, lease: &ConnLease) -> &mut Conn;                      // once up
-    pub fn release(&mut self, lease: ConnLease, finish: Finish, net: &mut dyn Net, now: Instant)
-        -> Released;                                                            // lock point 4
+    pub fn release(&mut self, lease: ConnLease, finish: Finish, limit: Limit, net: &mut dyn Net,
+                   now: Instant) -> Released;                                   // lock point 4
     pub fn get_conn(&self, id: ConnId) -> Option<&Conn>;                        // stale: None
     pub fn close_idle(&mut self, net: &mut dyn Net);                            // multi drop
 }
@@ -969,9 +969,17 @@ impl Pool {
   `Curl_conn_connect` returns at once.
 - `release` decides the connection's fate as `multi_done_locked` does, from what the pool knows
   (other leases, the route's reuse rules, a close mark) and what the transfer reports in
-  `Finish` (premature, reuse forbidden): `Released::{Idle, Closed, Terminated}` so far, traced as
-  "Connection #N to host H:P left intact", "shutting down connection #N", "closing connection
-  #N". A connection's use is one fact, `Use::{Leased(n), Idle { since }}`.
+  `Finish` (premature, reuse forbidden): `Released::{Idle, Evicted, Closed, Terminated}` so far,
+  traced as "Connection #N to host H:P left intact", nothing, "shutting down connection #N",
+  "closing connection #N". A connection kept idle may leave the pool over its `Limit`
+  (`cpool_conn_now_idle`): the multi's `max_connects` (`CURLMOPT_MAXCONNECTS`; an easy
+  handle's own multi takes `CURLOPT_MAXCONNECTS`), or with none set twice the transfers in the
+  multi, closing then only a connection idle for a second. Over it, the idle connection
+  longest unused is closed, and the transfer traces "Connection pool is full, closing the
+  oldest of N/M"; its close traces nowhere, as C's goes to the internal handle. `Evicted` is
+  the released connection closed so. The limit is the multi's, not the pool's, so that the
+  application's callbacks can set it while the pool is in use. A connection's use is one fact,
+  `Use::{Leased(n), Idle { since }}`.
 - The connection table starts empty and doubles from 16 when full (`ArenaPolicy::DOUBLING`), as
   `Curl_cpool_add` grows its table.
 - The pool owns every connection, busy or idle. It is the only issuer and consumer of leases,

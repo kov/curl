@@ -8,7 +8,7 @@ pub mod script;
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
-use std::num::{NonZeroU16, NonZeroU64};
+use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
 use crate::handler::{
@@ -280,13 +280,17 @@ impl Default for EyeballsDelay {
 }
 
 /// How long a connection may have been idle, and have lived, for a
-/// transfer to reuse it; none for no limit, as C's 0.
+/// transfer to reuse it, none for no limit as C's 0; and how many an
+/// easy handle's own pool keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReuseLimits {
     /// `CURLOPT_MAXAGE_CONN`: 118 seconds unless set.
     pub max_idle: Option<TimeLimit>,
     /// `CURLOPT_MAXLIFETIME_CONN`: a day unless set.
     pub max_age: Option<TimeLimit>,
+    /// `CURLOPT_MAXCONNECTS`: 5 unless set. A multi's own limit is the
+    /// multi's.
+    pub max_connects: NonZeroU32,
 }
 
 impl Default for ReuseLimits {
@@ -294,6 +298,7 @@ impl Default for ReuseLimits {
         ReuseLimits {
             max_idle: TimeLimit::from_millis(118 * 1000),
             max_age: TimeLimit::from_millis(24 * 3600 * 1000),
+            max_connects: NonZeroU32::new(5).expect("not zero"),
         }
     }
 }

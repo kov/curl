@@ -17,7 +17,7 @@ pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup};
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, parse_entry};
 pub(crate) use pool::{
-    Acquired, ConnLease, Connected, Finish, Pool, PoolNote, Released, ReuseRules,
+    Acquired, ConnLease, Connected, Finish, Full, Limit, Pool, PoolNote, Released, ReuseRules,
 };
 
 use std::fmt;

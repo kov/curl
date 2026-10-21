@@ -12,8 +12,8 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec};
 use crate::conn::io::Events;
 use crate::conn::{
     Acquired, Answer, BadEntry, BadVia, Conn, ConnLease, ConnectError, Connected, Failure, Finish,
-    Found, ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route, Setup, Tcp,
-    parse_entry,
+    Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route,
+    Setup, Tcp, parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -270,9 +270,26 @@ fn release<H: Host>(
     origin: Option<&Origin>,
 ) {
     let now = cx.rest.now;
+    let limit = Limit {
+        max: *cx.rest.max_connects,
+        attached: cx.rest.slots.len(),
+    };
     let (pool, mut net) = cx.rest.pool_net(cx.me);
-    match pool.release(lease, finish, &mut net, now) {
-        Released::Idle(n) => {
+    let released = pool.release(lease, finish, limit, &mut net, now);
+    if let Released::Idle {
+        full: Some(full), ..
+    }
+    | Released::Evicted(full) = released
+    {
+        let Full { conns, max } = full;
+        trace::info(
+            cx,
+            format_args!("Connection pool is full, closing the oldest of {conns}/{max}"),
+        );
+    }
+    match released {
+        Released::Evicted(_) => {}
+        Released::Idle { number: n, .. } => {
             let origin = origin.expect("a connection kept has a host");
             let (host, port) = (Bytes(origin.shown()), origin.port());
             trace::info(

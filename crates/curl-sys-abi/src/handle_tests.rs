@@ -212,6 +212,30 @@ fn http_options_reach_the_request() {
         CURLE_OK
     );
     assert!(resolve(c).is_empty());
+    let reuse = |c| options(c, |o| o.limits.reuse);
+    let max = |c| reuse(c).max_connects.get();
+    assert_eq!(long(c, ffi::CURLOPT_MAXCONNECTS, 3), CURLE_OK);
+    assert_eq!(max(c), 3);
+    assert_eq!(long(c, ffi::CURLOPT_MAXCONNECTS, 0), CURLE_OK);
+    assert_eq!(max(c), 5, "0 is the default");
+    assert_eq!(long(c, ffi::CURLOPT_MAXCONNECTS, c_long::MAX), CURLE_OK);
+    assert_eq!(max(c), i32::MAX as u32, "taken as INT_MAX");
+    assert_eq!(
+        long(c, ffi::CURLOPT_MAXCONNECTS, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(long(c, ffi::CURLOPT_MAXAGE_CONN, 7), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_MAXLIFETIME_CONN, 0), CURLE_OK);
+    let limits = reuse(c);
+    assert_eq!(
+        limits.max_idle.map(|t| t.duration()),
+        Some(std::time::Duration::from_secs(7))
+    );
+    assert_eq!(limits.max_age, None, "0 is no limit");
+    assert_eq!(
+        long(c, ffi::CURLOPT_MAXAGE_CONN, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
     let mut list = ptr::null_mut();
     for line in [c"::a:1", c"b:2:c:3"] {
         // SAFETY: a list made here, and a C string.
@@ -1426,6 +1450,10 @@ fn the_multi_s_callbacks_run_with_their_frames() {
         );
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_MAXCONNECTS, 1 as c_long),
+            CURLM_OK
+        );
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_PUSHDATA, ptr::null_mut::<c_void>()),
             ffi::CURLM_UNKNOWN_OPTION
         );
         for k in [ffi::CURLMNOTIFY_INFO_READ, ffi::CURLMNOTIFY_EASY_DONE] {

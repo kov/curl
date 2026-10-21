@@ -29,9 +29,9 @@ witness: curl-core proto::http::tests::a_held_line_is_delivered_at_the_end
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::responses_end_as_c_ends_them
 --- old
-        if !premature && head.got_nothing(self.pipeline.bytecount()) {
+        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
 --- new
-        if !premature && head.got_nothing(self.pipeline.bytecount() + 1) {
+        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount() + 1)
 
 === trailers are delivered as headers
 file: crates/curl-core/src/proto/http.rs
@@ -336,9 +336,9 @@ witness: curl-core proto::http::tests::a_long_line_ending_the_head_is_delivered_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_paused_last_piece_waits_to_be_delivered
 --- old
-                    let done = stepped == ProtoStep::Done && !x.proto.holds_output();
+                    let done = ended && !x.proto.holds_output();
 --- new
-                    let done = stepped == ProtoStep::Done;
+                    let done = ended;
 
 === a chunked body is traced as decoded
 file: crates/curl-core/src/proto/http.rs
@@ -371,3 +371,11 @@ witness: curl-core proto::http::tests::a_retry_after_date_counts_from_the_clock
                 if let Some(wait) = framing::retry_after(line.bytes, cx.unix_time()) {
 --- new
                 if let Some(wait) = framing::retry_after(line.bytes, 0) {
+
+=== a retried request is an empty reply
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again
+--- old
+        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
+--- new
+        if !premature && head.got_nothing(self.pipeline.bytecount())

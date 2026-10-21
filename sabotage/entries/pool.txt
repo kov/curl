@@ -142,7 +142,7 @@ witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_afte
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 --- old
-        self.answered < self.replies.len() && heads > self.answered
+        self.answered < self.replies.len() && self.heads() > self.answered
 --- new
         self.answered < self.replies.len()
 

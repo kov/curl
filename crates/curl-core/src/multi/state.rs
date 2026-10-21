@@ -36,6 +36,12 @@ use super::{Host, TransferId};
 pub(crate) struct Run {
     pub(crate) state: TransferState,
     pub(crate) deadlines: Deadlines,
+    /// The URL the request under way asked for, read back whole,
+    /// credentials and all (C's `state.url`): a retry asks for it again.
+    url: Vec<u8>,
+    /// Requests made again on a fresh connection, their reused one having
+    /// died (`state.retrycount`).
+    retries: u8,
     /// The first transfer added to its multi says that the library is a
     /// debug build (`multi_warn_debug`).
     #[cfg(feature = "debug-hooks")]
@@ -47,10 +53,26 @@ impl Run {
         Run {
             state: TransferState::Init,
             deadlines: Deadlines::new(None, None),
+            url: Vec::new(),
+            retries: 0,
             #[cfg(feature = "debug-hooks")]
             warn: false,
         }
     }
+}
+
+/// The most times a request is made again on a fresh connection
+/// (`CONN_MAX_RETRIES`).
+const MAX_RETRIES: u8 = 5;
+
+/// What follows a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AfterRequest {
+    /// The transfer is over.
+    Complete,
+    /// The same URL is asked for again on a fresh connection, the reused
+    /// one having died (C's `FOLLOW_RETRY`).
+    Retry,
 }
 
 #[derive(Debug)]
@@ -131,6 +153,7 @@ pub(crate) struct Done {
     reached: Reached,
     /// The host connected to, if any, as a connection kept names it.
     origin: Option<Origin>,
+    next: AfterRequest,
 }
 
 /// How far a request got.
@@ -222,6 +245,7 @@ impl TransferState {
                 premature: true,
                 reached: Reached::Unmade,
                 origin: Some(c.origin),
+                next: AfterRequest::Complete,
             }),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 TransferState::Done(x.done(Err(err), true, Reached::Unmade))
@@ -323,6 +347,15 @@ impl Attached {
             premature,
             reached,
             origin: self.origin,
+            next: AfterRequest::Complete,
+        }
+    }
+
+    /// The request is over, to be made again on a fresh connection.
+    fn retried(self, result: Result<(), ErrorKind>, reached: Reached) -> Done {
+        Done {
+            next: AfterRequest::Retry,
+            ..self.done(result, false, reached)
         }
     }
 }
@@ -479,7 +512,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let now = cx.rest.now;
             cx.report_mut().restart(now);
             *cx.speedometer_mut() = Speedometer::default();
-            let next = setup(run, cx);
+            let next = match pretransfer(run, cx) {
+                Ok(url) => start_leg(run, cx, url),
+                Err(kind) => TransferState::Init.fail(kind),
+            };
             if next.is_completed() {
                 enter_completed(cx.report_mut(), now, true);
             }
@@ -504,6 +540,16 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 };
                 (TransferState::Did(x), Wake::Again)
             }
+            // A reused connection that died may be the request's
+            // trouble: it is made again on a fresh one (`multistate_do`).
+            Err(ErrorKind::SendError) if cx.conn(&x.lease).reused() => {
+                let next = match retry_request(run, &x, cx) {
+                    Ok(true) => x.retried(Err(ErrorKind::SendError), Reached::Unmade),
+                    Ok(false) => x.done(Err(ErrorKind::SendError), false, Reached::Unmade),
+                    Err(e) => x.done(Err(e), false, Reached::Unmade),
+                };
+                (TransferState::Done(next), Wake::Again)
+            }
             // A failed request is done with, not cut short (`multistate_do`).
             Err(e) => (
                 TransferState::Done(x.done(Err(e), false, Reached::Unmade)),
@@ -525,6 +571,19 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 TimeLeft::Expired(_)
             );
             match stepped {
+                // Received nothing, perhaps over a reused connection that
+                // closed as it was reused (`multistate_performing`).
+                Err(ErrorKind::RecvError) => match retry_request(run, &x, cx) {
+                    Ok(true) => (
+                        TransferState::Done(x.retried(Ok(()), Reached::Made)),
+                        Wake::Again,
+                    ),
+                    // The receive's failure stands over the retry's.
+                    Ok(false) | Err(_) => (
+                        TransferState::Exchanging(x).fail(ErrorKind::RecvError),
+                        Wake::Again,
+                    ),
+                },
                 Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                 // Out of time at the end of the pass (transfer.c:382).
                 Ok(ProtoStep::Blocked) if expired => {
@@ -536,14 +595,27 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     // is not over while output waits for the application to
                     // unpause (`multi.c`: `req.done` and the writers not
                     // paused).
-                    let done = stepped == ProtoStep::Done && !x.proto.holds_output();
+                    let ended = stepped == ProtoStep::Done;
+                    let done = ended && !x.proto.holds_output();
                     match progress::check(cx, done) {
                         Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                         Ok(look_again) => {
                             if let Some(wait) = look_again {
                                 run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
                             }
-                            if done {
+                            let retry = if ended {
+                                retry_request(run, &x, cx)
+                            } else {
+                                Ok(false)
+                            };
+                            if let Err(e) = retry {
+                                (TransferState::Exchanging(x).fail(e), Wake::Again)
+                            } else if retry == Ok(true) {
+                                (
+                                    TransferState::Done(x.retried(Ok(()), Reached::Made)),
+                                    Wake::Again,
+                                )
+                            } else if done {
                                 (
                                     TransferState::Done(x.done(Ok(()), false, Reached::Exchanged)),
                                     Wake::Again,
@@ -562,7 +634,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // comes first.
             let mut premature = d.premature || is_premature(d.result);
             if let Some(proto) = d.proto.as_mut() {
-                d.result = proto.done(cx, &d.lease, d.result, premature);
+                d.result = proto.done(cx, &d.lease, d.result, premature, d.next);
             }
             // A last progress pass, unless a callback aborted already.
             if d.result != Err(ErrorKind::AbortedByCallback)
@@ -581,13 +653,24 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             if pause.recv == RecvPause::Held {
                 pause.recv = RecvPause::Running;
             }
-            let completed = TransferState::Completed(Completed {
-                outcome: d.result,
-                message: Message::Unread,
-            });
+            // A send failure is what a retry from DO set out to mend.
             let now = cx.rest.now;
-            enter_completed(cx.report_mut(), now, d.reached == Reached::Unmade);
-            (completed, Wake::Again)
+            if d.next == AfterRequest::Retry
+                && matches!(d.result, Ok(()) | Err(ErrorKind::SendError))
+            {
+                let next = retry_leg(run, cx);
+                if next.is_completed() {
+                    enter_completed(cx.report_mut(), now, true);
+                }
+                (next, Wake::Again)
+            } else {
+                enter_completed(cx.report_mut(), now, d.reached == Reached::Unmade);
+                let completed = TransferState::Completed(Completed {
+                    outcome: d.result,
+                    message: Message::Unread,
+                });
+                (completed, Wake::Again)
+            }
         }
         s @ TransferState::Completed(_) => (s, Wake::Idle),
     };
@@ -841,10 +924,9 @@ fn is_premature(result: Result<(), ErrorKind>) -> bool {
     )
 }
 
-/// C's pretransfer, SETUP and CONNECT, which always run in one pass: the
-/// URL, the leg's timers, the protocol and a connection, then the protocol
-/// connects over it.
-fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
+/// C's pretransfer, once per transfer: the option's URL parsed for the
+/// first request.
+fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, ErrorKind> {
     #[cfg(feature = "debug-hooks")]
     if std::mem::take(&mut run.warn) {
         trace::info(cx, format_args!("!!! WARNING !!!"));
@@ -854,22 +936,92 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         );
     }
     if cx.easy().options().url().is_none() {
-        let kind = trace::fail(cx, ErrorKind::UrlMalformat, format_args!("No URL set"));
-        return TransferState::Init.fail(kind);
+        return Err(trace::fail(
+            cx,
+            ErrorKind::UrlMalformat,
+            format_args!("No URL set"),
+        ));
     }
+    run.retries = 0;
     cx.mark(Timer::StartOp);
-    run.deadlines.start_leg(cx.rest.now);
-    cx.mark(Timer::StartSingle);
-    cx.mark(Timer::PostQueue);
     let options = cx.easy().options();
-    let url = match parse_url(options) {
+    match parse_url(options.url().expect("checked above"), options) {
+        Ok(url) => Ok(url),
+        Err(UrlRefused::Rejected(e)) => Err(trace::fail(
+            cx,
+            url_error(e),
+            format_args!("URL rejected: {e}"),
+        )),
+        Err(UrlRefused::Failed(kind)) => Err(kind),
+    }
+}
+
+/// A request is to be made again: its URL parsed anew, as the follow of a
+/// retry does (`Curl_http_follow`, `FOLLOW_RETRY`), and a leg started.
+fn retry_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
+    let url = match parse_url(&run.url, cx.easy().options()) {
         Ok(url) => url,
         Err(UrlRefused::Rejected(e)) => {
-            let kind = trace::fail(cx, url_error(e), format_args!("URL rejected: {e}"));
-            return TransferState::Init.fail(kind);
+            let kind = url_error(e);
+            let why = format_args!("The redirect target URL could not be parsed: {e}");
+            return TransferState::Init.fail(trace::fail(cx, kind, why));
         }
         Err(UrlRefused::Failed(kind)) => return TransferState::Init.fail(kind),
     };
+    let shown = match url.get(Part::Url, GetOptions::NONE) {
+        Ok(shown) => shown,
+        Err(e) => return TransferState::Init.fail(url_error(e)),
+    };
+    let shown = Bytes(&shown);
+    trace::info(
+        cx,
+        format_args!("Issue another request to this URL: '{shown}'"),
+    );
+    cx.report_mut().headers_mut().next_request();
+    cx.mark(Timer::Redirect);
+    // The sizes to come are the new request's (`Curl_pgrsResetTransferSizes`).
+    let sizes = cx.report_mut().sizes_mut();
+    sizes.download_expected = None;
+    sizes.upload_expected = None;
+    start_leg(run, cx, url)
+}
+
+/// Whether a request that got nothing back over a reused connection is
+/// made again on a fresh one (`Curl_retry_request`): the connection may
+/// have closed as it was reused. The fifth retry fails the transfer.
+fn retry_request<H: Host>(
+    run: &mut Run,
+    x: &Attached,
+    cx: &mut StepCx<'_, H>,
+) -> Result<bool, ErrorKind> {
+    if !x.proto.retryable() || !cx.conn(&x.lease).reused() {
+        return Ok(false);
+    }
+    if run.retries >= MAX_RETRIES {
+        run.retries = 0;
+        return Err(trace::fail(
+            cx,
+            ErrorKind::SendError,
+            format_args!("Connection died, tried {MAX_RETRIES} times before giving up"),
+        ));
+    }
+    run.retries += 1;
+    let count = run.retries;
+    trace::info(
+        cx,
+        format_args!("Connection died, retrying a fresh connect (retry count: {count})"),
+    );
+    cx.conn(&x.lease).mark_close();
+    Ok(true)
+}
+
+/// C's SETUP and CONNECT, which always run in one pass, for each request
+/// of a transfer: the leg's timers, the protocol and a connection for
+/// `url`, then the protocol connects over it.
+fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> TransferState {
+    run.deadlines.start_leg(cx.rest.now);
+    cx.mark(Timer::StartSingle);
+    cx.mark(Timer::PostQueue);
     // Read back once parsed, credentials and all, as C reads it back
     // (`url.c`, `CURLUPART_URL` into `state.url`): one that cannot be,
     // grown past the limit, fails the transfer without a word.
@@ -877,8 +1029,9 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         get_empty: true,
         ..GetOptions::NONE
     };
-    if let Err(e) = url.get(Part::Url, get) {
-        return TransferState::Init.fail(url_error(e));
+    match url.get(Part::Url, get) {
+        Ok(whole) => run.url = whole,
+        Err(e) => return TransferState::Init.fail(url_error(e)),
     }
     let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
         Ok(s) => s,
@@ -996,10 +1149,9 @@ enum UrlRefused {
     Failed(ErrorKind),
 }
 
-/// The transfer's URL, parsed, given the default scheme where it has none
-/// (`parseurlandfillconn`).
-fn parse_url(options: &Options) -> Result<Url, UrlRefused> {
-    let url = options.url().expect("checked by the caller");
+/// A request's URL, parsed by the options' rules, given the default
+/// scheme where it has none (`parseurlandfillconn`).
+fn parse_url(url: &[u8], options: &Options) -> Result<Url, UrlRefused> {
     let parse = ParseOptions {
         guess_scheme: true,
         non_support_scheme: true,
@@ -1072,7 +1224,7 @@ mod tests {
         options
             .set_default_protocol(default.map(str::as_bytes))
             .unwrap();
-        let url = parse_url(&options).map_err(|e| match e {
+        let url = parse_url(url.as_bytes(), &options).map_err(|e| match e {
             UrlRefused::Rejected(e) => url_error(e),
             UrlRefused::Failed(kind) => kind,
         })?;

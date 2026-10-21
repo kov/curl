@@ -985,3 +985,151 @@ fn the_report_s_url_has_no_credentials() {
         format!("http://127.0.0.1:{PORT}/x?q").as_bytes()
     );
 }
+
+/// A reply each test server below gives.
+const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+
+/// A multi whose server at `PORT`, `peer`, takes the connections
+/// `conversations` in turn.
+fn serving(peer: Peer, conversations: &[&Conversation]) -> Multi {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let mut net = FakeNet::new(clock.clone()).with_peer(at, peer);
+    for c in conversations {
+        net = net.with_conversation(at, (*c).clone());
+    }
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    Multi::new(env).unwrap()
+}
+
+/// A connection the server answers once, then closes as it is reused.
+fn answers_once() -> Conversation {
+    Conversation::new(OK, false).hanging_up_unanswered()
+}
+
+/// A request over a reused connection that closed as it was reused, with
+/// nothing back, is made again on a fresh connection, credentials and
+/// all (`Curl_retry_request`); its headers are the next request's. The
+/// C build traces the same lines for the same exchange.
+#[test]
+fn a_request_over_a_reused_connection_that_died_is_made_again() {
+    let first = answers_once();
+    let fresh = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &fresh]);
+    assert_eq!(get(&mut m, "/a", first.clone(), |_| {}).result, Ok(()));
+    let url = format!("http://u:p@127.0.0.1:{PORT}/b");
+    let ran = get(&mut m, "/b", fresh.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let authed = request_of("/b").len() - 2;
+    let second = &fresh.received();
+    assert!(
+        second.starts_with(b"GET /b HTTP/1.1\r\n")
+            && fixture::find(second, b"Authorization: Basic dTpw\r\n").is_some()
+            && second.len() > authed,
+        "{}",
+        String::from_utf8_lossy(second)
+    );
+    let text = ran.seen.text();
+    let start = text
+        .iter()
+        .position(|l| l.starts_with("Reusing existing"))
+        .unwrap();
+    assert_eq!(
+        text[start + 2..start + 6],
+        [
+            "Request completely sent off\n".to_string(),
+            "Connection died, retrying a fresh connect (retry count: 1)\n".to_string(),
+            "shutting down connection #0\n".to_string(),
+            format!("Issue another request to this URL: 'http://u:p@127.0.0.1:{PORT}/b'\n"),
+        ]
+    );
+    assert_eq!(text[start + 6], format!("  Trying 127.0.0.1:{PORT}...\n"));
+    assert_eq!(
+        text.last().unwrap(),
+        &format!("Connection #1 to host 127.0.0.1:{PORT} left intact\n")
+    );
+    let report = ran.easy.report();
+    assert_eq!(report.failure(), None, "{text:?}");
+    let headers = report.headers();
+    let any = crate::report::Origins::ALL;
+    use crate::report::{HeaderError, Request};
+    assert_eq!(
+        headers
+            .get(b"Content-Length", 0, any, Request::Nth(0))
+            .err(),
+        Some(HeaderError::Missing)
+    );
+    assert!(
+        headers
+            .get(b"Content-Length", 0, any, Request::Nth(1))
+            .is_ok()
+    );
+}
+
+/// A fresh connection that closes with nothing back is not tried again:
+/// the reply is empty.
+#[test]
+fn a_fresh_connection_that_died_is_an_empty_reply() {
+    let dead = Conversation::replies(&[], false).hanging_up_unanswered();
+    let mut m = serving(Peer::Accepts, &[&dead]);
+    let ran = get(&mut m, "/", dead.clone(), |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::GotNothing));
+    assert!(!ran.seen.text().iter().any(|l| l.contains("retrying")));
+}
+
+/// A request is made again on fresh connections at most five times: six
+/// idle connections that each die as they are reused fail the transfer.
+/// Each retry takes another idle connection, as C's would.
+#[test]
+fn a_request_is_retried_five_times_at_most() {
+    let dying: Vec<Conversation> = (0..6).map(|_| answers_once()).collect();
+    // Accepting late, so that six transfers at once open six connections.
+    let late = Peer::AcceptsAfter(Duration::from_millis(5));
+    let mut m = serving(late, &dying.iter().collect::<Vec<_>>());
+    let mut ids = Vec::new();
+    for _ in 0..6 {
+        let mut e = Easy::new();
+        let url = format!("http://127.0.0.1:{PORT}/");
+        e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+        e.options_mut().callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+        ids.push(m.add(e, (), &mut NoEvents).unwrap());
+    }
+    // Kept in the multi, so that the pool keeps their connections.
+    for &id in &ids {
+        let done = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(done, Ok(()));
+    }
+    let ran = get(&mut m, "/", dying[0].clone(), |_| {});
+    let text = ran.seen.text();
+    assert_eq!(ran.result, Err(ErrorKind::SendError), "{text:#?}");
+    let retries = text
+        .iter()
+        .filter(|l| l.starts_with("Connection died, retrying"))
+        .count();
+    assert_eq!(retries, 5, "{text:?}");
+    assert_eq!(
+        ran.easy.report().failure(),
+        Some(&b"Connection died, tried 5 times before giving up"[..])
+    );
+}
+
+/// A reused connection that closes once a response has begun is not
+/// tried again: what came is all there is.
+#[test]
+fn a_get_with_a_reused_connection_that_closes_mid_body_fails() {
+    let cut = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nab";
+    let talk = Conversation::replies(&[OK, cut], true);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    assert_eq!(get(&mut m, "/a", talk.clone(), |_| {}).result, Ok(()));
+    let ran = get(&mut m, "/b", talk.clone(), |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::PartialFile));
+    assert!(!ran.seen.text().iter().any(|l| l.contains("retrying")));
+}

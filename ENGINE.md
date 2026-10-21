@@ -319,6 +319,8 @@ pub(crate) struct Slot<H: Host> {
 pub(crate) struct Run {              // created at add, dropped at removal
     state: TransferState,
     deadlines: Deadlines,
+    url: Vec<u8>,                    // the request's URL read back whole (C's state.url)
+    retries: u8,                     // fresh connections tried this transfer (retrycount)
 }
 ```
 
@@ -390,8 +392,10 @@ pub(crate) enum TransferState {
 pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, origin: Origin }
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
-                         premature: bool, reached: Reached, origin: Option<Origin> }
+                         premature: bool, reached: Reached, origin: Option<Origin>,
+                         next: AfterRequest }
 enum Reached { Unmade, Made, Exchanged }  // DID's times taken; the exchange ran to its end
+pub(crate) enum AfterRequest { Complete, Retry }  // the protocol's done is told which
 pub(crate) struct Completed { outcome: Result<(), ErrorKind>, message: Message }
 pub(crate) enum Message { Unread, Read }
 ```
@@ -399,8 +403,19 @@ pub(crate) enum Message { Unread, Read }
 Planned for milestone 2, with the leg loop: `Pending(Pending { plan, reason: WaitReason })` for
 a transfer waiting on a connection limit, a `Plan { target, leg }` that setup makes and every
 state from `Connecting` to `Exchanging` carries, a throttle instant in `Exchanging` (C's
-RATELIMITING), and `Done.next: AfterRequest { Complete, Follow(FollowKind, Target),
-Retry(Target) }`, which the protocol's `done` decides.
+RATELIMITING), and `AfterRequest::Follow(FollowKind, Target)`, which the protocol's `done`
+decides from a `Location:`, with redirects (step 26).
+
+**A transfer runs as legs.** Init runs C's pretransfer once (the report restarted, `Starts::op`,
+the option's URL parsed) and `start_leg` for the first request: `Starts::single`, the limits
+armed, POSTQUEUE, the URL read back into `Run::url`, the protocol and a connection.
+`Curl_retry_request` is the engine's: a request that got nothing back over a reused connection
+(`ProtoState::retryable`: HTTP with no head line and no body byte), at the end of the exchange,
+on a receive error, or on a send error at DO, closes the connection and goes to
+`Done { next: Retry }`; the protocol's `done` then says no "Empty reply" (C's
+`conn->bits.retry`), and the Done step parses `Run::url` again, traces "Issue another request to
+this URL", counts a new request in the header store, marks REDIRECT, clears the expected sizes
+and starts the next leg. The fifth retry of a transfer fails it with SendError.
 
 - **The lease is released in exactly one place**: the `Done` step runs C's `multi_done` order —
   protocol `done` if past PROTOCONNECT, `pgrs_done` if past CONNECTING, then
@@ -417,8 +432,7 @@ Retry(Target) }`, which the protocol's `done` decides.
   and the total (`mstate_enter_completed`, `Curl_pgrsCompleted`); the step that enters
   `Completed` clears the deadlines and queues the message and EASY_DONE.
 - Planned: **server push and `add_perform`** enter `Exchanging` through a typed constructor,
-  `TransferState::pushed(lease, proto)`; **follow and retry** build a new `Plan` from
-  `AfterRequest`, the report keeping `Starts::op` and marking a fresh `Starts::single`.
+  `TransferState::pushed(lease, proto)`.
 
 ### 3.2 Per-request substates
 
@@ -454,16 +468,16 @@ the next protocol.
 | ProtoConnect | Do | the protocol's connect is done (none has one yet) |
 | Do | Did / Done | `ProtoState::do_it` made the request; prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature, before DID |
 | Did | Exchanging / Done | Done at once if the protocol exchanges nothing more (`file:`, C's DID without sockets); an HTTP-family protocol yields once when more than one transfer is alive (C returns CURLM_OK there) |
-| Exchanging | Done | request complete with output not held: `next` is Complete, Follow or Retry; FOLLOW_FAKE writes `report.would_redirect` |
+| Exchanging | Done | request complete with output not held, or a retry: `next` is Complete or Retry (Follow with redirects); FOLLOW_FAKE writes `report.would_redirect` |
 | connected | Done(Err) | progress callback abort |
 | any live | fail | an error, a timeout, `remove`, or a dead multi (AbortedByCallback) |
-| Done | (setup) / Completed | `finish`; Follow and Retry go back to setup with the new `Plan` |
+| Done | (leg) / Completed | `multi_done`'s order; Retry (and Follow) start the next leg |
 | Completed{Unread} | Completed{Read} | `info_read` |
 
 "Setup" is not a resting state: C's SETUP and CONNECT always run in the same pass, so they are
 one step that produces `Connecting`, or `ProtoConnect` for a protocol without a network, and
 `Pending` once connection limits wait. The
-rows for `Pending`, Follow and Retry describe the leg loop of milestone 2.
+rows for `Pending` and Follow describe later steps of milestone 2.
 
 Setup parses the URL as `parseurlandfillconn` does: with the URL rules, guessing a scheme, and
 accepting one libcurl does not know (the protocol lookup refuses it next). A default protocol is

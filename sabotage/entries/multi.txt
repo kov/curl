@@ -423,3 +423,43 @@ witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 --- old
                 let n = n.get();
 --- new
+
+=== a request over a fresh connection is retried
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_fresh_connection_that_died_is_an_empty_reply
+--- old
+    if !x.proto.retryable() || !cx.conn(&x.lease).reused() {
+--- new
+    if !x.proto.retryable() {
+
+=== a request that got something back is retried
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_get_with_a_reused_connection_that_closes_mid_body_fails
+--- old
+    if !x.proto.retryable() || !cx.conn(&x.lease).reused() {
+--- new
+    if !cx.conn(&x.lease).reused() {
+
+=== a retried request is retried without end
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_request_is_retried_five_times_at_most
+--- old
+    if run.retries >= MAX_RETRIES {
+--- new
+    if run.retries >= u8::MAX {
+
+=== a retry asks for the URL without its credentials
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again
+--- old
+    let url = match parse_url(&run.url, cx.easy().options()) {
+--- new
+    let url = match parse_url(cx.easy().report().url().unwrap_or_default(), cx.easy().options()) {
+
+=== a retried request's headers are the first request's
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again
+--- old
+    cx.report_mut().headers_mut().next_request();
+--- new
+    cx.report_mut().headers_mut();

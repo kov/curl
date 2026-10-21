@@ -252,6 +252,9 @@ struct Wire {
     read: usize,
     /// The peer closes once its last reply is read.
     then_close: bool,
+    /// The peer closes on a request it has no reply for, as a server
+    /// closing an idle connection just as it is reused.
+    hang_up_unanswered: bool,
     /// The peer closed, whatever it was saying.
     hung_up: bool,
 }
@@ -260,12 +263,15 @@ struct Wire {
 impl Wire {
     /// The peer has a request's head to answer with its next reply.
     fn answering(&self) -> bool {
-        let heads = self
-            .received
+        self.answered < self.replies.len() && self.heads() > self.answered
+    }
+
+    /// The request heads the peer was sent.
+    fn heads(&self) -> usize {
+        self.received
             .windows(4)
             .filter(|w| w == b"\r\n\r\n")
-            .count();
-        self.answered < self.replies.len() && heads > self.answered
+            .count()
     }
 
     /// The socket has something to read: reply bytes, or the end.
@@ -303,6 +309,13 @@ impl Conversation {
         Conversation(
             curl_alloc::TryRc::try_new(std::cell::RefCell::new(wire)).expect("a test's peer fits"),
         )
+    }
+
+    /// The same peer, closing the connection when a request comes that
+    /// it has no reply left for.
+    pub fn hanging_up_unanswered(self) -> Conversation {
+        self.0.borrow_mut().hang_up_unanswered = true;
+        self
     }
 
     /// What the peer was sent so far.
@@ -582,6 +595,12 @@ impl Socket for FakeSocket {
         wire.received
             .try_extend_from_slice(buf)
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        if wire.hang_up_unanswered
+            && wire.answered == wire.replies.len()
+            && wire.heads() > wire.answered
+        {
+            wire.hung_up = true;
+        }
         Ok(Sent::Bytes(n))
     }
 }

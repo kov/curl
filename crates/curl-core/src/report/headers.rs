@@ -131,6 +131,12 @@ impl HeaderStore {
 
     /// Store one response header line, with its line ending
     /// (`Curl_headers_push`). The blank line ending a head is not one.
+    /// The headers from here on are another request's (C's
+    /// `state.requests++`).
+    pub(crate) fn next_request(&mut self) {
+        self.request = self.request.saturating_add(1);
+    }
+
     pub(crate) fn push(&mut self, line: &[u8], origin: HeaderOrigin) -> Result<(), ErrorKind> {
         if matches!(line.first(), Some(b'\r' | b'\n')) {
             return Ok(());

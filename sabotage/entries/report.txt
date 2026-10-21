@@ -205,10 +205,12 @@ witness: curl-core report::tests::keeps_the_first_failure
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_url_too_long_to_read_back_fails_its_transfer
 --- old
-    if let Err(e) = url.get(Part::Url, get) {
-        return TransferState::Init.fail(url_error(e));
+        Err(e) => return TransferState::Init.fail(url_error(e)),
     }
+    let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
 --- new
-    if let Err(e) = url.get(Part::Url, get) {
-        let _ = e;
+        Err(e) => {
+            let _ = e;
+        }
     }
+    let scheme = match url.get(Part::Scheme, GetOptions::NONE) {

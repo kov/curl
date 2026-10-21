@@ -225,10 +225,6 @@ pub(crate) enum Timer {
     StartTransfer,
     /// The request is sent.
     PostTransfer,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "marked by redirects, from stage 3")
-    )]
     Redirect,
 }
 

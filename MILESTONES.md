@@ -318,13 +318,13 @@ modes. Each step opens with the change to the engine it stands on, then the feat
 tests it flips, checked on both legs as in milestone 1. At its end, the sabotage sweep and
 cargo-mutants run on the milestone's diff.
 
-22. **core: run a transfer as legs.** **To do.** The protocol's `done` says what comes next,
-    `AfterRequest { Complete, Follow(Target), Retry(Target) }`; setup splits into a pretransfer
-    run once per transfer (the report restarted, `Starts::op`, the option URL read) and
-    `start_leg(target)`, run per leg; `Run` owns the leg's target and the credential gate's
-    first origin. First user: a request on a reused connection that got nothing back is retried
-    once on a new one (`Curl_req_want_send`'s retry). Witnessed by core tests with a second
-    leg; no C test flips by itself.
+22. **core: run a transfer as legs.** **Done.** Setup splits into a pretransfer run once per
+    transfer and `start_leg`, run per request; `Run` keeps the request's URL, read back whole,
+    and the retry count. `Done` carries `AfterRequest { Complete, Retry }`. First user:
+    `Curl_retry_request`, a request that got nothing back over a reused connection made again
+    on a fresh one, up to five times a transfer, with C's traces (checked against the C build
+    with a libcurl program and a server closing the reused connection). Witnessed by core
+    tests; no C test flips by itself.
 23. **conn: resolve names and limit connections.** **To do.** Opening commits: a list
     `Pollset` in place of one socket, then a refcounted `Peer` as the one owner of the host,
     matched for reuse as `peer_same_destination` does (case, zone), with `Origin` gone. Then
@@ -342,7 +342,8 @@ cargo-mutants run on the milestone's diff.
     shim.
 26. **http: follow redirects.** **To do.** Opening commit: relative URL resolution and the
     part setters (the rest of lib1560). Then FOLLOWLOCATION, MAXREDIRS, 301/302/303 method
-    changes, credentials and a custom Host dropped across hosts through the gate,
+    changes, the credential gate's first origin kept in `Run`, credentials and a custom Host
+    dropped across hosts through the gate,
     `-e ";auto"` and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
     followlocation family.
 27. **tool: several URLs, then globbing.** **To do.** Globbing is refused with exit 125 until

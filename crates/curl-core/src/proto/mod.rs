@@ -18,7 +18,7 @@ use crate::conn::{ConnLease, Scheme};
 use crate::deliver::{Pause, Pipeline};
 use crate::error::ErrorKind;
 use crate::multi::Host;
-use crate::multi::state::StepCx;
+use crate::multi::state::{AfterRequest, StepCx};
 use crate::options::Options;
 use crate::url::Url;
 #[cfg(any(test, feature = "test-util"))]
@@ -216,17 +216,30 @@ impl ProtoState {
         }
     }
 
-    /// The request is over, with `result` so far (C's `done`): what the
-    /// protocol says of it.
+    /// Whether the request may be made again on a fresh connection, its
+    /// reused one having died (`Curl_retry_request`): it got nothing
+    /// back, and its protocol answers every request, as HTTP does.
+    pub(crate) fn retryable(&self) -> bool {
+        match *self {
+            ProtoState::Http(ref r) => r.received_nothing(),
+            ProtoState::File(_) => false,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
+        }
+    }
+
+    /// The request is over, with `result` so far, and `next` to follow it
+    /// (C's `done`): what the protocol says of it.
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
+        next: AfterRequest,
     ) -> Result<(), ErrorKind> {
         match *self {
-            ProtoState::Http(ref mut r) => r.done(cx, lease, result, premature),
+            ProtoState::Http(ref mut r) => r.done(cx, lease, result, premature, next),
             ProtoState::File(_) => result,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {

@@ -11,7 +11,7 @@ use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
-use crate::multi::state::{OsError, StepCx, url_error};
+use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
 use crate::options::{HttpVersion, Method, Resume};
 use crate::report::Timer;
 use crate::trace;
@@ -138,6 +138,12 @@ impl Request {
 
     pub(crate) fn holds_output(&self) -> bool {
         self.pipeline.holds_output()
+    }
+
+    /// Whether the response so far is nothing at all: no head line and no
+    /// body byte (C's `bytecount + headerbytecount`).
+    pub(crate) fn received_nothing(&self) -> bool {
+        self.head.as_ref().is_none_or(|h| h.request_bytes() == 0) && self.pipeline.bytecount() == 0
     }
 
     /// Whether some of the head is still to send.
@@ -581,13 +587,15 @@ impl Request {
 
     /// The request is over (`Curl_http_done`): a line still held is
     /// delivered, whatever came of it; a reply with nothing in it is an
-    /// error; the connection is kept only if the response allows.
+    /// error, unless the request is to be made again; the connection is
+    /// kept only if the response allows.
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
+        next: AfterRequest,
     ) -> Result<(), ErrorKind> {
         let Some(head) = self.head.as_ref() else {
             // The request was never made.
@@ -616,7 +624,8 @@ impl Request {
             cx.conn(lease).mark_close();
         }
         result?;
-        if !premature && head.got_nothing(self.pipeline.bytecount()) {
+        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
+        {
             cx.conn(lease).mark_close();
             return Err(trace::fail(
                 cx,

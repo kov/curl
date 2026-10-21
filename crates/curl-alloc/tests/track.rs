@@ -11,9 +11,26 @@ use curl_alloc::{TryArc, TryRc};
 static ALLOCATOR: Tracker = Tracker;
 
 fn main() {
-    logs_tracked_blocks_and_fails_past_the_limit();
-    one_allocation_is_refused_once();
-    track::untracked(|| println!("track: ok"));
+    for (name, test) in [
+        (
+            "logs_tracked_blocks_and_fails_past_the_limit",
+            logs_tracked_blocks_and_fails_past_the_limit as fn(),
+        ),
+        (
+            "one_allocation_is_refused_once",
+            one_allocation_is_refused_once,
+        ),
+    ] {
+        // Reported as libtest does, the name before the run, so that a run
+        // that aborts still shows which test it was in.
+        track::untracked(|| {
+            use std::io::Write as _;
+            print!("test {name} ... ");
+            std::io::stdout().flush().unwrap();
+        });
+        test();
+        track::untracked(|| println!("ok"));
+    }
 }
 
 /// Blocks made before tracking or inside an exclusion are not logged;

@@ -2594,3 +2594,31 @@ fn a_share_keeps_cookies_for_its_handles() {
     assert!(saved.ends_with(b"\n\nexample.com\tFALSE\t/\tFALSE\t0\ta\t1\n"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `Last-Modified` gives the file time when it is asked for, and not from
+/// a response that has no body (`http_header_l`); one that cannot be read
+/// is the epoch.
+#[test]
+fn last_modified_gives_the_file_time_when_asked() {
+    const DATED: &[u8] = b"HTTP/1.1 200 OK\r\nLast-Modified: Tue, 13 Jun 2000 12:10:00 GMT\r\n\
+                           Content-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[DATED], false);
+    let ran = get(&mut m, "/a", talk, |o| o.filetime = true);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().filetime(), Some(960_898_200));
+
+    let (mut m, talk, _) = server(&[DATED], false);
+    let ran = get(&mut m, "/a", talk, |_| {});
+    assert_eq!(ran.easy.report().filetime(), None);
+
+    let unmodified =
+        b"HTTP/1.1 304 Not Modified\r\nLast-Modified: Tue, 13 Jun 2000 12:10:00 GMT\r\n\r\n";
+    let (mut m, talk, _) = server(&[unmodified], false);
+    let ran = get(&mut m, "/a", talk, |o| o.filetime = true);
+    assert_eq!(ran.easy.report().filetime(), None);
+
+    let garbled = b"HTTP/1.1 200 OK\r\nLast-Modified: whenever\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[garbled], false);
+    let ran = get(&mut m, "/a", talk, |o| o.filetime = true);
+    assert_eq!(ran.easy.report().filetime(), Some(0));
+}

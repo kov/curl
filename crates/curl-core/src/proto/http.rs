@@ -860,6 +860,9 @@ impl Request {
             ..
         } = self;
         let head = head.as_mut().expect("made at DO");
+        // Only a status line changes it, so for a header line it is what
+        // it was before.
+        let bodyless = head.meta().bodyless();
         let (used, event) = head
             .feed(input, &mut cx.report_mut().sizes_mut().header)
             .map_err(|e| head_failed(cx, &e))?;
@@ -889,6 +892,16 @@ impl Request {
         // The body goes again with the next request (`http_perhapsrewind`).
         if line.redirects && upload.as_ref().is_some_and(Upload::needs_rewind) {
             trace::info(cx, format_args!("Need to rewind upload for next request"));
+        }
+        // The document's time, if asked for; one that cannot be read is
+        // the epoch (`http_header_l`).
+        if line.kind == LineKind::Header
+            && cx.easy().options().filetime
+            && !bodyless
+            && let Some(value) = strip_name(line.bytes, b"Last-Modified:")
+        {
+            let t = crate::date::parse(value).unwrap_or(0);
+            cx.report_mut().set_filetime(t);
         }
         // A cookie is stored before its line is traced (`http_header`).
         if line.kind == LineKind::Header

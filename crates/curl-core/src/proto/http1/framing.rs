@@ -494,6 +494,11 @@ impl Meta {
     }
 
     /// The connection closes after the response.
+    /// The current response may carry no body (1xx, 204, 304).
+    pub(crate) fn bodyless(&self) -> bool {
+        self.bodyless
+    }
+
     pub(crate) fn close(&self) -> bool {
         self.close
     }

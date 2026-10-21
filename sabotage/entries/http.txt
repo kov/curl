@@ -1186,3 +1186,21 @@ witness: curl-core proto::http::digest::tests::quotes_and_hashes_the_user
                 b'"' | b'\\' => &[b'\\', b],
 --- new
                 b'\\' => &[b'\\', b],
+
+=== Last-Modified is read though the file time is not asked for
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::last_modified_gives_the_file_time_when_asked
+--- old
+            && cx.easy().options().filetime
+            && !bodyless
+--- new
+            && !bodyless
+
+=== a bodyless response's Last-Modified gives the file time
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::last_modified_gives_the_file_time_when_asked
+--- old
+            && cx.easy().options().filetime
+            && !bodyless
+--- new
+            && cx.easy().options().filetime

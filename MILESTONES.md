@@ -388,9 +388,9 @@ cargo-mutants run on the milestone's diff.
     a file's text kept while what was parsed from it lives (17, 56, 411, 430-436, 468, 1639,
     3228 and others); `--retry`, its delay, time limit and `--retry-all-errors`, the output cut
     back or kept and resumed between attempts (197, 198, 366, 752, 1269, 1497, 1633-1637, 1673,
-    1716, 1909, 3035, 3036); URLs read from a file with `--url @file` (2012). Waiting: `-R`,
-    for the date parser (step 30) to read `Last-Modified` (762, 1443); `--retry-connrefused`,
-    for the connect's errno in the report.
+    1716, 1909, 3035, 3036); URLs read from a file with `--url @file` (2012); `-R`, from
+    HTTP's `Last-Modified` (762, 1443). Waiting: `--retry-connrefused`, for the connect's
+    errno in the report.
 28. **multi: event mode.** **Done**, but for what waits on later work. `drive_by_events`,
     behind `curl_easy_perform_ev`, `Easy::perform_ev` and the tool's `--test-event`; the
     regression list passes under `runtests.pl -e` on both legs. The core names a new transfer
@@ -417,8 +417,9 @@ cargo-mutants run on the milestone's diff.
     starts; `Set-Cookie:` stored and the request's `Cookie:` sent; `CURLOPT_COOKIE`,
     `COOKIEFILE`, `COOKIEJAR`, `COOKIESESSION`, `COOKIELIST` and `CURLINFO_COOKIELIST`; the
     tool's `-b`, `-c` and `-j`; public suffixes through libpsl (`curl-psl`). 44 of the 45
-    cookie and PSL tests the Rust leg runs pass. Next: `-R` (step 27) on the date parser.
-    Waiting: the shim's `curl_share_*` (test 1905); the proxy tests, with step 31.
+    cookie and PSL tests the Rust leg runs pass. Next: the shim's `curl_share_*` (test 1905
+    and the libtests sharing cookies, names and connections). Waiting: the proxy tests, with
+    step 31.
 31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
     the proxy options and the scheme table, each trace's host checked on the C leg. Then the
     absolute request target and Proxy-Authorization; then CONNECT, after the dial result is

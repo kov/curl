@@ -40,6 +40,9 @@ pub struct Options {
     pub resume: Option<Resume>,
     /// What a file an upload creates may be opened for.
     pub new_file_mode: FileMode,
+    /// The remote file's time is read, where the protocol has to ask for
+    /// it (`CURLOPT_FILETIME`): HTTP's `Last-Modified`.
+    pub filetime: bool,
     pub limits: Limits,
     /// Which of a name's addresses a connection may use
     /// (`CURLOPT_IPRESOLVE`).
@@ -176,6 +179,7 @@ impl Options {
             method: self.method,
             resume: self.resume,
             new_file_mode: self.new_file_mode,
+            filetime: self.filetime,
             limits: self.limits,
             ip_version: self.ip_version,
             port: self.port,

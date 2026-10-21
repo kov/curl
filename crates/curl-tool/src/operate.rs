@@ -1042,6 +1042,7 @@ fn configure(
     http.allow_09 = op.http09;
     http.raw = op.raw;
     http.ignore_content_length = op.ignore_content_length;
+    o.filetime = op.remote_time;
     http.fail_on_error = op.fail == Fail::WithoutBody;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);

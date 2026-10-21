@@ -931,3 +931,74 @@ fn every_run_reports_afresh() {
     e.reset();
     assert_eq!(e.report().timings().pretransfer(), Duration::ZERO);
 }
+
+/// What the timer and notify callbacks read of a failed transfer.
+#[derive(Default)]
+struct Inspect {
+    target: Option<TransferId>,
+    timer_failure: Option<Vec<u8>>,
+    notify_failure: Option<Vec<u8>>,
+    owner_seen: bool,
+    pause: Option<Result<(), ErrorKind>>,
+}
+
+impl MultiEvents<NoHost> for Inspect {
+    fn timer(&mut self, cx: &mut EventCx<'_, NoHost>, _: TimerChange) -> Result<(), Abort> {
+        if let Some(id) = self.target
+            && let Some(why) = cx.info(id).and_then(|r| r.failure())
+        {
+            self.timer_failure = Some(why.to_vec());
+        }
+        Ok(())
+    }
+
+    fn wants_timer(&self) -> bool {
+        true
+    }
+
+    fn notify(&mut self, cx: &mut NotifyCx<'_, NoHost>, n: Notification) {
+        let Notification::EasyDone(id) = n else {
+            return;
+        };
+        if Some(id) != self.target {
+            return;
+        }
+        self.notify_failure = cx.info(id).and_then(|r| r.failure().map(<[u8]>::to_vec));
+        self.owner_seen = cx.owner(id).is_some();
+        self.pause = Some(cx.pause(id, PauseRequest::CONT, &mut NoEvents));
+    }
+}
+
+/// The callbacks read a transfer's report and owner by its id, and a
+/// completed one has nothing to pause; the multi walks its transfers and
+/// counts their unread messages.
+#[test]
+fn callbacks_read_reports_and_the_multi_counts_messages() {
+    let (mut m, _clock) = multi();
+    let mut ev = Inspect::default();
+    m.set_notify(NotifyKind::EasyDone, true);
+    let missing = m
+        .add(easy("file:///nonexistent/curl-core-test"), (), &mut ev)
+        .unwrap();
+    let other = m.add(easy("null://b"), (), &mut ev).unwrap();
+    assert_eq!(m.unread(), 0);
+    let walked: Vec<_> =
+        std::iter::successors(m.next_transfer(None), |&id| m.next_transfer(Some(id))).collect();
+    assert_eq!(walked, [missing, other]);
+    assert!(m.owner(missing).is_some());
+    ev.target = Some(missing);
+    m.perform(&mut ev).unwrap();
+    let why = b"Could not open file /nonexistent/curl-core-test".to_vec();
+    assert_eq!(ev.notify_failure.as_ref(), Some(&why));
+    assert!(ev.owner_seen);
+    assert_eq!(ev.pause, Some(Err(ErrorKind::BadFunctionArgument)));
+    assert_eq!(m.unread(), 2);
+    m.info_read().unwrap();
+    assert_eq!(m.unread(), 1);
+    // The timer hears of the remove, and reads the transfer left.
+    m.remove(other, &mut ev).unwrap();
+    assert_eq!(ev.timer_failure, Some(why));
+    assert_eq!(m.unread(), 0);
+    assert_eq!(m.next_transfer(Some(missing)), None);
+    assert!(m.owner(other).is_none());
+}

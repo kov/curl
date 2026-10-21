@@ -15,6 +15,7 @@ use crate::time::Instant;
 use curl_alloc::OutOfMemory;
 
 use crate::error::UrlErrorKind;
+use crate::options::Method;
 use crate::url::{GetOptions, Part, Url};
 use crate::version::Protocol;
 
@@ -74,6 +75,9 @@ pub struct TransferReport {
     connects: u32,
     /// How many redirects the transfer followed (`state.followlocation`).
     redirects: u32,
+    /// The method of the last request, a redirect having perhaps changed
+    /// it (`state.httpreq`).
+    method: Method,
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
     /// none when keeping it ran out of memory.
     failure: Option<Vec<u8>>,
@@ -193,6 +197,16 @@ impl TransferReport {
 
     pub(crate) fn count_redirect(&mut self) {
         self.redirects = self.redirects.saturating_add(1);
+    }
+
+    /// The method of the last request, without the application's custom
+    /// one; `Easy::effective_method` names it.
+    pub fn method(&self) -> Method {
+        self.method
+    }
+
+    pub(crate) fn set_method(&mut self, method: Method) {
+        self.method = method;
     }
 
     /// How long a response asked to wait before the next try, in whole

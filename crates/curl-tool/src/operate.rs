@@ -371,6 +371,7 @@ fn configure(
     http.custom_method = op.custom_request.map(copy).transpose()?;
     http.follow = op.follow;
     http.unrestricted_auth = op.unrestricted_auth;
+    http.post_redirect = op.post_redirect;
     // As `CURLOPT_MAXREDIRS` takes it: -1 no limit, at most 32767.
     http.max_redirects = options::MaxRedirects(match op.max_redirs.unwrap_or(50) {
         -1 => None,
@@ -520,6 +521,7 @@ fn finish(
             urlnum: url.num,
             num_headers: stream.num_headers(),
             filename: stream.file_name(),
+            method: easy.effective_method(),
             report: easy.report(),
         };
         write_out::write(format.bytes(), &facts, run.stdout);

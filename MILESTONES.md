@@ -364,9 +364,13 @@ cargo-mutants run on the milestone's diff.
     `CURLINFO_REDIRECT_URL`; FOLLOWLOCATION, MAXREDIRS and UNRESTRICTED_AUTH, with the
     tool's `-L`, `--follow`, `--location-trusted` and `--max-redirs`; the credential gate's
     first origin kept in `Run`, so the application's Authorization, Cookie and Host stay
-    with it. Then 301/302/303 method changes, a request body rewound for the next leg (until
-    then a redirected upload is sent again empty, test 1073), a 417 sent again without
-    `Expect`, credentials from the URL across hosts and `-e ";auto"`. Flips 3010, 1940, 1942 and 1943 and the
+    with it; 301/302/303 method changes with POSTREDIR and `--post30x`, the custom method
+    as the follow mode says, the request body rewound for a redirect or a retry, an HTTP/1.0
+    response making the transfer's later requests HTTP/1.0, `CURLINFO_EFFECTIVE_METHOD` and
+    `%{method}`. Then a 417 sent again without `Expect`, credentials from the URL across
+    hosts and `-e ";auto"`. Not done: a redirect before a large body is all sent closing
+    the connection instead of sending the rest (`http_perhapsrewind`'s abort half); the
+    connection's own HTTP/1.0 memory (`conn->httpversion_seen`). Flips 3010, 1940, 1942 and 1943 and the
     followlocation family; T1 tests 193, 1029, 1067, 1080, 1081, 1089, 1090, 1159, 1197,
     1261, 1270, 2081 and 3015, with `%{method}`, `%{referer}`, `%{redirect_url}` and
     `%{num_redirects}`.

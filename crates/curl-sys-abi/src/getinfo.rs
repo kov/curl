@@ -17,7 +17,7 @@ use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_OK, CURLE_RECURSIVE_API_CALL,
     CURLE_UNKNOWN_OPTION, CURLINFO, CURLcode, curl_off_t,
 };
-use crate::gate::EasyCall;
+use crate::gate::{EasyCall, Recursive};
 
 /// An answer in one of C's types.
 enum Value {
@@ -120,6 +120,19 @@ fn string(p: Result<*const c_char, OutOfMemory>) -> Value {
     match p {
         Ok(p) => Value::Ptr(p.cast_mut().cast()),
         Err(OutOfMemory) => Value::Failed(ffi::CURLE_OUT_OF_MEMORY),
+    }
+}
+
+/// The last request's method (`CURLINFO_EFFECTIVE_METHOD`): the
+/// application's custom one if it set one, as `Easy::effective_method`.
+fn effective_method(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
+    let custom = easy.with_options(|o| {
+        let custom = o.http.custom_method.as_deref();
+        custom.map(|c| string(kept(&easy.method, c)))
+    })?;
+    match custom {
+        Some(v) => Ok(Some(v)),
+        None => easy.with_report(|r| Some(string(kept(&easy.method, r.method().name())))),
     }
 }
 
@@ -244,7 +257,12 @@ pub unsafe extern "C" fn curl_easy_getinfo(
     if out.is_null() {
         return CURLE_BAD_FUNCTION_ARGUMENT;
     }
-    let Ok(v) = easy.with_report(|r| value(easy, r, info)) else {
+    let v = if info == ffi::CURLINFO_EFFECTIVE_METHOD {
+        effective_method(easy)
+    } else {
+        easy.with_report(|r| value(easy, r, info))
+    };
+    let Ok(v) = v else {
         return CURLE_RECURSIVE_API_CALL;
     };
     let Some(v) = v else {

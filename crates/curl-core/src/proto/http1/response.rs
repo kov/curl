@@ -46,6 +46,8 @@ pub(crate) struct Line<'a> {
     pub(crate) kind: LineKind,
     /// What C says of the line before it delivers it.
     pub(crate) notes: Notes,
+    /// The line is the `Location:` the request is to follow.
+    pub(crate) redirects: bool,
     /// A failure C reports before it delivers the line, and raises after
     /// (`http_on_response`, which writes the head's last line on its way
     /// out).
@@ -196,6 +198,8 @@ pub(crate) struct HeadParser {
     status: Option<Status>,
     /// A status line was read for this request, an interim one included.
     version_seen: bool,
+    /// One of them said HTTP/1.0.
+    http10: bool,
     /// Head bytes of this request's responses (C's `allheadercount`).
     request_bytes: u64,
     /// Of those, the interim heads' up to the last that ended (C's
@@ -220,6 +224,7 @@ impl HeadParser {
             lines: 0,
             status: None,
             version_seen: false,
+            http10: false,
             request_bytes: 0,
             interim_bytes: 0,
             meta: Meta::default(),
@@ -230,6 +235,16 @@ impl HeadParser {
     /// What the heads said so far.
     pub(crate) fn meta(&self) -> &Meta {
         &self.meta
+    }
+
+    /// The final head's status, once it ended.
+    pub(crate) fn status(&self) -> Option<Status> {
+        self.status.filter(|_| self.phase == Phase::Done)
+    }
+
+    /// A response to the request said HTTP/1.0.
+    pub(crate) fn saw_http10(&self) -> bool {
+        self.http10
     }
 
     /// How the body is framed, once the final head ended.
@@ -393,6 +408,7 @@ impl HeadParser {
     fn line_out(&mut self, transfer_bytes: &mut u64) -> Result<HeadEvent<'_>, HeadError> {
         self.given = true;
         let mut note = Notes::default();
+        let mut redirects = false;
         // An error said before the line is delivered, and raised after.
         let mut first = Ok(());
         let mut bad_code = false;
@@ -428,6 +444,7 @@ impl HeadParser {
                 }
                 self.status = Some(status);
                 self.version_seen = true;
+                self.http10 |= status.version == HttpVersion::Http10;
                 note = Notes::one(self.meta.on_status(status));
                 LineKind::Status(status)
             } else {
@@ -436,11 +453,13 @@ impl HeadParser {
             fields::verify_line(&self.line, self.lines).map_err(HeadError::BadLine)?;
             if kind == LineKind::Header {
                 let status = self.status.expect("headers follow their status line");
+                let following = self.meta.follow().is_some();
                 note = Notes::one(
                     self.meta
                         .on_header(&self.line, status, &self.exchange.asked)
                         .map_err(HeadError::Framing)?,
                 );
+                redirects = !following && self.meta.follow().is_some();
             }
             kind
         };
@@ -454,6 +473,7 @@ impl HeadParser {
             bytes: &self.line,
             kind,
             notes: note,
+            redirects,
             early: first,
             then,
         }))

@@ -139,6 +139,18 @@ pub enum Method {
     Post,
 }
 
+impl Method {
+    /// The method as a request line names it.
+    pub fn name(self) -> &'static [u8] {
+        match self {
+            Method::Get => b"GET",
+            Method::Head => b"HEAD",
+            Method::Post => b"POST",
+            Method::Upload => b"PUT",
+        }
+    }
+}
+
 /// Where in the resource a transfer starts (`CURLOPT_RESUME_FROM_LARGE`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Resume {
@@ -374,9 +386,20 @@ pub struct Http {
     /// Which redirects are followed (`CURLOPT_FOLLOWLOCATION`).
     pub follow: Follow,
     pub max_redirects: MaxRedirects,
+    /// Which redirects keep a POST a POST (`CURLOPT_POSTREDIR`).
+    pub post_redirect: PostRedir,
     /// What the application said for the first origin goes to any a
     /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
     pub unrestricted_auth: bool,
+}
+
+/// Which redirects keep a POST a POST (`CURLOPT_POSTREDIR`): unless set,
+/// a 301, 302 or 303 turns it into a GET.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PostRedir {
+    pub post301: bool,
+    pub post302: bool,
+    pub post303: bool,
 }
 
 /// How many redirects a transfer follows (`CURLOPT_MAXREDIRS`): 30 unless
@@ -423,6 +446,7 @@ impl Http {
             keep_sending_on_error: self.keep_sending_on_error,
             follow: self.follow,
             max_redirects: self.max_redirects,
+            post_redirect: self.post_redirect,
             unrestricted_auth: self.unrestricted_auth,
         })
     }

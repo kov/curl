@@ -9,7 +9,7 @@
 //! rather than run without it.
 
 use curl_alloc::TryVec;
-use curl_core::options::Follow;
+use curl_core::options::{Follow, PostRedir};
 use curl_core::version::Protocol;
 
 use super::protocols::{self, Protocols};
@@ -162,6 +162,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) unrestricted_auth: bool,
     /// `--max-redirs`; -1 is no limit, and none the tool's 50.
     pub(crate) max_redirs: Option<i64>,
+    /// `--post301`, `--post302` and `--post303`.
+    pub(crate) post_redirect: PostRedir,
     /// `--globoff`: URLs and uploads are taken as they are.
     pub(crate) globoff: bool,
     /// `--head`: no body is asked for.
@@ -683,6 +685,9 @@ pub(crate) fn apply<'a>(
             }
             op.follow = if on { Follow::ObeyCode } else { Follow::No };
         }
+        Opt::Post301 => line.current().post_redirect.post301 = value.toggle(),
+        Opt::Post302 => line.current().post_redirect.post302 = value.toggle(),
+        Opt::Post303 => line.current().post_redirect.post303 = value.toggle(),
         Opt::MaxRedirs => {
             let n = number::signed(value.text())?;
             if n < -1 {
@@ -930,9 +935,6 @@ pub(crate) fn apply<'a>(
         | Opt::Pass
         | Opt::PathAsIs
         | Opt::Pinnedpubkey
-        | Opt::Post301
-        | Opt::Post302
-        | Opt::Post303
         | Opt::Preproxy
         | Opt::Proxy
         | Opt::ProxyAnyauth

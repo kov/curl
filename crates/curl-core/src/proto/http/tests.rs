@@ -12,7 +12,9 @@ use crate::handler::{
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx, drive_to_completion};
-use crate::options::{Follow, MaxRedirects, Method, Options, Resume, UserHeaders};
+use crate::options::{
+    Follow, MaxRedirects, Method, Options, PostRedir, Resume, UploadSource, UserHeaders,
+};
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
 use crate::time::{Clock as _, ManualClock};
@@ -1693,4 +1695,268 @@ fn a_location_outside_a_redirect_is_not_followed() {
     assert_eq!(ran.seen.body(), b"ok\n");
     let shown = format!("http://127.0.0.1:{PORT}/b");
     assert_eq!(ran.easy.report().redirect_url(), Some(shown.as_bytes()));
+}
+
+fn redirect(code: u16, location: &str) -> Vec<u8> {
+    format!("HTTP/1.1 {code} Moved\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
+        .into_bytes()
+}
+
+/// The two requests a transfer asking `method` with `body` sends when a
+/// `code` sends it on to `/b`, as `set` has it follow.
+fn redirected(code: u16, method: Method, body: &[u8], set: impl FnOnce(&mut Options)) -> Ran {
+    let first = redirect(code, "/b");
+    let (mut m, talk, _) = server(&[&first, OK], false);
+    let body = body.to_vec();
+    get(&mut m, "/a", talk, |o| {
+        o.method = method;
+        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+        o.http.follow = Follow::All;
+        set(o);
+    })
+}
+
+/// The second request on the wire, its line and its head.
+fn second_request(ran: &Ran) -> String {
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let at = text.find(" /b HTTP/1.1").expect("the redirect is followed");
+    // The method before it, behind the first request's body.
+    let start = text[..at]
+        .trim_end_matches(|c: char| c.is_ascii_uppercase())
+        .len();
+    text[start..].to_string()
+}
+
+/// A POST redirected by a 301 or 302 is made a GET, without a word unless
+/// the code is obeyed; a 303 makes anything a GET. POSTREDIR keeps a POST.
+#[test]
+fn a_redirect_turns_a_post_into_a_get_as_c_does() {
+    for code in [301, 302, 303] {
+        let ran = redirected(code, Method::Post, b"a=b", |_| {});
+        assert_eq!(ran.result, Ok(()));
+        let second = second_request(&ran);
+        assert!(
+            second.starts_with("GET /b HTTP/1.1\r\n"),
+            "{code}: {second}"
+        );
+        assert!(!second.contains("Content-Length"), "{second}");
+        assert_eq!(ran.easy.effective_method(), b"GET");
+        let said = format!("Switch to GET because of {code} response\n");
+        assert!(!ran.seen.text().contains(&said));
+
+        let ran = redirected(code, Method::Post, b"a=b", |o| {
+            o.http.follow = Follow::ObeyCode
+        });
+        assert!(ran.seen.text().contains(&said), "{code}");
+
+        let keep = PostRedir {
+            post301: code == 301,
+            post302: code == 302,
+            post303: code == 303,
+        };
+        let ran = redirected(code, Method::Post, b"a=b", |o| o.http.post_redirect = keep);
+        let second = second_request(&ran);
+        assert!(
+            second.starts_with("POST /b HTTP/1.1\r\n"),
+            "{code}: {second}"
+        );
+        assert!(
+            second.ends_with("\r\n\r\na=b"),
+            "the body goes again: {second}"
+        );
+        assert_eq!(ran.easy.effective_method(), b"POST");
+    }
+    // A PUT stays one but on a 303; a 307 changes nothing.
+    let put = |code| second_request(&redirected(code, Method::Upload, b"x", |_| {}));
+    assert!(put(301).starts_with("PUT /b "));
+    assert!(put(303).starts_with("GET /b "));
+    assert!(put(307).starts_with("PUT /b "));
+    // A HEAD stays bodyless.
+    let head = second_request(&redirected(303, Method::Head, b"", |_| {}));
+    assert!(head.starts_with("HEAD /b "), "{head}");
+    let post = second_request(&redirected(307, Method::Post, b"a=b", |_| {}));
+    assert!(
+        post.starts_with("POST /b ") && post.ends_with("a=b"),
+        "{post}"
+    );
+}
+
+/// A custom method sticks across a switch to GET, said so, unless the
+/// code is obeyed; asking it only of the first URL drops it at once.
+#[test]
+fn a_custom_method_follows_as_the_mode_says() {
+    let custom = |o: &mut Options| o.http.custom_method = Some(b"DELETE".to_vec());
+    let ran = redirected(303, Method::Get, b"", custom);
+    assert!(second_request(&ran).starts_with("DELETE /b "));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Stick to DELETE instead of GET\n".to_string())
+    );
+    assert_eq!(ran.easy.effective_method(), b"DELETE");
+
+    let ran = redirected(303, Method::Get, b"", |o| {
+        custom(o);
+        o.http.follow = Follow::ObeyCode;
+    });
+    assert!(second_request(&ran).starts_with("GET /b "));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Switch to GET because of 303 response\n".to_string())
+    );
+    assert_eq!(
+        ran.easy.effective_method(),
+        b"DELETE",
+        "named as C names it"
+    );
+
+    let ran = redirected(307, Method::Get, b"", |o| {
+        custom(o);
+        o.http.follow = Follow::FirstOnly;
+    });
+    assert!(ran.request.starts_with(b"DELETE /a "));
+    assert!(second_request(&ran).starts_with("GET /b "));
+    let text = ran.seen.text();
+    assert!(text.contains(&"Drop custom request method for next request\n".to_string()));
+}
+
+/// A body read from a handler, `data`, started over by its rewind
+/// handler if it has one; counts its rewinds.
+#[derive(Clone)]
+struct Stream {
+    data: &'static [u8],
+    at: Rc<std::cell::Cell<usize>>,
+    rewinds: Rc<std::cell::Cell<u32>>,
+}
+
+impl Stream {
+    fn new(data: &'static [u8]) -> Stream {
+        Stream {
+            data,
+            at: Rc::default(),
+            rewinds: Rc::default(),
+        }
+    }
+
+    fn source(&self, rewinds: bool) -> UploadSource {
+        UploadSource::Read {
+            handler: Handler::read(self.clone()).unwrap(),
+            rewind: rewinds.then(|| Handler::rewind(self.clone()).unwrap()),
+            size: Some(self.data.len() as u64),
+        }
+    }
+}
+
+impl crate::handler::ReadHandler for Stream {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        let rest = &self.data[self.at.get()..];
+        let n = rest.len().min(buf.len());
+        buf[..n].copy_from_slice(&rest[..n]);
+        self.at.set(self.at.get() + n);
+        match std::num::NonZeroUsize::new(n) {
+            Some(n) => crate::handler::Read::Data(n),
+            None => crate::handler::Read::Eof,
+        }
+    }
+}
+
+impl crate::handler::Rewind for Stream {
+    fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), crate::handler::RewindFailed> {
+        self.at.set(0);
+        self.rewinds.set(self.rewinds.get() + 1);
+        Ok(())
+    }
+}
+
+/// A body read from a handler is started over for the next request, or
+/// the transfer fails if it cannot be: unless that request sends none.
+#[test]
+fn a_redirected_body_is_rewound_or_the_transfer_fails() {
+    let stream = Stream::new(b"body");
+    let ran = redirected(307, Method::Upload, b"", |o| o.upload = stream.source(true));
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(stream.rewinds.get(), 1);
+    assert!(second_request(&ran).ends_with("\r\n\r\nbody"));
+    let text = ran.seen.text();
+    let need = text
+        .iter()
+        .position(|l| l == "Need to rewind upload for next request\n");
+    let location = ran
+        .seen
+        .of("in")
+        .iter()
+        .position(|l| l.starts_with(b"Location:"));
+    assert!(need.is_some() && location.is_some(), "{text:?}");
+
+    let stream = Stream::new(b"body");
+    let ran = redirected(307, Method::Upload, b"", |o| {
+        o.upload = stream.source(false)
+    });
+    assert_eq!(ran.result, Err(ErrorKind::SendFailRewind));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"necessary data rewind was not possible\n".to_string())
+    );
+    assert!(!ran.request.windows(6).any(|w| w == b"PUT /b"));
+
+    // A GET sends nothing again.
+    let stream = Stream::new(b"body");
+    let ran = redirected(303, Method::Upload, b"", |o| {
+        o.upload = stream.source(false)
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(second_request(&ran).starts_with("GET /b "));
+}
+
+/// After a response in HTTP/1.0, the transfer's requests say HTTP/1.0;
+/// a body of unknown size cannot go chunked to it.
+#[test]
+fn a_response_in_http_1_0_makes_the_next_request_one() {
+    let first = b"HTTP/1.0 301 Moved\r\nLocation: /b\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[first, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| o.http.follow = Follow::All);
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(text.contains("GET /b HTTP/1.0\r\n"), "{text}");
+
+    let stream = Stream::new(b"body");
+    let (mut m, talk, _) = server(&[first, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.http.follow = Follow::All;
+        o.method = Method::Upload;
+        o.upload = UploadSource::Read {
+            handler: Handler::read(stream.clone()).unwrap(),
+            rewind: Some(Handler::rewind(stream.clone()).unwrap()),
+            size: None,
+        };
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UploadFailed));
+    // The body waited for a 100: nothing was read, nothing is rewound.
+    assert_eq!(stream.rewinds.get(), 0);
+    assert!(!String::from_utf8_lossy(&ran.request).contains("/b HTTP"));
+}
+
+/// A request made again on a fresh connection sends its body from the
+/// start, its handler rewound (`FOLLOW_RETRY`).
+#[test]
+fn a_retried_request_rewinds_its_body() {
+    let first = answers_once();
+    let fresh = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &fresh]);
+    assert_eq!(get(&mut m, "/a", first.clone(), |_| {}).result, Ok(()));
+    let stream = Stream::new(b"body");
+    let ran = get(&mut m, "/b", fresh.clone(), |o| {
+        o.method = Method::Upload;
+        o.upload = stream.source(true);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(stream.rewinds.get(), 1);
+    let sent = fresh.received();
+    assert!(
+        sent.starts_with(b"PUT /b ") && sent.ends_with(b"\r\n\r\nbody"),
+        "{}",
+        String::from_utf8_lossy(&sent)
+    );
 }

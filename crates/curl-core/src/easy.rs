@@ -63,6 +63,17 @@ impl Easy {
         &self.report
     }
 
+    /// The method of the running or last request, as
+    /// `CURLINFO_EFFECTIVE_METHOD` names it: the application's custom one,
+    /// even where a redirect stopped sending it, or the one the request
+    /// had.
+    pub fn effective_method(&self) -> &[u8] {
+        if let Some(custom) = &self.options.http.custom_method {
+            return custom;
+        }
+        self.report.method().name()
+    }
+
     pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
         &mut self.report
     }

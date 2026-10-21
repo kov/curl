@@ -20,10 +20,10 @@ use crate::trace;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, Url};
 
-use super::ProtoStep;
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing};
 use super::http1::request::{self, Basic, CredentialGate, RequestHead};
+use super::{Inherited, ProtoStep};
 use auth::{Credentials, CredentialsError};
 
 mod auth;
@@ -63,6 +63,12 @@ pub(crate) struct Request {
     port: u16,
     /// What of the application's may go to the request's origin.
     gate: CredentialGate,
+    /// The method, as the requests before it left it.
+    method: Method,
+    /// The application's custom method is sent in its place.
+    custom: bool,
+    /// The HTTP version sent.
+    version: HttpVersion,
     /// What the request sends and has not yet (`req.sendbuf`): the head,
     /// then the body as read, behind it in one buffer of
     /// `UPLOAD_BUFFER` bytes. `out[sent..filled]` is still to go, the
@@ -126,11 +132,11 @@ enum Body {
 }
 
 impl Request {
-    /// A request for `url`, whose scheme is `http`, in a transfer that
-    /// started at `first`, if not here.
+    /// A request for `url`, whose scheme is `http`, after the transfer's
+    /// earlier ones left it `inherited`.
     pub(crate) fn new<H: Host>(
         url: &Url,
-        first: Option<&Peer>,
+        inherited: &Inherited,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
@@ -163,7 +169,7 @@ impl Request {
             Err(UrlErrorKind::NoQuery) => {}
             Err(e) => return Err(url_error(e)),
         }
-        let gate = match first {
+        let gate = match inherited.first.as_deref() {
             None => CredentialGate::FIRST,
             Some(first) => {
                 let mut name = Vec::new();
@@ -192,6 +198,13 @@ impl Request {
             credentials,
             port,
             gate,
+            method: inherited.method,
+            custom: !inherited.ignore_custom,
+            version: if inherited.http10 {
+                HttpVersion::Http10
+            } else {
+                cx.easy().options().http.version
+            },
             out: Vec::new(),
             filled: 0,
             sent: 0,
@@ -226,9 +239,26 @@ impl Request {
         self.head.as_ref()?.meta().location()
     }
 
-    /// Where the response redirects to, if it is followed.
-    pub(crate) fn follow(&self) -> Option<&[u8]> {
-        self.head.as_ref()?.meta().follow()
+    /// Where the response redirects to, if it is followed, and its code.
+    pub(crate) fn follow(&self) -> Option<(&[u8], u16)> {
+        let head = self.head.as_ref()?;
+        Some((head.meta().follow()?, head.status()?.code))
+    }
+
+    /// A response to the request said HTTP/1.0.
+    pub(crate) fn saw_http10(&self) -> bool {
+        self.head.as_ref().is_some_and(HeadParser::saw_http10)
+    }
+
+    /// Start the body over, for the next request to send it again.
+    pub(crate) fn rewind_upload<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<(), ErrorKind> {
+        match &mut self.upload {
+            Some(upload) => upload.rewind(cx),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn holds_output(&self) -> bool {
@@ -278,13 +308,14 @@ impl Request {
         let reused = cx.conn(lease).reused();
         let options = cx.easy().options();
         let http = &options.http;
-        let (method, body): (&[u8], _) = match options.method {
-            Method::Get => (b"GET", None),
-            Method::Head => (b"HEAD", None),
-            Method::Post => (b"POST", Some(BodyKind::Form)),
-            Method::Upload => (b"PUT", Some(BodyKind::Put)),
+        let method = self.method.name();
+        let body = match self.method {
+            Method::Get | Method::Head => None,
+            Method::Post => Some(BodyKind::Form),
+            Method::Upload => Some(BodyKind::Put),
         };
-        let method = http.custom_method.as_deref().unwrap_or(method);
+        let custom = http.custom_method.as_deref().filter(|_| self.custom);
+        let method = custom.unwrap_or(method);
         if body.is_some() && options.resume.is_some() {
             return Err(trace::fail(
                 cx,
@@ -299,7 +330,7 @@ impl Request {
         // send (`http_req_set_TE`).
         let size_unknown = upload.is_some() && size.is_none();
         let asked = http.headers.asks_chunked();
-        if asked.is_none() && size_unknown && http.version == HttpVersion::Http10 {
+        if asked.is_none() && size_unknown && self.version == HttpVersion::Http10 {
             return Err(trace::fail(
                 cx,
                 ErrorKind::UploadFailed,
@@ -322,7 +353,7 @@ impl Request {
         let expects = http.headers.expects_continue();
         let added_expect = content.is_some()
             && expects.is_none()
-            && http.version == HttpVersion::Http11
+            && self.version == HttpVersion::Http11
             && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
         let expect_state = if content.is_some() && (expects == Some(true) || added_expect) {
             ExpectState::Head
@@ -352,7 +383,7 @@ impl Request {
         let head = RequestHead {
             method,
             target: &self.target,
-            version: http.version,
+            version: self.version,
             host: &self.host,
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
@@ -366,20 +397,20 @@ impl Request {
         let mut out = Vec::new();
         request::render_h1(&head, &gate, &mut out)?;
         let exchange = Exchange {
-            sent: match http.version {
+            sent: match self.version {
                 HttpVersion::Http10 => response::HttpVersion::Http10,
                 HttpVersion::Http11 => response::HttpVersion::Http11,
             },
             reused,
             allow_09: http.allow_09,
             asked: Asked {
-                head: options.method == Method::Head,
+                head: self.method == Method::Head,
                 ignore_length: http.ignore_content_length,
                 max_filesize: options.limits.max_filesize,
                 decode_codings: http.transfer_encoding,
                 raw_codings: http.raw,
                 fail_on_error: http.fail_on_error,
-                resume_from: resume_from.filter(|_| options.method == Method::Get),
+                resume_from: resume_from.filter(|_| self.method == Method::Get),
                 follow: http.follow != Follow::No,
             },
         };
@@ -670,6 +701,7 @@ impl Request {
             pipeline,
             head,
             interim,
+            upload,
             ..
         } = self;
         let head = head.as_mut().expect("made at DO");
@@ -680,7 +712,7 @@ impl Request {
         let line = match event {
             None => return Ok(rest),
             Some(HeadEvent::Http09(bytes)) => {
-                let no_body = cx.easy().options().method == Method::Head;
+                let no_body = self.method == Method::Head;
                 pipeline.expect(Expect {
                     no_body,
                     no_head: true,
@@ -698,6 +730,10 @@ impl Request {
         };
         for note in line.notes.iter() {
             trace::info(cx, format_args!("{note}"));
+        }
+        // The body goes again with the next request (`http_perhapsrewind`).
+        if line.redirects && upload.as_ref().is_some_and(Upload::needs_rewind) {
+            trace::info(cx, format_args!("Need to rewind upload for next request"));
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
@@ -816,7 +852,7 @@ impl Request {
         let head = self.head.as_ref().expect("made at DO");
         let framing = head.framing().expect("a final head decides its framing");
         let size = head.meta().size();
-        let no_body = cx.easy().options().method == Method::Head;
+        let no_body = self.method == Method::Head;
         if size.is_some() {
             self.pipeline.announce_size(cx, size);
         }
@@ -902,7 +938,7 @@ impl Request {
     fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         match &self.stage {
             Stage::Head => {
-                let no_body = cx.easy().options().method == Method::Head;
+                let no_body = self.method == Method::Head;
                 match self.head().meta().size() {
                     Some(size) if size > 0 && !no_body => Err(trace::fail(
                         cx,

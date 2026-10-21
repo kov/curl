@@ -1445,8 +1445,15 @@ FOLLOW_REDIR does and starts the next leg through `next_leg`, the tail it shares
 That leg's URL replaces `Run::url` whole (C's `state.url`). A redirect reaches only HTTP and FTP
 schemes (`CURLPROTO_REDIR`). `Run::first` holds the first leg's origin (`state.initial_origin`):
 each request's `CredentialGate` is fixed when the request is made, from that origin and its own.
-Planned: 301/302/303 method switching as a function of `(status, method, policy)`, held in the
-leg's state on `Run`.
+What one request takes from the ones before it is `Inherited` on `Run`, reset at a transfer's
+start: the first origin, the method (C's `state.httpreq`), whether the custom method is still
+sent (`state.http_ignorecustom`) and whether a response said HTTP/1.0 (`rcvd_min`, which makes
+the later requests HTTP/1.0). A request copies what it needs of it when it is made. Following a
+redirect, in C's order: the old request's body is rewound (`Curl_req_soft_reset`), "Issue
+another request" is said, `FIRSTONLY` drops the custom method, `follow::switches_to_get`
+decides from `(code, method, POSTREDIR)` and `switch_to_get` applies it (a HEAD stays one).
+A failed rewind fails the transfer unless the next request is a GET. A retry rewinds the same
+way.
 Auth is `AuthState` on the `Run`: `input(challenge)`, `act(status) -> Option<Retry>`,
 `output(&CredentialGate) -> AuthHeaders`; stage 3 covers Basic, Digest and Bearer.
 

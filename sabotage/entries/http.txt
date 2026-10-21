@@ -432,7 +432,7 @@ witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decid
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_custom_method_is_sent_with_the_body_kept
 --- old
-        let method = http.custom_method.as_deref().unwrap_or(method);
+        let method = custom.unwrap_or(method);
 --- new
         let method = method;
 
@@ -458,9 +458,9 @@ witness: curl-core proto::http1::chunked::tests::encodes_pieces_as_chunks
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::http_1_0_refuses_a_body_of_unknown_size
 --- old
-        if asked.is_none() && size_unknown && http.version == HttpVersion::Http10 {
+        if asked.is_none() && size_unknown && self.version == HttpVersion::Http10 {
 --- new
-        if false && size_unknown && http.version == HttpVersion::Http10 {
+        if false && size_unknown && self.version == HttpVersion::Http10 {
 
 === the library says chunked beside the application
 file: crates/curl-core/src/proto/http.rs
@@ -667,11 +667,11 @@ witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_t
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-    if run.first.is_none() {
-        run.first = Some(origin.clone());
+    if run.inherited.first.is_none() {
+        run.inherited.first = Some(origin.clone());
     }
 --- new
-    run.first = Some(origin.clone());
+    run.inherited.first = Some(origin.clone());
 
 === unrestricted auth is ignored
 file: crates/curl-core/src/proto/http.rs
@@ -680,3 +680,104 @@ witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_t
         let other_hosts = cx.easy().options().http.unrestricted_auth;
 --- new
         let other_hosts = false;
+
+=== a 301 turns a POST into a GET whatever POSTREDIR says
+file: crates/curl-core/src/proto/http1/follow.rs
+witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
+--- old
+        301 => post && !keep.post301,
+--- new
+        301 => post,
+
+=== a 303 keeps everything but a POST
+file: crates/curl-core/src/proto/http1/follow.rs
+witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
+--- old
+        303 => !post || !keep.post303,
+--- new
+        303 => post && !keep.post303,
+
+=== a switch to GET keeps the method
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
+--- old
+        run.inherited.method = Method::Get;
+--- new
+
+=== a HEAD redirected by a 303 becomes a GET
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
+--- old
+    if run.inherited.method != Method::Head {
+--- new
+    if true {
+
+=== the report keeps the first request's method
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
+--- old
+    cx.report_mut().set_method(run.inherited.method);
+--- new
+
+=== a custom method asked only of the first URL is kept
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
+--- old
+        run.inherited.ignore_custom = true;
+--- new
+
+=== an obeyed code keeps the custom method
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
+--- old
+        inherited.ignore_custom = true;
+        trace::info(cx, format_args!("Switch to GET because of {code} response"));
+--- new
+        trace::info(cx, format_args!("Switch to GET because of {code} response"));
+
+=== a redirected body is not rewound
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
+--- old
+    // request (`Curl_req_soft_reset`); a failure stands only if the next
+    // request would send it.
+    let rewound = proto.rewind_upload(cx);
+--- new
+    // request (`Curl_req_soft_reset`); a failure stands only if the next
+    // request would send it.
+    let rewound: Result<(), ErrorKind> = Ok(());
+
+=== a failed rewind fails a redirect to GET
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
+--- old
+    if let Err(e) = rewound
+        && !switched
+    {
+--- new
+    if let Err(e) = rewound {
+
+=== a retried body is not rewound
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_retried_request_rewinds_its_body
+--- old
+    // As for a redirect, which never switches to GET here.
+    let rewound = proto.rewind_upload(cx);
+--- new
+    // As for a redirect, which never switches to GET here.
+    let rewound: Result<(), ErrorKind> = Ok(());
+
+=== the rewind a redirect needs goes unsaid
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
+--- old
+        if line.redirects && upload.as_ref().is_some_and(Upload::needs_rewind) {
+--- new
+        if false && upload.as_ref().is_some_and(Upload::needs_rewind) {
+
+=== an HTTP/1.0 response is forgotten
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_response_in_http_1_0_makes_the_next_request_one
+--- old
+                run.inherited.http10 = true;
+--- new

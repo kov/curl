@@ -13,6 +13,8 @@ pub(crate) mod http1;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 
+use curl_alloc::TryRc;
+
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
@@ -20,7 +22,7 @@ use crate::error::ErrorKind;
 use crate::error::UrlErrorKind;
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
-use crate::options::Options;
+use crate::options::{Method, Options};
 use crate::url::{GetOptions, Part, Url};
 
 /// The URL's IPv6 zone, if it has one.
@@ -29,6 +31,35 @@ pub(super) fn zone(url: &Url) -> Result<Option<Vec<u8>>, ErrorKind> {
         Ok(zone) => Ok(Some(zone)),
         Err(UrlErrorKind::NoZoneid) => Ok(None),
         Err(e) => Err(crate::multi::state::url_error(e)),
+    }
+}
+
+/// What a transfer's request takes from the ones before it.
+#[derive(Debug)]
+pub(crate) struct Inherited {
+    /// Where the first request went (`state.initial_origin`): what the
+    /// application said for it goes nowhere else.
+    pub(crate) first: Option<TryRc<Peer>>,
+    /// The method, which a redirect may have turned into a GET
+    /// (`state.httpreq`).
+    pub(crate) method: Method,
+    /// The application's custom method is no longer sent
+    /// (`state.http_ignorecustom`).
+    pub(crate) ignore_custom: bool,
+    /// A response said HTTP/1.0: so do the requests after it
+    /// (`state.http_neg.rcvd_min`).
+    pub(crate) http10: bool,
+}
+
+impl Inherited {
+    /// What the first request of a transfer that asks for `method` has.
+    pub(crate) fn new(method: Method) -> Inherited {
+        Inherited {
+            first: None,
+            method,
+            ignore_custom: false,
+            http10: false,
+        }
     }
 }
 
@@ -71,13 +102,13 @@ impl ProtoState {
     pub(crate) fn start<H: Host>(
         scheme: &[u8],
         url: &Url,
-        first: Option<&Peer>,
+        inherited: &Inherited,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
             b"file" => ProtoState::File(file::Request::open(url, cx)?),
             b"http" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::new(url, first, cx)?)
+                curl_alloc::try_box(http::Request::new(url, inherited, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             #[cfg(any(test, feature = "test-util"))]
@@ -208,13 +239,39 @@ impl ProtoState {
         }
     }
 
-    /// Where the response redirects to, if it is followed.
-    pub(crate) fn follow(&self) -> Option<&[u8]> {
+    /// Where the response redirects to, if it is followed, and its code.
+    pub(crate) fn follow(&self) -> Option<(&[u8], u16)> {
         match *self {
             ProtoState::Http(ref r) => r.follow(),
             ProtoState::File(_) => None,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+
+    /// A response to the request said HTTP/1.0.
+    pub(crate) fn saw_http10(&self) -> bool {
+        match *self {
+            ProtoState::Http(ref r) => r.saw_http10(),
+            ProtoState::File(_) => false,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
+        }
+    }
+
+    /// Start the request's body over, for the next request to send it
+    /// again (`Curl_client_start`).
+    pub(crate) fn rewind_upload<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<(), ErrorKind> {
+        match *self {
+            ProtoState::Http(ref mut r) => r.rewind_upload(cx),
+            ProtoState::File(_) => Ok(()),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
+                Ok(())
+            }
         }
     }
 

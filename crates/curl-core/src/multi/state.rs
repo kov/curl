@@ -18,10 +18,10 @@ use crate::conn::{
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::options::{Lines, Options, ResolveList};
+use crate::options::{Follow, Lines, Method, Options, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::http1::follow;
-use crate::proto::{ProtoState, ProtoStep};
+use crate::proto::{Inherited, ProtoState, ProtoStep};
 use crate::report::{Ends, Starts, Timer, TransferReport};
 use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
@@ -46,9 +46,8 @@ pub(crate) struct Run {
     /// Requests made again on a fresh connection, their reused one having
     /// died (`state.retrycount`).
     retries: u8,
-    /// Where the transfer's first request went (`state.initial_origin`):
-    /// what the application said for it goes nowhere else.
-    first: Option<TryRc<Peer>>,
+    /// What the next request takes from the ones before it.
+    inherited: Inherited,
     /// The first transfer added to its multi says that the library is a
     /// debug build (`multi_warn_debug`).
     #[cfg(feature = "debug-hooks")]
@@ -62,7 +61,7 @@ impl Run {
             deadlines: Deadlines::new(None, None),
             url: Vec::new(),
             retries: 0,
-            first: None,
+            inherited: Inherited::new(Method::Get),
             #[cfg(feature = "debug-hooks")]
             warn: false,
         }
@@ -82,8 +81,8 @@ pub(crate) enum AfterRequest {
     /// one having died (C's `FOLLOW_RETRY`).
     Retry,
     /// The response's `Location:`, as the server gave it, is followed
-    /// (C's `FOLLOW_REDIR`).
-    Follow(Vec<u8>),
+    /// (C's `FOLLOW_REDIR`); `code` is the response's.
+    Follow { location: Vec<u8>, code: u16 },
 }
 
 #[derive(Debug)]
@@ -723,12 +722,17 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 pause.recv = RecvPause::Running;
             }
             let now = cx.rest.now;
-            let leg = match (&d.next, d.result) {
+            if d.proto.as_ref().is_some_and(ProtoState::saw_http10) {
+                run.inherited.http10 = true;
+            }
+            let leg = match (&d.next, d.result, d.proto.as_mut()) {
                 // A send failure is what a retry from DO set out to mend.
-                (AfterRequest::Retry, Ok(()) | Err(ErrorKind::SendError)) => {
-                    Some(retry_leg(run, cx))
+                (AfterRequest::Retry, Ok(()) | Err(ErrorKind::SendError), Some(proto)) => {
+                    Some(retry_leg(run, cx, proto))
                 }
-                (AfterRequest::Follow(location), Ok(())) => Some(follow_leg(run, cx, location)),
+                (AfterRequest::Follow { location, code }, Ok(()), Some(proto)) => {
+                    Some(follow_leg(run, cx, proto, location, *code))
+                }
                 _ => None,
             };
             if let Some(next) = leg {
@@ -1156,7 +1160,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
         ));
     }
     run.retries = 0;
-    run.first = None;
+    run.inherited = Inherited::new(cx.easy().options().method);
     cx.mark(Timer::StartOp);
     read_resolve(cx)?;
     let options = cx.easy().options();
@@ -1260,11 +1264,14 @@ fn after_exchange<H: Host>(
     x: &Attached,
     cx: &mut StepCx<'_, H>,
 ) -> Result<AfterRequest, ErrorKind> {
-    if let Some(location) = x.proto.follow() {
+    if let Some((location, code)) = x.proto.follow() {
         let mut copy = Vec::new();
         copy.try_extend_from_slice(location)
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        return Ok(AfterRequest::Follow(copy));
+        return Ok(AfterRequest::Follow {
+            location: copy,
+            code,
+        });
     }
     if let Some(location) = x.proto.location() {
         keep_redirect_url(run, cx, location)?;
@@ -1299,7 +1306,13 @@ fn keep_redirect_url<H: Host>(
 /// A redirect is followed (`Curl_http_follow`, `FOLLOW_REDIR`): counted,
 /// `location` resolved against the request's URL, and a leg started for
 /// it. Past the limit, where it leads is kept and the transfer fails.
-fn follow_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, location: &[u8]) -> TransferState {
+fn follow_leg<H: Host>(
+    run: &mut Run,
+    cx: &mut StepCx<'_, H>,
+    proto: &mut ProtoState,
+    location: &[u8],
+    code: u16,
+) -> TransferState {
     let options = cx.easy().options();
     let path_as_is = options.url_rules.path_as_is;
     let max = options.http.max_redirects.0;
@@ -1329,11 +1342,34 @@ fn follow_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, location: &[u8]) -
         Ok(text) => text,
         Err(e) => return TransferState::Init.fail(url_error(e)),
     };
+    // The body is started over before anything else is said of the next
+    // request (`Curl_req_soft_reset`); a failure stands only if the next
+    // request would send it.
+    let rewound = proto.rewind_upload(cx);
     let shown = Bytes(&text);
     trace::info(
         cx,
         format_args!("Issue another request to this URL: '{shown}'"),
     );
+    let http = &cx.easy().options().http;
+    let custom = http.custom_method.is_some();
+    if http.follow == Follow::FirstOnly && custom && !run.inherited.ignore_custom {
+        run.inherited.ignore_custom = true;
+        trace::info(
+            cx,
+            format_args!("Drop custom request method for next request"),
+        );
+    }
+    let http = &cx.easy().options().http;
+    let switched = follow::switches_to_get(code, run.inherited.method, http.post_redirect);
+    if switched {
+        switch_to_get(run, cx, code);
+    }
+    if let Err(e) = rewound
+        && !switched
+    {
+        return TransferState::Init.fail(e);
+    }
     // Parsed again for its leg, as every request's URL is.
     let url = match parse_url(&text, cx.easy().options()) {
         Ok(url) => url,
@@ -1348,7 +1384,11 @@ fn follow_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, location: &[u8]) -
 
 /// A request is to be made again: its URL parsed anew, as the follow of a
 /// retry does (`Curl_http_follow`, `FOLLOW_RETRY`), and a leg started.
-fn retry_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
+fn retry_leg<H: Host>(
+    run: &mut Run,
+    cx: &mut StepCx<'_, H>,
+    proto: &mut ProtoState,
+) -> TransferState {
     let url = match parse_url(&run.url, cx.easy().options()) {
         Ok(url) => url,
         Err(UrlRefused::Rejected(e)) => {
@@ -1362,12 +1402,40 @@ fn retry_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         Ok(shown) => shown,
         Err(e) => return TransferState::Init.fail(url_error(e)),
     };
+    // As for a redirect, which never switches to GET here.
+    let rewound = proto.rewind_upload(cx);
     let shown = Bytes(&shown);
     trace::info(
         cx,
         format_args!("Issue another request to this URL: '{shown}'"),
     );
+    if let Err(e) = rewound {
+        return TransferState::Init.fail(e);
+    }
     next_leg(run, cx, url)
+}
+
+/// The next request asks for a GET (`http_switch_to_get`): traced and the
+/// custom method dropped only if the redirect's code is obeyed.
+fn switch_to_get<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, code: u16) {
+    let follow = cx.easy().options().http.follow;
+    // Out of the options while it is traced; put back after.
+    let custom = cx.easy_mut().options_mut().http.custom_method.take();
+    let inherited = &mut run.inherited;
+    if (custom.is_some() || inherited.method != Method::Get) && follow == Follow::ObeyCode {
+        inherited.ignore_custom = true;
+        trace::info(cx, format_args!("Switch to GET because of {code} response"));
+    } else if let Some(custom) = custom.as_deref()
+        && follow != Follow::FirstOnly
+    {
+        let custom = Bytes(custom);
+        trace::info(cx, format_args!("Stick to {custom} instead of GET"));
+    }
+    cx.easy_mut().options_mut().http.custom_method = custom;
+    // A HEAD stays bodyless, as `CURLOPT_NOBODY` keeps it.
+    if run.inherited.method != Method::Head {
+        run.inherited.method = Method::Get;
+    }
 }
 
 /// The next request of a transfer, made again or redirected, for `url`:
@@ -1416,6 +1484,7 @@ fn retry_request<H: Host>(
 /// `url`, then the protocol connects over it.
 fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> TransferState {
     run.deadlines.start_leg(cx.rest.now);
+    cx.report_mut().set_method(run.inherited.method);
     cx.mark(Timer::StartSingle);
     cx.mark(Timer::PostQueue);
     // Read back once parsed, credentials and all, as C reads it back
@@ -1442,7 +1511,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
     let started = if refused {
         Ok(None)
     } else {
-        ProtoState::start(&scheme, &url, run.first.as_deref(), cx)
+        ProtoState::start(&scheme, &url, &run.inherited, cx)
     };
     let proto = match started {
         Ok(Some(proto)) => proto,
@@ -1493,8 +1562,8 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
     let Ok(origin) = TryRc::try_new(peer) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    if run.first.is_none() {
-        run.first = Some(origin.clone());
+    if run.inherited.first.is_none() {
+        run.inherited.first = Some(origin.clone());
     }
     // Out of the options while the failure is traced; put back however
     // the search ends.

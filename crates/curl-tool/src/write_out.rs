@@ -71,6 +71,7 @@ enum Var {
     RemotePort,
     NumConnects,
     NumRedirects,
+    Method,
     NumHeaders,
     SizeRequest,
     SizeDelivered,
@@ -127,7 +128,7 @@ const VARIABLES: &[Variable] = &[
     known("json"),
     written("local_ip", Var::LocalIp),
     written("local_port", Var::LocalPort),
-    known("method"),
+    written("method", Var::Method),
     known("num_certs"),
     written("num_connects", Var::NumConnects),
     written("num_headers", Var::NumHeaders),
@@ -203,6 +204,8 @@ pub(crate) struct Facts<'a> {
     /// Header lines with a colon in the last response's head.
     pub(crate) num_headers: u64,
     pub(crate) filename: Option<&'a [u8]>,
+    /// `CURLINFO_EFFECTIVE_METHOD`.
+    pub(crate) method: &'a [u8],
     pub(crate) report: &'a TransferReport,
 }
 
@@ -475,6 +478,7 @@ fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()
         },
         Var::NumConnects => write!(out, "{}", r.connects()),
         Var::NumRedirects => write!(out, "{}", r.redirects()),
+        Var::Method => out.write_all(facts.method),
         Var::NumHeaders => write!(out, "{}", facts.num_headers),
         Var::SizeRequest => write!(out, "{}", r.sizes().request()),
         Var::SizeDelivered => write!(out, "{}", r.sizes().delivered()),
@@ -603,6 +607,7 @@ mod tests {
             urlnum: 7,
             num_headers: 3,
             filename: None,
+            method: b"GET",
             report: &report,
         };
         let mut out = Vec::new();
@@ -678,6 +683,7 @@ mod tests {
             urlnum: 0,
             num_headers: 0,
             filename: None,
+            method: b"GET",
             report: &report,
         };
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());

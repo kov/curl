@@ -3,6 +3,7 @@
 
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::multi::state::url_error;
+use crate::options::{Method, PostRedir};
 use crate::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 
 /// Where `location` leads from `base`, the request's URL, for a response
@@ -69,6 +70,19 @@ pub(crate) fn resolve(
     };
     base.set(Part::Url, Some(location), follow)?;
     Ok(base)
+}
+
+/// Whether a redirect with `code` turns a request with `method` into a
+/// GET (`follow_switch_get`): a POST on a 301 or 302 unless `keep` says
+/// otherwise, and anything on a 303 but a POST `keep` keeps.
+pub(crate) fn switches_to_get(code: u16, method: Method, keep: PostRedir) -> bool {
+    let post = method == Method::Post;
+    match code {
+        301 => post && !keep.post301,
+        302 => post && !keep.post302,
+        303 => !post || !keep.post303,
+        _ => false,
+    }
 }
 
 fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {

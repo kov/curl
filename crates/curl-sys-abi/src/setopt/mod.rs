@@ -18,7 +18,7 @@ use core::ptr::NonNull;
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 use curl_core::options::{
     ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, LowSpeed, MaxRedirects,
-    Method, Options, Resume, ReuseLimits, UserHeaders,
+    Method, Options, PostRedir, Resume, ReuseLimits, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -324,6 +324,17 @@ fn apply(
                 ..-1 => return Err(Refused::Bad),
                 -1 => MaxRedirects(None),
                 n => MaxRedirects(Some(u16::try_from(n.min(0x7fff)).expect("clamped"))),
+            };
+        }
+        (ffi::CURLOPT_POSTREDIR, Long(n)) => {
+            // Below CURL_REDIR_GET_ALL refused; bits past 303's ignored.
+            if n < 0 {
+                return Err(Refused::Bad);
+            }
+            options.http.post_redirect = PostRedir {
+                post301: n & 1 != 0,
+                post302: n & 2 != 0,
+                post303: n & 4 != 0,
             };
         }
         (ffi::CURLOPT_UNRESTRICTED_AUTH, Long(n)) => options.http.unrestricted_auth = n != 0,

@@ -57,6 +57,7 @@ pub(crate) struct ShimEasy {
     pub(crate) effective_url: RefCell<Vec<u8>>,
     pub(crate) content_type: RefCell<Vec<u8>>,
     pub(crate) redirect_url: RefCell<Vec<u8>>,
+    pub(crate) method: RefCell<Vec<u8>>,
     pub(crate) primary_ip: RefCell<Vec<u8>>,
     pub(crate) local_ip: RefCell<Vec<u8>>,
     /// What `curl_easy_header` and `curl_easy_nextheader` hand out.
@@ -125,6 +126,7 @@ impl ShimEasy {
             effective_url: RefCell::new(Vec::new()),
             content_type: RefCell::new(Vec::new()),
             redirect_url: RefCell::new(Vec::new()),
+            method: RefCell::new(Vec::new()),
             primary_ip: RefCell::new(Vec::new()),
             local_ip: RefCell::new(Vec::new()),
             headers_out: crate::headers::slots(),

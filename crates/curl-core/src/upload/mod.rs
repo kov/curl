@@ -32,13 +32,6 @@ enum Source {
     Bytes(TryRc<Vec<u8>>),
     Read {
         handler: Handler<dyn ReadHandler>,
-        #[cfg_attr(
-            not(any(test, feature = "test-util")),
-            expect(
-                dead_code,
-                reason = "only the test protocol sends a body again before HTTP"
-            )
-        )]
         rewind: Option<Handler<dyn Rewind>>,
         size: Option<u64>,
     },
@@ -86,6 +79,12 @@ impl Upload {
             latch: Latch::Open,
             called: false,
         }
+    }
+
+    /// The handler was called, and must be rewound for the body to be
+    /// sent again (`Curl_creader_needs_rewind`).
+    pub(crate) fn needs_rewind(&self) -> bool {
+        matches!(self.source, Source::Read { .. }) && self.called
     }
 
     /// The body's size, where known (`Curl_creader_total_length`).
@@ -194,13 +193,6 @@ impl Upload {
     /// was called, whatever it answered, needs its rewind: without one, or
     /// if it fails, SendFailRewind ("necessary data rewind was not
     /// possible").
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(
-            dead_code,
-            reason = "only the test protocol sends a body again before HTTP"
-        )
-    )]
     pub(crate) fn rewind<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         if let Source::Read { rewind, .. } = &self.source {
             if !self.called {

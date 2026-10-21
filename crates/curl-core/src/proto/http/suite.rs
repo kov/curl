@@ -38,7 +38,7 @@ const CASES: &[u32] = &[
 
 /// Cases that run but fail for want of a feature, and the step that
 /// brings it.
-const KNOWN: &[(u32, &str)] = &[(367, "Basic auth from the URL's credentials (step 16)")];
+const KNOWN: &[(u32, &str)] = &[];
 
 /// What a case asks of the transfer, mapped from its command line.
 #[derive(Default)]
@@ -387,7 +387,7 @@ fn the_milestone_s_http_cases() {
             "test {known} passes now: drop it from KNOWN ({why})"
         );
     }
-    for must in [1, 34, 207, 326, 1274, 1416, 1417, 2106, 457, 1154] {
+    for must in [1, 34, 207, 326, 367, 1274, 1416, 1417, 2106, 457, 1154] {
         assert!(ran.contains(&must), "test {must} did not run");
     }
 }

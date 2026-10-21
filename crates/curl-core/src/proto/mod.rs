@@ -62,7 +62,7 @@ impl ProtoState {
         Ok(Some(match scheme {
             b"file" => ProtoState::File(file::Request::open(url, cx)?),
             b"http" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::new(url)?)
+                curl_alloc::try_box(http::Request::new(url, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             #[cfg(any(test, feature = "test-util"))]

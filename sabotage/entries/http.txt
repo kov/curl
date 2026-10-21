@@ -224,3 +224,29 @@ witness: curl-core proto::http1::request::tests::the_referer_follows_accept
                 {
 --- new
                 if let Some(referer) = head.referer {
+
+=== the application's own Authorization does not replace Basic
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::basic_credentials_follow_host
+--- old
+            .replacing(b"Authorization")
+            .is_none()
+--- new
+            .replacing(b"X-Never")
+            .is_none()
+
+=== a zero byte in the URL's credentials is let through
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::takes_the_url_s_credentials_as_c
+--- old
+                Ok(None) => Err(CredentialsError::Malformed),
+--- new
+                Ok(None) => Ok(Some(Vec::new())),
+
+=== empty credentials still authenticate
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::encodes_basic_as_c
+--- old
+        if self.user.is_empty() && self.password.is_empty() {
+--- new
+        if false {

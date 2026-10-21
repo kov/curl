@@ -196,7 +196,13 @@ pub(crate) fn substitute(text: &[u8], test: u32) -> Vec<u8> {
     ] {
         text = replace(&text, from, to);
     }
-    // `%hex[..]hex%` and `%repeat[N x ..]%`, with `%NN` bytes inside.
+    // `%b64[..]b64%`, `%hex[..]hex%` and `%repeat[N x ..]%`, in that
+    // order, with `%NN` bytes inside.
+    while let Some(at) = find(&text, b"%b64[") {
+        let end = at + find(&text[at..], b"]b64%").unwrap();
+        let bytes = base64(&hex_bytes(&text[at + 5..end]));
+        text.splice(at..end + 5, bytes);
+    }
     while let Some(at) = find(&text, b"%hex[") {
         let end = at + find(&text[at..], b"]hex%").unwrap();
         let bytes = hex_bytes(&text[at + 5..end]);
@@ -211,6 +217,27 @@ pub(crate) fn substitute(text: &[u8], test: u32) -> Vec<u8> {
         text.splice(at..end + 2, bytes);
     }
     text
+}
+
+/// `bytes` in base64 with padding, as Perl's `encode_base64`.
+fn base64(bytes: &[u8]) -> Vec<u8> {
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0);
+    for &b in bytes {
+        acc = acc << 8 | u32::from(b);
+        bits += 8;
+        while bits >= 6 {
+            bits -= 6;
+            out.push(alphabet[(acc >> bits & 63) as usize]);
+        }
+    }
+    if bits > 0 {
+        out.push(alphabet[(acc << (6 - bits) & 63) as usize]);
+    }
+    while out.len() % 4 != 0 {
+        out.push(b'=');
+    }
+    out
 }
 
 fn hex_bytes(text: &[u8]) -> Vec<u8> {

@@ -30,6 +30,19 @@ pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
     text(cx, line.bytes());
 }
 
+/// `info` with a line made of `parts`, which need not be text.
+pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
+    if !cx.easy().options().output.verbose {
+        return;
+    }
+    let mut line = Text::<LINE_MAX>::new();
+    for part in parts {
+        line.push_clipped(part);
+    }
+    end_line(&mut line);
+    text(cx, line.bytes());
+}
+
 /// End a trace line (`trc_end_buf`): with a newline where it leaves room
 /// for C's zero byte, else cut and marked `...`.
 fn end_line(line: &mut Text<LINE_MAX>) {

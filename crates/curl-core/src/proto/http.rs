@@ -20,7 +20,10 @@ use crate::url::{GetOptions, Part, Url};
 use super::ProtoStep;
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
 use super::http1::framing::{Asked, Framing};
-use super::http1::request::{self, CredentialGate, RequestHead};
+use super::http1::request::{self, Basic, CredentialGate, RequestHead};
+use auth::{Credentials, CredentialsError};
+
+mod auth;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
 /// The most one read takes (`CURL_MAX_WRITE_SIZE`, BUFFERSIZE's default).
@@ -37,6 +40,8 @@ pub(crate) struct Request {
     target: Vec<u8>,
     /// The host as the URL names it, and its port.
     host: Vec<u8>,
+    /// What the URL says to authenticate with.
+    credentials: Option<Credentials>,
     port: u16,
     /// The head, rendered at DO, and how much of it went.
     out: Vec<u8>,
@@ -70,7 +75,7 @@ enum Body {
 
 impl Request {
     /// A request for `url`, whose scheme is `http`.
-    pub(crate) fn new(url: &Url) -> Result<Request, ErrorKind> {
+    pub(crate) fn new<H: Host>(url: &Url, cx: &mut StepCx<'_, H>) -> Result<Request, ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
         let port = url
             .get(
@@ -96,10 +101,22 @@ impl Request {
             Err(UrlErrorKind::NoQuery) => {}
             Err(e) => return Err(url_error(e)),
         }
+        let credentials = match Credentials::of_url(url) {
+            Ok(credentials) => credentials,
+            Err(CredentialsError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+            Err(CredentialsError::Malformed) => {
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::UrlMalformat,
+                    format_args!("error extracting credentials from URL"),
+                ));
+            }
+        };
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,
             host,
+            credentials,
             port,
             out: Vec::new(),
             sent: 0,
@@ -160,6 +177,22 @@ impl Request {
             Method::Upload => return Err(ErrorKind::NotBuiltIn),
         };
         let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
+        let peer = request::Peer {
+            scheme: b"http",
+            host: &self.host,
+            port: self.port,
+        };
+        // One origin, until redirects are followed.
+        let gate = CredentialGate::new(&peer, &peer, false);
+        let token = match (&self.credentials, gate.trusted()) {
+            (Some(c), Some(_)) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
+            _ => None,
+        };
+        let basic = token
+            .as_deref()
+            .zip(gate.trusted())
+            .and_then(|(token, trusted)| Basic::new(token, trusted, &http.headers));
+        let authenticates = basic.is_some();
         let head = RequestHead {
             method,
             target: &self.target,
@@ -168,15 +201,9 @@ impl Request {
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: http.referer.as_deref(),
+            basic,
             headers: &http.headers,
         };
-        let peer = request::Peer {
-            scheme: b"http",
-            host: &self.host,
-            port: self.port,
-        };
-        // One origin, until redirects are followed.
-        let gate = CredentialGate::new(&peer, &peer, false);
         let mut out = Vec::new();
         request::render_h1(&head, &gate, &mut out)?;
         let exchange = Exchange {
@@ -196,6 +223,10 @@ impl Request {
                 resuming: options.resume.is_some() && options.method == Method::Get,
             },
         };
+        if authenticates {
+            let user = self.credentials.as_ref().map_or(&b""[..], |c| c.user());
+            trace::info_with(cx, &[b"Server auth using Basic with user '", user, b"'"]);
+        }
         self.out = out;
         self.sent = 0;
         self.head = Some(HeadParser::new(exchange));

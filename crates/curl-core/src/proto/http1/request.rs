@@ -72,6 +72,21 @@ impl CredentialGate {
     }
 }
 
+/// The credentials an `Authorization: Basic` line carries, in base64. Only
+/// the gate's leave makes one, and only where the application sends no
+/// Authorization of its own (`output_auth_headers`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Basic<'a>(&'a [u8]);
+
+impl<'a> Basic<'a> {
+    pub(crate) fn new(token: &'a [u8], _: Trusted, headers: &UserHeaders) -> Option<Basic<'a>> {
+        headers
+            .replacing(b"Authorization")
+            .is_none()
+            .then_some(Basic(token))
+    }
+}
+
 /// What one of the application's header lines asks for, decided once when
 /// it is given (`Curl_add_custom_headers`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,6 +303,7 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) port: Option<u16>,
     pub(crate) user_agent: Option<&'o [u8]>,
     pub(crate) referer: Option<&'o [u8]>,
+    pub(crate) basic: Option<Basic<'o>>,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -373,6 +389,11 @@ fn write_h1(
                     out.put(b"\r\n")?;
                 }
             },
+            Part::Authorization => {
+                if let Some(Basic(token)) = head.basic {
+                    out.line(&[b"Authorization: Basic ", token])?;
+                }
+            }
             Part::UserAgent => {
                 if let Some(ua) = head.user_agent.filter(|ua| !ua.is_empty())
                     && head.headers.replacing(b"User-Agent").is_none()
@@ -397,7 +418,6 @@ fn write_h1(
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
             Part::ProxyAuthorization
-            | Part::Authorization
             | Part::Range
             | Part::Te
             | Part::AcceptEncoding
@@ -535,6 +555,7 @@ mod tests {
             port: Some(PORT),
             user_agent: Some(UA),
             referer: None,
+            basic: None,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -595,6 +616,7 @@ mod tests {
                 port: Some(PORT),
                 user_agent: Some(b"ua/1"),
                 referer: Some(b"http://ref.example/x"),
+                basic: None,
                 headers: &headers,
             };
             let here = peer(b"127.0.0.1");
@@ -615,6 +637,42 @@ mod tests {
                 "GET / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: ua/1\r\nAccept: */*\r\n\
                  Referer: mine\r\n\r\n"
             )
+        );
+    }
+
+    /// Basic credentials go after Host, as test 367 sends them, unless
+    /// the application sends an Authorization of its own.
+    #[test]
+    fn basic_credentials_follow_host() {
+        let here = peer(b"h");
+        let gate = CredentialGate::new(&here, &here, false);
+        let send = |headers: &[&[u8]]| {
+            let headers = UserHeaders::new(headers.iter().copied()).unwrap();
+            let trusted = gate.trusted().unwrap();
+            let head = RequestHead {
+                method: b"GET",
+                target: b"/",
+                version: Version::Http11,
+                host: b"h",
+                port: None,
+                user_agent: Some(b"ua/1"),
+                referer: None,
+                basic: Basic::new(b"OmV4YW1wbGU=", trusted, &headers),
+                headers: &headers,
+            };
+            let mut out = Vec::new();
+            render_h1(&head, &gate, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert_eq!(
+            send(&[]),
+            "GET / HTTP/1.1\r\nHost: h\r\nAuthorization: Basic OmV4YW1wbGU=\r\n\
+             User-Agent: ua/1\r\nAccept: */*\r\n\r\n"
+        );
+        assert_eq!(
+            send(&[b"authorization: mine"]),
+            "GET / HTTP/1.1\r\nHost: h\r\nUser-Agent: ua/1\r\nAccept: */*\r\n\
+             authorization: mine\r\n\r\n"
         );
     }
 
@@ -697,6 +755,7 @@ mod tests {
             port: None,
             user_agent: None,
             referer: None,
+            basic: None,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -740,6 +799,7 @@ mod tests {
                 port: None,
                 user_agent: None,
                 referer: None,
+                basic: None,
                 headers: &headers,
             };
             let here = peer(b"h");

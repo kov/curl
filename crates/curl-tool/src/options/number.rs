@@ -164,6 +164,9 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 50, "the cases were read");
+        // A fraction as long as the unit's digits is cut by one: the C
+        // tool takes `1.1234k` as 1149 bytes, as `1.123k`.
+        assert_eq!(size(b"1.1234k"), Ok(1149));
     }
 
     /// The C tool's answers, from `build/c/src/curl --retry` and friends.

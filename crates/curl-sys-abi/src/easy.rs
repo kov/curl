@@ -516,6 +516,70 @@ pub unsafe extern "C" fn curl_easy_pause(curl: *mut CURL, action: c_int) -> CURL
 }
 const _: ffi::proto::curl_easy_pause = curl_easy_pause;
 
+/// Bytes from a `CURLOPT_CONNECT_ONLY` connection: no handle has one,
+/// as that option is not built in (`easy_connection`).
+///
+/// # Safety
+///
+/// `curl` is NULL or a live handle; `n` is NULL or points at a `size_t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_easy_recv(
+    curl: *mut CURL,
+    buffer: *mut c_void,
+    buflen: usize,
+    n: *mut usize,
+) -> CURLcode {
+    // SAFETY: as the caller guarantees.
+    unsafe { connect_only(curl, EasyCall::Recv, buffer.is_null(), buflen, n) }
+}
+const _: ffi::proto::curl_easy_recv = curl_easy_recv;
+
+/// Bytes to a `CURLOPT_CONNECT_ONLY` connection, which no handle has.
+///
+/// # Safety
+///
+/// As `curl_easy_recv`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_easy_send(
+    curl: *mut CURL,
+    buffer: *const c_void,
+    buflen: usize,
+    n: *mut usize,
+) -> CURLcode {
+    // SAFETY: as the caller guarantees.
+    unsafe { connect_only(curl, EasyCall::Send, buffer.is_null(), buflen, n) }
+}
+const _: ffi::proto::curl_easy_send = curl_easy_send;
+
+/// `curl_easy_recv` and `curl_easy_send` on a handle without a
+/// `CURLOPT_CONNECT_ONLY` connection: refused inside a callback, and
+/// otherwise `CURLE_UNSUPPORTED_PROTOCOL` with nothing moved.
+///
+/// # Safety
+///
+/// As `curl_easy_recv`.
+unsafe fn connect_only(
+    curl: *mut CURL,
+    call: EasyCall,
+    no_buffer: bool,
+    buflen: usize,
+    n: *mut usize,
+) -> CURLcode {
+    // SAFETY: as the caller guarantees.
+    let Some(easy) = (unsafe { handle(curl) }) else {
+        return CURLE_BAD_FUNCTION_ARGUMENT;
+    };
+    let Ok(_entry) = easy.enter(call) else {
+        return CURLE_RECURSIVE_API_CALL;
+    };
+    if n.is_null() || (buflen > 0 && no_buffer) {
+        return CURLE_BAD_FUNCTION_ARGUMENT;
+    }
+    // SAFETY: `n` points at a `size_t`, as the caller guarantees.
+    unsafe { n.write(0) };
+    ffi::CURLE_UNSUPPORTED_PROTOCOL
+}
+
 #[cfg(test)]
 #[allow(
     clippy::multiple_unsafe_ops_per_block,
@@ -764,68 +828,4 @@ mod tests {
             curl_easy_cleanup(curl);
         }
     }
-}
-
-/// Bytes from a `CURLOPT_CONNECT_ONLY` connection: no handle has one,
-/// as that option is not built in (`easy_connection`).
-///
-/// # Safety
-///
-/// `curl` is NULL or a live handle; `n` is NULL or points at a `size_t`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_easy_recv(
-    curl: *mut CURL,
-    buffer: *mut c_void,
-    buflen: usize,
-    n: *mut usize,
-) -> CURLcode {
-    // SAFETY: as the caller guarantees.
-    unsafe { connect_only(curl, EasyCall::Recv, buffer.is_null(), buflen, n) }
-}
-const _: ffi::proto::curl_easy_recv = curl_easy_recv;
-
-/// Bytes to a `CURLOPT_CONNECT_ONLY` connection, which no handle has.
-///
-/// # Safety
-///
-/// As `curl_easy_recv`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn curl_easy_send(
-    curl: *mut CURL,
-    buffer: *const c_void,
-    buflen: usize,
-    n: *mut usize,
-) -> CURLcode {
-    // SAFETY: as the caller guarantees.
-    unsafe { connect_only(curl, EasyCall::Send, buffer.is_null(), buflen, n) }
-}
-const _: ffi::proto::curl_easy_send = curl_easy_send;
-
-/// `curl_easy_recv` and `curl_easy_send` on a handle without a
-/// `CURLOPT_CONNECT_ONLY` connection: refused inside a callback, and
-/// otherwise `CURLE_UNSUPPORTED_PROTOCOL` with nothing moved.
-///
-/// # Safety
-///
-/// As `curl_easy_recv`.
-unsafe fn connect_only(
-    curl: *mut CURL,
-    call: EasyCall,
-    no_buffer: bool,
-    buflen: usize,
-    n: *mut usize,
-) -> CURLcode {
-    // SAFETY: as the caller guarantees.
-    let Some(easy) = (unsafe { handle(curl) }) else {
-        return CURLE_BAD_FUNCTION_ARGUMENT;
-    };
-    let Ok(_entry) = easy.enter(call) else {
-        return CURLE_RECURSIVE_API_CALL;
-    };
-    if n.is_null() || (buflen > 0 && no_buffer) {
-        return CURLE_BAD_FUNCTION_ARGUMENT;
-    }
-    // SAFETY: `n` points at a `size_t`, as the caller guarantees.
-    unsafe { n.write(0) };
-    ffi::CURLE_UNSUPPORTED_PROTOCOL
 }

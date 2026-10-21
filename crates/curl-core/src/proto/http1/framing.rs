@@ -444,6 +444,12 @@ pub(crate) fn content_type(line: &[u8]) -> Option<&[u8]> {
     fields::header_value(line).filter(|v| !v.is_empty())
 }
 
+/// Where a `Location:` line points, its blanks trimmed, perhaps empty.
+pub(crate) fn location(line: &[u8]) -> Option<&[u8]> {
+    value_of(line, b"Location:")?;
+    fields::header_value(line)
+}
+
 /// The longest wait `Retry-After` is taken to ask for: six hours.
 const MAX_RETRY_AFTER: u64 = 6 * 3600;
 

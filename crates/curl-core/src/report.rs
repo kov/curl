@@ -62,6 +62,9 @@ pub struct TransferReport {
     retry_after: Option<Duration>,
     /// The URL the transfer used, without its credentials, as text.
     url: Option<Vec<u8>>,
+    /// Where the last response's `Location:` points, resolved, when it
+    /// was not followed (`info.wouldredirect`).
+    redirect_url: Option<Vec<u8>>,
     /// The last `Content-Type:` a response gave, not empty
     /// (`info.contenttype`).
     content_type: Option<Vec<u8>>,
@@ -214,6 +217,16 @@ impl TransferReport {
         };
         self.url = Some(text);
         Ok(())
+    }
+
+    /// Where the response would have redirected to, had it been followed
+    /// (`CURLINFO_REDIRECT_URL`).
+    pub fn redirect_url(&self) -> Option<&[u8]> {
+        self.redirect_url.as_deref()
+    }
+
+    pub(crate) fn set_redirect_url(&mut self, url: Vec<u8>) {
+        self.redirect_url = Some(url);
     }
 
     /// Why the transfer failed, in the words of the first reason given.

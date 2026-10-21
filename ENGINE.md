@@ -482,7 +482,7 @@ before DID and none from Done on (§3.6).
 | ProtoConnect | Do | the protocol's connect is done (none has one yet) |
 | Do | Did / Done | `ProtoState::do_it` made the request; prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature, before DID |
 | Did | Exchanging / Done | Done at once if the protocol exchanges nothing more (`file:`, C's DID without sockets); an HTTP-family protocol yields once when more than one transfer is alive (C returns CURLM_OK there) |
-| Exchanging | Done | request complete with output not held, or a retry: `next` is Complete or Retry (Follow with redirects); FOLLOW_FAKE writes `report.would_redirect` |
+| Exchanging | Done | request complete with output not held, or a retry: `next` is Complete or Retry (Follow with redirects); FOLLOW_FAKE writes `report.redirect_url` |
 | connected | Done(Err) | progress callback abort |
 | any live | fail | an error, a timeout, `remove`, or a dead multi (AbortedByCallback) |
 | Done | (leg) / Completed | `multi_done`'s order; Retry (and Follow) start the next leg |
@@ -1425,10 +1425,17 @@ measurement says it matters.
 
 ### 6.4 Redirects and auth
 
-`http1::follow(&FinalHead, &Target, &FollowPolicy) -> Result<FollowDecision, Error>` builds the
-next `Target` whole; it replaces the old one, so no stale URL copy exists between the decision
-and the next leg (C's `state.up`). 301/302/303 method switching is a pure function of
-`(status, method, policy)`; FOLLOW_FAKE fills `report.would_redirect`; MAXREDIRS gives 47.
+The HTTP request keeps a response's `Location:` as the server gave it (`http_header_l`), on any
+response, interim ones too, checked before the line is traced: an empty one or a repeat is
+ignored, a different second one fails WeirdServerReply. Where it leads is resolved by
+`http1::follow` against the request's URL, parsed again from `Run::url` as C's `state.uh` was
+(credentials and all), never against the report's URL. A Location not followed is resolved at
+the end of a complete exchange, C's FOLLOW_FAKE: any scheme accepted, read back without
+credentials, or kept as given if it does not resolve, into `report.redirect_url`
+(`CURLINFO_REDIRECT_URL`); the report starts empty with each transfer. Planned with following:
+the next leg's URL replaces `Run::url` whole, so no stale copy exists between the decision and
+the leg (C's `state.url`); 301/302/303 method switching a function of `(status, method,
+policy)` held in the leg's state on `Run`; MAXREDIRS gives 47.
 Auth is `AuthState` on the `Run`: `input(challenge)`, `act(status) -> Option<Retry>`,
 `output(&CredentialGate) -> AuthHeaders`; stage 3 covers Basic, Digest and Bearer.
 

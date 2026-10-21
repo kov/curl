@@ -1521,3 +1521,48 @@ fn a_chunked_body_ends_with_its_trailers() {
             .contains(&"operation aborted by trailing headers callback\n".to_string())
     );
 }
+
+/// A response's `Location:`, not followed, is kept resolved for the
+/// application, whatever the status; an empty one or a repeat is
+/// ignored, and a different second one fails before it is traced.
+#[test]
+fn a_location_not_followed_is_kept_resolved() {
+    let reply = |headers: &str| {
+        format!("HTTP/1.1 201 Created\r\n{headers}Content-Length: 0\r\n\r\n").into_bytes()
+    };
+    let ran = run(
+        "/a/b",
+        &reply("Location:\r\nLocation: c d?x\r\nLocation:  c d?x \r\n"),
+        false,
+        |_| {},
+    );
+    assert_eq!(ran.result, Ok(()));
+    let shown = format!("http://127.0.0.1:{PORT}/a/c%20d?x");
+    assert_eq!(ran.easy.report().redirect_url(), Some(shown.as_bytes()));
+
+    let ran = run("/", &reply(""), false, |_| {});
+    assert_eq!(ran.easy.report().redirect_url(), None);
+
+    let ran = run(
+        "/",
+        &reply("Location: /one\r\nLocation: /two\r\n"),
+        false,
+        |_| {},
+    );
+    assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply));
+    let text = ran.seen.text();
+    assert!(
+        text.contains(&"Multiple Location headers\n".to_string()),
+        "{text:?}"
+    );
+    let traced = ran.seen.of("in");
+    assert!(
+        traced.iter().any(|l| l.starts_with(b"Location: /one")),
+        "the first is traced"
+    );
+    assert!(
+        !traced.iter().any(|l| l.starts_with(b"Location: /two")),
+        "the second is refused before it is traced"
+    );
+    assert_eq!(ran.easy.report().redirect_url(), None);
+}

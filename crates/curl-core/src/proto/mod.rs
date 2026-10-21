@@ -195,6 +195,16 @@ impl ProtoState {
         }
     }
 
+    /// Where the response's `Location:` points, as the server gave it.
+    pub(crate) fn location(&self) -> Option<&[u8]> {
+        match *self {
+            ProtoState::Http(ref r) => r.location(),
+            ProtoState::File(_) => None,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+
     /// Whether the request holds output for the application.
     pub(crate) fn holds_output(&self) -> bool {
         match *self {

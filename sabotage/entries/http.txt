@@ -194,10 +194,24 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_head_s_end_fails_around_its_blank_line
 --- old
         let early = line.early.map_err(|e| head_failed(cx, &e));
+        // Before the line is traced, as `http_header` comes first.
+        if early.is_ok()
+            && line.kind == LineKind::Header
+            && let Some(given) = framing::location(line.bytes)
+        {
+            keep_location(cx, location, given)?;
+        }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
 --- new
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
         let early = line.early.map_err(|e| head_failed(cx, &e));
+        // Before the line is traced, as `http_header` comes first.
+        if early.is_ok()
+            && line.kind == LineKind::Header
+            && let Some(given) = framing::location(line.bytes)
+        {
+            keep_location(cx, location, given)?;
+        }
 
 === failing on errors starts at 500
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -591,3 +605,60 @@ witness: curl-core proto::http1::chunked::tests::encodes_pieces_as_chunks
             self.buf.try_extend_from_slice(trailers)?;
 --- new
             let _ = trailers;
+
+=== an empty Location is kept
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_location_not_followed_is_kept_resolved
+--- old
+        _ if given.is_empty() => Ok(()),
+--- new
+        _ if false => Ok(()),
+
+=== a repeated Location fails the request
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_location_not_followed_is_kept_resolved
+--- old
+        Some(k) if k == given => Ok(()),
+--- new
+        Some(k) if k.is_empty() => Ok(()),
+
+=== a Location is checked after its line is traced
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_location_not_followed_is_kept_resolved
+--- old
+            keep_location(cx, location, given)?;
+        }
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+--- new
+        }
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+        if early.is_ok()
+            && line.kind == LineKind::Header
+            && let Some(given) = framing::location(line.bytes)
+        {
+            keep_location(cx, location, given)?;
+        }
+
+=== a Location not followed is not kept
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_location_not_followed_is_kept_resolved
+--- old
+    cx.report_mut().set_redirect_url(url);
+--- new
+    let _ = url;
+
+=== the redirect URL keeps its credentials
+file: crates/curl-core/src/proto/http1/follow.rs
+witness: curl-core proto::http1::follow::tests::resolves_against_the_request_without_credentials
+--- old
+        .and_then(|()| bare.set(Part::User, None, SetOptions::NONE))
+--- new
+        .and_then(|()| Ok(()))
+
+=== a Location that does not resolve is dropped
+file: crates/curl-core/src/proto/http1/follow.rs
+witness: curl-core proto::http1::follow::tests::resolves_against_the_request_without_credentials
+--- old
+        Err(_) => return copied(location),
+--- new
+        Err(e) => return Err(url_error(e)),

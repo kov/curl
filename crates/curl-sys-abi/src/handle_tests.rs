@@ -932,12 +932,14 @@ fn infos_answer_from_the_report() {
         info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL),
         effective
     );
+    // No response pointed elsewhere.
+    assert!(info::<*const c_char>(c, ffi::CURLINFO_REDIRECT_URL).is_null());
     // An info not answered yet, and one of no type.
     let mut v: c_long = 0;
     // SAFETY: a live handle and a `long` to write.
     unsafe {
         assert_eq!(
-            curl_easy_getinfo(c, ffi::CURLINFO_REDIRECT_URL, &raw mut v),
+            curl_easy_getinfo(c, ffi::CURLINFO_FTP_ENTRY_PATH, &raw mut v),
             CURLE_UNKNOWN_OPTION
         );
         assert_eq!(

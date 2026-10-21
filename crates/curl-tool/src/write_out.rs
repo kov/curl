@@ -51,6 +51,8 @@ enum Var {
     },
     /// The URL the transfer used.
     UrlEffective,
+    /// Where the last response's `Location:` would have led.
+    RedirectUrl,
     /// The number of the URL on the command line, from 0.
     UrlNum,
     /// The output file, if any.
@@ -133,7 +135,7 @@ const VARIABLES: &[Variable] = &[
     written("onerror", Var::OnError),
     known("proxy_ssl_verify_result"),
     known("proxy_used"),
-    known("redirect_url"),
+    written("redirect_url", Var::RedirectUrl),
     known("referer"),
     written("remote_ip", Var::RemoteIp),
     written("remote_port", Var::RemotePort),
@@ -448,6 +450,10 @@ fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()
         },
         Var::ContentType => match r.content_type() {
             Some(media) => out.write_all(media),
+            None => Ok(()),
+        },
+        Var::RedirectUrl => match r.redirect_url() {
+            Some(url) => out.write_all(url),
             None => Ok(()),
         },
         Var::LocalIp => match r.primary().and_then(|ends| ends.local) {

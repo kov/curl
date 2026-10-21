@@ -4,6 +4,7 @@ pub(crate) mod chunked;
 pub(crate) mod fields;
 #[cfg(test)]
 pub(crate) mod fixture;
+pub(crate) mod follow;
 pub(crate) mod framing;
 pub(crate) mod request;
 pub(crate) mod response;

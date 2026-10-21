@@ -139,6 +139,11 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
             Some(media) => string(kept(&easy.content_type, media)),
             None => Value::Ptr(core::ptr::null_mut()),
         },
+        // None when no response pointed elsewhere, or one was followed.
+        ffi::CURLINFO_REDIRECT_URL => match r.redirect_url() {
+            Some(url) => string(kept(&easy.redirect_url, url)),
+            None => Value::Ptr(core::ptr::null_mut()),
+        },
         // Empty, and ports of -1, before any connection.
         ffi::CURLINFO_PRIMARY_IP => match r.primary() {
             Some(ends) => {

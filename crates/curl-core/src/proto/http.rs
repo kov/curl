@@ -89,6 +89,8 @@ pub(crate) struct Request {
     stage: Stage,
     /// The current response is interim (1xx).
     interim: bool,
+    /// Where a response's `Location:` points, as given (`req.location`).
+    location: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -187,6 +189,7 @@ impl Request {
             head: None,
             stage: Stage::Head,
             interim: false,
+            location: None,
         })
     }
 
@@ -200,6 +203,10 @@ impl Request {
 
     pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
         &mut self.pipeline
+    }
+
+    pub(crate) fn location(&self) -> Option<&[u8]> {
+        self.location.as_deref()
     }
 
     pub(crate) fn holds_output(&self) -> bool {
@@ -646,6 +653,7 @@ impl Request {
             pipeline,
             head,
             interim,
+            location,
             ..
         } = self;
         let head = head.as_mut().expect("made at DO");
@@ -676,6 +684,13 @@ impl Request {
             trace::info(cx, format_args!("{note}"));
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
+        // Before the line is traced, as `http_header` comes first.
+        if early.is_ok()
+            && line.kind == LineKind::Header
+            && let Some(given) = framing::location(line.bytes)
+        {
+            keep_location(cx, location, given)?;
+        }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
         let origin = if *interim {
             HeaderOrigin::Interim
@@ -946,6 +961,28 @@ impl Request {
             ));
         }
         Ok(())
+    }
+}
+
+/// A response's `Location:` (`http_header_l`): an empty one or a repeat
+/// of the one kept is ignored, and a different one fails the request.
+fn keep_location<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    kept: &mut Option<Vec<u8>>,
+    given: &[u8],
+) -> Result<(), ErrorKind> {
+    match kept {
+        _ if given.is_empty() => Ok(()),
+        Some(k) if k == given => Ok(()),
+        Some(_) => Err(trace::fail(
+            cx,
+            ErrorKind::WeirdServerReply,
+            format_args!("Multiple Location headers"),
+        )),
+        None => {
+            *kept = Some(copied(given)?);
+            Ok(())
+        }
     }
 }
 

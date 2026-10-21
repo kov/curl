@@ -20,6 +20,7 @@ use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::{Lines, Options, ResolveList};
 use crate::progress::{self, Speedometer};
+use crate::proto::http1::follow;
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Ends, Starts, Timer, TransferReport};
 use crate::text::Text;
@@ -671,10 +672,17 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                     Wake::Again,
                                 )
                             } else if done {
-                                (
-                                    TransferState::Done(x.done(Ok(()), false, Reached::Exchanged)),
-                                    Wake::Again,
-                                )
+                                match keep_redirect_url(run, &x, cx) {
+                                    Ok(()) => (
+                                        TransferState::Done(x.done(
+                                            Ok(()),
+                                            false,
+                                            Reached::Exchanged,
+                                        )),
+                                        Wake::Again,
+                                    ),
+                                    Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
+                                }
                             } else {
                                 (TransferState::Exchanging(x), Wake::Idle)
                             }
@@ -1230,6 +1238,28 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
             cx.easy_mut().wildcard_resolve = true;
         }
     }
+    Ok(())
+}
+
+/// Where a response's `Location:` would have led, kept for the
+/// application, as C's `FOLLOW_FAKE` keeps it at the end of the exchange.
+fn keep_redirect_url<H: Host>(
+    run: &Run,
+    x: &Attached,
+    cx: &mut StepCx<'_, H>,
+) -> Result<(), ErrorKind> {
+    let Some(location) = x.proto.location() else {
+        return Ok(());
+    };
+    // The request's URL as it was parsed for it (C's `state.uh`).
+    let base = match parse_url(&run.url, cx.easy().options()) {
+        Ok(base) => base,
+        Err(UrlRefused::Rejected(e)) => return Err(url_error(e)),
+        Err(UrlRefused::Failed(kind)) => return Err(kind),
+    };
+    let path_as_is = cx.easy().options().url_rules.path_as_is;
+    let url = follow::would_redirect(base, location, path_as_is)?;
+    cx.report_mut().set_redirect_url(url);
     Ok(())
 }
 

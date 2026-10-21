@@ -37,9 +37,11 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
   callbacks hand the event loop to the application, so the core cannot own one.
 - **No async runtime and no threads of our own** beyond those the C library uses for the same
   job.
-- **Protocols are sans-IO state machines.** Each one consumes received bytes and the current
-  time, and produces bytes to send, events for the transfer, and what it waits for next
-  (readable, writable, a deadline). Only the multi loop touches sockets.
+- **Parsers are sans-IO; drivers do I/O only through a connection.** A protocol's parsers and
+  renderers (`proto/http1/`) consume bytes and the current time and produce bytes and events,
+  with no I/O. Its driver (`proto/http.rs`) sends and receives through the leased `Conn` only,
+  never a socket, and reports what it waits for next; only the multi loop and the pool touch
+  sockets.
 - **`curl_easy_perform` runs a private multi loop**, as in C.
 - **Protocols are testable without a network.** Unit tests feed bytes and a clock, with no
   sockets and no sleeps.
@@ -146,9 +148,10 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   checks hundreds of cases. WHATWG-based crates parse differently.
 - **The Rust API has typed setters.** An option takes its real type (`Duration`, an enum, a
   `Url`), and related options form a config struct. No setter takes an option id.
-  - The C ABI's `CURLoption` → setter dispatch is **generated** from `inventory/options.json`,
-    as is the `curl_easy_option_*` metadata table. Ids, types, aliases and deprecation flags
-    therefore have one source.
+  - The C ABI's `CURLoption` → setter dispatch is matched by hand in the shim, each option
+    checked as setopt.c checks it. The ids libcurl knows are generated from
+    `inventory/options.json` (`gen/setopt.py`), so an id the shim lacks answers
+    `CURLE_NOT_BUILT_IN` and an unknown one `CURLE_UNKNOWN_OPTION`.
 - **Errors:** one `Error` type per API (easy, multi, share, URL), each carrying an error kind
   and an optional detail message.
   - The shim maps each kind to its `CURLcode` with a `match` that has no wildcard, so a new
@@ -162,9 +165,11 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   read info or headers and change options of any transfer in the multi; socket and timer
   callbacks may not pause; notification callbacks may also add and remove. The shim routes a
   re-entrant C call through the live context, by a table generated from `lib/api.c`.
-- **When an option is read is recorded.** C reads options live, so a setopt during a transfer
-  takes effect per piece, per request or per transfer depending on the option. Which applies is
-  recorded per option in `inventory/options.json`, and the generated dispatch follows it.
+- **Options are read when C reads them.** C reads options live, so a setopt during a transfer
+  takes effect per piece, per request or per transfer depending on the option. The core reads
+  each option where C does (handlers at each call, limits at the transfer's start); an option
+  whose C storage the application may change after setopt is copied at setopt instead
+  (`CURLOPT_HTTPHEADER`'s list).
 - **Strings handed to C belong to the shim.** It keeps NUL-terminated copies with the lifetime
   the C API promises (`CURLINFO_EFFECTIVE_URL` lives until the next transfer or cleanup), so
   the core never stores C-shaped strings.

@@ -179,10 +179,11 @@ yet meet.
     points (`fdset` and `waitfds` list no sockets until step 11). A handler explains its own
     failure (`TransferCx::fail`) and the core adds no reason of its own. Flips: 502, 751, 1508,
     1550, 1558, 1564, 1592, 1791, 2414, 3105. Left for the options and steps that need them:
-    `CURLINFO_EFFECTIVE_URL` (1990), the debug build's `CURL_TIME` getinfo override, C's
-    "boolean setopt got unsupported argument" text, multi calls from a transfer's own callback
-    (`info_read` and the counts answer `RECURSIVE_API_CALL`), `curl_easy_perform_ev`, and the
-    multi options past the timer and notify callbacks.
+    the debug build's `CURL_TIME` getinfo override, C's "boolean setopt got unsupported
+    argument" text, multi calls from a transfer's own callback (`info_read` and the counts
+    answer `RECURSIVE_API_CALL`), a setopt from the timer callback during `curl_multi_add_handle`
+    (`RECURSIVE_API_CALL`, where C allows it), `curl_easy_perform_ev`, and the multi options
+    past the timer and notify callbacks.
 
 **HTTP/1.1 GET**
 

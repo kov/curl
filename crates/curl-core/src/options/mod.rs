@@ -296,6 +296,9 @@ pub struct ReuseLimits {
     pub forbid: bool,
     /// `CURLOPT_FRESH_CONNECT`: a new connection, not an idle one.
     pub fresh: bool,
+    /// `CURLOPT_DNS_CACHE_TIMEOUT`: how long a name's answer is kept, 60
+    /// seconds unless set; none for ever.
+    pub dns_max_age: Option<Duration>,
 }
 
 impl Default for ReuseLimits {
@@ -306,6 +309,7 @@ impl Default for ReuseLimits {
             max_connects: NonZeroU32::new(5).expect("not zero"),
             forbid: false,
             fresh: false,
+            dns_max_age: Some(Duration::from_secs(60)),
         }
     }
 }

@@ -1706,6 +1706,31 @@ fn the_resolver_s_answers_are_kept() {
     assert_eq!(lines[0], "Hostname v4.test was found in DNS cache\n");
 }
 
+/// A transfer may keep answers for ever (`CURLOPT_DNS_CACHE_TIMEOUT` of
+/// -1): neither its lookup nor its end finds them stale.
+#[test]
+fn answers_may_be_kept_for_ever() {
+    let (mut m, clock) = networked();
+    let run = |m: &mut Multi, url: &str| {
+        let (mut e, lines) = traced(url);
+        e.options_mut().limits.reuse.dns_max_age = None;
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
+            .unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(messages(m).last().unwrap().1, Ok(()));
+        m.remove(id, &mut NoEvents).unwrap();
+        trace_of(&lines)
+    };
+    run(&mut m, "tcp://localhost:1/");
+    clock.advance(Duration::from_secs(119));
+    // Its end would drop what has gone stale.
+    run(&mut m, "tcp://127.0.0.1:4/");
+    let again = run(&mut m, "tcp://localhost:1/");
+    assert_eq!(again[0], "Hostname localhost was found in DNS cache\n");
+}
+
 /// An entry the list cannot be read with fails the transfer, and the list
 /// is read again by the next.
 #[test]

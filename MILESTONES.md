@@ -336,7 +336,7 @@ cargo-mutants run on the milestone's diff.
     MAXLIFETIME_CONN (tests 1506, 1510, 1542); the per-host and total limits, a transfer
     waiting for room in `Pending` (test 1557); FORBID_REUSE and FRESH_CONNECT; the
     getaddrinfo resolver, with negative answers kept and the resolver's reason in a failure
-    (test 241). To do: `CURLOPT_DNS_CACHE_TIMEOUT`; the grouping of the multi's tables.
+    (test 241); `CURLOPT_DNS_CACHE_TIMEOUT`. To do: the grouping of the multi's tables.
     Tests 3231 and 3232 wait for CONNECT_ONLY.
 24. **tool: the T1 ring.** **To do.** The `-w` variables, `--fail-with-body`, `-#` and
     `--stderr`, with the report fields they read.

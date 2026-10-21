@@ -59,10 +59,6 @@ impl Answer {
     }
 }
 
-/// How long an entry found by resolving is good for
-/// (`CURLOPT_DNS_CACHE_TIMEOUT`'s default).
-pub(crate) const CACHE_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// The most entries kept (`MAX_DNS_CACHE_SIZE`).
 const MAX_ENTRIES: usize = 29999;
 
@@ -101,14 +97,14 @@ impl DnsCache {
     }
 
     /// What is kept for `name` and `port`, or for any name on the port if
-    /// `wildcard` (`fetch_entry`), if it answers for `family`: a stale
-    /// entry is dropped.
+    /// `wildcard` (`fetch_entry`), if it answers for `family`: an entry
+    /// older than `max_age` is dropped, none for ever.
     pub(crate) fn lookup(
         &mut self,
-        name: &[u8],
-        port: u16,
+        (name, port): (&[u8], u16),
         family: Family,
         wildcard: bool,
+        max_age: Option<Duration>,
         now: Instant,
     ) -> Lookup {
         let row = self
@@ -117,7 +113,9 @@ impl DnsCache {
         let Some(row) = row else {
             return Lookup::Missing;
         };
-        if self.entries[row].stale(now) {
+        if let Some(max_age) = max_age
+            && self.entries[row].stale_at(now, max_age)
+        {
             self.entries.remove(row);
             return Lookup::Stale;
         }
@@ -161,10 +159,13 @@ impl DnsCache {
         }
     }
 
-    /// Drop the entries gone stale by `now` (`Curl_dnscache_prune`); while
-    /// over the most kept, those over half the oldest's age.
-    pub(crate) fn prune(&mut self, now: Instant) {
-        let mut max_age = CACHE_TIMEOUT;
+    /// Drop the entries older than `max_age` by `now`
+    /// (`Curl_dnscache_prune`); while over the most kept, those over half
+    /// the oldest's age. None keeps them for ever.
+    pub(crate) fn prune(&mut self, now: Instant, max_age: Option<Duration>) {
+        let Some(mut max_age) = max_age else {
+            return;
+        };
         loop {
             self.entries.retain(|e| !e.stale_at(now, max_age));
             if self.entries.len() <= MAX_ENTRIES {
@@ -174,7 +175,7 @@ impl DnsCache {
                 .entries
                 .iter()
                 .filter(|e| !e.permanent)
-                .map(|e| now.since(e.added))
+                .map(|e| e.age(now))
                 .max()
                 .unwrap_or_default();
             max_age = oldest / 2;
@@ -186,12 +187,19 @@ impl DnsCache {
 }
 
 impl Entry {
-    fn stale(&self, now: Instant) -> bool {
-        self.stale_at(now, CACHE_TIMEOUT)
+    fn stale_at(&self, now: Instant, max_age: Duration) -> bool {
+        !self.permanent && self.age(now) >= max_age
     }
 
-    fn stale_at(&self, now: Instant, max_age: Duration) -> bool {
-        !self.permanent && now.since(self.added) >= max_age
+    /// How old the entry is by `now`: one saying the name does not exist
+    /// ages twice as fast (`dnscache_entry_is_stale`).
+    fn age(&self, now: Instant) -> Duration {
+        let age = now.since(self.added);
+        if self.answer.addrs.is_empty() {
+            age.saturating_mul(2)
+        } else {
+            age
+        }
     }
 }
 
@@ -367,6 +375,8 @@ mod tests {
     use super::*;
     use crate::time::{Clock as _, ManualClock};
 
+    const MAX_AGE: Option<Duration> = Some(Duration::from_secs(60));
+
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
     }
@@ -453,6 +463,49 @@ mod tests {
         );
     }
 
+    /// The cache's timeout may keep answers for ever, or not past the
+    /// moment they were found; an answer that a name does not exist ages
+    /// twice as fast (`dnscache_entry_is_stale`).
+    #[test]
+    fn the_cache_s_timeout_decides_what_is_stale() {
+        let clock = ManualClock::new().unwrap();
+        let now = clock.now();
+        let answer = |name: &[u8], addrs: Vec<IpAddr>| {
+            TryRc::try_new(Answer::new(name, addrs).unwrap()).unwrap()
+        };
+        let mut cache = DnsCache::default();
+        cache
+            .put(answer(b"a", vec![ip("1.2.3.4")]), 1, now, false)
+            .unwrap();
+        cache
+            .put(answer(b"none", Vec::new()), 1, now, false)
+            .unwrap();
+        let mut look =
+            |name: &[u8], max_age, at| cache.lookup((name, 1), Family::Any, false, max_age, at);
+        let half = now.after(Duration::from_secs(30));
+        assert!(matches!(look(b"a", MAX_AGE, half), Lookup::Found(_)));
+        assert!(matches!(look(b"none", MAX_AGE, half), Lookup::Stale));
+        let years = now.after(Duration::from_secs(1 << 30));
+        assert!(matches!(look(b"a", None, years), Lookup::Found(_)));
+        assert!(matches!(
+            look(b"a", Some(Duration::ZERO), now),
+            Lookup::Stale
+        ));
+        cache
+            .put(answer(b"a", vec![ip("1.2.3.4")]), 1, now, false)
+            .unwrap();
+        cache.prune(years, None);
+        assert!(matches!(
+            cache.lookup((b"a", 1), Family::Any, false, MAX_AGE, now),
+            Lookup::Found(_)
+        ));
+        cache.prune(now, Some(Duration::ZERO));
+        assert!(matches!(
+            cache.lookup((b"a", 1), Family::Any, false, MAX_AGE, now),
+            Lookup::Missing
+        ));
+    }
+
     /// The cache keeps an answer by name, in any case, and port; a
     /// wildcard answers for any name; an entry not given for good goes
     /// stale after the cache's timeout.
@@ -465,11 +518,11 @@ mod tests {
         let mut cache = DnsCache::default();
         assert!(!cache.put(answer(b"Example.com"), 80, now, false).unwrap());
         assert!(matches!(
-            cache.lookup(b"example.COM", 80, Family::Any, false, now),
+            cache.lookup((b"example.COM", 80), Family::Any, false, MAX_AGE, now),
             Lookup::Found(_)
         ));
         assert!(matches!(
-            cache.lookup(b"example.com", 81, Family::Any, false, now),
+            cache.lookup((b"example.com", 81), Family::Any, false, MAX_AGE, now),
             Lookup::Missing
         ));
         assert!(
@@ -478,34 +531,35 @@ mod tests {
         );
         assert!(!cache.put(answer(b"*"), 81, now, true).unwrap());
         assert!(matches!(
-            cache.lookup(b"other", 81, Family::Any, false, now),
+            cache.lookup((b"other", 81), Family::Any, false, MAX_AGE, now),
             Lookup::Missing
         ));
-        let Lookup::Found(any) = cache.lookup(b"other", 81, Family::Any, true, now) else {
+        let Lookup::Found(any) = cache.lookup((b"other", 81), Family::Any, true, MAX_AGE, now)
+        else {
             panic!("the wildcard");
         };
         assert_eq!(any.name(), b"*");
-        let later = now.after(CACHE_TIMEOUT);
+        let later = now.after(MAX_AGE.unwrap());
         assert!(matches!(
-            cache.lookup(b"example.com", 80, Family::Any, false, later),
+            cache.lookup((b"example.com", 80), Family::Any, false, MAX_AGE, later),
             Lookup::Stale
         ));
         assert!(matches!(
-            cache.lookup(b"example.com", 80, Family::Any, false, later),
+            cache.lookup((b"example.com", 80), Family::Any, false, MAX_AGE, later),
             Lookup::Missing
         ));
         assert!(
             matches!(
-                cache.lookup(b"*", 81, Family::Any, false, later),
+                cache.lookup((b"*", 81), Family::Any, false, MAX_AGE, later),
                 Lookup::Found(_)
             ),
             "for good"
         );
         assert!(cache.put(answer(b"a"), 1, now, false).is_ok());
-        cache.prune(later);
+        cache.prune(later, MAX_AGE);
         assert!(
             matches!(
-                cache.lookup(b"a", 1, Family::Any, false, now),
+                cache.lookup((b"a", 1), Family::Any, false, MAX_AGE, now),
                 Lookup::Missing
             ),
             "pruned"

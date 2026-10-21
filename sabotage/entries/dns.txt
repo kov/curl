@@ -21,9 +21,9 @@ witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
-        !self.permanent && now.since(self.added) >= max_age
+        !self.permanent && self.age(now) >= max_age
 --- new
-        !self.permanent && now.since(self.added) >= max_age * 1000
+        !self.permanent && self.age(now) >= max_age * 1000
 
 === the cache is not looked in
 file: crates/curl-core/src/conn/connect.rs
@@ -50,10 +50,9 @@ witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
-            cx.rest.dns.prune(cx.rest.now);
-            release(cx, d.lease, premature, d.origin.as_ref());
+            cx.rest.dns.prune(cx.rest.now, max_age);
 --- new
-            release(cx, d.lease, premature, d.origin.as_ref());
+            let _ = max_age;
 
 === a resolve list is read by every transfer
 file: crates/curl-core/src/multi/state.rs
@@ -97,3 +96,31 @@ witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- new
         let _ = (name, family);
         Err(ResolveFailure::NotFound)
+
+=== a negative answer ages as an answer does
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::the_cache_s_timeout_decides_what_is_stale
+--- old
+            age.saturating_mul(2)
+--- new
+            age
+
+=== a setup never reads the cache's timeout
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::answers_may_be_kept_for_ever
+--- old
+    let max_age = cx.easy().options().limits.reuse.dns_max_age;
+    let (pool, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+--- new
+    let max_age = Some(std::time::Duration::from_secs(60));
+    let (pool, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+
+=== a transfer's end never reads the cache's timeout
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::answers_may_be_kept_for_ever
+--- old
+            let max_age = cx.easy().options().limits.reuse.dns_max_age;
+            cx.rest.dns.prune(cx.rest.now, max_age);
+--- new
+            let max_age = Some(std::time::Duration::from_secs(60));
+            cx.rest.dns.prune(cx.rest.now, max_age);

@@ -236,6 +236,16 @@ fn http_options_reach_the_request() {
         long(c, ffi::CURLOPT_MAXAGE_CONN, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
+    assert_eq!(reuse(c).dns_max_age, Some(Duration::from_secs(60)));
+    assert_eq!(long(c, ffi::CURLOPT_DNS_CACHE_TIMEOUT, 0), CURLE_OK);
+    assert_eq!(reuse(c).dns_max_age, Some(Duration::ZERO));
+    assert_eq!(long(c, ffi::CURLOPT_DNS_CACHE_TIMEOUT, -1), CURLE_OK);
+    assert_eq!(reuse(c).dns_max_age, None);
+    assert_eq!(
+        long(c, ffi::CURLOPT_DNS_CACHE_TIMEOUT, -2),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(reuse(c).dns_max_age, None, "unchanged");
     assert_eq!(long(c, ffi::CURLOPT_FORBID_REUSE, 2), CURLE_OK);
     assert_eq!(long(c, ffi::CURLOPT_FRESH_CONNECT, 1), CURLE_OK);
     assert!(reuse(c).forbid && reuse(c).fresh);

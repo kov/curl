@@ -696,7 +696,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 d.result = Err(e);
                 premature |= is_premature(d.result);
             }
-            cx.rest.dns.prune(cx.rest.now);
+            let max_age = cx.easy().options().limits.reuse.dns_max_age;
+            cx.rest.dns.prune(cx.rest.now, max_age);
             release(cx, d.lease, premature, d.origin.as_ref());
             // The request moves nothing more (`Curl_req_stop_send_recv`).
             *cx.directions_mut() = Directions::default();
@@ -810,10 +811,12 @@ fn connecting<H: Host>(
     }
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
+    let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let (pool, mut net, dns) = cx.rest.pool_net_dns(cx.me);
     let setup = Setup {
         dns,
         wildcard,
+        max_age,
         delay,
     };
     let connected = pool.connect(&c.lease, &mut net, now, setup);

@@ -244,6 +244,15 @@ fn apply(
         (ffi::CURLOPT_MAXLIFETIME_CONN, Long(n)) => {
             options.limits.reuse.max_age = time_limit(n, 1000)?;
         }
+        (ffi::CURLOPT_DNS_CACHE_TIMEOUT, Long(n)) => {
+            // -1 keeps answers for ever; any other negative is refused.
+            options.limits.reuse.dns_max_age = match n {
+                -1 => None,
+                n => Some(std::time::Duration::from_secs(
+                    u64::try_from(n).map_err(|_| Refused::Bad)?,
+                )),
+            };
+        }
         (ffi::CURLOPT_FORBID_REUSE, Long(n)) => options.limits.reuse.forbid = n != 0,
         (ffi::CURLOPT_FRESH_CONNECT, Long(n)) => options.limits.reuse.fresh = n != 0,
         (ffi::CURLOPT_MAXCONNECTS, Long(n)) => {

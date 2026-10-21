@@ -31,6 +31,7 @@ fn connect(
     let setup = Setup {
         dns: &mut DnsCache::default(),
         wildcard: false,
+        max_age: Some(Duration::from_secs(60)),
         delay: Duration::from_millis(200),
     };
     pool.connect(lease, net, now, setup)

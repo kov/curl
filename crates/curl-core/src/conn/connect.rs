@@ -60,6 +60,8 @@ pub(crate) struct Setup<'a> {
     pub(crate) dns: &'a mut DnsCache,
     /// A `*` entry answers for any name (C's `wildcard_resolve`).
     pub(crate) wildcard: bool,
+    /// How long an answer is kept (`CURLOPT_DNS_CACHE_TIMEOUT`).
+    pub(crate) max_age: Option<Duration>,
     /// The happy eyeballs delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`).
     pub(crate) delay: Duration,
 }
@@ -338,7 +340,10 @@ impl ConnectMachine {
             IpVersion::V4 => Family::V4,
             IpVersion::V6 => Family::V6,
         };
-        let found = match setup.dns.lookup(name, port, family, setup.wildcard, now) {
+        let found = match setup
+            .dns
+            .lookup((name, port), family, setup.wildcard, setup.max_age, now)
+        {
             Lookup::Found(answer) => return Ok((answer, Found::Cached)),
             Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
             Lookup::Stale => Found::Stale,
@@ -526,6 +531,7 @@ mod tests {
             let setup = Setup {
                 dns: &mut DnsCache::default(),
                 wildcard: false,
+                max_age: Some(Duration::from_secs(60)),
                 delay: he,
             };
             match m.drive(&mut net, clock.now(), setup) {
@@ -577,6 +583,7 @@ mod tests {
             let setup = Setup {
                 dns: &mut dns,
                 wildcard: false,
+                max_age: Some(Duration::from_secs(60)),
                 delay: he,
             };
             match m.drive(&mut net, clock.now(), setup).unwrap() {

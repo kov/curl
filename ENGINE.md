@@ -1052,9 +1052,10 @@ in for its names too; the trait comes with c-ares, the first resolver that answe
 any case, and port, each a `TryRc<Answer>` that the connect machine using it shares, recording
 the family asked (`dns_queries`): an answer for one family is no answer for both. A setup
 looks in the cache first (`hostip_resolv`), then asks the shortcuts, then the resolver, and
-keeps what they answer for the cache's timeout (60 seconds; the option is still to come). That
-a name does not exist, or has no address of the family asked, is kept too, as an answer with no
-addresses ("Negative DNS entry"); that the resolver could not answer is not. A failure gives
+keeps what they answer for the cache's timeout (`CURLOPT_DNS_CACHE_TIMEOUT`, the transfer's: 60
+seconds unless set, for ever at -1). That a name does not exist, or has no address of the family
+asked, is kept too, as an answer with no addresses ("Negative DNS entry"), which ages twice as
+fast; that the resolver could not answer is not. A failure gives
 the reference build's reason, c-ares's ("Domain name not found"), then fails again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
 stamp it last read); they are permanent unless given with `+`, and `*` answers for any name on

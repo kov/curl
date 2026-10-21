@@ -237,9 +237,12 @@ yet meet.
     - **a. Field helpers.** **Done.** `proto/http1/fields.rs`: a header's value
       (`Curl_copy_header_value`, unit 1626), whether it lists a token (`Curl_compareheader`,
       unit 1625), and whether a line is one (`Curl_verify_header`).
-    - **b. Lines and the status line.** **To do.** Line assembly over any split, folding,
-      the HTTP/0.9 decision, the status line's grammar, the per-response and per-transfer
-      header budgets, events in `http_rw_hd`'s order.
+    - **b. Lines and the status line.** **Done.** `proto/http1/response.rs`: `HeadParser`
+      assembles lines over any split, joins folds, decides HTTP/0.9, reads the status line
+      and counts the request's and the transfer's head bytes, giving out one line at a time
+      in `http_rw_hd`'s order. Tests feed 1274, 1430–1433, 1466 and 497 whole, split at every
+      byte and a byte at a time; the status-line and bad-line cases were checked against the
+      C binary.
     - **c. What the headers say, and the framing.** **To do.** Content-Length,
       Transfer-Encoding and Connection applied as each header arrives, with C's gates; the
       framing folded from them at the blank line; max-filesize at the head.

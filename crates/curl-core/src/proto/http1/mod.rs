@@ -7,4 +7,7 @@
 )]
 
 pub(crate) mod fields;
+#[cfg(test)]
+mod fixture;
 pub(crate) mod request;
+pub(crate) mod response;

@@ -1214,21 +1214,30 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
 ### 6.2 Response
 
 ```rust
-pub struct ResponseHeadParser { line: LineAssembler /* 100 KiB cap, fold state inside */,
-                                lines: u32, budget: HeaderBudget }
-pub enum HeadEvent<'b> { Status(StatusLine), Header(HeaderLine<'b>), Interim(u16), Final(FinalHead), Http09 }
-pub struct FinalHead { status: u16, version: H1Version, framing: BodyFraming, close: bool }
+pub(crate) struct HeadParser { line: Vec<u8> /* 100 KiB less a byte */, maybe_folded, unfolding,
+                               lines: u32, status: Option<Status>, request_bytes: u64, .. }
+pub(crate) enum HeadEvent<'a> { Line(Line<'a>), Http09(&'a [u8]) }
+pub(crate) struct Line<'a> { bytes: &'a [u8], kind: LineKind, then: Result<(), HeadError> }
+pub(crate) enum LineKind { Status(Status), Header, End { interim: bool } }
 pub enum BodyFraming { None, Length(u64), Chunked, UntilClose }
 fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOptions)
     -> Result<BodyFraming, Error>;
 ```
 
-- `feed(&mut self, bytes, now) -> Result<(usize, Option<HeadEvent>), Error>` is pure: complete
-  lines are borrowed from `conn.rx`; only a split or folded line is copied into the assembler.
-  Folding state lives in the assembler, not in transfer state (1274).
-- Per line: `verify_header` (NUL, stray CR, missing colon → 8); trace HEADER_IN; the header
-  handler; `include_header` output; the `HeaderStore`; size accounting; the facts that decide
-  framing are recorded in `ResponseMeta`.
+- `feed(&mut self, input, &mut transfer_bytes) -> Result<(usize, Option<HeadEvent>), HeadError>`
+  is pure and gives out at most one line per call, assembled in the parser's own buffer as C's
+  `headerb` is (a line over 100 KiB less a byte is `TooLarge`, silently). Folding lives in the
+  parser, not in transfer state (1274): a header line at the end of the input waits for the next
+  byte, and a blank-led continuation is joined by one space.
+- A line is given out only once it is good: the status line read (and the version checked
+  against the request's), the line verified (NUL, stray CR, missing colon → 8). The driver then
+  delivers it (HEADER_IN, the handlers, the store) and raises its `then`: the size limits count a
+  line only after the handlers had it, as `Curl_bump_headersize` does, and a blank line ending a
+  head whose code is below 100 fails after it is delivered. A first line that is no HTTP is
+  `Http09` (or 8 on a reused connection or after a status line, 1 when 0.9 is not allowed),
+  decided on a partial line as soon as it cannot become `HTTP/`.
+- Within a header line, what it says is applied as it arrives (step 13c): `ResponseMeta` is
+  mutated with C's gates, and `decide_framing` folds it at the blank line.
 - **Framing is decided once, at the blank line, by `decide_framing`**: 1xx, 204, 304 and HEAD
   have no body; TE overrides CL and a non-chunked final coding is `UntilClose` plus close;
   `--ignore-content-length`; conflicting CL → 8; unsolicited TE → error; HTTP/1.0 closes unless
@@ -1239,9 +1248,10 @@ fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOption
 - **`ChunkDecoder`** is C's HEX/LF/DATA/POSTLF/TRAILER/STOP/DONE machine as an enum. The
   chunk-extension state swallows bytes up to LF on purpose and says so. Trailers go to the sink
   as `HeaderOrigin::Trailer`; `--raw` passes the bytes through while still parsing.
-- The status line: `HTTP/1.[01] DDD`, `HTTP/2 DDD`, `HTTP/3 DDD`, HTTP200ALIASES; version
-  mismatch and unknown subversion are errors; on a bad first line the reused-connection and
-  version-seen cases are 8, HTTP/0.9 not allowed is 1, otherwise the bytes are an HTTP/0.9 body.
+- The status line: `HTTP/1.[01] DDD` and anything after, `HTTP/2 DDD ` and `HTTP/3 DDD `; a bad
+  1.x subversion or an unknown major version is 1, another major version than the request's is
+  8, and any other line starting `HTTP/` in some case is a 200 in HTTP/1.0 (the HTTP200ALIASES
+  check, which always knows `HTTP/`).
 - GOT_NOTHING is computed in one place from the response-phase byte counts, discounting 1xx.
 
 ### 6.3 Header store

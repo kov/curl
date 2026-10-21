@@ -94,3 +94,80 @@ witness: curl-core proto::http1::fields::tests::lines_are_verified_as_c_verifies
     if number < 2 || colon || (number > 2 && line.first().is_some_and(|&b| is_blank(b))) {
 --- new
     if number < 2 || colon || (number > 1 && line.first().is_some_and(|&b| is_blank(b))) {
+
+=== a fold keeps the blanks it joins
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::folded_lines_are_joined
+--- old
+        while self.line.last().is_some_and(|&b| is_blank(b)) {
+--- new
+        while self.line.last().is_some_and(|&b| b == 0) {
+
+=== a header line at the end of the input is given out at once
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::folded_lines_are_joined
+--- old
+                    None => {
+                        self.maybe_folded = true;
+                        return Ok((used, None));
+                    }
+--- new
+                    None => {}
+
+=== a 1xx head ends the response
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::interim_heads_come_before_the_final_one
+--- old
+            let interim = (100..200).contains(&code);
+--- new
+            let interim = (100..100).contains(&code);
+
+=== HTTP/0.9 is taken on a reused connection
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::a_reply_without_a_status_line_is_http_0_9
+--- old
+        if self.version_seen || self.exchange.reused {
+--- new
+        if self.version_seen {
+
+=== another major version is taken
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::status_lines_are_read_as_c_reads_them
+--- old
+                if status.version.major() != self.exchange.sent.major() {
+--- new
+                if status.version.major() == 9 {
+
+=== the transfer's heads have no limit
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::heads_are_counted_against_their_limits
+--- old
+        } else if *transfer_bytes > max * 20 {
+--- new
+        } else if *transfer_bytes > max * 200 {
+
+=== a line may be a byte past C's line buffer
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::a_line_is_at_most_100_kib
+--- old
+        if self.line.len() + bytes.len() > MAX_LINE {
+--- new
+        if self.line.len() + bytes.len() > MAX_LINE + 1 {
+
+=== a code below 100 is taken
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::status_codes_are_three_digits
+--- old
+            bad_code = code < 100;
+--- new
+            bad_code = code < 10;
+
+=== a line merely starting HTTP/ is refused
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http1::response::tests::status_lines_are_read_as_c_reads_them
+--- old
+        return Ok(ALIAS);
+    };
+--- new
+        return Err(HeadError::UnknownVersion);
+    };

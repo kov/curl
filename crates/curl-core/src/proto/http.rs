@@ -167,6 +167,7 @@ impl Request {
             host: &self.host,
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
+            referer: http.referer.as_deref(),
             headers: &http.headers,
         };
         let peer = request::Peer {

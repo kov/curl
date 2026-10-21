@@ -215,3 +215,12 @@ witness: curl-core proto::http1::response::tests::error_codes_fail_when_asked
 --- new
     asked.fail_on_error && code >= 400
 
+=== the referer is sent over the application's own
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::the_referer_follows_accept
+--- old
+                if let Some(referer) = head.referer
+                    && head.headers.replacing(b"Referer").is_none()
+                {
+--- new
+                if let Some(referer) = head.referer {

@@ -287,6 +287,7 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) host: &'o [u8],
     pub(crate) port: Option<u16>,
     pub(crate) user_agent: Option<&'o [u8]>,
+    pub(crate) referer: Option<&'o [u8]>,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -384,6 +385,13 @@ fn write_h1(
                     out.line(&[b"Accept: */*"])?;
                 }
             }
+            Part::Referer => {
+                if let Some(referer) = head.referer
+                    && head.headers.replacing(b"Referer").is_none()
+                {
+                    out.line(&[b"Referer: ", referer])?;
+                }
+            }
             Part::Custom => custom(head, gate, out)?,
             Part::Connection => connection(head.headers, out)?,
             Part::End => out.put(b"\r\n")?,
@@ -393,7 +401,6 @@ fn write_h1(
             | Part::Range
             | Part::Te
             | Part::AcceptEncoding
-            | Part::Referer
             | Part::ProxyConnection
             | Part::TransferEncoding
             | Part::AltUsed
@@ -527,6 +534,7 @@ mod tests {
             host: b"127.0.0.1",
             port: Some(PORT),
             user_agent: Some(UA),
+            referer: None,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -571,6 +579,43 @@ mod tests {
                 "test {test}"
             );
         }
+    }
+
+    /// The referer goes after `Accept`, unless the application sends its
+    /// own; the C tool's request with `-e` (with `;auto` cut by the tool).
+    #[test]
+    fn the_referer_follows_accept() {
+        let send = |headers: &[&[u8]]| {
+            let headers = UserHeaders::new(headers.iter().copied()).unwrap();
+            let head = RequestHead {
+                method: b"GET",
+                target: b"/",
+                version: Version::Http11,
+                host: b"127.0.0.1",
+                port: Some(PORT),
+                user_agent: Some(b"ua/1"),
+                referer: Some(b"http://ref.example/x"),
+                headers: &headers,
+            };
+            let here = peer(b"127.0.0.1");
+            let mut out = Vec::new();
+            render_h1(&head, &CredentialGate::new(&here, &here, false), &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert_eq!(
+            send(&[b"X-A: 1", b"Accept-Encoding: q"]),
+            format!(
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: ua/1\r\nAccept: */*\r\n\
+                 Referer: http://ref.example/x\r\nX-A: 1\r\nAccept-Encoding: q\r\n\r\n"
+            )
+        );
+        assert_eq!(
+            send(&[b"Referer: mine"]),
+            format!(
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: ua/1\r\nAccept: */*\r\n\
+                 Referer: mine\r\n\r\n"
+            )
+        );
     }
 
     /// A header the library sends is replaced by one of the application's
@@ -651,6 +696,7 @@ mod tests {
             host: b"[::1]",
             port: None,
             user_agent: None,
+            referer: None,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -693,6 +739,7 @@ mod tests {
                 host: b"h",
                 port: None,
                 user_agent: None,
+                referer: None,
                 headers: &headers,
             };
             let here = peer(b"h");

@@ -8,8 +8,9 @@ fail (its witness). The sweep applies one entry at a time, runs only its
 witness, and puts the file back, whatever happens. Verdicts:
 
   RED       the witness failed (named), the suite hung, the witness was
-            killed at the memory cap, or the build refused the change
-            outside the replaced text: caught
+            killed at the memory cap, the test binary aborted (a panic
+            that cannot unwind), or the build refused the change outside
+            the replaced text: caught
   BROKEN    the replacement itself does not compile, or the witness ran
             no test: the entry checks nothing
   SURVIVED  the witness passed with the invariant broken: a hole
@@ -115,6 +116,10 @@ def run(e, timeout):
     # The cap kills the test binary; cargo says so and fails.
     if proc.returncode != 0 and re.search(r"\(signal: 9, SIGKILL", out):
         return "killed", out
+    # A panic across `extern "C"` cannot unwind: the test binary aborts
+    # before it reports the witness.
+    if proc.returncode != 0 and re.search(r"\(signal: 6, SIGABRT", out):
+        return "aborted", out
     return ("passed" if proc.returncode == 0 else "failed"), out
 
 
@@ -173,6 +178,8 @@ def main():
             result = "RED       the suite hung"
         elif verdict == "killed":
             result = "RED       the witness ran out of memory"
+        elif verdict == "aborted":
+            result = "RED       the witness aborted"
         elif verdict == "failed" and "could not compile" in out:
             if build_error_inside(out, e, start, end):
                 result, holes = "BROKEN    the replacement does not compile", holes + 1

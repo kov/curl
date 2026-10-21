@@ -53,7 +53,6 @@ pub(crate) fn wants_send(options: &Options) -> bool {
 }
 
 impl Player {
-    #[cfg(debug_assertions)]
     pub(crate) fn holds_output(&self) -> bool {
         self.pipeline.holds_output()
     }

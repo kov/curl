@@ -162,7 +162,6 @@ impl ProtoState {
     }
 
     /// Whether the request holds output for the application.
-    #[cfg(debug_assertions)]
     pub(crate) fn holds_output(&self) -> bool {
         match *self {
             // A write cannot pause it: it never holds.

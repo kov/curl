@@ -10,7 +10,7 @@ use crate::handler::{
     DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler,
 };
 use crate::id::ArenaPolicy;
-use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
+use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx, drive_to_completion};
 use crate::options::{Method, Options, Resume, UserHeaders};
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
@@ -211,6 +211,51 @@ fn a_long_line_ending_the_head_is_delivered_whole() {
         ]
     );
     assert_eq!(ran.seen.body(), b"abc");
+}
+
+/// Takes the body, pausing at its first piece.
+#[derive(Clone, Default)]
+struct PausesOnce {
+    got: Rc<RefCell<Vec<u8>>>,
+    paused: Rc<std::cell::Cell<bool>>,
+}
+
+impl WriteHandler for PausesOnce {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        if !self.paused.replace(true) {
+            return Write::Pause;
+        }
+        self.got.borrow_mut().extend_from_slice(body);
+        Write::Accepted
+    }
+}
+
+/// A body whose last piece is paused is held, not lost: the transfer is
+/// not over until it is delivered (`multi.c`, test 1540's rule).
+#[test]
+fn a_paused_last_piece_waits_to_be_delivered() {
+    for reply in [
+        &b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc"[..],
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+    ] {
+        let (mut m, _talk, _clock) = server(&[reply], false);
+        let mut e = Easy::new();
+        let url = format!("http://127.0.0.1:{PORT}/");
+        let writer = PausesOnce::default();
+        let o = e.options_mut();
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.callbacks.write = Some(Handler::write(writer.clone()).unwrap());
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        for _ in 0..4 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert!(writer.paused.get(), "paused");
+        assert!(m.info_read().is_none(), "not over while output is held");
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Ok(()));
+        assert_eq!(*writer.got.borrow(), b"abc", "{reply:?}");
+    }
 }
 
 /// A response that keeps the connection leaves it in the pool.

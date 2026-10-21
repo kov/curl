@@ -139,7 +139,6 @@ impl Request {
         &mut self.pipeline
     }
 
-    #[cfg(debug_assertions)]
     pub(crate) fn holds_output(&self) -> bool {
         self.pipeline.holds_output()
     }

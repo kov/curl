@@ -517,8 +517,11 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     (TransferState::Exchanging(x).fail(kind), Wake::Again)
                 }
                 Ok(stepped) => {
-                    // The end of a receive pass (`Curl_sendrecv`).
-                    let done = stepped == ProtoStep::Done;
+                    // The end of a receive pass (`Curl_sendrecv`). A request
+                    // is not over while output waits for the application to
+                    // unpause (`multi.c`: `req.done` and the writers not
+                    // paused).
+                    let done = stepped == ProtoStep::Done && !x.proto.holds_output();
                     match progress::check(cx, done) {
                         Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                         Ok(look_again) => {

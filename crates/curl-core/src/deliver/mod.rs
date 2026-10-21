@@ -59,10 +59,6 @@ impl Pipeline {
 
     /// Whether output is held: the request cannot be over until it is
     /// delivered.
-    #[cfg_attr(
-        not(any(test, feature = "test-util", debug_assertions)),
-        expect(dead_code, reason = "only the debug build's check asks")
-    )]
     pub(crate) fn holds_output(&self) -> bool {
         self.out.holds_output()
     }
@@ -404,10 +400,6 @@ impl ClientOut {
         result
     }
 
-    #[cfg_attr(
-        not(any(test, feature = "test-util", debug_assertions)),
-        expect(dead_code, reason = "only the debug build's check asks")
-    )]
     fn holds_output(&self) -> bool {
         matches!(self, ClientOut::Held(_))
     }

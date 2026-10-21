@@ -567,3 +567,27 @@ witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_
             Some(at) => run.deadlines.arm_in(TimerKind::Proto, now, at.since(now)),
 --- new
             Some(_) => run.deadlines.clear(TimerKind::Proto),
+
+=== a trailer without a space after its colon is sent
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_chunked_body_ends_with_its_trailers
+--- old
+        if colon.is_none_or(|at| line.get(at + 1) != Some(&b' ')) {
+--- new
+        if colon.is_none() {
+
+=== a trailer handler's abort is ignored
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_chunked_body_ends_with_its_trailers
+--- old
+    if handler.trailers(&mut TransferCx::new(cx), &mut lines) == Trailers::Abort {
+--- new
+    if handler.trailers(&mut TransferCx::new(cx), &mut lines) == Trailers::Done && false {
+
+=== the last chunk leaves out its trailers
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::encodes_pieces_as_chunks
+--- old
+            self.buf.try_extend_from_slice(trailers)?;
+--- new
+            let _ = trailers;

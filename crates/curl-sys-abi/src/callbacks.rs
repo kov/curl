@@ -8,7 +8,7 @@
 
 #![allow(unsafe_code)]
 
-use core::ffi::{c_char, c_int, c_long, c_void};
+use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::num::NonZeroUsize;
 use core::ptr::{self, NonNull};
 
@@ -17,7 +17,8 @@ use core::cell::Cell;
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_format};
 use curl_core::handler::{
     DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow,
-    ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink, Write, WriteHandler,
+    ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink, TrailerHandler,
+    TrailerLines, Trailers, Write, WriteHandler,
 };
 use curl_core::multi::TransferCx;
 use curl_core::options::{Callbacks, Method, Options, Progress, UploadSource};
@@ -27,7 +28,8 @@ use crate::ffi::{
     self, CURL_PROGRESSFUNC_CONTINUE, CURL_READFUNC_ABORT, CURL_READFUNC_PAUSE, CURL_SEEKFUNC_OK,
     CURL_WRITEFUNC_ERROR, CURL_WRITEFUNC_PAUSE, CURLIOCMD_RESTARTREAD, CURLIOE_OK,
     curl_debug_callback, curl_infotype, curl_ioctl_callback, curl_progress_callback,
-    curl_read_callback, curl_seek_callback, curl_write_callback, curl_xferinfo_callback,
+    curl_read_callback, curl_seek_callback, curl_trailer_callback, curl_write_callback,
+    curl_xferinfo_callback,
 };
 use crate::gate::Frame;
 
@@ -63,6 +65,8 @@ pub(crate) struct CCallbacks {
     pub(crate) progress_data: *mut c_void,
     pub(crate) debug: curl_debug_callback,
     pub(crate) debug_data: *mut c_void,
+    pub(crate) trailer: curl_trailer_callback,
+    pub(crate) trailer_data: *mut c_void,
     /// Where text goes without a debug function (`CURLOPT_STDERR`).
     pub(crate) stderr: *mut libc::FILE,
 }
@@ -87,6 +91,8 @@ impl CCallbacks {
             progress_data: ptr::null_mut(),
             debug: None,
             debug_data: ptr::null_mut(),
+            trailer: None,
+            trailer_data: ptr::null_mut(),
             stderr: error,
         }
     }
@@ -143,6 +149,7 @@ pub(crate) fn install_defaults(
 ) -> Result<(), OutOfMemory> {
     sync_text(options, easy, ccb)?;
     sync_progress(options, easy, set, ccb)?;
+    sync_trailer(options, easy, ccb)?;
     sync_upload(options, easy, set)
 }
 
@@ -218,6 +225,21 @@ pub(crate) fn sync_progress(
     } else {
         Progress::Meter
     };
+    Ok(())
+}
+
+/// The trailer adapter, while there is a trailer function.
+pub(crate) fn sync_trailer(
+    options: &mut Options,
+    easy: NonNull<ShimEasy>,
+    ccb: &CCallbacks,
+) -> Result<(), OutOfMemory> {
+    let c = &mut options.callbacks;
+    match (ccb.trailer.is_some(), c.trailer.is_some()) {
+        (true, false) => c.trailer = Some(Handler::trailer(Adapter(easy))?),
+        (false, true) => c.trailer = None,
+        _ => {}
+    }
     Ok(())
 }
 
@@ -478,6 +500,43 @@ impl ReadHandler for Adapter {
         } else {
             // Past `len` is the core's to reject.
             NonZeroUsize::new(got).map_or(Read::Eof, Read::Data)
+        }
+    }
+}
+
+impl TrailerHandler for Adapter {
+    /// The lines of the list the trailer function builds, which is freed
+    /// here whatever it answers (`add_last_chunk`).
+    fn trailers(&self, cx: &mut TransferCx<'_>, lines: &mut TrailerLines) -> Trailers {
+        let ccb = self.easy().ccb.get();
+        let Some(f) = ccb.trailer else {
+            return Trailers::Done;
+        };
+        let mut list: *mut ffi::curl_slist = ptr::null_mut();
+        // SAFETY: the application's trailer function takes a list to
+        // append to and its data.
+        let answer = self.call(cx, || unsafe { f(&mut list, ccb.trailer_data) });
+        let mut at = list;
+        while let Some(node) = NonNull::new(at) {
+            // SAFETY: a list `curl_slist_append` built, alive until freed
+            // below.
+            let node = unsafe { node.as_ref() };
+            if !node.data.is_null() {
+                // SAFETY: each item holds a C string.
+                let line = unsafe { CStr::from_ptr(node.data) };
+                if lines.add(line.to_bytes()).is_err() {
+                    break;
+                }
+            }
+            at = node.next;
+        }
+        // SAFETY: the list is the application's to hand over, made by
+        // `curl_slist_append`, and not used again.
+        unsafe { crate::strings::curl_slist_free_all(list) };
+        if answer == ffi::CURL_TRAILERFUNC_OK {
+            Trailers::Done
+        } else {
+            Trailers::Abort
         }
     }
 }

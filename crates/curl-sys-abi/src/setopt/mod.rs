@@ -448,6 +448,13 @@ fn apply(
         (ffi::CURLOPT_IOCTLDATA, Ptr(p)) => ccb.ioctl_data = p,
         (ffi::CURLOPT_XFERINFODATA, Ptr(p)) => ccb.progress_data = p,
         (ffi::CURLOPT_DEBUGDATA, Ptr(p)) => ccb.debug_data = p,
+        (ffi::CURLOPT_TRAILERDATA, Ptr(p)) => ccb.trailer_data = p,
+        (ffi::CURLOPT_TRAILERFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL.
+            ccb.trailer = unsafe { function(p) };
+            callbacks::sync_trailer(options, me, ccb)?;
+        }
         // SAFETY: the application passes a function of the option's
         // type, or NULL.
         (ffi::CURLOPT_WRITEFUNCTION, Ptr(p)) => ccb.write = unsafe { function(p) },

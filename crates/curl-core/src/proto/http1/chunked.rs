@@ -395,9 +395,10 @@ impl ChunkEncoder {
         Some(&mut self.buf[SIZE_LINE..SIZE_LINE + n])
     }
 
-    /// The body gave `n` bytes where `wants` said, and ended if `eos`:
-    /// frame them.
-    pub(crate) fn got(&mut self, n: usize, eos: bool) {
+    /// The body gave `n` bytes where `wants` said, and ended if `end`
+    /// gives its trailer lines, each with its CRLF: frame them, and the
+    /// last chunk after them (`add_chunk`, `add_last_chunk`).
+    pub(crate) fn got(&mut self, n: usize, end: Option<&[u8]>) -> Result<(), OutOfMemory> {
         assert!(
             self.start == self.end && !self.read_eos,
             "read only when wanted"
@@ -417,11 +418,16 @@ impl ChunkEncoder {
             self.buf[self.end..self.end + 2].copy_from_slice(b"\r\n");
             self.end += 2;
         }
-        if eos {
+        if let Some(trailers) = end {
             self.read_eos = true;
-            self.buf[self.end..self.end + LAST_CHUNK.len()].copy_from_slice(LAST_CHUNK);
-            self.end += LAST_CHUNK.len();
+            // Within the room kept for it unless there are trailers.
+            self.buf.truncate(self.end);
+            self.buf.try_extend_from_slice(b"0\r\n")?;
+            self.buf.try_extend_from_slice(trailers)?;
+            self.buf.try_extend_from_slice(b"\r\n")?;
+            self.end = self.buf.len();
         }
+        Ok(())
     }
 
     /// Framed bytes into `dest`: how many, and whether the last chunk is
@@ -779,7 +785,7 @@ mod tests {
         let room = e.wants(10).unwrap();
         assert_eq!(room.len(), CHUNK_MIN);
         room[..3].copy_from_slice(b"abc");
-        e.got(3, false);
+        e.got(3, None).unwrap();
         assert!(e.wants(10).is_none(), "framed bytes first");
         let mut dest = [0u8; 4];
         assert_eq!(e.take(&mut dest), (4, false));
@@ -788,7 +794,7 @@ mod tests {
         assert_eq!(e.take(&mut dest), (4, false));
         assert_eq!(&dest[..4], b"bc\r\n");
         assert_eq!(e.wants(100_000).unwrap().len(), CHUNK_MAX - 12);
-        e.got(0, true);
+        e.got(0, Some(b"")).unwrap();
         assert!(e.wants(10).is_none(), "ended");
         assert_eq!(e.take(&mut dest), (5, true));
         assert_eq!(&dest[..5], b"0\r\n\r\n");
@@ -796,12 +802,12 @@ mod tests {
         let room = e.wants(CHUNK_MAX).unwrap();
         room.fill(b'x');
         let n = room.len();
-        e.got(n, true);
+        e.got(n, Some(b"X: y\r\n")).unwrap();
         let mut all = vec![0u8; CHUNK_MAX + 100];
         let (took, eos) = e.take(&mut all);
         assert!(eos);
         assert_eq!(&all[..6], b"fff4\r\n");
-        assert!(all[..took].ends_with(b"x\r\n0\r\n\r\n"));
-        assert_eq!(took, 6 + n + 2 + 5);
+        assert!(all[..took].ends_with(b"x\r\n0\r\nX: y\r\n\r\n"));
+        assert_eq!(took, 6 + n + 2 + 11, "trailers after the last chunk");
     }
 }

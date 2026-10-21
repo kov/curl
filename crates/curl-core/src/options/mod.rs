@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use crate::handler::{
     DebugHandler, Handler, HeaderHandler, ProgressHandler, ReadHandler, Rewind, TextSink,
-    WriteHandler,
+    TrailerHandler, WriteHandler,
 };
 use crate::time::TimeLimit;
 
@@ -436,6 +436,8 @@ pub struct Callbacks {
     /// Told a transfer's first reason for failing as it is given, as C
     /// copies it into `CURLOPT_ERRORBUFFER`; the report keeps it too.
     pub failure: Option<Handler<dyn TextSink>>,
+    /// The trailers a chunked request body ends with; without one, none.
+    pub trailer: Option<Handler<dyn TrailerHandler>>,
 }
 
 /// Where the body a transfer sends comes from.

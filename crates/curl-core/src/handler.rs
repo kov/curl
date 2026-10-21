@@ -8,7 +8,7 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 
-use curl_alloc::{OutOfMemory, TryRc, try_box};
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_box};
 
 use crate::multi::TransferCx;
 
@@ -44,6 +44,48 @@ pub enum Read {
 /// Gives what a transfer sends (`CURLOPT_READFUNCTION`).
 pub trait ReadHandler {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read;
+}
+
+/// Gives the trailers a chunked request body ends with
+/// (`CURLOPT_TRAILERFUNCTION`): each line, `Name: value`, added to
+/// `lines`; a line without a colon and a space after it is skipped.
+pub trait TrailerHandler {
+    fn trailers(&self, cx: &mut TransferCx<'_>, lines: &mut TrailerLines) -> Trailers;
+}
+
+/// Whether a trailer handler lets the body end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trailers {
+    Done,
+    /// The transfer fails with AbortedByCallback.
+    Abort,
+}
+
+/// The trailer lines a handler gives, each without its line end. A line
+/// that could not be kept fails the transfer with OutOfMemory.
+#[derive(Debug, Default)]
+pub struct TrailerLines {
+    lines: Vec<Vec<u8>>,
+    lost: bool,
+}
+
+impl TrailerLines {
+    pub fn add(&mut self, line: &[u8]) -> Result<(), OutOfMemory> {
+        let mut copy = Vec::new();
+        let kept = copy
+            .try_extend_from_slice(line)
+            .and_then(|()| self.lines.try_push(copy));
+        self.lost |= kept.is_err();
+        kept
+    }
+
+    /// The lines, or none if one was lost.
+    pub(crate) fn lines(&self) -> Result<impl Iterator<Item = &[u8]>, OutOfMemory> {
+        if self.lost {
+            return Err(OutOfMemory);
+        }
+        Ok(self.lines.iter().map(Vec::as_slice))
+    }
 }
 
 /// A rewind that could not be done.
@@ -160,6 +202,12 @@ impl Handler<dyn HeaderHandler> {
 
 impl Handler<dyn ReadHandler> {
     pub fn read(handler: impl ReadHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn TrailerHandler> {
+    pub fn trailer(handler: impl TrailerHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

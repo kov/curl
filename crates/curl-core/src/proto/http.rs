@@ -9,8 +9,9 @@ use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{ConnLease, RecvFailed};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::handler::{DebugKind, HeaderOrigin};
+use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::multi::Host;
+use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
 use crate::options::{HttpVersion, Method, Resume, UploadSource};
 use crate::report::Timer;
@@ -412,7 +413,14 @@ impl Request {
             Some(chunks) => {
                 if let Some(room) = chunks.wants(dest.len()) {
                     let got = upload.read(cx, room, pausable)?;
-                    chunks.got(got.n, got.eos);
+                    let end = if got.eos {
+                        Some(trailer_block(cx)?)
+                    } else {
+                        None
+                    };
+                    chunks
+                        .got(got.n, end.as_deref())
+                        .map_err(|_| ErrorKind::OutOfMemory)?;
                 }
                 let (n, eos) = chunks.take(dest);
                 upload::Readout { n, eos }
@@ -939,6 +947,38 @@ impl Request {
         }
         Ok(())
     }
+}
+
+/// The trailers a chunked body ends with, each line with its CRLF: the
+/// trailer handler's lines that read `Name: value` (`add_last_chunk`).
+fn trailer_block<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Vec<u8>, ErrorKind> {
+    let mut block = Vec::new();
+    let Some(handler) = cx.easy().options().callbacks.trailer.clone() else {
+        return Ok(block);
+    };
+    let mut lines = TrailerLines::default();
+    if handler.trailers(&mut TransferCx::new(cx), &mut lines) == Trailers::Abort {
+        return Err(trace::fail(
+            cx,
+            ErrorKind::AbortedByCallback,
+            format_args!("operation aborted by trailing headers callback"),
+        ));
+    }
+    for line in lines.lines().map_err(|_| ErrorKind::OutOfMemory)? {
+        let colon = line.iter().position(|&b| b == b':');
+        if colon.is_none_or(|at| line.get(at + 1) != Some(&b' ')) {
+            trace::info(
+                cx,
+                format_args!("Malformatted trailing header, skipping trailer"),
+            );
+            continue;
+        }
+        block
+            .try_extend_from_slice(line)
+            .and_then(|()| block.try_extend_from_slice(b"\r\n"))
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+    }
+    Ok(block)
 }
 
 /// A copy of `bytes`; out of memory fails the transfer.

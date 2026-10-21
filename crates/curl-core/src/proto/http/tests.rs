@@ -1478,3 +1478,46 @@ fn the_application_s_transfer_encoding_decides() {
     );
     assert!(!request.contains("Content-Length"), "{request}");
 }
+
+/// A chunked body ends with the trailer handler's lines that read
+/// `Name: value`, the others skipped; the handler can abort.
+#[test]
+fn a_chunked_body_ends_with_its_trailers() {
+    struct Give(crate::handler::Trailers);
+    impl crate::handler::TrailerHandler for Give {
+        fn trailers(
+            &self,
+            _: &mut TransferCx<'_>,
+            lines: &mut crate::handler::TrailerLines,
+        ) -> crate::handler::Trailers {
+            for line in [&b"X-A: 1"[..], b"bad", b"Y:z", b"Z: 2"] {
+                lines.add(line).unwrap();
+            }
+            self.0
+        }
+    }
+    let chunked = |verdict| {
+        with_body(Method::Post, b"", move |o| {
+            o.upload = pieces(&[b"abc"]);
+            o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
+            o.callbacks.trailer = Some(Handler::trailer(Give(verdict)).unwrap());
+        })
+    };
+    let ran = chunked(crate::handler::Trailers::Done);
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.request
+            .ends_with(b"\r\n\r\n3\r\nabc\r\n0\r\nX-A: 1\r\nZ: 2\r\n\r\n"),
+        "{}",
+        String::from_utf8_lossy(&ran.request)
+    );
+    let skipped = "Malformatted trailing header, skipping trailer\n".to_string();
+    assert_eq!(ran.seen.text().iter().filter(|l| **l == skipped).count(), 2);
+    let ran = chunked(crate::handler::Trailers::Abort);
+    assert_eq!(ran.result, Err(ErrorKind::AbortedByCallback));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"operation aborted by trailing headers callback\n".to_string())
+    );
+}

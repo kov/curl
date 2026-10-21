@@ -606,6 +606,15 @@ mod tests {
                 ErrorKind::TooLarge
             )
         );
+        // A line that never ends is refused at its 4096th byte, before
+        // the input ends.
+        let mut endless = reply(0);
+        endless.truncate(endless.len() - 4);
+        endless.resize(endless.len() + 4096 - 2, b'a');
+        assert_eq!(
+            read(&[&endless], false).error,
+            Some(ChunkError::TrailerTooLong)
+        );
     }
 
     /// Trailers count against the request's head limit.

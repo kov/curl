@@ -56,6 +56,16 @@ enum Var {
     HttpVersion,
     /// The scheme of the connection used, lowercase.
     Scheme,
+    ContentType,
+    /// The ends of the connection last used: an address, or a port, -1
+    /// before any connection.
+    LocalIp,
+    LocalPort,
+    RemoteIp,
+    RemotePort,
+    NumConnects,
+    NumHeaders,
+    SizeRequest,
     SizeDelivered,
     SizeDownload,
     SizeHeader,
@@ -98,7 +108,7 @@ const fn part(part: Part, effective: bool) -> Var {
 const VARIABLES: &[Variable] = &[
     known("certs"),
     known("conn_id"),
-    known("content_type"),
+    written("content_type", Var::ContentType),
     written("errormsg", Var::ErrorMsg),
     written("exitcode", Var::ExitCode),
     written("filename_effective", Var::FilenameEffective),
@@ -108,12 +118,12 @@ const VARIABLES: &[Variable] = &[
     known("http_connect"),
     written("http_version", Var::HttpVersion),
     known("json"),
-    known("local_ip"),
-    known("local_port"),
+    written("local_ip", Var::LocalIp),
+    written("local_port", Var::LocalPort),
     known("method"),
     known("num_certs"),
-    known("num_connects"),
-    known("num_headers"),
+    written("num_connects", Var::NumConnects),
+    written("num_headers", Var::NumHeaders),
     known("num_redirects"),
     known("num_retries"),
     written("onerror", Var::OnError),
@@ -121,14 +131,14 @@ const VARIABLES: &[Variable] = &[
     known("proxy_used"),
     known("redirect_url"),
     known("referer"),
-    known("remote_ip"),
-    known("remote_port"),
+    written("remote_ip", Var::RemoteIp),
+    written("remote_port", Var::RemotePort),
     written("response_code", Var::HttpCode),
     written("scheme", Var::Scheme),
     written("size_delivered", Var::SizeDelivered),
     written("size_download", Var::SizeDownload),
     written("size_header", Var::SizeHeader),
-    known("size_request"),
+    written("size_request", Var::SizeRequest),
     written("size_upload", Var::SizeUpload),
     written("speed_download", Var::SpeedDownload),
     written("speed_upload", Var::SpeedUpload),
@@ -183,6 +193,8 @@ pub(crate) struct Facts<'a> {
     pub(crate) url: &'a [u8],
     /// Its number on the command line, from 0.
     pub(crate) urlnum: u64,
+    /// Header lines with a colon in the last response's head.
+    pub(crate) num_headers: u64,
     pub(crate) filename: Option<&'a [u8]>,
     pub(crate) report: &'a TransferReport,
 }
@@ -405,6 +417,29 @@ fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()
             Some(p) => out.write_all(p.name().as_bytes()),
             None => Ok(()),
         },
+        Var::ContentType => match r.content_type() {
+            Some(media) => out.write_all(media),
+            None => Ok(()),
+        },
+        Var::LocalIp => match r.primary().and_then(|ends| ends.local) {
+            Some(local) => write!(out, "{}", local.ip()),
+            None => Ok(()),
+        },
+        Var::LocalPort => match r.primary() {
+            Some(ends) => write!(out, "{}", ends.local.map_or(0, |local| local.port())),
+            None => out.write_all(b"-1"),
+        },
+        Var::RemoteIp => match r.primary() {
+            Some(ends) => write!(out, "{}", ends.remote.ip()),
+            None => Ok(()),
+        },
+        Var::RemotePort => match r.primary() {
+            Some(ends) => write!(out, "{}", ends.remote.port()),
+            None => out.write_all(b"-1"),
+        },
+        Var::NumConnects => write!(out, "{}", r.connects()),
+        Var::NumHeaders => write!(out, "{}", facts.num_headers),
+        Var::SizeRequest => write!(out, "{}", r.sizes().request()),
         Var::SizeDelivered => write!(out, "{}", r.sizes().delivered()),
         Var::SizeDownload => write!(out, "{}", r.sizes().download()),
         Var::SizeHeader => write!(out, "{}", r.sizes().header()),
@@ -524,6 +559,7 @@ mod tests {
             result,
             url,
             urlnum: 7,
+            num_headers: 3,
             filename: None,
             report: &report,
         };
@@ -549,6 +585,12 @@ mod tests {
         assert_eq!(ok("url_effective"), b"");
         assert_eq!(ok("time_total"), b"0.000000");
         assert_eq!(ok("urlnum"), b"7");
+        assert_eq!(ok("num_headers"), b"3");
+        assert_eq!(ok("num_connects"), b"0");
+        assert_eq!(ok("content_type"), b"");
+        assert_eq!(ok("remote_ip"), b"");
+        assert_eq!(ok("remote_port"), b"-1");
+        assert_eq!(ok("local_port"), b"-1");
         assert_eq!(ok("errormsg"), b"");
         assert_eq!(ok("exitcode"), b"0");
         assert_eq!(ok("url.host"), b"example.com");
@@ -594,7 +636,7 @@ mod tests {
     fn refuses_what_is_not_implemented() {
         assert_eq!(unimplemented(b"%{url} %{exitcode}\\n"), None);
         assert_eq!(unimplemented(b"%{nosuch}"), None);
-        assert_eq!(unimplemented(b"x %{content_type}"), Some("content_type"));
+        assert_eq!(unimplemented(b"x %{json}"), Some("json"));
         assert_eq!(unimplemented(b"%header{a}"), Some("--write-out %header{}"));
         assert_eq!(unimplemented(b"%time{%H}"), Some("--write-out %time{}"));
         assert_eq!(unimplemented(b"%output{f}"), Some("--write-out %output{}"));

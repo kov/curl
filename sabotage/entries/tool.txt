@@ -296,3 +296,15 @@ witness: curl-tool write_out::tests::reads_a_format_file_without_line_ends
             for line in buf[..n].split(|&b| b == b'\r' || b == b'\n') {
 --- new
             for line in buf[..n].split(|&b| b == 0) {
+
+=== the header count runs on across responses
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::counts_the_last_responses_header_lines
+--- old
+        if self.after_blank {
+            self.num_headers = 0;
+        }
+--- new
+        if self.after_blank && self.num_headers == u64::MAX {
+            self.num_headers = 0;
+        }

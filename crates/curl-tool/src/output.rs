@@ -49,6 +49,11 @@ pub(crate) struct Stream {
     pub(crate) no_buffer: bool,
     /// `--dump-header`: where header lines are written too.
     dump: Option<Dump>,
+    /// Header lines with a colon in the last response's head
+    /// (`per->num_headers`).
+    num_headers: u64,
+    /// The last header line was blank: the next starts a response.
+    after_blank: bool,
     msgs: Messages,
 }
 
@@ -116,6 +121,8 @@ impl Output {
             binary_ok: false,
             no_buffer: false,
             dump: None,
+            num_headers: 0,
+            after_blank: true,
             msgs,
         };
         Ok(Output(TryRc::try_new(RefCell::new(stream))?))
@@ -182,6 +189,11 @@ impl Output {
 }
 
 impl Stream {
+    /// Header lines with a colon in the last response's head.
+    pub(crate) fn num_headers(&self) -> u64 {
+        self.num_headers
+    }
+
     /// The output file's name, if the output is a file.
     pub(crate) fn file_name(&self) -> Option<&[u8]> {
         match &self.target {
@@ -308,6 +320,13 @@ impl Stream {
     /// The output side of `tool_header_cb`: shown header lines, their
     /// names in bold on a terminal.
     fn header(&mut self, line: &[u8], protocol: Option<Protocol>) -> Write {
+        if self.after_blank {
+            self.num_headers = 0;
+        }
+        self.after_blank = matches!(line.first(), Some(b'\r' | b'\n'));
+        if line.contains(&b':') {
+            self.num_headers += 1;
+        }
         if self.dump(line) == Write::Fail {
             return Write::Fail;
         }
@@ -368,6 +387,27 @@ mod tests {
         let out = Output::null(quiet()).unwrap();
         out.stream().terminal = true;
         out
+    }
+
+    /// The header count is the last response's lines with a colon,
+    /// whether shown or not: an interim response's are forgotten.
+    #[test]
+    fn counts_the_last_responses_header_lines() {
+        let out = Output::null(quiet()).unwrap();
+        let mut s = out.stream();
+        let lines: [&[u8]; 7] = [
+            b"HTTP/1.1 100 Continue\r\n",
+            b"A: 1\r\n",
+            b"\r\n",
+            b"HTTP/1.1 200 OK\r\n",
+            b"B: 2\r\n",
+            b"C: 3\r\n",
+            b"\r\n",
+        ];
+        for line in lines {
+            assert_eq!(s.header(line, Some(Protocol::Http)), Write::Accepted);
+        }
+        assert_eq!(s.num_headers(), 2);
     }
 
     /// Binary output to a terminal is refused in its first 2000 bytes,

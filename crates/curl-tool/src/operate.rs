@@ -399,6 +399,7 @@ fn finish(
             result,
             url: url.text,
             urlnum: url.num,
+            num_headers: stream.num_headers(),
             filename: stream.file_name(),
             report: easy.report(),
         };

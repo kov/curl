@@ -27,7 +27,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("typecheck", true),
     // Error codes have their full messages.
     ("verbose-strings", true),
-    ("wakeup", false),
+    ("wakeup", true),
     ("headers-api", false),
     ("xattr", false),
     ("form-api", false),

@@ -1,0 +1,89 @@
+# The shim (crates/curl-sys-abi): its gate, against lib/api.c, and its handles.
+
+=== a callback lends no frame
+file: crates/curl-sys-abi/src/gate/mod.rs
+witness: curl-sys-abi gate::tests::admits_as_api_c
+--- old
+        let outer = self.frame.replace(Some(frame));
+--- new
+        let outer = self.frame.get();
+
+=== an easy call that may not recurse runs while its multi is busy
+file: crates/curl-sys-abi/src/gate/mod.rs
+witness: curl-sys-abi gate::tests::admits_as_api_c
+--- old
+        if !rules.recurse && (self.depth.get() > 0 || multi_busy) {
+--- new
+        if !rules.recurse && self.depth.get() > 0 {
+
+=== a pause runs inside an event callback
+file: crates/curl-sys-abi/src/gate/mod.rs
+witness: curl-sys-abi gate::tests::knows_the_callback_kinds
+--- old
+        if rules.not_in_event && multi.is_some_and(MultiStack::in_event) {
+--- new
+        if rules.not_in_event && multi.is_some_and(MultiStack::busy) && false {
+
+=== a notification lets in no call that may not recurse
+file: crates/curl-sys-abi/src/gate/mod.rs
+witness: curl-sys-abi gate::tests::knows_the_callback_kinds
+--- old
+        let in_notify = rules.in_notify && self.notifies.get() > 0;
+--- new
+        let in_notify = false;
+
+=== multi calls nest past C's depth
+file: crates/curl-sys-abi/src/gate/mod.rs
+witness: curl-sys-abi gate::tests::limits_the_depth
+--- old
+        if self.depth.get() >= MULTI_MAX_DEPTH {
+            return Err(Recursive);
+        }
+        self.depth.set(self.depth.get() + 1);
+        Ok(MultiEntry { stack: self, reach })
+--- new
+        self.depth.set(self.depth.get() + 1);
+        Ok(MultiEntry { stack: self, reach })
+
+=== a callback lends no frame to its multi
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi easy::tests::calls_from_a_callback_reach_the_running_transfer
+features: debug-hooks
+--- old
+            Some(multi) => multi.stack.lend(frame, f),
+--- new
+            Some(_) => f(),
+
+=== a handle is taken out of a multi it is not in
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi easy::tests::a_handle_moves_between_multis
+features: debug-hooks
+--- old
+    if home != NonNull::from(multi) {
+--- new
+    if false {
+
+=== a multi's cleanup keeps its handles' transfers
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi easy::tests::a_handle_moves_between_multis
+features: debug-hooks
+--- old
+        unsafe { removed.owner.as_ref() }.return_home(removed.easy);
+--- new
+        drop(removed);
+
+=== a copy keeps the original's adapters
+file: crates/curl-sys-abi/src/callbacks.rs
+witness: curl-sys-abi easy::tests::a_copy_calls_back_with_its_own_data
+features: debug-hooks
+--- old
+    options.callbacks = Callbacks::default();
+--- new
+
+=== an added handle keeps its old error text
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi easy::tests::the_error_buffer_fills_as_the_transfer_fails
+features: debug-hooks
+--- old
+    easy.clear_error_buffer();
+--- new

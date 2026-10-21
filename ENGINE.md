@@ -1216,58 +1216,66 @@ Auth is `AuthState` on the `Run`: `input(challenge)`, `act(status) -> Option<Ret
 
 ```rust
 struct ShimEasy {                         // what CURL * points to; stable address
-    magic: u32,
-    home: Home,                           // Detached(Easy) | Added { multi: NonNull<ShimMulti>, id: TransferId }
-    private: Option<Box<ShimMulti>>,      // curl_easy_perform's multi, kept across performs
-    ccb: CCallbacks,                      // C fn pointers + userdata for every callback
-    strings: InfoStrings,                 // getinfo char* copies: until next transfer or cleanup
-    hdr_out: [CHeader; 2],                // curl_easy_header / nextheader result slots
-    msg: CURLMsg,                         // what info_read points into
-    errbuf: Option<NonNull<c_char>>,
+    magic: Cell<u32>,
+    internal: bool,                       // a multi's own handle (C's `state.internal`): no call may use it
+    stack: EasyStack,                     // easy calls under way (C's `data->callstack`)
+    home: RefCell<Home>,                  // Detached(Easy) | Added { multi: NonNull<ShimMulti>, id } | Nowhere (mid-add)
+    ccb: Cell<CCallbacks>,                // C fn pointers + userdata, read by the adapters when they run
+    set: Cell<CSettings>,                 // what setopt keeps that the core holds only combined
+    errbuf: Cell<*mut c_char>,            // CURLOPT_ERRORBUFFER
+    private: Cell<Option<NonNull<ShimMulti>>>, // curl_easy_perform's multi, kept across performs
+    msg: UnsafeCell<CURLMsg>,             // what info_read points into
 }
 struct ShimMulti {
-    core: UnsafeCell<Multi<CHost>>,       // CHost { Transfer = NonNull<ShimEasy>, Socket = *mut c_void }
-    frame: Cell<Option<Frame>>,           // the live context, set only while a C callback runs
-    conn_easy: Box<ShimEasy>,             // the CURL * passed for connection-owned sockets
-    cb: CMultiCallbacks,
+    magic: AtomicU32,                     // curl_multi_wakeup reads it from other threads
+    stack: MultiStack,                    // depth, the innermost Frame, event and notify counts
+    core: UnsafeCell<Multi<CHost>>,       // CHost { Transfer = NonNull<ShimEasy> }
     waker: Option<TryArc<Waker>>,         // curl_multi_wakeup without touching `core`
+    cb: Cell<MultiCallbacks>,             // timer and notify functions and data
+    admin: ShimEasy,                      // the CURL * a notification about the multi names
 }
-enum Frame { Transfer(NonNull<TransferCx<'static, CHost>>), Event(NonNull<EventCx<'static, CHost>>),
+enum Frame { Transfer(NonNull<TransferCx<'static>>), Event(NonNull<EventCx<'static, CHost>>),
              Notify(NonNull<NotifyCx<'static, CHost>>) }
 ```
 
+The getinfo string copies and the header slots join `ShimEasy` with the infos and
+`curl_easy_header`.
+
 ### 7.2 Re-entrant calls: one gate
 
-Every exported function that touches a multi goes through one of two functions:
+Every exported function enters its handle's stack first (`gate/`): `MultiStack::enter(call)`
+for a multi call, `EasyStack::enter(call, multi)` for an easy call on a handle in `multi`. Each
+applies `TABLE[call]` as api.c does (recursion, `allow_ntfy_cb`, `no_event_cb`, the depth limits
+of 15 and 7) and returns an entry that pops the call when dropped. A multi entry carries the
+`Reach` its call has, decided before the call counts itself:
 
-```rust
-fn with_multi<R>(m: &ShimMulti, call: ApiCall,
-                 via_frame: impl FnOnce(&mut Frame) -> R,
-                 direct: impl FnOnce(&mut Multi<CHost>) -> R) -> Result<R, Recursive>;
-fn with_easy<R>(e: &ShimEasy, call: ApiCall, …) -> Result<R, Recursive>;
-```
+1. A frame is present: the call goes through the context the running callback lent (`Frame`'s
+   methods reach the target transfer by id, the caller's own or a sibling's); a call that context
+   cannot make (an add or a remove outside a notification) is RECURSIVE_API_CALL.
+2. No frame and nothing under way: `Direct`, the call borrows `&mut Multi` from the `UnsafeCell`
+   (no frame means no outstanding borrow of `core`; a frame is pushed only while the core is
+   suspended in a call-out on this thread).
+3. No frame but a call under way: another thread's call, refused.
 
-1. A frame is present: if `TABLE[call]` does not allow the call in that frame kind, return
-   CURLE_/CURLM_RECURSIVE_API_CALL; otherwise call the context method (`via_frame`), which
-   reaches the target transfer by id, whether it is the caller's own or a sibling.
-2. No frame: form `&mut Multi` from the `UnsafeCell` (SAFETY: no frame means no outstanding
-   borrow of `core`; a frame is pushed only while the core is suspended in a call-out on this
-   thread).
-
-`ShimMulti` is only ever reached through raw pointers while `core` is borrowed; the
-`MultiEvents` adapter the shim hands the core borrows `&Cell<Option<Frame>>`, `&CMultiCallbacks`
-and `&ShimEasy` (the connection easy), never `&ShimMulti`. The callback adapters push the frame
-around each C call and restore the previous one after it; panics abort, so the pop cannot be
-skipped. The `'static` in `Frame` is lifetime erasure confined to the push/pop pair: the adapter turns
-its `&mut TransferCx` into the raw pointer before calling C and does not use the reference again
-until after the pop, so the only access path during the C call is the frame. A call on a
-handle in another multi takes path 2 on that multi.
+An easy call reaches its `Easy` through `ShimEasy::with_easy`: in the handle, or in its multi by
+the same rule. The callback adapters (`callbacks.rs`) and `ShimEvents` push the frame around each
+C call with `MultiStack::lend` and restore the previous one after it; panics abort, so the pop
+cannot be skipped. The `'static` in `Frame` is lifetime erasure confined to the lend: the
+adapter turns its `&mut` context into the raw pointer before calling C and does not use the
+reference again until `lend` returns, so the only access path during the C call is the frame.
+`ShimEvents` holds `&ShimMulti`: every field it reaches is behind a `Cell` or never changes, and
+`core` only through the gate. A call on a handle in another multi takes that multi's own path.
 
 `TABLE` is generated from `lib/api.c`'s `eapi_fn_props`, `mapi_fn_props` and the event-callback
-flag into the shim (the extraction goes through `inventory/`), and a shim test parses the C file
-and compares the columns. C's recursion depth limits (15 for multi calls, 7 for easy calls) are kept in
-the shim, as api.c applies them; the Rust API has no depth limits because the context types bound nesting. CI
-greps that every `extern "C"` function in `easy.rs` and `multi.rs` calls a gate.
+flag (`gen/api.py`), and a shim test parses the C file and compares the columns. The Rust API
+has no depth limits because the context types bound nesting.
+
+The adapters are installed only where C's default differs from the core's: the write adapter
+always (the body goes to the application's C stream, never Rust's standard output), the header
+one with a header function or data, the debug one with a debug function, the text one with a
+STDERR stream other than standard error, ERRORBUFFER's with a buffer, and the progress and read
+ones as the settings call for. A handle allocates about what C's does (751). A copy's
+adapters are its own, installed in place of the ones it was cloned with.
 
 ### 7.3 `curl_easy_pause`
 
@@ -1281,7 +1289,8 @@ greps that every `extern "C"` function in `easy.rs` and `multi.rs` calls a gate.
 ### 7.4 `curl_easy_perform`, `curl_easy_perform_ev`, cleanup
 
 - `perform`: reject if `Added`; close a leftover CONNECT_ONLY connection; take or create the
-  private `ShimMulti` (policy 16/1); copy MAXCONNECTS and QUICK_EXIT; move the `Easy` in
+  private `ShimMulti` (policy 16/1, as every `ShimMulti`, so ids equal C's); copy MAXCONNECTS
+  and QUICK_EXIT; move the `Easy` in
   (`home = Added { private, id }`); `drive_to_completion` (the same core function `Easy::perform`
   uses, plus frames); remove; move the `Easy` back. An internal multi error maps to OutOfMemory
   or BadFunctionArgument.
@@ -1316,7 +1325,9 @@ greps that every `extern "C"` function in `easy.rs` and `multi.rs` calls a gate.
 
 - **Write**: `(ptr, 1, len, userdata)`; CURL_WRITEFUNC_PAUSE → `Write::Pause`; CURL_WRITEFUNC_ERROR
   → `Fail` ("client returned ERROR on write of N bytes"); `n != len` → `Fail` ("Failure writing
-  output to destination, passed N returned M"); NULL → fwrite to WRITEDATA or stdout. The adapter
+  output to destination, passed N returned M", which the adapter gives with `TransferCx::fail`:
+  a handler that gave its reason gets none from the core); NULL → fwrite to WRITEDATA or
+  stdout. The adapter
   reads `ccb` at call time, so a setopt of WRITEFUNCTION/WRITEDATA inside the callback applies to
   the next piece.
 - **Header**: HEADERFUNCTION, else WRITEFUNCTION if HEADERDATA is set, else discard; userdata is
@@ -1335,16 +1346,20 @@ greps that every `extern "C"` function in `easy.rs` and `multi.rs` calls a gate.
 
 ### 7.7 setopt, getinfo, headers, errors
 
-- `curl_easy_setopt` dispatch is generated from `inventory/options.json`: a `Detached` handle
-  writes its `Easy`; an `Added` one goes through `with_easy` (frame → `options_mut(id)`, else
-  `multi.easy_mut(id)`). Callback options update `ccb` only.
+- `curl_easy_setopt` reads its argument by the id's type class (long, pointer, function,
+  offset, blob), checks it as setopt.c does and applies it where `with_easy` finds the `Easy`
+  (frame → `options_mut(id)`, else `multi.easy_mut(id)`, else the detached one). Callback
+  options update `ccb`, and install or drop the adapter they need. An id
+  `inventory/options.json` lists (`gen/setopt.py`) that the shim does not implement yet is
+  CURLE_NOT_BUILT_IN; any other, CURLE_UNKNOWN_OPTION.
 - `curl_easy_getinfo`: frame → `cx.info(id)`; else `multi.report(id)` or the detached report.
   Strings are copied into `InfoStrings`. CURL_TIME and CURL_DEBUG_SIZE overrides apply here
   under debug-hooks.
 - `curl_easy_header` copies into `hdr_out[0]`; `nextheader` into `hdr_out[1]`, with the anchor
   holding a `HeaderCursor`; the reserved origin bit 1<<27 is set by the shim.
 - `ErrorKind` → `CURLcode` through the existing generated match, no wildcard; the detail goes to
-  ERRORBUFFER. Shim-only codes: RECURSIVE_API_CALL, CURLE_AGAIN from `Recv::WouldBlock` in
+  ERRORBUFFER as `failf` gives it: the core tells `Callbacks::failure` a transfer's first reason,
+  and the shim's sink copies it, in a multi as in a perform. Shim-only codes: RECURSIVE_API_CALL, CURLE_AGAIN from `Recv::WouldBlock` in
   `curl_easy_recv`/`send`, CURLM_BAD_SOCKET, CURLM_BAD_FUNCTION_ARGUMENT.
 
 ### 7.8 Deliberate differences from C

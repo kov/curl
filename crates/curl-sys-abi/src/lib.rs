@@ -11,10 +11,7 @@
 #[rustfmt::skip]
 mod ffi;
 #[rustfmt::skip]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the code mappings are unused until calls return errors")
-)]
+#[allow(dead_code, reason = "the share and URL handles come later")]
 mod error_codes;
 #[cfg(feature = "debug-hooks")]
 mod debug;
@@ -24,9 +21,14 @@ mod debug;
 #[cfg(feature = "debug-hooks")]
 #[global_allocator]
 static ALLOCATOR: curl_alloc::track::Tracker = curl_alloc::track::Tracker;
+mod callbacks;
+mod easy;
 mod gate;
+mod getinfo;
+mod multi;
 mod printf;
 mod root;
+mod setopt;
 mod strerror;
 mod strings;
 mod version;

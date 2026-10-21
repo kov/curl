@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 6 are **done**; every other step is **to do**.
+Status: steps 1 to 10 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -165,14 +165,23 @@ yet meet.
    2026-10-20: `curl -s -o O file://…` makes 25 allocations, the C tool 59. Flips: 200–205, 231,
    288, 686, 1145, 1146, 1220, 1440–1442, 1445, 1469, 1490, 1491, 2036, 2044, 2071, 2072, 3016,
    3203, 4040.
-10. **abi: add easy and multi handles.** `ShimEasy`, `ShimMulti`, the `with_multi`/`with_easy`
-    gate, `TABLE` generated from `lib/api.c` with its comparison test, `ShimEvents`, the callback
-    adapters, generated setopt for the options so far, getinfo, the error detail for
-    ERRORBUFFER and the informational text a verbose transfer traces (`failf`, `infof`; the tool's
-    result line shows the detail), `curl_easy_perform`, `pause`,
-    `perform_ev`, the multi entry points (`fdset` and `waitfds` list no sockets until step 11's
-    `Multi::sockets`, as no transfer owns one before then). Flips: 1508, 3105, 1564, 2414 (and any `file://`-only
-    libtests the inventory lists).
+10. **abi: add easy and multi handles.** **Done.** `ShimEasy` (`easy.rs`) holds its `Easy` while
+    on its own and names it in its multi while added; `ShimMulti` (`multi.rs`) holds its core
+    behind the gate (`gate/`, `TABLE` generated from `lib/api.c`), which hands a call either the
+    core or the context the running callback lent (`Frame`). `ShimEvents` runs the timer and
+    notify callbacks. The callback adapters (`callbacks.rs`) read the application's functions
+    when they run, and are installed only where C's default differs from the core's, so a
+    handle allocates about what C's does (751). `curl_easy_setopt` (`setopt/`) checks each
+    option as setopt.c does; an id libcurl knows but the shim lacks is `CURLE_NOT_BUILT_IN`
+    (`gen/setopt.py` lists the ids). `curl_easy_getinfo` answers the report's fields.
+    `curl_easy_perform` runs in a private `ShimMulti`; `curl_easy_pause`; the multi entry
+    points (`fdset` and `waitfds` list no sockets until step 11). A handler explains its own
+    failure (`TransferCx::fail`) and the core adds no reason of its own. Flips: 502, 751, 1508,
+    1550, 1558, 1564, 1592, 1791, 2414, 3105. Left for the options and steps that need them:
+    `CURLINFO_EFFECTIVE_URL` (1990), the debug build's `CURL_TIME` getinfo override, C's
+    "boolean setopt got unsupported argument" text, multi calls from a transfer's own callback
+    (`info_read` and the counts answer `RECURSIVE_API_CALL`), `curl_easy_perform_ev`, and the
+    multi options past the timer and notify callbacks.
 
 **HTTP/1.1 GET**
 

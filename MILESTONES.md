@@ -232,7 +232,20 @@ yet meet.
     `ChunkDecoder`, trailers, GOT_NOTHING, every limit, the accountant's `maxdownload` cut and
     short-body end ("end of response with N bytes missing"). Byte-fed tests at every split point from
     the fixtures of 1274, 1430–1433, 1466, 365, 2918, 1722, 1723, 2119, 772, 773, 497, 747, 1154,
-    34, 36, 207, 1416, 1417, 2106. Ports units 1625, 1626.
+    34, 36, 207, 1416, 1417, 2106. Ports units 1625, 1626. Built in five parts, each its own
+    commit, pure and fed bytes by tests; the protocol drives them from step 14.
+    - **a. Field helpers.** **Done.** `proto/http1/fields.rs`: a header's value
+      (`Curl_copy_header_value`, unit 1626), whether it lists a token (`Curl_compareheader`,
+      unit 1625), and whether a line is one (`Curl_verify_header`).
+    - **b. Lines and the status line.** **To do.** Line assembly over any split, folding,
+      the HTTP/0.9 decision, the status line's grammar, the per-response and per-transfer
+      header budgets, events in `http_rw_hd`'s order.
+    - **c. What the headers say, and the framing.** **To do.** Content-Length,
+      Transfer-Encoding and Connection applied as each header arrives, with C's gates; the
+      framing folded from them at the blank line; max-filesize at the head.
+    - **d. Chunks and trailers.** **To do.** `ChunkDecoder`, trailers, `--raw`, its limits.
+    - **e. Accounting.** **To do.** The `maxdownload` cut, a short body at its end, a body
+      where none was wanted, GOT_NOTHING.
 14. **http1: generate the fixture runner from tests/data.** The milestone set's cases without
     servercmd, driven over `FakeNet` and `ManualClock`; armed by breaking a framing rule. Adds the
     plain-GET allocation budget test, set at this design's count.

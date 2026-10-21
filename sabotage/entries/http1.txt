@@ -62,3 +62,35 @@ witness: curl-core proto::http1::request::tests::connection_headers_come_last
         out.line(&[b"Connection: ", first.value().expect("filtered on it")])?;
 --- new
         out.line(&[&first.line])?;
+
+=== a token matches as a prefix of a longer word
+file: crates/curl-core/src/proto/http1/fields.rs
+witness: curl-core proto::http1::fields::tests::tokens_are_found_as_c_finds_them
+--- old
+                .is_none_or(|&b| b == b',' || is_blank(b) || is_newline(b))
+--- new
+                .is_none_or(|_| true)
+
+=== a header's value keeps its blanks
+file: crates/curl-core/src/proto/http1/fields.rs
+witness: curl-core proto::http1::fields::tests::values_are_read_as_c_reads_them
+--- old
+    Some(trim_blanks(&rest[..end]))
+--- new
+    Some(&rest[..end])
+
+=== a CR just before the line's end is stray
+file: crates/curl-core/src/proto/http1/fields.rs
+witness: curl-core proto::http1::fields::tests::lines_are_verified_as_c_verifies_them
+--- old
+            b'\r' if i + 2 < line.len() => return Err(BadLine::StrayCr),
+--- new
+            b'\r' if i + 1 < line.len() => return Err(BadLine::StrayCr),
+
+=== the second line may continue the status line
+file: crates/curl-core/src/proto/http1/fields.rs
+witness: curl-core proto::http1::fields::tests::lines_are_verified_as_c_verifies_them
+--- old
+    if number < 2 || colon || (number > 2 && line.first().is_some_and(|&b| is_blank(b))) {
+--- new
+    if number < 2 || colon || (number > 1 && line.first().is_some_and(|&b| is_blank(b))) {

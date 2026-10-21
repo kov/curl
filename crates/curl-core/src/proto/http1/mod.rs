@@ -6,4 +6,5 @@
     expect(dead_code, reason = "no transfer makes a request yet")
 )]
 
+pub(crate) mod fields;
 pub(crate) mod request;

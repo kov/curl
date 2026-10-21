@@ -9,5 +9,6 @@
 pub(crate) mod fields;
 #[cfg(test)]
 mod fixture;
+pub(crate) mod framing;
 pub(crate) mod request;
 pub(crate) mod response;

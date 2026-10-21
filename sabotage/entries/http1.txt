@@ -118,9 +118,9 @@ witness: curl-core proto::http1::response::tests::folded_lines_are_joined
 file: crates/curl-core/src/proto/http1/response.rs
 witness: curl-core proto::http1::response::tests::interim_heads_come_before_the_final_one
 --- old
-            let interim = (100..200).contains(&code);
+            let interim = (100..200).contains(&status.code);
 --- new
-            let interim = (100..100).contains(&code);
+            let interim = (100..100).contains(&status.code);
 
 === HTTP/0.9 is taken on a reused connection
 file: crates/curl-core/src/proto/http1/response.rs
@@ -158,9 +158,9 @@ witness: curl-core proto::http1::response::tests::a_line_is_at_most_100_kib
 file: crates/curl-core/src/proto/http1/response.rs
 witness: curl-core proto::http1::response::tests::status_codes_are_three_digits
 --- old
-            bad_code = code < 100;
+            bad_code = status.code < 100;
 --- new
-            bad_code = code < 10;
+            bad_code = status.code < 10;
 
 === a line merely starting HTTP/ is refused
 file: crates/curl-core/src/proto/http1/response.rs
@@ -171,3 +171,99 @@ witness: curl-core proto::http1::response::tests::status_lines_are_read_as_c_rea
 --- new
         return Err(HeadError::UnknownVersion);
     };
+
+=== a coding does not void a later length
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_transfer_coding_overrides_the_length
+--- old
+            && !self.length_void
+            && let Some(v) = value_of(line, b"Content-Length:")
+--- new
+            && let Some(v) = value_of(line, b"Content-Length:")
+
+=== a 304 stacks its codings
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::some_responses_have_no_body
+--- old
+            && status.code != 304
+--- new
+            && status.code != 305
+
+=== a second length may differ
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_length_is_one_number
+--- old
+            if self.size.is_some_and(|s| s != n) {
+--- new
+            if self.size.is_some_and(|s| s == n + 1) {
+
+=== a coding after chunked is merely unsolicited
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::transfer_codings_are_refused_as_c_refuses_them
+--- old
+                if chunked_here {
+--- new
+                if chunked_here && false {
+
+=== identity is a coding not asked for
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::transfer_codings_are_refused_as_c_refuses_them
+--- old
+                if name.eq_ignore_ascii_case(b"identity") {
+--- new
+                if name.eq_ignore_ascii_case(b"identity!") {
+
+=== six codings may stack
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::transfer_codings_are_refused_as_c_refuses_them
+--- old
+            if self.codings >= MAX_CODINGS {
+--- new
+            if self.codings > MAX_CODINGS {
+
+=== a coding may follow chunked
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::transfer_codings_are_refused_as_c_refuses_them
+--- old
+            if !is_chunked && self.chunked {
+--- new
+            if !is_chunked && self.chunked && false {
+
+=== a body coded otherwise keeps its length
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_transfer_coding_overrides_the_length
+--- old
+                self.length_void = true;
+--- new
+
+=== an HTTP/1.0 body without a length keeps the connection
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::what_closes_the_connection
+--- old
+            && status.version == HttpVersion::Http11
+--- new
+            && status.version == HttpVersion::Http2
+
+=== keep-alive counts on HTTP/1.1
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::what_closes_the_connection
+--- old
+        if status.version == HttpVersion::Http10 && says(line, b"Connection:", b"keep-alive") {
+--- new
+        if says(line, b"Connection:", b"keep-alive") {
+
+=== a coding's name keeps its trailing blanks
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::transfer_codings_are_refused_as_c_refuses_them
+--- old
+        let len = part.iter().rposition(|&b| b > b' ').map_or(0, |p| p + 1);
+--- new
+        let len = part.len();
+
+=== raw codings are still refused
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_transfer_coding_overrides_the_length
+--- old
+                if asked.raw_codings {
+--- new
+                if asked.raw_codings && false {

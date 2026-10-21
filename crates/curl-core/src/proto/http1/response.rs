@@ -8,6 +8,7 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields::{self, BadLine, MAX_HEADERS};
+use super::framing::{Asked, Framing, FramingError, Meta, Note};
 use crate::error::ErrorKind;
 
 /// The most one assembled line may be, the byte C's buffer keeps for
@@ -50,6 +51,8 @@ pub(crate) struct Exchange {
     pub(crate) reused: bool,
     /// A response that is no HTTP may be HTTP/0.9 (`CURLOPT_HTTP09_ALLOWED`).
     pub(crate) allow_09: bool,
+    /// What the request asks of the body's framing.
+    pub(crate) asked: Asked,
 }
 
 /// One line of the head, to be delivered whole, then `then` to be raised:
@@ -58,6 +61,8 @@ pub(crate) struct Exchange {
 pub(crate) struct Line<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) kind: LineKind,
+    /// What C says of the line before it delivers it.
+    pub(crate) note: Option<Note>,
     pub(crate) then: Result<(), HeadError>,
 }
 
@@ -81,7 +86,7 @@ pub(crate) enum HeadEvent<'a> {
 }
 
 /// Why a head is refused, each as C says it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HeadError {
     /// A line longer than C's line buffer, which C fails silently.
     LineTooLong,
@@ -99,11 +104,13 @@ pub(crate) enum HeadError {
         max: u64,
     },
     BadCode,
+    /// What a header says of the body is refused.
+    Framing(FramingError),
     OutOfMemory,
 }
 
 impl HeadError {
-    pub(crate) fn kind(self) -> ErrorKind {
+    pub(crate) fn kind(&self) -> ErrorKind {
         match self {
             HeadError::LineTooLong => ErrorKind::TooLarge,
             HeadError::InvalidStatusLine
@@ -114,13 +121,28 @@ impl HeadError {
             | HeadError::UnknownVersion
             | HeadError::BadCode => ErrorKind::UnsupportedProtocol,
             HeadError::TooLarge { .. } => ErrorKind::RecvError,
-            HeadError::OutOfMemory => ErrorKind::OutOfMemory,
+            HeadError::Framing(FramingError::BadLength) => ErrorKind::WeirdServerReply,
+            HeadError::Framing(FramingError::FileTooLarge) => ErrorKind::FilesizeExceeded,
+            HeadError::Framing(
+                FramingError::Unsolicited(_)
+                | FramingError::ListedAfterChunked(_)
+                | FramingError::TooManyCodings
+                | FramingError::ChunkedNotLast,
+            ) => ErrorKind::BadContentEncoding,
+            HeadError::Framing(FramingError::OutOfMemory) | HeadError::OutOfMemory => {
+                ErrorKind::OutOfMemory
+            }
         }
     }
 
     /// Whether C says why (`failf`); the others fail with no text.
-    pub(crate) fn says(self) -> bool {
-        !matches!(self, HeadError::LineTooLong | HeadError::OutOfMemory)
+    pub(crate) fn says(&self) -> bool {
+        !matches!(
+            self,
+            HeadError::LineTooLong
+                | HeadError::OutOfMemory
+                | HeadError::Framing(FramingError::OutOfMemory)
+        )
     }
 }
 
@@ -128,6 +150,7 @@ impl fmt::Display for HeadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             HeadError::LineTooLong | HeadError::OutOfMemory => Ok(()),
+            HeadError::Framing(ref e) => e.fmt(f),
             HeadError::InvalidStatusLine => f.write_str("Invalid status line"),
             HeadError::Http09NotAllowed => f.write_str("Received HTTP/0.9 when not allowed"),
             HeadError::BadSubversion => f.write_str("Unsupported HTTP/1 subversion in response"),
@@ -183,6 +206,10 @@ pub(crate) struct HeadParser {
     version_seen: bool,
     /// Head bytes of this request's responses (C's `allheadercount`).
     request_bytes: u64,
+    /// What the heads said so far.
+    meta: Meta,
+    /// The body's framing, once the final head ended.
+    framing: Option<Framing>,
 }
 
 impl HeadParser {
@@ -198,7 +225,19 @@ impl HeadParser {
             status: None,
             version_seen: false,
             request_bytes: 0,
+            meta: Meta::default(),
+            framing: None,
         }
+    }
+
+    /// What the heads said so far.
+    pub(crate) fn meta(&self) -> &Meta {
+        &self.meta
+    }
+
+    /// How the body is framed, once the final head ended.
+    pub(crate) fn framing(&self) -> Option<Framing> {
+        self.framing
     }
 
     /// Whether the final head has ended: what follows is body.
@@ -333,17 +372,28 @@ impl HeadParser {
     /// Give out the complete line in `line` (`http_rw_hd`).
     fn line_out(&mut self, transfer_bytes: &mut u64) -> Result<HeadEvent<'_>, HeadError> {
         self.given = true;
+        let mut note = None;
+        // An error found before the line is delivered, but raised after.
+        let mut first = Ok(());
         let mut bad_code = false;
         let kind = if is_newline(self.line[0]) {
-            let code = self.status.expect("a head ends after its status line").code;
+            let status = self.status.expect("a head ends after its status line");
             // Below 100 is no response C knows (`http_on_response`).
-            bad_code = code < 100;
-            let interim = (100..200).contains(&code);
+            bad_code = status.code < 100;
+            let interim = (100..200).contains(&status.code);
             if interim {
                 self.lines = 0;
                 self.status = None;
             } else {
                 self.phase = Phase::Done;
+                if !bad_code {
+                    let (said, framing) = self.meta.decide(status, &self.exchange.asked);
+                    note = said;
+                    match framing {
+                        Ok(framing) => self.framing = Some(framing),
+                        Err(e) => first = Err(HeadError::Framing(e)),
+                    }
+                }
             }
             LineKind::End { interim }
         } else {
@@ -358,19 +408,29 @@ impl HeadParser {
                 }
                 self.status = Some(status);
                 self.version_seen = true;
+                note = self.meta.on_status(status);
                 LineKind::Status(status)
             } else {
                 LineKind::Header
             };
             fields::verify_line(&self.line, self.lines).map_err(HeadError::BadLine)?;
+            if kind == LineKind::Header {
+                let status = self.status.expect("headers follow their status line");
+                note = self
+                    .meta
+                    .on_header(&self.line, status, &self.exchange.asked)
+                    .map_err(HeadError::Framing)?;
+            }
             kind
         };
-        let then = self
-            .count(self.line.len() as u64, transfer_bytes)
+        let counted = self.count(self.line.len() as u64, transfer_bytes);
+        let then = first
+            .and(counted)
             .and_then(|()| (!bad_code).then_some(()).ok_or(HeadError::BadCode));
         Ok(HeadEvent::Line(Line {
             bytes: &self.line,
             kind,
+            note,
             then,
         }))
     }

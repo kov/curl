@@ -1236,12 +1236,20 @@ fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOption
   head whose code is below 100 fails after it is delivered. A first line that is no HTTP is
   `Http09` (or 8 on a reused connection or after a status line, 1 when 0.9 is not allowed),
   decided on a partial line as soon as it cannot become `HTTP/`.
-- Within a header line, what it says is applied as it arrives (step 13c): `ResponseMeta` is
-  mutated with C's gates, and `decide_framing` folds it at the blank line.
-- **Framing is decided once, at the blank line, by `decide_framing`**: 1xx, 204, 304 and HEAD
-  have no body; TE overrides CL and a non-chunked final coding is `UntilClose` plus close;
-  `--ignore-content-length`; conflicting CL → 8; unsolicited TE → error; HTTP/1.0 closes unless
-  keep-alive. These are the inputs pinned by 365, 2918, 1722, 1723, 2119, 334, 499, 1484.
+- What a line says is applied as it arrives, with C's gates (`framing.rs`'s `Meta`): the status
+  line makes the response bodyless (1xx, 204 and 304, the last two with a size of 0) and an
+  HTTP/1.0 one closing; `Content-Length` is read only when the response may have a body, the
+  option does not ignore it and no other coding than chunked came before it, and a second value
+  must equal the first (8); `Transfer-Encoding` is read only when not bodyless, not a HEAD and
+  not a 304, each coding stacked as `Curl_build_unencoding_stack` stacks it, and one other than
+  chunked closes the connection and voids the length; `Connection: close` counts on HTTP/1,
+  `keep-alive` on 1.0 only. An infof C writes while reading a line rides on it as a `Note`, to be
+  traced before the line is delivered.
+- **Framing is folded once, at the final blank line, by `Meta::decide`**: a HEAD and a size of 0
+  have no body, chunked is `Chunked`, a size is `Length`, anything else `UntilClose`; an HTTP/1.1
+  body with no size, no chunks and no close closes ("no chunk, no close, no size"), and a size
+  past `max_filesize` is 63 after the blank line is delivered. These are the inputs pinned by 365,
+  2918, 1722, 1723, 2119, 334, 499, 1484, 178, 394 and 282.
 - **Every peer limit is an `Error`**: 100 KiB per line, 300 KiB per response and 20× that per
   transfer (one counter per limit in `HeaderBudget`), 5000 stored headers, 17 hex digits per
   chunk size, 4 KiB per trailer line, 5 codings.

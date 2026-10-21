@@ -243,9 +243,13 @@ yet meet.
       in `http_rw_hd`'s order. Tests feed 1274, 1430–1433, 1466 and 497 whole, split at every
       byte and a byte at a time; the status-line and bad-line cases were checked against the
       C binary.
-    - **c. What the headers say, and the framing.** **To do.** Content-Length,
-      Transfer-Encoding and Connection applied as each header arrives, with C's gates; the
-      framing folded from them at the blank line; max-filesize at the head.
+    - **c. What the headers say, and the framing.** **Done.** `proto/http1/framing.rs`:
+      Content-Length, Transfer-Encoding, Connection, Content-Type and Trailer applied as each
+      header arrives, with C's gates; the framing and the close folded at the final blank
+      line; max-filesize at the head. Fixtures 365, 2918, 1722, 1723, 2119, 334, 499, 1484,
+      178, 394, 282, 262, 398, 415, 2105, 129 and 1473, and the cases no fixture pins checked
+      against the C binary. Decoding codings other than chunked, Content-Encoding,
+      Content-Range and Location come with the steps that use them.
     - **d. Chunks and trailers.** **To do.** `ChunkDecoder`, trailers, `--raw`, its limits.
     - **e. Accounting.** **To do.** The `maxdownload` cut, a short body at its end, a body
       where none was wanted, GOT_NOTHING.

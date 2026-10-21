@@ -1,10 +1,21 @@
+use std::num::NonZeroU64;
+
 use super::*;
 use crate::proto::http1::fixture;
+
+const ASKED: Asked = Asked {
+    head: false,
+    ignore_length: false,
+    max_filesize: None,
+    decode_codings: false,
+    raw_codings: false,
+};
 
 const PLAIN: Exchange = Exchange {
     sent: HttpVersion::Http11,
     reused: false,
     allow_09: false,
+    asked: ASKED,
 };
 
 /// What a head came to: each line given out with its kind, the body
@@ -12,8 +23,14 @@ const PLAIN: Exchange = Exchange {
 #[derive(Debug, PartialEq, Eq)]
 struct Outcome {
     lines: Vec<(LineKind, Vec<u8>)>,
+    /// What C said of the lines, in order.
+    notes: Vec<Note>,
     body: Vec<u8>,
     error: Option<HeadError>,
+    framing: Option<Framing>,
+    close: bool,
+    /// The body's size as the head gives it.
+    size: Option<u64>,
 }
 
 /// Feed `chunks` in turn, each as far as the parser takes it.
@@ -21,8 +38,12 @@ fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outc
     let mut p = HeadParser::new(exchange);
     let mut out = Outcome {
         lines: Vec::new(),
+        notes: Vec::new(),
         body: Vec::new(),
         error: None,
+        framing: None,
+        close: false,
+        size: None,
     };
     for chunk in chunks {
         let mut input = *chunk;
@@ -41,6 +62,7 @@ fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outc
             input = &input[used..];
             match event {
                 Some(HeadEvent::Line(line)) => {
+                    out.notes.extend(line.note);
                     out.lines.push((line.kind, line.bytes.to_vec()));
                     if let Err(e) = line.then {
                         out.error = Some(e);
@@ -52,6 +74,9 @@ fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outc
             }
         }
     }
+    out.framing = p.framing();
+    out.close = p.meta().close();
+    out.size = p.meta().size();
     out
 }
 
@@ -326,4 +351,275 @@ fn a_request_s_head_bytes_are_counted() {
         input = &input[used..];
     }
     assert_eq!((p.request_bytes(), transfer, input), (25, 25, &b"rest"[..]));
+}
+
+fn asked(f: impl FnOnce(&mut Asked)) -> Exchange {
+    let mut exchange = PLAIN;
+    f(&mut exchange.asked);
+    exchange
+}
+
+/// Transfer-Encoding overrides Content-Length, and a coding other than
+/// chunked is ended by the close; with `--raw` an unknown one is passed
+/// on (tests 365, 2918).
+#[test]
+fn a_transfer_coding_overrides_the_length() {
+    let got = outcome(&fixture::reply(365), PLAIN);
+    assert_eq!(
+        (got.error, got.framing, got.close),
+        (None, Some(Framing::Chunked), false)
+    );
+    let raw = asked(|a| a.raw_codings = true);
+    let got = outcome(&fixture::reply(2918), raw);
+    assert_eq!(
+        (got.error, got.framing, got.close),
+        (None, Some(Framing::UntilClose), true)
+    );
+    // The length is void only from the coding on.
+    let got = outcome(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: x\r\nContent-Length: junk\r\n\r\n",
+        raw,
+    );
+    assert_eq!(got.framing, Some(Framing::UntilClose));
+    let got = outcome(
+        b"HTTP/1.1 200 OK\r\nContent-Length: junk\r\nTransfer-Encoding: x\r\n\r\n",
+        raw,
+    );
+    assert_eq!(got.error, Some(HeadError::Framing(FramingError::BadLength)));
+}
+
+/// Codings not asked for are refused, chunked must come last, and five is
+/// the most (tests 1722, 1723, 2119).
+#[test]
+fn transfer_codings_are_refused_as_c_refuses_them() {
+    let refused = |reply: &[u8], exchange| match outcome(reply, exchange).error {
+        Some(HeadError::Framing(e)) => (e.to_string(), HeadError::Framing(e).kind()),
+        other => panic!("{other:?}"),
+    };
+    let bad = ErrorKind::BadContentEncoding;
+    assert_eq!(
+        refused(&fixture::reply(1722), PLAIN),
+        (
+            "A Transfer-Encoding (another) was listed after chunked".into(),
+            bad
+        )
+    );
+    assert_eq!(
+        refused(&fixture::reply(1723), PLAIN),
+        (
+            "A Transfer-Encoding (another) was listed after chunked".into(),
+            bad
+        )
+    );
+    assert_eq!(
+        refused(&fixture::reply(2119), PLAIN),
+        (
+            "Unsolicited Transfer-Encoding (identityx) found".into(),
+            bad
+        )
+    );
+    let head = |te: &str| format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: {te}\r\n\r\n");
+    assert_eq!(
+        outcome(head(" , identity,,chunked ").as_bytes(), PLAIN).framing,
+        Some(Framing::Chunked),
+        "identity is nothing"
+    );
+    assert_eq!(
+        refused(head("x y, chunked").as_bytes(), PLAIN).0,
+        "Unsolicited Transfer-Encoding (x y) found"
+    );
+    let decoding = asked(|a| a.decode_codings = true);
+    assert_eq!(
+        refused(head("chunked, gzip").as_bytes(), decoding).0,
+        "Reject response due to 'chunked' not being the last Transfer-Encoding"
+    );
+    assert_eq!(
+        outcome(head("a, b, c, d, chunked").as_bytes(), decoding).framing,
+        Some(Framing::Chunked)
+    );
+    assert_eq!(
+        refused(head("a, b, c, d, e, chunked").as_bytes(), decoding).0,
+        "Reject response exceeding limit of 5 transfer encodings"
+    );
+    assert_eq!(
+        outcome(head("chunked, chunked").as_bytes(), decoding).framing,
+        Some(Framing::Chunked),
+        "a second chunked is ignored"
+    );
+}
+
+/// No body is read for a HEAD, a 204 or a 304, whatever their headers say
+/// (tests 334, 499, 1484).
+#[test]
+fn some_responses_have_no_body() {
+    let got = outcome(&fixture::reply(334), PLAIN);
+    assert_eq!(
+        (got.error, got.framing, got.close),
+        (None, Some(Framing::None), false)
+    );
+    let head = asked(|a| a.head = true);
+    let got = outcome(&fixture::reply(499), head);
+    assert_eq!(
+        (got.error, got.framing, got.size),
+        (None, Some(Framing::None), Some(6)),
+        "a HEAD's size is still announced"
+    );
+    let got = outcome(&fixture::reply(1484), head);
+    assert_eq!(
+        (got.error, got.framing, got.close),
+        (None, Some(Framing::None), false)
+    );
+    let got = outcome(
+        b"HTTP/1.1 304 Not\r\nContent-Length: 9\r\nTransfer-Encoding: gzip\r\n\r\n",
+        PLAIN,
+    );
+    assert_eq!((got.error, got.framing), (None, Some(Framing::None)));
+}
+
+/// Content-Length is a number, or the same number listed or repeated
+/// (tests 178, 394).
+#[test]
+fn a_length_is_one_number() {
+    for test in [178, 394] {
+        let got = outcome(&fixture::reply(test), PLAIN);
+        assert_eq!(
+            got.error,
+            Some(HeadError::Framing(FramingError::BadLength)),
+            "test {test}"
+        );
+    }
+    let length = |values: &[&str]| {
+        let mut reply = String::from("HTTP/1.1 200 OK\r\n");
+        for v in values {
+            reply += &format!("Content-Length:{v}\r\n");
+        }
+        reply += "\r\n";
+        let got = outcome(reply.as_bytes(), PLAIN);
+        got.error.map_or(Ok(got.framing), Err)
+    };
+    let bad = Err(HeadError::Framing(FramingError::BadLength));
+    assert_eq!(length(&[" 6"]), Ok(Some(Framing::Length(6))));
+    assert_eq!(length(&["6 , 6,6 "]), Ok(Some(Framing::Length(6))));
+    assert_eq!(length(&["6", "\t6"]), Ok(Some(Framing::Length(6))));
+    assert_eq!(length(&["6", "7"]), bad);
+    assert_eq!(length(&["6,7"]), bad);
+    assert_eq!(length(&["6x"]), bad);
+    assert_eq!(length(&["+6"]), bad);
+    assert_eq!(length(&["0"]), Ok(Some(Framing::None)));
+    // Past what a size can be: ignored, and the connection closes.
+    let got = outcome(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 9223372036854775808\r\n\r\n",
+        PLAIN,
+    );
+    assert_eq!(
+        (got.error, got.framing, got.close),
+        (None, Some(Framing::UntilClose), true)
+    );
+    assert_eq!(got.notes, [Note::LengthOverflow]);
+    let ignoring = asked(|a| a.ignore_length = true);
+    let got = outcome(b"HTTP/1.1 200 OK\r\nContent-Length: junk\r\n\r\n", ignoring);
+    assert_eq!((got.error, got.framing), (None, Some(Framing::UntilClose)));
+}
+
+/// A size past the limit fails at the head's end, after the blank line is
+/// delivered; one too large to be a size fails at its header.
+#[test]
+fn a_size_past_the_limit_fails_at_the_head() {
+    let limited = asked(|a| a.max_filesize = NonZeroU64::new(5));
+    let got = outcome(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabcdef",
+        limited,
+    );
+    assert_eq!(got.lines.len(), 3);
+    let e = got.error.unwrap();
+    assert_eq!(
+        (e.to_string(), e.kind()),
+        (
+            "Maximum file size exceeded".into(),
+            ErrorKind::FilesizeExceeded
+        )
+    );
+    let got = outcome(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n", limited);
+    assert_eq!(got.error, None);
+    let got = outcome(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999\r\n\r\n",
+        limited,
+    );
+    assert_eq!(
+        (got.lines.len(), got.error),
+        (1, Some(HeadError::Framing(FramingError::FileTooLarge)))
+    );
+}
+
+/// What says the connection closes: HTTP/1.0 unless it keeps alive,
+/// `Connection: close`, and an HTTP/1.1 body with nothing else to end it
+/// (test 282).
+#[test]
+fn what_closes_the_connection() {
+    let got = outcome(&fixture::reply(282), PLAIN);
+    assert_eq!((got.framing, got.close), (Some(Framing::UntilClose), true));
+    assert_eq!(got.notes, [Note::AssumeClose]);
+    let h10 = Exchange {
+        sent: HttpVersion::Http10,
+        ..PLAIN
+    };
+    let got = outcome(b"HTTP/1.0 200 OK\r\nContent-Length: 1\r\n\r\n", h10);
+    assert_eq!(
+        (got.close, &got.notes[..]),
+        (true, &[Note::Http10Close][..])
+    );
+    let got = outcome(
+        b"HTTP/1.0 200 OK\r\nConnection: Keep-Alive\r\nContent-Length: 1\r\n\r\n",
+        h10,
+    );
+    assert_eq!(
+        (got.close, &got.notes[..]),
+        (false, &[Note::Http10Close, Note::Http10KeepAlive][..])
+    );
+    let got = outcome(
+        b"HTTP/1.1 200 OK\r\nConnection: Keep-Alive\r\nContent-Length: 1\r\n\r\n",
+        PLAIN,
+    );
+    assert_eq!(
+        (got.close, got.notes),
+        (false, vec![]),
+        "keep-alive is 1.0's"
+    );
+    let got = outcome(
+        b"HTTP/1.1 200 OK\r\nConnection: x, close\r\nContent-Length: 1\r\n\r\n",
+        PLAIN,
+    );
+    assert!(got.close);
+    let head = asked(|a| a.head = true);
+    let got = outcome(b"HTTP/1.1 200 OK\r\n\r\n", head);
+    assert_eq!(
+        (got.close, got.framing),
+        (false, Some(Framing::None)),
+        "a HEAD has no body to end"
+    );
+}
+
+/// The bad lines of tests 262, 398, 415 and 2105, and 129's version.
+#[test]
+fn bad_heads_of_the_suite() {
+    let bad = |test| outcome(&fixture::reply(test), PLAIN).error;
+    assert_eq!(bad(262), Some(HeadError::BadLine(BadLine::Nul)));
+    assert_eq!(bad(398), Some(HeadError::BadLine(BadLine::NoColon)));
+    assert_eq!(bad(415), Some(HeadError::BadLine(BadLine::StrayCr)));
+    assert_eq!(bad(2105), Some(HeadError::BadLine(BadLine::StrayCr)));
+    assert_eq!(bad(129), Some(HeadError::BadSubversion));
+    assert_eq!(bad(1473), None, "a blank-led line 2 with a colon");
+}
+
+/// The content type is kept, the last one given.
+#[test]
+fn the_content_type_is_kept() {
+    let mut p = HeadParser::new(PLAIN);
+    let mut input = &b"HTTP/1.1 200 OK\r\nContent-Type: a\r\nContent-Type:  \r\ncontent-type:  text/html \r\nTrailer: x\r\n\r\n"[..];
+    while !p.is_done() {
+        let (used, _) = p.feed(input, &mut 0).unwrap();
+        input = &input[used..];
+    }
+    assert_eq!(p.meta().content_type(), Some(&b"text/html"[..]));
+    assert!(p.meta().trailer());
 }

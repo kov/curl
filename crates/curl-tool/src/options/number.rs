@@ -167,6 +167,15 @@ mod tests {
         // A fraction as long as the unit's digits is cut by one: the C
         // tool takes `1.1234k` as 1149 bytes, as `1.123k`.
         assert_eq!(size(b"1.1234k"), Ok(1149));
+        // At `LONG_MAX / mul == prec` C takes the second form, which rounds
+        // the unit down first.
+        assert_eq!(size(b"0.8191p"), Ok(922_224_613_692_644));
+        // The fraction counts against the limit.
+        assert_eq!(size(b"9007199254740991.5k"), Ok(9_223_372_036_854_775_296));
+        assert_eq!(
+            size(b"9007199254740992.5k"),
+            Err(ParamError::NumberTooLarge)
+        );
     }
 
     /// The C tool's answers, from `build/c/src/curl --retry` and friends.

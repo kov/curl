@@ -205,3 +205,57 @@ fn takes_one_method() {
          Warning: (-T, --upload-file) and HEAD (-I, --head).\n"
     );
 }
+
+/// `-H` warns of a header with neither colon nor semicolon, and a second
+/// HTTP version option warns that it overrides the first.
+#[test]
+fn warns_of_odd_header_and_version_options() {
+    let warning = "Warning: The provided HTTP header 'foo' does not look like a header?\n";
+    let overrides = "Warning: Overrides previous HTTP version option\n";
+    for (args, want) in [
+        (&["-H", "foo"][..], warning.to_owned()),
+        (&["-H", "a:b", "-H", "c;"], String::new()),
+        (&["-0", "--http1.1"], overrides.to_owned()),
+        (&["-0", "-0"], String::new()),
+    ] {
+        // No transfer: the URL's port refuses.
+        let mut all = vec!["--no-progress-meter", "-o", "/dev/null"];
+        all.extend_from_slice(args);
+        all.push("http://127.0.0.1:1/");
+        let run = curl(&all);
+        if want.is_empty() {
+            assert!(!run.stderr.contains("Warning"), "{args:?}: {}", run.stderr);
+        } else {
+            assert!(run.stderr.starts_with(&want), "{args:?}: {}", run.stderr);
+        }
+    }
+}
+
+/// `-D -` dumps the header lines to standard output, `-D %` to standard
+/// error.
+#[test]
+fn dumps_the_headers_to_the_standard_streams() {
+    let head = "HTTP/1.1 200 OK\r\nContent-Length: 6\r\nA: b\r\n\r\n";
+    let s = Server::new(OK);
+    let run = curl(&["-s", "-D", "-", &s.url()]);
+    assert_eq!(run.stdout, [head.as_bytes(), b"-foo-\n"].concat());
+    let s = Server::new(OK);
+    let run = curl(&["-s", "-D", "%", &s.url()]);
+    assert_eq!((&run.stdout[..], &run.stderr[..]), (&b"-foo-\n"[..], head));
+}
+
+/// With two URLs, `-D` starts its file afresh for the first transfer and
+/// adds the second's header lines after.
+#[test]
+fn dumps_the_headers_of_each_transfer() {
+    let dir = std::env::temp_dir().join(format!("curl-tool-heads-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("heads");
+    std::fs::write(&file, "old\n").unwrap();
+    let (a, b) = (Server::new(OK), Server::new(OK));
+    let run = curl(&["-s", "-D", file.to_str().unwrap(), &a.url(), &b.url()]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let head = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nA: b\r\n\r\n";
+    assert_eq!(std::fs::read(&file).unwrap(), [&head[..], head].concat());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

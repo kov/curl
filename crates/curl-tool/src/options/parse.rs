@@ -393,7 +393,7 @@ mod tests {
             run(&["x", "-C", "1", "--clobber", "--no-remove-on-error"]),
             Ok((1, None, None))
         );
-        assert_eq!(run(&["x", "--no-clobber"]), Ok((1, Some("clobber"), None)));
+        assert_eq!(run(&["x", "--no-clobber"]), Ok((1, None, None)));
         assert_eq!(
             run(&["x", "--remove-on-error"]),
             Ok((1, Some("remove-on-error"), None))

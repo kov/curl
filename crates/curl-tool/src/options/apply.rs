@@ -566,9 +566,6 @@ pub(crate) fn apply<'a>(
             // `--clobber` differs from the default only for a name the
             // server gives, which `--remote-header-name` asks for.
             op.clobber = if on { Clobber::Always } else { Clobber::Never };
-            if !on {
-                line.not_implemented(spec, "--no-");
-            }
         }
         Opt::Proto => {
             let set = protocols::parse(Protocols::all(), value.text(), msgs)?;

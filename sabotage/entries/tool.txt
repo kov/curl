@@ -427,3 +427,11 @@ witness: curl-tool uploads_standard_input
     if upload.is_some_and(|file| file != b"-") {
 --- new
     if upload.is_some() {
+
+=== a numbered name goes after the extension
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::clobber_names_number_as_c_does
+--- old
+        Some(dot) if dot != base && dot + 1 < name.len() => {
+--- new
+        Some(dot) if false && dot != base && dot + 1 < name.len() => {

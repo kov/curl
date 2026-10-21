@@ -20,6 +20,9 @@ pub enum Keep {
     Nothing,
     /// Everything: writes go after it.
     Everything,
+    /// There is to be nothing yet: a file that exists is not opened
+    /// (`O_EXCL`).
+    Absent,
 }
 
 /// Open `path` to read it. A directory opens too.
@@ -33,6 +36,7 @@ pub fn open_write(path: &CStr, keep: Keep, mode: u32) -> io::Result<File> {
     let keep = match keep {
         Keep::Nothing => libc::O_TRUNC,
         Keep::Everything => libc::O_APPEND,
+        Keep::Absent => libc::O_EXCL,
     };
     open(path, libc::O_WRONLY | libc::O_CREAT | keep, mode)
 }

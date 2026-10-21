@@ -47,6 +47,9 @@ pub(crate) struct Stream {
     pub(crate) binary_ok: bool,
     /// `--no-buffer`: what is written is flushed at once.
     pub(crate) no_buffer: bool,
+    /// `--no-clobber`: a file that exists is kept, the output going to
+    /// the first free name numbered after it.
+    pub(crate) no_clobber: bool,
     /// `--dump-header`: where header lines are written too.
     dump: Option<Dump>,
     /// Header lines with a colon in the last response's head
@@ -120,6 +123,7 @@ impl Output {
             terminal: false,
             binary_ok: false,
             no_buffer: false,
+            no_clobber: false,
             dump: None,
             num_headers: 0,
             after_blank: true,
@@ -188,6 +192,88 @@ impl Output {
     }
 }
 
+/// The most names tried for a file not to clobber (`MAX_CLOBBER_ATTEMPTS`).
+const MAX_CLOBBER: u32 = 9999;
+
+/// `name`, a file name ended by a zero byte, opened only if nothing has
+/// it, or else the first of its numbered names that nothing has, which
+/// `name` then becomes (`tool_create_output_file`). The error is the last
+/// name's.
+fn open_unclobbered(name: &mut Vec<u8>) -> std::io::Result<File> {
+    let first = fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE);
+    let mut err = match first {
+        Ok(f) => return Ok(f),
+        Err(e) => e,
+    };
+    #[cfg_attr(not(feature = "debug-hooks"), expect(unused_mut))]
+    let mut max = MAX_CLOBBER;
+    // The debug test build takes the limit from `CURL_MAX_CLOBBER`.
+    #[cfg(feature = "debug-hooks")]
+    if let Some(n) = std::env::var_os("CURL_MAX_CLOBBER")
+        .as_deref()
+        .and_then(crate::memlimit)
+        .filter(|&n| n <= 100_000)
+    {
+        max = n as u32;
+    }
+    let base = &name[..name.len() - 1];
+    let mut next = 1;
+    while matches!(
+        err.kind(),
+        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::IsADirectory
+    ) && next < max
+    {
+        let numbered = clobber_name(base, next).map_err(|OutOfMemory| err_oom())?;
+        next += 1;
+        match fs::open_write(Stream::c_name(&numbered), Keep::Absent, NEW_FILE_MODE) {
+            Ok(f) => {
+                *name = numbered;
+                return Ok(f);
+            }
+            Err(e) => err = e,
+        }
+    }
+    Err(err)
+}
+
+fn err_oom() -> std::io::Error {
+    std::io::Error::from(std::io::ErrorKind::OutOfMemory)
+}
+
+/// `name` numbered `n`, ended by a zero byte: before its extension if its
+/// base name has one, after it if not (`clobber_name`).
+fn clobber_name(name: &[u8], n: u32) -> Result<Vec<u8>, OutOfMemory> {
+    let base = name.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1);
+    let dot = name[base..]
+        .iter()
+        .rposition(|&b| b == b'.')
+        .map(|i| base + i);
+    let mut out = Vec::new();
+    match dot {
+        Some(dot) if dot != base && dot + 1 < name.len() => {
+            out.try_extend_from_slice(&name[..dot])?;
+            push_number(&mut out, b'-', n)?;
+            out.try_extend_from_slice(&name[dot..])?;
+        }
+        _ => {
+            out.try_extend_from_slice(name)?;
+            push_number(&mut out, b'.', n)?;
+        }
+    }
+    out.try_push(0)?;
+    Ok(out)
+}
+
+/// `sep` and `n` in decimal, after what `out` holds.
+fn push_number(out: &mut Vec<u8>, sep: u8, n: u32) -> Result<(), OutOfMemory> {
+    out.try_push(sep)?;
+    let mut digits = [0u8; 10];
+    let mut cursor = std::io::Cursor::new(&mut digits[..]);
+    write!(cursor, "{n}").expect("a u32 fits in ten digits");
+    let len = cursor.position() as usize;
+    out.try_extend_from_slice(&digits[..len])
+}
+
 impl Stream {
     /// Header lines with a colon in the last response's head.
     pub(crate) fn num_headers(&self) -> u64 {
@@ -234,7 +320,12 @@ impl Stream {
         if file.is_some() {
             return true;
         }
-        match fs::open_write(Stream::c_name(name), Keep::Nothing, NEW_FILE_MODE) {
+        let opened = if self.no_clobber {
+            open_unclobbered(name)
+        } else {
+            fs::open_write(Stream::c_name(name), Keep::Nothing, NEW_FILE_MODE)
+        };
+        match opened {
             Ok(f) => {
                 *file = Some(f);
                 self.bytes = 0;
@@ -391,6 +482,18 @@ impl HeaderHandler for Headers {
 
 #[cfg(test)]
 mod tests {
+
+    /// A number goes before an extension, or after a name without one;
+    /// a leading dot or a trailing one is no extension.
+    #[test]
+    fn clobber_names_number_as_c_does() {
+        let name = |n: &str, i| String::from_utf8(clobber_name(n.as_bytes(), i).unwrap()).unwrap();
+        assert_eq!(name("a/b.txt", 1), "a/b-1.txt\0");
+        assert_eq!(name("a.d/b", 2), "a.d/b.2\0");
+        assert_eq!(name("a/.hidden", 3), "a/.hidden.3\0");
+        assert_eq!(name("b.", 4), "b..4\0");
+        assert_eq!(name("x.tar.gz", 12), "x.tar-12.gz\0");
+    }
     use super::*;
 
     fn quiet() -> Messages {

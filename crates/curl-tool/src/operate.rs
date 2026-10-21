@@ -241,6 +241,7 @@ fn transfer(
         stream.terminal = terminal;
         stream.binary_ok = node.output == Output::File(b"-");
         stream.no_buffer = op.no_buffer;
+        stream.no_clobber = op.clobber == tool::Clobber::Never;
     }
     // A resumed transfer's bar shows the whole (`progressbarinit`); an
     // upload resumed at the end of what the peer holds learns it there.

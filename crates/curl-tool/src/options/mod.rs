@@ -21,8 +21,8 @@ mod protocols;
 mod table;
 
 pub(crate) use apply::{
-    CommandLine, Fail, Global, HttpVersion, IpVersion, Method, Node, Operation, Output, Request,
-    Resume, Trace, Unimplemented, Upload,
+    Clobber, CommandLine, Fail, Global, HttpVersion, IpVersion, Method, Node, Operation, Output,
+    Request, Resume, Trace, Unimplemented, Upload,
 };
 pub(crate) use errors::{ParamError, exit_code};
 pub(crate) use help::{CATEGORIES, HELP, HelpLine};

@@ -2,8 +2,11 @@
 //! starts (`Curl_cookie_loadfiles`), given what servers set
 //! (`http_header_s`), and asked what a request sends (`http_cookies`).
 //!
-//! The jar is taken out of the handle while it is used, so that what it
-//! says can be traced, and put back however that ends.
+//! The jar is the handle's own, or its share's if that keeps the cookies,
+//! as C's `data->cookies` is either. It is taken out for one operation at
+//! a time, so that what it says can be traced, and put back however that
+//! ends: as C locks `CURL_LOCK_DATA_COOKIE` around each, so that handles
+//! sharing the jar take turns with it whichever multis run them.
 
 use std::io::Read as _;
 
@@ -15,6 +18,7 @@ use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Lines;
 use crate::proto::http1::request::{SameOrigin, UserHeaders};
+use crate::share::{Lent, Share};
 use crate::trace;
 
 /// The longest `Cookie:` line a request sends (`MAX_COOKIE_HEADER_LEN`).
@@ -76,33 +80,69 @@ pub(super) fn custom_host(
 /// `Curl_cookie_run`).
 pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     let easy = cx.easy_mut();
-    if easy.options().http.cookies.wanted() && easy.cookies.is_none() {
-        easy.cookies = Some(Jar::default());
+    if easy.options().http.cookies.wanted() {
+        easy.enable_cookies();
     }
-    let Some(mut jar) = easy.cookies.take() else {
+    // Asked for before the jar is out, as making them can fail.
+    let suffixes = match easy.cookies {
+        Some(_) => easy.public_suffixes().map_err(oom)?,
+        None => return Ok(()),
+    };
+    let Some((mut jar, from)) = take_jar(cx)? else {
         return Ok(());
     };
     // Out of the options while the trace is reached; put back however
     // reading them ends.
     let files = std::mem::take(&mut cx.easy_mut().options_mut().http.cookies.files);
-    let read = read_files(cx, &mut jar, &files);
+    let list = suffixes.as_ref().map(Suffixes::list);
+    let read = read_files(cx, &mut jar, &files, list);
     if read.is_ok() {
         jar.start();
     }
-    let easy = cx.easy_mut();
-    easy.options_mut().http.cookies.files = files;
-    easy.cookies = Some(jar);
+    cx.easy_mut().options_mut().http.cookies.files = files;
+    put_back(cx, jar, from);
     read
+}
+
+/// Whose jar a transfer took out.
+enum Owner {
+    Handle,
+    Share(Share),
+}
+
+/// The jar the handle uses, taken out, if its jar is on: its share's, if
+/// that keeps the cookies, else its own.
+fn take_jar<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Option<(Jar, Owner)>, ErrorKind> {
+    let easy = cx.easy_mut();
+    if easy.cookies.is_none() {
+        return Ok(None);
+    }
+    if let Some(share) = easy.share().cloned() {
+        // Lent only to a call made from inside this operation's trace.
+        let lent = share
+            .lend_cookies()
+            .map_err(|Lent| ErrorKind::RecursiveApiCall)?;
+        if let Some(jar) = lent {
+            return Ok(Some((jar, Owner::Share(share))));
+        }
+    }
+    Ok(easy.cookies.take().map(|jar| (jar, Owner::Handle)))
+}
+
+fn put_back<H: Host>(cx: &mut StepCx<'_, H>, jar: Jar, owner: Owner) {
+    match owner {
+        Owner::Handle => cx.easy_mut().cookies = Some(jar),
+        Owner::Share(share) => share.give_back_cookies(jar),
+    }
 }
 
 fn read_files<H: Host>(
     cx: &mut StepCx<'_, H>,
     jar: &mut Jar,
     files: &Lines,
+    list: Option<&dyn crate::cookie::PublicSuffixes>,
 ) -> Result<(), ErrorKind> {
     let new_session = cx.easy().options().http.cookies.new_session;
-    let suffixes = cx.easy_mut().public_suffixes().map_err(oom)?;
-    let list = suffixes.as_ref().map(Suffixes::list);
     for name in files.iter() {
         // An empty name reads nothing, and turns the jar on all the same.
         if name.is_empty() {
@@ -205,7 +245,7 @@ pub(super) fn set_by_server<H: Host>(
     }
     let suffixes = cx.easy_mut().public_suffixes().map_err(oom)?;
     let list = suffixes.as_ref().map(Suffixes::list);
-    let mut jar = cx.easy_mut().cookies.take().expect("checked above");
+    let (mut jar, owner) = take_jar(cx)?.expect("on, checked above");
     let source = Source::Server {
         host: site.host,
         path: site.path,
@@ -221,7 +261,7 @@ pub(super) fn set_by_server<H: Host>(
         }
         Err(OutOfMemory) => Err(ErrorKind::OutOfMemory),
     };
-    cx.easy_mut().cookies = Some(jar);
+    put_back(cx, jar, owner);
     stored
 }
 
@@ -237,9 +277,9 @@ pub(super) fn request_value<H: Host>(
     let mut count = 0;
     // The line is full: the application's do not go either.
     let mut full = false;
-    if let Some(mut jar) = cx.easy_mut().cookies.take() {
+    if let Some((mut jar, owner)) = take_jar(cx)? {
         let made = jar_cookies(cx, &mut jar, site, &mut value, &mut count, &mut full);
-        cx.easy_mut().cookies = Some(jar);
+        put_back(cx, jar, owner);
         made?;
     }
     if application && !full {

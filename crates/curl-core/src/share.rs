@@ -4,9 +4,9 @@
 //! it is asked to keep them (`CURL_LOCK_DATA_COOKIE`).
 //!
 //! A transfer's multi borrows the caches whole for the length of a
-//! perform, and its handle the cookie jar, and they give them back at its
-//! end: one owner at a time, so no lock guards them. A perform on a share
-//! already lent is refused.
+//! perform, and a handle the cookie jar for one operation on it, and they
+//! give them back at its end: one owner at a time, so no lock guards
+//! them. A perform on a share already lent is refused.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -32,7 +32,7 @@ struct Inner {
 
 /// The share's caches are lent to a perform under way.
 #[derive(Debug)]
-pub(crate) struct Lent;
+pub struct Lent;
 
 impl Share {
     /// A share whose connections are the system's.
@@ -81,6 +81,22 @@ impl Share {
         if matches!(*cookies, Cookies::NotKept) {
             *cookies = Cookies::Here(Jar::default());
         }
+    }
+
+    /// Keep no cookies from now on, forgetting those kept
+    /// (`CURLSHOPT_UNSHARE` of `CURL_LOCK_DATA_COOKIE`).
+    pub fn forget_cookies(&self) -> Result<(), Lent> {
+        let mut cookies = self.0.cookies.borrow_mut();
+        if matches!(*cookies, Cookies::Lent) {
+            return Err(Lent);
+        }
+        *cookies = Cookies::NotKept;
+        Ok(())
+    }
+
+    /// How many hold the share: its clones, this one among them.
+    pub fn holders(&self) -> usize {
+        TryRc::count(&self.0)
     }
 
     /// The jar, if the share keeps one, for a handle to use until it gives

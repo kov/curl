@@ -1649,7 +1649,7 @@ fn a_share_keeps_connections_across_handles() {
     for _ in 0..2 {
         let mut m: Multi = Multi::new(env()).unwrap();
         let mut e = easy("tcp://127.0.0.1:1/");
-        e.options_mut().share = Some(share.clone());
+        e.set_share(Some(share.clone()));
         e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
         connects.push(e.report().connects());
         drop(m);
@@ -1658,7 +1658,7 @@ fn a_share_keeps_connections_across_handles() {
     assert_eq!(closed.get(), 0, "kept by the share");
     let lent = share.lend().unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
-    e.options_mut().share = Some(share.clone());
+    e.set_share(Some(share.clone()));
     let refused = e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits);
     assert_eq!(refused.unwrap_err().kind(), ErrorKind::RecursiveApiCall);
     share.give_back(lent);

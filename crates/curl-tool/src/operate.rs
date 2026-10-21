@@ -404,7 +404,7 @@ fn transfer(
         easy: Easy::new(),
         tracer: run.tracer,
     };
-    easy.options_mut().share = Some(run.share.clone());
+    easy.set_share(Some(run.share.clone()));
     easy.set_public_suffixes(Some(run.suffixes.clone()));
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).

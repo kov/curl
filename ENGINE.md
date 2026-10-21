@@ -1032,13 +1032,17 @@ The pool and the DNS cache are one `conn::Caches`, which a multi holds unless a 
 its own. `Share` (`share.rs`, `CURLOPT_SHARE` with `CURL_LOCK_DATA_CONNECT` and
 `CURL_LOCK_DATA_DNS`) keeps a `Caches` and the network its idle connections close through at
 the end, as C's share closes them through its own internal handle, never CLOSESOCKETFUNCTION.
-`Easy::perform` takes the share's caches for the length of the perform, swapped into the
+A handle holds its share (`Easy::set_share`, C's `data->share`): kept through `reset`, not
+copied by `try_clone`, as C's `duphandle` links none. `Easy::perform` takes the share's caches
+for the length of the perform, swapped into the
 handle's multi in place of its own, and gives them back with nothing leased: one owner at a
 time, so nothing locks them, and a connection made by one handle's multi is reused by the next
 (tests 2051, 2052, 3225). A perform on a share already lent (from a handler of a transfer using
 it) fails with `RecursiveApiCall`, where C's would go on under the share's lock. A share's idle
-connections close when its last clone drops (`curl_share_cleanup`). A share asked to keep
-cookies holds a jar too, lent to the handle in the same way (section 6.5).
+connections close when its last clone drops (`curl_share_cleanup`), and it is in use while a
+clone other than its owner's lives (`Share::holders`). A share asked to keep cookies holds a
+jar too, which a handle borrows for one operation on it at a time, whichever multi runs the
+transfer (section 6.5).
 
 Planned, for transfers on one share running at once in several multis (the shim's `CURLSH`
 across threads, or an application multi given handles with a share): the share keeps only the
@@ -1046,8 +1050,9 @@ idle connections, the route index and the DNS cache; a connection moves into its
 for the life of its lease and back at release, as C's `conn->attached_multi` makes a busy
 connection one multi's. The lock is then taken only at the pool's four points, by the `Lock`
 trait the shim maps to the application's callbacks, and `Pool::get(lease)` reads the multi's
-own table. Until then the pool owns busy connections too, the whole `Caches` moves, and the
-share's pool is made with no lock.
+own table. Until then the pool owns busy connections too, the whole `Caches` moves, the
+share's pool is made with no lock, and a transfer an application's multi runs uses that
+multi's caches, not its share's.
 
 ### 4.7 No admin easy
 
@@ -1527,8 +1532,10 @@ order within each bucket, which decide the order `CURLINFO_COOKIELIST` lists and
 any file or `save_to` is set, or the application turns it on (`enable_cookies`,
 `add_cookie`); it is kept through `reset`, and a duplicate gets an empty one if the original's
 is on. A share that keeps cookies (`Share::keep_cookies`, `CURL_LOCK_DATA_COOKIE`) lends its
-jar to a perform whose handle has its jar on, swapped in for the handle's own for its length
-(section 4.6.1); the handle's jar operations (`with_jar`) use the share's in the same way.
+jar in place of the handle's own, whose presence then only says the jar is on: for one
+operation at a time (reading the files, storing a `Set-Cookie:`, building a `Cookie:` line,
+the application's `with_jar` calls, saving), taken out and given back around it, as C locks
+`CURL_LOCK_DATA_COOKIE` around each; so handles in different multis take turns with it.
 As each transfer starts (pretransfer, before the resolve list), the files are read into it
 again, live cookies kept over a file's, and it is started (`running`): a jar not started is
 not written. The request's `Cookie:` line is the jar's matches for the cookie host (a custom

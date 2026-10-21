@@ -15,7 +15,7 @@ use crate::options::{Lines, Options};
 use crate::proto::http::auth::HostAuth;
 use crate::report::TransferReport;
 use crate::save::{self, SaveError};
-use crate::share::Lent;
+use crate::share::{Lent, Share};
 use crate::time::{Clock as _, SystemClock};
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
@@ -40,9 +40,14 @@ pub struct Easy {
     pub(crate) auth: HostAuth,
     /// The cookie jar, once the options or the application turn it on
     /// (C's `cookies` with `cookie_engine`): kept from one transfer to
-    /// the next, and through `reset`. For the length of a perform on a
-    /// share that keeps cookies, the share's, this one set aside.
+    /// the next, and through `reset`. On a share that keeps cookies, the
+    /// share's is used in its place, and this one only says the jar is on.
     pub(crate) cookies: Option<Jar>,
+    /// Where connections, resolved names and cookies are kept for the
+    /// transfers after, if not in the handle's own multi (`CURLOPT_SHARE`,
+    /// C's `data->share`): kept through `reset`, not copied with the
+    /// handle.
+    share: Option<Share>,
     /// The public suffixes cookies are checked against: without them, a
     /// domain needs a dot, as in C built without libpsl.
     suffixes: SuffixList,
@@ -120,6 +125,7 @@ impl Easy {
             private: None,
             // A jar of its own, empty, if this one's is on.
             cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            share: None,
             suffixes: match &self.suffixes {
                 SuffixList::Given(given) => SuffixList::Given(given.clone()),
                 SuffixList::Made(make) => SuffixList::Made(*make),
@@ -137,6 +143,16 @@ impl Easy {
         self.resolve_read = 0;
         self.wildcard_resolve = false;
         self.auth = HostAuth::default();
+    }
+
+    /// The share the handle's transfers use.
+    pub fn share(&self) -> Option<&Share> {
+        self.share.as_ref()
+    }
+
+    /// Use `share` for the transfers from now on, or none.
+    pub fn set_share(&mut self, share: Option<Share>) {
+        self.share = share;
     }
 
     /// The public suffixes cookies' domains are checked against, kept
@@ -265,7 +281,7 @@ impl Easy {
         make: bool,
         f: impl FnOnce(&mut Jar) -> R,
     ) -> Result<Option<R>, ErrorKind> {
-        if let Some(share) = self.options.share.clone() {
+        if let Some(share) = self.share.clone() {
             let lent = share
                 .lend_cookies()
                 .map_err(|Lent| ErrorKind::RecursiveApiCall)?;
@@ -290,7 +306,7 @@ impl Easy {
         let Some(to) = &self.options.http.cookies.save_to else {
             return Ok(());
         };
-        let share = self.options.share.clone();
+        let share = self.share.clone();
         let mut lent = match &share {
             Some(share) => share
                 .lend_cookies()
@@ -353,7 +369,7 @@ impl Easy {
     pub(crate) fn perform_in(&mut self, multi: &mut Multi, drive: Drive) -> Result<(), Error> {
         // The easy handle's limit is its multi's (`curl_easy_perform`).
         multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
-        let share = self.options.share.clone();
+        let share = self.share.clone();
         let mut lent = match &share {
             // A perform from a handler of a transfer on the same share.
             Some(share) => Some(
@@ -363,15 +379,6 @@ impl Easy {
             ),
             None => None,
         };
-        // A transfer whose jar is on uses its share's, if it keeps one.
-        // The caches are lent with it, so it cannot be lent already.
-        let cookies_lent = match &share {
-            Some(share) if self.cookies.is_some() || self.options.http.cookies.wanted() => {
-                share.lend_cookies().expect("lent with the caches")
-            }
-            _ => None,
-        };
-        let own_cookies = cookies_lent.map(|jar| self.cookies.replace(jar));
         if let Some(caches) = &mut lent {
             multi.swap_caches(caches);
         }
@@ -380,10 +387,6 @@ impl Easy {
         if let (Some(share), Some(mut caches)) = (&share, lent) {
             multi.swap_caches(&mut caches);
             share.give_back(caches);
-        }
-        if let (Some(share), Some(own)) = (&share, own_cookies) {
-            let jar = std::mem::replace(&mut self.cookies, own);
-            share.give_back_cookies(jar.expect("the share's jar stays in place"));
         }
         result.map_err(|kind| Error::with_detail(kind, self.report().failure()))
     }

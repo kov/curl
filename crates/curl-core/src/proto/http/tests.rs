@@ -130,7 +130,17 @@ fn server(replies: &[&[u8]], close: bool) -> (Multi, Conversation, ManualClock) 
 
 /// A verbose GET of `/path` on `m`, whose server is `talk`.
 fn get(m: &mut Multi, path: &str, talk: Conversation, set: impl FnOnce(&mut Options)) -> Ran {
-    let mut e = Easy::new();
+    get_with(m, Easy::new(), path, talk, set)
+}
+
+/// As `get`, by the handle `e`.
+fn get_with(
+    m: &mut Multi,
+    mut e: Easy,
+    path: &str,
+    talk: Conversation,
+    set: impl FnOnce(&mut Options),
+) -> Ran {
     let url = format!("http://127.0.0.1:{PORT}{path}");
     let seen = Seen::default();
     let o = e.options_mut();
@@ -2573,8 +2583,8 @@ fn a_share_keeps_cookies_for_its_handles() {
     let share = crate::share::Share::new().unwrap();
     let mut one = Easy::new();
     let mut two = Easy::new();
-    one.options_mut().share = Some(share.clone());
-    two.options_mut().share = Some(share.clone());
+    one.set_share(Some(share.clone()));
+    two.set_share(Some(share.clone()));
     one.add_cookie(line).unwrap();
     assert!(two.cookie_list().unwrap().is_empty(), "each its own");
     share.keep_cookies();
@@ -2621,4 +2631,24 @@ fn last_modified_gives_the_file_time_when_asked() {
     let (mut m, talk, _) = server(&[garbled], false);
     let ran = get(&mut m, "/a", talk, |o| o.filetime = true);
     assert_eq!(ran.easy.report().filetime(), Some(0));
+}
+
+/// Handles on a share that keeps cookies use its jar in whichever multi
+/// runs them: what one transfer stores, the next sends.
+#[test]
+fn a_share_s_jar_serves_the_transfers_of_a_multi() {
+    let share = crate::share::Share::new().unwrap();
+    share.keep_cookies();
+    let jar_on = |o: &mut Options| o.http.cookies.files.push(b"").unwrap();
+    let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
+    let mut one = Easy::new();
+    one.set_share(Some(share.clone()));
+    assert_eq!(get_with(&mut m, one, "/a", talk, jar_on).result, Ok(()));
+    let (mut m, talk, _) = server(&[OK], false);
+    let mut two = Easy::new();
+    two.set_share(Some(share.clone()));
+    let ran = get_with(&mut m, two, "/a", talk, jar_on);
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(text.contains("\r\nCookie: "), "{text}");
 }

@@ -16,3 +16,11 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
         caches.pool.close_idle(&mut **self.net.get_mut());
 --- new
         let _ = caches;
+
+=== a share's jar is used only by a perform
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_multi
+--- old
+    if let Some(share) = easy.share().cloned() {
+--- new
+    if let Some(share) = None::<Share> {

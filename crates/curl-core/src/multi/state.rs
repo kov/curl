@@ -13,7 +13,7 @@ use crate::conn::io::Events;
 use crate::conn::{
     Acquired, Answer, BadEntry, BadVia, Conn, ConnLease, ConnectError, Connected, Failure, Finish,
     Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route,
-    Setup, Tcp, parse_entry,
+    Setup, Tcp, WaitReason, parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -29,9 +29,11 @@ use crate::url::{self, GetOptions, ParseOptions, Part, Url};
 use crate::version::Protocol;
 
 use super::cx::{EngineRest, TransferCalls};
+use super::sched::RowSet;
 use super::sockets::Pollset;
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
-use super::{Host, TransferId};
+use super::{Host, Slot, Transfer, TransferId};
+use crate::id::Arena;
 
 /// A transfer from `add` to `remove`.
 #[derive(Debug)]
@@ -81,6 +83,12 @@ pub(crate) enum AfterRequest {
 pub(crate) enum TransferState {
     /// Added, not yet run.
     Init,
+    /// Waiting for room for a connection under the multi's limits (C's
+    /// PENDING): not run until a connection is given back or its time
+    /// is up.
+    Pending(Plan),
+    /// Let to look for a connection again (C's CONNECT, from PENDING).
+    Setup(Plan),
     /// Holding a connection being set up (C's CONNECTING).
     Connecting(Connecting),
     /// Holding a connection, the protocol connecting over it (C's
@@ -96,6 +104,15 @@ pub(crate) enum TransferState {
     Done(Done),
     /// Over; its message is read or not. Terminal until removed.
     Completed(Completed),
+}
+
+/// What a request needs to set up its connection, kept while it waits for
+/// one.
+#[derive(Debug)]
+pub(crate) struct Plan {
+    proto: ProtoState,
+    origin: Origin,
+    via: Option<TryRc<Peer>>,
 }
 
 /// A request whose connection is being set up.
@@ -222,10 +239,12 @@ impl TransferState {
     /// finishing keeps its result, as `multi_done` runs once.
     pub(crate) fn fail(self, err: ErrorKind) -> TransferState {
         match self {
-            TransferState::Init => TransferState::Completed(Completed {
-                outcome: Err(err),
-                message: Message::Unread,
-            }),
+            TransferState::Init | TransferState::Pending(_) | TransferState::Setup(_) => {
+                TransferState::Completed(Completed {
+                    outcome: Err(err),
+                    message: Message::Unread,
+                })
+            }
             TransferState::Connecting(c) => TransferState::Done(Done {
                 lease: c.lease,
                 proto: None,
@@ -249,7 +268,10 @@ impl TransferState {
     /// its connection, as a premature end (`curl_multi_remove_handle`).
     pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
         let (lease, origin) = match self {
-            TransferState::Init | TransferState::Completed(_) => return,
+            TransferState::Init
+            | TransferState::Pending(_)
+            | TransferState::Setup(_)
+            | TransferState::Completed(_) => return,
             TransferState::Connecting(c) => (c.lease, Some(c.origin)),
             TransferState::ProtoConnect(x)
             | TransferState::Do(x)
@@ -271,7 +293,7 @@ fn release<H: Host>(
 ) {
     let now = cx.rest.now;
     let limit = Limit {
-        max: *cx.rest.max_connects,
+        max: cx.rest.limits.max_connects,
         attached: cx.rest.slots.len(),
     };
     let (pool, mut net) = cx.rest.pool_net(cx.me);
@@ -300,6 +322,8 @@ fn release<H: Host>(
         Released::Closed(n) => trace::info(cx, format_args!("shutting down connection {n}")),
         Released::Terminated(n) => trace::info(cx, format_args!("closing connection {n}")),
     }
+    // Room, perhaps, for one waiting (`multi_done`).
+    schedule_pending(&mut cx.rest);
 }
 
 impl TransferState {
@@ -527,6 +551,24 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             (next, Wake::Again)
         }
+        TransferState::Pending(plan) => pending(run, plan, cx),
+        TransferState::Setup(plan) => {
+            let now = cx.rest.now;
+            let next = match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
+                TimeLeft::Expired(_) => {
+                    let kind = timed_out(cx);
+                    // Its failure may make room for another
+                    // (`multi_runsingle`).
+                    schedule_pending(&mut cx.rest);
+                    TransferState::Init.fail(kind)
+                }
+                TimeLeft::Remaining(_) | TimeLeft::Unlimited => setup(cx, plan),
+            };
+            if next.is_completed() {
+                enter_completed(cx.report_mut(), now, true);
+            }
+            (next, Wake::Again)
+        }
         TransferState::Connecting(c) => connecting(run, c, cx),
         // No protocol connects over its connection yet.
         TransferState::ProtoConnect(x) => (TransferState::Do(x), Wake::Again),
@@ -722,6 +764,21 @@ fn progress_after_step<H: Host>(
             }
         }
         s => (s, wake),
+    }
+}
+
+/// A transfer waiting for a connection runs only to find its time up
+/// (`multi_handle_timeout` from the timer sweep, "PENDING handle
+/// timeout"), and then fails as it looks for one again.
+fn pending<H: Host>(run: &mut Run, plan: Plan, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    let now = cx.rest.now;
+    match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
+        TimeLeft::Expired(_) => {
+            timed_out(cx);
+            trace::info(cx, format_args!("PENDING handle timeout"));
+            (TransferState::Setup(plan), Wake::Again)
+        }
+        TimeLeft::Remaining(_) | TimeLeft::Unlimited => (TransferState::Pending(plan), Wake::Idle),
     }
 }
 
@@ -1255,6 +1312,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
         let lease = match acquire(cx, Route::Local) {
             Ok(Acquired::New(lease)) => lease,
             Ok(Acquired::Reused(_)) => unreachable!("a connection without a network is never kept"),
+            Ok(Acquired::Wait(_)) => unreachable!("a connection without a network has no limits"),
             Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
         };
         // A connection without a network has its name at once.
@@ -1277,30 +1335,110 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
         Ok(via) => via,
         Err(e) => return TransferState::Init.fail(e),
     };
+    setup(cx, Plan { proto, origin, via })
+}
+
+/// A connection for the request (`Curl_connect`): one to set up, or an
+/// idle one to reuse, or none while the multi's limits allow none, the
+/// request waiting for one (`multistate_connect`).
+fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
     let route = Tcp {
-        origin: origin.clone(),
-        via: via.clone(),
+        origin: plan.origin.clone(),
+        via: plan.via.clone(),
         ip: cx.easy().options().ip_version,
     };
-    let lease = match acquire(cx, Route::Tcp(route)) {
+    let acquired = acquire(cx, Route::Tcp(route));
+    if !matches!(acquired, Ok(Acquired::Wait(_))) {
+        // One waiting may now find room too.
+        schedule_pending(&mut cx.rest);
+    }
+    let lease = match acquired {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
-            let host = Bytes(origin.name());
-            let name = origin.scheme().name;
+            let host = Bytes(plan.origin.name());
+            let name = plan.origin.scheme().name;
             trace::info(
                 cx,
                 format_args!("Reusing existing {name}: connection with host {host}"),
             );
             lease
         }
+        Ok(Acquired::Wait(reason)) => {
+            match reason {
+                WaitReason::HostLimit => {
+                    trace::info(cx, format_args!("No more connections allowed to host"));
+                }
+                WaitReason::TotalLimit(max) => trace::info(
+                    cx,
+                    format_args!("No connections available, total of {max} reached."),
+                ),
+            }
+            return TransferState::Pending(plan);
+        }
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
+    let Plan { proto, origin, via } = plan;
     TransferState::Connecting(Connecting {
         lease,
         proto,
         origin,
         via,
     })
+}
+
+/// Let the next transfer waiting for a connection, after the last one
+/// let, look for one again (`multi_schedule_pending`): one at a time, as
+/// a connection freed most often makes room for one.
+pub(crate) fn schedule_pending<H: Host>(rest: &mut EngineRest<'_, H>) {
+    wake_pending(rest.slots, rest.dirty, rest.pending_after);
+}
+
+/// As `schedule_pending`, on the multi's tables.
+pub(super) fn wake_pending<H: Host>(
+    slots: &mut Arena<Slot<H>, Transfer>,
+    dirty: &mut RowSet,
+    after: &mut Option<TransferId>,
+) {
+    let waiting = |slots: &Arena<Slot<H>, Transfer>, id| {
+        slots
+            .get(id)
+            .and_then(|slot| slot.run.as_ref())
+            .is_some_and(|run| matches!(run.state, TransferState::Pending(_)))
+    };
+    // From the one after the last let, round to the start.
+    let mut found = None;
+    let mut cursor = *after;
+    while let Some(id) = slots.next_after(cursor) {
+        cursor = Some(id);
+        if waiting(slots, id) {
+            found = Some(id);
+            break;
+        }
+    }
+    if found.is_none() {
+        let mut cursor = None;
+        while let Some(id) = slots.next_after(cursor) {
+            cursor = Some(id);
+            if waiting(slots, id) {
+                found = Some(id);
+                break;
+            }
+        }
+    }
+    let Some(id) = found else {
+        return;
+    };
+    let run = slots
+        .get_mut(id)
+        .and_then(|slot| slot.run.as_mut())
+        .expect("found waiting");
+    let TransferState::Pending(plan) = std::mem::replace(&mut run.state, TransferState::Init)
+    else {
+        unreachable!("found waiting");
+    };
+    run.state = TransferState::Setup(plan);
+    dirty.insert(id.index());
+    *after = Some(id);
 }
 
 /// The peer the connect-to entries send a connection for `origin` to, if
@@ -1333,8 +1471,9 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     };
     let mut notes = Vec::new();
     let now = cx.rest.now;
+    let add = cx.rest.limits.add();
     let (pool, mut net) = cx.rest.pool_net(cx.me);
-    let acquired = pool.acquire(route, rules, &mut net, now, &mut notes)?;
+    let acquired = pool.acquire(route, rules, add, &mut net, now, &mut notes)?;
     for note in notes {
         match note {
             PoolNote::IdleTooLong { idle_ms, max_ms } => trace::info(

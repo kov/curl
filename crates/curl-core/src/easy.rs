@@ -106,7 +106,7 @@ impl Easy {
             }
         };
         // The easy handle's limit is its multi's (`curl_easy_perform`).
-        multi.set_max_connects(Some(self.options().limits.reuse.max_connects));
+        multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
         let (result, easy) = run_to_end(&mut multi, std::mem::take(self));
         *self = easy;
         self.private = Some(Private(multi));

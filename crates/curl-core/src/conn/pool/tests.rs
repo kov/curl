@@ -78,7 +78,10 @@ fn resolved(pool: &mut Pool, lease: &ConnLease, net: &mut FakeNet, now: Instant)
 /// A connection for `route`, which must be new; the search says nothing.
 fn new(pool: &mut Pool, route: Route, net: &mut FakeNet, now: Instant) -> ConnLease {
     let mut notes = Vec::new();
-    let Acquired::New(lease) = pool.acquire(route, RULES, net, now, &mut notes).unwrap() else {
+    let Acquired::New(lease) = pool
+        .acquire(route, RULES, AddLimits::default(), net, now, &mut notes)
+        .unwrap()
+    else {
         panic!("reused");
     };
     assert_eq!(notes, []);
@@ -201,12 +204,79 @@ fn a_full_pool_closes_its_oldest_idle_connection() {
     assert_eq!(pool.len(), 2, "#2 is closed");
     // The one left to port 1 is #3.
     let mut notes = Vec::new();
-    let got = pool.acquire(tcp(1), RULES, &mut net, clock.now(), &mut notes);
+    let got = pool.acquire(
+        tcp(1),
+        RULES,
+        AddLimits::default(),
+        &mut net,
+        clock.now(),
+        &mut notes,
+    );
     let Ok(Acquired::Reused(kept)) = got else {
         panic!("{got:?}");
     };
     assert_eq!(pool.get(&kept).number, ConnNumber(3));
     pool.release(kept, Finish::default(), UNLIMITED, &mut net, clock.now());
+}
+
+/// A new connection is made within the host and total limits, closing
+/// the idle one longest unused to make room, first among those to the
+/// same destination whatever their scheme (`cpool_check_limits`); with
+/// no room, there is none.
+#[test]
+fn a_new_connection_waits_for_room_within_the_limits() {
+    let (mut net, clock) = net();
+    let mut pool = Pool::new().unwrap();
+    let ms = Duration::from_millis(1);
+    let limits = |max_host, max_total| AddLimits {
+        max_host: NonZeroU32::new(max_host),
+        max_total: NonZeroU32::new(max_total),
+    };
+    let try_new = |pool: &mut Pool, net: &mut FakeNet, route, limits| {
+        let mut notes = Vec::new();
+        let got = pool.acquire(route, RULES, limits, net, clock.now(), &mut notes);
+        assert_eq!(notes, []);
+        got.unwrap()
+    };
+    let a = new(&mut pool, tcp(1), &mut net, clock.now());
+    up(&mut pool, &a, &mut net, clock.now());
+    let got = try_new(&mut pool, &mut net, tcp(1), limits(1, 0));
+    assert!(
+        matches!(got, Acquired::Wait(WaitReason::HostLimit)),
+        "{got:?}"
+    );
+    let b = new(&mut pool, tcp(4), &mut net, clock.now());
+    up(&mut pool, &b, &mut net, clock.now());
+    let got = try_new(&mut pool, &mut net, tcp(3), limits(1, 2));
+    let two = NonZeroU32::new(2).unwrap();
+    assert!(
+        matches!(got, Acquired::Wait(WaitReason::TotalLimit(n)) if n == two),
+        "{got:?}"
+    );
+    // #0 idle makes room for one more.
+    pool.release(a, Finish::default(), UNLIMITED, &mut net, clock.now());
+    clock.advance(ms);
+    let Acquired::New(c) = try_new(&mut pool, &mut net, tcp(3), limits(1, 2)) else {
+        panic!("no room made");
+    };
+    assert_eq!(pool.len(), 2, "#0 closed");
+    // To #1's destination by another scheme: one connection to the host.
+    pool.release(b, Finish::default(), UNLIMITED, &mut net, clock.now());
+    let other = Scheme {
+        name: "other",
+        reuse: true,
+    };
+    let Acquired::New(d) = try_new(
+        &mut pool,
+        &mut net,
+        to(other, b"127.0.0.1", 4),
+        limits(1, 0),
+    ) else {
+        panic!("no room made");
+    };
+    assert_eq!(pool.len(), 2, "#1 closed");
+    pool.release(c, Finish::default(), UNLIMITED, &mut net, clock.now());
+    pool.release(d, Finish::default(), UNLIMITED, &mut net, clock.now());
 }
 
 /// A setup tries its address, waits, and is established in the slot it
@@ -350,7 +420,14 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     assert_ne!(other.id(), id);
     let mut notes = Vec::new();
     let again = pool
-        .acquire(tcp(1), RULES, &mut net, now, &mut notes)
+        .acquire(
+            tcp(1),
+            RULES,
+            AddLimits::default(),
+            &mut net,
+            now,
+            &mut notes,
+        )
         .unwrap();
     let Acquired::Reused(again) = again else {
         panic!("{again:?}");
@@ -400,7 +477,14 @@ fn a_search_closes_what_it_must_not_reuse() {
     let search = |pool: &mut Pool, net: &mut FakeNet, rules| {
         let mut notes = Vec::new();
         let got = pool
-            .acquire(tcp(1), rules, net, clock.now(), &mut notes)
+            .acquire(
+                tcp(1),
+                rules,
+                AddLimits::default(),
+                net,
+                clock.now(),
+                &mut notes,
+            )
             .unwrap();
         (got, notes)
     };
@@ -509,7 +593,14 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
     let search = |pool: &mut Pool, net: &mut FakeNet, rules| {
         let mut notes = Vec::new();
         let got = pool
-            .acquire(tcp(1), rules, net, clock.now(), &mut notes)
+            .acquire(
+                tcp(1),
+                rules,
+                AddLimits::default(),
+                net,
+                clock.now(),
+                &mut notes,
+            )
             .unwrap();
         let reused = match got {
             Acquired::Reused(lease) => {
@@ -526,6 +617,7 @@ fn a_limit_is_passed_a_whole_millisecond_after_it() {
                 );
                 false
             }
+            Acquired::Wait(_) => unreachable!("no limits"),
         };
         (reused, notes)
     };
@@ -587,7 +679,14 @@ fn a_search_prunes_once_a_second() {
     // The search for the first connection pruned; the next prune is a
     // second on.
     let got = pool
-        .acquire(tcp(4), RULES, &mut net, now, &mut notes)
+        .acquire(
+            tcp(4),
+            RULES,
+            AddLimits::default(),
+            &mut net,
+            now,
+            &mut notes,
+        )
         .unwrap();
     assert_eq!(net.open_sockets(), 1, "not pruned within the second");
     let Acquired::New(other) = got else {
@@ -597,7 +696,14 @@ fn a_search_prunes_once_a_second() {
     clock.advance(Duration::from_secs(1));
     let now = clock.now();
     let got = pool
-        .acquire(tcp(4), RULES, &mut net, now, &mut notes)
+        .acquire(
+            tcp(4),
+            RULES,
+            AddLimits::default(),
+            &mut net,
+            now,
+            &mut notes,
+        )
         .unwrap();
     assert_eq!(notes, [], "pruned: the match never saw it");
     assert_eq!(net.open_sockets(), 0);
@@ -647,7 +753,14 @@ fn the_lock_is_taken_where_c_takes_it() {
     pool.xfer_init();
     let mut notes = Vec::new();
     let got = pool
-        .acquire(tcp(1), RULES, &mut net, now, &mut notes)
+        .acquire(
+            tcp(1),
+            RULES,
+            AddLimits::default(),
+            &mut net,
+            now,
+            &mut notes,
+        )
         .unwrap();
     assert_eq!(sections(&log), 2);
     let Acquired::Reused(lease) = got else {
@@ -738,7 +851,14 @@ fn a_host_in_capitals_reuses_the_connection() {
     let mut notes = Vec::new();
     let route = to(TCP, b"[::FFFF:7F00:1]", 5);
     let got = pool
-        .acquire(route, RULES, &mut net, now, &mut notes)
+        .acquire(
+            route,
+            RULES,
+            AddLimits::default(),
+            &mut net,
+            now,
+            &mut notes,
+        )
         .unwrap();
     let Acquired::Reused(lease) = got else {
         panic!("{got:?}");

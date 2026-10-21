@@ -169,8 +169,14 @@ witness: curl-core conn::buf::tests::received_bytes_wait_until_used
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::pool::tests::a_host_in_capitals_reuses_the_connection
 --- old
+        self.scheme == other.scheme
+            && self.port == other.port
+            && self.ipv6() == other.ipv6()
             && self.name().eq_ignore_ascii_case(other.name())
 --- new
+        self.scheme == other.scheme
+            && self.port == other.port
+            && self.ipv6() == other.ipv6()
             && self.name() == other.name()
 
 === a peer's zone is ignored
@@ -280,13 +286,13 @@ witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connect
 --- new
                 Some((full, closed)) if closed == Some(id) && false => Released::Evicted(full),
 
-=== the multi's limit is never set
-file: crates/curl-core/src/multi/mod.rs
+=== the multi's limit is never read
+file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_full_pool_is_traced_by_the_transfer_filling_it
 --- old
-        self.max_connects = max;
+        max: cx.rest.limits.max_connects,
 --- new
-        let _ = max;
+        max: None,
 
 === the guess counts no transfers
 file: crates/curl-core/src/multi/state.rs
@@ -295,3 +301,56 @@ witness: curl-core multi::tests::the_pool_s_limit_is_guessed_from_the_transfers
         attached: cx.rest.slots.len(),
 --- new
         attached: 0,
+
+=== a new connection may reach the host limit's count
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_new_connection_waits_for_room_within_the_limits
+--- old
+        if count(conns, to_host) >= max.get() {
+--- new
+        if count(conns, to_host) > max.get() {
+
+=== no idle connection to the host is closed for room
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_new_connection_waits_for_room_within_the_limits
+--- old
+            let Some(id) = oldest_idle(conns, to_host, now) else {
+--- new
+            let Some(id) = None::<ConnId>.filter(|_| oldest_idle(conns, to_host, now).is_some()) else {
+
+=== no idle connection is closed for room in all
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_new_connection_waits_for_room_within_the_limits
+--- old
+            let Some(id) = oldest_idle(conns, any, now) else {
+--- new
+            let Some(id) = None::<ConnId>.filter(|_| oldest_idle(conns, any, now).is_some()) else {
+
+=== the host limit counts by scheme too
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_new_connection_waits_for_room_within_the_limits
+--- old
+    let to_host = |slot: &ConnSlot| slot.destination().is_some_and(|d| d.same_bundle(to));
+--- new
+    let to_host = |slot: &ConnSlot| slot.destination().is_some_and(|d| d == to);
+
+=== a connection given back lets no one waiting look again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
+--- old
+    // Room, perhaps, for one waiting (`multi_done`).
+    schedule_pending(&mut cx.rest);
+--- new
+    // Room, perhaps, for one waiting (`multi_done`).
+
+=== a waiting transfer never runs out of time
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_waiting_transfer_runs_out_of_time
+--- old
+        TimeLeft::Expired(_) => {
+            timed_out(cx);
+            trace::info(cx, format_args!("PENDING handle timeout"));
+            (TransferState::Setup(plan), Wake::Again)
+        }
+--- new
+        TimeLeft::Expired(_) => (TransferState::Pending(plan), Wake::Idle),

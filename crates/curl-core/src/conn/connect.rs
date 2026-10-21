@@ -207,6 +207,10 @@ impl ConnectMachine {
         self.number
     }
 
+    pub(crate) fn route(&self) -> &Tcp {
+        &self.route
+    }
+
     /// The sockets of the attempts running.
     pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
         let running = match &self.stage {

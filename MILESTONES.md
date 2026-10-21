@@ -333,10 +333,10 @@ cargo-mutants run on the milestone's diff.
     as unit 2600 has them; IPv6 reported as a feature (tests 240, 242); a DNS cache on the
     multi and `--resolve` read into it (tests 1317, 1318, 1322, 1324, 1458, 3019);
     `--connect-to` (tests 1659, 2049, 2054, 3020); MAXCONNECTS, MAXAGE_CONN and
-    MAXLIFETIME_CONN (tests 1506, 1510, 1542). To do: the getaddrinfo resolver, with
+    MAXLIFETIME_CONN (tests 1506, 1510, 1542); the per-host and total limits, a transfer
+    waiting for room in `Pending` (test 1557). To do: the getaddrinfo resolver, with
     `CURLOPT_DNS_CACHE_TIMEOUT`; the grouping of the multi's tables; FORBID_REUSE; the
-    per-host and total limits, with the transfer waiting for a connection (tests 1557, 3231,
-    3232); the resolver's reason in a connect failure.
+    resolver's reason in a connect failure. Tests 3231 and 3232 wait for CONNECT_ONLY.
 24. **tool: the T1 ring.** **To do.** The `-w` variables, `--fail-with-body`, `-#` and
     `--stderr`, with the report fields they read.
 25. **http: send request bodies.** **To do.** Opening commit: `Directions` refreshed by the

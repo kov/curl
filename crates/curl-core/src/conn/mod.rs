@@ -17,7 +17,8 @@ pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup};
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, parse_entry};
 pub(crate) use pool::{
-    Acquired, ConnLease, Connected, Finish, Full, Limit, Pool, PoolNote, Released, ReuseRules,
+    Acquired, AddLimits, ConnLease, Connected, Finish, Full, Limit, Pool, PoolNote, Released,
+    ReuseRules, WaitReason,
 };
 
 use std::fmt;
@@ -63,6 +64,21 @@ pub(crate) enum ConnSlot {
     /// Its setup failed; it holds nothing open, and goes when its lease
     /// is given back.
     Failed(ConnNumber),
+}
+
+impl ConnSlot {
+    /// The peer the connection goes to, if over a network.
+    fn destination(&self) -> Option<&Peer> {
+        let route = match self {
+            ConnSlot::Connecting(m) => m.route(),
+            ConnSlot::Open(Conn {
+                route: Route::Tcp(tcp),
+                ..
+            }) => tcp,
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => return None,
+        };
+        Some(route.destination())
+    }
 }
 
 /// What a transfer needs of a connection, decided once per leg. A
@@ -200,6 +216,18 @@ impl PartialEq for Peer {
 }
 
 impl Eq for Peer {}
+
+impl Peer {
+    /// Whether connections to the two count toward one per-host limit:
+    /// C's `destination`, `host:port` in lowercase, an IPv6 address in
+    /// brackets with its scope; the scheme and a zone's name aside.
+    pub(crate) fn same_bundle(&self, other: &Peer) -> bool {
+        self.port == other.port
+            && self.ipv6() == other.ipv6()
+            && self.name().eq_ignore_ascii_case(other.name())
+            && self.scope == other.scope
+    }
+}
 
 /// What a connection's bytes travel over.
 #[derive(Debug)]

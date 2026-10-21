@@ -239,8 +239,8 @@ date) and never for a limit; `ManualClock::set_unix_time` sets it for a test.
 pub struct Error { kind: ErrorKind, detail: Option<Vec<u8>> }  // detail dropped on OOM, kind kept
 pub enum Recv { Data(NonZeroUsize), Eof, WouldBlock }
 pub enum Sent { Bytes(NonZeroUsize), WouldBlock }
-pub enum Acquire { Ready(ConnLease, Reused), Connecting(ConnLease), Wait(WaitReason) }
-pub enum WaitReason { HostLimit, TotalLimit, Multiplexable(ConnId) }
+pub enum Acquired { New(ConnLease), Reused(ConnLease), Wait(WaitReason) }
+pub enum WaitReason { HostLimit, TotalLimit(NonZeroU32) }  // Multiplexable(ConnId) with HTTP/2
 pub enum ConnectStep<S> { Pending(Interest, Option<Instant>), Next(S), Restart(RestartReason) }
 pub enum Wake { Again, Idle }          // Again: run this transfer again in the same pass
 ```
@@ -384,6 +384,8 @@ socket's assigned value) are offered without the `H` part or not at all.
 ```rust
 pub(crate) enum TransferState {
     Init,                              // added, not yet run
+    Pending(Plan),                     // PENDING: no lease, runs only when its time is up
+    Setup(Plan),                       // CONNECT from PENDING: let look for a connection again
     Connecting(Connecting),            // holds a lease on a ConnSlot::Connecting
     ProtoConnect(Attached),            // PROTOCONNECT, PROTOCONNECTING
     Do(Attached),                      // DO..DOING_MORE
@@ -393,7 +395,9 @@ pub(crate) enum TransferState {
     Completed(Completed),              // terminal until remove
 }
 type Origin = TryRc<Peer>;           // the request's peer, shared with its connection's route
-pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, origin: Origin }
+pub(crate) struct Plan { proto: ProtoState, origin: Origin, via: Option<TryRc<Peer>> }
+pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, origin: Origin,
+                               via: Option<TryRc<Peer>> }
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
                          premature: bool, reached: Reached, origin: Option<Origin>,
@@ -404,9 +408,10 @@ pub(crate) struct Completed { outcome: Result<(), ErrorKind>, message: Message }
 pub(crate) enum Message { Unread, Read }
 ```
 
-Planned for milestone 2, with the leg loop: `Pending(Pending { plan, reason: WaitReason })` for
-a transfer waiting on a connection limit, a `Plan { target, leg }` that setup makes and every
-state from `Connecting` to `Exchanging` carries, a throttle instant in `Exchanging` (C's
+`Pending` and `Setup` hold what the setup made before it looked for a connection, so that only
+the search is made again. Planned for milestone 2, with the leg loop: the `Plan` grown into
+`Plan { target, leg }`, carried by every state from `Connecting` to `Exchanging`, a throttle
+instant in `Exchanging` (C's
 RATELIMITING), and `AfterRequest::Follow(FollowKind, Target)`, which the protocol's `done`
 decides from a `Location:`, with redirects (step 26).
 
@@ -467,7 +472,8 @@ the next protocol.
 |---|---|---|
 | Init | Exchanging setup | pretransfer: fresh `TransferReport` (header store empties), cookies and resolve list, `Starts::op`; on failure `fail` → Completed |
 | (setup) | Connecting / Exchanging / Pending | `Starts::single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait` |
-| Pending | (setup) | `schedule_pending` (one per call, round robin from `pending_cursor`), dirty while pending, or the expiry sweep finding it late |
+| Pending | Setup | `schedule_pending` (one per call, round robin after `pending_after`, marked dirty): after a connection is given back, after a setup finds or makes one, when a transfer is removed, and when a woken one fails; or its own step finding its time up ("PENDING handle timeout", after the timeout's failure is traced once) |
+| Setup | Connecting / Pending / Completed | the search again, as from setup; past its time, fails with the timeout traced a second time |
 | Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |
 | ProtoConnect | Do | the protocol's connect is done (none has one yet) |
 | Do | Did / Done | `ProtoState::do_it` made the request; prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature, before DID |
@@ -479,9 +485,11 @@ the next protocol.
 | Completed{Unread} | Completed{Read} | `info_read` |
 
 "Setup" is not a resting state: C's SETUP and CONNECT always run in the same pass, so they are
-one step that produces `Connecting`, or `ProtoConnect` for a protocol without a network, and
-`Pending` once connection limits wait. The
-rows for `Pending` and Follow describe later steps of milestone 2.
+one step that produces `Connecting`, or `ProtoConnect` for a protocol without a network, or
+`Pending` when the connection limits leave no room ("No more connections allowed to host",
+"No connections available, total of N reached."). A `Pending` transfer is not run with the
+others: its step does nothing until its time is up. The row for Follow describes a later
+step of milestone 2.
 
 Setup parses the URL as `parseurlandfillconn` does: with the URL rules, guessing a scheme, and
 accepting one libcurl does not know (the protocol lookup refuses it next). A default protocol is
@@ -589,7 +597,8 @@ Dropping a `Multi` removes every transfer still in it (`curl_multi_cleanup`).
 **`perform`** (multi.c:2898), with `now` read once:
 1. run every process transfer in ascending slot order with an index cursor, so a transfer
    added during the walk at a higher slot runs in the same pass;
-2. `schedule_pending` if a pass flagged a connection change;
+2. `schedule_pending` if a pass flagged a connection change (graceful shutdowns and
+   multiplexing flag it; neither exists yet, so nothing does);
 3. dispatch notifications;
 4. sweep the timer queue for entries before `now`; a late `Pending` transfer goes to setup and
    fails there with the timeout;
@@ -944,8 +953,9 @@ pub struct ConnLease { id: ConnId }          // no Clone/Copy; only Pool creates
 impl Pool {
     pub fn with_lock(lock: Box<dyn Lock>) -> Result<Pool, OutOfMemory>;        // a share's pool
     pub fn xfer_init(&self);                                                    // lock point 1
-    pub fn acquire(&mut self, route: Route, rules: ReuseRules, net: &mut dyn Net, now: Instant,
-                   notes: &mut Vec<PoolNote>) -> Result<Acquired, OutOfMemory>; // lock points 2, 3
+    pub fn acquire(&mut self, route: Route, rules: ReuseRules, limits: AddLimits,
+                   net: &mut dyn Net, now: Instant, notes: &mut Vec<PoolNote>)
+        -> Result<Acquired, OutOfMemory>;                                       // lock points 2, 3
     pub fn connect(&mut self, lease: &ConnLease, net: &mut dyn Net, now: Instant)
         -> Result<Connected, ConnectError>;                     // Connecting, Established, AlreadyUp
     pub fn get(&mut self, lease: &ConnLease) -> &mut Conn;                      // once up
@@ -966,7 +976,12 @@ impl Pool {
   terminating", "shutting down connection #N"). The rules are the searching transfer's, as C's
   match and the settings it copies to its internal handle make them. A reused connection is
   driven like a new one and says `AlreadyUp`, with no trace and no times, as
-  `Curl_conn_connect` returns at once.
+  `Curl_conn_connect` returns at once. Finding none, it adds one within the multi's
+  `max_host` and `max_total` (`cpool_check_limits`): past either, the idle connection longest
+  unused is closed to make room, first among those to the same destination (C's `destination`:
+  the peer connected to, host and port in any case, IPv6 scope, any scheme), then among all;
+  with no room left it returns `Wait`. A connection without a network is added unchecked, and
+  counts toward the total.
 - `release` decides the connection's fate as `multi_done_locked` does, from what the pool knows
   (other leases, the route's reuse rules, a close mark) and what the transfer reports in
   `Finish` (premature, reuse forbidden): `Released::{Idle, Evicted, Closed, Terminated}` so far,

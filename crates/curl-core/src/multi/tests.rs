@@ -1667,7 +1667,7 @@ fn a_bad_resolve_entry_fails_the_transfer() {
 #[test]
 fn a_full_pool_is_traced_by_the_transfer_filling_it() {
     let (mut m, _clock) = networked();
-    m.set_max_connects(NonZeroU32::new(1));
+    m.conn_limits_mut().max_connects = NonZeroU32::new(1);
     let (a, a_lines) = traced("tcp://127.0.0.1:1/");
     let (b, b_lines) = traced("tcp://localhost:1/");
     m.add(a, (), &mut NoEvents).unwrap();
@@ -1687,6 +1687,116 @@ fn a_full_pool_is_traced_by_the_transfer_filling_it() {
         ]
     );
     assert_eq!(m.pool.len(), 1);
+}
+
+/// A transfer that would pass the host limit waits, running not at all,
+/// until a connection is given back; then it looks again, and reuses it
+/// (`multistate_connect`, `multi_schedule_pending`).
+#[test]
+fn a_transfer_waits_for_room_under_the_host_limit() {
+    let (mut m, clock) = networked();
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    let (a, a_lines) = traced("tcp://127.0.0.1:4/");
+    let (b, b_lines) = traced("tcp://127.0.0.1:4/");
+    let a = m.add(a, (), &mut NoEvents).unwrap();
+    let b = m.add(b, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&b_lines),
+        ["No more connections allowed to host\n"]
+    );
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&b_lines).len(),
+        1,
+        "it does not run while it waits"
+    );
+    assert_eq!(m.counts().running, 2);
+    clock.advance(Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&a_lines).last().unwrap(),
+        "Connection #0 to host 127.0.0.1:4 left intact\n"
+    );
+    assert_eq!(
+        trace_of(&b_lines)[1..],
+        [
+            "Reusing existing tcp: connection with host 127.0.0.1\n",
+            "Connection #0 to host 127.0.0.1:4 left intact\n",
+        ]
+    );
+    assert_eq!(
+        messages(&mut m),
+        [(a.index(), Ok(()), 1), (b.index(), Ok(()), 0)]
+    );
+}
+
+/// Under the total limit, an idle connection to another host is closed
+/// to make room.
+#[test]
+fn an_idle_connection_makes_room_under_the_total_limit() {
+    let (mut m, _clock) = networked();
+    m.conn_limits_mut().max_total = NonZeroU32::new(1);
+    for url in ["tcp://127.0.0.1:1/", "tcp://localhost:1/"] {
+        let (e, lines) = traced(url);
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+        assert!(trace_of(&lines).last().unwrap().ends_with("left intact\n"));
+        m.remove(id, &mut NoEvents).unwrap();
+    }
+    assert_eq!(m.pool.len(), 1);
+}
+
+/// A waiting transfer's time runs on: once it is up, the timer finds it
+/// late and lets it look again, and it fails there (`multi_handle_timeout`,
+/// twice).
+#[test]
+fn a_waiting_transfer_runs_out_of_time() {
+    let (mut m, clock) = networked();
+    m.conn_limits_mut().max_total = NonZeroU32::new(1);
+    let (a, _) = traced("tcp://127.0.0.1:3/");
+    let (mut b, b_lines) = traced("tcp://127.0.0.1:1/");
+    b.options_mut().limits.total = TimeLimit::from_millis(100);
+    let a = m.add(a, (), &mut NoEvents).unwrap();
+    let b = m.add(b, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(Duration::from_millis(100));
+    m.perform(&mut NoEvents).unwrap();
+    let late = "Operation timed out after 100 milliseconds with 0 bytes received\n";
+    assert_eq!(
+        trace_of(&b_lines),
+        [
+            "No connections available, total of 1 reached.\n",
+            late,
+            "PENDING handle timeout\n",
+            late,
+        ]
+    );
+    assert_eq!(
+        messages(&mut m),
+        [(b.index(), Err(ErrorKind::OperationTimedout), 0)]
+    );
+    m.remove(a, &mut NoEvents).unwrap();
+}
+
+/// A waiting transfer comes out of the multi, and then the one it waited
+/// on, with nothing left of either (test 1557).
+#[test]
+fn a_waiting_transfer_is_removed_cleanly() {
+    let (mut m, _clock) = networked();
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    let a = m
+        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .unwrap();
+    let b = m
+        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(b, &mut NoEvents).unwrap();
+    m.remove(a, &mut NoEvents).unwrap();
+    assert_eq!(m.counts().running, 0);
+    assert_eq!(m.pool.len(), 0);
 }
 
 /// With no limit set, the pool keeps twice the transfers in the multi,

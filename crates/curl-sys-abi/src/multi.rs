@@ -21,8 +21,8 @@ use curl_core::conn::io::{Events, Net, PollFd, SocketKey, SystemNet, Waker};
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::{
-    Abort, Env, EventCx, Host, Message, Multi, MultiEvents, Notification, NotifyCx, NotifyKind,
-    SocketEvent, SocketWhat, TimerChange, TransferId, UnknownSocket, WaitMode,
+    Abort, ConnLimits, Env, EventCx, Host, Message, Multi, MultiEvents, Notification, NotifyCx,
+    NotifyKind, SocketEvent, SocketWhat, TimerChange, TransferId, UnknownSocket, WaitMode,
 };
 use curl_core::time::SystemClock;
 
@@ -190,7 +190,7 @@ unsafe fn enter<'a>(m: *mut CURLM, call: MultiCall) -> Result<MultiEntry<'a>, CU
 /// # Safety
 ///
 /// `m` is the handle `enter` admitted the call on.
-unsafe fn multi<'a>(m: *mut CURLM) -> &'a ShimMulti {
+pub(crate) unsafe fn multi<'a>(m: *mut CURLM) -> &'a ShimMulti {
     // SAFETY: as the caller guarantees.
     unsafe { &*m.cast::<ShimMulti>() }
 }
@@ -815,27 +815,24 @@ pub unsafe extern "C" fn curl_multi_setopt(
     };
     // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
-    if option == ffi::CURLMOPT_MAXCONNECTS {
-        // SAFETY: the application passes a long, the option's type.
-        let n = unsafe { args.next_arg::<c_ulong>() };
-        // Past `UINT32_MAX` changes nothing; 0 is the guess.
-        if let Ok(n) = u32::try_from(n) {
-            let max = NonZeroU32::new(n);
-            match entry.reach {
-                // SAFETY: the reach is direct.
-                Reach::Direct => unsafe { multi.core_mut() }.set_max_connects(max),
-                Reach::Frame(Frame::Event(cx)) => {
-                    // SAFETY: as in `curl_multi_info_read`.
-                    unsafe { &mut *cx.as_ptr() }.set_max_connects(max);
-                }
-                Reach::Frame(Frame::Notify(cx)) => {
-                    // SAFETY: as above.
-                    unsafe { &mut *cx.as_ptr() }.set_max_connects(max);
-                }
-                Reach::Frame(Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
-            }
-        }
-        return CURLM_OK;
+    if matches!(
+        option,
+        ffi::CURLMOPT_MAXCONNECTS
+            | ffi::CURLMOPT_MAX_HOST_CONNECTIONS
+            | ffi::CURLMOPT_MAX_TOTAL_CONNECTIONS
+    ) {
+        // SAFETY: the application passes a long, the type of each.
+        let n = unsafe { args.next_arg::<c_long>() };
+        let limits = match entry.reach {
+            // SAFETY: the reach is direct.
+            Reach::Direct => unsafe { multi.core_mut() }.conn_limits_mut(),
+            // SAFETY: as in `curl_multi_info_read`.
+            Reach::Frame(Frame::Event(cx)) => unsafe { &mut *cx.as_ptr() }.conn_limits_mut(),
+            // SAFETY: as above.
+            Reach::Frame(Frame::Notify(cx)) => unsafe { &mut *cx.as_ptr() }.conn_limits_mut(),
+            Reach::Frame(Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
+        };
+        return set_limit(limits, option, n);
     }
     let mut cb = multi.cb.get();
     // SAFETY: the application passes a pointer, the type of each of these
@@ -858,6 +855,31 @@ pub unsafe extern "C" fn curl_multi_setopt(
     CURLM_OK
 }
 const _: ffi::proto::curl_multi_setopt = curl_multi_setopt;
+
+/// One of the multi's connection limits from its long, as C takes it:
+/// 0 for none.
+fn set_limit(limits: &mut ConnLimits, option: CURLMoption, n: c_long) -> CURLMcode {
+    if option == ffi::CURLMOPT_MAXCONNECTS {
+        // Read unsigned: past `UINT32_MAX`, a negative one among them,
+        // changes nothing; 0 is the guess.
+        if let Ok(n) = u32::try_from(n as c_ulong) {
+            limits.max_connects = NonZeroU32::new(n);
+        }
+        return CURLM_OK;
+    }
+    // Negative is refused and taken as 0; past `UINT32_MAX` is it.
+    let (n, code) = match u64::try_from(n) {
+        Ok(n) => (n, CURLM_OK),
+        Err(_) => (0, CURLM_BAD_FUNCTION_ARGUMENT),
+    };
+    let max = NonZeroU32::new(u32::try_from(n).unwrap_or(u32::MAX));
+    if option == ffi::CURLMOPT_MAX_HOST_CONNECTIONS {
+        limits.max_host = max;
+    } else {
+        limits.max_total = max;
+    }
+    code
+}
 
 /// What C polls an extra descriptor for.
 pub(crate) fn wait_events(events: i16) -> Events {

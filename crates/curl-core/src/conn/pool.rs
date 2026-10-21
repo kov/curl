@@ -10,7 +10,7 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 use super::connect::{ConnectError, ConnectMachine, Drove, Progress, Setup};
 use super::dns::Answer;
 use super::io::{Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnId, ConnNumber, ConnSlot, RecvBuf, Route, Transport, Use};
+use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, RecvBuf, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::time::Instant;
 
@@ -122,6 +122,24 @@ pub(crate) struct Full {
     pub(crate) max: u32,
 }
 
+/// The limits a new connection is added under
+/// (`CURLMOPT_MAX_HOST_CONNECTIONS`, `CURLMOPT_MAX_TOTAL_CONNECTIONS`);
+/// none for no limit.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct AddLimits {
+    pub(crate) max_host: Option<NonZeroU32>,
+    pub(crate) max_total: Option<NonZeroU32>,
+}
+
+/// Why a transfer waits for a connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WaitReason {
+    /// As many to its destination as allowed.
+    HostLimit,
+    /// As many in all as allowed: this many.
+    TotalLimit(NonZeroU32),
+}
+
 /// A connection for a transfer.
 #[derive(Debug)]
 pub(crate) enum Acquired {
@@ -129,6 +147,8 @@ pub(crate) enum Acquired {
     New(ConnLease),
     /// An idle one, up already.
     Reused(ConnLease),
+    /// None: a new one would pass a limit.
+    Wait(WaitReason),
 }
 
 /// Something the search for a connection did, for the transfer to trace.
@@ -189,13 +209,15 @@ impl Pool {
     }
 
     /// A connection for `route`, leased to the caller: an idle one whose
-    /// route is equal, healthy and young enough, or a new one, open at
-    /// once without a network and set up by `Pool::connect` over one.
-    /// What the search did is added to `notes`.
+    /// route is equal, healthy and young enough, or a new one within
+    /// `limits`, open at once without a network and set up by
+    /// `Pool::connect` over one; or none, for want of room. What the
+    /// search did is added to `notes`.
     pub(crate) fn acquire(
         &mut self,
         route: Route,
         rules: ReuseRules,
+        limits: AddLimits,
         net: &mut dyn Net,
         now: Instant,
         notes: &mut Vec<PoolNote>,
@@ -206,6 +228,13 @@ impl Pool {
             return Ok(Acquired::Reused(lease));
         }
         let _locked = Locked::take(&*self.lock);
+        // A connection without a network is added with no limits
+        // (`Curl_cpool_add(data, needle, 0, 0)`).
+        if let Route::Tcp(tcp) = &route
+            && let Some(reason) = make_room(&mut self.conns, tcp.destination(), limits, net, now)
+        {
+            return Ok(Acquired::Wait(reason));
+        }
         let number = ConnNumber(self.next_number);
         let slot = match route {
             Route::Local => ConnSlot::Open(Conn {
@@ -527,6 +556,92 @@ fn over_limit(
         close(conns, id, net);
     }
     Some((Full { conns: count, max }, closed))
+}
+
+/// Make room for a connection to `to` within `limits`, closing idle ones
+/// longest unused, first among those to the same destination
+/// (`cpool_check_limits`); why there is none, if there is not. The
+/// closes trace nowhere, as C's go to its internal handle.
+fn make_room(
+    conns: &mut Arena<ConnSlot>,
+    to: &Peer,
+    limits: AddLimits,
+    net: &mut dyn Net,
+    now: Instant,
+) -> Option<WaitReason> {
+    let to_host = |slot: &ConnSlot| slot.destination().is_some_and(|d| d.same_bundle(to));
+    if let Some(max) = limits.max_host {
+        let live = count(conns, to_host);
+        for _ in max.get()..=live {
+            let Some(id) = oldest_idle(conns, to_host, now) else {
+                break;
+            };
+            close(conns, id, net);
+        }
+        if count(conns, to_host) >= max.get() {
+            return Some(WaitReason::HostLimit);
+        }
+    }
+    if let Some(max) = limits.max_total {
+        let any = |_: &ConnSlot| true;
+        let live = count(conns, any);
+        for _ in max.get()..=live {
+            let Some(id) = oldest_idle(conns, any, now) else {
+                break;
+            };
+            close(conns, id, net);
+        }
+        if count(conns, any) >= max.get() {
+            return Some(WaitReason::TotalLimit(max));
+        }
+    }
+    None
+}
+
+/// The connections `which` picks, busy, idle or being set up; a failed
+/// setup holds nothing.
+fn count(conns: &Arena<ConnSlot>, which: impl Fn(&ConnSlot) -> bool) -> u32 {
+    let mut n = 0;
+    let mut cursor = None;
+    while let Some(id) = conns.next_after(cursor) {
+        cursor = Some(id);
+        if let Some(slot) = conns.get(id)
+            && !matches!(slot, ConnSlot::Failed(_))
+            && which(slot)
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// The idle connection `which` picks that has been unused longest; of
+/// two as old in C's milliseconds, the first (`cpool_get_oldest_idle`,
+/// `cpool_bundle_get_oldest_idle`).
+fn oldest_idle(
+    conns: &Arena<ConnSlot>,
+    which: impl Fn(&ConnSlot) -> bool,
+    now: Instant,
+) -> Option<ConnId> {
+    let mut oldest: Option<(ConnId, u128)> = None;
+    let mut cursor = None;
+    while let Some(id) = conns.next_after(cursor) {
+        cursor = Some(id);
+        if let Some(
+            slot @ ConnSlot::Open(Conn {
+                use_: Use::Idle { since },
+                ..
+            }),
+        ) = conns.get(id)
+            && which(slot)
+        {
+            let idle_ms = now.since(*since).as_millis();
+            if oldest.is_none_or(|(_, ms)| idle_ms > ms) {
+                oldest = Some((id, idle_ms));
+            }
+        }
+    }
+    oldest.map(|(id, _)| id)
 }
 
 /// Close the idle connections that are not healthy, saying nothing: C's

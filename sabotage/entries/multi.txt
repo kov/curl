@@ -258,10 +258,10 @@ witness: curl-core multi::props::random_calls_keep_the_multi_consistent
 --- old
         self.timers.remove(id);
         self.dirty.remove(id.index());
-        let status = self.update_timer(ev);
+        // One waiting may run now (multi.c:867).
 --- new
         self.timers.remove(id);
-        let status = self.update_timer(ev);
+        // One waiting may run now (multi.c:867).
 
 === an expired timer is not queued again
 file: crates/curl-core/src/multi/mod.rs
@@ -370,11 +370,11 @@ witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 --- old
-            let host = Bytes(origin.name());
-            let name = origin.scheme().name;
+            let host = Bytes(plan.origin.name());
+            let name = plan.origin.scheme().name;
 --- new
-            let host = Bytes(origin.shown());
-            let name = origin.scheme().name;
+            let host = Bytes(plan.origin.shown());
+            let name = plan.origin.scheme().name;
 
 === a setup paused for receiving still waits to write
 file: crates/curl-core/src/multi/state.rs

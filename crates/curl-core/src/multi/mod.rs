@@ -23,7 +23,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
-use crate::conn::{DnsCache, Pool};
+use crate::conn::{AddLimits, DnsCache, Pool};
 use crate::deliver::{Directions, Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -196,6 +196,32 @@ pub enum SocketEvent {
     Socket(SocketKey),
 }
 
+/// The multi's limits on its connections; none set by default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConnLimits {
+    /// How many it keeps once one goes idle (`CURLMOPT_MAXCONNECTS`):
+    /// past it, the one longest unused is closed. None keeps twice the
+    /// transfers added, and closes only a connection unused for a
+    /// second.
+    pub max_connects: Option<NonZeroU32>,
+    /// How many may be open to one host at once
+    /// (`CURLMOPT_MAX_HOST_CONNECTIONS`): a transfer that would pass it
+    /// waits for one to close.
+    pub max_host: Option<NonZeroU32>,
+    /// How many may be open at once (`CURLMOPT_MAX_TOTAL_CONNECTIONS`),
+    /// likewise.
+    pub max_total: Option<NonZeroU32>,
+}
+
+impl ConnLimits {
+    pub(crate) fn add(&self) -> AddLimits {
+        AddLimits {
+            max_host: self.max_host,
+            max_total: self.max_total,
+        }
+    }
+}
+
 pub struct Multi<H: Host = NoHost> {
     slots: Arena<Slot<H>, Transfer>,
     dirty: RowSet,
@@ -206,8 +232,9 @@ pub struct Multi<H: Host = NoHost> {
     delivering: bool,
     pool: Pool,
     dns: DnsCache,
-    /// How many connections the pool keeps once one goes idle.
-    max_connects: Option<NonZeroU32>,
+    limits: ConnLimits,
+    /// The transfer last let look for a connection again.
+    pending_after: Option<TransferId>,
     sockets: SocketTable<H::Socket>,
     clock: Box<dyn Clock>,
     net: Box<dyn Net>,
@@ -230,7 +257,8 @@ impl<H: Host> Multi<H> {
             delivering: false,
             pool: Pool::new()?,
             dns: DnsCache::default(),
-            max_connects: None,
+            limits: ConnLimits::default(),
+            pending_after: None,
             sockets: SocketTable::new(),
             clock: env.clock,
             net: env.net,
@@ -242,12 +270,9 @@ impl<H: Host> Multi<H> {
         })
     }
 
-    /// How many connections the multi keeps once one goes idle
-    /// (`CURLMOPT_MAXCONNECTS`): past it, the one longest unused is
-    /// closed. None, the default, keeps twice the transfers added, and
-    /// closes only a connection unused for a second.
-    pub fn set_max_connects(&mut self, max: Option<NonZeroU32>) {
-        self.max_connects = max;
+    /// The multi's limits on its connections.
+    pub fn conn_limits_mut(&mut self) -> &mut ConnLimits {
+        &mut self.limits
     }
 
     /// Add a transfer, to run at the next `perform` (`curl_multi_add_handle`).
@@ -365,6 +390,8 @@ impl<H: Host> Multi<H> {
         let slot = self.slots.remove(id).expect("still in the multi");
         self.timers.remove(id);
         self.dirty.remove(id.index());
+        // One waiting may run now (multi.c:867).
+        state::wake_pending(&mut self.slots, &mut self.dirty, &mut self.pending_after);
         let status = self.update_timer(ev);
         Some(Removed {
             easy: slot.easy,
@@ -554,7 +581,8 @@ impl<H: Host> Multi<H> {
             slots: &mut self.slots,
             pool: &mut self.pool,
             dns: &mut self.dns,
-            max_connects: &mut self.max_connects,
+            limits: &mut self.limits,
+            pending_after: &mut self.pending_after,
             net: &mut *self.net,
             dirty: &mut self.dirty,
             sockets: &mut self.sockets,
@@ -607,7 +635,7 @@ impl<H: Host> Multi<H> {
             ev,
             &mut cx::Telling {
                 slots: &mut self.slots,
-                max_connects: &mut self.max_connects,
+                limits: &mut self.limits,
                 notify: &mut self.notify,
                 counts: &self.counts,
                 sockets: &mut self.sockets,
@@ -819,7 +847,7 @@ impl<H: Host> Multi<H> {
         };
         let mut cx = EventCx {
             slots: &mut self.slots,
-            max_connects: &mut self.max_connects,
+            limits: &mut self.limits,
             notify: &mut self.notify,
             counts: self.counts.get(),
             sockets: &mut self.sockets,

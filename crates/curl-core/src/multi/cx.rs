@@ -6,7 +6,6 @@ use curl_alloc::OutOfMemory;
 
 use std::io;
 use std::net::SocketAddr;
-use std::num::NonZeroU32;
 use std::time::Duration;
 
 use crate::conn::io::{Connect, Net, PollFd, Socket, SocketKey, SocketPoll};
@@ -23,8 +22,8 @@ use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
 use super::sockets::{Change, SocketTable, SocketWhat, UnknownSocket};
 use super::{
-    Abort, AddError, Counts, Host, Life, Message, Multi, MultiEvents, Removed, Slot, Transfer,
-    TransferId, read_message,
+    Abort, AddError, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed, Slot,
+    Transfer, TransferId, read_message,
 };
 
 /// The multi minus the transfer being stepped, whose `Run` is out of its
@@ -34,8 +33,10 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
     pub(super) pool: &'a mut Pool,
     pub(super) dns: &'a mut DnsCache,
-    /// `Multi::set_max_connects`.
-    pub(super) max_connects: &'a mut Option<NonZeroU32>,
+    /// `Multi::conn_limits_mut`.
+    pub(super) limits: &'a mut ConnLimits,
+    /// The transfer last let look for a connection again.
+    pub(super) pending_after: &'a mut Option<TransferId>,
     pub(super) net: &'a mut dyn Net,
     pub(super) dirty: &'a mut RowSet,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
@@ -58,7 +59,8 @@ impl<H: Host> EngineRest<'_, H> {
             slots: &mut *self.slots,
             pool: &mut *self.pool,
             dns: &mut *self.dns,
-            max_connects: &mut *self.max_connects,
+            limits: &mut *self.limits,
+            pending_after: &mut *self.pending_after,
             net: &mut *self.net,
             dirty: &mut *self.dirty,
             sockets: &mut *self.sockets,
@@ -81,7 +83,7 @@ impl<H: Host> EngineRest<'_, H> {
             net: &mut *self.net,
             sockets: &mut *self.sockets,
             slots: &mut *self.slots,
-            max_connects: &mut *self.max_connects,
+            limits: &mut *self.limits,
             notify: &mut *self.notify,
             counts: self.counts,
             life: &mut *self.life,
@@ -106,7 +108,7 @@ pub(crate) struct Announcing<'a, H: Host> {
     net: &'a mut dyn Net,
     sockets: &'a mut SocketTable<H::Socket>,
     slots: &'a mut Arena<Slot<H>, Transfer>,
-    max_connects: &'a mut Option<NonZeroU32>,
+    limits: &'a mut ConnLimits,
     notify: &'a mut NotifyQueue,
     counts: &'a Tally,
     life: &'a mut Life,
@@ -146,7 +148,7 @@ impl<H: Host> Announcing<'_, H> {
                 &mut *self.events,
                 &mut Telling {
                     slots: &mut *self.slots,
-                    max_connects: &mut *self.max_connects,
+                    limits: &mut *self.limits,
                     notify: &mut *self.notify,
                     counts: self.counts,
                     sockets: &mut *self.sockets,
@@ -160,7 +162,7 @@ impl<H: Host> Announcing<'_, H> {
 /// What telling the socket callback reaches.
 pub(super) struct Telling<'a, H: Host> {
     pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
-    pub(super) max_connects: &'a mut Option<NonZeroU32>,
+    pub(super) limits: &'a mut ConnLimits,
     pub(super) notify: &'a mut NotifyQueue,
     pub(super) counts: &'a Tally,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
@@ -186,7 +188,7 @@ pub(super) fn tell<H: Host>(
         };
         let mut cx = EventCx {
             slots: &mut *t.slots,
-            max_connects: &mut *t.max_connects,
+            limits: &mut *t.limits,
             notify: &mut *t.notify,
             counts: t.counts.get(),
             sockets: &mut *t.sockets,
@@ -267,7 +269,7 @@ pub(crate) trait TransferCalls {
 /// recurse into a running multi call.
 pub struct EventCx<'a, H: Host> {
     pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
-    pub(super) max_connects: &'a mut Option<NonZeroU32>,
+    pub(super) limits: &'a mut ConnLimits,
     pub(super) notify: &'a mut NotifyQueue,
     pub(super) counts: Counts,
     pub(super) sockets: &'a mut SocketTable<H::Socket>,
@@ -286,9 +288,9 @@ impl<H: Host> EventCx<'_, H> {
         self.notify.set(kind, on);
     }
 
-    /// As `Multi::set_max_connects`.
-    pub fn set_max_connects(&mut self, max: Option<NonZeroU32>) {
-        *self.max_connects = max;
+    /// As `Multi::conn_limits_mut`.
+    pub fn conn_limits_mut(&mut self) -> &mut ConnLimits {
+        self.limits
     }
 
     pub fn options(&self, id: TransferId) -> Option<&Options> {
@@ -360,9 +362,9 @@ impl<H: Host> NotifyCx<'_, H> {
         self.multi.set_notify(kind, on);
     }
 
-    /// As `Multi::set_max_connects`.
-    pub fn set_max_connects(&mut self, max: Option<NonZeroU32>) {
-        self.multi.set_max_connects(max);
+    /// As `Multi::conn_limits_mut`.
+    pub fn conn_limits_mut(&mut self) -> &mut ConnLimits {
+        self.multi.conn_limits_mut()
     }
 
     pub fn options(&self, id: TransferId) -> Option<&Options> {

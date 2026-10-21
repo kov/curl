@@ -200,6 +200,51 @@ fn node_transfers(
     None
 }
 
+/// Make each directory `path`, a file's name, is in that is not there
+/// yet, with permissions `rwxr-x---` (`create_dir_hierarchy`). One that
+/// exists, or that may not be looked at, is gone through.
+fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
+    use std::io::ErrorKind as Io;
+    use std::os::unix::fs::DirBuilderExt as _;
+    let mut maker = std::fs::DirBuilder::new();
+    maker.mode(0o750);
+    let mut at = 0;
+    loop {
+        let seps = path[at..].iter().take_while(|&&b| b == b'/').count();
+        let name = path[at + seps..].iter().take_while(|&&b| b != b'/').count();
+        at += seps + name;
+        // The last part is the file.
+        if at == path.len() {
+            return Ok(());
+        }
+        let dir = &path[..at];
+        let Err(e) = maker.create(OsStr::from_bytes(dir)) else {
+            continue;
+        };
+        if e.kind() == Io::AlreadyExists || curl_os::fs::denied(&e) {
+            continue;
+        }
+        // `show_dir_errno`.
+        let message: [&[u8]; 3] = match e.kind() {
+            Io::InvalidFilename => [b"The directory name ", dir, b" is too long"],
+            Io::ReadOnlyFilesystem => [dir, b" resides on a read-only file system", b""],
+            Io::StorageFull => [
+                b"No space left on the file system that would contain the directory ",
+                dir,
+                b"",
+            ],
+            Io::QuotaExceeded => [
+                b"Cannot create directory ",
+                dir,
+                b" because you exceeded your quota",
+            ],
+            _ => [b"Error creating directory ", dir, b""],
+        };
+        msgs.error(&message);
+        return Err(ErrorKind::WriteError);
+    }
+}
+
 /// `dir/name`.
 fn joined(dir: &[u8], name: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut path = Vec::new();
@@ -350,6 +395,13 @@ fn transfer(
     };
     // `setup_headerfile`.
     if let Some(name) = op.dump_header {
+        if op.create_dirs
+            && name != b"-"
+            && name != b"%"
+            && let Err(e) = create_dirs(name, &msgs)
+        {
+            return failed(&easy, e);
+        }
         match out.dump_to(name, first, run.stdout) {
             Ok(()) => {}
             Err(output::DumpFailed::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
@@ -365,6 +417,11 @@ fn transfer(
     if let Output::File(name) = output
         && !to_stdout
     {
+        if op.create_dirs
+            && let Err(e) = create_dirs(name, &msgs)
+        {
+            return failed(&easy, e);
+        }
         let exists = std::fs::metadata(OsStr::from_bytes(name));
         if op.skip_existing && exists.is_ok() {
             msgs.note(&[b"skips transfer, \"", name, b"\" exists locally"]);

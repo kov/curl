@@ -96,6 +96,40 @@ fn globs_unless_told_not_to() {
     assert_eq!(dir.read("out#1"), b"both");
 }
 
+/// `--create-dirs` makes the directories an output file is in, those
+/// already there gone through.
+#[test]
+fn creates_the_output_directories() {
+    let dir = Scratch::new("dirs");
+    dir.write("in", b"data");
+    std::fs::create_dir(dir.0.join("d1")).unwrap();
+    let run = curl(
+        &dir,
+        &[
+            "--create-dirs",
+            &dir.url("in"),
+            "-o",
+            &dir.path("d1/d2/d3/out"),
+        ],
+    );
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(dir.read("d1/d2/d3/out"), b"data");
+    let mode = std::fs::metadata(dir.0.join("d1/d2")).unwrap().mode();
+    assert_eq!(mode & 0o777, 0o750 & !umask(&dir));
+    let run = curl(&dir, &[&dir.url("in"), "-o", &dir.path("e/out")]);
+    assert_eq!(run.code, 23, "without, the file cannot be made");
+}
+
+/// The process's file mode mask, as a shell in `dir` reports it.
+fn umask(dir: &Scratch) -> u32 {
+    let out = Command::new("sh")
+        .args(["-c", "umask"])
+        .current_dir(&dir.0)
+        .output()
+        .unwrap();
+    u32::from_str_radix(String::from_utf8(out.stdout).unwrap().trim(), 8).unwrap()
+}
+
 #[test]
 fn downloads_to_a_file_or_standard_output() {
     let s = Scratch::new("download");

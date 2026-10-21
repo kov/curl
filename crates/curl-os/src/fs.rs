@@ -25,6 +25,13 @@ pub enum Keep {
     Absent,
 }
 
+/// Whether `e` is a refusal to look in or change a directory (`EACCES`),
+/// as distinct from an operation not permitted (`EPERM`), which std
+/// reports with the same kind.
+pub fn denied(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(libc::EACCES)
+}
+
 /// Open `path` to read it. A directory opens too.
 pub fn open_read(path: &CStr) -> io::Result<File> {
     open(path, libc::O_RDONLY, 0)

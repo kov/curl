@@ -467,3 +467,11 @@ witness: curl-tool operate::tests::adds_a_file_name_to_a_bare_path
     if slash.is_some_and(|at| at + 1 < path.len()) {
 --- new
     if true {
+
+=== --create-dirs makes no directory
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool creates_the_output_directories
+--- old
+        let Err(e) = maker.create(OsStr::from_bytes(dir)) else {
+--- new
+        let Err(e) = std::fs::metadata(OsStr::from_bytes(dir)).map(drop) else {

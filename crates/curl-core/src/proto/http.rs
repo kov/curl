@@ -185,7 +185,8 @@ impl Request {
                 CredentialGate::new(first, &here, other_hosts)
             }
         };
-        let credentials = match Credentials::of_url(url) {
+        let login = &cx.easy().options().login;
+        let credentials = match Credentials::for_request(login, gate.trusted(), url) {
             Ok(credentials) => credentials,
             Err(CredentialsError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
             Err(CredentialsError::Malformed) => {
@@ -385,14 +386,14 @@ impl Request {
         };
         let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
         let gate = self.gate;
-        // The URL's own credentials: the only ones there are yet.
         let token = match &self.credentials {
             Some(c) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
             None => None,
         };
-        let basic = token
-            .as_deref()
-            .and_then(|token| Basic::new(token, request::Trusted::own_url(), &http.headers));
+        let basic = match (&self.credentials, token.as_deref()) {
+            (Some(c), Some(token)) => Basic::new(token, c.trusted(), &http.headers),
+            _ => None,
+        };
         let authenticates = basic.is_some();
         let head = RequestHead {
             method,

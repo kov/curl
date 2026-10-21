@@ -398,9 +398,12 @@ cargo-mutants run on the milestone's diff.
     reaches the handle. Waiting: `curl_multi_assign` from a transfer's own handler, for a
     `TransferCx` that reaches the socket table; the timer and socket callbacks inside a pause
     from a transfer's own handler, which come at the end of the pass instead (ENGINE.md 7.8).
-29. **http: authenticate.** **To do.** Basic from the options, then netrc, Bearer and Digest,
-    and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15) with it.
-    T1 tests 1876 and 1877.
+29. **http: authenticate.** **In progress.** Basic from the options, then netrc, Bearer and
+    Digest, and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15)
+    with it. T1 tests 1876 and 1877. Done: the login (`CURLOPT_USERPWD`, `USERNAME`,
+    `PASSWORD`, the tool's `-u`) composed with the URL's per request, gated to the first
+    origin. To do: the methods asked for and the 401 retry, Bearer, netrc, Digest. Waiting: the
+    tool's password prompt for `-u` without one.
 30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
     share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`;
     then `-R` (step 27) on the date parser.

@@ -140,6 +140,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) connect_to: Vec<&'a [u8]>,
     /// `--user-agent`.
     pub(crate) user_agent: Option<&'a [u8]>,
+    /// `-u`: `user:password`, or a user alone.
+    pub(crate) user: Option<&'a [u8]>,
     /// `--request`.
     pub(crate) custom_request: Option<&'a [u8]>,
     /// `--referer`, without its `;auto`.
@@ -650,6 +652,7 @@ pub(crate) fn apply<'a>(
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
+        Opt::User => line.current().user = Some(value.text()),
         Opt::OutputDir => {
             let text = value.text();
             if text.is_empty() {
@@ -1075,7 +1078,6 @@ pub(crate) fn apply<'a>(
         | Opt::UploadFlags
         | Opt::UrlQuery
         | Opt::UseAscii
-        | Opt::User
         | Opt::Variable
         | Opt::VlanPriority
         | Opt::Xattr => line.not_implemented(spec, "--"),

@@ -813,13 +813,15 @@ witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_ca
     cx.mark(Timer::StartOp);
 
 === a URL's own credentials pass the gate
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::tests::a_redirect_s_own_credentials_go_with_it
 --- old
-            .and_then(|token| Basic::new(token, request::Trusted::own_url(), &http.headers));
+        let (mut user, mut password) = (None, None);
 --- new
-            .zip(gate.trusted())
-            .and_then(|(token, trusted)| Basic::new(token, trusted, &http.headers));
+        let (mut user, mut password) = (None, None);
+        if trusted.is_none() {
+            return Ok(None);
+        }
 
 === a 417 is not made again
 file: crates/curl-core/src/multi/state.rs
@@ -878,3 +880,27 @@ witness: curl-core multi::tests::a_host_name_too_long_is_refused
     if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
 --- new
     if url.host_held().is_some_and(|host| host.len() > MAX_HOST + 1) {
+
+=== the application's login goes to any origin a redirect leads to
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::the_login_stays_with_the_first_origin
+--- old
+        if let Some(trusted) = trusted {
+--- new
+        if let Some(trusted) = trusted.or(Some(Trusted::own_url())) {
+
+=== the URL's credentials are taken even when the login names a user
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::the_login_stays_with_the_first_origin
+--- old
+            if let Some(user) = user.take_if(|u| !u.is_empty()) {
+--- new
+            if let Some(user) = user.take_if(|u| u.is_empty()) {
+
+=== a user and password pair splits at its last colon
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::auth::tests::composes_the_login_and_the_url_s_as_c
+--- old
+        let (user, password) = match pair.iter().position(|&b| b == b':') {
+--- new
+        let (user, password) = match pair.iter().rposition(|&b| b == b':') {

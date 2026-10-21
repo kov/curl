@@ -440,6 +440,21 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.http.referer = unsafe { owned(p) }?;
         }
+        (ffi::CURLOPT_USERPWD, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.login = match unsafe { string(p) }? {
+                Some(pair) => curl_core::options::Login::from_pair(pair)?,
+                None => curl_core::options::Login::default(),
+            };
+        }
+        (ffi::CURLOPT_USERNAME, Ptr(p)) => {
+            // SAFETY: as above.
+            options.login.user = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_PASSWORD, Ptr(p)) => {
+            // SAFETY: as above.
+            options.login.password = unsafe { owned(p) }?;
+        }
         (ffi::CURLOPT_CUSTOMREQUEST, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.http.custom_method = unsafe { owned(p) }?;

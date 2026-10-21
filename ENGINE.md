@@ -1467,7 +1467,10 @@ That leg's URL replaces `Run::url` whole (C's `state.url`). A redirect reaches o
 schemes (`CURLPROTO_REDIR`). `Run::first` holds the first leg's origin (`state.initial_origin`):
 each request's `CredentialGate` is fixed when the request is made, from that origin and its own.
 The gate holds back what the application said; credentials in the request's own URL go to its
-origin regardless (`Trusted::own_url`), as C takes them per leg in `url_set_data_creds`.
+origin regardless (`Trusted::own_url`), as C takes them per leg in `url_set_data_creds`. Each
+request composes its `Credentials` so (`for_request`): the application's `Login`, if the gate
+trusts the origin; the URL's parts in place of the login's unless the login named a user. The
+`Trusted` leave travels inside them, so no credentials reach a header without it.
 What one request takes from the ones before it is `Inherited` on `Run`, reset at a transfer's
 start: the first origin, the method (C's `state.httpreq`), whether the custom method is still
 sent (`state.http_ignorecustom`) and whether a response said HTTP/1.0 (`rcvd_min`, which makes

@@ -59,11 +59,45 @@ pub struct Options {
     pub progress: Progress,
     /// What a transfer sends, if its request has a body.
     pub upload: UploadSource,
+    /// Who the transfer authenticates as.
+    pub login: Login,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
     #[cfg(any(test, feature = "test-util"))]
     pub script: Option<script::Script>,
+}
+
+/// The user and password the application gives (`CURLOPT_USERNAME`,
+/// `CURLOPT_PASSWORD`, `CURLOPT_USERPWD`), each as given; none is not the
+/// same as empty. They go only to the origin the transfer starts at,
+/// unless `Http::unrestricted_auth` says otherwise.
+#[derive(Debug, Default)]
+pub struct Login {
+    pub user: Option<Vec<u8>>,
+    pub password: Option<Vec<u8>>,
+}
+
+impl Login {
+    /// `user:password`, split at the first colon; with none, a user alone
+    /// (`Curl_parse_login_details`).
+    pub fn from_pair(pair: &[u8]) -> Result<Login, OutOfMemory> {
+        let (user, password) = match pair.iter().position(|&b| b == b':') {
+            Some(at) => (&pair[..at], Some(&pair[at + 1..])),
+            None => (pair, None),
+        };
+        Ok(Login {
+            user: Some(copy(user)?),
+            password: password.map(copy).transpose()?,
+        })
+    }
+
+    fn try_clone(&self) -> Result<Login, OutOfMemory> {
+        Ok(Login {
+            user: self.user.as_deref().map(copy).transpose()?,
+            password: self.password.as_deref().map(copy).transpose()?,
+        })
+    }
 }
 
 impl Options {
@@ -121,6 +155,7 @@ impl Options {
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
             upload: self.upload.clone(),
+            login: self.login.try_clone()?,
             http: self.http.try_clone()?,
             tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]

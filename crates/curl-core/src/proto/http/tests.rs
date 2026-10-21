@@ -1680,6 +1680,42 @@ fn the_application_s_credentials_stay_with_the_first_origin() {
     }
 }
 
+/// The application's login goes as Basic to the origin the transfer
+/// started at, before the URL's own credentials; to another only if it
+/// lets it, and a redirect's own credentials go there in its place.
+#[test]
+fn the_login_stays_with_the_first_origin() {
+    let login = b"Authorization: Basic c21pdGg6ZG9nZ2ll\r\n";
+    for (unrestricted, userinfo, second_has) in [
+        (false, "", None),
+        (true, "", Some(&login[..])),
+        (false, "u:p@", Some(&b"Authorization: Basic dTpw\r\n"[..])),
+    ] {
+        let location = format!("http://{userinfo}other.test:{PORT}/b");
+        let first = Conversation::new(&moved(&location, true), true);
+        let second = Conversation::new(OK, false);
+        let mut m = serving(Peer::Accepts, &[&first, &second]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let url = format!("http://x:y@127.0.0.1:{PORT}/a");
+        let ran = get(&mut m, "/a", first.clone(), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.login = crate::options::Login::from_pair(b"smith:doggie").unwrap();
+            o.http.follow = Follow::All;
+            o.http.unrestricted_auth = unrestricted;
+            o.resolve.set([entry.as_bytes()]).unwrap();
+        });
+        assert_eq!(ran.result, Ok(()));
+        let has = |r: &[u8], line: &[u8]| fixture::find(r, line).is_some();
+        assert!(has(&first.received(), login), "the login before the URL's");
+        let second = second.received();
+        let sent = fixture::find(&second, b"Authorization:").map(|at| {
+            let end = at + fixture::find(&second[at..], b"\n").unwrap() + 1;
+            &second[at..end]
+        });
+        assert_eq!(sent, second_has, "{location}, unrestricted {unrestricted}");
+    }
+}
+
 /// A `Location:` with a code outside 3xx is not followed, only kept.
 #[test]
 fn a_location_outside_a_redirect_is_not_followed() {

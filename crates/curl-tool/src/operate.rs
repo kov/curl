@@ -919,6 +919,11 @@ fn configure(
             HttpVersion::Http11 => options::HttpVersion::Http11,
         };
     }
+    // A user without a password is not prompted for one, as C's
+    // `checkpasswd` does on a terminal.
+    if let Some(pair) = op.user {
+        o.login = options::Login::from_pair(pair)?;
+    }
     http.allow_09 = op.http09;
     http.raw = op.raw;
     http.ignore_content_length = op.ignore_content_length;

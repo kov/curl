@@ -212,6 +212,18 @@ fn http_options_reach_the_request() {
         CURLE_OK
     );
     assert!(resolve(c).is_empty());
+    let login = |c| options(c, |o| (o.login.user.clone(), o.login.password.clone()));
+    let some = |s: &[u8]| Some(s.to_vec());
+    pointer(c, ffi::CURLOPT_USERPWD, c"a:b:c".as_ptr().cast_mut());
+    assert_eq!(login(c), (some(b"a"), some(b"b:c")));
+    pointer(c, ffi::CURLOPT_PASSWORD, c"pw".as_ptr().cast_mut());
+    assert_eq!(login(c), (some(b"a"), some(b"pw")));
+    pointer(c, ffi::CURLOPT_USERNAME, c"u".as_ptr().cast_mut());
+    assert_eq!(login(c), (some(b"u"), some(b"pw")));
+    pointer(c, ffi::CURLOPT_USERPWD, c"x".as_ptr().cast_mut());
+    assert_eq!(login(c), (some(b"x"), None));
+    pointer(c, ffi::CURLOPT_USERPWD, ptr::null_mut::<c_char>());
+    assert_eq!(login(c), (None, None));
     let reuse = |c| options(c, |o| o.limits.reuse);
     let max = |c| reuse(c).max_connects.get();
     assert_eq!(long(c, ffi::CURLOPT_MAXCONNECTS, 3), CURLE_OK);

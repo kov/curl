@@ -887,9 +887,9 @@ impl Pool {
 - `acquire` searches before it adds (`Curl_cpool_find`): at most once a second it first prunes
   the idle connections that are not healthy, silently, as C's prune traces to its internal
   handle; then it takes the first idle connection, in table order, whose route is equal. One
-  alive longer than the searching transfer's `max_age` is closed and passed over; one idle
-  longer than its `max_idle`, or alive too long by the health check, or with anything to read,
-  is closed as dead. What the search did comes back as `PoolNote`s, which the transfer traces in
+  alive longer than the searching transfer's `max_age` is closed and passed over before its
+  health is checked; one idle longer than its `max_idle`, or with anything to read, is closed as
+  dead. What the search did comes back as `PoolNote`s, which the transfer traces in
   C's words ("Too old connection (…), disconnect it", "Connection N seems to be dead,
   terminating", "shutting down connection #N"). The rules are the searching transfer's, as C's
   match and the settings it copies to its internal handle make them. A reused connection is

@@ -167,7 +167,7 @@ pub struct Limits {
 }
 
 /// How long a connection may have been idle, and have lived, for a
-/// transfer to reuse it; none for no limit.
+/// transfer to reuse it; none for no limit, as C's 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReuseLimits {
     /// `CURLOPT_MAXAGE_CONN`: 118 seconds unless set.

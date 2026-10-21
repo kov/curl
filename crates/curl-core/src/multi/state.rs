@@ -798,8 +798,10 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         Err(e) => return TransferState::Init.fail(e),
     };
     let Some((scheme, host, port)) = target else {
-        let Ok(Acquired::New(lease)) = acquire(cx, Route::Local) else {
-            return TransferState::Init.fail(ErrorKind::OutOfMemory);
+        let lease = match acquire(cx, Route::Local) {
+            Ok(Acquired::New(lease)) => lease,
+            Ok(Acquired::Reused(_)) => unreachable!("a connection without a network is never kept"),
+            Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
         };
         // A connection without a network has its name at once.
         cx.mark(Timer::NameLookup);
@@ -861,12 +863,6 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
                 cx,
                 format_args!(
                     "Too old connection ({idle_ms} ms idle, max idle is {max_ms} ms), disconnect it"
-                ),
-            ),
-            PoolNote::LivedTooLong { age_ms, max_ms } => trace::info(
-                cx,
-                format_args!(
-                    "Too old connection (created {age_ms} ms ago, max lifetime is {max_ms} ms), disconnect it"
                 ),
             ),
             PoolNote::Dead(n) => {

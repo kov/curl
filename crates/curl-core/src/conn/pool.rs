@@ -77,7 +77,7 @@ impl Drop for Locked<'_> {
 
 /// How long the transfer looking for a connection lets one be idle, and
 /// live (`CURLOPT_MAXAGE_CONN`, `CURLOPT_MAXLIFETIME_CONN`); none for no
-/// limit.
+/// limit, as 0 is for either in C.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ReuseRules {
     pub(crate) max_idle: Option<Duration>,
@@ -116,10 +116,9 @@ pub(crate) enum Acquired {
 /// Something the search for a connection did, for the transfer to trace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PoolNote {
-    /// A match idle for too long (`cpool_conn_too_old`).
+    /// A match idle for too long (`cpool_conn_too_old`). One alive too
+    /// long is passed over before its health is checked, so says nothing.
     IdleTooLong { idle_ms: u64, max_ms: u64 },
-    /// A match that lived too long, judged by its health check.
-    LivedTooLong { age_ms: u64, max_ms: u64 },
     /// A match not healthy (`url_match_conn`).
     Dead(ConnNumber),
     /// A connection closed, gracefully.
@@ -477,14 +476,12 @@ fn health(
             max_ms: whole_ms(max),
         }));
     }
-    let age = now.since(conn.created);
-    if let Some(max) = rules.max_age
-        && age > max
+    // Only the prune meets one alive too long here, and says nothing.
+    if rules
+        .max_age
+        .is_some_and(|max| now.since(conn.created) > max)
     {
-        return Err(Some(PoolNote::LivedTooLong {
-            age_ms: whole_ms(age),
-            max_ms: whole_ms(max),
-        }));
+        return Err(None);
     }
     let Transport::Tcp(socket) = &conn.transport else {
         return Ok(());

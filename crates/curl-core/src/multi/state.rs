@@ -624,15 +624,8 @@ fn connecting<H: Host>(
             cx.mark(Timer::NameLookup);
             match to {
                 SocketAddr::V4(_) => trace::info(cx, format_args!("  Trying {to}...")),
-                SocketAddr::V6(v6) if v6.scope_id() != 0 => trace::info(
-                    cx,
-                    format_args!(
-                        "  Trying [{}]:{} scope_id={}...",
-                        v6.ip(),
-                        v6.port(),
-                        v6.scope_id()
-                    ),
-                ),
+                // No address carries a zone yet, which C would show as
+                // `scope_id=N` after the port.
                 SocketAddr::V6(v6) => {
                     trace::info(cx, format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
                 }

@@ -25,6 +25,8 @@ pub struct TransferReport {
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
     /// none when keeping it ran out of memory.
     failure: Option<Vec<u8>>,
+    /// How many reasons were given, the first among them.
+    reasons: u32,
 }
 
 impl TransferReport {
@@ -89,8 +91,15 @@ impl TransferReport {
         self.failure.as_deref()
     }
 
+    /// How many reasons for failing the transfer gave: a handler that
+    /// gave one leaves its caller nothing to add.
+    pub(crate) fn reasons(&self) -> u32 {
+        self.reasons
+    }
+
     /// Keep `detail` as the reason, unless one was given already.
     pub(crate) fn record_failure(&mut self, detail: &[u8]) {
+        self.reasons = self.reasons.saturating_add(1);
         if self.failure.is_some() {
             return;
         }

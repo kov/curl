@@ -315,8 +315,9 @@ fn deliver<H: Host>(
             let Some(handler) = cx.easy().options().callbacks.header.clone() else {
                 return Ok(bytes.len());
             };
+            let reasons = cx.easy().report().reasons();
             let w = handler.header(&mut TransferCx::new(cx), bytes, origin);
-            Ok(if verdict(cx, w, bytes.len(), pausable)? {
+            Ok(if verdict(cx, w, bytes.len(), reasons, pausable)? {
                 bytes.len()
             } else {
                 0
@@ -349,8 +350,9 @@ fn deliver_body<H: Host>(
                 format_args!("Would have exceeded max file size"),
             ));
         }
+        let reasons = cx.easy().report().reasons();
         let w = handler.write(&mut TransferCx::new(cx), piece);
-        if !verdict(cx, w, piece.len(), pausable)? {
+        if !verdict(cx, w, piece.len(), reasons, pausable)? {
             break;
         }
         cx.report_mut().sizes_mut().delivered += piece.len() as u64;
@@ -360,11 +362,13 @@ fn deliver_body<H: Host>(
 }
 
 /// Whether the handler took what it was given; a pause holds the output
-/// from here on.
+/// from here on. A handler that failed with a reason of its own, given
+/// since the transfer had `reasons`, is not given another.
 fn verdict<H: Host>(
     cx: &mut StepCx<'_, H>,
     w: Write,
     len: usize,
+    reasons: u32,
     pausable: bool,
 ) -> Result<bool, ErrorKind> {
     match w {
@@ -378,6 +382,7 @@ fn verdict<H: Host>(
             cx.pause_mut().recv = RecvPause::Held;
             Ok(false)
         }
+        Write::Fail if cx.easy().report().reasons() != reasons => Err(ErrorKind::WriteError),
         Write::Fail => Err(trace::fail(
             cx,
             ErrorKind::WriteError,

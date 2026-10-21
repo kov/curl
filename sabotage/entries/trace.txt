@@ -51,3 +51,11 @@ witness: curl-tool reports_a_failure
                 Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
 --- new
                 Some(_) => msgs.error_line(&[code.as_bytes(), b"?\n"]),
+
+=== the failure sink hears every reason
+file: crates/curl-core/src/trace.rs
+witness: curl-core deliver::tests::the_first_reason_is_the_one_kept
+--- old
+    if first && let Some(sink) = cx.easy().options().callbacks.failure.clone() {
+--- new
+    if let Some(sink) = cx.easy().options().callbacks.failure.clone() {

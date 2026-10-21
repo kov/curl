@@ -140,11 +140,11 @@ witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
 --- old
                 None => false,
             };
-            if !rewound {
+            if !rewound && cx.easy().report().reasons() != reasons {
 --- new
                 None => true,
             };
-            if !rewound {
+            if !rewound && cx.easy().report().reasons() != reasons {
 
 === a request with a body is sent at DID
 file: crates/curl-core/src/multi/state.rs
@@ -185,3 +185,11 @@ witness: curl-core progress::tests::both_directions_add_up
             self.current = speeds.download.saturating_add(speeds.upload);
 --- new
             self.current = speeds.download;
+
+=== a rewind handler that gave its reason is given a second
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::a_rewind_handler_s_reason_is_the_transfer_s
+--- old
+            if !rewound && cx.easy().report().reasons() != reasons {
+--- new
+            if !rewound && cx.easy().report().reasons() != reasons && false {

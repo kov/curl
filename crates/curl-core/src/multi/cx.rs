@@ -76,6 +76,13 @@ impl<'a> TransferCx<'a> {
     pub fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
         self.calls.pause(id, req)
     }
+
+    /// Why this transfer fails, in the handler's words, before it answers
+    /// that it failed: the transfer gives this reason instead of its own.
+    /// As every reason, it is traced, and kept unless one came before.
+    pub fn fail(&mut self, why: &[u8]) {
+        self.calls.fail(why);
+    }
 }
 
 /// What a `TransferCx` reaches, whatever the multi's `Host`.
@@ -84,6 +91,7 @@ pub(crate) trait TransferCalls {
     fn easy(&self, id: TransferId) -> Option<&Easy>;
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy>;
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind>;
+    fn fail(&mut self, why: &[u8]);
 }
 
 /// The multi as the timer callback sees it: only the calls api.c lets
@@ -109,6 +117,10 @@ impl<H: Host> EventCx<'_, H> {
 
     pub fn options(&self, id: TransferId) -> Option<&Options> {
         self.slots.get(id).map(|s| s.easy.options())
+    }
+
+    pub fn info(&self, id: TransferId) -> Option<&TransferReport> {
+        self.slots.get(id).map(|s| s.easy.report())
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
@@ -164,6 +176,25 @@ impl<H: Host> NotifyCx<'_, H> {
 
     pub fn options(&self, id: TransferId) -> Option<&Options> {
         self.multi.easy(id).map(Easy::options)
+    }
+
+    pub fn info(&self, id: TransferId) -> Option<&TransferReport> {
+        self.multi.easy(id).map(Easy::report)
+    }
+
+    /// As `Multi::owner`.
+    pub fn owner(&self, id: TransferId) -> Option<&H::Transfer> {
+        self.multi.owner(id)
+    }
+
+    /// As `Multi::pause`.
+    pub fn pause(
+        &mut self,
+        id: TransferId,
+        req: PauseRequest,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), ErrorKind> {
+        self.multi.pause(id, req, ev)
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {

@@ -380,6 +380,23 @@ impl<H: Host> Multi<H> {
         read_message(&mut self.slots)
     }
 
+    /// How many completed transfers' messages are unread
+    /// (`CURLMINFO_XFERS_DONE`).
+    pub fn unread(&self) -> u32 {
+        let mut unread = 0;
+        let mut cursor = None;
+        while let Some(id) = self.slots.next_after(cursor) {
+            cursor = Some(id);
+            if let Some(run) = &self.slots.get(id).expect("just found").run
+                && let TransferState::Completed(c) = &run.state
+                && c.message == MessageState::Unread
+            {
+                unread += 1;
+            }
+        }
+        unread
+    }
+
     /// Turn a kind of notification on or off
     /// (`curl_multi_notify_enable`, `curl_multi_notify_disable`). One
     /// already queued is not delivered once its kind is off.
@@ -425,6 +442,17 @@ impl<H: Host> Multi<H> {
             .map_err(|_| ErrorKind::AbortedByCallback);
         self.check();
         result.and(timer)
+    }
+
+    /// The transfer after `after` in the multi, or the first; transfers
+    /// added meanwhile may or may not be met.
+    pub fn next_transfer(&self, after: Option<TransferId>) -> Option<TransferId> {
+        self.slots.next_after(after)
+    }
+
+    /// What the application gave with the transfer when it added it.
+    pub fn owner(&self, id: TransferId) -> Option<&H::Transfer> {
+        self.slots.get(id).map(|s| &s.owner)
     }
 
     pub fn easy(&self, id: TransferId) -> Option<&Easy> {

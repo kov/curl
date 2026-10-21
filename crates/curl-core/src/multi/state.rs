@@ -296,6 +296,11 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {
         super::pause_transfer(&mut self.rest, id, req)
     }
+
+    fn fail(&mut self, why: &[u8]) {
+        // The kind is the verdict's to decide.
+        trace::fail_with(self, ErrorKind::WriteError, &[why]);
+    }
 }
 
 /// Replay a transfer's held output, from outside its step.

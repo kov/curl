@@ -163,6 +163,90 @@ fn a_failed_write_fails_the_transfer() {
     );
 }
 
+/// Fails with a reason of its own.
+struct Explains;
+
+impl WriteHandler for Explains {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        cx.fail(b"mine");
+        Write::Fail
+    }
+}
+
+/// Keeps the trace's text lines.
+#[derive(Clone, Default)]
+struct Trace(std::rc::Rc<std::cell::RefCell<Vec<Vec<u8>>>>);
+
+impl DebugHandler for Trace {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        if kind == DebugKind::Text {
+            self.0.borrow_mut().push(data.to_vec());
+        }
+    }
+}
+
+impl crate::handler::TextSink for Trace {
+    fn write(&self, text: &[u8]) {
+        self.0.borrow_mut().push(text.to_vec());
+    }
+}
+
+/// A handler that says why it fails gives the transfer's reason, and the
+/// transfer adds none of its own: C's write callback adapter is the one
+/// that calls `failf` for a short count. The failure sink hears it once.
+#[test]
+fn a_handler_s_own_reason_is_the_only_one() {
+    let mut e = script(vec![body(b"one")]);
+    let (trace, told) = (Trace::default(), Trace::default());
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.write = Some(handler(Explains));
+    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    e.options_mut().callbacks.failure = Some(Handler::text(told.clone()).unwrap());
+    let mut m = multi();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::WriteError));
+    let e = m.remove(id, &mut NoEvents).unwrap().easy;
+    assert_eq!(e.report().failure(), Some(&b"mine"[..]));
+    assert_eq!(*trace.0.borrow(), [b"mine\n".to_vec()]);
+    assert_eq!(*told.0.borrow(), [b"mine".to_vec()]);
+}
+
+/// Fails with two reasons.
+struct ExplainsTwice;
+
+impl WriteHandler for ExplainsTwice {
+    fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        cx.fail(b"first");
+        cx.fail(b"second");
+        Write::Fail
+    }
+}
+
+/// Of a transfer's reasons, the report keeps and the failure sink hears
+/// the first alone (`failf`'s `state.errorbuf`); the trace has each.
+#[test]
+fn the_first_reason_is_the_one_kept() {
+    let mut e = script(vec![body(b"one")]);
+    let (trace, told) = (Trace::default(), Trace::default());
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.write = Some(handler(ExplainsTwice));
+    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    e.options_mut().callbacks.failure = Some(Handler::text(told.clone()).unwrap());
+    let mut m = multi();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    drive_to_completion(&mut m, id, &mut NoEvents)
+        .unwrap()
+        .unwrap_err();
+    let e = m.remove(id, &mut NoEvents).unwrap().easy;
+    assert_eq!(e.report().failure(), Some(&b"first"[..]));
+    assert_eq!(*told.0.borrow(), [b"first".to_vec()]);
+    assert_eq!(
+        *trace.0.borrow(),
+        [b"first\n".to_vec(), b"second\n".to_vec()]
+    );
+}
+
 /// Sees its own transfer and its options from inside the call.
 struct Introspect(std::cell::Cell<Option<TransferId>>);
 

@@ -202,10 +202,14 @@ impl Upload {
             if !self.called {
                 return Ok(());
             }
+            let reasons = cx.easy().report().reasons();
             let rewound = match rewind.clone() {
                 Some(rewind) => rewind.rewind(&mut TransferCx::new(cx)).is_ok(),
                 None => false,
             };
+            if !rewound && cx.easy().report().reasons() != reasons {
+                return Err(ErrorKind::SendFailRewind);
+            }
             if !rewound {
                 let why = format_args!("necessary data rewind was not possible");
                 return Err(trace::fail(cx, ErrorKind::SendFailRewind, why));

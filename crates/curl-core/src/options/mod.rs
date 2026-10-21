@@ -195,6 +195,9 @@ pub struct Callbacks {
     pub debug: Option<Handler<dyn DebugHandler>>,
     /// Text for the user; without one, the process's standard error.
     pub stderr: Option<Handler<dyn TextSink>>,
+    /// Told a transfer's first reason for failing as it is given, as C
+    /// copies it into `CURLOPT_ERRORBUFFER`; the report keeps it too.
+    pub failure: Option<Handler<dyn TextSink>>,
 }
 
 /// Where the body a transfer sends comes from.

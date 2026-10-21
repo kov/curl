@@ -332,6 +332,65 @@ fn a_rewind_sends_the_body_again() {
     assert_eq!(seen.reads.borrow().len(), 4, "read to its end twice");
 }
 
+/// Fails to rewind, saying why.
+struct Explains;
+
+impl Rewind for Explains {
+    fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
+        cx.fail(b"seek callback returned error 1");
+        Err(RewindFailed)
+    }
+}
+
+/// Keeps the trace's text lines.
+#[derive(Clone, Default)]
+struct Trace(Rc<RefCell<Vec<Vec<u8>>>>);
+
+impl crate::handler::DebugHandler for Trace {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+        if kind == crate::handler::DebugKind::Text {
+            self.0.borrow_mut().push(data.to_vec());
+        }
+    }
+}
+
+/// A rewind handler that says why it failed gives the transfer's reason
+/// in place of the transfer's own, which is neither kept nor traced
+/// (`cr_in_rewind`).
+#[test]
+fn a_rewind_handler_s_reason_is_the_transfer_s() {
+    let reason = |explains: bool| {
+        let mut e = script(vec![Piece::SendAll, Piece::Rewind]);
+        fed(&mut e, b"x", None, Some(false), plain);
+        let trace = Trace::default();
+        e.options_mut().output.verbose = true;
+        e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+        if explains {
+            let UploadSource::Read { rewind, .. } = &mut e.options_mut().upload else {
+                unreachable!()
+            };
+            *rewind = Some(Handler::rewind(Explains).unwrap());
+        }
+        let (mut m, _clock) = multi();
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(result(&mut m), Some(Err(ErrorKind::SendFailRewind)));
+        let kept = m.easy(id).unwrap().report().failure().map(<[u8]>::to_vec);
+        let traced = trace.0.borrow().clone();
+        (kept, traced)
+    };
+    let mine = b"seek callback returned error 1";
+    assert_eq!(
+        reason(true),
+        (Some(mine.to_vec()), vec![[&mine[..], b"\n"].concat()])
+    );
+    let its = b"necessary data rewind was not possible";
+    assert_eq!(
+        reason(false),
+        (Some(its.to_vec()), vec![[&its[..], b"\n"].concat()])
+    );
+}
+
 /// A body not yet read needs no rewind; one read from needs a rewind
 /// handler that works, even when the read only paused.
 #[test]

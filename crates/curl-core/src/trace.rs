@@ -78,7 +78,11 @@ pub(crate) fn fail_with<H: Host>(
 }
 
 fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_MAX>) -> ErrorKind {
+    let first = cx.easy().report().reasons() == 0;
     cx.report_mut().record_failure(detail.bytes());
+    if first && let Some(sink) = cx.easy().options().callbacks.failure.clone() {
+        sink.write(detail.bytes());
+    }
     if cx.easy().options().output.verbose {
         let mut line = Text::<{ DETAIL_MAX + 1 }>::new();
         line.push_clipped(detail.bytes());

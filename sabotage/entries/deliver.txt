@@ -133,9 +133,9 @@ witness: curl-core deliver::tests::a_receive_pause_inside_the_replay_lets_it_fin
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_receive_pause_finishes_the_write_under_way
 --- old
-        if !verdict(cx, w, piece.len(), pausable)? {
+        if !verdict(cx, w, piece.len(), reasons, pausable)? {
 --- new
-        if !verdict(cx, w, piece.len(), pausable)? || cx.pause().recv_paused() {
+        if !verdict(cx, w, piece.len(), reasons, pausable)? || cx.pause().recv_paused() {
 
 === the piece a handler paused on is dropped
 file: crates/curl-core/src/deliver/mod.rs
@@ -318,3 +318,13 @@ witness: curl-core pausing_and_replaying_survives_every_allocation_failing
 --- new
         if joins {
             self.entries
+
+=== a handler that gave its reason is given a second
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_handler_s_own_reason_is_the_only_one
+--- old
+        Write::Fail if cx.easy().report().reasons() != reasons => Err(ErrorKind::WriteError),
+--- new
+        Write::Fail if cx.easy().report().reasons() != reasons && false => {
+            Err(ErrorKind::WriteError)
+        }

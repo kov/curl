@@ -11,10 +11,30 @@ pub use headers::{HeaderCursor, HeaderError, HeaderStore, HeaderView, Origins, R
 use curl_alloc::TryVec;
 
 use crate::time::Instant;
+use crate::url::Url;
 use crate::version::Protocol;
 
+/// The HTTP version a status line says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResponseVersion {
+    Http10,
+    Http11,
+    Http2,
+    Http3,
+}
+
+impl ResponseVersion {
+    pub(crate) fn major(self) -> u8 {
+        match self {
+            ResponseVersion::Http10 | ResponseVersion::Http11 => 1,
+            ResponseVersion::Http2 => 2,
+            ResponseVersion::Http3 => 3,
+        }
+    }
+}
+
 /// One transfer's report. The default is that of a transfer never run.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct TransferReport {
     timings: Timings,
     sizes: Sizes,
@@ -22,6 +42,14 @@ pub struct TransferReport {
     headers: HeaderStore,
     filetime: Option<i64>,
     protocol: Option<Protocol>,
+    /// The last status line's code and version (`info.httpcode`,
+    /// `info.httpversion`).
+    response: Option<(u16, ResponseVersion)>,
+    /// The seconds a response asked to wait before trying again, at most
+    /// six hours (`info.retry_after`).
+    retry_after: u64,
+    /// The URL the transfer used, without its credentials.
+    url: Option<Url>,
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
     /// none when keeping it ran out of memory.
     failure: Option<Vec<u8>>,
@@ -84,6 +112,42 @@ impl TransferReport {
 
     pub(crate) fn set_protocol(&mut self, protocol: Option<Protocol>) {
         self.protocol = protocol;
+    }
+
+    /// The code of the last response, interim ones included
+    /// (`CURLINFO_RESPONSE_CODE`).
+    pub fn response_code(&self) -> Option<u16> {
+        self.response.map(|(code, _)| code)
+    }
+
+    /// The HTTP version of the last response (`CURLINFO_HTTP_VERSION`).
+    pub fn response_version(&self) -> Option<ResponseVersion> {
+        self.response.map(|(_, version)| version)
+    }
+
+    pub(crate) fn set_response(&mut self, code: u16, version: ResponseVersion) {
+        self.response = Some((code, version));
+    }
+
+    /// How long a response asked to wait before the next try, in
+    /// seconds (`CURLINFO_RETRY_AFTER`).
+    pub fn retry_after(&self) -> u64 {
+        self.retry_after
+    }
+
+    pub(crate) fn set_retry_after(&mut self, secs: u64) {
+        self.retry_after = secs;
+    }
+
+    /// The URL the transfer used, its credentials taken out
+    /// (`CURLINFO_EFFECTIVE_URL`).
+    pub fn url(&self) -> Option<&Url> {
+        self.url.as_ref()
+    }
+
+    pub(crate) fn set_url(&mut self, mut url: Url) {
+        url.forget_credentials();
+        self.url = Some(url);
     }
 
     /// Why the transfer failed, in the words of the first reason given.

@@ -15,24 +15,7 @@ use crate::error::ErrorKind;
 /// itself taken off (`CURL_MAX_HTTP_HEADER`).
 const MAX_LINE: usize = 100 * 1024 - 1;
 
-/// An HTTP version, as a status line says it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HttpVersion {
-    Http10,
-    Http11,
-    Http2,
-    Http3,
-}
-
-impl HttpVersion {
-    fn major(self) -> u8 {
-        match self {
-            HttpVersion::Http10 | HttpVersion::Http11 => 1,
-            HttpVersion::Http2 => 2,
-            HttpVersion::Http3 => 3,
-        }
-    }
-}
+pub(crate) use crate::report::ResponseVersion as HttpVersion;
 
 /// What the status line said.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -148,10 +148,7 @@ pub struct Url {
 impl Drop for Url {
     fn drop(&mut self) {
         // As C clears a password before freeing it.
-        if let Some(p) = &mut self.password {
-            p.fill(0);
-            std::hint::black_box(p);
-        }
+        self.forget_credentials();
     }
 }
 
@@ -441,6 +438,16 @@ impl Url {
         self.password = password;
         self.options = options;
         Ok(at + 1)
+    }
+
+    /// Take out the user and the password, the password cleared first.
+    pub(crate) fn forget_credentials(&mut self) {
+        if let Some(p) = &mut self.password {
+            p.fill(0);
+            std::hint::black_box(p);
+        }
+        self.user = None;
+        self.password = None;
     }
 
     /// Part `what`, as `curl_url_get` returns it.

@@ -508,8 +508,11 @@ fn ids_are_told_apart_as_c_tells_them() {
 fn infos_answer_from_the_report() {
     let (path, url) = file("infos", b"hello");
     let c = curl_easy_init();
-    // Not run yet: no time is known.
+    // Not run yet: no time is known, and the URL is empty.
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_FILETIME), -1);
+    let before = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL);
+    // SAFETY: getinfo gives a string that lives while the handle does.
+    assert_eq!(unsafe { CStr::from_ptr(before) }, c"");
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_FILETIME_T), -1);
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
@@ -610,12 +613,22 @@ fn infos_answer_from_the_report() {
         ffi::CURLPROTO_FILE
     );
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_RESPONSE_CODE), 0);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_HTTP_VERSION), 0);
+    assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_RETRY_AFTER), 0);
+    // The URL the transfer used, the same string each time it is asked.
+    let effective = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL);
+    // SAFETY: getinfo gives a string that lives while the handle does.
+    assert_eq!(unsafe { CStr::from_ptr(effective) }, url.as_c_str());
+    assert_eq!(
+        info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL),
+        effective
+    );
     // An info not answered yet, and one of no type.
     let mut v: c_long = 0;
     // SAFETY: a live handle and a `long` to write.
     unsafe {
         assert_eq!(
-            curl_easy_getinfo(c, ffi::CURLINFO_EFFECTIVE_URL, &raw mut v),
+            curl_easy_getinfo(c, ffi::CURLINFO_REDIRECT_URL, &raw mut v),
             CURLE_UNKNOWN_OPTION
         );
         assert_eq!(

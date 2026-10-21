@@ -21,3 +21,11 @@ witness: curl-core easy::tests::performs_a_file_url_on_its_own
                     break msg.result;
 --- new
                     break Ok(());
+
+=== the effective URL is copied again for each call
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi handle_tests::infos_answer_from_the_report
+--- old
+    if kept.strip_suffix(b"\0") != Some(&text[..]) {
+--- new
+    if true {

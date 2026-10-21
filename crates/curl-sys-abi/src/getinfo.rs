@@ -6,7 +6,10 @@
 use core::ffi::{c_char, c_int, c_long, c_void};
 use std::time::Duration;
 
-use curl_core::report::TransferReport;
+use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_core::error::UrlErrorKind;
+use curl_core::report::{ResponseVersion, TransferReport};
+use curl_core::url::{GetOptions, Part};
 use curl_core::version::Protocol;
 
 use crate::easy::{self, ShimEasy};
@@ -22,6 +25,8 @@ enum Value {
     Double(f64),
     Off(curl_off_t),
     Ptr(*mut c_void),
+    /// No answer, for this reason.
+    Failed(CURLcode),
 }
 
 /// An answer in the type its info's number names.
@@ -87,6 +92,34 @@ fn proto_bit(p: Protocol) -> c_long {
     }
 }
 
+/// The URL the transfer used, without its credentials, as the handle
+/// keeps it for C; empty before any transfer (`effective_url`).
+fn effective_url(easy: &ShimEasy, r: &TransferReport) -> Result<*const c_char, OutOfMemory> {
+    let Some(url) = r.url() else {
+        return Ok(c"".as_ptr());
+    };
+    let get = GetOptions {
+        get_empty: true,
+        ..GetOptions::NONE
+    };
+    let text = match url.get(Part::Url, get) {
+        Ok(text) => text,
+        Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),
+        // The transfer ran with it, so it reads back.
+        Err(e) => unreachable!("a transfer's URL does not read back: {e:?}"),
+    };
+    let mut kept = easy.effective_url.borrow_mut();
+    if kept.strip_suffix(b"\0") != Some(&text[..]) {
+        let mut copy = Vec::new();
+        copy.try_reserve_exact(text.len() + 1)
+            .map_err(|_| OutOfMemory)?;
+        copy.try_extend_from_slice(&text)?;
+        copy.try_push(0)?;
+        *kept = copy;
+    }
+    Ok(kept.as_ptr().cast())
+}
+
 /// What `info` asks of the transfer, or none for one not known.
 fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
     let t = r.timings();
@@ -94,8 +127,21 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
     let length = |n: Option<u64>| n.map_or(-1, off);
     Some(match info {
         ffi::CURLINFO_PRIVATE => Value::Ptr(easy.set.get().private),
-        // No protocol yet has a response code.
-        ffi::CURLINFO_RESPONSE_CODE => Value::Long(0),
+        ffi::CURLINFO_EFFECTIVE_URL => match effective_url(easy, r) {
+            Ok(p) => Value::Ptr(p.cast_mut().cast()),
+            Err(OutOfMemory) => Value::Failed(ffi::CURLE_OUT_OF_MEMORY),
+        },
+        ffi::CURLINFO_RESPONSE_CODE => Value::Long(r.response_code().map_or(0, c_long::from)),
+        ffi::CURLINFO_HTTP_VERSION => Value::Long(r.response_version().map_or(
+            ffi::CURL_HTTP_VERSION_NONE,
+            |v| match v {
+                ResponseVersion::Http10 => ffi::CURL_HTTP_VERSION_1_0,
+                ResponseVersion::Http11 => ffi::CURL_HTTP_VERSION_1_1,
+                ResponseVersion::Http2 => ffi::CURL_HTTP_VERSION_2_0,
+                ResponseVersion::Http3 => ffi::CURL_HTTP_VERSION_3,
+            },
+        )),
+        ffi::CURLINFO_RETRY_AFTER => Value::Off(off(r.retry_after())),
         ffi::CURLINFO_FILETIME => Value::Long(r.filetime().map_or(-1, long_time)),
         ffi::CURLINFO_FILETIME_T => Value::Off(r.filetime().unwrap_or(-1)),
         ffi::CURLINFO_PROTOCOL => Value::Long(r.protocol().map_or(0, proto_bit)),
@@ -165,6 +211,9 @@ pub unsafe extern "C" fn curl_easy_getinfo(
     let Some(v) = v else {
         return CURLE_UNKNOWN_OPTION;
     };
+    if let Value::Failed(code) = v {
+        return code;
+    }
     // The info's number names its type; a value of another is a bug here.
     let kind = info.0 & ffi::CURLINFO_TYPEMASK;
     let typed = match v {
@@ -172,6 +221,7 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         Value::Double(n) if kind == ffi::CURLINFO_DOUBLE => Typed::Double(n),
         Value::Off(n) if kind == ffi::CURLINFO_OFF_T => Typed::Off(n),
         Value::Ptr(p) if kind == ffi::CURLINFO_STRING => Typed::Str(p.cast()),
+        Value::Failed(_) => unreachable!("returned above"),
         _ => unreachable!("info {} answered in the wrong type", info.0 as c_int),
     };
     // SAFETY: the application points at a value of the info's type, which

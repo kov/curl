@@ -282,3 +282,38 @@ witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
             if self.size != Some(from) {
 --- new
             if true {
+
+=== the report does not keep the response's code
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_report_knows_the_response_as_its_lines_arrive
+--- old
+                cx.report_mut().set_response(status.code, status.version);
+--- new
+                let _ = status;
+
+=== the body's size is told after the blank line is delivered
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_report_knows_the_response_as_its_lines_arrive
+--- old
+                self.body_start(cx);
+                self.pipeline.header(cx, blank, origin)?;
+--- new
+                self.pipeline.header(cx, blank, origin)?;
+                self.body_start(cx);
+
+=== Retry-After has no ceiling
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::retry_after_reads_seconds
+--- old
+    Some(secs.min(MAX_RETRY_AFTER))
+--- new
+    Some(secs)
+
+=== the report's URL keeps its credentials
+file: crates/curl-core/src/report.rs
+witness: curl-core proto::http::tests::the_report_s_url_has_no_credentials
+--- old
+        url.forget_credentials();
+        self.url = Some(url);
+--- new
+        self.url = Some(url);

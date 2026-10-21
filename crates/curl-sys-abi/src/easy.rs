@@ -49,6 +49,10 @@ pub(crate) struct ShimEasy {
     private: Cell<Option<NonNull<ShimMulti>>>,
     /// What `curl_multi_info_read` points to.
     pub(crate) msg: UnsafeCell<ffi::CURLMsg>,
+    /// What `CURLINFO_EFFECTIVE_URL` points to, ended by a zero byte:
+    /// replaced only by a different URL, so a pointer handed out lives
+    /// until a later transfer's URL differs, or the handle goes.
+    pub(crate) effective_url: RefCell<Vec<u8>>,
 }
 
 /// Where the handle's transfer is.
@@ -107,6 +111,7 @@ impl ShimEasy {
             private: Cell::new(None),
             // SAFETY: a `CURLMsg` of zeroes is its empty value.
             msg: UnsafeCell::new(unsafe { core::mem::zeroed() }),
+            effective_url: RefCell::new(Vec::new()),
         }
     }
 

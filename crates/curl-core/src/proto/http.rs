@@ -19,7 +19,7 @@ use crate::url::{GetOptions, Part, Url};
 
 use super::ProtoStep;
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
-use super::http1::framing::{Asked, Framing};
+use super::http1::framing::{self, Asked, Framing};
 use super::http1::request::{self, Basic, CredentialGate, RequestHead};
 use auth::{Credentials, CredentialsError};
 
@@ -420,19 +420,35 @@ impl Request {
         } else {
             HeaderOrigin::Header
         };
-        match line.kind {
+        let kind = line.kind;
+        let then = line.then;
+        match kind {
             LineKind::Status(status) => {
                 *interim = (100..200).contains(&status.code);
+                cx.report_mut().set_response(status.code, status.version);
                 pipeline.status(cx, line.bytes)?;
             }
-            LineKind::Header => pipeline.header(cx, line.bytes, origin)?,
+            LineKind::Header => {
+                if let Some(secs) = framing::retry_after(line.bytes) {
+                    cx.report_mut().set_retry_after(secs);
+                }
+                pipeline.header(cx, line.bytes, origin)?;
+            }
+            LineKind::End { interim: false } if early.is_ok() && then.is_ok() => {
+                // What the body comes to is known before the blank line is
+                // delivered (`http_size`, then the last header), so the
+                // header handler reads it there.
+                let mut blank = [0u8; 2];
+                blank[..line.bytes.len()].copy_from_slice(line.bytes);
+                let blank = &blank[..line.bytes.len()];
+                self.body_start(cx);
+                self.pipeline.header(cx, blank, origin)?;
+            }
             LineKind::End { .. } => pipeline.header(cx, line.bytes, origin)?,
         }
-        let kind = line.kind;
         early?;
-        line.then.map_err(|e| head_failed(cx, &e))?;
+        then.map_err(|e| head_failed(cx, &e))?;
         if kind == (LineKind::End { interim: false }) {
-            self.body_start(cx);
             let abandoned = self.head().framing() == Some(Framing::Abandoned);
             if abandoned {
                 return Ok(&[]);

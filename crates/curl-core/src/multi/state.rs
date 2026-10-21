@@ -869,11 +869,18 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
             };
             let kind = ErrorKind::UnsupportedProtocol;
             let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why]);
+            cx.report_mut().set_url(url);
             return TransferState::Init.fail(kind);
         }
-        Err(e) => return TransferState::Init.fail(e),
+        Err(e) => {
+            cx.report_mut().set_url(url);
+            return TransferState::Init.fail(e);
+        }
     };
-    let target = match proto.network(&url) {
+    let target = proto.network(&url);
+    // The transfer's URL from here on is the report's.
+    cx.report_mut().set_url(url);
+    let target = match target {
         Ok(target) => target,
         Err(e) => return TransferState::Init.fail(e),
     };

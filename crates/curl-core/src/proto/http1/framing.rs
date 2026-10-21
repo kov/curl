@@ -452,6 +452,23 @@ impl Meta {
     }
 }
 
+/// The longest wait `Retry-After` is taken to ask for: six hours.
+const MAX_RETRY_AFTER: u64 = 6 * 3600;
+
+/// The seconds a `Retry-After:` line asks to wait (`http_header_r`): its
+/// leading number, at most six hours; 0 for anything else. A date is
+/// read as a number, which it does not start with: dates wait on a date
+/// parser.
+pub(crate) fn retry_after(line: &[u8]) -> Option<u64> {
+    let v = skip_blanks(value_of(line, b"Retry-After:")?);
+    let digits = v.iter().take_while(|b| b.is_ascii_digit()).count();
+    let secs = std::str::from_utf8(&v[..digits])
+        .ok()
+        .and_then(|d| d.parse::<i64>().ok())
+        .map_or(0, |n| n as u64);
+    Some(secs.min(MAX_RETRY_AFTER))
+}
+
 /// The rest of `line` after its name `name`, which includes the colon
 /// (C's `HD_VAL`).
 fn value_of<'l>(line: &'l [u8], name: &[u8]) -> Option<&'l [u8]> {

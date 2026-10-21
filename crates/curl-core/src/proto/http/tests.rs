@@ -12,8 +12,10 @@ use crate::handler::{
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use crate::options::{Method, Options, Resume, UserHeaders};
-use crate::proto::http1::fixture;
+use crate::proto::http1::{fixture, framing};
+use crate::report::ResponseVersion;
 use crate::time::{Clock as _, ManualClock};
+use crate::url::{GetOptions, Part};
 
 /// Where the fake server listens.
 const PORT: u16 = 8990;
@@ -641,4 +643,85 @@ fn a_416_to_a_resumed_get_is_read_and_dropped() {
     assert!(text.iter().any(|l| l == "setting size while ignoring\n"));
     assert!(text.last().unwrap().ends_with("left intact\n"));
     assert_eq!(ran.easy.report().sizes().download(), 4);
+}
+
+/// What a header handler sees of the report at each line: the code and
+/// version once the status line is read, the body's size by the blank
+/// line (`http_size` runs before the last header is written, as test
+/// 1485 reads it).
+#[derive(Clone, Default)]
+struct Watched(Rc<RefCell<Vec<WatchedLine>>>);
+
+/// A header line, with the response code and body size known then.
+type WatchedLine = (Vec<u8>, Option<u16>, Option<u64>);
+
+impl HeaderHandler for Watched {
+    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+        let r = cx.info(cx.me()).unwrap();
+        let seen = (
+            line.to_vec(),
+            r.response_code(),
+            r.sizes().download_expected(),
+        );
+        self.0.borrow_mut().push(seen);
+        Write::Accepted
+    }
+}
+
+#[test]
+fn the_report_knows_the_response_as_its_lines_arrive() {
+    let watched = Watched::default();
+    let w = watched.clone();
+    let ran = run(
+        "/",
+        b"HTTP/1.1 100 Go\r\n\r\nHTTP/1.0 200 OK\r\nRetry-After: 99999\r\nContent-Length: 3\r\n\r\nabc",
+        true,
+        move |o| o.callbacks.header = Some(Handler::header(w).unwrap()),
+    );
+    assert_eq!(ran.result, Ok(()));
+    let seen = watched.0.borrow();
+    let at = |i: usize| (seen[i].1, seen[i].2);
+    assert_eq!(seen[0].0, b"HTTP/1.1 100 Go\r\n");
+    assert_eq!(at(0), (Some(100), None));
+    assert_eq!(at(2), (Some(200), None));
+    assert_eq!(at(4), (Some(200), None));
+    assert_eq!(seen[5].0, b"\r\n");
+    assert_eq!(at(5), (Some(200), Some(3)));
+    let r = ran.easy.report();
+    assert_eq!(r.response_version(), Some(ResponseVersion::Http10));
+    // At most six hours.
+    assert_eq!(r.retry_after(), 21600);
+}
+
+/// `Retry-After` in seconds; what is not a number is 0
+/// (`http_header_r`).
+#[test]
+fn retry_after_reads_seconds() {
+    let after = |line: &[u8]| framing::retry_after(line);
+    assert_eq!(after(b"Retry-After: 22\r\n"), Some(22));
+    assert_eq!(after(b"retry-after:\t 7x\r\n"), Some(7));
+    assert_eq!(after(b"Retry-After: soon\r\n"), Some(0));
+    assert_eq!(after(b"Retry-After: 99999999999999999999\r\n"), Some(0));
+    assert_eq!(after(b"Retry-After: 21601\r\n"), Some(21600));
+    assert_eq!(after(b"Retry-Afte: 1\r\n"), None);
+}
+
+/// The report keeps the URL the transfer used, without its credentials.
+#[test]
+fn the_report_s_url_has_no_credentials() {
+    let ran = run(
+        "/",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        false,
+        |o| {
+            let url = format!("http://u:secret@127.0.0.1:{PORT}/x?q");
+            o.set_url(Some(url.as_bytes())).unwrap();
+        },
+    );
+    assert_eq!(ran.result, Ok(()));
+    let url = ran.easy.report().url().unwrap();
+    assert_eq!(
+        url.get(Part::Url, GetOptions::NONE).unwrap(),
+        format!("http://127.0.0.1:{PORT}/x?q").as_bytes()
+    );
 }

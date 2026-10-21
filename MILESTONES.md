@@ -331,9 +331,10 @@ cargo-mutants run on the milestone's diff.
     `localhost` and its names resolved as C resolves them, the answer reported, its addresses
     limited by `CURLOPT_IPRESOLVE` (`-4`, `-6`; test 389); happy eyeballs, its attempts raced
     as unit 2600 has them; IPv6 reported as a feature (tests 240, 242); a DNS cache on the
-    multi and `--resolve` read into it (tests 1317, 1318, 1322, 1324, 1458, 3019). To do:
-    the getaddrinfo resolver, with `CURLOPT_DNS_CACHE_TIMEOUT`; the grouping of the multi's
-    tables; `--connect-to`; the limits left at step 11b (MAXCONNECTS eviction, FORBID_REUSE, the per-host and total limits,
+    multi and `--resolve` read into it (tests 1317, 1318, 1322, 1324, 1458, 3019);
+    `--connect-to` (tests 1659, 2049, 2054, 3020). To do: the getaddrinfo resolver, with
+    `CURLOPT_DNS_CACHE_TIMEOUT`; the grouping of the multi's tables; the limits left at
+    step 11b (MAXCONNECTS eviction, FORBID_REUSE, the per-host and total limits,
     MAXAGE_CONN and MAXLIFETIME_CONN); the resolver's reason in a connect failure.
 24. **tool: the T1 ring.** **To do.** The `-w` variables, `--fail-with-body`, `-#` and
     `--stderr`, with the report fields they read.
@@ -349,8 +350,9 @@ cargo-mutants run on the milestone's diff.
     dropped across hosts through the gate,
     `-e ";auto"` and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
     followlocation family.
-27. **tool: several URLs, then globbing.** **To do.** Globbing is refused with exit 125 until
-    then.
+27. **tool: several URLs, then globbing.** **To do.** The tool's transfers share their
+    connections and DNS cache, as C's share handle has them (tests 2051, 2052 and 3225 with
+    step 24's `%{num_connects}`). Globbing is refused with exit 125 until then (test 2053).
 28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a
     transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
     handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`

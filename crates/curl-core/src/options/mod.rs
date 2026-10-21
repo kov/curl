@@ -40,6 +40,11 @@ pub struct Options {
     /// Addresses given for names ahead of resolving them
     /// (`CURLOPT_RESOLVE`).
     pub resolve: ResolveList,
+    /// Peers to connect to in place of the URL's
+    /// (`CURLOPT_CONNECT_TO`): `HOST:PORT:CONNECT-TO-HOST:CONNECT-TO-PORT`,
+    /// the first that matches the URL's host and port taken, an empty
+    /// field matching any and keeping the URL's.
+    pub connect_to: Lines,
     pub output: Output,
     pub callbacks: Callbacks,
     pub progress: Progress,
@@ -87,6 +92,7 @@ impl Options {
             limits: self.limits,
             ip_version: self.ip_version,
             resolve: self.resolve.try_clone()?,
+            connect_to: self.connect_to.try_clone()?,
             output: self.output,
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
@@ -170,14 +176,14 @@ impl Default for FileMode {
 /// for the cache's timeout with a `+` before; `-HOST:PORT` to forget.
 #[derive(Debug, Default)]
 pub struct ResolveList {
-    entries: Vec<Vec<u8>>,
+    entries: Lines,
     /// Which setting of the list this is: a transfer reads each once.
     stamp: u64,
 }
 
 impl ResolveList {
     pub fn entries(&self) -> impl Iterator<Item = &[u8]> {
-        self.entries.iter().map(|e| &e[..])
+        self.entries.iter()
     }
 
     /// The list as the application sets it again, replacing what it was:
@@ -186,11 +192,7 @@ impl ResolveList {
         &mut self,
         entries: impl IntoIterator<Item = &'a [u8]>,
     ) -> Result<(), OutOfMemory> {
-        let mut owned = Vec::new();
-        for e in entries {
-            owned.try_push(copy(e)?)?;
-        }
-        self.entries = owned;
+        self.entries.set(entries)?;
         self.stamp += 1;
         Ok(())
     }
@@ -200,14 +202,41 @@ impl ResolveList {
     }
 
     fn try_clone(&self) -> Result<ResolveList, OutOfMemory> {
-        let mut entries = Vec::new();
-        for e in &self.entries {
-            entries.try_push(copy(e)?)?;
-        }
         Ok(ResolveList {
-            entries,
+            entries: self.entries.try_clone()?,
             stamp: self.stamp,
         })
+    }
+}
+
+/// A list of lines, each as the application gave it.
+#[derive(Debug, Default)]
+pub struct Lines(Vec<Vec<u8>>);
+
+impl Lines {
+    pub fn iter(&self) -> impl Iterator<Item = &[u8]> {
+        self.0.iter().map(|e| &e[..])
+    }
+
+    /// The lines given, in place of those before.
+    pub fn set<'a>(
+        &mut self,
+        lines: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<(), OutOfMemory> {
+        let mut owned = Vec::new();
+        for line in lines {
+            owned.try_push(copy(line)?)?;
+        }
+        self.0 = owned;
+        Ok(())
+    }
+
+    fn try_clone(&self) -> Result<Lines, OutOfMemory> {
+        let mut owned = Vec::new();
+        for line in self.iter() {
+            owned.try_push(copy(line)?)?;
+        }
+        Ok(Lines(owned))
     }
 }
 

@@ -144,9 +144,10 @@ curl-core/src/
     cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx
     wait.rs                  wait, the waker, drive_to_completion over Net
   conn/
-    mod.rs                   ConnSlot, Conn, Route, Scheme, Peer, Transport, ConnNumber
+    mod.rs                   ConnSlot, Conn, Route, Tcp, Scheme, Peer, Transport, ConnNumber
     pool.rs                  Pool, ConnLease, ReuseRules, Lock
     connect.rs               ConnectMachine, Eyeballs, Racing
+    connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
@@ -913,12 +914,16 @@ pub struct Route {
 }
 ```
 
-Built so far: `enum Route { Local, Tcp(TryRc<Peer>, IpVersion) }`. `Peer` is C's `struct Curl_peer`: the
-`Scheme` (the protocol's name and whether it keeps connections, `PROTOPT_CONN_REUSE`), the
-host as the URL names it, the port and the IPv6 zone, made once per leg and shared by the
-transfer, as its origin, and the connection it sets up. Matching is `Route::serves`: `Peer`'s
-`Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its number when it is
-one), and the same `IpVersion` unless the transfer takes any (`url_match_conn`).
+Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip }`. `Peer` is C's
+`struct Curl_peer`: the `Scheme` (the protocol's name and whether it keeps connections,
+`PROTOPT_CONN_REUSE`), the host as the URL names it, the port and the IPv6 zone, made once per
+leg and shared by the transfer, as its origin, and the connection it sets up. `via` is the
+peer a connect-to entry names in the origin's place (C's `via_peer`, `conn/connect_to.rs`),
+none when it names the origin itself; the setup resolves and connects to `via` if there is
+one, and the traces name it where C's do. Matching is `Route::serves`: the same origin by
+`Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its number
+when it is one), the same `via` or none on both, and the same `IpVersion` unless the
+transfer takes any (`url_match_conn`, `url_match_destination`).
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate

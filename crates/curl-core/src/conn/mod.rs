@@ -8,11 +8,13 @@
 
 mod buf;
 mod connect;
+mod connect_to;
 mod dns;
 pub mod io;
 mod pool;
 
 pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup};
+pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, parse_entry};
 pub(crate) use pool::{
     Acquired, ConnLease, Connected, Finish, Pool, PoolNote, Released, ReuseRules,
@@ -71,22 +73,42 @@ pub(crate) enum Route {
     /// No network: the protocol does its own I/O (C's
     /// `PROTOPT_NONETWORK`).
     Local,
-    /// To a peer, shared by the transfer and the connection, over the
-    /// addresses of `IpVersion`.
-    Tcp(TryRc<Peer>, IpVersion),
+    Tcp(Tcp),
 }
 
 impl Route {
     /// Whether a connection set up for this route may serve a transfer
-    /// that needs `wanted` (`url_match_conn`): the same peer, and the
-    /// same addresses unless the transfer takes any.
+    /// that needs `wanted` (`url_match_conn`, `url_match_destination`):
+    /// the same origin through the same peer, and the same addresses
+    /// unless the transfer takes any.
     pub(crate) fn serves(&self, wanted: &Route) -> bool {
         match (self, wanted) {
-            (Route::Tcp(peer, ip), Route::Tcp(want, want_ip)) => {
-                **peer == **want && (*want_ip == IpVersion::Any || want_ip == ip)
+            (Route::Tcp(have), Route::Tcp(want)) => {
+                // C compares the detours without their schemes
+                // (`Curl_peer_same_destination`); each has its origin's.
+                *have.origin == *want.origin
+                    && have.via.as_deref() == want.via.as_deref()
+                    && (want.ip == IpVersion::Any || want.ip == have.ip)
             }
             (Route::Local | Route::Tcp(..), Route::Local | Route::Tcp(..)) => false,
         }
+    }
+}
+
+/// A route over TCP to `origin`, the peer shared by the transfer and the
+/// connection; through `via` when a connect-to entry names another peer
+/// for it (C's `via_peer`); over the addresses of `ip`.
+#[derive(Clone, Debug)]
+pub(crate) struct Tcp {
+    pub(crate) origin: TryRc<Peer>,
+    pub(crate) via: Option<TryRc<Peer>>,
+    pub(crate) ip: IpVersion,
+}
+
+impl Tcp {
+    /// The peer connected to (`Curl_conn_get_destination`).
+    pub(crate) fn destination(&self) -> &Peer {
+        self.via.as_deref().unwrap_or(&self.origin)
     }
 }
 
@@ -156,6 +178,11 @@ impl Peer {
 
     pub(crate) fn port(&self) -> u16 {
         self.port
+    }
+
+    /// The IPv6 zone, as given.
+    pub(crate) fn zone(&self) -> Option<&[u8]> {
+        self.zone.as_deref()
     }
 }
 

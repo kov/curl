@@ -309,6 +309,7 @@ fn configure(
     if !op.resolve.is_empty() {
         o.resolve.set(op.resolve.iter().copied())?;
     }
+    o.connect_to.set(op.connect_to.iter().copied())?;
     o.ip_version = match op.ip_version {
         None => options::IpVersion::Any,
         Some(IpVersion::V4) => options::IpVersion::V4,

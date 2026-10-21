@@ -17,7 +17,7 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use super::dns::{Answer, DnsCache, Lookup};
 use super::io::{Connect, Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnNumber, Peer, RecvBuf, Route, Transport, Use};
+use super::{Conn, ConnNumber, RecvBuf, Route, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
 
@@ -25,8 +25,7 @@ use crate::time::Instant;
 #[derive(Debug)]
 pub(crate) struct ConnectMachine {
     number: ConnNumber,
-    peer: TryRc<Peer>,
-    ip: IpVersion,
+    route: Tcp,
     /// When the setup started (C's `conn->created`).
     created: Instant,
     stage: Stage,
@@ -195,16 +194,10 @@ pub(crate) enum ConnectError {
 }
 
 impl ConnectMachine {
-    pub(crate) fn new(
-        number: ConnNumber,
-        peer: TryRc<Peer>,
-        ip: IpVersion,
-        created: Instant,
-    ) -> ConnectMachine {
+    pub(crate) fn new(number: ConnNumber, route: Tcp, created: Instant) -> ConnectMachine {
         ConnectMachine {
             number,
-            peer,
-            ip,
+            route,
             created,
             stage: Stage::Resolving,
         }
@@ -242,7 +235,7 @@ impl ConnectMachine {
         let r = match &mut self.stage {
             Stage::Resolving => {
                 let (answer, found) = self.resolve(setup, now)?;
-                let eyeballs = Eyeballs::new(answer, self.ip);
+                let eyeballs = Eyeballs::new(answer, self.route.ip);
                 if !eyeballs.more() {
                     return Err(ConnectError::Unresolved);
                 }
@@ -288,7 +281,7 @@ impl ConnectMachine {
                 return Err(ConnectError::OutOfMemory);
             }
             let ip = r.eyeballs.next().expect("an address is left");
-            let remote = SocketAddr::new(ip, self.peer.port());
+            let remote = SocketAddr::new(ip, self.route.destination().port());
             r.last_start = Some(now);
             return match net.connect(remote) {
                 Ok((socket, Connect::InProgress | Connect::Done)) => {
@@ -320,14 +313,15 @@ impl ConnectMachine {
         setup: Setup<'_>,
         now: Instant,
     ) -> Result<(TryRc<Answer>, Found), ConnectError> {
-        let (name, port) = (self.peer.name(), self.peer.port());
+        let peer = self.route.destination();
+        let (name, port) = (peer.name(), peer.port());
         let found = match setup.dns.lookup(name, port, setup.wildcard, now) {
             Lookup::Found(answer) => return Ok((answer, Found::Cached)),
             Lookup::Stale => Found::Stale,
             Lookup::Missing => Found::Resolved,
         };
         let oom = |OutOfMemory| ConnectError::OutOfMemory;
-        let answer = shortcut(self.peer.shown(), name)
+        let answer = shortcut(peer.shown(), name)
             .map_err(oom)?
             .ok_or(ConnectError::Unresolved)?;
         let answer = TryRc::try_new(answer).map_err(oom)?;
@@ -343,7 +337,7 @@ impl ConnectMachine {
         let local = won.socket.local_addr().ok();
         Conn {
             number: self.number,
-            route: Route::Tcp(self.peer, self.ip),
+            route: Route::Tcp(self.route),
             transport: Transport::Tcp(won.socket),
             remote: Some(won.remote),
             local,
@@ -440,8 +434,9 @@ fn literal(host: &[u8]) -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conn::Scheme;
     use crate::conn::io::{FakeNet, Peer as FakePeer};
+    use crate::conn::{Peer, Scheme};
+    use crate::options::IpVersion;
     use crate::time::{Clock as _, ManualClock};
 
     /// What a race did, in milliseconds from its start.
@@ -470,7 +465,12 @@ mod tests {
             reuse: true,
         };
         let peer = Peer::new(scheme, b"abc.test".to_vec(), 123, None);
-        let mut m = ConnectMachine::new(ConnNumber(0), TryRc::try_new(peer).unwrap(), ip, start);
+        let route = Tcp {
+            origin: TryRc::try_new(peer).unwrap(),
+            via: None,
+            ip,
+        };
+        let mut m = ConnectMachine::new(ConnNumber(0), route, start);
         m.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(
                 TryRc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
@@ -530,8 +530,12 @@ mod tests {
             reuse: true,
         };
         let peer = Peer::new(scheme, b"localhost".to_vec(), 5, None);
-        let peer = TryRc::try_new(peer).unwrap();
-        let mut m = ConnectMachine::new(ConnNumber(0), peer, IpVersion::Any, clock.now());
+        let route = Tcp {
+            origin: TryRc::try_new(peer).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+        };
+        let mut m = ConnectMachine::new(ConnNumber(0), route, clock.now());
         let he = Duration::from_millis(200);
         let mut dns = DnsCache::default();
         let conn = loop {

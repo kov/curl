@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
-use crate::conn::{DnsCache, Failure, Scheme, Setup};
+use crate::conn::{DnsCache, Failure, Scheme, Setup, Tcp};
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
 use curl_alloc::TryRc;
@@ -52,7 +52,11 @@ fn tcp(port: u16) -> Route {
 
 fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
     let peer = crate::conn::Peer::new(scheme, host.to_vec(), port, None);
-    Route::Tcp(TryRc::try_new(peer).unwrap(), IpVersion::Any)
+    Route::Tcp(Tcp {
+        origin: TryRc::try_new(peer).unwrap(),
+        via: None,
+        ip: IpVersion::Any,
+    })
 }
 
 /// Drive the setup of `lease` past its name, which must resolve.

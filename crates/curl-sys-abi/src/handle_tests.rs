@@ -212,6 +212,25 @@ fn http_options_reach_the_request() {
         CURLE_OK
     );
     assert!(resolve(c).is_empty());
+    let mut list = ptr::null_mut();
+    for line in [c"::a:1", c"b:2:c:3"] {
+        // SAFETY: a list made here, and a C string.
+        list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
+    }
+    let connect_to = |c| {
+        options(c, |o| {
+            o.connect_to.iter().map(<[u8]>::to_vec).collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(pointer(c, ffi::CURLOPT_CONNECT_TO, list), CURLE_OK);
+    // SAFETY: the list made above, which the handle does not keep.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    assert_eq!(connect_to(c), [b"::a:1".to_vec(), b"b:2:c:3".to_vec()]);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_CONNECT_TO, ptr::null_mut::<c_char>()),
+        CURLE_OK
+    );
+    assert!(connect_to(c).is_empty());
     assert_eq!(
         strings(c),
         (

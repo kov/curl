@@ -11,13 +11,14 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
 use crate::conn::io::Events;
 use crate::conn::{
-    Acquired, Answer, BadEntry, Conn, ConnLease, ConnectError, Connected, Failure, Finish, Found,
-    ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route, Setup, parse_entry,
+    Acquired, Answer, BadEntry, BadVia, Conn, ConnLease, ConnectError, Connected, Failure, Finish,
+    Found, ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route, Setup, Tcp,
+    parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::options::{Options, ResolveList};
+use crate::options::{Lines, Options, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Starts, Timer, TransferReport};
@@ -102,8 +103,17 @@ pub(crate) enum TransferState {
 pub(crate) struct Connecting {
     lease: ConnLease,
     proto: ProtoState,
-    /// The host and port connected to, as the failure names them.
+    /// The host and port the request is for, and the peer connected to
+    /// in their place, as the failure names them.
     origin: Origin,
+    via: Option<TryRc<Peer>>,
+}
+
+impl Connecting {
+    /// The peer connected to (`Curl_conn_get_destination`).
+    fn destination(&self) -> &Peer {
+        self.via.as_deref().unwrap_or(&self.origin)
+    }
 }
 
 /// Who the request is for (C's `conn->origin`), shared with the
@@ -307,6 +317,7 @@ impl Connecting {
             lease,
             proto,
             origin,
+            via: _,
         } = self;
         TransferState::ProtoConnect(Attached {
             lease,
@@ -773,7 +784,8 @@ fn connecting<H: Host>(
         }
         Ok(Connected::Established { remote, local, at }) => {
             cx.report_mut().timings_mut().mark(Timer::Connect, at);
-            let host = Bytes(c.origin.shown());
+            // `CURL_CONN_HOST_DISPNAME`.
+            let host = Bytes(c.destination().shown());
             let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
             let lip = Ip(lip);
             trace::info(
@@ -790,7 +802,7 @@ fn connecting<H: Host>(
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
         Ok(Connected::AlreadyUp) => (c.attached(), Wake::Again),
         Err(e) => {
-            let kind = connect_failed(cx, &c.origin, e);
+            let kind = connect_failed(cx, &c.origin, c.via.as_deref(), e);
             (TransferState::Connecting(c).fail(kind), Wake::Again)
         }
     }
@@ -798,26 +810,45 @@ fn connecting<H: Host>(
 
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,
 /// `is_connected`).
-fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, origin: &Origin, e: ConnectError) -> ErrorKind {
-    let host = Bytes(origin.name());
-    let port = origin.port();
+fn connect_failed<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    origin: &Origin,
+    via: Option<&Peer>,
+    e: ConnectError,
+) -> ErrorKind {
     match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Unresolved => {
+            let to = via.unwrap_or(origin);
+            let (host, port) = (Bytes(to.name()), to.port());
             trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
             let kind = ErrorKind::CouldntResolveHost;
             return trace::fail(cx, kind, format_args!("Could not resolve host: {host}"));
         }
         ConnectError::Failed(failure) => trace_failure(cx, failure),
     }
+    let (host, port) = (Bytes(origin.name()), origin.port());
+    let via = Via(via);
     let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
     trace::fail(
         cx,
         ErrorKind::CouldntConnect,
         format_args!(
-            "Failed to connect to {host}:{port} after {ms} ms: Could not connect to server"
+            "Failed to connect to {host}:{port}{via} after {ms} ms: Could not connect to server"
         ),
     )
+}
+
+/// The peer connected to in place of the origin, as a failure names it.
+struct Via<'a>(Option<&'a Peer>);
+
+impl std::fmt::Display for Via<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(peer) => write!(f, " via {}:{}", Bytes(peer.name()), peer.port()),
+            None => Ok(()),
+        }
+    }
 }
 
 /// How an attempt failed, as C traces it.
@@ -859,7 +890,7 @@ fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
         return;
     };
     let host = Bytes(answer.name());
-    let port = c.origin.port();
+    let port = c.destination().port();
     trace::info(cx, format_args!("Host {host}:{port} was resolved."));
     trace::info(cx, format_args!("IPv6: {}", Family(answer.addrs(), true)));
     trace::info(cx, format_args!("IPv4: {}", Family(answer.addrs(), false)));
@@ -1220,8 +1251,21 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
     let Ok(origin) = TryRc::try_new(peer) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    let ip = cx.easy().options().ip_version;
-    let lease = match acquire(cx, Route::Tcp(origin.clone(), ip)) {
+    // Out of the options while the failure is traced; put back however
+    // the search ends.
+    let entries = std::mem::take(&mut cx.easy_mut().options_mut().connect_to);
+    let via = connect_to(cx, &origin, &entries);
+    cx.easy_mut().options_mut().connect_to = entries;
+    let via = match via {
+        Ok(via) => via,
+        Err(e) => return TransferState::Init.fail(e),
+    };
+    let route = Tcp {
+        origin: origin.clone(),
+        via: via.clone(),
+        ip: cx.easy().options().ip_version,
+    };
+    let lease = match acquire(cx, Route::Tcp(route)) {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
             let host = Bytes(origin.name());
@@ -1238,7 +1282,28 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
         lease,
         proto,
         origin,
+        via,
     })
+}
+
+/// The peer the connect-to entries send a connection for `origin` to, if
+/// not `origin` itself (`url_set_conn_peer`).
+fn connect_to<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    origin: &Peer,
+    entries: &Lines,
+) -> Result<Option<TryRc<Peer>>, ErrorKind> {
+    match crate::conn::via(origin, entries.iter()) {
+        Ok(None) => Ok(None),
+        Ok(Some(via)) => TryRc::try_new(via)
+            .map(Some)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory),
+        Err(BadVia::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+        Err(BadVia::Syntax { kind, why, text }) => {
+            let text = Bytes(text);
+            Err(trace::fail(cx, kind, format_args!("{why} in '{text}'")))
+        }
+    }
 }
 
 /// A connection for the transfer, and the trace of what the search for

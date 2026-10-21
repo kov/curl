@@ -1661,6 +1661,55 @@ fn a_bad_resolve_entry_fails_the_transfer() {
     m.remove(id, &mut NoEvents).unwrap();
 }
 
+/// A connect-to entry sends the connection to its peer, and the
+/// connection serves only transfers going through that same peer
+/// (`url_match_conn`, `url_match_destination`).
+#[test]
+fn a_connection_serves_only_the_peer_it_goes_through() {
+    let (mut m, _clock) = networked();
+    let mut run = |to: &[&[u8]]| {
+        let (mut e, lines) = traced("tcp://foo.test:9/");
+        e.options_mut().connect_to.set(to.iter().copied()).unwrap();
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        let result = messages(&mut m).last().unwrap().1;
+        m.remove(id, &mut NoEvents).unwrap();
+        (result, trace_of(&lines))
+    };
+    let (result, first) = run(&[b"other:9:x:1", b"::127.0.0.1:1"]);
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        first[..2],
+        [
+            "  Trying 127.0.0.1:1...\n",
+            "Established connection to 127.0.0.1 (127.0.0.1 port 1) from 127.0.0.1 port 40000 \n",
+        ]
+    );
+    let (_, again) = run(&[b"foo.test:9:127.0.0.1:1"]);
+    assert_eq!(
+        again[0],
+        "Reusing existing tcp: connection with host foo.test\n"
+    );
+    // Another peer, to the same addresses: a connection of its own.
+    let (result, other) = run(&[b"::localhost:1"]);
+    assert_eq!(result, Ok(()));
+    assert_eq!(other[0], "Host localhost:1 was resolved.\n");
+    // No peer: the URL's host, which nothing resolves.
+    let (result, direct) = run(&[]);
+    assert_eq!(result, Err(ErrorKind::CouldntResolveHost));
+    assert_eq!(direct[0], "Could not resolve: foo.test:9\n");
+    // A failure names both.
+    let (result, refused) = run(&[b":9:127.0.0.1:2"]);
+    assert_eq!(result, Err(ErrorKind::CouldntConnect));
+    assert!(
+        refused[2].starts_with("Failed to connect to foo.test:9 via 127.0.0.1:2 after "),
+        "{refused:?}"
+    );
+    let (result, bad) = run(&[b"::localhost:x"]);
+    assert_eq!(result, Err(ErrorKind::SetoptOptionSyntax));
+    assert_eq!(bad, ["No valid port number in 'localhost:x'\n"]);
+}
+
 /// `IpVersion` limits the addresses tried, not those reported, and a
 /// connection kept for any family serves only a transfer that takes any.
 #[test]

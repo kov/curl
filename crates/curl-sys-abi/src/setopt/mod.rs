@@ -295,6 +295,10 @@ fn apply(
             // SAFETY: the application passes a list or NULL.
             options.http.headers = UserHeaders::new(unsafe { list_lines(p) })?;
         }
+        (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => {
+            // SAFETY: the application passes a list or NULL.
+            options.connect_to.set(unsafe { list_lines(p) })?;
+        }
         (ffi::CURLOPT_RESOLVE, Ptr(p)) => {
             // SAFETY: the application passes a list or NULL.
             options.resolve.set(unsafe { list_lines(p) })?;

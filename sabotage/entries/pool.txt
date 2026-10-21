@@ -106,10 +106,10 @@ witness: curl-core conn::pool::tests::the_lock_is_taken_where_c_takes_it
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-            && peer.scheme().reuse
+            && tcp.origin.scheme().reuse
             && !finish.premature
 --- new
-            && peer.scheme().reuse
+            && tcp.origin.scheme().reuse
 
 === a multi leaves its idle connections open
 file: crates/curl-core/src/multi/mod.rs
@@ -185,17 +185,17 @@ witness: curl-core conn::tests::peers_compare_as_c_compares_them
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-                **peer == **want && (*want_ip == IpVersion::Any || want_ip == ip)
+                    && (want.ip == IpVersion::Any || want.ip == have.ip)
 --- new
-                **peer == **want
+                    && (want.ip == want.ip)
 
 === a connection for one family serves only that family
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-                **peer == **want && (*want_ip == IpVersion::Any || want_ip == ip)
+                    && (want.ip == IpVersion::Any || want.ip == have.ip)
 --- new
-                **peer == **want && want_ip == ip
+                    && (want.ip == have.ip)
 
 === the next attempt waits for the last to fail
 file: crates/curl-core/src/conn/connect.rs
@@ -231,3 +231,11 @@ witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_d
                     .arm_in(TimerKind::Eyeballs, now, wait_ms(now, at)),
 --- new
                 Some(_) => run.deadlines.clear(TimerKind::Eyeballs),
+
+=== a connection through one peer serves a transfer through another
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core multi::tests::a_connection_serves_only_the_peer_it_goes_through
+--- old
+                    && have.via.as_deref() == want.via.as_deref()
+--- new
+                    && true

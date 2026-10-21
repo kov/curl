@@ -1,0 +1,65 @@
+# The connect-to entries (crates/curl-core/src/conn/connect_to.rs).
+
+=== the origin named again is a detour
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
+--- old
+        return Ok(Some(peer).filter(|p| p != origin));
+--- new
+        return Ok(Some(peer));
+
+=== an IPv6 origin matches only without brackets
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
+--- old
+        None => [origin.name(), origin.shown()]
+--- new
+        None => [origin.name(), origin.name()]
+
+=== a host matches in its case only
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
+--- old
+                let same = entry[..host.len()].eq_ignore_ascii_case(host);
+--- new
+                let same = entry[..host.len()] == *host;
+
+=== any port matches
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
+--- old
+            if port_number(&rest[..colon]) != Some(origin.port()) {
+--- new
+            if port_number(&rest[..colon]).is_none() {
+
+=== an entry naming nothing matches
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
+--- old
+    Some(rest).filter(|to| !to.is_empty())
+--- new
+    Some(rest)
+
+=== an empty port is port 0
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
+--- old
+        None => origin.port(),
+--- new
+        None => 0,
+
+=== a port switch loses the host
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
+--- old
+        name.try_extend_from_slice(origin.shown())?;
+--- new
+        name.try_extend_from_slice(b"localhost")?;
+
+=== a long port overflows
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::bad_entries_are_refused_as_c_refuses_them
+--- old
+        if n > 0xffff {
+--- new
+        if false {

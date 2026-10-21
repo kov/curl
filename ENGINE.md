@@ -1432,10 +1432,21 @@ ignored, a different second one fails WeirdServerReply. Where it leads is resolv
 (credentials and all), never against the report's URL. A Location not followed is resolved at
 the end of a complete exchange, C's FOLLOW_FAKE: any scheme accepted, read back without
 credentials, or kept as given if it does not resolve, into `report.redirect_url`
-(`CURLINFO_REDIRECT_URL`); the report starts empty with each transfer. Planned with following:
-the next leg's URL replaces `Run::url` whole, so no stale copy exists between the decision and
-the leg (C's `state.url`); 301/302/303 method switching a function of `(status, method,
-policy)` held in the leg's state on `Run`; MAXREDIRS gives 47.
+(`CURLINFO_REDIRECT_URL`); the report starts empty with each transfer.
+
+A Location is followed when it came with a 3xx and following is on (C's `req.newurl`), decided
+by the head parser as it takes the line. Its body is not delivered: on a connection that closes
+the response ends at its head (`Framing::Abandoned`), on a kept one the body is read and dropped.
+A complete exchange ends `Done { next: AfterRequest::Follow(location) }`; the Done step releases
+the connection first, then `follow_leg` checks the limit (past it, FOLLOW_FAKE's URL is kept and
+the transfer fails TooManyRedirects), counts the redirect in the report (C's
+`state.followlocation`, which is also what "this is a follow" means), resolves the location as
+FOLLOW_REDIR does and starts the next leg through `next_leg`, the tail it shares with a retry.
+That leg's URL replaces `Run::url` whole (C's `state.url`). A redirect reaches only HTTP and FTP
+schemes (`CURLPROTO_REDIR`). `Run::first` holds the first leg's origin (`state.initial_origin`):
+each request's `CredentialGate` is fixed when the request is made, from that origin and its own.
+Planned: 301/302/303 method switching as a function of `(status, method, policy)`, held in the
+leg's state on `Run`.
 Auth is `AuthState` on the `Run`: `input(challenge)`, `act(status) -> Option<Retry>`,
 `output(&CredentialGate) -> AuthHeaders`; stage 3 covers Basic, Digest and Bearer.
 

@@ -6,14 +6,14 @@
 use curl_alloc::TryVec as _;
 
 use crate::conn::io::{Events, Recv, Sent};
-use crate::conn::{ConnLease, RecvFailed};
+use crate::conn::{ConnLease, Peer, RecvFailed};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
-use crate::options::{HttpVersion, Method, Resume, UploadSource};
+use crate::options::{Follow, HttpVersion, Method, Resume, UploadSource};
 use crate::report::Timer;
 use crate::time::Instant;
 use crate::trace;
@@ -61,6 +61,8 @@ pub(crate) struct Request {
     /// What the URL says to authenticate with.
     credentials: Option<Credentials>,
     port: u16,
+    /// What of the application's may go to the request's origin.
+    gate: CredentialGate,
     /// What the request sends and has not yet (`req.sendbuf`): the head,
     /// then the body as read, behind it in one buffer of
     /// `UPLOAD_BUFFER` bytes. `out[sent..filled]` is still to go, the
@@ -124,8 +126,13 @@ enum Body {
 }
 
 impl Request {
-    /// A request for `url`, whose scheme is `http`.
-    pub(crate) fn new<H: Host>(url: &Url, cx: &mut StepCx<'_, H>) -> Result<Request, ErrorKind> {
+    /// A request for `url`, whose scheme is `http`, in a transfer that
+    /// started at `first`, if not here.
+    pub(crate) fn new<H: Host>(
+        url: &Url,
+        first: Option<&Peer>,
+        cx: &mut StepCx<'_, H>,
+    ) -> Result<Request, ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
         let port = url
             .get(
@@ -156,6 +163,17 @@ impl Request {
             Err(UrlErrorKind::NoQuery) => {}
             Err(e) => return Err(url_error(e)),
         }
+        let gate = match first {
+            None => CredentialGate::FIRST,
+            Some(first) => {
+                let mut name = Vec::new();
+                name.try_extend_from_slice(&host)
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+                let here = Peer::new(super::HTTP, name, port, super::zone(url)?);
+                let other_hosts = cx.easy().options().http.unrestricted_auth;
+                CredentialGate::new(first, &here, other_hosts)
+            }
+        };
         let credentials = match Credentials::of_url(url) {
             Ok(credentials) => credentials,
             Err(CredentialsError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
@@ -173,6 +191,7 @@ impl Request {
             host,
             credentials,
             port,
+            gate,
             out: Vec::new(),
             filled: 0,
             sent: 0,
@@ -205,6 +224,11 @@ impl Request {
     /// Where the response's `Location:` points, as the server gave it.
     pub(crate) fn location(&self) -> Option<&[u8]> {
         self.head.as_ref()?.meta().location()
+    }
+
+    /// Where the response redirects to, if it is followed.
+    pub(crate) fn follow(&self) -> Option<&[u8]> {
+        self.head.as_ref()?.meta().follow()
     }
 
     pub(crate) fn holds_output(&self) -> bool {
@@ -315,13 +339,7 @@ impl Request {
             Some(Resume::AtEnd) => return Err(ErrorKind::NotBuiltIn),
         };
         let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
-        let peer = request::Peer {
-            scheme: b"http",
-            host: &self.host,
-            port: self.port,
-        };
-        // One origin, until redirects are followed.
-        let gate = CredentialGate::new(&peer, &peer, false);
+        let gate = self.gate;
         let token = match (&self.credentials, gate.trusted()) {
             (Some(c), Some(_)) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
             _ => None,
@@ -362,6 +380,7 @@ impl Request {
                 raw_codings: http.raw,
                 fail_on_error: http.fail_on_error,
                 resume_from: resume_from.filter(|_| options.method == Method::Get),
+                follow: http.follow != Follow::No,
             },
         };
         if authenticates {
@@ -677,7 +696,7 @@ impl Request {
             }
             Some(HeadEvent::Line(line)) => line,
         };
-        if let Some(note) = line.note {
+        for note in line.notes.iter() {
             trace::info(cx, format_args!("{note}"));
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
@@ -912,7 +931,7 @@ impl Request {
         lease: &ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
-        next: AfterRequest,
+        next: &AfterRequest,
     ) -> Result<(), ErrorKind> {
         let Some(head) = self.head.as_ref() else {
             // The request was never made.
@@ -941,7 +960,7 @@ impl Request {
             cx.conn(lease).mark_close();
         }
         result?;
-        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
+        if !premature && *next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
         {
             cx.conn(lease).mark_close();
             return Err(trace::fail(

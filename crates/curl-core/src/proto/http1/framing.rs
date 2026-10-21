@@ -36,6 +36,8 @@ pub(crate) struct Asked {
     /// The offset a GET resumes at: a 416 does not fail it, and the
     /// response must start there.
     pub(crate) resume_from: Option<u64>,
+    /// A redirect's `Location:` is followed (`CURLOPT_FOLLOWLOCATION`).
+    pub(crate) follow: bool,
 }
 
 /// How the body after a final head ends.
@@ -61,6 +63,26 @@ pub(crate) enum Note {
     AssumeClose,
     AlreadyDownloaded,
     SizeWhileIgnoring,
+    IgnoringBody,
+}
+
+/// What C says of a line before it delivers it: at most two notes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Notes([Option<Note>; 2]);
+
+impl Notes {
+    pub(crate) fn one(note: Option<Note>) -> Notes {
+        Notes([note, None])
+    }
+
+    fn push(&mut self, note: Note) {
+        let free = self.0.iter_mut().find(|n| n.is_none());
+        *free.expect("at most two notes to a line") = Some(note);
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = Note> + '_ {
+        self.0.iter().flatten().copied()
+    }
 }
 
 impl fmt::Display for Note {
@@ -72,6 +94,7 @@ impl fmt::Display for Note {
             Note::AssumeClose => "no chunk, no close, no size. Assume close to signal end",
             Note::AlreadyDownloaded => "The entire document is already downloaded",
             Note::SizeWhileIgnoring => "setting size while ignoring",
+            Note::IgnoringBody => "Ignoring the response-body",
         })
     }
 }
@@ -173,6 +196,9 @@ pub(crate) struct Meta {
     close: bool,
     /// Where the response points (`req.location`).
     location: Option<Vec<u8>>,
+    /// The location came with a redirect and is to be followed
+    /// (`req.newurl`).
+    follow: bool,
     /// The response announced trailers.
     trailer: bool,
     /// `Content-Range` starts at the offset the GET resumes at.
@@ -248,6 +274,7 @@ impl Meta {
                 return Err(FramingError::MultipleLocations);
             }
             self.location = Some(copy(v)?);
+            self.follow = asked.follow && (300..400).contains(&status.code);
             return Ok(None);
         }
         if !self.bodyless
@@ -357,8 +384,8 @@ impl Meta {
         &mut self,
         status: Status,
         asked: &Asked,
-    ) -> (Option<Note>, Result<Framing, FramingError>) {
-        let mut note = None;
+    ) -> (Notes, Result<Framing, FramingError>) {
+        let mut note = Notes::default();
         if self.size.is_none()
             && !self.chunked
             && !self.close
@@ -367,7 +394,7 @@ impl Meta {
         {
             // RFC 2616, section 4.4, point 5.
             self.close = true;
-            note = Some(Note::AssumeClose);
+            note.push(Note::AssumeClose);
         }
         if should_fail(status.code, asked) {
             return (note, Err(FramingError::Returned(status.code)));
@@ -375,9 +402,22 @@ impl Meta {
         if self.length_void || self.chunked {
             self.size = None;
         }
-        // `http_firstwrite`.
+        // `http_firstwrite`: a response to follow is read no further than
+        // its head on a connection that closes, and its body is dropped
+        // on one kept.
+        if self.follow && self.close {
+            if let Some(size) = self.size
+                && asked.max_filesize.is_some_and(|max| size > max.get())
+            {
+                return (note, Err(FramingError::FileTooLarge));
+            }
+            return (note, Ok(Framing::Abandoned));
+        }
         let resume_from = asked.resume_from.filter(|_| !self.whole);
-        self.ignore_body = resume_from.is_some() && status.code == 416;
+        self.ignore_body = self.follow || (resume_from.is_some() && status.code == 416);
+        if self.follow {
+            note.push(Note::IgnoringBody);
+        }
         if let Some(from) = resume_from
             && !self.content_range
             && !self.ignore_body
@@ -387,12 +427,13 @@ impl Meta {
             }
             // What is stored is the whole document.
             self.close = true;
-            return (Some(Note::AlreadyDownloaded), Ok(Framing::Abandoned));
+            note.push(Note::AlreadyDownloaded);
+            return (note, Ok(Framing::Abandoned));
         }
         // `http_size`.
         if let Some(size) = self.size {
             if self.ignore_body {
-                note = Some(Note::SizeWhileIgnoring);
+                note.push(Note::SizeWhileIgnoring);
             } else if asked.max_filesize.is_some_and(|max| size > max.get()) {
                 return (note, Err(FramingError::FileTooLarge));
             }
@@ -428,6 +469,11 @@ impl Meta {
     /// Where the response points, as the server gave it.
     pub(crate) fn location(&self) -> Option<&[u8]> {
         self.location.as_deref()
+    }
+
+    /// Where the response redirects to, if it is followed.
+    pub(crate) fn follow(&self) -> Option<&[u8]> {
+        self.location.as_deref().filter(|_| self.follow)
     }
 
     /// The body is read and dropped.

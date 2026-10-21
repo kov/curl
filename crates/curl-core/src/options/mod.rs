@@ -371,6 +371,39 @@ pub struct Http {
     /// An error response before the body is all sent lets it go on
     /// rather than stop (`CURLOPT_KEEP_SENDING_ON_ERROR`).
     pub keep_sending_on_error: bool,
+    /// Which redirects are followed (`CURLOPT_FOLLOWLOCATION`).
+    pub follow: Follow,
+    pub max_redirects: MaxRedirects,
+    /// What the application said for the first origin goes to any a
+    /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
+    pub unrestricted_auth: bool,
+}
+
+/// How many redirects a transfer follows (`CURLOPT_MAXREDIRS`): 30 unless
+/// set; `None` for no limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaxRedirects(pub Option<u16>);
+
+impl Default for MaxRedirects {
+    fn default() -> Self {
+        MaxRedirects(Some(30))
+    }
+}
+
+/// Which redirects a transfer follows, and how its method changes along
+/// them (`CURLFOLLOW_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Follow {
+    /// None: where a redirect leads is only reported.
+    #[default]
+    No,
+    /// Every redirect.
+    All,
+    /// Every redirect, the method changing as its code says, a custom
+    /// one included.
+    ObeyCode,
+    /// Every redirect, a custom method sent only to the first URL.
+    FirstOnly,
 }
 
 impl Http {
@@ -388,6 +421,9 @@ impl Http {
             fail_on_error: self.fail_on_error,
             continue_wait: self.continue_wait,
             keep_sending_on_error: self.keep_sending_on_error,
+            follow: self.follow,
+            max_redirects: self.max_redirects,
+            unrestricted_auth: self.unrestricted_auth,
         })
     }
 }

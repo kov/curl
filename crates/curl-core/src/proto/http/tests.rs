@@ -12,7 +12,7 @@ use crate::handler::{
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx, drive_to_completion};
-use crate::options::{Method, Options, Resume, UserHeaders};
+use crate::options::{Follow, MaxRedirects, Method, Options, Resume, UserHeaders};
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
 use crate::time::{Clock as _, ManualClock};
@@ -1565,4 +1565,132 @@ fn a_location_not_followed_is_kept_resolved() {
         "the second is refused before it is traced"
     );
     assert_eq!(ran.easy.report().redirect_url(), None);
+}
+
+fn moved(location: &str, close: bool) -> Vec<u8> {
+    let close = if close { "Connection: close\r\n" } else { "" };
+    format!("HTTP/1.1 301 Moved\r\nLocation: {location}\r\n{close}Content-Length: 5\r\n\r\nmoved")
+        .into_bytes()
+}
+
+/// A redirect followed: its body is dropped, the next request made on the
+/// kept connection to where it leads, and counted.
+#[test]
+fn a_redirect_is_followed_on_the_kept_connection() {
+    let first = moved("c?x", false);
+    let (mut m, talk, _) = server(&[&first, OK], false);
+    let ran = get(&mut m, "/a/b", talk, |o| o.http.follow = Follow::All);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n", "the redirect's body is dropped");
+    let mut want = request_of("/a/b");
+    want.extend_from_slice(&request_of("/a/c?x"));
+    assert_eq!(
+        String::from_utf8_lossy(&ran.request),
+        String::from_utf8_lossy(&want)
+    );
+    let report = ran.easy.report();
+    assert_eq!(report.redirects(), 1);
+    assert_eq!(report.connects(), 1, "the connection is kept");
+    assert_eq!(report.redirect_url(), None, "followed, not kept");
+    let text = ran.seen.text();
+    let ignoring = text
+        .iter()
+        .position(|l| l == "Ignoring the response-body\n");
+    let issue = format!("Issue another request to this URL: 'http://127.0.0.1:{PORT}/a/c?x'\n");
+    let issued = text.iter().position(|l| *l == issue);
+    assert!(ignoring.is_some() && ignoring < issued, "{text:?}");
+}
+
+/// A redirect past the limit is not followed: where it would have led
+/// is kept, and the transfer fails.
+#[test]
+fn redirects_stop_at_the_limit() {
+    let first = moved("/b", false);
+    let (mut m, talk, _) = server(&[&first, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.http.follow = Follow::All;
+        o.http.max_redirects = MaxRedirects(Some(0));
+    });
+    assert_eq!(ran.result, Err(ErrorKind::TooManyRedirects));
+    assert_eq!(ran.request, request_of("/a"));
+    let text = ran.seen.text();
+    assert!(
+        text.contains(&"Maximum (0) redirects followed\n".to_string()),
+        "{text:?}"
+    );
+    let report = ran.easy.report();
+    let shown = format!("http://127.0.0.1:{PORT}/b");
+    assert_eq!(report.redirect_url(), Some(shown.as_bytes()));
+    assert_eq!(report.redirects(), 0);
+}
+
+/// A redirect goes to no scheme but HTTP's and FTP's, whatever the
+/// build knows.
+#[test]
+fn a_redirect_to_a_file_is_refused() {
+    let ran = run("/a", &moved("file:///etc/passwd", false), false, |o| {
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    let text = ran.seen.text();
+    assert!(
+        text.contains(&"Protocol \"file\" is disabled (in redirect)\n".to_string()),
+        "{text:?}"
+    );
+    assert_eq!(ran.seen.body(), b"");
+}
+
+/// The application's Authorization and Cookie go only to the origin the
+/// transfer started at, unless it lets them go anywhere; its other
+/// headers go everywhere.
+#[test]
+fn the_application_s_credentials_stay_with_the_first_origin() {
+    for unrestricted in [false, true] {
+        let location = format!("http://other.test:{PORT}/b");
+        let first = Conversation::new(&moved(&location, true), true);
+        // Moved again, on the other origin.
+        let second = Conversation::replies(&[&moved("/c", false), OK], false);
+        let mut m = serving(Peer::Accepts, &[&first, &second]);
+        let entry = format!("other.test:{PORT}:127.0.0.1");
+        let ran = get(&mut m, "/a", first.clone(), |o| {
+            o.http.follow = Follow::All;
+            o.http.unrestricted_auth = unrestricted;
+            o.resolve.set([entry.as_bytes()]).unwrap();
+            o.http.headers =
+                UserHeaders::new([&b"Authorization: Basic eA=="[..], b"Cookie: a=b", b"X-A: 1"])
+                    .unwrap();
+        });
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(ran.seen.body(), b"ok\n");
+        let sent = |r: &[u8], line: &[u8]| fixture::find(r, line).is_some();
+        let first = first.received();
+        assert!(sent(&first, b"Authorization: Basic eA==\r\n"));
+        let second = second.received();
+        let at = fixture::find(&second, b"GET /c ").expect("the second redirect is followed");
+        for request in [&second[..at], &second[at..]] {
+            assert!(sent(request, b"Host: other.test:8990\r\n"));
+            assert!(sent(request, b"X-A: 1\r\n"));
+            assert_eq!(
+                sent(request, b"Authorization: Basic eA==\r\n"),
+                unrestricted,
+                "{}",
+                String::from_utf8_lossy(request)
+            );
+            assert_eq!(sent(request, b"Cookie: a=b\r\n"), unrestricted);
+        }
+        assert_eq!(ran.easy.report().redirects(), 2);
+    }
+}
+
+/// A `Location:` with a code outside 3xx is not followed, only kept.
+#[test]
+fn a_location_outside_a_redirect_is_not_followed() {
+    let created = b"HTTP/1.1 201 Created\r\nLocation: /b\r\nContent-Length: 3\r\n\r\nok\n";
+    let (mut m, talk, _) = server(&[created, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| o.http.follow = Follow::All);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.request, request_of("/a"));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let shown = format!("http://127.0.0.1:{PORT}/b");
+    assert_eq!(ran.easy.report().redirect_url(), Some(shown.as_bytes()));
 }

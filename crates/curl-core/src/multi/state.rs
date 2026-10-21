@@ -46,6 +46,9 @@ pub(crate) struct Run {
     /// Requests made again on a fresh connection, their reused one having
     /// died (`state.retrycount`).
     retries: u8,
+    /// Where the transfer's first request went (`state.initial_origin`):
+    /// what the application said for it goes nowhere else.
+    first: Option<TryRc<Peer>>,
     /// The first transfer added to its multi says that the library is a
     /// debug build (`multi_warn_debug`).
     #[cfg(feature = "debug-hooks")]
@@ -59,6 +62,7 @@ impl Run {
             deadlines: Deadlines::new(None, None),
             url: Vec::new(),
             retries: 0,
+            first: None,
             #[cfg(feature = "debug-hooks")]
             warn: false,
         }
@@ -70,13 +74,16 @@ impl Run {
 const MAX_RETRIES: u8 = 5;
 
 /// What follows a request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum AfterRequest {
     /// The transfer is over.
     Complete,
     /// The same URL is asked for again on a fresh connection, the reused
     /// one having died (C's `FOLLOW_RETRY`).
     Retry,
+    /// The response's `Location:`, as the server gave it, is followed
+    /// (C's `FOLLOW_REDIR`).
+    Follow(Vec<u8>),
 }
 
 #[derive(Debug)]
@@ -672,13 +679,12 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                     Wake::Again,
                                 )
                             } else if done {
-                                match keep_redirect_url(run, &x, cx) {
-                                    Ok(()) => (
-                                        TransferState::Done(x.done(
-                                            Ok(()),
-                                            false,
-                                            Reached::Exchanged,
-                                        )),
+                                match after_exchange(run, &x, cx) {
+                                    Ok(next) => (
+                                        TransferState::Done(Done {
+                                            next,
+                                            ..x.done(Ok(()), false, Reached::Exchanged)
+                                        }),
                                         Wake::Again,
                                     ),
                                     Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
@@ -697,7 +703,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // comes first.
             let mut premature = d.premature || is_premature(d.result);
             if let Some(proto) = d.proto.as_mut() {
-                d.result = proto.done(cx, &d.lease, d.result, premature, d.next);
+                d.result = proto.done(cx, &d.lease, d.result, premature, &d.next);
             }
             // A last progress pass, unless a callback aborted already.
             if d.result != Err(ErrorKind::AbortedByCallback)
@@ -716,12 +722,16 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             if pause.recv == RecvPause::Held {
                 pause.recv = RecvPause::Running;
             }
-            // A send failure is what a retry from DO set out to mend.
             let now = cx.rest.now;
-            if d.next == AfterRequest::Retry
-                && matches!(d.result, Ok(()) | Err(ErrorKind::SendError))
-            {
-                let next = retry_leg(run, cx);
+            let leg = match (&d.next, d.result) {
+                // A send failure is what a retry from DO set out to mend.
+                (AfterRequest::Retry, Ok(()) | Err(ErrorKind::SendError)) => {
+                    Some(retry_leg(run, cx))
+                }
+                (AfterRequest::Follow(location), Ok(())) => Some(follow_leg(run, cx, location)),
+                _ => None,
+            };
+            if let Some(next) = leg {
                 if next.is_completed() {
                     enter_completed(cx.report_mut(), now, true);
                 }
@@ -1146,6 +1156,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
         ));
     }
     run.retries = 0;
+    run.first = None;
     cx.mark(Timer::StartOp);
     read_resolve(cx)?;
     let options = cx.easy().options();
@@ -1241,26 +1252,98 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
     Ok(())
 }
 
-/// Where a response's `Location:` would have led, kept for the
-/// application, as C's `FOLLOW_FAKE` keeps it at the end of the exchange.
-fn keep_redirect_url<H: Host>(
+/// What follows a complete exchange: the redirect it is to follow, or
+/// none, where a `Location:` would have led kept for the application, as
+/// C's `FOLLOW_FAKE` keeps it at the end of the exchange.
+fn after_exchange<H: Host>(
     run: &Run,
     x: &Attached,
     cx: &mut StepCx<'_, H>,
+) -> Result<AfterRequest, ErrorKind> {
+    if let Some(location) = x.proto.follow() {
+        let mut copy = Vec::new();
+        copy.try_extend_from_slice(location)
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        return Ok(AfterRequest::Follow(copy));
+    }
+    if let Some(location) = x.proto.location() {
+        keep_redirect_url(run, cx, location)?;
+    }
+    Ok(AfterRequest::Complete)
+}
+
+/// The URL of the request just made, as it was parsed for it (C's
+/// `state.uh`).
+fn request_url<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> Result<Url, ErrorKind> {
+    match parse_url(&run.url, cx.easy().options()) {
+        Ok(url) => Ok(url),
+        Err(UrlRefused::Rejected(e)) => Err(url_error(e)),
+        Err(UrlRefused::Failed(kind)) => Err(kind),
+    }
+}
+
+/// Where `location` would have led from the request, kept for the
+/// application (`follow_fake`).
+fn keep_redirect_url<H: Host>(
+    run: &Run,
+    cx: &mut StepCx<'_, H>,
+    location: &[u8],
 ) -> Result<(), ErrorKind> {
-    let Some(location) = x.proto.location() else {
-        return Ok(());
-    };
-    // The request's URL as it was parsed for it (C's `state.uh`).
-    let base = match parse_url(&run.url, cx.easy().options()) {
-        Ok(base) => base,
-        Err(UrlRefused::Rejected(e)) => return Err(url_error(e)),
-        Err(UrlRefused::Failed(kind)) => return Err(kind),
-    };
+    let base = request_url(run, cx)?;
     let path_as_is = cx.easy().options().url_rules.path_as_is;
     let url = follow::would_redirect(base, location, path_as_is)?;
     cx.report_mut().set_redirect_url(url);
     Ok(())
+}
+
+/// A redirect is followed (`Curl_http_follow`, `FOLLOW_REDIR`): counted,
+/// `location` resolved against the request's URL, and a leg started for
+/// it. Past the limit, where it leads is kept and the transfer fails.
+fn follow_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, location: &[u8]) -> TransferState {
+    let options = cx.easy().options();
+    let path_as_is = options.url_rules.path_as_is;
+    let max = options.http.max_redirects.0;
+    let base = match request_url(run, cx) {
+        Ok(base) => base,
+        Err(e) => return TransferState::Init.fail(e),
+    };
+    if let Some(max) = max
+        && cx.report_mut().redirects() >= u32::from(max)
+    {
+        if let Err(e) = keep_redirect_url(run, cx, location) {
+            return TransferState::Init.fail(e);
+        }
+        let why = format_args!("Maximum ({max}) redirects followed");
+        return TransferState::Init.fail(trace::fail(cx, ErrorKind::TooManyRedirects, why));
+    }
+    cx.report_mut().count_redirect();
+    let url = match follow::resolve(base, location, path_as_is) {
+        Ok(url) => url,
+        Err(e) => {
+            let kind = url_error(e);
+            let why = format_args!("The redirect target URL could not be parsed: {e}");
+            return TransferState::Init.fail(trace::fail(cx, kind, why));
+        }
+    };
+    let text = match url.get(Part::Url, GetOptions::NONE) {
+        Ok(text) => text,
+        Err(e) => return TransferState::Init.fail(url_error(e)),
+    };
+    let shown = Bytes(&text);
+    trace::info(
+        cx,
+        format_args!("Issue another request to this URL: '{shown}'"),
+    );
+    // Parsed again for its leg, as every request's URL is.
+    let url = match parse_url(&text, cx.easy().options()) {
+        Ok(url) => url,
+        Err(UrlRefused::Rejected(e)) => {
+            let why = format_args!("URL rejected: {e}");
+            return TransferState::Init.fail(trace::fail(cx, url_error(e), why));
+        }
+        Err(UrlRefused::Failed(kind)) => return TransferState::Init.fail(kind),
+    };
+    next_leg(run, cx, url)
 }
 
 /// A request is to be made again: its URL parsed anew, as the follow of a
@@ -1284,6 +1367,12 @@ fn retry_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         cx,
         format_args!("Issue another request to this URL: '{shown}'"),
     );
+    next_leg(run, cx, url)
+}
+
+/// The next request of a transfer, made again or redirected, for `url`:
+/// counted in the header store, timed, and its leg started.
+fn next_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> TransferState {
     cx.report_mut().headers_mut().next_request();
     cx.mark(Timer::Redirect);
     // The sizes to come are the new request's (`Curl_pgrsResetTransferSizes`).
@@ -1346,7 +1435,16 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
     };
     // Known before the protocol opens anything, as C records it.
     cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
-    let proto = match ProtoState::start(&scheme, &url, cx) {
+    // A redirect goes only where C's `CURLPROTO_REDIR` lets it
+    // (`url_set_conn_scheme`).
+    let redirected = cx.report_mut().redirects() > 0;
+    let refused = redirected && !matches!(&scheme[..], b"http" | b"https" | b"ftp" | b"ftps");
+    let started = if refused {
+        Ok(None)
+    } else {
+        ProtoState::start(&scheme, &url, run.first.as_deref(), cx)
+    };
+    let proto = match started {
         Ok(Some(proto)) => proto,
         Ok(None) => {
             // A scheme libcurl knows is one this build leaves out.
@@ -1355,8 +1453,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
             } else {
                 b"\" not supported"
             };
+            let follow: &[u8] = if redirected { b" (in redirect)" } else { b"" };
             let kind = ErrorKind::UnsupportedProtocol;
-            let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why]);
+            let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why, follow]);
             // Out of memory keeping the URL, the first failure stands.
             let _kept = cx.report_mut().set_url(url);
             return TransferState::Init.fail(kind);
@@ -1394,6 +1493,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transf
     let Ok(origin) = TryRc::try_new(peer) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
+    if run.first.is_none() {
+        run.first = Some(origin.clone());
+    }
     // Out of the options while the failure is traced; put back however
     // the search ends.
     let entries = std::mem::take(&mut cx.easy_mut().options_mut().connect_to);

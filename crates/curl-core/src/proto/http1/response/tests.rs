@@ -2,6 +2,7 @@ use std::num::NonZeroU64;
 
 use super::*;
 use crate::proto::http1::fixture;
+use crate::proto::http1::framing::Note;
 
 const ASKED: Asked = Asked {
     head: false,
@@ -11,6 +12,7 @@ const ASKED: Asked = Asked {
     raw_codings: false,
     fail_on_error: false,
     resume_from: None,
+    follow: false,
 };
 
 const PLAIN: Exchange = Exchange {
@@ -64,7 +66,7 @@ fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outc
             input = &input[used..];
             match event {
                 Some(HeadEvent::Line(line)) => {
-                    out.notes.extend(line.note);
+                    out.notes.extend(line.notes.iter());
                     out.lines.push((line.kind, line.bytes.to_vec()));
                     if let Err(e) = line.early.and(line.then) {
                         out.error = Some(e);

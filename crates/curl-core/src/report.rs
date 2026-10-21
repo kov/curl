@@ -72,6 +72,8 @@ pub struct TransferReport {
     primary: Option<Ends>,
     /// How many connections the transfer made (`info.numconnects`).
     connects: u32,
+    /// How many redirects the transfer followed (`state.followlocation`).
+    redirects: u32,
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
     /// none when keeping it ran out of memory.
     failure: Option<Vec<u8>>,
@@ -182,6 +184,15 @@ impl TransferReport {
 
     pub(crate) fn count_connect(&mut self) {
         self.connects = self.connects.saturating_add(1);
+    }
+
+    /// How many redirects the transfer followed (`CURLINFO_REDIRECT_COUNT`).
+    pub fn redirects(&self) -> u32 {
+        self.redirects
+    }
+
+    pub(crate) fn count_redirect(&mut self) {
+        self.redirects = self.redirects.saturating_add(1);
     }
 
     /// How long a response asked to wait before the next try, in whole

@@ -3,6 +3,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::conn::Peer;
 use crate::error::ErrorKind;
 
 use super::fields;
@@ -17,23 +18,6 @@ pub enum Version {
     Http10,
     #[default]
     Http11,
-}
-
-/// One endpoint as the credential gate compares them (`Curl_peer_equal`):
-/// the scheme, the host as the URL names it, and the port.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Peer<'a> {
-    pub(crate) scheme: &'a [u8],
-    pub(crate) host: &'a [u8],
-    pub(crate) port: u16,
-}
-
-impl Peer<'_> {
-    fn same(&self, other: &Peer<'_>) -> bool {
-        self.scheme.eq_ignore_ascii_case(other.scheme)
-            && self.host.eq_ignore_ascii_case(other.host)
-            && self.port == other.port
-    }
 }
 
 /// Whether what the application said for the first origin may go to the
@@ -54,11 +38,17 @@ pub(crate) struct SameOrigin(());
 pub(crate) struct Trusted(());
 
 impl CredentialGate {
+    /// The gate for the transfer's first request.
+    pub(crate) const FIRST: CredentialGate = CredentialGate {
+        same: true,
+        trusted: true,
+    };
+
     /// The gate for a request to `now` in a transfer that started at
     /// `initial`; `other_hosts` lets credentials follow it anywhere
     /// (`CURLOPT_UNRESTRICTED_AUTH`).
-    pub(crate) fn new(initial: &Peer<'_>, now: &Peer<'_>, other_hosts: bool) -> CredentialGate {
-        let same = initial.same(now);
+    pub(crate) fn new(initial: &Peer, now: &Peer, other_hosts: bool) -> CredentialGate {
+        let same = initial == now;
         CredentialGate {
             same,
             trusted: same || other_hosts,
@@ -580,6 +570,7 @@ fn connection(headers: &UserHeaders, out: &mut Out<'_>) -> Result<(), ErrorKind>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conn::Scheme;
 
     const PORT: u16 = 8990;
     const UA: &[u8] = b"curl/8.99.0-test";
@@ -624,12 +615,13 @@ mod tests {
         out
     }
 
-    fn peer(host: &[u8]) -> Peer<'_> {
-        Peer {
-            scheme: b"http",
-            host,
-            port: PORT,
-        }
+    const HTTP: Scheme = Scheme {
+        name: "http",
+        reuse: true,
+    };
+
+    fn peer(host: &[u8]) -> Peer {
+        Peer::new(HTTP, host.to_vec(), PORT, None)
     }
 
     /// What `curl` sends for a GET of `target` with `headers`.
@@ -854,16 +846,21 @@ mod tests {
         assert!(headers.try_clone().unwrap().lines().eq(lines));
     }
 
-    /// Endpoints are the same only with scheme, host and port alike, the
-    /// first two in any case.
+    /// Origins are the same only with scheme, host and port alike, the
+    /// host in any case.
     #[test]
-    fn peers_are_the_same_only_wholly() {
-        let at = |scheme, host, port| Peer { scheme, host, port };
-        let here = at(&b"http"[..], &b"Example.COM"[..], 80);
-        assert!(here.same(&at(b"HTTP", b"example.com", 80)));
-        assert!(!here.same(&at(b"http", b"example.com", 81)));
-        assert!(!here.same(&at(b"http", b"example.org", 80)));
-        assert!(!here.same(&at(b"https", b"example.com", 80)));
+    fn the_same_origin_is_the_same_wholly() {
+        let at = |scheme, host: &[u8], port| Peer::new(scheme, host.to_vec(), port, None);
+        let other = Scheme {
+            name: "https",
+            reuse: true,
+        };
+        let here = at(HTTP, b"Example.COM", 80);
+        let same = |p: &Peer| CredentialGate::new(&here, p, false).same_origin().is_some();
+        assert!(same(&at(HTTP, b"example.com", 80)));
+        assert!(!same(&at(HTTP, b"example.com", 81)));
+        assert!(!same(&at(HTTP, b"example.org", 80)));
+        assert!(!same(&at(other, b"example.com", 80)));
     }
 
     /// The application's Connection headers: the first with a value as
@@ -914,11 +911,7 @@ mod tests {
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
-        let now = Peer {
-            scheme: b"http",
-            host: b"[::1]",
-            port: 80,
-        };
+        let now = Peer::new(HTTP, b"[::1]".to_vec(), 80, None);
         let mut out = Vec::new();
         render_h1(&head, &CredentialGate::new(&first, &now, false), &mut out).unwrap();
         assert_eq!(

@@ -24,13 +24,19 @@ use crate::options::Options;
 use crate::url::{GetOptions, Part, Url};
 
 /// The URL's IPv6 zone, if it has one.
-fn zone(url: &Url) -> Result<Option<Vec<u8>>, ErrorKind> {
+pub(super) fn zone(url: &Url) -> Result<Option<Vec<u8>>, ErrorKind> {
     match url.get(Part::ZoneId, GetOptions::NONE) {
         Ok(zone) => Ok(Some(zone)),
         Err(UrlErrorKind::NoZoneid) => Ok(None),
         Err(e) => Err(crate::multi::state::url_error(e)),
     }
 }
+
+/// HTTP, as the connection layer knows it.
+const HTTP: Scheme = Scheme {
+    name: "http",
+    reuse: true,
+};
 
 /// A protocol's state for one transfer.
 #[derive(Debug)]
@@ -65,12 +71,13 @@ impl ProtoState {
     pub(crate) fn start<H: Host>(
         scheme: &[u8],
         url: &Url,
+        first: Option<&Peer>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
             b"file" => ProtoState::File(file::Request::open(url, cx)?),
             b"http" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::new(url, cx)?)
+                curl_alloc::try_box(http::Request::new(url, first, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             #[cfg(any(test, feature = "test-util"))]
@@ -92,11 +99,7 @@ impl ProtoState {
             ProtoState::File(_) => Ok(None),
             ProtoState::Http(ref r) => {
                 let (host, port) = r.origin()?;
-                let scheme = Scheme {
-                    name: "http",
-                    reuse: true,
-                };
-                Ok(Some(Peer::new(scheme, host, port, zone(url)?)))
+                Ok(Some(Peer::new(HTTP, host, port, zone(url)?)))
             }
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
@@ -205,6 +208,16 @@ impl ProtoState {
         }
     }
 
+    /// Where the response redirects to, if it is followed.
+    pub(crate) fn follow(&self) -> Option<&[u8]> {
+        match *self {
+            ProtoState::Http(ref r) => r.follow(),
+            ProtoState::File(_) => None,
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+        }
+    }
+
     /// Whether the request holds output for the application.
     pub(crate) fn holds_output(&self) -> bool {
         match *self {
@@ -280,7 +293,7 @@ impl ProtoState {
         lease: &ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
-        next: AfterRequest,
+        next: &AfterRequest,
     ) -> Result<(), ErrorKind> {
         match *self {
             ProtoState::Http(ref mut r) => r.done(cx, lease, result, premature, next),

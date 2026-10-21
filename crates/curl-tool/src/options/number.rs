@@ -37,6 +37,22 @@ pub(crate) fn unsigned(s: &[u8]) -> Result<u64, ParamError> {
     }
 }
 
+/// A whole number, as `str2num` reads it: an optional `-`, then only
+/// digits, at most `LONG_MAX`.
+pub(crate) fn signed(s: &[u8]) -> Result<i64, ParamError> {
+    let (negative, digits) = match s.strip_prefix(b"-") {
+        Some(rest) => (true, rest),
+        None => (false, s),
+    };
+    match leading_number(digits, LONG_MAX) {
+        Some((n, b"")) => {
+            let n = i64::try_from(n).expect("at most LONG_MAX");
+            Ok(if negative { -n } else { n })
+        }
+        _ => Err(ParamError::BadNumeric),
+    }
+}
+
 /// A byte offset, as `str2offset` reads it: only digits, at most
 /// `CURL_OFF_T_MAX`.
 pub(crate) fn offset(s: &[u8]) -> Result<u64, ParamError> {

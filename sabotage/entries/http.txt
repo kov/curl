@@ -29,9 +29,9 @@ witness: curl-core proto::http::tests::a_held_line_is_delivered_at_the_end
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::responses_end_as_c_ends_them
 --- old
-        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
+        if !premature && *next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
 --- new
-        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount() + 1)
+        if !premature && *next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount() + 1)
 
 === trailers are delivered as headers
 file: crates/curl-core/src/proto/http.rs
@@ -376,7 +376,7 @@ witness: curl-core proto::http::tests::a_retry_after_date_counts_from_the_clock
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_request_over_a_reused_connection_that_died_is_made_again
 --- old
-        if !premature && next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
+        if !premature && *next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
 --- new
         if !premature && head.got_nothing(self.pipeline.bytecount())
 
@@ -615,3 +615,68 @@ witness: curl-core proto::http1::follow::tests::resolves_against_the_request_wit
         Err(_) => return copied(location),
 --- new
         Err(e) => return Err(url_error(e)),
+
+=== a redirect's body is delivered
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_redirect_is_followed_on_the_kept_connection
+--- old
+        self.ignore_body = self.follow || (resume_from.is_some() && status.code == 416);
+--- new
+        self.ignore_body = resume_from.is_some() && status.code == 416;
+
+=== a Location under any code is followed
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_location_outside_a_redirect_is_not_followed
+--- old
+            self.follow = asked.follow && (300..400).contains(&status.code);
+--- new
+            self.follow = asked.follow;
+
+=== redirects go uncounted
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirect_is_followed_on_the_kept_connection
+--- old
+    cx.report_mut().count_redirect();
+--- new
+
+=== the redirect limit lets one more through
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::redirects_stop_at_the_limit
+--- old
+        && cx.report_mut().redirects() >= u32::from(max)
+--- new
+        && cx.report_mut().redirects() > u32::from(max)
+
+=== a redirect goes to any scheme built
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_redirect_to_a_file_is_refused
+--- old
+    let refused = redirected && !matches!(&scheme[..], b"http" | b"https" | b"ftp" | b"ftps");
+--- new
+    let refused = false;
+
+=== every request is the first origin's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
+--- old
+                CredentialGate::new(first, &here, other_hosts)
+--- new
+                CredentialGate::new(&here, &here, other_hosts)
+
+=== the first origin is each request's own
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
+--- old
+    if run.first.is_none() {
+        run.first = Some(origin.clone());
+    }
+--- new
+    run.first = Some(origin.clone());
+
+=== unrestricted auth is ignored
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
+--- old
+        let other_hosts = cx.easy().options().http.unrestricted_auth;
+--- new
+        let other_hosts = false;

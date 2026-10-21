@@ -17,8 +17,8 @@ use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 use curl_core::options::{
-    ContinueWait, EyeballsDelay, FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options,
-    Resume, ReuseLimits, UserHeaders,
+    ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, LowSpeed, MaxRedirects,
+    Method, Options, Resume, ReuseLimits, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -308,6 +308,25 @@ fn apply(
         (ffi::CURLOPT_KEEP_SENDING_ON_ERROR, Long(n)) => {
             options.http.keep_sending_on_error = n != 0;
         }
+        (ffi::CURLOPT_FOLLOWLOCATION, Long(n)) => {
+            options.http.follow = match n {
+                0 => Follow::No,
+                1 => Follow::All,
+                2 => Follow::ObeyCode,
+                3 => Follow::FirstOnly,
+                _ => return Err(Refused::Bad),
+            };
+        }
+        (ffi::CURLOPT_MAXREDIRS, Long(n)) => {
+            // Below -1 refused, -1 no limit, past 32767 taken as it
+            // (`value_range`).
+            options.http.max_redirects = match n {
+                ..-1 => return Err(Refused::Bad),
+                -1 => MaxRedirects(None),
+                n => MaxRedirects(Some(u16::try_from(n.min(0x7fff)).expect("clamped"))),
+            };
+        }
+        (ffi::CURLOPT_UNRESTRICTED_AUTH, Long(n)) => options.http.unrestricted_auth = n != 0,
         (ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, Long(n)) => {
             // Negative refused, past 65535 taken as it (`value_range`).
             let ms = u64::try_from(n).map_err(|_| Refused::Bad)?.min(0xffff);

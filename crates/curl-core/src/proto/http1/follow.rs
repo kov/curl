@@ -50,6 +50,27 @@ pub(crate) fn would_redirect(
     Ok(stripped.unwrap_or(url))
 }
 
+/// `location` resolved against `base`, the request's URL, for a redirect
+/// followed (`follow_parse_url`, `FOLLOW_REDIR`): what needs it encoded,
+/// spaces allowed, and only a scheme this build knows.
+pub(crate) fn resolve(
+    mut base: Url,
+    location: &[u8],
+    path_as_is: bool,
+) -> Result<Url, UrlErrorKind> {
+    let follow = SetOptions {
+        parse: ParseOptions {
+            url_encode: true,
+            allow_space: true,
+            path_as_is,
+            ..ParseOptions::NONE
+        },
+        ..SetOptions::NONE
+    };
+    base.set(Part::Url, Some(location), follow)?;
+    Ok(base)
+}
+
 fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     let mut copy = Vec::new();
     curl_alloc::TryVec::try_extend_from_slice(&mut copy, bytes)

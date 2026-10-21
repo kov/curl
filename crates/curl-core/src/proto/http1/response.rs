@@ -8,7 +8,7 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields::{self, BadLine, MAX_HEADERS};
-use super::framing::{Asked, Framing, FramingError, Meta, Note};
+use super::framing::{Asked, Framing, FramingError, Meta, Notes};
 use crate::error::ErrorKind;
 
 /// The most one assembled line may be, the byte C's buffer keeps for
@@ -45,7 +45,7 @@ pub(crate) struct Line<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) kind: LineKind,
     /// What C says of the line before it delivers it.
-    pub(crate) note: Option<Note>,
+    pub(crate) notes: Notes,
     /// A failure C reports before it delivers the line, and raises after
     /// (`http_on_response`, which writes the head's last line on its way
     /// out).
@@ -392,7 +392,7 @@ impl HeadParser {
     /// Give out the complete line in `line` (`http_rw_hd`).
     fn line_out(&mut self, transfer_bytes: &mut u64) -> Result<HeadEvent<'_>, HeadError> {
         self.given = true;
-        let mut note = None;
+        let mut note = Notes::default();
         // An error said before the line is delivered, and raised after.
         let mut first = Ok(());
         let mut bad_code = false;
@@ -428,7 +428,7 @@ impl HeadParser {
                 }
                 self.status = Some(status);
                 self.version_seen = true;
-                note = self.meta.on_status(status);
+                note = Notes::one(self.meta.on_status(status));
                 LineKind::Status(status)
             } else {
                 LineKind::Header
@@ -436,10 +436,11 @@ impl HeadParser {
             fields::verify_line(&self.line, self.lines).map_err(HeadError::BadLine)?;
             if kind == LineKind::Header {
                 let status = self.status.expect("headers follow their status line");
-                note = self
-                    .meta
-                    .on_header(&self.line, status, &self.exchange.asked)
-                    .map_err(HeadError::Framing)?;
+                note = Notes::one(
+                    self.meta
+                        .on_header(&self.line, status, &self.exchange.asked)
+                        .map_err(HeadError::Framing)?,
+                );
             }
             kind
         };
@@ -452,7 +453,7 @@ impl HeadParser {
         Ok(HeadEvent::Line(Line {
             bytes: &self.line,
             kind,
-            note,
+            notes: note,
             early: first,
             then,
         }))

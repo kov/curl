@@ -360,11 +360,13 @@ cargo-mutants run on the milestone's diff.
 26. **http: follow redirects.** **In progress.** Done: relative URL resolution and the part
     setters (the rest of lib1560's tables), and the shim's `curl_url_*` (1559, 1921, 1965,
     1967, 1989); test 1560 itself waits for https and IDN in the build, and
-    `CURLOPT_CURLU` (658, 674, 1518, 1567, 1906, 1977) is not yet read. Then
-    FOLLOWLOCATION, MAXREDIRS, 301/302/303 method changes, a request body rewound for the
-    next leg, a 417 sent again without `Expect`, the credential gate's first origin kept in
-    `Run`, credentials and a custom Host dropped across hosts through the gate, `-e ";auto"`
-    and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
+    `CURLOPT_CURLU` (658, 674, 1518, 1567, 1906, 1977) is not yet read. Done too:
+    `CURLINFO_REDIRECT_URL`; FOLLOWLOCATION, MAXREDIRS and UNRESTRICTED_AUTH, with the
+    tool's `-L`, `--follow`, `--location-trusted` and `--max-redirs`; the credential gate's
+    first origin kept in `Run`, so the application's Authorization, Cookie and Host stay
+    with it. Then 301/302/303 method changes, a request body rewound for the next leg (until
+    then a redirected upload is sent again empty, test 1073), a 417 sent again without
+    `Expect`, credentials from the URL across hosts and `-e ";auto"`. Flips 3010, 1940, 1942 and 1943 and the
     followlocation family; T1 tests 193, 1029, 1067, 1080, 1081, 1089, 1090, 1159, 1197,
     1261, 1270, 2081 and 3015, with `%{method}`, `%{referer}`, `%{redirect_url}` and
     `%{num_redirects}`.

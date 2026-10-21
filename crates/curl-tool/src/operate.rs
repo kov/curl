@@ -369,6 +369,13 @@ fn configure(
         options::UserHeaders::new(op.headers.iter().copied().chain(json.into_iter().flatten()))?;
     http.referer = op.referer.map(copy).transpose()?;
     http.custom_method = op.custom_request.map(copy).transpose()?;
+    http.follow = op.follow;
+    http.unrestricted_auth = op.unrestricted_auth;
+    // As `CURLOPT_MAXREDIRS` takes it: -1 no limit, at most 32767.
+    http.max_redirects = options::MaxRedirects(match op.max_redirs.unwrap_or(50) {
+        -1 => None,
+        n => Some(u16::try_from(n.clamp(0, 0x7fff)).expect("clamped")),
+    });
     if op.expect100_timeout_ms > 0 {
         // As `CURLOPT_EXPECT_100_TIMEOUT_MS` takes it, at most 65535.
         let ms = op.expect100_timeout_ms.min(0xffff);

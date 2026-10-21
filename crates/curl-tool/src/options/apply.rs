@@ -9,6 +9,7 @@
 //! rather than run without it.
 
 use curl_alloc::TryVec;
+use curl_core::options::Follow;
 use curl_core::version::Protocol;
 
 use super::protocols::{self, Protocols};
@@ -155,6 +156,12 @@ pub(crate) struct Operation<'a> {
     pub(crate) connect_timeout_ms: u64,
     /// `--expect100-timeout`, in milliseconds; 0 is the library's default.
     pub(crate) expect100_timeout_ms: u64,
+    /// `--location` and `--follow`.
+    pub(crate) follow: Follow,
+    /// `--location-trusted`.
+    pub(crate) unrestricted_auth: bool,
+    /// `--max-redirs`; -1 is no limit, and none the tool's 50.
+    pub(crate) max_redirs: Option<i64>,
     /// `--globoff`: URLs and uploads are taken as they are.
     pub(crate) globoff: bool,
     /// `--head`: no body is asked for.
@@ -657,6 +664,32 @@ pub(crate) fn apply<'a>(
         Opt::MaxTime => line.current().timeout_ms = value.millis(),
         Opt::ConnectTimeout => line.current().connect_timeout_ms = value.millis(),
         Opt::Expect100Timeout => line.current().expect100_timeout_ms = value.millis(),
+        Opt::Location | Opt::LocationTrusted => {
+            let on = value.toggle();
+            let op = line.current();
+            if spec.opt == Opt::LocationTrusted {
+                op.unrestricted_auth = on;
+            }
+            if op.follow == Follow::ObeyCode {
+                msgs.warn(&[b"--location overrides --follow"]);
+            }
+            op.follow = if on { Follow::All } else { Follow::No };
+        }
+        Opt::Follow => {
+            let on = value.toggle();
+            let op = line.current();
+            if op.follow == Follow::All {
+                msgs.warn(&[b"--follow overrides --location"]);
+            }
+            op.follow = if on { Follow::ObeyCode } else { Follow::No };
+        }
+        Opt::MaxRedirs => {
+            let n = number::signed(value.text())?;
+            if n < -1 {
+                return Err(ParamError::BadNumeric);
+            }
+            line.current().max_redirs = Some(n);
+        }
         Opt::Globoff => line.current().globoff = value.toggle(),
         Opt::Fail | Opt::FailWithBody => {
             let (this, other, deselects) = if spec.opt == Opt::Fail {
@@ -826,7 +859,6 @@ pub(crate) fn apply<'a>(
         | Opt::Epsv
         | Opt::FailEarly
         | Opt::FalseStart
-        | Opt::Follow
         | Opt::Form
         | Opt::FormEscape
         | Opt::FormString
@@ -874,14 +906,11 @@ pub(crate) fn apply<'a>(
         | Opt::LimitRate
         | Opt::ListOnly
         | Opt::LocalPort
-        | Opt::Location
-        | Opt::LocationTrusted
         | Opt::LoginOptions
         | Opt::MailAuth
         | Opt::MailFrom
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
-        | Opt::MaxRedirs
         | Opt::Metalink
         | Opt::Mptcp
         | Opt::Negotiate

@@ -163,6 +163,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
             ends.local.map_or(0, |local| c_long::from(local.port()))
         })),
         ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
+        ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),
         ffi::CURLINFO_REQUEST_SIZE => {
             Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))
         }

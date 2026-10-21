@@ -477,6 +477,7 @@ mod tests {
                 raw_codings: raw,
                 fail_on_error: false,
                 resume_from: None,
+                follow: false,
             },
         };
         let mut head = HeadParser::new(exchange);

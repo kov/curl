@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 12 are **done**; every other step is **to do**.
+Status: steps 1 to 14 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -260,8 +260,8 @@ yet meet.
       `HeadParser::got_nothing`, the interim heads' bytes deducted. Messages checked against the
       C binary.
 14. **http1: run requests, and the fixture runner.** In three parts:
-    - **a. Bytes on a connection.** **Done.** `Socket::recv` and `send`; a connection's `rx` and
-      `tx` (`conn/buf.rs`), `Conn::recv` behind what waits and `Conn::flush`; `FakeNet`
+    - **a. Bytes on a connection.** **Done.** `Socket::recv` and `send`; a connection's `rx`
+      (`conn/buf.rs`), `Conn::recv` behind what waits and `Conn::send`; `FakeNet`
       conversations, a peer that replies to a request's head and then closes or not, and keeps
       what it was sent.
     - **b. The HTTP/1 driver.** **Done.** `proto/http.rs`: `http:` as a protocol, the head
@@ -272,9 +272,13 @@ yet meet.
       end on tests 1, 266 and 326 over `FakeNet`, the outcomes and texts taken from the C
       binary. Not yet: a request body, retrying a reused connection that delivered nothing,
       C's debug-build-only trace lines.
-    - **c. The fixture runner.** **To do.** Generated from `tests/data`: the milestone set's
-      cases without servercmd, driven over `FakeNet` and `ManualClock`; armed by breaking a
-      framing rule. Adds the plain-GET allocation budget test, set at this design's count.
+    - **c. The fixture runner.** **Done.** `proto/http/suite.rs` reads the milestone set's
+      cases from `tests/data` and runs them over `FakeNet` and `ManualClock`: 66 of 81 run
+      (the rest need a server command, several replies, `-f`, `-o` or a stderr check), and
+      all but 367 (Basic auth from the URL) pass; armed by breaking a framing rule. It found
+      the second `Location` (772) and HEAD over HTTP/0.9 (1144). The plain-GET torture
+      scenario and allocation budget (38) are in `tests/torture.rs`; the scenario found memory
+      failures reported as `UrlMalformat`, `CouldntConnect` and `RecvError`.
 15. **tool: run HTTP transfers.** The tool maps the remaining milestone options (`-H`, `-A`,
     `-e`, `-0`/`--http1.0`/`--http1.1`/`--http0.9`, `-D`, `--raw`, `--ignore-content-length`,
     `--max-filesize`, `--show-headers`, `-f`, `-N`, `--tr-encoding`). Measure test 1's

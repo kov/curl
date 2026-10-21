@@ -290,17 +290,23 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) headers: &'o UserHeaders,
 }
 
-/// The request head as it goes on the wire.
-struct Out<'b>(&'b mut Vec<u8>);
+/// The request head as it goes on the wire, or only its length.
+struct Out<'b> {
+    buf: Option<&'b mut Vec<u8>>,
+    len: usize,
+}
 
 impl Out<'_> {
     fn put(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
-        if self.0.len() + bytes.len() > MAX_HEAD {
+        if self.len + bytes.len() > MAX_HEAD {
             return Err(ErrorKind::TooLarge);
         }
-        self.0
-            .try_extend_from_slice(bytes)
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)
+        if let Some(buf) = &mut self.buf {
+            buf.try_extend_from_slice(bytes)
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        }
+        self.len += bytes.len();
+        Ok(())
     }
 
     fn line(&mut self, parts: &[&[u8]]) -> Result<(), ErrorKind> {
@@ -317,7 +323,30 @@ pub(crate) fn render_h1(
     gate: &CredentialGate,
     out: &mut Vec<u8>,
 ) -> Result<(), ErrorKind> {
-    let mut out = Out(out);
+    // Measured first, so that the head takes one allocation.
+    let mut measure = Out {
+        buf: None,
+        len: out.len(),
+    };
+    write_h1(head, gate, &mut measure)?;
+    out.try_reserve_exact(measure.len - out.len())
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    let len = out.len();
+    write_h1(
+        head,
+        gate,
+        &mut Out {
+            buf: Some(out),
+            len,
+        },
+    )
+}
+
+fn write_h1(
+    head: &RequestHead<'_>,
+    gate: &CredentialGate,
+    out: &mut Out<'_>,
+) -> Result<(), ErrorKind> {
     // A custom Host replaces the library's only for the first origin
     // (`http_set_aptr_host`); `Host:` with nothing after it drops it.
     let custom_host = gate.same_origin().and_then(|o| head.headers.host(o));
@@ -355,8 +384,8 @@ pub(crate) fn render_h1(
                     out.line(&[b"Accept: */*"])?;
                 }
             }
-            Part::Custom => custom(head, gate, &mut out)?,
-            Part::Connection => connection(head.headers, &mut out)?,
+            Part::Custom => custom(head, gate, out)?,
+            Part::Connection => connection(head.headers, out)?,
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
             Part::ProxyAuthorization

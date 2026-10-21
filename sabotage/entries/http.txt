@@ -165,3 +165,26 @@ witness: curl-core a_get_survives_every_allocation_failing
 --- new
         let host = url.get(Part::Host, GetOptions::NONE).map_err(|_| ErrorKind::UrlMalformat)?;
 
+=== the request head grows as it is written
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core a_get_stays_within_its_allocation_budget
+--- old
+    out.try_reserve_exact(measure.len - out.len())
+--- new
+    out.try_reserve_exact(0)
+
+=== a poll of known sockets makes a list
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core a_get_stays_within_its_allocation_budget
+--- old
+        (None, _) => return Ok(curl_os::poll::poll(fds, timeout)? + known),
+--- new
+        (None, _) if false => return Ok(curl_os::poll::poll(fds, timeout)? + known),
+
+=== a lone socket's readiness is dropped
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core easy::tests::connects_over_loopback
+--- old
+            s.revents = one[0].revents();
+--- new
+            s.revents = Events::NONE;

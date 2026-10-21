@@ -173,8 +173,23 @@ fn poll_together(
         }
     }
     let timeout = if known > 0 { Duration::ZERO } else { timeout };
-    if sockets.is_empty() {
-        return curl_os::poll::poll(fds, timeout);
+    // With no socket to poll, or one alone as a connect's check polls it,
+    // no list is made.
+    let mut to_poll = sockets
+        .iter_mut()
+        .filter_map(|s| match s.socket.readiness() {
+            Readiness::Poll(fd) => Some((fd, s)),
+            Readiness::Known { .. } => None,
+        });
+    match (to_poll.next(), to_poll.next()) {
+        (None, _) => return Ok(curl_os::poll::poll(fds, timeout)? + known),
+        (Some((fd, s)), None) if fds.is_empty() => {
+            let mut one = [PollFd::new(fd, s.events)];
+            let ready = curl_os::poll::poll(&mut one, timeout)?;
+            s.revents = one[0].revents();
+            return Ok(ready + known);
+        }
+        _ => {}
     }
     let mut all = Vec::new();
     all.try_reserve_exact(sockets.len() + fds.len())

@@ -51,9 +51,9 @@ witness: curl-core proto::http1::request::tests::the_application_s_headers_repla
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http1::request::tests::a_head_is_at_most_a_mebibyte_less_a_byte
 --- old
-        if self.0.len() + bytes.len() > MAX_HEAD {
+        if self.len + bytes.len() > MAX_HEAD {
 --- new
-        if self.0.len() + bytes.len() > MAX_HEAD + 1 {
+        if self.len + bytes.len() > MAX_HEAD + 1 {
 
 === the first Connection header goes untrimmed
 file: crates/curl-core/src/proto/http1/request.rs

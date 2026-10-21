@@ -1093,7 +1093,8 @@ pub(crate) struct Upload { source: Source /* None | Bytes(TryRc<Vec<u8>>) | Read
 
 `Upload` is C's client readers (`cr_null`, `cr_buf`, `cr_in`) as one struct, made per request
 from `options.upload` and read by the protocol.
-- The request head is rendered straight into `conn.tx`; body bytes are pulled from `Upload`
+- The request head is rendered into the request's own send buffer, as C's `req.sendbuf` is per
+  request, measured first so that it takes one allocation; body bytes are pulled from `Upload`
   into the remaining space (the first read is reduced by the head length, as C's shared chunk).
   HEADER_OUT and DATA_OUT are traced for the bytes `Net::send` accepted, split at the head
   length; SIZE_UPLOAD counts accepted body bytes only (`upload::sent`).
@@ -1520,7 +1521,9 @@ Each is either unobservable through the ABI or a fixed bug:
 | `UserHeaders`, `Url`, option strings | setopt | per handle; shared strings are `TryRc` |
 | socket table entries beyond the reserved two | connect-machine stage entry, before the socket opens | 6 attempts + ALPN racers |
 | error detail | on error | dropped if boxing it fails |
-| trace lines, request head, header parsing | none: stack buffers and `conn.tx` | — |
+| request head | once, measured before it is written | 1 MiB → TooLarge |
+| `Conn` receive buffer, head parser line | grows to the largest read and line | READ_SIZE, 100 KiB |
+| trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
 
 Nothing allocates per chunk. Peer-sized reservations happen after the limit check, so a hostile
 peer gets a protocol error, not an out-of-memory one.
@@ -1537,7 +1540,11 @@ peer gets a protocol error, not an out-of-memory one.
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
-  `FakeNet`, is fixed when that commit lands and recorded beside the test.
+  `FakeNet`, is fixed beside the test at 38: the multi, the easy's URL, user agent and
+  handlers, the transfer's place in the multi, then the URL as fetched and its parts, the
+  protocol's state, the destination, the socket, the request head, the receive buffer, the
+  head parser's line, the header store and the content type. The host is copied three times
+  (the request, the origin, the destination), two more than one owner needs.
 - Test 1's 140-allocation and 136000-byte limit is whole-process (argv, option parsing, output
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.
@@ -1560,12 +1567,15 @@ peer gets a protocol error, not an out-of-memory one.
   leg's run of the libtest and are replayed against the core over `FakeNet`.
 - **Pure units**: `ResponseHeadParser`, `ChunkDecoder`, `decide_framing`, `render_h1`,
   `UserHeaders`, `Url` and the `Pipeline`, fed whole, one byte at a time, and at every split point.
-- **A fixture runner generated from `tests/data`** for the HTTP milestone set: the generator
-  writes the reply, the options mapped to typed options, the expected `<protocol>` after variable
-  substitution, the expected output and error code. A Rust test drives `Multi` over `FakeNet`
-  playing the server. It is trusted only after it fails on a deliberately broken framing rule.
-  When it says green and `runtests.pl` says red, the mapping has drifted: the runner is the
-  fixture bug until shown otherwise.
+- **A fixture runner reading `tests/data`** for the HTTP milestone set
+  (`proto/http/suite.rs`): at test time it takes each case's reply, maps its command line to
+  typed options, and compares the request the peer got, the output (as `-i` writes it), the
+  dumped headers and the error code with the case's, after variable substitution, as
+  `runtests.pl` compares them. The peer closes when the suite's server would. A case it cannot
+  map is listed as skipped with why; a case that fails for want of a feature is listed as known,
+  and the test fails when it starts passing. Nothing is generated, so the cases stay the single
+  source. It is armed by a broken framing rule. When it says green and `runtests.pl` says red,
+  the mapping has drifted: the runner is the fixture bug until shown otherwise.
 - **Ported unit tests**, named after their originals: 1303, 1309, 3230 (table generated), 1399,
   1606, 1636, 1625, 1626, 2602, 2603, 1675, 2600, and 1560 growing with the URL parser.
 - **Property tests**: random add/remove/pause/socket events checking the invariants (counts equal

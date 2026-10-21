@@ -48,6 +48,10 @@ fn main() {
             "a_get_survives_every_allocation_failing",
             a_get_survives_every_allocation_failing,
         ),
+        (
+            "a_get_stays_within_its_allocation_budget",
+            a_get_stays_within_its_allocation_budget,
+        ),
     ] {
         // Reported as libtest does, the name before the run, so that a run
         // that aborts still shows which test it was in.
@@ -468,4 +472,23 @@ fn a_get_survives_every_allocation_failing() {
         headers: REPLY.len() as u64 - 6,
     };
     torture(get_scenario, Ok(full));
+}
+
+/// What a plain GET with a query allocates, from a new multi to its
+/// removal (`ENGINE.md` 8.1): the multi; the easy's URL, user agent and
+/// handlers; the transfer's place in the multi; then the URL as fetched
+/// and its parts, the target grown by its query, the protocol's state,
+/// the destination, the socket, the request head, the receive buffer,
+/// the head parser's line, the header store and the content type.
+const GET_BUDGET: u64 = 38;
+
+fn a_get_stays_within_its_allocation_budget() {
+    let (clock, net, talk) = test_1_server();
+    let (got, n) = track::count_allocations(|| get(clock, net, &talk));
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    track::untracked(|| eprintln!("budget: a plain GET made {n} allocations"));
+    assert!(
+        n <= GET_BUDGET,
+        "a plain GET made {n} allocations, over its {GET_BUDGET}"
+    );
 }

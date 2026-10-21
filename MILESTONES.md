@@ -7,7 +7,8 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 16 are **done**; every other step is **to do**.
+Status: **done**. Every ring passes through runtests.pl on both legs; the libtests that wait on
+later work are listed in step 21.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -290,18 +291,22 @@ yet meet.
     with them); the request sends Basic credentials from the URL (367). Ring A (1, 14, 22, 23,
     47, 59, 151, 260, 334, 367, 461, 1109, 1121, 1292) passes through runtests.pl on the Rust
     leg, test 1 within its `<limits>`; 497, 747 and 767's limits are checked with their rings.
-17. **Ring B, chunked and transfer codings:** 34, 207, 266, 319, 326, 365, 1116, 1416, 1417,
-    1482, 1483, 1493–1496, 1722, 1723, 2106, 2119, 2918.
-18. **Ring C, response errors and limits:** 30, 37, 282, 1665; 178, 262, 394, 398, 415, 1473,
-    2105; 129, 1430–1433, 1466; 497, 747, 1154, 1205.
-19. **Ring D:** HTTP/0.9 (66, 1144, 1172, 1174, 1266, 1267); 1xx (1033, 1115, 1480); folding
-    (1274); a body on HEAD (499, 1484); 395, 767–773.
-20. **Ring E, tool options:** 292, 293, 393, 457, 24, 152, 269, 419, 26 and the remaining
-    servercmd cases. At the end, the 102-test set passes on both legs or each remaining test is
-    listed with its reason.
-21. **abi: the HTTP libtests.** Easy: 566, 1485, 1532, 1541, 1556, 1594, 1595, 1596, 1649, 1907,
-    2306, 2308, 3010. Headers: 1940, 1942, 1943. Multi: 528, 535, 573, 580, 581, 1500, 2405,
-    2412, 2453. Re-entrancy and events: 1555, 3107, 530, 758.
+17. **Ring B, chunked and transfer codings.** **Done.** 34, 207, 266, 319, 326, 365, 1116, 1416,
+    1417, 1482, 1483, 1493–1496, 1722, 1723, 2106, 2119, 2918 pass.
+18. **Ring C, response errors and limits.** **Done.** 30, 37, 282, 1665; 178, 262, 394, 398, 415,
+    1473, 2105; 129, 1430–1433, 1466; 497, 747, 1154, 1205 pass, each within its `<limits>`.
+19. **Ring D.** **Done.** HTTP/0.9 (66, 1144, 1172, 1174, 1266, 1267); 1xx (1033, 1115, 1480);
+    folding (1274); a body on HEAD (499, 1484); 395, 767–773 pass.
+20. **Ring E, tool options.** **Done.** 292, 293, 393, 457, 24, 152, 269, 419 and 26 pass; HTTP
+    resume (`-C`, `Range`, the 416 read and dropped) came with them. The 84 ring tests of steps
+    16 to 20 pass on both legs.
+21. **abi: the HTTP libtests.** **Done**, but for those that wait on later work. Easy: 566, 1485,
+    1532, 1541, 1556, 1594, 1595, 1649, 1907, 2306, 2308. Multi: 528, 535, 573, 580, 581, 1500,
+    2405, 2412, 2453. Re-entrancy and events: 1555, 3107, 530. The shim gained the HTTP options,
+    the response's infos, `curl_easy_recv`/`curl_easy_send` and the headers API (`headers-api`
+    ON). Waiting: 1596 (a Retry-After date, needs the date parser), 3010
+    (`CURLINFO_REDIRECT_URL`), 1940, 1942 and 1943 (they set `CURLOPT_FOLLOWLOCATION`), all
+    with redirects; 758 needs an HTTPS server.
 
 After the milestone, each ring has its seam: T1 (`-w`, `-m`, `--fail-with-body`, `-#`,
 `--stderr`), pool reuse and limits with the getaddrinfo resolver, redirects, multi-URL, then event

@@ -1,5 +1,5 @@
-//! The URL API, `curl_url` and its kin: a `CURLU *` is a core `Url` in
-//! memory of its own.
+//! The URL API, `curl_url` and its kin: a `CURLU *` is a core
+//! `SharedUrl` in memory of its own, which `CURLOPT_CURLU` shares.
 
 #![allow(unsafe_code)]
 
@@ -8,7 +8,7 @@ use core::ptr::{self, NonNull};
 
 use curl_alloc::try_box;
 use curl_core::error::UrlErrorKind;
-use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
+use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, SharedUrl, Url};
 
 use crate::error_codes::url_code;
 use crate::ffi::{self, CURLU, CURLUPart, CURLUcode};
@@ -72,10 +72,23 @@ pub(crate) fn set_options(flags: c_uint) -> SetOptions {
 
 /// A `CURLU *` holding `url`, or NULL if out of memory.
 fn boxed(url: Url) -> *mut CURLU {
-    match try_box(url) {
+    let Ok(shared) = SharedUrl::new(url) else {
+        return ptr::null_mut();
+    };
+    match try_box(shared) {
         Ok(b) => Box::into_raw(b).cast(),
         Err(_) => ptr::null_mut(),
     }
+}
+
+/// The URL `u` points to, if any.
+///
+/// # Safety
+///
+/// `u` is NULL or a live handle from `boxed`.
+pub(crate) unsafe fn shared<'a>(u: *const CURLU) -> Option<&'a SharedUrl> {
+    // SAFETY: as the caller guarantees.
+    unsafe { u.cast::<SharedUrl>().as_ref() }
 }
 
 #[unsafe(no_mangle)]
@@ -92,7 +105,7 @@ const _: ffi::proto::curl_url = curl_url;
 pub unsafe extern "C" fn curl_url_cleanup(u: *mut CURLU) {
     if !u.is_null() {
         // SAFETY: made by `boxed`, and the caller gives it up.
-        drop(unsafe { Box::from_raw(u.cast::<Url>()) });
+        drop(unsafe { Box::from_raw(u.cast::<SharedUrl>()) });
     }
 }
 const _: ffi::proto::curl_url_cleanup = curl_url_cleanup;
@@ -103,10 +116,10 @@ const _: ffi::proto::curl_url_cleanup = curl_url_cleanup;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn curl_url_dup(u: *const CURLU) -> *mut CURLU {
     // SAFETY: as the caller guarantees.
-    let Some(u) = (unsafe { u.cast::<Url>().as_ref() }) else {
+    let Some(u) = (unsafe { shared(u) }) else {
         return ptr::null_mut();
     };
-    match u.try_clone() {
+    match u.with(Url::try_clone) {
         Ok(copy) => boxed(copy),
         Err(_) => ptr::null_mut(),
     }
@@ -125,7 +138,7 @@ pub unsafe extern "C" fn curl_url_set(
     flags: c_uint,
 ) -> CURLUcode {
     // SAFETY: as the caller guarantees.
-    let Some(u) = (unsafe { u.cast::<Url>().as_mut() }) else {
+    let Some(u) = (unsafe { shared(u) }) else {
         return ffi::CURLUE_BAD_HANDLE;
     };
     // SAFETY: as the caller guarantees.
@@ -137,7 +150,7 @@ pub unsafe extern "C" fn curl_url_set(
             _ => ffi::CURLUE_UNKNOWN_PART,
         };
     };
-    match u.set(what, value.map(CStr::to_bytes), set_options(flags)) {
+    match u.update(|u| u.set(what, value.map(CStr::to_bytes), set_options(flags))) {
         Ok(()) => ffi::CURLUE_OK,
         Err(e) => url_code(e),
     }
@@ -155,7 +168,7 @@ pub unsafe extern "C" fn curl_url_get(
     flags: c_uint,
 ) -> CURLUcode {
     // SAFETY: as the caller guarantees.
-    let Some(u) = (unsafe { u.cast::<Url>().as_ref() }) else {
+    let Some(u) = (unsafe { shared(u) }) else {
         return ffi::CURLUE_BAD_HANDLE;
     };
     let Some(out) = NonNull::new(out) else {
@@ -166,7 +179,7 @@ pub unsafe extern "C" fn curl_url_get(
     let Some(what) = part(what) else {
         return ffi::CURLUE_UNKNOWN_PART;
     };
-    let text = match u.get(what, get_options(flags)) {
+    let text = match u.with(|u| u.get(what, get_options(flags))) {
         Ok(text) => text,
         Err(e) => return url_code(e),
     };

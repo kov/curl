@@ -16,6 +16,7 @@ use crate::handler::{
     TrailerHandler, WriteHandler,
 };
 use crate::time::TimeLimit;
+use crate::url::SharedUrl;
 
 pub use crate::proto::http1::request::{UserHeaders, Version as HttpVersion};
 
@@ -24,6 +25,7 @@ pub use crate::proto::http1::request::{UserHeaders, Version as HttpVersion};
 #[derive(Debug, Default)]
 pub struct Options {
     url: Option<Vec<u8>>,
+    shared_url: Option<SharedUrl>,
     default_protocol: Option<Vec<u8>>,
     /// How the URL is read.
     pub url_rules: UrlRules,
@@ -37,6 +39,9 @@ pub struct Options {
     /// Which of a name's addresses a connection may use
     /// (`CURLOPT_IPRESOLVE`).
     pub ip_version: IpVersion,
+    /// The port the first URL is reached on, whatever it says, and any a
+    /// relative redirect leads to (`CURLOPT_PORT`).
+    pub port: Option<NonZeroU16>,
     /// Addresses given for names ahead of resolving them
     /// (`CURLOPT_RESOLVE`).
     pub resolve: ResolveList,
@@ -69,6 +74,18 @@ impl Options {
         Ok(())
     }
 
+    /// The URL to transfer as the application keeps it, read as each
+    /// transfer starts (`CURLOPT_CURLU`): it goes before `url`, which
+    /// setting it, even to none, clears.
+    pub fn shared_url(&self) -> Option<&SharedUrl> {
+        self.shared_url.as_ref()
+    }
+
+    pub fn set_shared_url(&mut self, url: Option<SharedUrl>) {
+        self.url = None;
+        self.shared_url = url;
+    }
+
     /// The scheme a URL without one is given (`CURLOPT_DEFAULT_PROTOCOL`),
     /// as given: an unknown one fails the transfer when it starts.
     pub fn default_protocol(&self) -> Option<&[u8]> {
@@ -84,6 +101,7 @@ impl Options {
     pub fn try_clone(&self) -> Result<Options, OutOfMemory> {
         Ok(Options {
             url: self.url.as_deref().map(copy).transpose()?,
+            shared_url: self.shared_url.clone(),
             default_protocol: self.default_protocol.as_deref().map(copy).transpose()?,
             url_rules: self.url_rules,
             method: self.method,
@@ -91,6 +109,7 @@ impl Options {
             new_file_mode: self.new_file_mode,
             limits: self.limits,
             ip_version: self.ip_version,
+            port: self.port,
             resolve: self.resolve.try_clone()?,
             connect_to: self.connect_to.try_clone()?,
             output: self.output,

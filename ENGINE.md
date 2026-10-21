@@ -1458,7 +1458,11 @@ A failed rewind fails the transfer unless the next request is a GET. A retry rew
 way. A 417 to a body sent behind `Expect: 100-continue` makes the exchange end with a Follow
 to the request's own URL, as C's `newurl` does: counted as a redirect, and with
 `Inherited::no_expect` set so the library adds no Expect again. The connection is kept if the
-body was still held, and closed if some of it went. The referer a request sends is the report's (`state.referer`): the application's, copied
+body was still held, and closed if some of it went. A URL the application keeps (`SharedUrl`, `CURLOPT_CURLU`, which the shim's `CURLU *` is) goes
+before the text URL: each transfer reads it as it starts, taking a copy of it as the first leg's
+parsed URL; it is reached only inside a closure, so no borrow of it outlives the read.
+`Options::port` replaces the port of that first URL, and of each leg after, until a redirect
+leads to an absolute URL (`Inherited::allow_port`). The referer a request sends is the report's (`state.referer`): the application's, copied
 at the transfer's start, until a redirect followed with AUTOREFERER replaces it with the URL it
 came from, without credentials or fragment.
 Auth is `AuthState` on the `Run`: `input(challenge)`, `act(status) -> Option<Retry>`,

@@ -52,6 +52,9 @@ pub(crate) struct Inherited {
     /// A 417 refused `Expect: 100-continue`: the library adds it no more
     /// (`state.disableexpect`).
     pub(crate) no_expect: bool,
+    /// `Options::port` still applies: no redirect led to an absolute URL
+    /// (`state.allow_port`).
+    pub(crate) allow_port: bool,
 }
 
 impl Inherited {
@@ -63,6 +66,7 @@ impl Inherited {
             ignore_custom: false,
             http10: false,
             no_expect: false,
+            allow_port: true,
         }
     }
 }

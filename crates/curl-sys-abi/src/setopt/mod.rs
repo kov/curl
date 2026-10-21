@@ -425,6 +425,17 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.set_url(unsafe { string(p) }?)?;
         }
+        (ffi::CURLOPT_PORT, Long(n)) => {
+            // 0 for the URL's own.
+            let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
+            options.port = std::num::NonZeroU16::new(port);
+        }
+        (ffi::CURLOPT_CURLU, Ptr(p)) => {
+            // SAFETY: the application passes a handle from `curl_url` or
+            // NULL.
+            let shared = unsafe { crate::url::shared(p.cast()) };
+            options.set_shared_url(shared.cloned());
+        }
         (ffi::CURLOPT_REFERER, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.http.referer = unsafe { owned(p) }?;

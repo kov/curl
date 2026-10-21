@@ -357,24 +357,23 @@ cargo-mutants run on the milestone's diff.
     tool's `-d` family, `--json`, `-X`, `-T -` and `--expect100-timeout`. T1 tests 1295,
     1740, 1741 and 2093. The 417 retry and the body's rewind for a new leg come with step
     26's legs; `-T .` (standard input without blocking) is still refused.
-26. **http: follow redirects.** **In progress.** Done: relative URL resolution and the part
-    setters (the rest of lib1560's tables), and the shim's `curl_url_*` (1559, 1921, 1965,
-    1967, 1989); test 1560 itself waits for https and IDN in the build, and
-    `CURLOPT_CURLU` (658, 674, 1518, 1567, 1906, 1977) is not yet read. Done too:
-    `CURLINFO_REDIRECT_URL`; FOLLOWLOCATION, MAXREDIRS and UNRESTRICTED_AUTH, with the
-    tool's `-L`, `--follow`, `--location-trusted` and `--max-redirs`; the credential gate's
-    first origin kept in `Run`, so the application's Authorization, Cookie and Host stay
-    with it; 301/302/303 method changes with POSTREDIR and `--post30x`, the custom method
-    as the follow mode says, the request body rewound for a redirect or a retry, an HTTP/1.0
-    response making the transfer's later requests HTTP/1.0, `CURLINFO_EFFECTIVE_METHOD` and
-    `%{method}`; `-e ";auto"` (AUTOREFERER), with `CURLINFO_REFERER` and `%{referer}`. A
-    redirect's own URL credentials go to its host; a 417 has the request made again without
-    `Expect` (test 357). Not done: a redirect before a large body is all sent closing
-    the connection instead of sending the rest (`http_perhapsrewind`'s abort half); the
-    connection's own HTTP/1.0 memory (`conn->httpversion_seen`). Flips 3010, 1940, 1942 and 1943 and the
-    followlocation family; T1 tests 193, 1029, 1067, 1080, 1081, 1089, 1090, 1159, 1197,
-    1261, 1270, 2081 and 3015, with `%{method}`, `%{referer}`, `%{redirect_url}` and
-    `%{num_redirects}`.
+26. **http: follow redirects.** **Done.** Relative URL resolution and the part setters
+    (lib1560's tables), the shim's `curl_url_*` (1559, 1921, 1965, 1967, 1989) and
+    `CURLOPT_CURLU`, read as each transfer starts (658, 674, 1518, 1567, 1977), with
+    `CURLOPT_PORT` (1906). `CURLINFO_REDIRECT_URL`; FOLLOWLOCATION, MAXREDIRS and
+    UNRESTRICTED_AUTH, with the tool's `-L`, `--follow`, `--location-trusted` and
+    `--max-redirs`; the credential gate's first origin kept in `Run`, so the application's
+    Authorization, Cookie and Host stay with it while a redirect's own URL credentials go to
+    its host; 301/302/303 method changes with POSTREDIR and `--post30x`, the custom method as
+    the follow mode says; the request body rewound for a redirect or a retry; an HTTP/1.0
+    response making the transfer's later requests HTTP/1.0; a 417 making the request again
+    without `Expect` (357); AUTOREFERER and `-e ";auto"`. The infos and variables
+    `%{method}`, `%{referer}`, `%{redirect_url}` and `%{num_redirects}`. T1 tests 193, 1029,
+    1067, 1089, 1090, 1159, 1197, 1261, 1270, 2081 and 3015 pass, and 3010, 1940, 1942, 1943
+    and the followlocation family; 1080 and 1081 need step 27's several URLs, and 1560 https
+    and IDN in the build. Not done: a redirect before a large body is all sent closing the
+    connection instead of sending the rest (`http_perhapsrewind`'s abort half), and a
+    connection's own memory of HTTP/1.0 (`conn->httpversion_seen`).
 27. **tool: several URLs, then globbing.** **To do.** The tool's transfers share their
     connections and DNS cache, as C's share handle has them (tests 2051, 2052 and 3225 with
     step 24's `%{num_connects}`). Opening commit: the multi's tables that a share can hold in

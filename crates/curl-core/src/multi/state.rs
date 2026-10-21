@@ -1152,7 +1152,19 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
             format_args!("This is a debug build of libcurl, do not use in production."),
         );
     }
-    if cx.easy().options().url().is_none() {
+    // The application's own URL goes first, as it is now: one that
+    // cannot be read back is none (`Curl_pretransfer`).
+    let shared = cx.easy().options().shared_url().map(|shared| {
+        shared.with(|url| {
+            let readable = url.get(Part::Url, GetOptions::NONE).is_ok();
+            (readable, url.try_clone())
+        })
+    });
+    let unset = match &shared {
+        Some((readable, _)) => !readable,
+        None => cx.easy().options().url().is_none(),
+    };
+    if unset {
         return Err(trace::fail(
             cx,
             ErrorKind::UrlMalformat,
@@ -1171,6 +1183,10 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     }
     cx.mark(Timer::StartOp);
     read_resolve(cx)?;
+    // Taken as it is parsed, its text not read again.
+    if let Some((_, copy)) = shared {
+        return copy.map_err(url_error);
+    }
     let options = cx.easy().options();
     match parse_url(options.url().expect("checked above"), options) {
         Ok(url) => Ok(url),
@@ -1365,6 +1381,11 @@ fn follow_leg<H: Host>(
             return TransferState::Init.fail(trace::fail(cx, kind, why));
         }
     };
+    // An absolute URL is reached on its own port, unless the code asks
+    // for credentials.
+    if !matches!(code, 401 | 407) && url::is_absolute(location) {
+        run.inherited.allow_port = false;
+    }
     let text = match url.get(Part::Url, GetOptions::NONE) {
         Ok(text) => text,
         Err(e) => return TransferState::Init.fail(url_error(e)),
@@ -1522,9 +1543,28 @@ fn retry_request<H: Host>(
 /// C's SETUP and CONNECT, which always run in one pass, for each request
 /// of a transfer: the leg's timers, the protocol and a connection for
 /// `url`, then the protocol connects over it.
-fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> TransferState {
+fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> TransferState {
     run.deadlines.start_leg(cx.rest.now);
     cx.report_mut().set_method(run.inherited.method);
+    // The application's port over the URL's (`Curl_peer_from_url`).
+    if let Some(port) = cx
+        .easy()
+        .options()
+        .port
+        .filter(|_| run.inherited.allow_port)
+    {
+        let mut digits = [0u8; 5];
+        let mut cursor = std::io::Cursor::new(&mut digits[..]);
+        std::io::Write::write_fmt(&mut cursor, format_args!("{port}"))
+            .expect("a port fits in five digits");
+        let n = cursor.position() as usize;
+        if url
+            .set(Part::Port, Some(&digits[..n]), SetOptions::NONE)
+            .is_err()
+        {
+            return TransferState::Init.fail(ErrorKind::OutOfMemory);
+        }
+    }
     cx.mark(Timer::StartSingle);
     cx.mark(Timer::PostQueue);
     // Read back once parsed, credentials and all, as C reads it back

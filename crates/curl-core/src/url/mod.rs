@@ -21,6 +21,10 @@ mod schemes;
 mod c_tests;
 
 
+use std::cell::RefCell;
+
+use curl_alloc::{OutOfMemory, TryRc};
+
 use crate::error::UrlErrorKind;
 use encode::{Query, bad_octets, copy, push};
 
@@ -232,6 +236,12 @@ pub(crate) fn is_known_scheme(scheme: &[u8]) -> bool {
     schemes::KNOWN
         .binary_search_by(|k| k.name.as_bytes().cmp(scheme))
         .is_ok()
+}
+
+/// Whether `url` starts with a scheme and `:` (`Curl_is_absolute_url`,
+/// not guessing).
+pub(crate) fn is_absolute(url: &[u8]) -> bool {
+    scheme_of(url, false).is_some()
 }
 
 /// Whether `url` starts with a scheme, `:` and `/` (`Curl_is_absolute_url`
@@ -1153,6 +1163,29 @@ fn path_part(
         return Ok(Some(kept));
     }
     Ok(Some(path::remove_dot_segments(&kept)?.unwrap_or(kept)))
+}
+
+/// A URL the application keeps and may change between transfers, each
+/// of which reads it as it starts (`CURLOPT_CURLU`). Every copy is the
+/// same URL. It is reached only for the length of one call, so that no
+/// borrow of it outlives what it was taken for.
+#[derive(Clone, Debug)]
+pub struct SharedUrl(TryRc<RefCell<Url>>);
+
+impl SharedUrl {
+    pub fn new(url: Url) -> Result<SharedUrl, OutOfMemory> {
+        Ok(SharedUrl(TryRc::try_new(RefCell::new(url))?))
+    }
+
+    /// What `f` reads of the URL.
+    pub fn with<R>(&self, f: impl FnOnce(&Url) -> R) -> R {
+        f(&self.0.borrow())
+    }
+
+    /// What `f` makes of the URL, changing it.
+    pub fn update<R>(&self, f: impl FnOnce(&mut Url) -> R) -> R {
+        f(&mut self.0.borrow_mut())
+    }
 }
 
 #[cfg(test)]

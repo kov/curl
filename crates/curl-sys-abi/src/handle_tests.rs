@@ -784,7 +784,7 @@ fn callback_options_install_their_adapters() {
 #[test]
 fn ids_are_told_apart_as_c_tells_them() {
     let c = curl_easy_init();
-    assert_eq!(long(c, ffi::CURLOPT_PORT, 80), CURLE_NOT_BUILT_IN);
+    assert_eq!(long(c, ffi::CURLOPT_LOCALPORT, 80), CURLE_NOT_BUILT_IN);
     for unknown in [9999, 10999, 50000] {
         assert_eq!(
             long(c, CURLoption(unknown), 0),

@@ -847,3 +847,26 @@ witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_
             self.expect_refused = true;
             self.closing = true;
             self.aborted = true;
+
+=== the shared URL is ignored
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_shared_url_is_read_as_each_transfer_starts
+--- old
+    if let Some((_, copy)) = shared {
+--- new
+    if let Some((_, copy)) = shared.filter(|_| false) {
+
+=== the application's port is never applied
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
+--- old
+        .filter(|_| run.inherited.allow_port)
+--- new
+        .filter(|_| false)
+
+=== the application's port holds past an absolute redirect
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
+--- old
+        run.inherited.allow_port = false;
+--- new

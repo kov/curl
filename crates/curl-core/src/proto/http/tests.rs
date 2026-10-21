@@ -2048,3 +2048,57 @@ fn a_417_has_the_request_made_again_without_expect() {
     let report = ran.easy.report();
     assert_eq!((report.redirects(), report.connects()), (1, 1));
 }
+
+/// A URL the application keeps is read as each transfer starts, as it
+/// is then; setting it drops the URL given as text.
+#[test]
+fn a_shared_url_is_read_as_each_transfer_starts() {
+    let text = format!("http://127.0.0.1:{PORT}/one");
+    let shared = crate::url::SharedUrl::new(
+        crate::url::Url::parse(text.as_bytes(), Default::default()).unwrap(),
+    )
+    .unwrap();
+    let (mut m, talk, _) = server(&[OK, OK], false);
+    let ran = get(&mut m, "/ignored", talk.clone(), |o| {
+        o.set_shared_url(Some(shared.clone()));
+        assert_eq!(o.url(), None);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.request.starts_with(b"GET /one HTTP/1.1\r\n"));
+    shared.update(|u| {
+        u.set(crate::url::Part::Path, Some(b"/two"), Default::default())
+            .unwrap()
+    });
+    let ran = get(&mut m, "/ignored", talk.clone(), |o| {
+        o.set_shared_url(Some(shared.clone()))
+    });
+    assert!(fixture::find(&ran.request, b"GET /two HTTP/1.1\r\n").is_some());
+}
+
+/// The application's port goes over the first URL's and a relative
+/// redirect's, not over the port of an absolute one.
+#[test]
+fn the_application_s_port_holds_until_an_absolute_redirect() {
+    let relative = redirect(302, "/b");
+    let (mut m, talk, _) = server(&[&relative, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
+        o.port = std::num::NonZeroU16::new(PORT);
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(second_request(&ran).starts_with("GET /b "));
+
+    let absolute = redirect(302, "http://127.0.0.1:1/c");
+    let (mut m, talk, _) = server(&[&absolute, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
+        o.port = std::num::NonZeroU16::new(PORT);
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(
+        ran.result,
+        Err(ErrorKind::CouldntConnect),
+        "port 1 is asked for"
+    );
+}

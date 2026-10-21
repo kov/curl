@@ -163,5 +163,8 @@ witness: curl-os random::tests::fills_with_different_bytes
 --- old
         let rest = &mut out[filled..];
 --- new
-        let rest = &mut out[filled..out.len().min(filled + 32)];
-            if filled >= 32 { break; }
+        let end = out.len().min(filled + 32);
+        let rest = &mut out[filled..end];
+        if filled >= 32 {
+            break;
+        }

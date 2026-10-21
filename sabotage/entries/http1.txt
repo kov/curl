@@ -328,3 +328,11 @@ witness: curl-core proto::http1::response::tests::interim_heads_alone_are_nothin
             self.interim_bytes = self.request_bytes;
 --- new
             self.interim_bytes = 0;
+
+=== an empty media type is kept
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::the_content_type_is_trimmed_and_an_empty_one_ignored
+--- old
+    fields::header_value(line).filter(|v| !v.is_empty())
+--- new
+    fields::header_value(line)

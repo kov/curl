@@ -49,10 +49,13 @@ pub(crate) struct ShimEasy {
     private: Cell<Option<NonNull<ShimMulti>>>,
     /// What `curl_multi_info_read` points to.
     pub(crate) msg: UnsafeCell<ffi::CURLMsg>,
-    /// What `CURLINFO_EFFECTIVE_URL` points to, ended by a zero byte:
-    /// replaced only by a different URL, so a pointer handed out lives
-    /// until a later transfer's URL differs, or the handle goes.
+    /// What the string infos point to, each ended by a zero byte:
+    /// replaced only by a different text, so a pointer handed out lives
+    /// until a later transfer's differs, or the handle goes.
     pub(crate) effective_url: RefCell<Vec<u8>>,
+    pub(crate) content_type: RefCell<Vec<u8>>,
+    pub(crate) primary_ip: RefCell<Vec<u8>>,
+    pub(crate) local_ip: RefCell<Vec<u8>>,
     /// What `curl_easy_header` and `curl_easy_nextheader` hand out.
     pub(crate) headers_out: [crate::headers::HeaderOut; 2],
 }
@@ -114,6 +117,9 @@ impl ShimEasy {
             // SAFETY: a `CURLMsg` of zeroes is its empty value.
             msg: UnsafeCell::new(unsafe { core::mem::zeroed() }),
             effective_url: RefCell::new(Vec::new()),
+            content_type: RefCell::new(Vec::new()),
+            primary_ip: RefCell::new(Vec::new()),
+            local_ip: RefCell::new(Vec::new()),
             headers_out: crate::headers::slots(),
         }
     }

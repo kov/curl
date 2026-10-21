@@ -4,6 +4,7 @@
 
 mod headers;
 
+use std::net::SocketAddr;
 use std::time::Duration;
 
 pub use headers::{HeaderCursor, HeaderError, HeaderStore, HeaderView, Origins, Request};
@@ -16,6 +17,14 @@ use curl_alloc::OutOfMemory;
 use crate::error::UrlErrorKind;
 use crate::url::{GetOptions, Part, Url};
 use crate::version::Protocol;
+
+/// The ends of a connection: the peer's address, and the local one if
+/// it was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ends {
+    pub remote: SocketAddr,
+    pub local: Option<SocketAddr>,
+}
 
 /// The HTTP version a status line says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +62,13 @@ pub struct TransferReport {
     retry_after: Option<Duration>,
     /// The URL the transfer used, without its credentials, as text.
     url: Option<Vec<u8>>,
+    /// The last `Content-Type:` a response gave, not empty
+    /// (`info.contenttype`).
+    content_type: Option<Vec<u8>>,
+    /// The ends of the connection last used (`info.primary`).
+    primary: Option<Ends>,
+    /// How many connections the transfer made (`info.numconnects`).
+    connects: u32,
     /// Why the transfer failed, as it first said (`CURLOPT_ERRORBUFFER`);
     /// none when keeping it ran out of memory.
     failure: Option<Vec<u8>>,
@@ -130,6 +146,39 @@ impl TransferReport {
 
     pub(crate) fn set_response(&mut self, code: u16, version: ResponseVersion) {
         self.response = Some((code, version));
+    }
+
+    /// The media type of the last response that gave one
+    /// (`CURLINFO_CONTENT_TYPE`).
+    pub fn content_type(&self) -> Option<&[u8]> {
+        self.content_type.as_deref()
+    }
+
+    pub(crate) fn set_content_type(&mut self, value: &[u8]) -> Result<(), OutOfMemory> {
+        let mut owned = Vec::new();
+        owned.try_extend_from_slice(value)?;
+        self.content_type = Some(owned);
+        Ok(())
+    }
+
+    /// The ends of the connection the transfer last used
+    /// (`CURLINFO_PRIMARY_IP`, `CURLINFO_LOCAL_IP` and their ports).
+    pub fn primary(&self) -> Option<Ends> {
+        self.primary
+    }
+
+    pub(crate) fn set_primary(&mut self, ends: Ends) {
+        self.primary = Some(ends);
+    }
+
+    /// How many new connections the transfer made
+    /// (`CURLINFO_NUM_CONNECTS`).
+    pub fn connects(&self) -> u32 {
+        self.connects
+    }
+
+    pub(crate) fn count_connect(&mut self) {
+        self.connects = self.connects.saturating_add(1);
     }
 
     /// How long a response asked to wait before the next try, in whole
@@ -401,6 +450,8 @@ pub struct Sizes {
     pub(crate) download_expected: Option<u64>,
     pub(crate) upload: u64,
     pub(crate) upload_expected: Option<u64>,
+    /// Bytes sent of every request, head and body (`info.request_size`).
+    pub(crate) request: u64,
 }
 
 impl Sizes {
@@ -408,6 +459,12 @@ impl Sizes {
     /// (`CURLINFO_HEADER_SIZE`).
     pub fn header(&self) -> u64 {
         self.header
+    }
+
+    /// Bytes sent of every request, head and body
+    /// (`CURLINFO_REQUEST_SIZE`).
+    pub fn request(&self) -> u64 {
+        self.request
     }
 
     /// Body bytes sent (`CURLINFO_SIZE_UPLOAD_T`).

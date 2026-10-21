@@ -160,7 +160,7 @@ witness: curl-core upload::tests::a_request_with_a_body_is_sent_when_its_body_is
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::a_known_size_bounds_the_reads_and_ends_the_body
 --- old
-    cx.report_mut().sizes_mut().upload += body.len() as u64;
+    sizes.upload += body.len() as u64;
 --- new
 
 === the upload size is not announced

@@ -21,7 +21,7 @@ use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::{Lines, Options, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
-use crate::report::{Starts, Timer, TransferReport};
+use crate::report::{Ends, Starts, Timer, TransferReport};
 use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
 use crate::trace;
@@ -865,6 +865,8 @@ fn connecting<H: Host>(
         }
         Ok(Connected::Established { remote, local, at }) => {
             cx.report_mut().timings_mut().mark(Timer::Connect, at);
+            cx.report_mut().count_connect();
+            cx.report_mut().set_primary(Ends { remote, local });
             // `CURL_CONN_HOST_DISPNAME`.
             let host = Bytes(c.destination().shown());
             let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
@@ -881,7 +883,12 @@ fn connecting<H: Host>(
         }
         // A reused connection is up: nothing to trace or time
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
-        Ok(Connected::AlreadyUp) => (c.attached(), Wake::Again),
+        Ok(Connected::AlreadyUp { remote, local }) => {
+            if let Some(remote) = remote {
+                cx.report_mut().set_primary(Ends { remote, local });
+            }
+            (c.attached(), Wake::Again)
+        }
         Err(e) => {
             let kind = connect_failed(cx, &c.origin, c.via.as_deref(), e);
             (TransferState::Connecting(c).fail(kind), Wake::Again)

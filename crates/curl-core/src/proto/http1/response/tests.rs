@@ -705,16 +705,28 @@ fn bad_heads_of_the_suite() {
     assert_eq!(bad(1473), None, "a blank-led line 2 with a colon");
 }
 
-/// The content type is kept, the last one given.
+/// A media type is a line's, trimmed; an empty one is none.
 #[test]
-fn the_content_type_is_kept() {
+fn the_content_type_is_trimmed_and_an_empty_one_ignored() {
+    use crate::proto::http1::framing::content_type;
+    assert_eq!(content_type(b"Content-Type: a\r\n"), Some(&b"a"[..]));
+    assert_eq!(content_type(b"Content-Type:  \r\n"), None);
+    assert_eq!(
+        content_type(b"content-type:  text/html \r\n"),
+        Some(&b"text/html"[..])
+    );
+    assert_eq!(content_type(b"X-Content-Type: a\r\n"), None);
+}
+
+/// Announced trailers are noted.
+#[test]
+fn trailers_are_noted() {
     let mut p = HeadParser::new(PLAIN);
-    let mut input = &b"HTTP/1.1 200 OK\r\nContent-Type: a\r\nContent-Type:  \r\ncontent-type:  text/html \r\nTrailer: x\r\n\r\n"[..];
+    let mut input = &b"HTTP/1.1 200 OK\r\nContent-Type: a\r\nTrailer: x\r\n\r\n"[..];
     while !p.is_done() {
         let (used, _) = p.feed(input, &mut 0).unwrap();
         input = &input[used..];
     }
-    assert_eq!(p.meta().content_type(), Some(&b"text/html"[..]));
     assert!(p.meta().trailer());
     let mut p = HeadParser::new(PLAIN);
     let mut input = &b"HTTP/1.1 200 OK\r\nX-Trailer: x\r\n\r\n"[..];

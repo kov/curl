@@ -4,6 +4,8 @@
 #![allow(unsafe_code)]
 
 use core::ffi::{c_char, c_int, c_long, c_void};
+use std::cell::RefCell;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -90,13 +92,9 @@ fn proto_bit(p: Protocol) -> c_long {
     }
 }
 
-/// The URL the transfer used, without its credentials, as the handle
-/// keeps it for C; empty before any transfer (`effective_url`).
-fn effective_url(easy: &ShimEasy, r: &TransferReport) -> Result<*const c_char, OutOfMemory> {
-    let Some(text) = r.url() else {
-        return Ok(c"".as_ptr());
-    };
-    let mut kept = easy.effective_url.borrow_mut();
+/// `text` as C reads it, kept in `kept` with a zero byte after it.
+fn kept(kept: &RefCell<Vec<u8>>, text: &[u8]) -> Result<*const c_char, OutOfMemory> {
+    let mut kept = kept.borrow_mut();
     if kept.strip_suffix(b"\0") != Some(text) {
         let mut copy = Vec::new();
         copy.try_reserve_exact(text.len() + 1)
@@ -108,6 +106,23 @@ fn effective_url(easy: &ShimEasy, r: &TransferReport) -> Result<*const c_char, O
     Ok(kept.as_ptr().cast())
 }
 
+/// An address as C writes it for the infos (`Curl_addr2string`): an
+/// IPv6 one without brackets.
+fn ip_text(ip: IpAddr) -> Result<Vec<u8>, OutOfMemory> {
+    let text = curl_alloc::try_format(format_args!("{ip}"))?;
+    let mut bytes = Vec::new();
+    bytes.try_extend_from_slice(text.as_bytes())?;
+    Ok(bytes)
+}
+
+/// A string info's pointer, or the failure to keep it.
+fn string(p: Result<*const c_char, OutOfMemory>) -> Value {
+    match p {
+        Ok(p) => Value::Ptr(p.cast_mut().cast()),
+        Err(OutOfMemory) => Value::Failed(ffi::CURLE_OUT_OF_MEMORY),
+    }
+}
+
 /// What `info` asks of the transfer, or none for one not known.
 fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
     let t = r.timings();
@@ -115,10 +130,37 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
     let length = |n: Option<u64>| n.map_or(-1, off);
     Some(match info {
         ffi::CURLINFO_PRIVATE => Value::Ptr(easy.set.get().private),
-        ffi::CURLINFO_EFFECTIVE_URL => match effective_url(easy, r) {
-            Ok(p) => Value::Ptr(p.cast_mut().cast()),
-            Err(OutOfMemory) => Value::Failed(ffi::CURLE_OUT_OF_MEMORY),
+        // Empty before any transfer.
+        ffi::CURLINFO_EFFECTIVE_URL => {
+            string(kept(&easy.effective_url, r.url().unwrap_or_default()))
+        }
+        // None when no response gave one.
+        ffi::CURLINFO_CONTENT_TYPE => match r.content_type() {
+            Some(media) => string(kept(&easy.content_type, media)),
+            None => Value::Ptr(core::ptr::null_mut()),
         },
+        // Empty, and ports of -1, before any connection.
+        ffi::CURLINFO_PRIMARY_IP => match r.primary() {
+            Some(ends) => {
+                string(ip_text(ends.remote.ip()).and_then(|t| kept(&easy.primary_ip, &t)))
+            }
+            None => string(kept(&easy.primary_ip, b"")),
+        },
+        ffi::CURLINFO_LOCAL_IP => match r.primary().and_then(|ends| ends.local) {
+            Some(local) => string(ip_text(local.ip()).and_then(|t| kept(&easy.local_ip, &t))),
+            None => string(kept(&easy.local_ip, b"")),
+        },
+        ffi::CURLINFO_PRIMARY_PORT => Value::Long(
+            r.primary()
+                .map_or(-1, |ends| c_long::from(ends.remote.port())),
+        ),
+        ffi::CURLINFO_LOCAL_PORT => Value::Long(r.primary().map_or(-1, |ends| {
+            ends.local.map_or(0, |local| c_long::from(local.port()))
+        })),
+        ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
+        ffi::CURLINFO_REQUEST_SIZE => {
+            Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))
+        }
         ffi::CURLINFO_RESPONSE_CODE => Value::Long(r.response_code().map_or(0, c_long::from)),
         ffi::CURLINFO_HTTP_VERSION => Value::Long(r.response_version().map_or(
             ffi::CURL_HTTP_VERSION_NONE,

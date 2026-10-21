@@ -269,6 +269,7 @@ impl Request {
                 DebugKind::HeaderOut,
                 &self.out[self.sent..self.sent + n],
             );
+            cx.report_mut().sizes_mut().request += n as u64;
             self.sent += n;
         }
         trace::info(cx, format_args!("Request completely sent off"));
@@ -432,6 +433,11 @@ impl Request {
             LineKind::Header => {
                 if let Some(wait) = framing::retry_after(line.bytes, cx.unix_time()) {
                     cx.report_mut().set_retry_after(wait);
+                }
+                if let Some(media) = framing::content_type(line.bytes) {
+                    cx.report_mut()
+                        .set_content_type(media)
+                        .map_err(|_| ErrorKind::OutOfMemory)?;
                 }
                 pipeline.header(cx, line.bytes, origin)?;
             }

@@ -171,7 +171,6 @@ pub(crate) struct Meta {
     length_void: bool,
     /// The connection closes after the response.
     close: bool,
-    content_type: Option<Vec<u8>>,
     /// Where the response points (`req.location`).
     location: Option<Vec<u8>>,
     /// The response announced trailers.
@@ -214,15 +213,6 @@ impl Meta {
             && let Some(v) = value_of(line, b"Content-Length:")
         {
             return self.length(v, asked);
-        }
-        if let Some(v) = value_of(line, b"Content-Type:") {
-            let v = fields::header_value(line).unwrap_or(&v[..0]);
-            if !v.is_empty() {
-                let mut copy = Vec::new();
-                copy.try_extend_from_slice(v)?;
-                self.content_type = Some(copy);
-            }
-            return Ok(None);
         }
         let h1 = matches!(status.version, HttpVersion::Http10 | HttpVersion::Http11);
         if h1 && says(line, b"Connection:", b"close") {
@@ -426,14 +416,6 @@ impl Meta {
         self.close
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "CURLINFO_CONTENT_TYPE is not reported yet")
-    )]
-    pub(crate) fn content_type(&self) -> Option<&[u8]> {
-        self.content_type.as_deref()
-    }
-
     /// The response announced trailers.
     #[cfg_attr(
         not(test),
@@ -452,6 +434,14 @@ impl Meta {
     pub(crate) fn size(&self) -> Option<u64> {
         self.size
     }
+}
+
+/// The media type a `Content-Type:` line gives, its blanks trimmed
+/// (`Curl_copy_header_value`); none for another line or an empty value,
+/// which C ignores.
+pub(crate) fn content_type(line: &[u8]) -> Option<&[u8]> {
+    value_of(line, b"Content-Type:")?;
+    fields::header_value(line).filter(|v| !v.is_empty())
 }
 
 /// The longest wait `Retry-After` is taken to ask for: six hours.

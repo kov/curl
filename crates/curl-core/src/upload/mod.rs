@@ -245,7 +245,9 @@ pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, body: &[u8]) {
     {
         handler.debug(&mut TransferCx::new(cx), DebugKind::DataOut, body);
     }
-    cx.report_mut().sizes_mut().upload += body.len() as u64;
+    let sizes = cx.report_mut().sizes_mut();
+    sizes.upload += body.len() as u64;
+    sizes.request += body.len() as u64;
 }
 
 /// The size of the body to send, as the request announces it, or not

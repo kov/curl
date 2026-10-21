@@ -369,7 +369,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     assert_eq!(pool.get_conn(id).map(|c| c.number), Some(ConnNumber(0)));
     assert!(matches!(
         connect(&mut pool, &lease, &mut net, now),
-        Ok(Connected::AlreadyUp)
+        Ok(Connected::AlreadyUp { .. })
     ));
     assert_eq!(socket(&pool, &lease), Some(1000), "kept once up");
     let premature = Finish {

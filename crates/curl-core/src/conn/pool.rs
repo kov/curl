@@ -179,8 +179,12 @@ pub(crate) enum Connected {
         local: Option<SocketAddr>,
         at: Instant,
     },
-    /// Up before this step: a reused connection.
-    AlreadyUp,
+    /// Up before this step: a reused connection, from `local` to
+    /// `remote`.
+    AlreadyUp {
+        remote: Option<SocketAddr>,
+        local: Option<SocketAddr>,
+    },
 }
 
 /// Every connection of a multi (or of a share).
@@ -371,7 +375,13 @@ impl Pool {
                         Err(e) => (ConnSlot::Failed(number), Err(e)),
                     }
                 }
-                open @ ConnSlot::Open(_) => (open, Ok(Connected::AlreadyUp)),
+                ConnSlot::Open(conn) => {
+                    let up = Connected::AlreadyUp {
+                        remote: conn.remote,
+                        local: conn.local,
+                    };
+                    (ConnSlot::Open(conn), Ok(up))
+                }
                 ConnSlot::Failed(_) => unreachable!("a failed setup is not driven again"),
             })
             .unwrap_or_else(|| panic!("a lease on {:?}, which the pool no longer has", lease.id))

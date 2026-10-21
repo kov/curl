@@ -808,6 +808,16 @@ fn infos_answer_from_the_report() {
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_RESPONSE_CODE), 0);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_HTTP_VERSION), 0);
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_RETRY_AFTER), 0);
+    // No response gave a type, and no connection was made.
+    assert!(info::<*const c_char>(c, ffi::CURLINFO_CONTENT_TYPE).is_null());
+    for ip in [ffi::CURLINFO_PRIMARY_IP, ffi::CURLINFO_LOCAL_IP] {
+        // SAFETY: getinfo gives a string that lives while the handle does.
+        assert_eq!(unsafe { CStr::from_ptr(info::<*const c_char>(c, ip)) }, c"");
+    }
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_PRIMARY_PORT), -1);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_LOCAL_PORT), -1);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_NUM_CONNECTS), 0);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_REQUEST_SIZE), 0);
     // The URL the transfer used, the same string each time it is asked.
     let effective = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL);
     // SAFETY: getinfo gives a string that lives while the handle does.

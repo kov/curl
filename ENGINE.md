@@ -1547,8 +1547,9 @@ peer gets a protocol error, not an out-of-memory one.
 - **`FakeNet`** (feature `test-util`): peers per address that accept, accept late, refuse or
   never answer, and fd numbers that reuse closed ones to exercise the socket table. A
   `Conversation` scripts what the next connection to an address says: like the suite's server,
-  the peer replies once it has a request's head, then closes or stays open, and keeps what it was
-  sent for the test to compare; a test can hang a peer up. Would-block points and partial sends
+  the peer answers each request's head with its next reply, then closes or stays open after the
+  last, and keeps what it was sent for the test to compare; an idle connection whose reply was
+  read whole has nothing waiting, so the pool's health check keeps it; a test can hang a peer up. Would-block points and partial sends
   are added when a case needs them. **`ManualClock`**: `wait` advances it to the next deadline
   when nothing is ready, so timeout tests take microseconds.
 - **`RecordingEvents`** logs every socket, timer and notify call; **recording handlers** can run a

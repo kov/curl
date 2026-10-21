@@ -12,7 +12,7 @@ use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
 use crate::options::Options;
 use crate::proto::http1::fixture;
-use crate::time::ManualClock;
+use crate::time::{Clock as _, ManualClock};
 
 /// Where the fake server listens.
 const PORT: u16 = 8990;
@@ -94,32 +94,50 @@ struct Ran {
 /// A verbose GET of `/path` from a server replying `reply`, closing after
 /// it if `close`, with the options `set` makes.
 fn run(path: &str, reply: &[u8], close: bool, set: impl FnOnce(&mut Options)) -> Ran {
+    let (mut m, talk, clock) = server(&[reply], close);
+    let start = clock.now();
+    let ran = get(&mut m, path, talk, set);
+    // Each wait found the socket ready: one that timed out instead would
+    // have moved the clock on.
+    assert_eq!(clock.now(), start, "the transfer waited on its socket");
+    ran
+}
+
+/// A multi whose network has a server at `PORT` replying `replies` in
+/// turn on one connection, closing after them if `close`.
+fn server(replies: &[&[u8]], close: bool) -> (Multi, Conversation, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
-    let talk = Conversation::new(reply, close);
+    let talk = Conversation::replies(replies, close);
     let net = FakeNet::new(clock.clone())
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, talk.clone());
     let env = Env {
-        clock: Box::new(clock),
+        clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    let mut m: Multi = Multi::new(env).unwrap();
+    (Multi::new(env).unwrap(), talk, clock)
+}
+
+/// A verbose GET of `/path` on `m`, whose server is `talk`.
+fn get(m: &mut Multi, path: &str, talk: Conversation, set: impl FnOnce(&mut Options)) -> Ran {
     let mut e = Easy::new();
     let url = format!("http://127.0.0.1:{PORT}{path}");
     let seen = Seen::default();
     let o = e.options_mut();
     o.set_url(Some(url.as_bytes())).unwrap();
     o.output.verbose = true;
+    // A transfer that hangs fails, rather than the test.
+    o.limits.total = crate::time::TimeLimit::from_millis(10_000);
     o.http.user_agent = Some(b"curl/test".to_vec());
     o.callbacks.write = Some(Handler::write(seen.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
     o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
     set(o);
     let id = m.add(e, (), &mut NoEvents).unwrap();
-    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
     let easy = m.remove(id, &mut NoEvents).unwrap().easy;
     Ran {
         result,
@@ -216,6 +234,14 @@ fn responses_end_as_c_ends_them() {
             Err(ErrorKind::GotNothing),
             b"",
             "Empty reply from server\n",
+        ),
+        // Not cut short: the connection is shut down, not terminated.
+        (
+            b"HTTP/1.1 100 Continue\r\n\r\n",
+            true,
+            Err(ErrorKind::GotNothing),
+            b"",
+            "shutting down connection #0\n",
         ),
         (
             b"",
@@ -374,4 +400,34 @@ fn a_body_is_read_no_further_than_its_size() {
     // The head is 42 bytes of the first read.
     assert_eq!(reads, [16384 - 42, 20000 - (16384 - 42)]);
     assert!(ran.seen.text().last().unwrap().ends_with("left intact\n"));
+}
+
+/// A second request goes over the connection the first left intact, which
+/// a reply that is no HTTP then cannot be HTTP/0.9 on (`Invalid status
+/// line`).
+#[test]
+fn a_kept_connection_carries_the_next_request() {
+    let first = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+    let (mut m, talk, _clock) = server(&[first, first], false);
+    let one = get(&mut m, "/1", talk.clone(), |_| {});
+    let two = get(&mut m, "/2", talk.clone(), |_| {});
+    assert_eq!((one.result, two.result), (Ok(()), Ok(())));
+    assert_eq!(two.seen.body(), b"abc");
+    assert_eq!(
+        talk.received(),
+        [request_of("/1"), request_of("/2")].concat()
+    );
+    assert_eq!(
+        two.seen.text()[0],
+        "Reusing existing http: connection with host 127.0.0.1\n"
+    );
+    let (mut m, talk, _clock) = server(&[first, b"hello\r\n"], false);
+    get(&mut m, "/1", talk.clone(), |_| {}).result.unwrap();
+    let two = get(&mut m, "/2", talk, |o| o.http.allow_09 = true);
+    assert_eq!(two.result, Err(ErrorKind::WeirdServerReply));
+    assert!(
+        two.seen
+            .text()
+            .contains(&"Invalid status line\n".to_string())
+    );
 }

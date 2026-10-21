@@ -63,3 +63,19 @@ witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
         if head.meta().close() || self.pipeline.body_closes() {
 --- new
         if self.pipeline.body_closes() {
+
+=== an exchanging transfer waits on nothing
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
+--- old
+                let events = x.proto.interest(pause);
+--- new
+                let events = Events::NONE;
+
+=== a reused connection is taken as new
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_kept_connection_carries_the_next_request
+--- old
+        let reused = cx.conn(lease).reused();
+--- new
+        let reused = false;

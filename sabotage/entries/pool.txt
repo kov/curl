@@ -142,9 +142,9 @@ witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_afte
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 --- old
-        self.received.windows(4).any(|w| w == b"\r\n\r\n")
+        self.answered < self.replies.len() && heads > self.answered
 --- new
-        true
+        self.answered < self.replies.len()
 
 === a read that got nothing keeps its room
 file: crates/curl-core/src/conn/mod.rs

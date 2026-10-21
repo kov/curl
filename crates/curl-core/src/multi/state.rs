@@ -539,9 +539,11 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
         }
         TransferState::Done(mut d) => {
-            // The protocol's last word first (`multi_done`).
+            // Whether the request was cut short is decided by how it
+            // ended, not by the protocol's last word (`multi_done`), which
+            // comes first.
+            let mut premature = d.premature || is_premature(d.result);
             if let Some(proto) = d.proto.as_mut() {
-                let premature = d.premature || is_premature(d.result);
                 d.result = proto.done(cx, &d.lease, d.result, premature);
             }
             // A last progress pass, unless a callback aborted already.
@@ -550,8 +552,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 && d.result.is_ok()
             {
                 d.result = Err(e);
+                premature |= is_premature(d.result);
             }
-            let premature = d.premature || is_premature(d.result);
             release(cx, d.lease, Finish { premature }, d.origin.as_ref());
             // The request moves nothing more (`Curl_req_stop_send_recv`).
             *cx.directions_mut() = Directions::default();

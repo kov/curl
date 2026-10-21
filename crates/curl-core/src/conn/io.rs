@@ -229,10 +229,13 @@ pub struct Conversation(curl_alloc::TryRc<std::cell::RefCell<Wire>>);
 #[derive(Debug, Default)]
 struct Wire {
     received: Vec<u8>,
-    reply: Vec<u8>,
-    /// How much of `reply` was read.
+    /// One reply for each request, in turn.
+    replies: Vec<Vec<u8>>,
+    /// Replies read whole.
+    answered: usize,
+    /// How much of the next reply was read.
     read: usize,
-    /// The peer closes once its reply is read.
+    /// The peer closes once its last reply is read.
     then_close: bool,
     /// The peer closed, whatever it was saying.
     hung_up: bool,
@@ -240,14 +243,19 @@ struct Wire {
 
 #[cfg(any(test, feature = "test-util"))]
 impl Wire {
-    /// The peer has a request's head to answer.
+    /// The peer has a request's head to answer with its next reply.
     fn answering(&self) -> bool {
-        self.received.windows(4).any(|w| w == b"\r\n\r\n")
+        let heads = self
+            .received
+            .windows(4)
+            .filter(|w| w == b"\r\n\r\n")
+            .count();
+        self.answered < self.replies.len() && heads > self.answered
     }
 
     /// The socket has something to read: reply bytes, or the end.
     fn readable(&self) -> bool {
-        self.hung_up || (self.answering() && (self.read < self.reply.len() || self.then_close))
+        self.hung_up || self.answering() || (self.answered == self.replies.len() && self.then_close)
     }
 }
 
@@ -256,13 +264,22 @@ impl Conversation {
     /// A peer that replies `reply` to a request's head, then closes if
     /// `then_close`.
     pub fn new(reply: &[u8], then_close: bool) -> Conversation {
+        Conversation::replies(&[reply], then_close)
+    }
+
+    /// A peer that replies to each request's head with the next of
+    /// `replies`, then closes after the last if `then_close`.
+    pub fn replies(replies: &[&[u8]], then_close: bool) -> Conversation {
         let mut wire = Wire {
             then_close,
             ..Wire::default()
         };
-        wire.reply
-            .try_extend_from_slice(reply)
-            .expect("a test's reply fits");
+        for reply in replies {
+            let mut copy = Vec::new();
+            copy.try_extend_from_slice(reply)
+                .expect("a test's reply fits");
+            wire.replies.try_push(copy).expect("a test's replies fit");
+        }
         Conversation(
             curl_alloc::TryRc::try_new(std::cell::RefCell::new(wire)).expect("a test's peer fits"),
         )
@@ -501,17 +518,27 @@ impl Socket for FakeSocket {
         if wire.hung_up {
             return Ok(Recv::Eof);
         }
-        if !wire.answering() {
-            return Ok(Recv::WouldBlock);
+        while wire.answered < wire.replies.len() {
+            if !wire.answering() {
+                return Ok(Recv::WouldBlock);
+            }
+            let left = &wire.replies[wire.answered][wire.read..];
+            let n = left.len().min(buf.len());
+            buf[..n].copy_from_slice(&left[..n]);
+            wire.read += n;
+            if wire.read == wire.replies[wire.answered].len() {
+                // Read whole: an idle connection has nothing waiting.
+                wire.answered += 1;
+                wire.read = 0;
+            }
+            if let Some(got) = std::num::NonZeroUsize::new(n) {
+                return Ok(Recv::Data(got));
+            }
         }
-        let left = &wire.reply[wire.read..];
-        let n = left.len().min(buf.len());
-        buf[..n].copy_from_slice(&left[..n]);
-        wire.read += n;
-        Ok(match std::num::NonZeroUsize::new(n) {
-            Some(n) => Recv::Data(n),
-            None if wire.then_close => Recv::Eof,
-            None => Recv::WouldBlock,
+        Ok(if wire.then_close {
+            Recv::Eof
+        } else {
+            Recv::WouldBlock
         })
     }
 

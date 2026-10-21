@@ -49,7 +49,7 @@ fn up(pool: &mut Pool, lease: &ConnLease, net: &mut FakeNet, now: Instant) {
 }
 
 fn socket(pool: &Pool, lease: &ConnLease) -> Option<i32> {
-    pool.socket(lease).map(|s| s.key().get())
+    pool.sockets(lease).next().map(|s| s.key().get())
 }
 
 #[test]
@@ -534,7 +534,7 @@ fn a_connection_moves_bytes_both_ways() {
     let mut pool = Pool::new().unwrap();
     let lease = new(&mut pool, tcp(1), &mut net, now);
     up(&mut pool, &lease, &mut net, now);
-    let readable = |pool: &Pool| match pool.socket(&lease).unwrap().readiness() {
+    let readable = |pool: &Pool| match pool.sockets(&lease).next().unwrap().readiness() {
         Readiness::Known { now, .. } => now.contains(Events::IN),
         Readiness::Poll(_) => unreachable!("a fake socket"),
     };

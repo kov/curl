@@ -8,7 +8,81 @@
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::TransferId;
-use crate::conn::io::{Events, SocketKey};
+use crate::conn::io::{Events, Socket, SocketKey};
+
+/// The most sockets a transfer waits on at once: a connection being set
+/// up races up to six addresses, and a resolver may add its own.
+const POLLSET_MAX: usize = 8;
+
+/// The sockets a transfer waits on, and for what (C's `easy_pollset`),
+/// held without allocating. A socket added twice waits for both.
+pub(crate) struct Pollset<'p> {
+    sockets: [Option<&'p dyn Socket>; POLLSET_MAX],
+    wants: Wants,
+}
+
+/// A pollset's sockets by key, apart from the sockets themselves.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Wants {
+    len: usize,
+    /// Unused past `len`.
+    wants: [(SocketKey, Events); POLLSET_MAX],
+}
+
+impl Wants {
+    /// No socket.
+    pub(crate) const NONE: Wants = Wants {
+        len: 0,
+        wants: [(SocketKey::BAD, Events::NONE); POLLSET_MAX],
+    };
+
+    pub(crate) fn as_slice(&self) -> &[(SocketKey, Events)] {
+        &self.wants[..self.len]
+    }
+}
+
+impl<'p> Pollset<'p> {
+    /// Waiting on nothing.
+    pub(crate) fn new() -> Pollset<'p> {
+        Pollset {
+            sockets: [None; POLLSET_MAX],
+            wants: Wants::NONE,
+        }
+    }
+
+    /// Wait on `socket` for `events` too; nothing, for none.
+    pub(crate) fn add(&mut self, socket: &'p dyn Socket, events: Events) {
+        if events.is_empty() {
+            return;
+        }
+        let key = socket.key();
+        let w = &mut self.wants;
+        if let Some((_, had)) = w.wants[..w.len].iter_mut().find(|(k, _)| *k == key) {
+            *had = *had | events;
+            return;
+        }
+        assert!(
+            w.len < POLLSET_MAX,
+            "a transfer waits on at most {POLLSET_MAX} sockets"
+        );
+        self.sockets[w.len] = Some(socket);
+        w.wants[w.len] = (key, events);
+        w.len += 1;
+    }
+
+    /// Each socket, and what it is waited on for.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&'p dyn Socket, Events)> + '_ {
+        self.sockets[..self.wants.len]
+            .iter()
+            .zip(self.wants.as_slice())
+            .map(|(s, &(_, events))| (s.expect("added"), events))
+    }
+
+    /// The sockets by key.
+    pub(crate) fn wants(&self) -> Wants {
+        self.wants
+    }
+}
 
 /// What the socket callback is told of a socket (`CURL_POLL_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,7 +278,51 @@ pub struct UnknownSocket;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conn::io::{Readiness, Recv, Sent};
     use crate::id::{Arena, ArenaPolicy};
+
+    /// A socket known by its key alone.
+    #[derive(Debug)]
+    struct Keyed(i32);
+
+    impl Socket for Keyed {
+        fn key(&self) -> SocketKey {
+            SocketKey::new(self.0)
+        }
+        fn readiness(&self) -> Readiness<'_> {
+            unreachable!()
+        }
+        fn take_error(&self) -> std::io::Result<Option<std::io::Error>> {
+            unreachable!()
+        }
+        fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+            unreachable!()
+        }
+        fn recv(&self, _: &mut [u8]) -> std::io::Result<Recv> {
+            unreachable!()
+        }
+        fn send(&self, _: &[u8]) -> std::io::Result<Sent> {
+            unreachable!()
+        }
+    }
+
+    /// A socket added again waits for both; one added for nothing is not
+    /// waited on.
+    #[test]
+    fn a_pollset_holds_each_socket_once() {
+        let (a, b, c) = (Keyed(3), Keyed(4), Keyed(5));
+        let mut set = Pollset::new();
+        set.add(&a, Events::IN);
+        set.add(&b, Events::OUT);
+        set.add(&a, Events::OUT);
+        set.add(&c, Events::NONE);
+        let keys = [SocketKey::new(3), SocketKey::new(4)];
+        let want = [(keys[0], Events::IN | Events::OUT), (keys[1], Events::OUT)];
+        assert_eq!(set.wants().as_slice(), want);
+        let got: Vec<_> = set.iter().map(|(s, e)| (s.key(), e)).collect();
+        assert_eq!(got, want);
+        assert_eq!(Wants::NONE.as_slice(), []);
+    }
 
     fn ids() -> (TransferId, TransferId) {
         let mut arena: Arena<(), super::super::Transfer> =

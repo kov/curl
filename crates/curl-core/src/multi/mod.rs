@@ -41,7 +41,7 @@ pub use wait::{WaitMode, drive_to_completion};
 
 use notify::NotifyQueue;
 use sched::{RowSet, Tally};
-use sockets::SocketTable;
+use sockets::{SocketTable, Wants};
 use state::{Message as MessageState, Run, StepCx, TransferState, Wake};
 use timers::{Due, TimerAnnounce, TimerQueue};
 
@@ -347,7 +347,7 @@ impl<H: Host> Multi<H> {
         self.abandon(id, run, ev);
         // Waiting on nothing now; C does not mind the callback's answer
         // (`Curl_multi_ev_xfer_done`).
-        let _ = self.tell_wants(id, None, ev);
+        let _ = self.tell_wants(id, Wants::NONE, ev);
         let slot = self.slots.remove(id).expect("still in the multi");
         self.timers.remove(id);
         self.dirty.remove(id.index());
@@ -561,14 +561,12 @@ impl<H: Host> Multi<H> {
         if !ev.wants_sockets() {
             return Ok(());
         }
-        let wants = self.slots.get(id).and_then(|slot| {
+        let wants = self.slots.get(id).map_or(Wants::NONE, |slot| {
             let run = slot
                 .run
                 .as_ref()
                 .expect("no transfer is out while the multi is called");
-            run.state
-                .pollset(&self.pool, slot.pause)
-                .map(|(s, events)| (s.key(), events))
+            run.state.pollset(&self.pool, slot.pause).wants()
         });
         self.tell_wants(id, wants, ev)
     }
@@ -577,7 +575,7 @@ impl<H: Host> Multi<H> {
     fn tell_wants(
         &mut self,
         id: TransferId,
-        wants: Option<(SocketKey, Events)>,
+        wants: Wants,
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<(), MultiErrorKind> {
         if !ev.wants_sockets() {
@@ -830,7 +828,7 @@ fn pollsets<'a, H: Host>(
             .run
             .as_ref()
             .expect("no transfer is out while the multi is called");
-        if let Some((socket, events)) = run.state.pollset(pool, slot.pause) {
+        for (socket, events) in run.state.pollset(pool, slot.pause).iter() {
             f(socket, events);
         }
     }

@@ -49,7 +49,7 @@ witness: curl-core multi::socket_tests::a_pause_is_heard_inside_the_call
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::socket_tests::a_removed_transfer_leaves_its_sockets
 --- old
-        let _ = self.tell_wants(id, None, ev);
+        let _ = self.tell_wants(id, Wants::NONE, ev);
 --- new
 
 === an aborting socket callback leaves the multi alive
@@ -92,3 +92,11 @@ witness: curl-sys-abi handle_tests::cleanup_removes_the_sockets_the_socket_funct
 --- new
         let _ = (cx, who, s, what, assigned);
         Ok(())
+
+=== a socket added twice is waited on twice
+file: crates/curl-core/src/multi/sockets.rs
+witness: curl-core multi::sockets::tests::a_pollset_holds_each_socket_once
+--- old
+        if let Some((_, had)) = w.wants[..w.len].iter_mut().find(|(k, _)| *k == key) {
+--- new
+        if let Some((_, had)) = w.wants[..0].iter_mut().find(|(k, _)| *k == key) {

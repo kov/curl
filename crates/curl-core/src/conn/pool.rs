@@ -346,9 +346,9 @@ impl Pool {
         }
     }
 
-    /// The socket of the connection a lease holds: its attempt's while
+    /// The sockets of the connection a lease holds: its attempts' while
     /// it is set up, none without a network.
-    pub(crate) fn socket(&self, lease: &ConnLease) -> Option<&dyn Socket> {
+    pub(crate) fn sockets(&self, lease: &ConnLease) -> impl Iterator<Item = &dyn Socket> {
         match self.conns.get(lease.id) {
             Some(ConnSlot::Connecting(m)) => m.socket(),
             Some(ConnSlot::Open(Conn {
@@ -358,6 +358,7 @@ impl Pool {
             Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => None,
             None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
         }
+        .into_iter()
     }
 
     /// Take a lease back and decide the connection's fate as

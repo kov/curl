@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use curl_alloc::{OutOfMemory, TryVec};
 
-use crate::conn::io::{Events, Socket};
+use crate::conn::io::Events;
 use crate::conn::{
     Acquired, Conn, ConnLease, ConnectError, Connected, Destination, Finish, Pool, PoolNote,
     Progress, Released, ReuseRules, Route,
@@ -28,6 +28,7 @@ use crate::url::{self, GetOptions, ParseOptions, Part, Url};
 use crate::version::Protocol;
 
 use super::cx::{EngineRest, TransferCalls};
+use super::sockets::Pollset;
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind};
 use super::{Host, TransferId};
 
@@ -298,27 +299,27 @@ fn release<H: Host>(
 }
 
 impl TransferState {
-    /// The socket the transfer waits on, and for what (`Curl_multi_pollset`):
-    /// a setup waits to write, unless receiving is paused
-    /// (`mstate_connecting_pollset`); an exchange waits for what its
-    /// protocol says (`Curl_http_perform_pollset`).
-    pub(crate) fn pollset<'p>(
-        &self,
-        pool: &'p Pool,
-        pause: Pause,
-    ) -> Option<(&'p dyn Socket, Events)> {
+    /// The sockets the transfer waits on, and for what
+    /// (`Curl_multi_pollset`): a setup waits to write on each, unless
+    /// receiving is paused (`mstate_connecting_pollset`); an exchange
+    /// waits for what its protocol says (`Curl_http_perform_pollset`).
+    pub(crate) fn pollset<'p>(&self, pool: &'p Pool, pause: Pause) -> Pollset<'p> {
+        let mut set = Pollset::new();
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
-                pool.socket(&c.lease).map(|s| (s, Events::OUT))
+                for s in pool.sockets(&c.lease) {
+                    set.add(s, Events::OUT);
+                }
             }
             TransferState::Exchanging(x) => {
                 let events = x.proto.interest(pause);
-                pool.socket(&x.lease)
-                    .filter(|_| !events.is_empty())
-                    .map(|s| (s, events))
+                for s in pool.sockets(&x.lease) {
+                    set.add(s, events);
+                }
             }
-            _ => None,
+            _ => {}
         }
+        set
     }
 }
 

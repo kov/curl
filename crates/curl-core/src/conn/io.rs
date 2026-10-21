@@ -20,6 +20,9 @@ pub use curl_os::wake::Waker;
 pub struct SocketKey(i32);
 
 impl SocketKey {
+    /// No socket (`CURL_SOCKET_BAD`).
+    pub(crate) const BAD: SocketKey = SocketKey(-1);
+
     /// The socket C calls `n`, as the application names it back.
     pub fn new(n: i32) -> SocketKey {
         SocketKey(n)

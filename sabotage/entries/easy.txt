@@ -63,3 +63,19 @@ witness: curl-sys-abi handle_tests::boolean_options_take_any_nonzero_value
         (ffi::CURLOPT_SSL_VERIFYHOST, Long(n)) => options.tls.verify_host = n != 0,
 --- new
         (ffi::CURLOPT_SSL_VERIFYHOST, Long(n)) => options.tls.verify_peer = n != 0,
+
+=== nextheader follows a header it did not hand out
+file: crates/curl-sys-abi/src/headers.rs
+witness: curl-sys-abi handle_tests::headers_are_looked_up_and_walked_as_in_c
+--- old
+        match easy.headers_out.iter().find(|o| o.header_ptr() == prev) {
+--- new
+        match easy.headers_out.first() {
+
+=== a header's origin is handed out without the reserved bit
+file: crates/curl-sys-abi/src/headers.rs
+witness: curl-sys-abi handle_tests::headers_are_looked_up_and_walked_as_in_c
+--- old
+            origin: origin_bit(view.origin) | RESERVED_ORIGIN_BIT,
+--- new
+            origin: origin_bit(view.origin),

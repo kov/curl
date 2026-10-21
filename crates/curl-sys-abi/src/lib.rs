@@ -27,6 +27,7 @@ mod gate;
 mod getinfo;
 #[cfg(test)]
 mod handle_tests;
+mod headers;
 mod multi;
 mod printf;
 mod root;

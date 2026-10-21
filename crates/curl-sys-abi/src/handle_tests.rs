@@ -23,7 +23,7 @@ use crate::easy::{self, curl_easy_cleanup, curl_easy_init, curl_easy_pause, curl
 use crate::ffi::{
     self, CURL, CURLE_ABORTED_BY_CALLBACK, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_NOT_BUILT_IN,
     CURLE_OK, CURLE_RECURSIVE_API_CALL, CURLE_UNKNOWN_OPTION, CURLINFO, CURLM, CURLM_OK, CURLcode,
-    CURLoption, curl_off_t,
+    CURLoption, curl_header, curl_off_t,
 };
 use crate::getinfo::curl_easy_getinfo;
 use crate::multi::{
@@ -1861,6 +1861,142 @@ fn recv_and_send_need_a_connect_only_connection() {
             curl_easy_recv(ptr::null_mut(), buf.as_mut_ptr().cast(), 4, &raw mut n),
             CURLE_BAD_FUNCTION_ARGUMENT
         );
+        curl_easy_cleanup(c);
+    }
+}
+
+/// `curl_easy_header` and `curl_easy_nextheader` over a real response:
+/// lookups by name in any case with index and amount, iteration in
+/// arrival order, and the arguments C refuses (as lib1940 checks them).
+#[test]
+fn headers_are_looked_up_and_walked_as_in_c() {
+    use crate::headers::{curl_easy_header, curl_easy_nextheader};
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0; 1024];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = peer.read(&mut buf).unwrap();
+            got.extend_from_slice(&buf[..n]);
+        }
+        peer.write_all(
+            b"HTTP/1.1 200 OK\r\nDate: today\r\nSet-Cookie: a=1\r\nServer: x \r\n\
+              set-cookie: b=2\r\nContent-Length: 0\r\n\r\n",
+        )
+        .unwrap();
+    });
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let mut h = ptr::null_mut();
+    // SAFETY: a live handle and a header pointer to write.
+    unsafe {
+        assert_eq!(
+            curl_easy_header(
+                c,
+                c"date".as_ptr(),
+                0,
+                ffi::CURLH_HEADER as c_uint,
+                -1,
+                &raw mut h
+            ),
+            ffi::CURLHE_NOHEADERS
+        );
+    }
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    server.join().unwrap();
+    let text = |p: *const c_char| {
+        // SAFETY: a header's strings are C strings while it is shown.
+        unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_owned()
+    };
+    let header = ffi::CURLH_HEADER as c_uint;
+    // SAFETY: a live handle, and the headers it hands out, read before
+    // the next call of the same function.
+    unsafe {
+        let get = |name: &CStr, i: usize, h: &mut *mut curl_header| {
+            curl_easy_header(c, name.as_ptr(), i, header, -1, h)
+        };
+        assert_eq!(get(c"SET-COOKIE", 1, &mut h), ffi::CURLHE_OK);
+        let one = &*h;
+        assert_eq!(
+            (text(one.name), text(one.value)),
+            ("set-cookie".into(), "b=2".into())
+        );
+        assert_eq!((one.index, one.amount), (1, 2));
+        assert_eq!(one.origin & 0xff, header);
+        assert_ne!(one.origin, header, "a reserved bit is set");
+        assert_eq!(get(c"server", 0, &mut h), ffi::CURLHE_OK);
+        assert_eq!(text((*h).value), "x");
+        assert_eq!(get(c"set-cookie", 2, &mut h), ffi::CURLHE_BADINDEX);
+        assert_eq!(get(c"nope", 0, &mut h), ffi::CURLHE_MISSING);
+        let bad = |name: *const c_char, origin: c_uint, req: c_int, out: *mut *mut curl_header| {
+            curl_easy_header(c, name, 0, origin, req, out)
+        };
+        assert_eq!(
+            bad(ptr::null(), header, -1, &raw mut h),
+            ffi::CURLHE_BAD_ARGUMENT
+        );
+        assert_eq!(
+            bad(c"x".as_ptr(), header, -1, ptr::null_mut()),
+            ffi::CURLHE_BAD_ARGUMENT
+        );
+        assert_eq!(
+            bad(c"x".as_ptr(), 0, -1, &raw mut h),
+            ffi::CURLHE_BAD_ARGUMENT
+        );
+        assert_eq!(
+            bad(c"x".as_ptr(), 32, -1, &raw mut h),
+            ffi::CURLHE_BAD_ARGUMENT
+        );
+        assert_eq!(
+            bad(c"x".as_ptr(), header, -2, &raw mut h),
+            ffi::CURLHE_BAD_ARGUMENT
+        );
+        assert_eq!(
+            bad(c"date".as_ptr(), header, 1, &raw mut h),
+            ffi::CURLHE_NOREQUEST
+        );
+        assert_eq!(
+            curl_easy_header(ptr::null_mut(), c"x".as_ptr(), 0, header, -1, &raw mut h),
+            ffi::CURLHE_BAD_ARGUMENT
+        );
+        // Every header, in order; a lookup's header goes on from itself.
+        let mut names = Vec::new();
+        let mut at = curl_easy_nextheader(c, header, -1, ptr::null_mut());
+        // Bounded, so a walk that goes round fails rather than grows.
+        while !at.is_null() && names.len() < 10 {
+            names.push(format!(
+                "{}:{}/{}",
+                text((*at).name),
+                (*at).index,
+                (*at).amount
+            ));
+            at = curl_easy_nextheader(c, header, -1, at);
+        }
+        assert_eq!(
+            names,
+            [
+                "Date:0/1",
+                "Set-Cookie:0/2",
+                "Server:0/1",
+                "set-cookie:1/2",
+                "Content-Length:0/1"
+            ]
+        );
+        assert_eq!(get(c"server", 0, &mut h), ffi::CURLHE_OK);
+        let after = curl_easy_nextheader(c, header, -1, h);
+        assert_eq!(text((*after).name), "set-cookie");
+        assert!(
+            curl_easy_nextheader(c, ffi::CURLH_TRAILER as c_uint, -1, ptr::null_mut()).is_null()
+        );
+        let mut foreign = *after;
+        assert!(curl_easy_nextheader(c, header, -1, &raw mut foreign).is_null());
+        assert!(curl_easy_nextheader(ptr::null_mut(), header, -1, ptr::null_mut()).is_null());
         curl_easy_cleanup(c);
     }
 }

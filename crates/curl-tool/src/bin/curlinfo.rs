@@ -28,7 +28,7 @@ const TOGGLES: &[(&str, bool)] = &[
     // Error codes have their full messages.
     ("verbose-strings", true),
     ("wakeup", true),
-    ("headers-api", false),
+    ("headers-api", true),
     ("xattr", false),
     ("form-api", false),
     // `time_t` and `curl_off_t` are 64 bits wide.

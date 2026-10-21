@@ -53,6 +53,8 @@ pub(crate) struct ShimEasy {
     /// replaced only by a different URL, so a pointer handed out lives
     /// until a later transfer's URL differs, or the handle goes.
     pub(crate) effective_url: RefCell<Vec<u8>>,
+    /// What `curl_easy_header` and `curl_easy_nextheader` hand out.
+    pub(crate) headers_out: [crate::headers::HeaderOut; 2],
 }
 
 /// Where the handle's transfer is.
@@ -112,6 +114,7 @@ impl ShimEasy {
             // SAFETY: a `CURLMsg` of zeroes is its empty value.
             msg: UnsafeCell::new(unsafe { core::mem::zeroed() }),
             effective_url: RefCell::new(Vec::new()),
+            headers_out: crate::headers::slots(),
         }
     }
 

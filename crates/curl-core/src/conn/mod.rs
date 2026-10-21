@@ -6,6 +6,7 @@
 //! `ConnectMachine`, in the slot it keeps once established. `io` is the
 //! engine's way to the network.
 
+mod buf;
 mod connect;
 pub mod io;
 mod pool;
@@ -21,8 +22,9 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+pub(crate) use self::buf::{RecvBuf, SendBuf};
 use self::connect::ConnectMachine;
-use self::io::Socket;
+use self::io::{Recv, Sent, Socket};
 use crate::id::Key;
 use crate::time::Instant;
 
@@ -114,6 +116,88 @@ pub(crate) struct Conn {
     created: Instant,
     connected_at: Instant,
     use_: Use,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the http protocol moves bytes from step 14b")
+    )]
+    rx: RecvBuf,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the http protocol moves bytes from step 14b")
+    )]
+    tx: SendBuf,
+}
+
+/// What a flush of a connection's queued bytes came to.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the http protocol moves bytes from step 14b")
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Flushed {
+    /// Bytes the network took.
+    pub(crate) sent: usize,
+    /// Nothing is left to send.
+    pub(crate) done: bool,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the http protocol moves bytes from step 14b")
+)]
+impl Conn {
+    fn socket(&self) -> &dyn Socket {
+        match &self.transport {
+            Transport::Tcp(socket) => &**socket,
+            Transport::Local => unreachable!("a local connection moves no bytes"),
+        }
+    }
+
+    /// Received bytes no request has used yet.
+    pub(crate) fn rx_mut(&mut self) -> &mut RecvBuf {
+        &mut self.rx
+    }
+
+    /// Bytes queued to send.
+    pub(crate) fn tx_mut(&mut self) -> &mut SendBuf {
+        &mut self.tx
+    }
+
+    /// Read once from the network, up to `max` bytes, behind what `rx`
+    /// holds.
+    pub(crate) fn recv(&mut self, max: usize) -> std::io::Result<Recv> {
+        let socket = match &self.transport {
+            Transport::Tcp(socket) => &**socket,
+            Transport::Local => unreachable!("a local connection moves no bytes"),
+        };
+        // Borrowed apart from `rx`, which the read fills.
+        let room = self
+            .rx
+            .room(max)
+            .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+        let got = socket.recv(room);
+        let n = match got {
+            Ok(Recv::Data(n)) => n.get(),
+            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
+        };
+        self.rx.commit(max, n);
+        got
+    }
+
+    /// Send what is queued, as much as the network takes now.
+    pub(crate) fn flush(&mut self) -> std::io::Result<Flushed> {
+        let mut sent = 0;
+        while !self.tx.is_empty() {
+            match self.socket().send(self.tx.pending())? {
+                Sent::Bytes(n) => {
+                    self.tx.sent(n.get());
+                    sent += n.get();
+                }
+                Sent::WouldBlock => return Ok(Flushed { sent, done: false }),
+            }
+        }
+        Ok(Flushed { sent, done: true })
+    }
 }
 
 /// Whether a connection is leased.

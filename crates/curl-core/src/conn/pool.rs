@@ -9,7 +9,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::connect::{ConnectError, ConnectMachine, Drove, Progress};
 use super::io::{Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnId, ConnNumber, ConnSlot, Route, Transport, Use};
+use super::{Conn, ConnId, ConnNumber, ConnSlot, RecvBuf, Route, SendBuf, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::time::Instant;
 
@@ -199,6 +199,8 @@ impl Pool {
                 created: now,
                 connected_at: now,
                 use_: Use::Leased(NonZeroU32::MIN),
+                rx: RecvBuf::default(),
+                tx: SendBuf::default(),
             }),
             Route::Tcp(scheme, dest) => {
                 ConnSlot::Connecting(ConnectMachine::new(number, scheme, dest, now))

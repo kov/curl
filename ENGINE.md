@@ -1530,9 +1530,12 @@ peer gets a protocol error, not an out-of-memory one.
 
 ### 8.3 Fakes and test ports
 
-- **`FakeNet`** (feature `test-util`): scripted peers per address — expected bytes in, bytes out,
-  would-block points, partial sends, EOF, resets, connect refusal, and fd numbers that reuse closed
-  ones to exercise the socket table. **`ManualClock`**: `wait` advances it to the next deadline
+- **`FakeNet`** (feature `test-util`): peers per address that accept, accept late, refuse or
+  never answer, and fd numbers that reuse closed ones to exercise the socket table. A
+  `Conversation` scripts what the next connection to an address says: like the suite's server,
+  the peer replies once it has a request's head, then closes or stays open, and keeps what it was
+  sent for the test to compare; a test can hang a peer up. Would-block points and partial sends
+  are added when a case needs them. **`ManualClock`**: `wait` advances it to the next deadline
   when nothing is ready, so timeout tests take microseconds.
 - **`RecordingEvents`** logs every socket, timer and notify call; **recording handlers** can run a
   scripted action through their context (pause, setopt, getinfo, sibling calls) to test

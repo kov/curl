@@ -259,9 +259,19 @@ yet meet.
       (18), a body where none was wanted dropped with the connection, and
       `HeadParser::got_nothing`, the interim heads' bytes deducted. Messages checked against the
       C binary.
-14. **http1: generate the fixture runner from tests/data.** The milestone set's cases without
-    servercmd, driven over `FakeNet` and `ManualClock`; armed by breaking a framing rule. Adds the
-    plain-GET allocation budget test, set at this design's count.
+14. **http1: run requests, and the fixture runner.** In three parts:
+    - **a. Bytes on a connection.** **Done.** `Socket::recv` and `send`; a connection's `rx` and
+      `tx` (`conn/buf.rs`), `Conn::recv` behind what waits and `Conn::flush`; `FakeNet`
+      conversations, a peer that replies to a request's head and then closes or not, and keeps
+      what it was sent.
+    - **b. The HTTP/1 driver.** **To do.** `http:` as a protocol: the head rendered at DO and
+      sent, the response read and parsed, delivered through the pipeline with what its head
+      expects, the body framed by length, chunks or the close, the end judged (nothing, short,
+      outstanding chunks), the connection kept or closed. Armed end to end on test 1 over
+      `FakeNet`.
+    - **c. The fixture runner.** **To do.** Generated from `tests/data`: the milestone set's
+      cases without servercmd, driven over `FakeNet` and `ManualClock`; armed by breaking a
+      framing rule. Adds the plain-GET allocation budget test, set at this design's count.
 15. **tool: run HTTP transfers.** The tool maps the remaining milestone options (`-H`, `-A`,
     `-e`, `-0`/`--http1.0`/`--http1.1`/`--http0.9`, `-D`, `--raw`, `--ignore-content-length`,
     `--max-filesize`, `--show-headers`, `-f`, `-N`, `--tr-encoding`). Measure test 1's

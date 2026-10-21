@@ -11,7 +11,7 @@ use curl_alloc::{TryVec, try_box};
 
 use crate::time::Instant;
 
-pub use curl_os::net::Connect;
+pub use curl_os::net::{Connect, Recv, Sent};
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::wake::Waker;
 
@@ -43,6 +43,12 @@ pub trait Socket: fmt::Debug {
     fn take_error(&self) -> io::Result<Option<io::Error>>;
 
     fn local_addr(&self) -> io::Result<SocketAddr>;
+
+    /// Receive into `buf`, which is not empty.
+    fn recv(&self, buf: &mut [u8]) -> io::Result<Recv>;
+
+    /// Send from `buf`, which is not empty.
+    fn send(&self, buf: &[u8]) -> io::Result<Sent>;
 }
 
 /// How a socket's readiness is learned.
@@ -113,6 +119,14 @@ impl Socket for curl_os::net::TcpSocket {
 
     fn local_addr(&self) -> io::Result<SocketAddr> {
         curl_os::net::TcpSocket::local_addr(self)
+    }
+
+    fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
+        curl_os::net::TcpSocket::recv(self, buf)
+    }
+
+    fn send(&self, buf: &[u8]) -> io::Result<Sent> {
+        curl_os::net::TcpSocket::send(self, buf)
     }
 }
 
@@ -201,26 +215,87 @@ pub enum Peer {
     Silent,
 }
 
+/// What a fake peer says once connected, as the test suite's server
+/// does: it reads what it is sent, and once that holds a request's head,
+/// up to its blank line, it replies, then closes if told to. The test
+/// keeps a clone to read what the peer was sent.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone, Debug)]
+pub struct Conversation(curl_alloc::TryRc<std::cell::RefCell<Wire>>);
+
+/// A fake connection's two directions, shared by its socket, its network
+/// and the test.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug, Default)]
+struct Wire {
+    received: Vec<u8>,
+    reply: Vec<u8>,
+    /// How much of `reply` was read.
+    read: usize,
+    /// The peer closes once its reply is read.
+    then_close: bool,
+    /// The peer closed, whatever it was saying.
+    hung_up: bool,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Wire {
+    /// The peer has a request's head to answer.
+    fn answering(&self) -> bool {
+        self.received.windows(4).any(|w| w == b"\r\n\r\n")
+    }
+
+    /// The socket has something to read: reply bytes, or the end.
+    fn readable(&self) -> bool {
+        self.hung_up || (self.answering() && (self.read < self.reply.len() || self.then_close))
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Conversation {
+    /// A peer that replies `reply` to a request's head, then closes if
+    /// `then_close`.
+    pub fn new(reply: &[u8], then_close: bool) -> Conversation {
+        let mut wire = Wire {
+            then_close,
+            ..Wire::default()
+        };
+        wire.reply
+            .try_extend_from_slice(reply)
+            .expect("a test's reply fits");
+        Conversation(
+            curl_alloc::TryRc::try_new(std::cell::RefCell::new(wire)).expect("a test's peer fits"),
+        )
+    }
+
+    /// What the peer was sent so far.
+    pub fn received(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.try_extend_from_slice(&self.0.borrow().received)
+            .expect("a test's request fits");
+        out
+    }
+}
+
 /// A network where waiting takes no time: a poll that finds nothing ready
 /// moves the clock on by its timeout instead of sleeping. Real descriptors
 /// given to it, a waker's or the application's, are still polled. Connects
 /// reach fake peers, by address; one to an address with no peer is
-/// refused at once.
+/// refused at once. A peer says what its next conversation scripts, or
+/// nothing.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug)]
 pub struct FakeNet {
     clock: crate::time::ManualClock,
     peers: Vec<(SocketAddr, Peer)>,
-    /// The sockets open, by number from `FIRST_FAKE`, each with whether
-    /// its peer hung up: a closed number is handed out again, lowest
-    /// first, as the kernel does.
-    open: Vec<Option<HungUp>>,
+    /// The conversations to come, each for the next connection to its
+    /// address.
+    conversations: Vec<(SocketAddr, Conversation)>,
+    /// The sockets open, by number from `FIRST_FAKE`, each with its
+    /// conversation: a closed number is handed out again, lowest first, as
+    /// the kernel does.
+    open: Vec<Option<Conversation>>,
 }
-
-/// Whether a fake socket's peer hung up, shared by the socket and its
-/// network.
-#[cfg(any(test, feature = "test-util"))]
-type HungUp = curl_alloc::TryRc<std::cell::Cell<bool>>;
 
 /// The first number a fake socket gets: past the descriptors a test
 /// process has open, so that a fake one is never mistaken for them.
@@ -234,8 +309,17 @@ impl FakeNet {
         FakeNet {
             clock,
             peers: Vec::new(),
+            conversations: Vec::new(),
             open: Vec::new(),
         }
+    }
+
+    /// The next connection to `addr` has `conversation`.
+    pub fn with_conversation(mut self, addr: SocketAddr, conversation: Conversation) -> FakeNet {
+        self.conversations
+            .try_push((addr, conversation))
+            .expect("a test's conversations fit");
+        self
     }
 
     /// A peer at `addr`.
@@ -246,7 +330,7 @@ impl FakeNet {
         self
     }
 
-    fn open_number(&mut self, hung_up: HungUp) -> io::Result<SocketKey> {
+    fn open_number(&mut self, wire: Conversation) -> io::Result<SocketKey> {
         let row = match self.open.iter().position(Option::is_none) {
             Some(row) => row,
             None => {
@@ -256,7 +340,7 @@ impl FakeNet {
                 self.open.len() - 1
             }
         };
-        self.open[row] = Some(hung_up);
+        self.open[row] = Some(wire);
         let n = i32::try_from(row).expect("a test opens few sockets");
         Ok(SocketKey(FIRST_FAKE + n))
     }
@@ -265,7 +349,12 @@ impl FakeNet {
     /// ready, with nothing but the end to read.
     pub fn hang_up(&self, key: SocketKey) {
         let row = usize::try_from(key.0 - FIRST_FAKE).expect("a fake socket's number");
-        self.open[row].as_ref().expect("an open socket").set(true);
+        self.open[row]
+            .as_ref()
+            .expect("an open socket")
+            .0
+            .borrow_mut()
+            .hung_up = true;
     }
 
     /// How many fake sockets are open.
@@ -312,9 +401,14 @@ impl Net for FakeNet {
         let Some(&(_, peer)) = self.peers.iter().find(|(a, _)| *a == addr) else {
             return Err(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED));
         };
-        let hung_up = curl_alloc::TryRc::try_new(std::cell::Cell::new(false))
-            .map_err(|_| io::ErrorKind::OutOfMemory)?;
-        let key = self.open_number(hung_up.clone())?;
+        let wire = match self.conversations.iter().position(|(a, _)| *a == addr) {
+            Some(at) => self.conversations.remove(at).1,
+            None => Conversation(
+                curl_alloc::TryRc::try_new(std::cell::RefCell::new(Wire::default()))
+                    .map_err(|_| io::ErrorKind::OutOfMemory)?,
+            ),
+        };
+        let key = self.open_number(wire.clone())?;
         // The port the kernel would have picked.
         let port = 40000 + u16::try_from(key.0 - FIRST_FAKE).expect("a test opens few sockets");
         let local = match addr {
@@ -333,7 +427,7 @@ impl Net for FakeNet {
             local,
             clock,
             ready_at,
-            hung_up,
+            wire,
         };
         let socket: Box<dyn Socket> = try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?;
         Ok((socket, Connect::InProgress))
@@ -359,7 +453,7 @@ struct FakeSocket {
     clock: crate::time::ManualClock,
     /// When a peer that answers late answers.
     ready_at: Option<Instant>,
-    hung_up: HungUp,
+    wire: Conversation,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -369,19 +463,23 @@ impl Socket for FakeSocket {
     }
 
     fn readiness(&self) -> Readiness<'_> {
-        if self.hung_up.get() {
+        let wire = self.wire.0.borrow();
+        if wire.hung_up {
             return Readiness::Known {
                 now: Events::IN | Events::OUT,
                 later: None,
             };
         }
-        let now = match (self.peer, self.ready_at) {
+        let mut now = match (self.peer, self.ready_at) {
             (Peer::Accepts | Peer::Refuses, _) => Events::OUT,
             (Peer::AcceptsAfter(_), Some(at)) if crate::time::Clock::now(&self.clock) >= at => {
                 Events::OUT
             }
             (Peer::AcceptsAfter(_) | Peer::Silent, _) => Events::NONE,
         };
+        if now == Events::OUT && self.peer != Peer::Refuses && wire.readable() {
+            now = now | Events::IN;
+        }
         let later = self.ready_at.filter(|_| now.is_empty());
         Readiness::Known { now, later }
     }
@@ -396,12 +494,45 @@ impl Socket for FakeSocket {
     fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.local)
     }
+
+    fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
+        assert!(!buf.is_empty(), "a receive needs room");
+        let mut wire = self.wire.0.borrow_mut();
+        if wire.hung_up {
+            return Ok(Recv::Eof);
+        }
+        if !wire.answering() {
+            return Ok(Recv::WouldBlock);
+        }
+        let left = &wire.reply[wire.read..];
+        let n = left.len().min(buf.len());
+        buf[..n].copy_from_slice(&left[..n]);
+        wire.read += n;
+        Ok(match std::num::NonZeroUsize::new(n) {
+            Some(n) => Recv::Data(n),
+            None if wire.then_close => Recv::Eof,
+            None => Recv::WouldBlock,
+        })
+    }
+
+    fn send(&self, buf: &[u8]) -> io::Result<Sent> {
+        let n = std::num::NonZeroUsize::new(buf.len()).expect("a send needs bytes");
+        let mut wire = self.wire.0.borrow_mut();
+        if wire.hung_up {
+            return Err(io::Error::from_raw_os_error(libc_errno::EPIPE));
+        }
+        wire.received
+            .try_extend_from_slice(buf)
+            .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        Ok(Sent::Bytes(n))
+    }
 }
 
 /// The error numbers the fake gives, as Linux numbers them.
 #[cfg(any(test, feature = "test-util"))]
 mod libc_errno {
     pub(super) const ECONNREFUSED: i32 = 111;
+    pub(super) const EPIPE: i32 = 32;
 }
 
 #[cfg(test)]

@@ -2,7 +2,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use crate::conn::io::{FakeNet, Peer};
+use crate::conn::Flushed;
+use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv};
 use crate::conn::{Destination, Scheme};
 use crate::time::{Clock as _, ManualClock};
 
@@ -518,4 +519,67 @@ fn a_dropped_lease_is_caught() {
     let (mut net, clock) = net();
     let mut pool = Pool::new().unwrap();
     drop(new(&mut pool, Route::Local, &mut net, clock.now()));
+}
+
+/// A connection sends what is queued and reads behind what waits; its
+/// peer replies to a request's head, then closes.
+#[test]
+fn a_connection_moves_bytes_both_ways() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 1));
+    let talk = Conversation::new(b"HTTP/1.1 200 OK\r\n\r\nhi", true);
+    let mut net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let lease = new(&mut pool, tcp(1), &mut net, now);
+    up(&mut pool, &lease, &mut net, now);
+    let readable = |pool: &Pool| match pool.socket(&lease).unwrap().readiness() {
+        Readiness::Known { now, .. } => now.contains(Events::IN),
+        Readiness::Poll(_) => unreachable!("a fake socket"),
+    };
+    assert!(!readable(&pool), "no request yet");
+    let conn = pool.get(&lease);
+    assert!(
+        matches!(conn.recv(64).unwrap(), Recv::WouldBlock),
+        "no request yet"
+    );
+    conn.tx_mut()
+        .queue(|b| b.try_extend_from_slice(b"GET / HTTP/1.1\r\n\r\n"))
+        .unwrap();
+    assert_eq!(
+        conn.flush().unwrap(),
+        Flushed {
+            sent: 18,
+            done: true
+        }
+    );
+    assert_eq!(talk.received(), b"GET / HTTP/1.1\r\n\r\n");
+    assert!(readable(&pool), "a reply waits");
+    let conn = pool.get(&lease);
+    assert!(matches!(conn.recv(10).unwrap(), Recv::Data(n) if n.get() == 10));
+    assert!(matches!(conn.recv(64).unwrap(), Recv::Data(n) if n.get() == 11));
+    assert_eq!(conn.rx_mut().filled(), b"HTTP/1.1 200 OK\r\n\r\nhi");
+    assert!(matches!(conn.recv(64).unwrap(), Recv::Eof));
+    assert_eq!(conn.rx_mut().filled().len(), 21, "the end adds nothing");
+    pool.release(lease, Finish::default(), &mut net, now);
+}
+
+/// Without a conversation, a peer says nothing and takes what it is sent.
+#[test]
+fn a_silent_peer_takes_what_it_is_sent() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let lease = new(&mut pool, tcp(1), &mut net, now);
+    up(&mut pool, &lease, &mut net, now);
+    let conn = pool.get(&lease);
+    conn.tx_mut()
+        .queue(|b| b.try_extend_from_slice(b"GET / HTTP/1.1\r\n\r\n"))
+        .unwrap();
+    assert!(conn.flush().unwrap().done);
+    assert!(matches!(conn.recv(64).unwrap(), Recv::WouldBlock));
+    assert_eq!(conn.rx_mut().filled(), b"");
+    pool.release(lease, Finish::default(), &mut net, now);
 }

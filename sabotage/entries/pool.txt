@@ -137,3 +137,39 @@ witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_afte
         .is_some_and(|max| whole_ms(now.since(conn.created)) >= whole_ms(max))
     {
         return Err(None);
+
+=== a fake peer replies before the request's head
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
+--- old
+        self.received.windows(4).any(|w| w == b"\r\n\r\n")
+--- new
+        true
+
+=== a read that got nothing keeps its room
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
+--- old
+            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
+--- new
+            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => max,
+
+=== a failed fill stays queued
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::queued_bytes_go_in_order
+--- old
+        if filled.is_err() {
+            self.bytes.truncate(len);
+        }
+--- new
+
+=== received bytes are replaced, not added to
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::received_bytes_wait_until_used
+--- old
+        let len = self.bytes.len();
+        self.bytes.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
+--- new
+        self.bytes.clear();
+        let len = self.bytes.len();
+        self.bytes.try_reserve_exact(n).map_err(|_| OutOfMemory)?;

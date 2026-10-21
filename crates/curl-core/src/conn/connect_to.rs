@@ -287,5 +287,24 @@ mod tests {
             )
         );
         assert_eq!(via_of(&foo, &["::[fe80::1%25eth0]:2"]), to("[fe80::1]", 2));
+        assert_eq!(via_of(&foo, &["::localhost:65535"]), to("localhost", 65535));
+    }
+
+    /// A peer named in brackets keeps its zone, and one kept from the
+    /// origin keeps the origin's; an empty zone is none.
+    #[test]
+    fn zones_are_kept() {
+        let zone_of = |origin: &Peer, entry: &'static str| {
+            via(origin, [entry.as_bytes()].into_iter())
+                .unwrap()
+                .unwrap()
+                .zone()
+                .map(<[u8]>::to_vec)
+        };
+        let foo = peer("foo.test", 1);
+        assert_eq!(zone_of(&foo, "::[fe80::1%eth0]:2"), Some(b"eth0".to_vec()));
+        assert_eq!(zone_of(&foo, "::[fe80::1%]:2"), None);
+        let v6 = Peer::new(HTTP, b"[fe80::1]".to_vec(), 1, Some(b"eth1".to_vec()));
+        assert_eq!(zone_of(&v6, ":1::7"), Some(b"eth1".to_vec()));
     }
 }

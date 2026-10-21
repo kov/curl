@@ -498,3 +498,12 @@ witness: curl-core multi::tests::localhost_names_are_the_loopback_addresses
         || (host.len() > tail.len() && host[host.len() - tail.len()..].eq_ignore_ascii_case(tail))
 --- new
     host.eq_ignore_ascii_case(b"localhost")
+
+=== an established connection keeps the next attempt's wait
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::an_established_connection_forgets_the_next_attempt
+--- old
+    if !matches!(connected, Ok(Connected::Connecting(_))) {
+        run.deadlines.clear(TimerKind::Eyeballs);
+    }
+--- new

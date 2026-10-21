@@ -138,6 +138,13 @@ mod tests {
         }
     }
 
+    /// Each feature is listed under the name `curl -V` gives it.
+    #[test]
+    fn features_are_named_as_c_names_them() {
+        let names: Vec<_> = version().features.iter().map(|f| f.name()).collect();
+        assert!(names.contains(&"IPv6"), "{names:?}");
+    }
+
     #[test]
     fn version_matches_its_parts() {
         let v = version();

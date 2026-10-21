@@ -284,6 +284,62 @@ fn a_new_connection_waits_for_room_within_the_limits() {
     pool.release(d, Finish::default(), UNLIMITED, &mut net, clock.now());
 }
 
+/// Room is made by closing the connection idle longest, the first of
+/// those idle as long (`cpool_get_oldest_idle`).
+#[test]
+fn room_is_made_by_the_connection_idle_longest() {
+    let (mut net, clock) = net();
+    let mut pool = Pool::new().unwrap();
+    let mapped = || to(TCP, b"[::ffff:7f00:1]", 5);
+    let routes = [tcp(1), tcp(4), mapped()];
+    let leases: Vec<ConnLease> = routes
+        .into_iter()
+        .map(|r| {
+            let l = new(&mut pool, r, &mut net, clock.now());
+            up(&mut pool, &l, &mut net, clock.now());
+            l
+        })
+        .collect();
+    let [a, b, c] = <[ConnLease; 3]>::try_from(leases).unwrap();
+    // #0 and #1 idle as long, #2 less.
+    pool.release(a, Finish::default(), UNLIMITED, &mut net, clock.now());
+    pool.release(b, Finish::default(), UNLIMITED, &mut net, clock.now());
+    clock.advance(Duration::from_millis(5));
+    pool.release(c, Finish::default(), UNLIMITED, &mut net, clock.now());
+    clock.advance(Duration::from_millis(5));
+    let limits = AddLimits {
+        max_host: None,
+        max_total: NonZeroU32::new(3),
+    };
+    let mut notes = Vec::new();
+    let got = pool.acquire(tcp(3), RULES, limits, &mut net, clock.now(), &mut notes);
+    let Ok(Acquired::New(d)) = got else {
+        panic!("no room made: {got:?}");
+    };
+    pool.release(d, Finish::default(), UNLIMITED, &mut net, clock.now());
+    let mut kept = |route| {
+        let got = pool.acquire(
+            route,
+            RULES,
+            AddLimits::default(),
+            &mut net,
+            clock.now(),
+            &mut notes,
+        );
+        let (reused, lease) = match got {
+            Ok(Acquired::Reused(lease)) => (true, lease),
+            Ok(Acquired::New(lease)) => (false, lease),
+            got => panic!("{got:?}"),
+        };
+        pool.release(lease, Finish::default(), UNLIMITED, &mut net, clock.now());
+        reused
+    };
+    assert_eq!(
+        [kept(tcp(1)), kept(tcp(4)), kept(mapped())],
+        [false, true, true]
+    );
+}
+
 /// A setup tries its address, waits, and is established in the slot it
 /// started in; its socket is the pool's to wait on until then.
 #[test]

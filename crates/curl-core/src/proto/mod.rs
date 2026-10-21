@@ -252,3 +252,28 @@ impl ProtoState {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::url::ParseOptions;
+
+    /// The peer a URL names keeps its IPv6 zone.
+    #[test]
+    fn the_peer_keeps_the_url_s_zone() {
+        let zone_of = |url: &[u8]| {
+            let opts = ParseOptions {
+                non_support_scheme: true,
+                ..ParseOptions::NONE
+            };
+            let url = Url::parse(url, opts).unwrap();
+            let peer = ProtoState::Tcp.network(&url).unwrap().unwrap();
+            peer.zone().map(<[u8]>::to_vec)
+        };
+        assert_eq!(
+            zone_of(b"tcp://[fe80::1%25eth0]:1/"),
+            Some(b"eth0".to_vec())
+        );
+        assert_eq!(zone_of(b"tcp://[fe80::1]:1/"), None);
+    }
+}

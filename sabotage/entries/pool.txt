@@ -371,3 +371,19 @@ witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
             && !rules.fresh
 --- new
             && !rules.fresh.then_some(()).is_some_and(|()| false)
+
+=== a transfer finding room lets no one waiting look
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_transfer_finding_room_lets_the_next_look
+--- old
+    if !matches!(acquired, Ok(Acquired::Wait(_))) {
+--- new
+    if false {
+
+=== room is made by the youngest idle connection
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::room_is_made_by_the_connection_idle_longest
+--- old
+            if oldest.is_none_or(|(_, ms)| idle_ms > ms) {
+--- new
+            if oldest.is_none_or(|(_, ms)| idle_ms < ms) {

@@ -441,3 +441,20 @@ pub enum Progress {
     /// A handler, which may ask for the meter too.
     Handler(Handler<dyn ProgressHandler>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A copy keeps the lists of addresses and peers given for names.
+    #[test]
+    fn a_copy_keeps_the_lists_for_names() {
+        let mut o = Options::default();
+        o.resolve.set([&b"a:1:127.0.0.1"[..]]).unwrap();
+        o.connect_to.set([&b"::b:2"[..]]).unwrap();
+        let copy = o.try_clone().unwrap();
+        assert!(copy.resolve.entries().eq([&b"a:1:127.0.0.1"[..]]));
+        assert_eq!(copy.resolve.stamp(), o.resolve.stamp());
+        assert!(copy.connect_to.iter().eq([&b"::b:2"[..]]));
+    }
+}

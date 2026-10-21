@@ -588,6 +588,7 @@ impl MultiEvents<NoHost> for Probe {
         let dup = cx.duplicate(id).unwrap().unwrap();
         self.in_timer.push(probe_options(Some(dup.options())));
         cx.set_notify(NotifyKind::EasyDone, true);
+        cx.conn_limits_mut().max_host = NonZeroU32::new(7);
         Ok(())
     }
 
@@ -612,6 +613,7 @@ impl MultiEvents<NoHost> for Probe {
         self.in_notify.push(probe_options(Some(dup.options())));
         let read = cx.info_read().map(|m| m.id);
         self.in_notify.push(format!("read {}", read == Some(id)));
+        cx.conn_limits_mut().max_total = NonZeroU32::new(8);
     }
 }
 
@@ -649,6 +651,9 @@ fn callbacks_reach_the_multi_through_their_contexts() {
         m.easy(id).unwrap().options().url(),
         Some(&b"null://again"[..])
     );
+    let limits = m.conn_limits_mut();
+    let n = NonZeroU32::new;
+    assert_eq!((limits.max_host, limits.max_total), (n(7), n(8)));
 }
 
 fn multi_with_waker() -> (Multi, ManualClock, TryArc<Waker>) {
@@ -1112,6 +1117,35 @@ fn networked() -> (Multi, ManualClock) {
         waker: None,
     };
     (Multi::new(env).unwrap(), clock)
+}
+
+/// A connection established before the next attempt was due leaves no
+/// wait for that attempt behind (`Curl_expire_done`, HAPPY_EYEBALLS).
+#[test]
+fn an_established_connection_forgets_the_next_attempt() {
+    use crate::conn::io::{Conversation, Peer};
+    let clock = ManualClock::new().unwrap();
+    let v6 = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 7));
+    let head = b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n";
+    let net = FakeNet::new(clock.clone())
+        .with_peer(v6, Peer::AcceptsAfter(Duration::from_millis(5)))
+        .with_peer(([127, 0, 0, 1], 7).into(), Peer::Accepts)
+        .with_conversation(v6, Conversation::new(head, false));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    m.add(easy("http://localhost:7/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let next = Some(Duration::from_millis(200));
+    assert_eq!(m.timeout(), next, "the next attempt's");
+    clock.advance(Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.timeout(), None, "the body still to come");
 }
 
 /// A verbose transfer of `url`, and its trace.
@@ -1866,6 +1900,37 @@ fn a_transfer_waits_for_room_under_the_host_limit() {
         messages(&mut m),
         [(a.index(), Ok(()), 1), (b.index(), Ok(()), 0)]
     );
+}
+
+/// A waiting transfer that finds room lets the next one waiting look
+/// too, while it is still connecting, and one that finds none lets no
+/// one (`multistate_connect`'s `multi_schedule_pending`).
+#[test]
+fn a_transfer_finding_room_lets_the_next_look() {
+    let (mut m, clock) = networked();
+    m.conn_limits_mut().max_total = NonZeroU32::new(2);
+    let mut add = |url: &str, fresh| {
+        let (mut e, lines) = traced(url);
+        e.options_mut().limits.reuse.fresh = fresh;
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        (id, lines)
+    };
+    // One never connects, one is done after 5 ms; two wait for room.
+    let (stuck, _) = add("tcp://127.0.0.1:3/", false);
+    let (late, _) = add("tcp://127.0.0.1:4/", false);
+    let (fresh, _) = add("tcp://127.0.0.1:4/", true);
+    let (next, next_lines) = add("tcp://127.0.0.1:1/", false);
+    m.perform(&mut NoEvents).unwrap();
+    assert_ne!(m.timeout(), Some(Duration::ZERO), "a wait wakes no one");
+    clock.advance(Duration::from_millis(5));
+    // The idle connection to :4 is closed for the fresh one, which is
+    // still connecting when the next looks, and waits again.
+    m.perform(&mut NoEvents).unwrap();
+    let total = "No connections available, total of 2 reached.\n";
+    assert_eq!(trace_of(&next_lines), [total, total]);
+    for id in [stuck, late, fresh, next] {
+        m.remove(id, &mut NoEvents).unwrap();
+    }
 }
 
 /// Under the total limit, an idle connection to another host is closed

@@ -1484,6 +1484,15 @@ fn the_multi_s_callbacks_run_with_their_frames() {
             (None, None),
             "-1 is taken as 0"
         );
+        let (host, total) = (
+            ffi::CURLMOPT_MAX_HOST_CONNECTIONS,
+            ffi::CURLMOPT_MAX_TOTAL_CONNECTIONS,
+        );
+        assert_eq!(curl_multi_setopt(m, host, 2 as c_long), CURLM_OK);
+        assert_eq!(curl_multi_setopt(m, total, 3 as c_long), CURLM_OK);
+        let limits = *crate::multi::multi(m).core_mut().conn_limits_mut();
+        let n = core::num::NonZeroU32::new;
+        assert_eq!((limits.max_host, limits.max_total), (n(2), n(3)));
         assert_eq!(
             curl_multi_setopt(m, ffi::CURLMOPT_PUSHDATA, ptr::null_mut::<c_void>()),
             ffi::CURLM_UNKNOWN_OPTION

@@ -163,12 +163,16 @@ impl DnsCache {
     /// (`Curl_dnscache_prune`); while over the most kept, those over half
     /// the oldest's age. None keeps them for ever.
     pub(crate) fn prune(&mut self, now: Instant, max_age: Option<Duration>) {
+        self.prune_to(now, max_age, MAX_ENTRIES);
+    }
+
+    fn prune_to(&mut self, now: Instant, max_age: Option<Duration>, most: usize) {
         let Some(mut max_age) = max_age else {
             return;
         };
         loop {
             self.entries.retain(|e| !e.stale_at(now, max_age));
-            if self.entries.len() <= MAX_ENTRIES {
+            if self.entries.len() <= most {
                 return;
             }
             let oldest = self
@@ -455,6 +459,14 @@ mod tests {
         ] {
             assert_eq!(parse_entry(bad), syntax, "{bad:?}");
         }
+        // The longest name and the highest port are read.
+        let long = [&[b'a'; 4096][..], b":65535:127.0.0.1"].concat();
+        assert!(matches!(
+            parse_entry(&long),
+            Ok(Some(ListEntry::Add { name, port: 65535, .. })) if name.len() == 4096
+        ));
+        let longer = [&[b'a'; 4097][..], b":1:127.0.0.1"].concat();
+        assert_eq!(parse_entry(&longer), Ok(None));
         assert_eq!(
             parse_entry(b"a:1:127.0.0.1,example.com"),
             Err(BadEntry::Syntax {
@@ -504,6 +516,33 @@ mod tests {
             cache.lookup((b"a", 1), Family::Any, false, MAX_AGE, now),
             Lookup::Missing
         ));
+    }
+
+    /// Over the most kept, the entries over half the oldest's age go, the
+    /// permanent ones neither counted nor dropped.
+    #[test]
+    fn a_full_cache_drops_its_oldest_half() {
+        let clock = ManualClock::new().unwrap();
+        let start = clock.now();
+        let answer =
+            |name: &[u8]| TryRc::try_new(Answer::new(name, vec![ip("1.2.3.4")]).unwrap()).unwrap();
+        let mut cache = DnsCache::default();
+        let at = |s| start.after(Duration::from_secs(s));
+        cache.put(answer(b"p"), 1, at(0), true).unwrap();
+        cache.put(answer(b"a"), 1, at(60), false).unwrap();
+        cache.put(answer(b"b"), 1, at(80), false).unwrap();
+        cache.put(answer(b"c"), 1, at(90), false).unwrap();
+        cache.prune_to(at(100), MAX_AGE, 2);
+        let mut kept = |name: &[u8]| {
+            matches!(
+                cache.lookup((name, 1), Family::Any, false, None, at(100)),
+                Lookup::Found(_)
+            )
+        };
+        assert_eq!(
+            [kept(b"p"), kept(b"a"), kept(b"b"), kept(b"c")],
+            [true, false, false, true]
+        );
     }
 
     /// The cache keeps an answer by name, in any case, and port; a

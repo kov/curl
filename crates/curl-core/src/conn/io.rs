@@ -673,6 +673,14 @@ mod tests {
 
     use super::*;
 
+    /// The system's network resolves names with the system's resolver.
+    #[test]
+    fn the_system_resolves_names() {
+        let addrs = SystemNet.resolve(b"localhost", Family::V4).unwrap();
+        assert!(addrs.contains(&IpAddr::from([127, 0, 0, 1])), "{addrs:?}");
+        assert!(SystemNet.resolve(b"nonexist.invalid", Family::Any).is_err());
+    }
+
     #[test]
     fn the_system_network_polls_the_descriptors() {
         let (mut a, b) = UnixStream::pair().unwrap();

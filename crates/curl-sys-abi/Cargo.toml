@@ -21,6 +21,7 @@ nightly = []
 [dependencies]
 curl-alloc = { version = "0.1.0", path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
+curl-psl = { path = "../curl-psl" }
 libc = "0.2"
 
 [dev-dependencies]

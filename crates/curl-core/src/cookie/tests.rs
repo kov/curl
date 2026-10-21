@@ -16,11 +16,14 @@ fn set(jar: &mut Jar, host: &[u8], path: &[u8], value: &[u8]) -> Option<String> 
     let said = jar
         .set_by(value, server(host, path), None, NOW, &mut n)
         .unwrap();
-    said.map(|s| text(s.line(|parts| parts.concat())))
+    said.map(|s| said_text(&s))
 }
 
-fn text(bytes: Vec<u8>) -> String {
-    String::from_utf8_lossy(&bytes).into_owned()
+/// What the jar said, its lines joined by newlines.
+fn said_text(said: &Said<'_>) -> String {
+    let mut lines = Vec::new();
+    said.lines(|parts| lines.push(String::from_utf8_lossy(&parts.concat()).into_owned()));
+    lines.join("\n")
 }
 
 fn lines(jar: &Jar) -> Vec<String> {
@@ -457,7 +460,7 @@ fn checks_public_suffixes() {
             &mut n,
         )
         .unwrap()
-        .map(|s| text(s.line(|p| p.concat())));
+        .map(|s| said_text(&s));
     assert_eq!(
         said.as_deref(),
         Some("cookie 'a' dropped, domain 'x.com' must not set cookies for 'com'")
@@ -530,4 +533,54 @@ fn writes_negative_expiry_with_its_sign() {
     assert_eq!(signed(-12, &mut buf), b"-12");
     assert_eq!(signed(i64::MIN, &mut buf), b"-9223372036854775808");
     assert_eq!(signed(0, &mut buf), b"0");
+}
+
+/// A list that could not be had.
+struct Missing;
+
+impl PublicSuffixes for Missing {
+    fn is_public_suffix(&self, _: &[u8]) -> bool {
+        unreachable!("not asked without the list")
+    }
+
+    fn accepts(&self, _: &[u8], _: &[u8]) -> bool {
+        unreachable!("not asked without the list")
+    }
+
+    fn available(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn without_the_list_every_domain_is_refused() {
+    let mut jar = running();
+    let mut n = 0;
+    let said = jar
+        .set_by(
+            b"a=1",
+            server(b"example.com", b"/"),
+            Some(&Missing),
+            NOW,
+            &mut n,
+        )
+        .unwrap()
+        .map(|s| said_text(&s));
+    assert_eq!(
+        said.as_deref(),
+        Some(
+            "libpsl problem, rejecting cookie for safety\n\
+             cookie 'a' dropped, domain 'example.com' must not set cookies for 'example.com'"
+        )
+    );
+    // An address needs no list.
+    jar.set_by(
+        b"b=1",
+        server(b"127.0.0.1", b"/"),
+        Some(&Missing),
+        NOW,
+        &mut n,
+    )
+    .unwrap();
+    assert_eq!(jar.len(), 1);
 }

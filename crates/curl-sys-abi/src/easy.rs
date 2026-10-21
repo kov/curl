@@ -281,9 +281,13 @@ pub(crate) unsafe fn handle<'a>(curl: *mut CURL) -> Option<&'a ShimEasy> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_easy_init() -> *mut CURL {
+    // Each handle has its own list of public suffixes, made and loaded
+    // the first time a cookie asks, as C loads it in the handle's multi.
+    let mut handle = Easy::new();
+    handle.set_public_suffixes_from(curl_psl::suffixes);
     // C initialises the library for a program that did not.
     match ShimEasy::boxed(
-        Easy::new(),
+        handle,
         CCallbacks::new(),
         CSettings::new(),
         callbacks::Post::new(),

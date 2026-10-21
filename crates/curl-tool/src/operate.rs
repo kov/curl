@@ -10,6 +10,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_format};
+use curl_core::cookie::Suffixes;
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed};
@@ -66,12 +67,18 @@ pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
     share.keep_cookies();
+    // And one list of public suffixes (`CURL_LOCK_DATA_PSL`).
+    let suffixes = match curl_psl::suffixes() {
+        Ok(suffixes) => suffixes,
+        Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+    };
     let run = Shared {
         global: &line.global,
         stdout: &stdout,
         tracer: tracer.as_ref(),
         msgs,
         share: &share,
+        suffixes: &suffixes,
     };
     let ending = run_all(line, &run);
     // What is left is written at exit; a failure then goes unreported, as
@@ -294,6 +301,7 @@ struct Shared<'a, 'l> {
     tracer: Option<&'a Tracer>,
     msgs: Messages,
     share: &'a Share,
+    suffixes: &'a Suffixes,
 }
 
 /// Set up, run and finish one URL's transfer (`create_single`,
@@ -397,6 +405,7 @@ fn transfer(
         tracer: run.tracer,
     };
     easy.options_mut().share = Some(run.share.clone());
+    easy.set_public_suffixes(Some(run.suffixes.clone()));
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
     let failed = |easy: &Easy, e| {

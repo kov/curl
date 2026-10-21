@@ -9,7 +9,7 @@
 
 use std::cmp::Ordering;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use crate::url::is_ip_address;
 
@@ -58,6 +58,32 @@ pub trait PublicSuffixes {
     /// Whether `host` may set a cookie for `domain`, both in lower case
     /// (`psl_is_cookie_domain_acceptable`).
     fn accepts(&self, host: &[u8], domain: &[u8]) -> bool;
+
+    /// Whether the list could be had: without it, every domain is
+    /// refused (`Curl_psl_use` failing).
+    fn available(&self) -> bool {
+        true
+    }
+}
+
+/// A list of public suffixes, shared by the handles given it.
+#[derive(Clone)]
+pub struct Suffixes(TryRc<Box<dyn PublicSuffixes>>);
+
+impl Suffixes {
+    pub fn new(list: Box<dyn PublicSuffixes>) -> Result<Suffixes, OutOfMemory> {
+        Ok(Suffixes(TryRc::try_new(list)?))
+    }
+
+    pub(crate) fn list(&self) -> &dyn PublicSuffixes {
+        &**self.0
+    }
+}
+
+impl std::fmt::Debug for Suffixes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Suffixes")
+    }
 }
 
 /// One cookie.
@@ -237,10 +263,12 @@ pub(crate) enum Said<'a> {
     NotSecure,
     /// A domain the host is not in.
     BadDomain(&'a [u8]),
-    /// A domain that is a public suffix, set by `host`: none from a file.
+    /// A domain that is a public suffix, set by `host`: none from a file;
+    /// `problem`: no list could be had, so every domain is refused.
     PublicSuffix {
         cookie: Cookie,
         host: Option<&'a [u8]>,
+        problem: bool,
     },
     /// It would overlay a secure cookie, set over a connection that was
     /// not.
@@ -253,8 +281,8 @@ pub(crate) enum Said<'a> {
 }
 
 impl Said<'_> {
-    /// The line C traces, in parts.
-    pub(crate) fn line<R>(&self, f: impl FnOnce(&[&[u8]]) -> R) -> R {
+    /// The lines C traces, each in parts.
+    pub(crate) fn lines(&self, mut f: impl FnMut(&[&[u8]])) {
         let mut a = [0u8; 20];
         let mut b = [0u8; 20];
         match self {
@@ -270,15 +298,24 @@ impl Said<'_> {
             Said::ValueOctets => f(&[b"invalid octets in value, cookie dropped"]),
             Said::NotSecure => f(&[b"skipped cookie because not 'secure'"]),
             Said::BadDomain(domain) => f(&[b"skipped cookie with bad tailmatch domain: ", domain]),
-            Said::PublicSuffix { cookie, host } => f(&[
-                b"cookie '",
-                &cookie.name,
-                b"' dropped, domain '",
-                host.unwrap_or(b"[file]"),
-                b"' must not set cookies for '",
-                cookie.domain.as_deref().unwrap_or(NIL),
-                b"'",
-            ]),
+            Said::PublicSuffix {
+                cookie,
+                host,
+                problem,
+            } => {
+                if *problem {
+                    f(&[b"libpsl problem, rejecting cookie for safety"]);
+                }
+                f(&[
+                    b"cookie '",
+                    &cookie.name,
+                    b"' dropped, domain '",
+                    host.unwrap_or(b"[file]"),
+                    b"' must not set cookies for '",
+                    cookie.domain.as_deref().unwrap_or(NIL),
+                    b"'",
+                ]);
+            }
             Said::Overlay(cookie) => f(&[
                 b"cookie '",
                 &cookie.name,
@@ -461,9 +498,13 @@ impl Jar {
         };
         if source.checks_suffixes()
             && let Some(suffixes) = suffixes
-            && on_public_suffix(&mut co, host, suffixes)
+            && let Some(problem) = on_public_suffix(&mut co, host, suffixes)
         {
-            return Ok(Some(Said::PublicSuffix { cookie: co, host }));
+            return Ok(Some(Said::PublicSuffix {
+                cookie: co,
+                host,
+                problem,
+            }));
         }
         if co.prefix == Prefix::Host
             && !(co.secure && co.path.as_deref() == Some(b"/") && !co.tailmatch)
@@ -930,12 +971,14 @@ fn bad_domain(domain: &[u8]) -> bool {
 /// Whether `co` is set on a public suffix from a host that may not set
 /// it there (`is_public_suffix`), `host` being none for a file's. One
 /// that is allowed there goes to that domain alone.
-fn on_public_suffix(co: &mut Cookie, host: Option<&[u8]>, suffixes: &dyn PublicSuffixes) -> bool {
-    let Some(domain) = co.domain.as_deref() else {
-        return false;
-    };
+fn on_public_suffix(
+    co: &mut Cookie,
+    host: Option<&[u8]>,
+    suffixes: &dyn PublicSuffixes,
+) -> Option<bool> {
+    let domain = co.domain.as_deref()?;
     if is_ip_address(domain) {
-        return false;
+        return None;
     }
     let trimmed = |s: &[u8]| -> ([u8; 255], usize, bool) {
         let s = s.strip_suffix(b".").unwrap_or(s);
@@ -951,7 +994,8 @@ fn on_public_suffix(co: &mut Cookie, host: Option<&[u8]>, suffixes: &dyn PublicS
     let (cookie_low, clen, cfits) = trimmed(domain);
     let (host_low, hlen, hfits) = trimmed(host.unwrap_or_default());
     let mut acceptable = false;
-    if cfits && hfits {
+    let problem = cfits && hfits && !suffixes.available();
+    if cfits && hfits && !problem {
         let cookie_low = &cookie_low[..clen];
         match host {
             Some(host) => {
@@ -973,7 +1017,7 @@ fn on_public_suffix(co: &mut Cookie, host: Option<&[u8]>, suffixes: &dyn PublicS
             }
         }
     }
-    !acceptable
+    (!acceptable).then_some(problem)
 }
 
 /// `Max-Age`, as the time it gives (`parse_maxage`): a number that

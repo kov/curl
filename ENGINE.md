@@ -1538,8 +1538,13 @@ its own, under C's 8190-byte cap. A `Set-Cookie:` line is stored before it is tr
 request at most. `Easy::save_cookies` writes the jar to `save_to` (`Curl_flush_cookies`):
 the shim at `curl_easy_cleanup` and FLUSH, the tool as each transfer's handle is done with.
 Files are written whole and renamed into place (`save::replace`, C's `Curl_fopen`). Domains
-are checked against public suffixes through `cookie::PublicSuffixes`; without a list, a
-domain needs a dot not at its end, or to be `localhost` (`bad_domain`).
+are checked against public suffixes through `cookie::PublicSuffixes`, which `curl-psl`
+implements over libpsl; core cannot make one, so the handle is given it
+(`Easy::set_public_suffixes`, kept through `reset`, shared by duplicates): the tool gives
+every handle one list, as its share's `CURL_LOCK_DATA_PSL` does, and the shim each handle its
+own, loaded at the first question, as C's per-multi cache is. A handle given none behaves as
+C built without libpsl: a domain needs a dot not at its end, or to be `localhost`
+(`bad_domain`). A list that cannot be loaded refuses every domain, as C's does.
 
 ---
 

@@ -80,12 +80,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-psl"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-core",
+]
+
+[[package]]
 name = "curl-sys-abi"
 version = "0.1.0"
 dependencies = [
  "cc",
  "curl-alloc",
  "curl-core",
+ "curl-psl",
  "libc",
 ]
 
@@ -96,6 +105,7 @@ dependencies = [
  "curl-alloc",
  "curl-core",
  "curl-os",
+ "curl-psl",
 ]
 
 [[package]]

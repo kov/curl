@@ -416,10 +416,9 @@ cargo-mutants run on the milestone's diff.
     by a share that keeps cookies, as the tool's share does; its files read as each transfer
     starts; `Set-Cookie:` stored and the request's `Cookie:` sent; `CURLOPT_COOKIE`,
     `COOKIEFILE`, `COOKIEJAR`, `COOKIESESSION`, `COOKIELIST` and `CURLINFO_COOKIELIST`; the
-    tool's `-b`, `-c` and `-j`. 38 of the 39 cookie tests the Rust leg runs pass. Next: public
-    suffixes through libpsl, which the reference build has (eight tests, and domains without a
-    dot); `-R` (step 27) on the date parser. Waiting: the shim's `curl_share_*` (test 1905);
-    the proxy tests, with step 31.
+    tool's `-b`, `-c` and `-j`; public suffixes through libpsl (`curl-psl`). 44 of the 45
+    cookie and PSL tests the Rust leg runs pass. Next: `-R` (step 27) on the date parser.
+    Waiting: the shim's `curl_share_*` (test 1905); the proxy tests, with step 31.
 31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
     the proxy options and the scheme table, each trace's host checked on the C leg. Then the
     absolute request target and Proxy-Authorization; then CONNECT, after the dial result is

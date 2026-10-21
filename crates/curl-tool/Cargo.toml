@@ -22,6 +22,7 @@ required-features = ["debug-hooks"]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os", features = ["args"] }
+curl-psl = { path = "../curl-psl" }
 
 [lints]
 workspace = true

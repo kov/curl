@@ -9,7 +9,7 @@ use std::io::Read as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::cookie::{Jar, Source};
+use crate::cookie::{Jar, Source, Suffixes};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
@@ -101,6 +101,8 @@ fn read_files<H: Host>(
     files: &Lines,
 ) -> Result<(), ErrorKind> {
     let new_session = cx.easy().options().http.cookies.new_session;
+    let suffixes = cx.easy_mut().public_suffixes().map_err(oom)?;
+    let list = suffixes.as_ref().map(Suffixes::list);
     for name in files.iter() {
         // An empty name reads nothing, and turns the jar on all the same.
         if name.is_empty() {
@@ -127,7 +129,7 @@ fn read_files<H: Host>(
                 continue;
             }
         };
-        jar.load(&text, new_session, false, None, cx.unix_time())
+        jar.load(&text, new_session, false, list, cx.unix_time())
             .map_err(oom)?;
     }
     Ok(())
@@ -198,19 +200,22 @@ pub(super) fn set_by_server<H: Host>(
     site: &Site<'_>,
     set: &mut u8,
 ) -> Result<(), ErrorKind> {
-    let Some(mut jar) = cx.easy_mut().cookies.take() else {
+    if cx.easy().cookies.is_none() {
         return Ok(());
-    };
+    }
+    let suffixes = cx.easy_mut().public_suffixes().map_err(oom)?;
+    let list = suffixes.as_ref().map(Suffixes::list);
+    let mut jar = cx.easy_mut().cookies.take().expect("checked above");
     let source = Source::Server {
         host: site.host,
         path: site.path,
         secure: site.secure(),
     };
     let now = cx.unix_time();
-    let stored = match jar.set_by(value, source, None, now, set) {
+    let stored = match jar.set_by(value, source, list, now, set) {
         Ok(said) => {
             if let Some(said) = said {
-                said.line(|parts| trace::info_with(cx, parts));
+                said.lines(|parts| trace::info_with(cx, parts));
             }
             Ok(())
         }

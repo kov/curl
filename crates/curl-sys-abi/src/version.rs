@@ -81,6 +81,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
+        Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
     }
 }
 
@@ -224,14 +225,17 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["Debug", "IPv6"][..],
-                ffi::CURL_VERSION_DEBUG | ffi::CURL_VERSION_IPV6
+                &["Debug", "IPv6", "PSL"][..],
+                ffi::CURL_VERSION_DEBUG | ffi::CURL_VERSION_IPV6 | ffi::CURL_VERSION_PSL
             )
         );
         #[cfg(not(feature = "debug-hooks"))]
         assert_eq!(
             (names.as_slice(), info.features),
-            (&["IPv6"][..], ffi::CURL_VERSION_IPV6)
+            (
+                &["IPv6", "PSL"][..],
+                ffi::CURL_VERSION_IPV6 | ffi::CURL_VERSION_PSL
+            )
         );
     }
 }

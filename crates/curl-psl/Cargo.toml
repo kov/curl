@@ -1,0 +1,15 @@
+[package]
+name = "curl-psl"
+description = "The public suffix list of the curl rewrite, from libpsl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "psl"
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+
+[lints]
+workspace = true

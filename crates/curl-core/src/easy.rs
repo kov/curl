@@ -7,7 +7,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use crate::conn::io::SystemNet;
-use crate::cookie::Jar;
+use crate::cookie::{Jar, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::id::ArenaPolicy;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
@@ -43,6 +43,19 @@ pub struct Easy {
     /// the next, and through `reset`. For the length of a perform on a
     /// share that keeps cookies, the share's, this one set aside.
     pub(crate) cookies: Option<Jar>,
+    /// The public suffixes cookies are checked against: without them, a
+    /// domain needs a dot, as in C built without libpsl.
+    suffixes: SuffixList,
+}
+
+/// Where a handle's public suffixes come from.
+#[derive(Debug, Default)]
+enum SuffixList {
+    #[default]
+    None,
+    Given(Suffixes),
+    /// Made the first time they are wanted.
+    Made(fn() -> Result<Suffixes, OutOfMemory>),
 }
 
 /// A handle's own multi (C's `multi_easy`).
@@ -107,6 +120,11 @@ impl Easy {
             private: None,
             // A jar of its own, empty, if this one's is on.
             cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            suffixes: match &self.suffixes {
+                SuffixList::Given(given) => SuffixList::Given(given.clone()),
+                SuffixList::Made(make) => SuffixList::Made(*make),
+                SuffixList::None => SuffixList::None,
+            },
         })
     }
 
@@ -119,6 +137,31 @@ impl Easy {
         self.resolve_read = 0;
         self.wildcard_resolve = false;
         self.auth = HostAuth::default();
+    }
+
+    /// The public suffixes cookies' domains are checked against, kept
+    /// through `reset` (libpsl's list, as C's build has it).
+    pub fn set_public_suffixes(&mut self, suffixes: Option<Suffixes>) {
+        self.suffixes = suffixes.map_or(SuffixList::None, SuffixList::Given);
+    }
+
+    /// As `set_public_suffixes`, with a list `make` makes the first time
+    /// one is wanted, so that a handle no cookie needs it for costs
+    /// nothing: as C loads it in the handle's multi.
+    pub fn set_public_suffixes_from(&mut self, make: fn() -> Result<Suffixes, OutOfMemory>) {
+        self.suffixes = SuffixList::Made(make);
+    }
+
+    /// The public suffixes, made now if they are made when wanted.
+    pub(crate) fn public_suffixes(&mut self) -> Result<Option<Suffixes>, OutOfMemory> {
+        if let SuffixList::Made(make) = self.suffixes {
+            self.suffixes = SuffixList::Given(make()?);
+        }
+        Ok(match &self.suffixes {
+            SuffixList::Given(given) => Some(given.clone()),
+            SuffixList::Made(_) => unreachable!("made above"),
+            SuffixList::None => None,
+        })
     }
 
     /// Turn the cookie jar on: one of the handle's own, empty, if it has
@@ -146,7 +189,9 @@ impl Easy {
         // C counts the line against the last request's fields; this
         // counts it alone.
         let mut set = 0;
-        self.with_jar(true, |jar| jar.add_line(line, None, now, &mut set))?
+        let suffixes = self.public_suffixes().map_err(oom)?;
+        let list = suffixes.as_ref().map(Suffixes::list);
+        self.with_jar(true, |jar| jar.add_line(line, list, now, &mut set))?
             .expect("made if missing")
             .map_err(oom)
     }
@@ -180,10 +225,12 @@ impl Easy {
         }
         let new_session = cookies.new_session;
         let now = SystemClock::new().unix_time();
+        let suffixes = self.public_suffixes().map_err(oom)?;
+        let list = suffixes.as_ref().map(Suffixes::list);
         self.with_jar(true, |jar| {
             texts
                 .iter()
-                .try_for_each(|text| jar.load(text, new_session, true, None, now))
+                .try_for_each(|text| jar.load(text, new_session, true, list, now))
         })?
         .expect("made if missing")
         .map_err(oom)

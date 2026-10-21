@@ -1277,3 +1277,15 @@ fn a_body_larger_than_the_buffer_goes_in_buffers() {
     assert_eq!(pieces[1].len(), 65536);
     assert_eq!(ran.easy.report().sizes().upload(), body.len() as u64);
 }
+
+/// The application's method replaces the word on the request line; the
+/// body is still the one the method implies.
+#[test]
+fn a_custom_method_is_sent_with_the_body_kept() {
+    let ran = with_body(Method::Post, b"a=b", |o| {
+        o.http.custom_method = Some(b"PATCH".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.request.starts_with(b"PATCH /p HTTP/1.1\r\n"));
+    assert!(ran.request.ends_with(b"x-www-form-urlencoded\r\n\r\na=b"));
+}

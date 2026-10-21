@@ -427,3 +427,11 @@ witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
             (Some(kind), Some(Some(length))) if !http.headers.asks_chunked() => {
 --- new
             (Some(kind), Some(Some(length))) => {
+
+=== the custom method is not sent
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_custom_method_is_sent_with_the_body_kept
+--- old
+        let method = http.custom_method.as_deref().unwrap_or(method);
+--- new
+        let method = method;

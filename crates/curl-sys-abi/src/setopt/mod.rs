@@ -308,6 +308,10 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.http.referer = unsafe { owned(p) }?;
         }
+        (ffi::CURLOPT_CUSTOMREQUEST, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.http.custom_method = unsafe { owned(p) }?;
+        }
         (ffi::CURLOPT_USERAGENT, Ptr(p)) => {
             // SAFETY: as above.
             options.http.user_agent = unsafe { owned(p) }?;

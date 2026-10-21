@@ -218,6 +218,7 @@ impl Request {
             Method::Post => (b"POST", Some(BodyKind::Form)),
             Method::Upload => (b"PUT", Some(BodyKind::Put)),
         };
+        let method = http.custom_method.as_deref().unwrap_or(method);
         if body.is_some() && options.resume.is_some() {
             return Err(trace::fail(
                 cx,

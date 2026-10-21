@@ -347,6 +347,9 @@ pub struct Http {
     pub transfer_encoding: bool,
     /// `CURLOPT_REFERER`.
     pub referer: Option<Vec<u8>>,
+    /// The request's method as sent, in place of the one `method` implies,
+    /// which still decides the body (`CURLOPT_CUSTOMREQUEST`).
+    pub custom_method: Option<Vec<u8>>,
     /// A response code of 400 or more fails the transfer at the end of
     /// its head (`CURLOPT_FAILONERROR`).
     pub fail_on_error: bool,
@@ -363,6 +366,7 @@ impl Http {
             raw: self.raw,
             transfer_encoding: self.transfer_encoding,
             referer: self.referer.as_deref().map(copy).transpose()?,
+            custom_method: self.custom_method.as_deref().map(copy).transpose()?,
             fail_on_error: self.fail_on_error,
         })
     }

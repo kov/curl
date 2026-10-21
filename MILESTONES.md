@@ -357,12 +357,14 @@ cargo-mutants run on the milestone's diff.
     tool's `-d` family, `--json`, `-X`, `-T -` and `--expect100-timeout`. T1 tests 1295,
     1740, 1741 and 2093. The 417 retry and the body's rewind for a new leg come with step
     26's legs; `-T .` (standard input without blocking) is still refused.
-26. **http: follow redirects.** **To do.** Opening commit: relative URL resolution and the
-    part setters (the rest of lib1560). Then FOLLOWLOCATION, MAXREDIRS, 301/302/303 method
-    changes, a request body rewound for the next leg, a 417 sent again without `Expect`,
-    the credential gate's first origin kept in `Run`, credentials and a custom Host
-    dropped across hosts through the gate,
-    `-e ";auto"` and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
+26. **http: follow redirects.** **In progress.** Done: relative URL resolution and the part
+    setters (the rest of lib1560's tables), and the shim's `curl_url_*` (1559, 1921, 1965,
+    1967, 1989); test 1560 itself waits for https and IDN in the build, and
+    `CURLOPT_CURLU` (658, 674, 1518, 1567, 1906, 1977) is not yet read. Then
+    FOLLOWLOCATION, MAXREDIRS, 301/302/303 method changes, a request body rewound for the
+    next leg, a 417 sent again without `Expect`, the credential gate's first origin kept in
+    `Run`, credentials and a custom Host dropped across hosts through the gate, `-e ";auto"`
+    and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
     followlocation family; T1 tests 193, 1029, 1067, 1080, 1081, 1089, 1090, 1159, 1197,
     1261, 1270, 2081 and 3015, with `%{method}`, `%{referer}`, `%{redirect_url}` and
     `%{num_redirects}`.

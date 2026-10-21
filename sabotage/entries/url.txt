@@ -314,3 +314,11 @@ witness: curl-core url::tests::lib1560_set_parts
         host::check_name(&plain).map_err(bad)?;
 --- new
         let _ = bad;
+
+=== an IDN conversion without an IDN library succeeds
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::sets_parts_as_c_does
+--- old
+        if (self.punycode && !ascii) || (self.puny2idn && ascii) {
+--- new
+        if false {

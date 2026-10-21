@@ -5,8 +5,9 @@
 //! Implemented: parsing a whole URL, resolving a relative one against it,
 //! setting, clearing and appending to single parts, with every flag
 //! `curl_url_set` takes, and getting any part back with every flag of
-//! `curl_url_get` except the IDN conversions (`CURLU_PUNYCODE`,
-//! `CURLU_PUNY2IDN`), which need an IDN library.
+//! `curl_url_get`. The IDN conversions (`CURLU_PUNYCODE`,
+//! `CURLU_PUNY2IDN`) need an IDN library, and fail with LacksIdn where
+//! they would convert, as in C's build without one.
 
 mod encode;
 
@@ -34,7 +35,7 @@ pub fn escape(bytes: &[u8]) -> Result<Vec<u8>, curl_alloc::OutOfMemory> {
 
 /// The longest URL C accepts (`CURL_MAX_INPUT_LENGTH`); its buffers also
 /// stop just short of it.
-const MAX_INPUT: usize = 8_000_000;
+pub const MAX_INPUT: usize = 8_000_000;
 
 /// The scheme used when a URL has none and `default_scheme` is set.
 const DEFAULT_SCHEME: &[u8] = b"https";
@@ -117,6 +118,10 @@ pub struct GetOptions {
     pub get_empty: bool,
     /// `CURLU_NO_GUESS_SCHEME`: a guessed scheme counts as missing.
     pub no_guess_scheme: bool,
+    /// `CURLU_PUNYCODE`: a host not in ASCII in its punycode form.
+    pub punycode: bool,
+    /// `CURLU_PUNY2IDN`: a host in ASCII with its punycode decoded.
+    pub puny2idn: bool,
 }
 
 impl GetOptions {
@@ -128,7 +133,19 @@ impl GetOptions {
         url_encode: false,
         get_empty: false,
         no_guess_scheme: false,
+        punycode: false,
+        puny2idn: false,
     };
+
+    /// Whether the IDN conversions asked for would convert `host`: with
+    /// no IDN library, an error (`host_decode`, `host_encode`).
+    fn idn(&self, host: &[u8]) -> Result<(), UrlErrorKind> {
+        let ascii = host.is_ascii();
+        if (self.punycode && !ascii) || (self.puny2idn && ascii) {
+            return Err(UrlErrorKind::LacksIdn);
+        }
+        Ok(())
+    }
 }
 
 /// A part of a URL, as `CURLUPART_*` names it.
@@ -481,6 +498,35 @@ impl Url {
         Ok(at + 1)
     }
 
+    /// A copy (`curl_url_dup`).
+    pub fn try_clone(&self) -> Result<Url, UrlErrorKind> {
+        let dup = |b: &Option<Bytes>| b.as_deref().map(copy).transpose();
+        let tail = |t: &Option<Tail>| match t {
+            None => Ok(None),
+            Some(Tail::Bare) => Ok(Some(Tail::Bare)),
+            Some(Tail::Text(t)) => Ok(Some(Tail::Text(copy(t)?))),
+        };
+        let scheme = match &self.scheme {
+            Some(s) => Some(Scheme {
+                name: copy(&s.name)?,
+                guessed: s.guessed,
+            }),
+            None => None,
+        };
+        Ok(Url {
+            scheme,
+            user: dup(&self.user)?,
+            password: dup(&self.password)?,
+            options: dup(&self.options)?,
+            host: dup(&self.host)?,
+            zone_id: dup(&self.zone_id)?,
+            port: self.port,
+            path: dup(&self.path)?,
+            query: tail(&self.query)?,
+            fragment: tail(&self.fragment)?,
+        })
+    }
+
     /// Set part `what` to `value`, or clear it if `None`, as `curl_url_set`
     /// does. A whole URL replaces this one, or, if relative, is resolved
     /// against it. A part set alone is encoded or not, but not checked,
@@ -810,6 +856,8 @@ impl Url {
             };
             encode::reencode(&mut enc, &out, query)?;
             out = enc;
+        } else if what == Part::Host {
+            opts.idn(part)?;
         }
         Ok(out)
     }
@@ -912,6 +960,7 @@ impl Url {
         } else if opts.url_encode {
             Some(encode::escape(host)?)
         } else {
+            opts.idn(host)?;
             None
         };
         if !opts.no_guess_scheme || !self.scheme.as_ref().is_some_and(|s| s.guessed) {
@@ -1482,6 +1531,25 @@ mod tests {
         let mut u = Url::parse(b"http://h", ParseOptions::NONE).unwrap();
         u.set(Part::Scheme, Some(b"FILE"), none).unwrap();
         assert_eq!(show(&u.get(Part::Url, g).unwrap()), "file://(nil)");
+
+        // No IDN library: a conversion that would happen fails.
+        let puny = GetOptions {
+            punycode: true,
+            ..g
+        };
+        let idn = GetOptions {
+            puny2idn: true,
+            ..g
+        };
+        let u = Url::parse("http://räksmörgås.se/".as_bytes(), ParseOptions::NONE).unwrap();
+        assert_eq!(u.get(Part::Host, puny), Err(UrlErrorKind::LacksIdn));
+        assert_eq!(u.get(Part::Url, puny), Err(UrlErrorKind::LacksIdn));
+        assert!(u.get(Part::Host, idn).is_ok(), "nothing to decode");
+        let u = Url::parse(b"http://xn--rksmrgs-5wao1o.se/", ParseOptions::NONE).unwrap();
+        assert!(u.get(Part::Url, puny).is_ok(), "already ASCII");
+        assert_eq!(u.get(Part::Host, idn), Err(UrlErrorKind::LacksIdn));
+        let copy = u.try_clone().unwrap();
+        assert_eq!(copy, u);
 
         // A relative URL resolved against a base read with the flags
         // given: the default port is written into the result.

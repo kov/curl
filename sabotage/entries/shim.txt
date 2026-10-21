@@ -48,3 +48,27 @@ witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
                 PostFields::None if options.http.headers.asks_chunked() == Some(true) => {
 --- new
                 PostFields::None if false => {
+
+=== curl_url_get leaves the part pointer as it was on an error
+file: crates/curl-sys-abi/src/url.rs
+witness: curl-sys-abi url::tests::rejects_what_c_rejects
+--- old
+    unsafe { out.write(ptr::null_mut()) };
+--- new
+    let _ = ();
+
+=== curl_url_set looks at the part before measuring the value
+file: crates/curl-sys-abi/src/url.rs
+witness: curl-sys-abi url::tests::rejects_what_c_rejects
+--- old
+            Some(v) if v.count_bytes() > curl_core::url::MAX_INPUT => ffi::CURLUE_MALFORMED_INPUT,
+--- new
+            Some(v) if v.count_bytes() > usize::MAX => ffi::CURLUE_MALFORMED_INPUT,
+
+=== CURLU_APPENDQUERY is not passed on
+file: crates/curl-sys-abi/src/url.rs
+witness: curl-sys-abi url::tests::copies_and_reads_back
+--- old
+        append_query: has(flags, ffi::CURLU_APPENDQUERY),
+--- new
+        append_query: false,

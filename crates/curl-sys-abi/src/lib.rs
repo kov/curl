@@ -35,6 +35,7 @@ mod root;
 mod setopt;
 mod strerror;
 mod strings;
+mod url;
 mod version;
 
 #[cfg(test)]

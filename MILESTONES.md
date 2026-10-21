@@ -337,31 +337,43 @@ cargo-mutants run on the milestone's diff.
     waiting for room in `Pending` (test 1557); FORBID_REUSE and FRESH_CONNECT; the
     getaddrinfo resolver, with negative answers kept and the resolver's reason in a failure
     (test 241); `CURLOPT_DNS_CACHE_TIMEOUT`. Tests 3231 and 3232 wait for CONNECT_ONLY.
-24. **tool: the T1 ring.** **To do.** The `-w` variables, `--fail-with-body`, `-#` and
-    `--stderr`, with the report fields they read.
+24. **tool: the T1 ring.** **Done.** The `-w` variables read from the transfer report (the
+    response, the URL and its parts, the times, sizes and speeds, the content type, the
+    connection's ends and count, the header count), `-w @file` and `%output{}`;
+    `--fail-with-body`; `-#`; `--stderr`, pointing descriptor 2 as C's `freopen` does; and
+    the getinfo answers for the same report fields. Tests 15, 57, 192, 349, 360, 361, 423,
+    435, 978, 990, 991, 1148, 1188, 1223, 1271, 1278, 1429, 1438, 1439, 1721 and 3014 pass,
+    and libtest 500 within its memory limit now that a multi's rows hold their transfers
+    boxed. The rest of the ring waits on the steps named for it below: `%{method}` and
+    `%{referer}` are tested only through redirects.
 25. **http: send request bodies.** **To do.** Opening commit: `Directions` refreshed by the
     engine from the protocol after each call, its other writers removed and the debug check
     comparing them. Then the send side's states (`SendSide`), POSTFIELDS, the read callback,
     PUT, chunked upload, `Expect: 100-continue` with the 417 retry as a second leg, and a
     rewind for a new leg. The method's options (NOBODY, POST, UPLOAD, HTTPGET) combine in the
-    shim.
+    shim. T1 tests 1295, 1740, 1741 and 2093.
 26. **http: follow redirects.** **To do.** Opening commit: relative URL resolution and the
     part setters (the rest of lib1560). Then FOLLOWLOCATION, MAXREDIRS, 301/302/303 method
     changes, the credential gate's first origin kept in `Run`, credentials and a custom Host
     dropped across hosts through the gate,
     `-e ";auto"` and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
-    followlocation family.
+    followlocation family; T1 tests 193, 1029, 1067, 1080, 1081, 1089, 1090, 1159, 1197,
+    1261, 1270, 2081 and 3015, with `%{method}`, `%{referer}`, `%{redirect_url}` and
+    `%{num_redirects}`.
 27. **tool: several URLs, then globbing.** **To do.** The tool's transfers share their
     connections and DNS cache, as C's share handle has them (tests 2051, 2052 and 3225 with
     step 24's `%{num_connects}`). Opening commit: the multi's tables that a share can hold in
     its place (the pool and the DNS cache) grouped, so that `EngineRest`, `Announcing` and
-    `Telling` stop each listing their own subset of them. Globbing is refused with exit 125 until then (test 2053).
+    `Telling` stop each listing their own subset of them. Globbing is refused with exit 125
+    until then (test 2053). Then the tool's output names (`-O`, `-J`, `--no-clobber`), `-K`
+    and `--retry`. T1 tests 75, 468, 1340, 1341, 1635, 1681, 2051, 2052 and 3224–3226.
 28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a
     transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
     handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`
     (step 10).
 29. **http: authenticate.** **To do.** Basic from the options, then netrc, Bearer and Digest,
     and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15) with it.
+    T1 tests 1876 and 1877.
 30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
     share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`.
 31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
@@ -372,6 +384,10 @@ cargo-mutants run on the milestone's diff.
     C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a
     binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and
     Content-Encoding.
+33. **http: the headers API, and time conditions.** **To do.** Each request's headers kept
+    for `curl_easy_header` and `curl_easy_nextheader`, by origin and request across step 26's
+    redirects; the tool's `%header{}` and `%{header_json}` read from them (T1 tests 421, 764,
+    765, 1670, 1671). Then `-z` and `CURLOPT_TIMECONDITION` (T1 test 1239).
 
 Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
 generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting

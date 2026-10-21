@@ -296,8 +296,10 @@ multi.c:495), by `Drop`.
 pub trait Host { type Transfer; type Socket: Copy; } // app values per transfer and per socket
 pub struct NoHost;                                // Host<Transfer = (), Socket = ()>
 
+type Slots<H> = Arena<Box<Slot<H>>, Transfer>; // boxed, as C's rows hold pointers
+
 pub struct Multi<H: Host = NoHost> {
-    slots: Arena<Slot<H>, Transfer>,
+    slots: Slots<H>,
     dirty: RowSet,                   // transfers to run at the next pass
     timers: TimerQueue<Transfer>,    // one entry per slot, reserved at add
     announce: TimerAnnounce,         // what the timer callback was last told (unit 3230)
@@ -330,6 +332,9 @@ pub(crate) struct Run {              // created at add, dropped at removal
 Planned with the steps that need them: an internal owner for transfers the engine makes itself
 (`Owner::Internal`, with server push), the pending cursor (with `WaitReason`), the share's pool
 and DNS cache, the shutdown set, and, in `Run`, the follow, auth and rate-limit state.
+
+A row holds its slot boxed: a slot is about a kilobyte, and a table starts with C's sixteen
+rows, which C's limits on a transfer's memory count as pointers (libtest 500).
 
 `Slot.run` is `None` in exactly one situation: while the engine has moved the `Box<Run>` out to
 step it, and for that duration the slot is reachable only through `EngineRest`, whose methods
@@ -660,7 +665,7 @@ AbortedByCallback.
 
 ```rust
 pub struct EngineRest<'a, H: Host> {      // the multi minus what the step holds
-    slots: &'a mut Arena<Slot<H>>,        // the stepping slot's `run` is moved out
+    slots: &'a mut Slots<H>,              // the stepping slot's `run` is moved out
     pool: &'a mut PoolRef, sockets: &'a mut SocketTable<H>, timers: &'a mut TimerQueue,
     announce: &'a mut TimerAnnounce, sched: &'a mut Sched, notify: &'a mut NotifyQueue,
     net: &'a mut dyn Net, now: Instant, life: &'a mut MultiLife,

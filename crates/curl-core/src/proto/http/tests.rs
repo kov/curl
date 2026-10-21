@@ -1232,35 +1232,136 @@ fn the_application_s_content_headers_replace_the_library_s() {
     assert!(!request.contains("x-www-form-urlencoded"), "{request}");
 }
 
-/// What is not sent yet is refused before anything goes: a body to wait
-/// for 100-continue for, asked or added; a resumed upload is not HTTP's.
+/// A resumed upload is not HTTP's: refused before anything goes.
 #[test]
-fn bodies_not_sent_yet_are_refused() {
-    let big = vec![b'x'; 1024 * 1024 + 1];
-    assert_eq!(
-        with_body(Method::Post, &big, |_| {}).result,
-        Err(ErrorKind::NotBuiltIn)
-    );
-    let asked = with_body(Method::Post, b"a", |o| {
-        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-    });
-    assert_eq!(asked.result, Err(ErrorKind::NotBuiltIn));
-    let unknown = with_body(Method::Upload, b"", |o| o.upload = pieces(&[b"a"]));
-    assert_eq!(
-        unknown.result,
-        Err(ErrorKind::NotBuiltIn),
-        "Expect is added"
-    );
-    let not_asked = with_body(Method::Post, &big, |o| {
-        o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
-    });
-    assert_eq!(not_asked.result, Ok(()), "the application asked for none");
-    assert_eq!(not_asked.easy.report().sizes().upload(), big.len() as u64);
+fn a_resumed_body_is_refused() {
     let resumed = with_body(Method::Upload, b"a", |o| {
         o.resume = Some(Resume::At(NonZeroU64::new(1).unwrap()));
     });
     assert_eq!(resumed.result, Err(ErrorKind::BadFunctionArgument));
     assert!(resumed.request.is_empty());
+}
+
+/// A request sending `body`, answered with `reply`, and how long it
+/// waited.
+fn expecting(reply: &[u8], body: &[u8], set: impl FnOnce(&mut Options)) -> (Ran, Duration) {
+    let (mut m, talk, clock) = server(&[reply], false);
+    let start = clock.now();
+    let body = body.to_vec();
+    let ran = get(&mut m, "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = crate::options::UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+        set(o);
+    });
+    let waited = clock.now().since(start);
+    (ran, waited)
+}
+
+const OK_EMPTY: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+
+/// A large body, or one asked so, is announced with `Expect:
+/// 100-continue` and sent once the 100 comes, without waiting; one the
+/// application says no `Expect` for is sent at once.
+#[test]
+fn a_body_waits_for_a_100() {
+    let big = vec![b'x'; 1024 * 1024 + 1];
+    let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK_EMPTY].concat();
+    let (ran, waited) = expecting(&continued, &big, |_| {});
+    assert_eq!((ran.result, waited), (Ok(()), Duration::ZERO));
+    let head_end = ran.request.len() - big.len();
+    assert!(
+        ran.request[..head_end].ends_with(
+            b"Content-Type: application/x-www-form-urlencoded\r\nExpect: 100-continue\r\n\r\n"
+        ),
+        "{}",
+        String::from_utf8_lossy(&ran.request[..head_end])
+    );
+    assert!(ran.request.ends_with(&big));
+    assert!(
+        !ran.seen
+            .text()
+            .iter()
+            .any(|l| l.starts_with("Done waiting"))
+    );
+    let (asked, waited) = expecting(&continued, b"a=b", |o| {
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    });
+    assert_eq!((asked.result, waited), (Ok(()), Duration::ZERO));
+    let request = String::from_utf8(asked.request).unwrap();
+    assert_eq!(request.matches("Expect").count(), 1, "{request}");
+    assert!(request.ends_with("\r\n\r\na=b"), "{request}");
+    let (unknown, waited) = expecting(&continued, b"", |o| o.upload = pieces(&[b"abc"]));
+    assert_eq!((unknown.result, waited), (Ok(()), Duration::ZERO));
+    let request = String::from_utf8(unknown.request).unwrap();
+    assert!(
+        request.contains("\r\nExpect: 100-continue\r\n\r\n3\r\nabc\r\n0\r\n\r\n"),
+        "{request}"
+    );
+    let (not_asked, waited) = expecting(OK_EMPTY, &big, |o| {
+        o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
+    });
+    assert_eq!((not_asked.result, waited), (Ok(()), Duration::ZERO));
+    assert!(not_asked.request.ends_with(&big));
+}
+
+/// Without a 100, the body goes when the wait runs out, the response
+/// already read.
+#[test]
+fn a_body_goes_when_the_wait_for_a_100_runs_out() {
+    let (ran, waited) = expecting(OK_EMPTY, b"a=b", |o| {
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+        o.http.continue_wait = crate::options::ContinueWait(Duration::from_millis(300));
+    });
+    assert_eq!((ran.result, waited), (Ok(()), Duration::from_millis(300)));
+    assert!(ran.request.ends_with(b"\r\n\r\na=b"));
+    let text = ran.seen.text();
+    let done = text
+        .iter()
+        .position(|l| l == "Done waiting for 100-continue\n");
+    let sent = text
+        .iter()
+        .position(|l| l == "upload completely sent off: 3 bytes\n");
+    assert!(done.is_some() && done < sent, "{text:?}");
+}
+
+/// An error response before the body has gone stops it, the connection
+/// not used again; the application can have it sent anyway.
+#[test]
+fn an_error_response_stops_the_body() {
+    let not_found = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let asked = |o: &mut Options| {
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    };
+    let (ran, waited) = expecting(not_found, b"a=b", asked);
+    assert_eq!((ran.result, waited), (Ok(()), Duration::ZERO));
+    assert!(ran.request.ends_with(b"\r\n\r\n"), "the head alone");
+    let text = ran.seen.text();
+    for line in [
+        "HTTP error before end of send, stop sending\n",
+        "abort upload\n",
+    ] {
+        assert!(text.contains(&line.to_string()), "{text:?}");
+    }
+    assert!(
+        text.iter()
+            .any(|l| l.starts_with("shutting down connection")),
+        "{text:?}"
+    );
+    let (kept, waited) = expecting(not_found, b"a=b", |o| {
+        asked(o);
+        o.http.keep_sending_on_error = true;
+    });
+    assert_eq!((kept.result, waited), (Ok(()), Duration::ZERO));
+    assert!(kept.request.ends_with(b"\r\n\r\na=b"));
+    assert!(
+        kept.seen
+            .text()
+            .contains(&"HTTP error before end of send, keep sending\n".to_string())
+    );
+    // A 417 asks for the request again without `Expect`: not yet.
+    let failed = b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n";
+    let (ran, _) = expecting(failed, b"a=b", asked);
+    assert_eq!(ran.result, Err(ErrorKind::NotBuiltIn));
 }
 
 /// A body larger than the send buffer is read again as each buffer goes,

@@ -36,10 +36,13 @@ pub(crate) enum TimerKind {
     SpeedCheck,
     /// The next connect attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
     Eyeballs,
+    /// The protocol's own wait, which its state says
+    /// (`ProtoState::wake_at`): HTTP's for a 100 (`EXPIRE_100_TIMEOUT`).
+    Proto,
 }
 
 impl TimerKind {
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
 
     fn slot(self) -> usize {
         self as usize

@@ -44,7 +44,7 @@ use notify::NotifyQueue;
 use sched::{RowSet, Tally};
 use sockets::{SocketTable, Wants};
 use state::{Message as MessageState, Run, StepCx, TransferState, Wake};
-use timers::{Due, TimerAnnounce, TimerQueue};
+use timers::{Due, TimerAnnounce, TimerKind, TimerQueue};
 
 /// The application's types a multi carries: a value per transfer, handed
 /// back with its messages and on removal, and a value per socket it
@@ -718,6 +718,12 @@ impl<H: Host> Multi<H> {
             rest: self.rest(now, ev),
         };
         while state::step(&mut run, &mut cx) == Wake::Again {}
+        // The protocol's own wait is derived from its state, never stored
+        // apart from it.
+        match run.state.wake_at() {
+            Some(at) => run.deadlines.arm_in(TimerKind::Proto, now, at.since(now)),
+            None => run.deadlines.clear(TimerKind::Proto),
+        }
         let completed = run.state.is_completed();
         if completed {
             self.counts.completed();

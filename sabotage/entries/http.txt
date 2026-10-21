@@ -60,9 +60,9 @@ witness: curl-core proto::http::tests::a_head_wants_no_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 --- old
-        if head.meta().close() || self.pipeline.body_closes() {
+        if head.meta().close() || self.pipeline.body_closes() || self.aborted {
 --- new
-        if self.pipeline.body_closes() {
+        if self.pipeline.body_closes() || self.aborted {
 
 === an exchanging transfer waits on nothing
 file: crates/curl-core/src/multi/state.rs
@@ -414,11 +414,11 @@ witness: curl-core proto::http::tests::the_application_s_content_headers_replace
 
 === a large body is sent without waiting for 100-continue
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
+witness: curl-core proto::http::tests::a_body_waits_for_a_100
 --- old
-                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
 --- new
-                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD * 2);
+            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD * 2);
 
 === a body the application asks chunked goes plain
 file: crates/curl-core/src/proto/http.rs
@@ -480,8 +480,90 @@ witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decid
 
 === a body of unknown size is sent without waiting for 100-continue
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::bodies_not_sent_yet_are_refused
+witness: curl-core proto::http::tests::a_body_waits_for_a_100
 --- old
-                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
 --- new
-                && size.is_some_and(|n| n > EXPECT_100_THRESHOLD);
+            && size.is_some_and(|n| n > EXPECT_100_THRESHOLD);
+
+=== a body announced with Expect does not wait
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
+--- old
+                        self.expect = ExpectState::Awaiting(cx.now().after(wait));
+--- new
+                        self.expect = ExpectState::Open;
+
+=== the wait for a 100 never runs out
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
+--- old
+                    ExpectState::Awaiting(until) if cx.now() < until => return Ok(false),
+--- new
+                    ExpectState::Awaiting(until) if false && cx.now() < until => return Ok(false),
+
+=== a 100 does not release the body
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_body_waits_for_a_100
+--- old
+            if interim && code == 100 {
+--- new
+            if interim && code == 101 {
+
+=== a 4xx before the body has gone is ignored
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_error_response_stops_the_body
+--- old
+            } else if !interim && code >= 300 {
+--- new
+            } else if !interim && code >= 500 {
+
+=== keep-sending-on-error is ignored
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_error_response_stops_the_body
+--- old
+        if cx.easy().options().http.keep_sending_on_error {
+--- new
+        if false {
+
+=== a connection whose send was aborted is used again
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_error_response_stops_the_body
+--- old
+        if head.meta().close() || self.pipeline.body_closes() || self.aborted {
+--- new
+        if head.meta().close() || self.pipeline.body_closes() {
+
+=== the library's Expect line is not sent
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_body_waits_for_a_100
+--- old
+            content.expect = added_expect;
+--- new
+            content.expect = false;
+
+=== a body held for a 100 is read behind the head
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_error_response_stops_the_body
+--- old
+        if expect_state == ExpectState::None
+--- new
+        if true
+
+=== a request ends with its body unsent
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
+--- old
+                return Ok(if self.sending() {
+                    ProtoStep::Blocked
+--- new
+                return Ok(if self.sending() {
+                    ProtoStep::Done
+
+=== the protocol's wait arms no timer
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
+--- old
+            Some(at) => run.deadlines.arm_in(TimerKind::Proto, now, at.since(now)),
+--- new
+            Some(_) => run.deadlines.clear(TimerKind::Proto),

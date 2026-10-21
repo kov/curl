@@ -14,6 +14,7 @@ use crate::multi::Host;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
 use crate::options::{HttpVersion, Method, Resume, UploadSource};
 use crate::report::Timer;
+use crate::time::Instant;
 use crate::trace;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, Url};
@@ -77,6 +78,11 @@ pub(crate) struct Request {
     body_sent: u64,
     /// Everything is sent (`upload_done`); nothing is, before DO.
     sent_all: bool,
+    /// Where the body stands behind `Expect: 100-continue`.
+    expect: ExpectState,
+    /// Sending stopped short of the body's end (`upload_aborted`): the
+    /// connection is not used again.
+    aborted: bool,
     /// Made at DO, once the connection says whether it is reused.
     head: Option<HeadParser>,
     stage: Stage,
@@ -89,6 +95,20 @@ enum Stage {
     Head,
     Body(Body),
     Done,
+}
+
+/// A body announced with `Expect: 100-continue` (C's `cr_exp100`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpectState {
+    /// None was announced.
+    None,
+    /// The head is still going; the wait starts once it has gone.
+    Head,
+    /// The body waits for a 100 until this instant.
+    Awaiting(Instant),
+    /// The 100 came, the wait ran out or an error response lets the body
+    /// go on.
+    Open,
 }
 
 /// How the body ends.
@@ -161,6 +181,8 @@ impl Request {
             eos_read: false,
             body_sent: 0,
             sent_all: true,
+            expect: ExpectState::None,
+            aborted: false,
             head: None,
             stage: Stage::Head,
             interim: false,
@@ -189,9 +211,18 @@ impl Request {
         self.head.as_ref().is_none_or(|h| h.request_bytes() == 0) && self.pipeline.bytecount() == 0
     }
 
-    /// Whether some of the request is still to send.
+    /// Whether some of the request is still to send, a body waiting for
+    /// a 100 included (`Curl_req_want_send`).
     pub(crate) fn sending(&self) -> bool {
         !self.sent_all
+    }
+
+    /// When a body waiting for a 100 is sent anyway.
+    pub(crate) fn wake_at(&self) -> Option<Instant> {
+        match self.expect {
+            ExpectState::Awaiting(until) if self.sending() => Some(until),
+            _ => None,
+        }
     }
 
     /// What the request waits for on its socket.
@@ -200,7 +231,9 @@ impl Request {
         if !matches!(self.stage, Stage::Done) && !pause.recv_paused() {
             events = events | Events::IN;
         }
-        if self.sending() && !pause.send_paused() {
+        // A body waiting for a 100 waits on the clock, not the socket.
+        let waiting = matches!(self.expect, ExpectState::Awaiting(_));
+        if self.sending() && !pause.send_paused() && !waiting {
             events = events | Events::OUT;
         }
         events
@@ -248,21 +281,26 @@ impl Request {
         if chunked && upload.is_none() {
             upload = Some(Upload::new(&UploadSource::None));
         }
-        let content = body.map(|kind| request::Content {
+        let mut content = body.map(|kind| request::Content {
             length: size.filter(|_| !chunked),
             form: kind == BodyKind::Form,
+            expect: false,
         });
-        // `Expect: 100-continue`, asked for or added on HTTP/1.1 for a
-        // body large or of unknown size, is not waited for yet
-        // (`addexpect`).
-        if content.is_some() {
-            let asked = http.headers.expects_continue();
-            let added = asked.is_none()
-                && http.version == HttpVersion::Http11
-                && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
-            if asked == Some(true) || added {
-                return Err(ErrorKind::NotBuiltIn);
-            }
+        // `Expect: 100-continue`, asked for, or added on HTTP/1.1 for a
+        // body large or of unknown size, holds the body back until a 100
+        // comes or the wait runs out (`addexpect`).
+        let expects = http.headers.expects_continue();
+        let added_expect = content.is_some()
+            && expects.is_none()
+            && http.version == HttpVersion::Http11
+            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+        let expect_state = if content.is_some() && (expects == Some(true) || added_expect) {
+            ExpectState::Head
+        } else {
+            ExpectState::None
+        };
+        if let Some(content) = &mut content {
+            content.expect = added_expect;
         }
         let resume_from = match options.resume {
             None => None,
@@ -348,8 +386,15 @@ impl Request {
         };
         self.body_sent = 0;
         self.sent_all = false;
+        self.expect = expect_state;
+        self.aborted = false;
         self.head = Some(HeadParser::new(exchange));
-        if !self.eos_read && self.filled < self.out.len() && !cx.pause().send_paused() {
+        // A body held for a 100 is not read behind the head.
+        if expect_state == ExpectState::None
+            && !self.eos_read
+            && self.filled < self.out.len()
+            && !cx.pause().send_paused()
+        {
             self.fill(cx)?;
         }
         // The engine takes the request as sent at DID if it went now.
@@ -395,6 +440,22 @@ impl Request {
                 }
                 self.sent = 0;
                 self.filled = 0;
+                // The head has gone: a body announced with `Expect:
+                // 100-continue` waits for the 100, or until the wait runs
+                // out (`cr_exp100_read`).
+                match self.expect {
+                    ExpectState::Head => {
+                        let wait = cx.easy().options().http.continue_wait.0;
+                        self.expect = ExpectState::Awaiting(cx.now().after(wait));
+                        return Ok(false);
+                    }
+                    ExpectState::Awaiting(until) if cx.now() < until => return Ok(false),
+                    ExpectState::Awaiting(_) => {
+                        self.expect = ExpectState::Open;
+                        trace::info(cx, format_args!("Done waiting for 100-continue"));
+                    }
+                    ExpectState::None | ExpectState::Open => {}
+                }
                 if cx.pause().send_paused() || !self.fill(cx)? {
                     return Ok(false);
                 }
@@ -429,8 +490,23 @@ impl Request {
             self.body_sent += (n - head) as u64;
             self.sent += n;
         }
-        if self.body_sent > 0 {
-            let n = self.body_sent;
+        self.upload_done(cx);
+        Ok(true)
+    }
+
+    /// Nothing more of the request goes, all of it sent or not
+    /// (`req_set_upload_done`).
+    fn upload_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
+        self.sent_all = true;
+        self.sent = self.filled;
+        let n = self.body_sent;
+        if self.aborted {
+            if n > 0 {
+                trace::info(cx, format_args!("abort upload after having sent {n} bytes"));
+            } else {
+                trace::info(cx, format_args!("abort upload"));
+            }
+        } else if n > 0 {
             trace::info(cx, format_args!("upload completely sent off: {n} bytes"));
         } else if !matches!(self.stage, Stage::Done) {
             let sized = self
@@ -445,7 +521,6 @@ impl Request {
             };
             trace::info(cx, format_args!("{said}"));
         }
-        Ok(true)
     }
 
     /// Send what is left, then read until the connection has nothing more
@@ -461,8 +536,14 @@ impl Request {
             cx.mark(Timer::PostTransfer);
         }
         loop {
+            // The request is over once its response is and nothing more of
+            // it is to send (`KEEP_RECV` and `KEEP_SEND` both off).
             if matches!(self.stage, Stage::Done) {
-                return Ok(ProtoStep::Done);
+                return Ok(if self.sending() {
+                    ProtoStep::Blocked
+                } else {
+                    ProtoStep::Done
+                });
             }
             if cx.pause().recv_paused() {
                 return Ok(ProtoStep::Blocked);
@@ -638,6 +719,15 @@ impl Request {
         }
         early?;
         then.map_err(|e| head_failed(cx, &e))?;
+        if let LineKind::End { interim } = kind {
+            let code = cx.report_mut().response_code().unwrap_or(0);
+            if interim && code == 100 {
+                // The server is ready for the body (`http_exp100_got100`).
+                self.release();
+            } else if !interim && code >= 300 {
+                self.send_error(cx, code)?;
+            }
+        }
         if kind == (LineKind::End { interim: false }) {
             let abandoned = self.head().framing() == Some(Framing::Abandoned);
             if abandoned {
@@ -650,6 +740,43 @@ impl Request {
             }
         }
         Ok(rest)
+    }
+
+    /// A body held for a 100 goes now (`http_exp100_continue`).
+    fn release(&mut self) {
+        if matches!(self.expect, ExpectState::Head | ExpectState::Awaiting(_)) {
+            self.expect = ExpectState::Open;
+        }
+    }
+
+    /// An error response came before the body was all sent: it goes on if
+    /// the application says so, and stops otherwise, the connection not
+    /// used again (`http_handle_send_error`).
+    fn send_error<H: Host>(&mut self, cx: &mut StepCx<'_, H>, code: u16) -> Result<(), ErrorKind> {
+        if !self.sending() || self.head().meta().close() {
+            return Ok(());
+        }
+        if code == 417 && self.expect != ExpectState::None {
+            // Sending again without `Expect` is a second request, which
+            // comes with redirects.
+            return Err(ErrorKind::NotBuiltIn);
+        }
+        if cx.easy().options().http.keep_sending_on_error {
+            trace::info(
+                cx,
+                format_args!("HTTP error before end of send, keep sending"),
+            );
+            self.release();
+        } else {
+            trace::info(
+                cx,
+                format_args!("HTTP error before end of send, stop sending"),
+            );
+            self.aborted = true;
+            self.upload_done(cx);
+            cx.mark(Timer::PostTransfer);
+        }
+        Ok(())
     }
 
     /// The final head ended: what it expects of the body (`http_size`).
@@ -797,7 +924,7 @@ impl Request {
             }
         }
         let head = self.head.as_ref().expect("made at DO");
-        if head.meta().close() || self.pipeline.body_closes() {
+        if head.meta().close() || self.pipeline.body_closes() || self.aborted {
             cx.conn(lease).mark_close();
         }
         result?;

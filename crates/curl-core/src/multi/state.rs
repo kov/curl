@@ -243,6 +243,14 @@ impl TransferState {
         }
     }
 
+    /// When the protocol wants to look again whatever its socket says.
+    pub(crate) fn wake_at(&self) -> Option<Instant> {
+        match self {
+            TransferState::Did(x) | TransferState::Exchanging(x) => x.proto.wake_at(),
+            _ => None,
+        }
+    }
+
     /// End the transfer with `err`: through `Done` if it holds a
     /// connection, straight to `Completed` if not. A transfer already
     /// finishing keeps its result, as `multi_done` runs once.

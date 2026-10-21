@@ -349,6 +349,9 @@ pub(crate) struct RequestHead<'o> {
 pub(crate) struct Content {
     /// Its size, unless it goes chunked or its end is the connection's.
     pub(crate) length: Option<u64>,
+    /// The library asks for a 100 before it (`addexpect`); one the
+    /// application asks for, its own header says.
+    pub(crate) expect: bool,
     /// A POST's, typed as a form unless the application types it.
     pub(crate) form: bool,
 }
@@ -477,6 +480,9 @@ fn write_h1(
                     }
                     if content.form && head.headers.replacing(b"Content-Type").is_none() {
                         out.line(&[b"Content-Type: application/x-www-form-urlencoded"])?;
+                    }
+                    if content.expect {
+                        out.line(&[b"Expect: 100-continue"])?;
                     }
                 }
             }

@@ -457,9 +457,9 @@ Body(Body), Done }`, with `Body` the framing decided once at the end of the head
 chunked, until close), and whether the response is interim. Each C flag is a variant there:
 `k->header` is `Stage::Head`, `download_done` is `Stage::Done`, and `chunk`, `ignore_cl`,
 `http_bodyless`, `size`/`maxdownload` are the `Body` and the pipeline's `Expect`. The send side
-is a byte offset until request bodies arrive; then it becomes `SendSide { Head,
-AwaitingContinue(Instant), Body, Done, Aborted }`, C's `upload_done`, `eos_read`/`eos_sent`,
-`upload_aborted` and `expect100`.
+is the send buffer with what of it has gone, `eos_read`, `sent_all` (`upload_done`), `aborted`
+(`upload_aborted`) and `ExpectState { None, Head, Awaiting(Instant), Open }` (`expect100`).
+The request is over when its response is and nothing more of it is to send.
 
 The pipeline and the done gate belong to the engine. Each protocol owns a `Pipeline`
 (accounting, the write handlers, held output) and drives it; the engine moves `Exchanging` to
@@ -511,7 +511,7 @@ pub(crate) struct Deadlines {
     total: Option<TimeLimit>, connect: Option<TimeLimit>,
     armed: [Option<Instant>; TimerKind::COUNT],   // C's per-transfer expire list
 }
-pub(crate) enum TimerKind { Total, Connect, Expect100, AsyncName, HappyEyeballs, SpeedCheck,
+pub(crate) enum TimerKind { Total, Connect, Proto, AsyncName, HappyEyeballs, SpeedCheck,
                             TooFast, Quic, FtpAccept, AlpnEyeballs, Shutdown, ServerResponse }
 impl Deadlines {
     fn start_leg(&mut self, now: Instant);                 // SETUP: arms Total and Connect
@@ -536,6 +536,10 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   end of a receive/send pass always since `Starts::single` (transfer.c:382-393).
 - `MultiPending` is not a kind: C declares EXPIRE_MULTI_PENDING (urldata.h:498) and never arms
   it.
+- `Proto` is the protocol's own wait, HTTP's for a 100 (EXPIRE_100_TIMEOUT) among them: never
+  stored apart from the protocol's state, it is derived after every step from
+  `TransferState::wake_at`, as `Directions` is, and armed or cleared there. One kind serves
+  every protocol, as a transfer runs one at a time.
 - **`TimerQueue`** is an indexed binary min-heap with one entry per transfer, holding
   `deadlines.wake_at()` of that transfer, keyed by its `Key` with the position index by row.
   Capacity is reserved at `add`, and `update(key, Option<Instant>)` is O(log n) with no
@@ -1314,8 +1318,14 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
 - **One typed request for every version.** h2 and h3 (stage 5) encode the same `RequestHead`;
   C's render-to-HTTP/1-then-reparse (`Curl_h1_req_parse_read`) has no counterpart, and the H1
   request parser survives only as test support (unit 2603).
-- `Expect: 100-continue` is `SendSide::AwaitingContinue(deadline)`, armed when the head has
-  drained, released by a 100, the timeout or keep-sending-on-error; a 417 retries without it.
+- `Expect: 100-continue`, asked for or added (`addexpect`), holds the body back: it is not
+  read behind the head, and once the head has drained the request is `ExpectState::Awaiting`
+  until a deadline (`continue_wait`), not asking to write, the deadline its `wake_at`. A 100,
+  the deadline ("Done waiting for 100-continue") or keep-sending-on-error opens it. A final
+  response of 300 or more before the body has gone, the connection not closing anyway, stops
+  the send ("HTTP error before end of send, stop sending", then "abort upload") and the
+  connection is not used again, unless keep-sending-on-error. A 417 retries without it, which
+  needs a second leg and comes with redirects; until then it is NotBuiltIn.
   Unknown body length on HTTP/1.1 uses the chunk encoder (chunks ≤ 64 KiB, trailers from the
   trailer handler); on HTTP/1.0 it is UploadFailed.
 

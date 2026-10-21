@@ -17,8 +17,8 @@ use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::options::{
-    EyeballsDelay, FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options, Resume,
-    ReuseLimits, UserHeaders,
+    ContinueWait, EyeballsDelay, FileMode, HttpVersion, IpVersion, LowSpeed, Method, Options,
+    Resume, ReuseLimits, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -223,6 +223,14 @@ fn apply(
         }
         (ffi::CURLOPT_PATH_AS_IS, Long(n)) => options.url_rules.path_as_is = n != 0,
         (ffi::CURLOPT_FAILONERROR, Long(n)) => options.http.fail_on_error = n != 0,
+        (ffi::CURLOPT_KEEP_SENDING_ON_ERROR, Long(n)) => {
+            options.http.keep_sending_on_error = n != 0;
+        }
+        (ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, Long(n)) => {
+            // Negative refused, past 65535 taken as it (`value_range`).
+            let ms = u64::try_from(n).map_err(|_| Refused::Bad)?.min(0xffff);
+            options.http.continue_wait = ContinueWait(std::time::Duration::from_millis(ms));
+        }
         (ffi::CURLOPT_SSL_VERIFYPEER, Long(n)) => options.tls.verify_peer = n != 0,
         // 1 is taken as 2, as C takes it.
         (ffi::CURLOPT_SSL_VERIFYHOST, Long(n)) => options.tls.verify_host = n != 0,

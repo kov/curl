@@ -271,6 +271,18 @@ pub struct Limits {
     pub eyeballs: EyeballsDelay,
 }
 
+/// How long a body announced with `Expect: 100-continue` waits for the
+/// 100 before it is sent anyway (`CURLOPT_EXPECT_100_TIMEOUT_MS`): a
+/// second unless set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContinueWait(pub Duration);
+
+impl Default for ContinueWait {
+    fn default() -> Self {
+        ContinueWait(Duration::from_secs(1))
+    }
+}
+
 /// How long a connect attempt runs before the next starts beside it
 /// (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`): 200 milliseconds unless set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -353,6 +365,12 @@ pub struct Http {
     /// A response code of 400 or more fails the transfer at the end of
     /// its head (`CURLOPT_FAILONERROR`).
     pub fail_on_error: bool,
+    /// How long a body announced with `Expect: 100-continue` waits for
+    /// the 100.
+    pub continue_wait: ContinueWait,
+    /// An error response before the body is all sent lets it go on
+    /// rather than stop (`CURLOPT_KEEP_SENDING_ON_ERROR`).
+    pub keep_sending_on_error: bool,
 }
 
 impl Http {
@@ -368,6 +386,8 @@ impl Http {
             referer: self.referer.as_deref().map(copy).transpose()?,
             custom_method: self.custom_method.as_deref().map(copy).transpose()?,
             fail_on_error: self.fail_on_error,
+            continue_wait: self.continue_wait,
+            keep_sending_on_error: self.keep_sending_on_error,
         })
     }
 }

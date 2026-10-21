@@ -186,6 +186,15 @@ impl ProtoState {
         }
     }
 
+    /// When the request wants to look again whatever its socket says: an
+    /// HTTP body's wait for a 100 running out.
+    pub(crate) fn wake_at(&self) -> Option<crate::time::Instant> {
+        match self {
+            ProtoState::Http(r) => r.wake_at(),
+            _ => None,
+        }
+    }
+
     /// Whether the request holds output for the application.
     pub(crate) fn holds_output(&self) -> bool {
         match *self {

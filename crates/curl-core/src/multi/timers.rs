@@ -47,10 +47,6 @@ impl TimerKind {
 /// (before C's `MSTATE_DO`) or past it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "judged while connecting, from step 11")
-    )]
     Connecting,
     Transferring,
 }
@@ -156,10 +152,6 @@ impl Deadlines {
     /// Whole milliseconds since the leg started (`TIMER_STARTSINGLE`): the
     /// N of the multi's error while connecting, and of the receive/send
     /// pass's error in any phase (transfer.c:382).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the timeout error texts, from step 9")
-    )]
     pub(crate) fn since_leg_ms(&self, now: Instant) -> u64 {
         whole_ms(now.since(self.started_single))
     }
@@ -382,10 +374,6 @@ impl<T> TimerQueue<T> {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the timeout error texts, from step 9")
-)]
 fn whole_ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }

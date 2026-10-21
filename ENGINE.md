@@ -586,9 +586,13 @@ when the wait will be one (`WaitMode::Poll`, or anything else to poll), the wake
 `Net::poll`, for `max` capped by `timeout()`. `WaitMode::Wait` with nothing to poll returns at
 once; `Poll` sleeps. The waker's event is drained and not counted; `extra`'s events are copied
 back into its entries; a failed poll is `UnrecoverablePoll`, a signal ending it early counts as
-nothing ready. A negative timeout is the shim's BAD_FUNCTION_ARGUMENT. `Net` has only `poll`
-until connections need more; `FakeNet` polls real descriptors without waiting and moves the
-`ManualClock` on by the timeout when none is ready. `drive_to_completion` is `easy_transfer`:
+nothing ready. A negative timeout is the shim's BAD_FUNCTION_ARGUMENT. `Net` has `poll` for the
+waits, and `connect` and `close` for connections; a `Socket` says how its readiness is learned:
+a descriptor to poll, or, for a fake one, what it is ready for now and when it will be.
+`FakeNet` polls real descriptors without waiting and, when none is ready, moves the
+`ManualClock` to the first fake socket's answer or on by the whole timeout. The connecting
+sockets are the pool's (`Pool::sockets`), polled for writing. `drive_to_completion` is
+`easy_transfer`:
 `wait(Poll, 1 s)`, `perform`, until the transfer completes; its message is read, other
 transfers' are not. A transfer not in the multi, checked every round as a callback may take it
 out, is `BadEasyHandle`.
@@ -704,7 +708,8 @@ the number still unread.
 ### 4.1 Connection slots
 
 ```rust
-pub(crate) enum ConnSlot { Connecting(Box<ConnectMachine>), Open(Conn), Closing(Box<Closing>) }
+pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNumber),
+                           Closing(Box<Closing>) }
 
 pub(crate) struct Conn {
     route: Route,
@@ -725,8 +730,10 @@ Protocols without a network (`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with
 keeps one lease-holding path through `Done` for every protocol, as C attaches a connection for
 `file:` too.
 
-`ConnectMachine::drive` returns `ConnectStep`; on `Next(Established(conn))` the pool replaces
-the slot in place, so the `ConnId` and every outstanding lease survive the handshake. Send,
+`Pool::connect` drives the leased slot's machine by one event and the pool replaces the slot in
+place (`Arena::replace_with`): `Established(conn)` makes it `Open`, a failure `Failed`, which
+holds nothing open and goes when its lease is released. The `ConnId` and every outstanding lease
+survive the handshake. Send,
 receive, reuse matching, health checks and upkeep exist only on `Conn`. A `Connecting` slot with
 a matching route counts toward the limits and makes `acquire` return
 `Wait(Multiplexable(id))` when the needle wants PIPEWAIT (C's `seen_pending_conn`).
@@ -741,10 +748,22 @@ pub(crate) enum ConnectMachine {
     Socks(SocksHandshake), Tunnel(TunnelHandshake), Tls(TlsHandshake),
 }
 impl ConnectMachine {
-    fn drive(self, io: &mut ConnIo<'_>, cx: &mut ConnCx<'_>)
-        -> Result<ConnectStep<ConnectMachine>, Error>;
+    fn drive(self, net: &mut dyn Net, now: Instant) -> Result<Drove, ConnectError>;
 }
+pub(crate) enum Drove { Connecting(ConnectMachine, Progress), Established(Conn) }
+pub(crate) enum Progress { Trying(SocketAddr), Waiting }
+pub(crate) enum ConnectError { Unresolved, Immediate { .. }, Attempt { remote, local, error } }
 ```
+
+A drive moves the machine by at most one event and returns it; the transfer traces it in C's
+words ("  Trying …", "connect to … from … failed: …", "Established connection to … ", then
+`failf`'s "Failed to connect to H:P after N ms: …" or "Could not resolve host: …"). The machine
+never reaches a transfer, so it is driven while the pool holding it is borrowed, and the
+transfer's handlers run outside that borrow. As `cf_tcp_connect` does, the socket is polled
+with a zero timeout right after its connect starts, so an answer already there is taken in the
+same pass. A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
+connect limit is judged before each drive. Only IP literals resolve until a resolver lands
+(`localhost` needs two attempts).
 
 - Each stage owns what the previous stage produced: `Resolving` yields `DnsAnswer`, which
   builds `Eyeballs`; the winning `Attempt`'s `Transport` builds the next stage; each handshake

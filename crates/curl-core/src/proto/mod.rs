@@ -3,7 +3,9 @@
 //!
 //! `file:` is built in. Tests have three more, networkless: `null:`, which
 //! completes at once, `stall:`, which never does, and `script:`, which
-//! delivers the pieces of its transfer's `Options::script`.
+//! delivers the pieces of its transfer's `Options::script`; and `tcp:`,
+//! which connects to its URL's host and port and completes once
+//! connected.
 
 mod file;
 #[cfg(any(test, feature = "test-util"))]
@@ -15,6 +17,8 @@ use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Options;
 use crate::url::Url;
+#[cfg(any(test, feature = "test-util"))]
+use crate::url::{GetOptions, Part};
 
 /// A protocol's state for one transfer.
 #[derive(Debug)]
@@ -26,6 +30,8 @@ pub(crate) enum ProtoState {
     Stall,
     #[cfg(any(test, feature = "test-util"))]
     Script(script::Player),
+    #[cfg(any(test, feature = "test-util"))]
+    Tcp,
 }
 
 /// What a protocol step achieved.
@@ -59,8 +65,38 @@ impl ProtoState {
             b"stall" => ProtoState::Stall,
             #[cfg(any(test, feature = "test-util"))]
             b"script" => ProtoState::Script(script::Player::default()),
+            #[cfg(any(test, feature = "test-util"))]
+            b"tcp" => ProtoState::Tcp,
             _ => return Ok(None),
         }))
+    }
+
+    /// The host and port the request connects to, or none for a protocol
+    /// that does its own I/O (C's `PROTOPT_NONETWORK`).
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(
+            unused_variables,
+            reason = "only the test protocol connects before HTTP"
+        )
+    )]
+    pub(crate) fn network(&self, url: &Url) -> Result<Option<(Vec<u8>, u16)>, ErrorKind> {
+        match *self {
+            ProtoState::File(_) => Ok(None),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
+            #[cfg(any(test, feature = "test-util"))]
+            ProtoState::Tcp => {
+                let malformed = |_| ErrorKind::UrlMalformat;
+                let host = url.get(Part::Host, GetOptions::NONE).map_err(malformed)?;
+                let port = url.get(Part::Port, GetOptions::NONE).map_err(malformed)?;
+                let port = std::str::from_utf8(&port)
+                    .ok()
+                    .and_then(|p| p.parse().ok())
+                    .ok_or(ErrorKind::UrlMalformat)?;
+                Ok(Some((host, port)))
+            }
+        }
     }
 
     /// Make the request (C's `do_it`): `file:`'s is the whole transfer;
@@ -69,7 +105,9 @@ impl ProtoState {
         match *self {
             ProtoState::File(ref mut f) => f.do_it(cx),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(()),
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
+                Ok(())
+            }
         }
     }
 
@@ -79,7 +117,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => false,
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => true,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => true,
         }
     }
 
@@ -95,7 +133,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(_) => script::wants_send(options),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall => false,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => false,
         }
     }
 
@@ -108,7 +146,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref p) => p.holds_output(),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall => false,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => false,
         }
     }
 
@@ -119,7 +157,7 @@ impl ProtoState {
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Script(ref mut p) => Some(p.pipeline_mut()),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall => None,
+            ProtoState::Null | ProtoState::Stall | ProtoState::Tcp => None,
         }
     }
 
@@ -131,7 +169,7 @@ impl ProtoState {
         match *self {
             ProtoState::File(_) => unreachable!("a file request exchanges nothing once made"),
             #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null => Ok(ProtoStep::Done),
+            ProtoState::Null | ProtoState::Tcp => Ok(ProtoStep::Done),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Stall => Ok(ProtoStep::Blocked),
             #[cfg(any(test, feature = "test-util"))]

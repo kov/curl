@@ -348,7 +348,11 @@ struct Trace(Rc<RefCell<Vec<Vec<u8>>>>);
 
 impl crate::handler::DebugHandler for Trace {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
-        if kind == crate::handler::DebugKind::Text {
+        // Without the debug build's warning, which its first transfer
+        // traces.
+        let warning =
+            data.starts_with(b"!!! WARNING") || data.starts_with(b"This is a debug build");
+        if kind == crate::handler::DebugKind::Text && !warning {
             self.0.borrow_mut().push(data.to_vec());
         }
     }
@@ -380,14 +384,21 @@ fn a_rewind_handler_s_reason_is_the_transfer_s() {
         (kept, traced)
     };
     let mine = b"seek callback returned error 1";
+    let closed = b"closing connection #0\n";
     assert_eq!(
         reason(true),
-        (Some(mine.to_vec()), vec![[&mine[..], b"\n"].concat()])
+        (
+            Some(mine.to_vec()),
+            vec![[&mine[..], b"\n"].concat(), closed.to_vec()]
+        )
     );
     let its = b"necessary data rewind was not possible";
     assert_eq!(
         reason(false),
-        (Some(its.to_vec()), vec![[&its[..], b"\n"].concat()])
+        (
+            Some(its.to_vec()),
+            vec![[&its[..], b"\n"].concat(), closed.to_vec()]
+        )
     );
 }
 

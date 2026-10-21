@@ -132,10 +132,6 @@ pub(crate) enum Timer {
     /// The request has its connection.
     PostQueue,
     NameLookup,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "marked by connections, from step 11")
-    )]
     Connect,
     #[cfg_attr(
         not(test),

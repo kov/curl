@@ -13,10 +13,6 @@ use crate::progress;
 use crate::text::Text;
 
 /// C's longest trace line, its end included (`TRC_LINE_MAX`).
-#[cfg_attr(
-    not(any(test, feature = "debug-hooks")),
-    expect(dead_code, reason = "the debug build's warning is the only line yet")
-)]
 const LINE_MAX: usize = 2048;
 
 /// C's longest failure detail, without its zero byte (`CURL_ERROR_SIZE`,
@@ -25,10 +21,6 @@ pub(crate) const DETAIL_MAX: usize = 255;
 
 /// A line for a verbose transfer's trace (`infof`): one cut short ends in
 /// `...`, as C ends it.
-#[cfg_attr(
-    not(feature = "debug-hooks"),
-    expect(dead_code, reason = "the debug build's warning is the only line yet")
-)]
 pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
     if !cx.easy().options().output.verbose {
         return;
@@ -40,10 +32,6 @@ pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
 
 /// End a trace line (`trc_end_buf`): with a newline where it leaves room
 /// for C's zero byte, else cut and marked `...`.
-#[cfg_attr(
-    not(any(test, feature = "debug-hooks")),
-    expect(dead_code, reason = "the debug build's warning is the only line yet")
-)]
 fn end_line(line: &mut Text<LINE_MAX>) {
     if line.bytes().len() >= LINE_MAX - 2 {
         line.truncate(LINE_MAX - 5);

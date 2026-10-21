@@ -177,9 +177,14 @@ impl WriteHandler for Explains {
 #[derive(Clone, Default)]
 struct Trace(std::rc::Rc<std::cell::RefCell<Vec<Vec<u8>>>>);
 
+/// The debug build's warning, which its first transfer traces.
+fn debug_build_warning(line: &[u8]) -> bool {
+    line.starts_with(b"!!! WARNING") || line.starts_with(b"This is a debug build")
+}
+
 impl DebugHandler for Trace {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
-        if kind == DebugKind::Text {
+        if kind == DebugKind::Text && !debug_build_warning(data) {
             self.0.borrow_mut().push(data.to_vec());
         }
     }
@@ -208,7 +213,8 @@ fn a_handler_s_own_reason_is_the_only_one() {
     assert_eq!(result, Err(ErrorKind::WriteError));
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
     assert_eq!(e.report().failure(), Some(&b"mine"[..]));
-    assert_eq!(*trace.0.borrow(), [b"mine\n".to_vec()]);
+    let closed = b"closing connection #0\n".to_vec();
+    assert_eq!(*trace.0.borrow(), [b"mine\n".to_vec(), closed]);
     assert_eq!(*told.0.borrow(), [b"mine".to_vec()]);
 }
 
@@ -243,7 +249,11 @@ fn the_first_reason_is_the_one_kept() {
     assert_eq!(*told.0.borrow(), [b"first".to_vec()]);
     assert_eq!(
         *trace.0.borrow(),
-        [b"first\n".to_vec(), b"second\n".to_vec()]
+        [
+            b"first\n".to_vec(),
+            b"second\n".to_vec(),
+            b"closing connection #0\n".to_vec()
+        ]
     );
 }
 
@@ -301,6 +311,14 @@ fn a_copy_of_the_options_shares_the_handlers() {
 
 impl DebugHandler for Recorder {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        // Only the connection's end is traced as text.
+        if kind == DebugKind::Text {
+            assert!(
+                data.ends_with(b"connection #0\n") || debug_build_warning(data),
+                "{data:?}"
+            );
+            return;
+        }
         assert_eq!(kind, DebugKind::DataIn);
         self.log.borrow_mut().push((self.name, data.to_vec()));
     }

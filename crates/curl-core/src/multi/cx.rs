@@ -5,6 +5,7 @@
 use curl_alloc::OutOfMemory;
 
 use crate::conn::Pool;
+use crate::conn::io::Net;
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
@@ -26,6 +27,7 @@ use super::{
 pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
     pub(super) pool: &'a mut Pool,
+    pub(super) net: &'a mut dyn Net,
     pub(super) dirty: &'a mut RowSet,
     /// The pass's time, read once.
     pub(super) now: Instant,

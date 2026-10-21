@@ -40,13 +40,6 @@ impl<const N: usize> Text<N> {
     }
 
     /// Keep the first `len` bytes.
-    #[cfg_attr(
-        not(any(test, feature = "debug-hooks")),
-        expect(
-            dead_code,
-            reason = "only a trace line is cut, and the debug build's is the only one yet"
-        )
-    )]
     pub(crate) fn truncate(&mut self, len: usize) {
         self.len = self.len.min(len);
     }

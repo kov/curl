@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 10 are **done**; every other step is **to do**.
+Status: steps 1 to 10 are **done**; step 11 is **in progress**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -185,16 +185,25 @@ yet meet.
 
 **HTTP/1.1 GET**
 
-11. **conn: add plain TCP connections to the pool.** Network routes, reuse and idle
-    connections, leases counted per connection, the connection table's own growth (C doubles it
-    from 16 when full), the four lock points (a recording `Lock` test pins the 1554 sequence), `ConnectMachine` with `Resolving` (`Literal`) → `Racing` (one attempt) →
-    established, socket open and close order, `ShutdownSet`, `Multi::sockets` (the transfers'
-    and closing connections' sockets, which `wait` polls and the shim's `fdset` and `waitfds`
-    list). `FakeNet` tests: refusal ("Failed
-    to connect to … after N ms"), connect timeout under `ManualClock`, REMOVE before the close
-    hook. The pollset's basis says which directions a transfer wants, so a pause blocks it
-    only when every direction it wants is paused (`Curl_xfer_is_blocked`); until then
-    `pause_transfer` judges the receiving direction alone.
+11. **conn: add plain TCP connections to the pool**, in four parts.
+    - **a. The connect path.** **Done.** `TransferState::Connecting` holds a lease on a
+      `ConnSlot::Connecting`, whose `ConnectMachine` goes `Resolving` (IP literals only) →
+      `Racing` (one attempt) → established in the slot it started in, or `Failed`. `Net` has
+      `connect` and `close`; `FakeNet` has peers by address (accepts, accepts after a delay,
+      refuses, silent). C's traces and texts for refusal, an immediate failure, an unresolved
+      name and the connect timeout, and the connection's end ("closing connection #N",
+      "shutting down connection #N", which `file:` transfers now trace too). `wait` polls the
+      connecting sockets. `tcp:` is the test protocol that connects and completes.
+    - **b. Pool semantics.** **To do.** Network routes, reuse and idle connections, leases
+      counted per connection, the connection table's own growth (C doubles it from 16 when
+      full), the four lock points (a recording `Lock` test pins the 1554 sequence).
+    - **c. The close path.** **To do.** Socket close order, `ShutdownSet`, `Multi::sockets`
+      (the transfers' and closing connections' sockets, which `wait` polls and the shim's
+      `fdset` and `waitfds` list), REMOVE before the close hook, and the trace of a transfer
+      removed mid-connection.
+    - **d. The pollset's basis.** **To do.** Which directions a transfer wants, so a pause
+      blocks it only when every direction it wants is paused (`Curl_xfer_is_blocked`); until
+      then `pause_transfer` judges the receiving direction alone.
 12. **http1: render requests behind the credential gate.** `RequestHead`, `UserHeaders`,
     `render_h1`, `CredentialGate`. Fixture tests compare byte-exactly with the `<protocol>` of 1,
     14, 47, 461, 1121, 1292.

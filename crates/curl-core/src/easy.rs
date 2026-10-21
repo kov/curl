@@ -415,4 +415,63 @@ mod tests {
         assert_eq!(easy.options().limits.total, None);
         assert_eq!(copy.options().url(), Some(&b"file:///x"[..]));
     }
+
+    /// Over the system's network: a closed port refuses with C's words,
+    /// and a listening one is connected to, both traced as C traces them.
+    #[test]
+    fn connects_over_loopback() {
+        let traced = |url: &str| {
+            let (mut e, _) = easy(url.as_bytes());
+            let lines = Lines::default();
+            e.options_mut().output.verbose = true;
+            e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+            let result = e.perform().map_err(|err| err.kind());
+            let text: Vec<String> = lines
+                .0
+                .borrow()
+                .iter()
+                .map(|(_, l)| String::from_utf8(l.clone()).unwrap())
+                .filter(|l| !l.starts_with("!!!") && !l.starts_with("This is a debug build"))
+                .collect();
+            (result, text)
+        };
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let (result, text) = traced(&format!("tcp://127.0.0.1:{port}/"));
+        assert_eq!(result, Err(ErrorKind::CouldntConnect));
+        assert_eq!(text[0], format!("  Trying 127.0.0.1:{port}...\n"));
+        let refused = format!("connect to 127.0.0.1 port {port} from 127.0.0.1 port ");
+        assert!(text[1].starts_with(&refused), "{text:?}");
+        assert!(
+            text[1].ends_with(" failed: Connection refused\n"),
+            "{text:?}"
+        );
+        let failed = format!("Failed to connect to 127.0.0.1:{port} after ");
+        assert!(text[2].starts_with(&failed), "{text:?}");
+        assert!(
+            text[2].ends_with(" ms: Could not connect to server\n"),
+            "{text:?}"
+        );
+        assert_eq!(text[3..], ["closing connection #0\n"]);
+
+        let listening = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listening.local_addr().unwrap().port();
+        let (result, text) = traced(&format!("tcp://127.0.0.1:{port}/"));
+        assert_eq!(result, Ok(()));
+        let (accepted, from) = listening.accept().unwrap();
+        drop(accepted);
+        let established = format!(
+            "Established connection to 127.0.0.1 (127.0.0.1 port {port}) from 127.0.0.1 port {} \n",
+            from.port()
+        );
+        assert_eq!(
+            text,
+            [
+                format!("  Trying 127.0.0.1:{port}...\n"),
+                established,
+                "shutting down connection #0\n".to_owned(),
+            ]
+        );
+    }
 }

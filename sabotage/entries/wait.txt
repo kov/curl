@@ -6,7 +6,7 @@
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::wait_with_nothing_to_wait_for_returns_at_once
 --- old
-        if fds.is_empty() && mode == WaitMode::Wait {
+        if sockets.is_empty() && fds.is_empty() && mode == WaitMode::Wait {
             return Ok(0);
         }
 --- new
@@ -41,7 +41,7 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_cons
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
 --- old
-        let watch_waker = mode == WaitMode::Poll || !extra.is_empty();
+        let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
 --- new
         let watch_waker = true;
 
@@ -66,11 +66,10 @@ witness: curl-core multi::tests::a_failed_poll_is_unrecoverable
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_entries
 --- old
-        if ready == 0 {
-            self.clock.advance(timeout);
+        if ready > 0 {
+            return Ok(ready);
         }
 --- new
-        self.clock.advance(timeout);
 
 === driving one transfer reads whichever message is first
 file: crates/curl-core/src/multi/wait.rs
@@ -105,3 +104,14 @@ witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_e
     }
     loop {
         m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
+
+=== a wait does not poll the connecting sockets
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
+--- old
+        self.pool.sockets(|s, events| {
+            sockets
+                .try_push(SocketPoll::new(s, events))
+                .expect("reserved");
+        });
+--- new

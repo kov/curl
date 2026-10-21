@@ -15,7 +15,7 @@ witness: curl-core multi::tests::completions_are_read_in_id_order
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::removing_a_running_transfer_gives_its_connection_back
 --- old
-        run.state.abandon(&mut self.pool);
+        run.state.abandon(&mut self.pool, &mut *self.net);
         self.timers.remove(id);
 --- new
         std::mem::forget(run);
@@ -329,3 +329,33 @@ witness: curl-core easy::tests::performs_a_path_with_the_default_protocol
             default_protocol: self.default_protocol.as_deref().map(copy).transpose()?,
 --- new
             default_protocol: None,
+
+=== the connect limit is judged as the transfer's
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_silent_peer_times_out_at_the_connect_limit
+--- old
+    if let TimeLeft::Expired(_) = run.deadlines.time_left(now, Phase::Connecting) {
+--- new
+    if let TimeLeft::Expired(_) = run.deadlines.time_left(now, Phase::Transferring) {
+
+=== a paused transfer connects
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_paused_transfer_does_not_connect
+--- old
+    if StepCx::pause(cx).recv != RecvPause::Running {
+--- new
+    if false {
+
+=== a refused connect is not reported
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_refused_connect_fails_as_c_says
+--- old
+            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
+            let lip = Ip(lip);
+            let why = OsError(&error);
+--- new
+            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
+            let lip = Ip(lip);
+            let why = OsError(&error);
+            let _ = (lip, lport, why, remote);
+            return ErrorKind::CouldntConnect;

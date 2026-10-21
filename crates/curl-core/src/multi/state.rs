@@ -4,9 +4,15 @@
 //! the moment a transfer has a connection until `Done` gives it back, and
 //! only `Done` gives it back.
 
+use std::fmt::Write as _;
+use std::net::{IpAddr, SocketAddr};
+
 use curl_alloc::TryVec;
 
-use crate::conn::{ConnLease, Finish, Pool, Route};
+use crate::conn::io::Net;
+use crate::conn::{
+    ConnLease, ConnectError, Connected, Destination, Finish, Pool, Progress, Released, Route,
+};
 use crate::deliver::{Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
@@ -14,6 +20,7 @@ use crate::options::Options;
 use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Timer, TransferReport};
+use crate::text::Text;
 use crate::time::Instant;
 use crate::trace;
 use crate::url::{self, GetOptions, ParseOptions, Part, Url};
@@ -49,6 +56,8 @@ impl Run {
 pub(crate) enum TransferState {
     /// Added, not yet run.
     Init,
+    /// Holding a connection being set up (C's CONNECTING).
+    Connecting(Connecting),
     /// Holding a connection, the protocol connecting over it (C's
     /// PROTOCONNECT).
     ProtoConnect(Attached),
@@ -62,6 +71,23 @@ pub(crate) enum TransferState {
     Done(Done),
     /// Over; its message is read or not. Terminal until removed.
     Completed(Completed),
+}
+
+/// A request whose connection is being set up.
+#[derive(Debug)]
+pub(crate) struct Connecting {
+    lease: ConnLease,
+    proto: ProtoState,
+    /// The host and port connected to, as the failure names them.
+    origin: Origin,
+}
+
+/// The host a request is for, without the brackets of an IPv6 address,
+/// and its port (C's `conn->origin`).
+#[derive(Debug)]
+struct Origin {
+    host: Vec<u8>,
+    port: u16,
 }
 
 /// A request holding its connection.
@@ -114,7 +140,8 @@ pub(crate) enum Wake {
 impl TransferState {
     /// Whether the transfer holds a connection lease.
     pub(crate) fn holds_lease(&self) -> bool {
-        self.attached().is_some() || matches!(self, TransferState::Done(_))
+        self.attached().is_some()
+            || matches!(self, TransferState::Connecting(_) | TransferState::Done(_))
     }
 
     fn attached(&self) -> Option<&Attached> {
@@ -161,6 +188,12 @@ impl TransferState {
                 outcome: Err(err),
                 message: Message::Unread,
             }),
+            TransferState::Connecting(c) => TransferState::Done(Done {
+                lease: c.lease,
+                result: Err(err),
+                premature: true,
+                reached: Reached::Unmade,
+            }),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 TransferState::Done(x.done(Err(err), true, Reached::Unmade))
             }
@@ -173,16 +206,17 @@ impl TransferState {
 
     /// Take the transfer out of the multi before it completed: give back
     /// its connection, as a premature end (`curl_multi_remove_handle`).
-    pub(crate) fn abandon(self, pool: &mut Pool) {
+    pub(crate) fn abandon(self, pool: &mut Pool, net: &mut dyn Net) {
         let lease = match self {
             TransferState::Init | TransferState::Completed(_) => return,
+            TransferState::Connecting(c) => c.lease,
             TransferState::ProtoConnect(x)
             | TransferState::Do(x)
             | TransferState::Did(x)
             | TransferState::Exchanging(x) => x.lease,
             TransferState::Done(d) => d.lease,
         };
-        pool.release(lease, Finish { premature: true });
+        pool.release(lease, Finish { premature: true }, net);
     }
 }
 
@@ -327,6 +361,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             (next, Wake::Again)
         }
+        TransferState::Connecting(c) => connecting(run, c, cx),
         // No protocol connects over its connection yet.
         TransferState::ProtoConnect(x) => (TransferState::Do(x), Wake::Again),
         TransferState::Do(mut x) => match x.proto.do_it(cx) {
@@ -397,7 +432,16 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 d.result = Err(e);
             }
             let premature = d.premature || is_premature(d.result);
-            cx.rest.pool.release(d.lease, Finish { premature });
+            let rest = &mut cx.rest;
+            match rest
+                .pool
+                .release(d.lease, Finish { premature }, &mut *rest.net)
+            {
+                Released::Closed(n) => {
+                    trace::info(cx, format_args!("shutting down connection {n}"));
+                }
+                Released::Terminated(n) => trace::info(cx, format_args!("closing connection {n}")),
+            }
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();
@@ -455,6 +499,166 @@ fn progress_after_step<H: Host>(
             }
         }
         s => (s, wake),
+    }
+}
+
+/// A step of the connection's setup (`multistate_connecting`): not while
+/// receiving is paused, and not past the connect deadline
+/// (`multi_handle_timeout`).
+fn connecting<H: Host>(
+    run: &mut Run,
+    c: Connecting,
+    cx: &mut StepCx<'_, H>,
+) -> (TransferState, Wake) {
+    let now = cx.rest.now;
+    if let TimeLeft::Expired(_) = run.deadlines.time_left(now, Phase::Connecting) {
+        let ms = run.deadlines.since_leg_ms(now);
+        let kind = ErrorKind::OperationTimedout;
+        let kind = trace::fail(
+            cx,
+            kind,
+            format_args!("Connection timed out after {ms} milliseconds"),
+        );
+        return (TransferState::Connecting(c).fail(kind), Wake::Again);
+    }
+    if StepCx::pause(cx).recv != RecvPause::Running {
+        return (TransferState::Connecting(c), Wake::Idle);
+    }
+    let rest = &mut cx.rest;
+    match rest.pool.connect(&c.lease, &mut *rest.net, now) {
+        Ok(Connected::Connecting(Progress::Trying(to))) => {
+            // A literal's name is known at once.
+            cx.mark(Timer::NameLookup);
+            match to {
+                SocketAddr::V4(_) => trace::info(cx, format_args!("  Trying {to}...")),
+                SocketAddr::V6(v6) if v6.scope_id() != 0 => trace::info(
+                    cx,
+                    format_args!(
+                        "  Trying [{}]:{} scope_id={}...",
+                        v6.ip(),
+                        v6.port(),
+                        v6.scope_id()
+                    ),
+                ),
+                SocketAddr::V6(v6) => {
+                    trace::info(cx, format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
+                }
+            }
+            (TransferState::Connecting(c), Wake::Again)
+        }
+        Ok(Connected::Connecting(Progress::Waiting)) => (TransferState::Connecting(c), Wake::Idle),
+        Ok(Connected::Established { remote, local, at }) => {
+            cx.report_mut().timings_mut().mark(Timer::Connect, at);
+            let host = Bytes(&c.origin.host);
+            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
+            let lip = Ip(lip);
+            trace::info(
+                cx,
+                format_args!(
+                    "Established connection to {host} ({} port {}) from {lip} port {lport} ",
+                    remote.ip(),
+                    remote.port()
+                ),
+            );
+            let Connecting { lease, proto, .. } = c;
+            (
+                TransferState::ProtoConnect(Attached { lease, proto }),
+                Wake::Again,
+            )
+        }
+        Err(e) => {
+            let kind = connect_failed(cx, &c.origin, e);
+            (TransferState::Connecting(c).fail(kind), Wake::Again)
+        }
+    }
+}
+
+/// Why the setup failed, as C traces it (`cf_tcp_connect`,
+/// `is_connected`).
+fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, origin: &Origin, e: ConnectError) -> ErrorKind {
+    let host = Bytes(&origin.host);
+    let port = origin.port;
+    match e {
+        ConnectError::Unresolved => {
+            trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
+            let kind = ErrorKind::CouldntResolveHost;
+            return trace::fail(cx, kind, format_args!("Could not resolve host: {host}"));
+        }
+        ConnectError::Immediate { remote, error } => {
+            let why = OsError(&error);
+            trace::info(
+                cx,
+                format_args!("Immediate connect fail for {}: {why}", remote.ip()),
+            );
+        }
+        ConnectError::Attempt {
+            remote,
+            local,
+            error,
+        } => {
+            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
+            let lip = Ip(lip);
+            let why = OsError(&error);
+            trace::info(
+                cx,
+                format_args!(
+                    "connect to {} port {} from {lip} port {lport} failed: {why}",
+                    remote.ip(),
+                    remote.port()
+                ),
+            );
+        }
+    }
+    let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
+    trace::fail(
+        cx,
+        ErrorKind::CouldntConnect,
+        format_args!(
+            "Failed to connect to {host}:{port} after {ms} ms: Could not connect to server"
+        ),
+    )
+}
+
+/// Bytes shown as text, as C's `%s` shows them.
+struct Bytes<'a>(&'a [u8]);
+
+impl std::fmt::Display for Bytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for chunk in self.0.utf8_chunks() {
+            f.write_str(chunk.valid())?;
+            for b in chunk.invalid() {
+                f.write_char(char::from(*b))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A local address, or C's empty one when none is known.
+struct Ip(Option<IpAddr>);
+
+impl std::fmt::Display for Ip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(ip) => ip.fmt(f),
+            None => Ok(()),
+        }
+    }
+}
+
+/// An operating system error as `strerror` words it, without std's
+/// "(os error N)".
+struct OsError<'a>(&'a std::io::Error);
+
+impl std::fmt::Display for OsError<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (text, _) = Text::<256>::clipped(format_args!("{}", self.0));
+        let mut bytes = text.bytes();
+        if let Some(code) = self.0.raw_os_error() {
+            let (suffix, _) = Text::<32>::clipped(format_args!(" (os error {code})"));
+            bytes = bytes.strip_suffix(suffix.bytes()).unwrap_or(bytes);
+        }
+        Bytes(bytes).fmt(f)
     }
 }
 
@@ -561,12 +765,39 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         }
         Err(e) => return TransferState::Init.fail(e),
     };
-    let Ok(lease) = cx.rest.pool.acquire(&Route::LOCAL) else {
+    let target = match proto.network(&url) {
+        Ok(target) => target,
+        Err(e) => return TransferState::Init.fail(e),
+    };
+    let now = cx.rest.now;
+    let Some((host, port)) = target else {
+        let Ok(lease) = cx.rest.pool.acquire(Route::Local, now) else {
+            return TransferState::Init.fail(ErrorKind::OutOfMemory);
+        };
+        // A connection without a network has its name at once.
+        cx.mark(Timer::NameLookup);
+        return TransferState::ProtoConnect(Attached { lease, proto });
+    };
+    let shown = host
+        .strip_prefix(b"[")
+        .and_then(|h| h.strip_suffix(b"]"))
+        .unwrap_or(&host);
+    let mut origin = Vec::new();
+    let Ok(route) = origin
+        .try_extend_from_slice(shown)
+        .map_err(|_| ErrorKind::OutOfMemory)
+        .and_then(|()| Destination::new(&host, port).map_err(|_| ErrorKind::OutOfMemory))
+    else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    // A connection without a network has its name at once.
-    cx.mark(Timer::NameLookup);
-    TransferState::ProtoConnect(Attached { lease, proto })
+    let Ok(lease) = cx.rest.pool.acquire(Route::Tcp(route), now) else {
+        return TransferState::Init.fail(ErrorKind::OutOfMemory);
+    };
+    TransferState::Connecting(Connecting {
+        lease,
+        proto,
+        origin: Origin { host: origin, port },
+    })
 }
 
 /// Why a transfer's URL was not taken.

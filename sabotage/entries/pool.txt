@@ -24,3 +24,41 @@ witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
             std::thread::panicking(),
 --- new
             true,
+
+=== a connection given back keeps its socket open
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
+--- old
+                    Transport::Tcp(socket) => net.close(socket),
+--- new
+                    Transport::Tcp(socket) => drop(socket),
+
+=== a setup given back keeps its attempt's socket open
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::refused_and_silent_attempts
+--- old
+                m.close(net);
+--- new
+                drop(m);
+
+=== a failed attempt keeps its socket open
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core conn::pool::tests::refused_and_silent_attempts
+--- old
+        net.close(self.socket);
+--- new
+        drop(self.socket);
+
+=== an established connection takes a new slot
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
+--- old
+                        Ok(Drove::Established(conn)) => {
+                            let up = established(&conn);
+                            (ConnSlot::Open(conn), Ok(up))
+                        }
+--- new
+                        Ok(Drove::Established(conn)) => {
+                            let up = established(&conn);
+                            (ConnSlot::Failed(conn.number), Ok(up))
+                        }

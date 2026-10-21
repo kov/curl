@@ -304,7 +304,7 @@ impl<H: Host> Multi<H> {
             .take()
             .expect("no transfer is out while the multi is called");
         self.counts.removed(run.state.is_completed());
-        run.state.abandon(&mut self.pool);
+        run.state.abandon(&mut self.pool, &mut *self.net);
         self.timers.remove(id);
         self.dirty.remove(id.index());
         let status = self.update_timer(ev);
@@ -431,6 +431,7 @@ impl<H: Host> Multi<H> {
         let mut rest = EngineRest {
             slots: &mut self.slots,
             pool: &mut self.pool,
+            net: &mut *self.net,
             dirty: &mut self.dirty,
             now,
         };
@@ -483,6 +484,7 @@ impl<H: Host> Multi<H> {
             rest: EngineRest {
                 slots: &mut self.slots,
                 pool: &mut self.pool,
+                net: &mut *self.net,
                 dirty: &mut self.dirty,
                 now,
             },
@@ -513,6 +515,7 @@ impl<H: Host> Multi<H> {
             rest: EngineRest {
                 slots: &mut self.slots,
                 pool: &mut self.pool,
+                net: &mut *self.net,
                 dirty: &mut self.dirty,
                 now,
             },
@@ -750,6 +753,7 @@ fn pause_transfer<H: Host>(
             rest: EngineRest {
                 slots: &mut *rest.slots,
                 pool: &mut *rest.pool,
+                net: &mut *rest.net,
                 dirty: &mut *rest.dirty,
                 now: rest.now,
             },
@@ -770,7 +774,7 @@ impl<H: Host> Drop for Multi<H> {
             cursor = Some(id);
             let slot = self.slots.get_mut(id).expect("just found");
             if let Some(run) = slot.run.take() {
-                run.state.abandon(&mut self.pool);
+                run.state.abandon(&mut self.pool, &mut *self.net);
             }
         }
     }

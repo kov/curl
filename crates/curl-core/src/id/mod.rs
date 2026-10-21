@@ -163,6 +163,19 @@ impl<T, K> Arena<T, K> {
             .filter(|_| row.generation == key.generation)
     }
 
+    /// Replace the value with what `f` makes of it, keeping its key: a
+    /// value whose variant changes stays where every key names it.
+    pub fn replace_with<R>(&mut self, key: Key<K>, f: impl FnOnce(T) -> (T, R)) -> Option<R> {
+        let row = self.rows.get_mut(key.row as usize)?;
+        if row.generation != key.generation {
+            return None;
+        }
+        // Panics abort, so no one sees the row empty.
+        let (value, r) = f(row.value.take()?);
+        row.value = Some(value);
+        Some(r)
+    }
+
     /// Take the value out; every key to it is stale from then on.
     pub fn remove(&mut self, key: Key<K>) -> Option<T> {
         let row = self.rows.get_mut(key.row as usize)?;
@@ -307,6 +320,19 @@ mod tests {
         assert_eq!(arena.remove(old), None);
         assert_eq!(arena.get(new), Some(&"new"));
         assert_eq!(arena.len(), 1);
+    }
+
+    /// A value replaced in place keeps its key; a stale key replaces
+    /// nothing.
+    #[test]
+    fn a_value_replaced_keeps_its_key() {
+        let mut arena: Arena<_> = Arena::new(ArenaPolicy::new(16, 0).unwrap()).unwrap();
+        let key = arena.reserve().unwrap().fill(1);
+        assert_eq!(arena.replace_with(key, |n| (n + 1, n * 10)), Some(10));
+        assert_eq!(arena.get(key), Some(&2));
+        assert_eq!(arena.len(), 1);
+        arena.remove(key);
+        assert_eq!(arena.replace_with(key, |n| (n, ())), None);
     }
 
     #[test]

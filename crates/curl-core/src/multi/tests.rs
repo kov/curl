@@ -745,9 +745,23 @@ fn a_wake_ends_a_wait_without_counting_and_is_consumed() {
 struct BrokenNet;
 
 impl Net for BrokenNet {
-    fn poll(&mut self, _: &mut [PollFd<'_>], _: Duration) -> std::io::Result<u32> {
+    fn poll(
+        &mut self,
+        _: &mut [crate::conn::io::SocketPoll<'_>],
+        _: &mut [PollFd<'_>],
+        _: Duration,
+    ) -> std::io::Result<u32> {
         Err(std::io::Error::from_raw_os_error(9))
     }
+
+    fn connect(
+        &mut self,
+        _: std::net::SocketAddr,
+    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
+        Err(std::io::Error::from_raw_os_error(9))
+    }
+
+    fn close(&mut self, _: Box<dyn crate::conn::io::Socket>) {}
 }
 
 #[test]
@@ -1001,4 +1015,228 @@ fn callbacks_read_reports_and_the_multi_counts_messages() {
     assert_eq!(m.unread(), 0);
     assert_eq!(m.next_transfer(Some(missing)), None);
     assert!(m.owner(other).is_none());
+}
+
+/// Keeps the trace's text lines.
+#[derive(Clone, Default)]
+struct TextLines(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+impl crate::handler::DebugHandler for TextLines {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+        if kind == crate::handler::DebugKind::Text {
+            let line = String::from_utf8(data.to_vec()).unwrap();
+            self.0.borrow_mut().push(line);
+        }
+    }
+}
+
+/// A multi over fake peers: 127.0.0.1 port 1 accepts, 2 refuses, 3 never
+/// answers, 4 accepts after 5 ms.
+fn networked() -> (Multi, ManualClock) {
+    use crate::conn::io::Peer;
+    let clock = ManualClock::new().unwrap();
+    let at = |port| std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at(1), Peer::Accepts)
+        .with_peer(at(2), Peer::Refuses)
+        .with_peer(at(3), Peer::Silent)
+        .with_peer(at(4), Peer::AcceptsAfter(Duration::from_millis(5)));
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), clock)
+}
+
+/// A verbose transfer of `url`, and its trace.
+fn traced(url: &str) -> (Easy, TextLines) {
+    let mut e = easy(url);
+    let lines = TextLines::default();
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    (e, lines)
+}
+
+/// Lines of the trace without the debug build's warning.
+fn trace_of(lines: &TextLines) -> Vec<String> {
+    lines
+        .0
+        .borrow()
+        .iter()
+        .filter(|l| !l.starts_with("!!!") && !l.starts_with("This is a debug build"))
+        .cloned()
+        .collect()
+}
+
+/// A connect refused is C's: the attempt's line, then the failure, then
+/// the connection closed (test 1 run against a closed port).
+#[test]
+fn a_refused_connect_fails_as_c_says() {
+    let (mut m, _clock) = networked();
+    let (e, lines) = traced("tcp://127.0.0.1:2/");
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    // The socket is looked at as soon as the connect starts
+    // (`cf_tcp_connect`): a refusal already there fails in the same pass.
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::CouldntConnect), 0)]
+    );
+    let why = "Failed to connect to 127.0.0.1:2 after 0 ms: Could not connect to server";
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "  Trying 127.0.0.1:2...\n".to_owned(),
+            "connect to 127.0.0.1 port 2 from 127.0.0.1 port 40000 failed: Connection refused\n"
+                .to_owned(),
+            format!("{why}\n"),
+            "closing connection #0\n".to_owned(),
+        ]
+    );
+    let easy = m.easy(id).unwrap();
+    assert_eq!(easy.report().failure(), Some(why.as_bytes()));
+    // The name was known at once, and no connection made. A time taken
+    // at once counts as a microsecond (`Curl_pgrsTimeWas`).
+    let t = easy.report().timings();
+    assert_eq!(t.namelookup(), Duration::from_micros(1));
+    assert_eq!(t.connect(), Duration::ZERO);
+}
+
+/// An accepted connect is traced, timed, and the request goes on.
+#[test]
+fn an_accepted_connect_goes_on_to_the_request() {
+    let (mut m, clock) = networked();
+    let (e, lines) = traced("tcp://127.0.0.1:4/");
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.counts().running, 1);
+    // The wait ends when the peer answers.
+    let start = clock.now();
+    let ready = m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait);
+    assert_eq!(ready, Ok(1));
+    assert_eq!(clock.now().since(start), Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "  Trying 127.0.0.1:4...\n",
+            "Established connection to 127.0.0.1 (127.0.0.1 port 4) from 127.0.0.1 port 40000 \n",
+            "shutting down connection #0\n",
+        ]
+    );
+    let t = m.easy(id).unwrap().report().timings();
+    assert_eq!(t.namelookup(), Duration::from_micros(1));
+    assert_eq!(t.connect(), Duration::from_millis(5));
+}
+
+/// A peer that never answers times out at the connect limit, which the
+/// multi's timeout and `wait` bring about, polling the socket meanwhile.
+#[test]
+fn a_silent_peer_times_out_at_the_connect_limit() {
+    let (mut m, clock) = networked();
+    let (mut e, lines) = traced("tcp://127.0.0.1:3/");
+    e.options_mut().limits.connect = TimeLimit::from_millis(1500);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let start = clock.now();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1500)));
+    // The wait polls the connecting socket: nothing is ready, so the
+    // fake moves the clock by the whole timeout.
+    assert_eq!(
+        m.wait(&mut [], Duration::from_secs(10), WaitMode::Wait)
+            .unwrap(),
+        0
+    );
+    assert_eq!(clock.now().since(start), Duration::from_millis(1500));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::OperationTimedout), 0)]
+    );
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "  Trying 127.0.0.1:3...\n",
+            "Connection timed out after 1500 milliseconds\n",
+            "closing connection #0\n",
+        ]
+    );
+}
+
+/// A host with no address, and one whose connect fails before any poll.
+#[test]
+fn unresolved_and_immediate_failures() {
+    let (mut m, _clock) = networked();
+    let (named, named_lines) = traced("tcp://example.com:80/");
+    let named = m.add(named, (), &mut NoEvents).unwrap();
+    let (nobody, nobody_lines) = traced("tcp://[::1]:9/");
+    let nobody = m.add(nobody, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [
+            (named.index(), Err(ErrorKind::CouldntResolveHost), 1),
+            (nobody.index(), Err(ErrorKind::CouldntConnect), 0)
+        ]
+    );
+    assert_eq!(
+        trace_of(&named_lines),
+        [
+            "Could not resolve: example.com:80\n",
+            "Could not resolve host: example.com\n",
+            "closing connection #0\n",
+        ]
+    );
+    assert_eq!(
+        trace_of(&nobody_lines),
+        [
+            "Immediate connect fail for ::1: Connection refused\n",
+            "Failed to connect to ::1:9 after 0 ms: Could not connect to server\n",
+            "closing connection #1\n",
+        ]
+    );
+}
+
+/// Removing a transfer while it connects closes its socket.
+#[test]
+fn removing_a_connecting_transfer_closes_its_socket() {
+    let (mut m, _clock) = networked();
+    let id = m
+        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let mut open = 0;
+    m.pool.sockets(|_, _| open += 1);
+    assert_eq!(open, 1);
+    m.remove(id, &mut NoEvents).unwrap();
+    let mut open = 0;
+    m.pool.sockets(|_, _| open += 1);
+    assert_eq!(open, 0);
+    assert_eq!(m.pool.len(), 0);
+}
+
+/// A setup does not move on while receiving is paused
+/// (`multistate_connecting`), and does once it is not.
+#[test]
+fn a_paused_transfer_does_not_connect() {
+    let (mut m, _clock) = networked();
+    let id = m
+        .add(easy("tcp://127.0.0.1:4/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    // The peer answers, but the transfer is not told.
+    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.counts().running, 1);
+    let mut connecting = 0;
+    m.pool.sockets(|_, _| connecting += 1);
+    assert_eq!(connecting, 1, "still connecting");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
 }

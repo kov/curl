@@ -8,7 +8,7 @@ use curl_alloc::{TryArc, TryVec};
 
 use super::state::{Message as MessageState, TransferState};
 use super::{Host, Multi, MultiEvents, TransferId};
-use crate::conn::io::{Events, PollFd, Waker};
+use crate::conn::io::{Events, PollFd, SocketPoll, Waker};
 use crate::error::{ErrorKind, MultiErrorKind};
 
 /// How `wait` treats a multi with nothing to wait for.
@@ -32,9 +32,20 @@ impl<H: Host> Multi<H> {
         max: Duration,
         mode: WaitMode,
     ) -> Result<u32, MultiErrorKind> {
-        // No transfer owns a socket yet: the multi's own descriptors are
-        // the waker's alone, watched only when the wait will be one.
-        let watch_waker = mode == WaitMode::Poll || !extra.is_empty();
+        let timeout = self.timeout().map_or(max, |t| t.min(max));
+        let mut wanted = 0;
+        self.pool.sockets(|_, _| wanted += 1);
+        let mut sockets = Vec::new();
+        sockets
+            .try_reserve_exact(wanted)
+            .map_err(|_| MultiErrorKind::OutOfMemory)?;
+        self.pool.sockets(|s, events| {
+            sockets
+                .try_push(SocketPoll::new(s, events))
+                .expect("reserved");
+        });
+        // The waker is watched when the wait will be one (multi.c:1574).
+        let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
         let waker = self.waker.as_deref().filter(|_| watch_waker);
         let mut fds = Vec::new();
         fds.try_reserve_exact(extra.len() + usize::from(waker.is_some()))
@@ -46,13 +57,12 @@ impl<H: Host> Multi<H> {
             fds.try_push(PollFd::new(w.fd(), Events::IN))
                 .expect("reserved");
         }
-        if fds.is_empty() && mode == WaitMode::Wait {
+        if sockets.is_empty() && fds.is_empty() && mode == WaitMode::Wait {
             return Ok(0);
         }
-        let timeout = self.timeout().map_or(max, |t| t.min(max));
         let mut ready = self
             .net
-            .poll(&mut fds, timeout)
+            .poll(&mut sockets, &mut fds, timeout)
             .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
         for (mine, polled) in extra.iter_mut().zip(&fds) {
             mine.copy_revents(polled);

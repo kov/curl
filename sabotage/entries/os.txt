@@ -140,3 +140,11 @@ witness: curl-os fs::tests::a_listing_closes_its_directory
         unsafe { libc::closedir(self.stream.as_ptr()) };
 --- new
         let _ = self.stream;
+
+=== the time of day is UTC's, not the zone's
+file: crates/curl-os/src/time.rs
+witness: curl-os time::tests::follows_the_time_zone
+--- old
+    let filled = unsafe { libc::localtime_r(&raw const t, &raw mut tm) };
+--- new
+    let filled = unsafe { libc::gmtime_r(&raw const t, &raw mut tm) };

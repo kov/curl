@@ -37,6 +37,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/net.rs`: opening and connecting sockets.
 - `crates/curl-os/src/poll.rs`: `poll(2)`.
 - `crates/curl-os/src/terminal.rs`: the terminal's width.
+- `crates/curl-os/src/time.rs`: the local time of day.
 - `crates/curl-os/src/users.rs`: the user database.
 - `crates/curl-sys-abi/csrc/va_fetch.c`: C, not Rust; reads the printf arguments stable Rust
   cannot (`long double`). The `nightly` feature reads them in Rust instead.

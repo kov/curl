@@ -153,6 +153,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) timeout_ms: u64,
     /// `--connect-timeout`, in milliseconds; 0 is the library's default.
     pub(crate) connect_timeout_ms: u64,
+    /// `--expect100-timeout`, in milliseconds; 0 is the library's default.
+    pub(crate) expect100_timeout_ms: u64,
     /// `--globoff`: URLs and uploads are taken as they are.
     pub(crate) globoff: bool,
     /// `--head`: no body is asked for.
@@ -654,6 +656,7 @@ pub(crate) fn apply<'a>(
         Opt::MaxFilesize => line.current().max_filesize = number::size(value.text())?,
         Opt::MaxTime => line.current().timeout_ms = value.millis(),
         Opt::ConnectTimeout => line.current().connect_timeout_ms = value.millis(),
+        Opt::Expect100Timeout => line.current().expect100_timeout_ms = value.millis(),
         Opt::Globoff => line.current().globoff = value.toggle(),
         Opt::Fail | Opt::FailWithBody => {
             let (this, other, deselects) = if spec.opt == Opt::Fail {
@@ -821,7 +824,6 @@ pub(crate) fn apply<'a>(
         | Opt::Engine
         | Opt::Eprt
         | Opt::Epsv
-        | Opt::Expect100Timeout
         | Opt::FailEarly
         | Opt::FalseStart
         | Opt::Follow

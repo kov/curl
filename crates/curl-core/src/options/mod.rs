@@ -69,14 +69,17 @@ pub struct Options {
     pub script: Option<script::Script>,
 }
 
-/// The user and password the application gives (`CURLOPT_USERNAME`,
-/// `CURLOPT_PASSWORD`, `CURLOPT_USERPWD`), each as given; none is not the
-/// same as empty. They go only to the origin the transfer starts at,
+/// The user, password and token the application gives
+/// (`CURLOPT_USERNAME`, `CURLOPT_PASSWORD`, `CURLOPT_USERPWD`,
+/// `CURLOPT_XOAUTH2_BEARER`), each as given; none is not the same as
+/// empty. They go only to the origin the transfer starts at,
 /// unless `Http::unrestricted_auth` says otherwise.
 #[derive(Debug, Default)]
 pub struct Login {
     pub user: Option<Vec<u8>>,
     pub password: Option<Vec<u8>>,
+    /// An OAuth 2.0 token, for Bearer (`CURLOPT_XOAUTH2_BEARER`).
+    pub bearer: Option<Vec<u8>>,
 }
 
 impl Login {
@@ -90,6 +93,7 @@ impl Login {
         Ok(Login {
             user: Some(copy(user)?),
             password: password.map(copy).transpose()?,
+            bearer: None,
         })
     }
 
@@ -97,6 +101,7 @@ impl Login {
         Ok(Login {
             user: self.user.as_deref().map(copy).transpose()?,
             password: self.password.as_deref().map(copy).transpose()?,
+            bearer: self.bearer.as_deref().map(copy).transpose()?,
         })
     }
 }

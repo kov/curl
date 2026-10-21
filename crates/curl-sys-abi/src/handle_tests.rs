@@ -224,6 +224,8 @@ fn http_options_reach_the_request() {
     assert_eq!(login(c), (some(b"x"), None));
     pointer(c, ffi::CURLOPT_USERPWD, ptr::null_mut::<c_char>());
     assert_eq!(login(c), (None, None));
+    pointer(c, ffi::CURLOPT_XOAUTH2_BEARER, c"tok".as_ptr().cast_mut());
+    assert_eq!(options(c, |o| o.login.bearer.clone()), some(b"tok"));
     use curl_core::options::AuthMethods as M;
     let auth = |c| options(c, |o| o.http.auth.0);
     assert_eq!(auth(c), M::BASIC, "Basic unless set");

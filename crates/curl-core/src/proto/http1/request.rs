@@ -73,18 +73,23 @@ impl CredentialGate {
     }
 }
 
-/// The credentials an `Authorization: Basic` line carries, in base64. Only
-/// the gate's leave makes one, and only where the application sends no
-/// Authorization of its own (`output_auth_headers`).
+/// The `Authorization` line a method sends: its name, and what follows
+/// it. Only the gate's leave makes one, and only where the application
+/// sends no Authorization of its own (`output_auth_headers`).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Basic<'a>(&'a [u8]);
+pub(crate) struct Authorization<'a> {
+    method: &'static str,
+    value: &'a [u8],
+}
 
-impl<'a> Basic<'a> {
-    pub(crate) fn new(token: &'a [u8], _: Trusted, headers: &UserHeaders) -> Option<Basic<'a>> {
-        headers
-            .replacing(b"Authorization")
-            .is_none()
-            .then_some(Basic(token))
+impl<'a> Authorization<'a> {
+    pub(crate) fn new(
+        method: &'static str,
+        value: &'a [u8],
+        _: Trusted,
+        headers: &UserHeaders,
+    ) -> Option<Authorization<'a>> {
+        (!headers.replaces(b"Authorization")).then_some(Authorization { method, value })
     }
 }
 
@@ -338,7 +343,7 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) port: Option<u16>,
     pub(crate) user_agent: Option<&'o [u8]>,
     pub(crate) referer: Option<&'o [u8]>,
-    pub(crate) basic: Option<Basic<'o>>,
+    pub(crate) authorization: Option<Authorization<'o>>,
     /// The offset a GET or HEAD asks the rest from.
     pub(crate) range_from: Option<u64>,
     /// The body the request sends, if it has one.
@@ -444,8 +449,8 @@ fn write_h1(
                 }
             },
             Part::Authorization => {
-                if let Some(Basic(token)) = head.basic {
-                    out.line(&[b"Authorization: Basic ", token])?;
+                if let Some(Authorization { method, value }) = head.authorization {
+                    out.line(&[b"Authorization: ", method.as_bytes(), b" ", value])?;
                 }
             }
             Part::Range => {
@@ -650,7 +655,7 @@ mod tests {
             port: Some(PORT),
             user_agent: Some(UA),
             referer: None,
-            basic: None,
+            authorization: None,
             range_from: None,
             content: None,
             chunked: false,
@@ -714,7 +719,7 @@ mod tests {
                 port: Some(PORT),
                 user_agent: Some(b"ua/1"),
                 referer: Some(b"http://ref.example/x"),
-                basic: None,
+                authorization: None,
                 range_from: None,
                 content: None,
                 chunked: false,
@@ -758,7 +763,7 @@ mod tests {
                 port: None,
                 user_agent: Some(b"ua/1"),
                 referer: None,
-                basic: Basic::new(b"OmV4YW1wbGU=", trusted, &headers),
+                authorization: Authorization::new("Basic", b"OmV4YW1wbGU=", trusted, &headers),
                 range_from: None,
                 content: None,
                 chunked: false,
@@ -919,7 +924,7 @@ mod tests {
             port: None,
             user_agent: None,
             referer: None,
-            basic: None,
+            authorization: None,
             range_from: None,
             content: None,
             chunked: false,
@@ -962,7 +967,7 @@ mod tests {
                 port: None,
                 user_agent: None,
                 referer: None,
-                basic: None,
+                authorization: None,
                 range_from: None,
                 content: None,
                 chunked: false,

@@ -13,7 +13,7 @@ use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
-use crate::options::{AuthMethods, Follow, HttpVersion, Method, Resume, UploadSource};
+use crate::options::{Follow, HttpVersion, Method, Resume, UploadSource};
 use crate::report::Timer;
 use crate::time::Instant;
 use crate::trace;
@@ -22,7 +22,7 @@ use crate::url::{GetOptions, Part, Url};
 
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing};
-use super::http1::request::{self, Basic, CredentialGate, RequestHead};
+use super::http1::request::{self, Authorization, CredentialGate, RequestHead};
 use super::{Inherited, ProtoStep};
 use auth::{Credentials, CredentialsError};
 
@@ -403,15 +403,19 @@ impl Request {
         };
         let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
         let gate = self.gate;
-        let token = match (&self.credentials, auth.sent) {
-            (Some(c), Some(AuthMethods::BASIC)) => c.basic().map_err(|_| ErrorKind::OutOfMemory)?,
+        let value = match (&self.credentials, auth.sent) {
+            (Some(c), Some(method)) => c
+                .authorization(method)
+                .map_err(|_| ErrorKind::OutOfMemory)?,
             _ => None,
         };
-        let basic = match (&self.credentials, token.as_deref()) {
-            (Some(c), Some(token)) => Basic::new(token, c.trusted(), &http.headers),
+        let authorization = match (&self.credentials, auth.sent, value.as_deref()) {
+            (Some(c), Some(method), Some(value)) => {
+                Authorization::new(method.name(), value, c.trusted(), &http.headers)
+            }
             _ => None,
         };
-        let authenticates = basic.is_some();
+        let authenticated = auth.sent.filter(|_| authorization.is_some());
         let head = RequestHead {
             method,
             target: &self.target,
@@ -420,7 +424,7 @@ impl Request {
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: cx.easy().report().referer(),
-            basic,
+            authorization,
             range_from: resume_from,
             content,
             chunked: chunked && asked.is_none(),
@@ -447,9 +451,13 @@ impl Request {
                 auth: auth_asked,
             },
         };
-        if authenticates {
+        if let Some(method) = authenticated {
             let user = self.credentials.as_ref().map_or(&b""[..], |c| c.user());
-            trace::info_with(cx, &[b"Server auth using Basic with user '", user, b"'"]);
+            let name = method.name().as_bytes();
+            trace::info_with(
+                cx,
+                &[b"Server auth using ", name, b" with user '", user, b"'"],
+            );
         }
         let head_len = out.len();
         if upload.is_some() {

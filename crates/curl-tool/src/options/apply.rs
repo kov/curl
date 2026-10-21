@@ -142,6 +142,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) user_agent: Option<&'a [u8]>,
     /// `-u`: `user:password`, or a user alone.
     pub(crate) user: Option<&'a [u8]>,
+    /// `--oauth2-bearer`.
+    pub(crate) bearer: Option<&'a [u8]>,
     /// The methods to authenticate with; none for the library's default
     /// (C's `authtype`).
     pub(crate) auth: AuthMethods,
@@ -657,6 +659,15 @@ pub(crate) fn apply<'a>(
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
         Opt::User => line.current().user = Some(value.text()),
         Opt::Anyauth => line.current().auth = AuthMethods::ANY,
+        Opt::Oauth2Bearer => {
+            let text = value.text();
+            if text.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            let op = line.current();
+            op.bearer = Some(text);
+            op.auth = op.auth | AuthMethods::BEARER;
+        }
         Opt::Basic => {
             let op = line.current();
             op.auth = if value.toggle() {
@@ -990,7 +1001,6 @@ pub(crate) fn apply<'a>(
         | Opt::Npn
         | Opt::Ntlm
         | Opt::NtlmWb
-        | Opt::Oauth2Bearer
         | Opt::Parallel
         | Opt::ParallelImmediate
         | Opt::ParallelMax

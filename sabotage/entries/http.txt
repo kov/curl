@@ -228,11 +228,9 @@ witness: curl-core proto::http1::request::tests::the_referer_follows_accept
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http1::request::tests::basic_credentials_follow_host
 --- old
-            .replacing(b"Authorization")
-            .is_none()
+        (!headers.replaces(b"Authorization")).then_some(Authorization { method, value })
 --- new
-            .replacing(b"X-Never")
-            .is_none()
+        (!headers.replaces(b"X-Never")).then_some(Authorization { method, value })
 
 === a zero byte in the URL's credentials is let through
 file: crates/curl-core/src/proto/http/auth.rs
@@ -815,9 +813,9 @@ witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_ca
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::tests::a_redirect_s_own_credentials_go_with_it
 --- old
-        let (mut user, mut password) = (None, None);
+        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
 --- new
-        let (mut user, mut password) = (None, None);
+        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
         if trusted.is_none() {
             return Ok(None);
         }
@@ -961,6 +959,39 @@ witness: curl-core proto::http::tests::the_method_chosen_is_kept_for_the_next_tr
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 --- old
-            let open = challenges.open & asked.want & !AuthMethods::BEARER;
+            let mut open = challenges.open & asked.want;
 --- new
-            let open = challenges.open & !AuthMethods::BEARER;
+            let mut open = challenges.open;
+
+=== the application's token goes to any origin
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::composes_a_token_with_the_rest
+--- old
+        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
+--- new
+        let (mut user, mut password, mut bearer) =
+            (None, None, login.bearer.clone().unwrap_or_default());
+
+=== Basic is preferred to Bearer
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
+--- old
+            let picked = if open.contains(AuthMethods::BEARER) {
+--- new
+            let picked = if open.contains(AuthMethods::BEARER) && !open.contains(AuthMethods::BASIC) {
+
+=== Bearer is picked without a token
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
+--- old
+            if !asked.bearer {
+--- new
+            if asked.bearer && !asked.bearer {
+
+=== a token wanted alone is not sent
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::tests::a_token_goes_as_bearer
+--- old
+                (credentials.has_bearer() && !custom).then_some(AuthMethods::BEARER)
+--- new
+                None

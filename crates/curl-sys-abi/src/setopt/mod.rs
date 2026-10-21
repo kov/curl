@@ -487,6 +487,10 @@ fn apply(
             // SAFETY: as above.
             options.login.password = unsafe { owned(p) }?;
         }
+        (ffi::CURLOPT_XOAUTH2_BEARER, Ptr(p)) => {
+            // SAFETY: as above.
+            options.login.bearer = unsafe { owned(p) }?;
+        }
         (ffi::CURLOPT_CUSTOMREQUEST, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.http.custom_method = unsafe { owned(p) }?;

@@ -924,6 +924,9 @@ fn configure(
     if let Some(pair) = op.user {
         o.login = options::Login::from_pair(pair)?;
     }
+    if let Some(token) = op.bearer {
+        o.login.bearer = Some(copy(token)?);
+    }
     if !op.auth.is_empty() {
         http.auth = options::HttpAuth(op.auth);
     }

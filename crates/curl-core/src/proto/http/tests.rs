@@ -1782,6 +1782,28 @@ fn the_method_chosen_is_kept_for_the_next_transfer() {
     }
 }
 
+/// A token goes as Bearer when Bearer alone is wanted, its user named
+/// as empty; a 401 offering Bearer again refuses it.
+#[test]
+fn a_token_goes_as_bearer() {
+    let refused = b"HTTP/1.1 401 No\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\n\r\n";
+    for (reply, result) in [(OK, Ok(())), (&refused[..], Ok(()))] {
+        let (mut m, talk, _) = server(&[reply], false);
+        let ran = get(&mut m, "/a", talk.clone(), |o| {
+            o.login.bearer = Some(b"mF_9.B5f".to_vec());
+            o.http.auth = crate::options::HttpAuth(AuthMethods::BEARER);
+        });
+        assert_eq!(ran.result, result);
+        let received = talk.received();
+        assert!(fixture::find(&received, b"Authorization: Bearer mF_9.B5f\r\n").is_some());
+        let text = ran.seen.text();
+        assert!(text.contains(&"Server auth using Bearer with user ''\n".to_string()));
+        let problem = "Bearer authentication problem, ignoring.\n".to_string();
+        assert_eq!(text.contains(&problem), reply != OK);
+        assert_eq!(ran.easy.report().auth_used(), AuthMethods::BEARER);
+    }
+}
+
 /// Basic sent and offered again is refused: the 401 is the answer, and
 /// fails a request that asked to fail on errors. Without credentials, a
 /// 401 is no different from any other error.

@@ -73,6 +73,10 @@ impl HostAuth {
                 self.done = true;
                 (credentials.has_user_or_password() && !custom).then_some(AuthMethods::BASIC)
             }
+            Some(AuthMethods::BEARER) => {
+                self.done = true;
+                (credentials.has_bearer() && !custom).then_some(AuthMethods::BEARER)
+            }
             _ => None,
         };
         // A method that takes more than one request, not done, probes
@@ -101,6 +105,7 @@ impl HostAuth {
             picked: self.picked,
             credentials: credentials.is_some(),
             user_or_password: credentials.is_some_and(Credentials::has_user_or_password),
+            bearer: credentials.is_some_and(Credentials::has_bearer),
             done: self.done,
             probe,
             get_or_head,
@@ -126,6 +131,7 @@ pub(crate) struct AuthAsked {
     /// The request has credentials, empty ones too.
     credentials: bool,
     user_or_password: bool,
+    bearer: bool,
     done: bool,
     probe: bool,
     get_or_head: bool,
@@ -139,6 +145,7 @@ impl AuthAsked {
         picked: AuthMethods::NONE,
         credentials: false,
         user_or_password: false,
+        bearer: false,
         done: false,
         probe: false,
         get_or_head: true,
@@ -228,9 +235,14 @@ impl AuthAct {
             return act;
         }
         if asked.credentials && (code == 401 || asked.probe && code < 300) {
-            let open = challenges.open & asked.want & !AuthMethods::BEARER;
+            let mut open = challenges.open & asked.want;
+            if !asked.bearer {
+                open = open & !AuthMethods::BEARER;
+            }
             // In C's order of preference.
-            let picked = if open.contains(AuthMethods::BASIC) && asked.user_or_password {
+            let picked = if open.contains(AuthMethods::BEARER) {
+                AuthMethods::BEARER
+            } else if open.contains(AuthMethods::BASIC) && asked.user_or_password {
                 AuthMethods::BASIC
             } else {
                 AuthMethods::NONE
@@ -264,6 +276,8 @@ impl AuthAct {
 pub(crate) struct Credentials {
     user: Vec<u8>,
     password: Vec<u8>,
+    /// An OAuth 2.0 token, empty for none.
+    bearer: Vec<u8>,
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "netrc reads it, MILESTONES step 29")
@@ -303,14 +317,21 @@ impl Credentials {
         trusted: Option<Trusted>,
         url: &Url,
     ) -> Result<Option<Credentials>, CredentialsError> {
-        let (mut user, mut password) = (None, None);
+        let (mut user, mut password, mut bearer) = (None, None, Vec::new());
         if let Some(trusted) = trusted {
             user = login.user.as_deref().map(copy).transpose()?;
             password = login.password.as_deref().map(copy).transpose()?;
+            bearer = login
+                .bearer
+                .as_deref()
+                .map(copy)
+                .transpose()?
+                .unwrap_or_default();
             if let Some(user) = user.take_if(|u| !u.is_empty()) {
                 return Ok(Some(Credentials {
                     user,
                     password: password.unwrap_or_default(),
+                    bearer,
                     source: Source::Options,
                     trusted,
                 }));
@@ -319,7 +340,7 @@ impl Credentials {
         if let Some((url_user, url_password)) = Self::of_url(url)? {
             user = url_user.or(user);
             password = url_password.or(password);
-        } else if user.is_none() && password.is_none() {
+        } else if user.is_none() && password.is_none() && bearer.is_empty() {
             return Ok(None);
         }
         // What the login left blank merged with the URL is the URL's,
@@ -327,6 +348,7 @@ impl Credentials {
         Ok(Some(Credentials {
             user: user.unwrap_or_default(),
             password: password.unwrap_or_default(),
+            bearer,
             source: Source::Url,
             // A login gets this far only trusted; the URL's own always.
             trusted: trusted.unwrap_or_else(Trusted::own_url),
@@ -368,6 +390,24 @@ impl Credentials {
         !self.user.is_empty() || !self.password.is_empty()
     }
 
+    pub(crate) fn has_bearer(&self) -> bool {
+        !self.bearer.is_empty()
+    }
+
+    /// What follows the name of `method` in the `Authorization` line
+    /// these send: Basic's encoded pair, Bearer's token. None where they
+    /// hold nothing for it.
+    pub(crate) fn authorization(
+        &self,
+        method: AuthMethods,
+    ) -> Result<Option<Vec<u8>>, OutOfMemory> {
+        match method {
+            AuthMethods::BASIC => self.basic(),
+            AuthMethods::BEARER if self.has_bearer() => copy(&self.bearer).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// The leave to send these to the request's origin.
     pub(crate) fn trusted(&self) -> Trusted {
         self.trusted
@@ -375,7 +415,7 @@ impl Credentials {
 
     /// `user:password` in base64, what `Authorization: Basic` carries;
     /// nothing when both are empty (`Curl_creds_has_user_or_pass`).
-    pub(crate) fn basic(&self) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    fn basic(&self) -> Result<Option<Vec<u8>>, OutOfMemory> {
         if self.user.is_empty() && self.password.is_empty() {
             return Ok(None);
         }
@@ -452,6 +492,7 @@ mod tests {
         let login = |u: Option<&[u8]>, p: Option<&[u8]>| Login {
             user: u.map(<[u8]>::to_vec),
             password: p.map(<[u8]>::to_vec),
+            bearer: None,
         };
         let got = |u: &[u8], p: &[u8], s| Ok(Some((u.to_vec(), p.to_vec(), s)));
         let both = login(Some(b"smith"), Some(b"doggie"));
@@ -500,6 +541,30 @@ mod tests {
         assert_eq!(creds("http://a%01b:x%3a@h/"), some(b"a\x01b", b"x:"));
         assert_eq!(creds("http://a%00b:x@h/"), Err(CredentialsError::Malformed));
         assert_eq!(creds("http://a:%00@h/"), Err(CredentialsError::Malformed));
+    }
+
+    /// A token goes where the login would, kept through the URL's
+    /// credentials; alone it still makes credentials.
+    #[test]
+    fn composes_a_token_with_the_rest() {
+        let token = Login {
+            bearer: Some(b"t".to_vec()),
+            ..Login::default()
+        };
+        let bearer = |trusted: bool, url: &str| {
+            let url = Url::parse(url.as_bytes(), ParseOptions::NONE).unwrap();
+            let trusted = trusted.then(Trusted::own_url);
+            Credentials::for_request(&token, trusted, &url)
+                .unwrap()
+                .map(|c| (c.user, c.bearer))
+        };
+        assert_eq!(bearer(true, "http://h/"), Some((vec![], b"t".to_vec())));
+        assert_eq!(
+            bearer(true, "http://u@h/"),
+            Some((b"u".to_vec(), b"t".to_vec()))
+        );
+        assert_eq!(bearer(false, "http://h/"), None);
+        assert_eq!(bearer(false, "http://u@h/"), Some((b"u".to_vec(), vec![])));
     }
 
     /// Methods are read at the start of each comma-separated part, whole
@@ -561,6 +626,15 @@ mod tests {
         };
         let act = AuthAct::of(401, &offered(AuthMethods::BASIC), &digest_only);
         assert!(act.problem && !act.reload);
+        let both = offered(AuthMethods::BASIC | AuthMethods::BEARER);
+        let act = AuthAct::of(401, &both, &asked);
+        assert_eq!(act.picked, Some(AuthMethods::BASIC), "no token: not Bearer");
+        let token = AuthAsked {
+            bearer: true,
+            ..asked
+        };
+        let act = AuthAct::of(401, &both, &token);
+        assert_eq!(act.picked, Some(AuthMethods::BEARER), "Bearer before Basic");
         let empty = AuthAsked {
             user_or_password: false,
             ..asked
@@ -580,6 +654,7 @@ mod tests {
             let c = Credentials {
                 user: u.to_vec(),
                 password: p.to_vec(),
+                bearer: Vec::new(),
                 source: Source::Options,
                 trusted: Trusted::own_url(),
             };

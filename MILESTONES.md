@@ -309,6 +309,62 @@ yet meet.
     and Retry-After dates. Waiting: 3010 (`CURLINFO_REDIRECT_URL`), 1940, 1942 and 1943 (they
     set `CURLOPT_FOLLOWLOCATION`), all with redirects; 758 needs an HTTPS server.
 
-After the milestone, each ring has its seam: T1 (`-w`, `-m`, `--fail-with-body`, `-#`,
-`--stderr`), pool reuse and limits with the getaddrinfo resolver, redirects, multi-URL, then event
-mode and `-e`.
+## Milestone 2: more than one leg, the resolver, and the rest of HTTP/1.1
+
+Status: **in progress**. The rest of SCOPE stage 3: what a transfer needs to make a second
+request (redirects, retries, authentication), names resolved and connections limited, request
+bodies, cookies, proxies and compression, with the tool's T1 ring and its multi-URL and event
+modes. Each step opens with the change to the engine it stands on, then the features, then the
+tests it flips, checked on both legs as in milestone 1. At its end, the sabotage sweep and
+cargo-mutants run on the milestone's diff.
+
+22. **core: run a transfer as legs.** **To do.** The protocol's `done` says what comes next,
+    `AfterRequest { Complete, Follow(Target), Retry(Target) }`; setup splits into a pretransfer
+    run once per transfer (the report restarted, `Starts::op`, the option URL read) and
+    `start_leg(target)`, run per leg; `Run` owns the leg's target and the credential gate's
+    first origin. First user: a request on a reused connection that got nothing back is retried
+    once on a new one (`Curl_req_want_send`'s retry). Witnessed by core tests with a second
+    leg; no C test flips by itself.
+23. **conn: resolve names and limit connections.** **To do.** Opening commits: a list
+    `Pollset` in place of one socket, then a refcounted `Peer` as the one owner of the host,
+    matched for reuse as `peer_same_destination` does (case, zone), with `Origin` gone. Then
+    the getaddrinfo resolver, happy eyeballs (unit 2600 first), a DNS cache on the multi and
+    the grouping of the multi's tables; `--resolve` and `--connect-to`; the limits left at
+    step 11b (MAXCONNECTS eviction, FORBID_REUSE, the per-host and total limits,
+    MAXAGE_CONN and MAXLIFETIME_CONN); the resolver's reason in a connect failure.
+24. **tool: the T1 ring.** **To do.** The `-w` variables, `--fail-with-body`, `-#` and
+    `--stderr`, with the report fields they read.
+25. **http: send request bodies.** **To do.** Opening commit: `Directions` refreshed by the
+    engine from the protocol after each call, its other writers removed and the debug check
+    comparing them. Then the send side's states (`SendSide`), POSTFIELDS, the read callback,
+    PUT, chunked upload, `Expect: 100-continue` with the 417 retry as a second leg, and a
+    rewind for a new leg. The method's options (NOBODY, POST, UPLOAD, HTTPGET) combine in the
+    shim.
+26. **http: follow redirects.** **To do.** Opening commit: relative URL resolution and the
+    part setters (the rest of lib1560). Then FOLLOWLOCATION, MAXREDIRS, 301/302/303 method
+    changes, credentials and a custom Host dropped across hosts through the gate,
+    `-e ";auto"` and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
+    followlocation family.
+27. **tool: several URLs, then globbing.** **To do.** Globbing is refused with exit 125 until
+    then.
+28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a
+    transfer's own handler, the socket and timer callbacks inside a pause from a transfer's own
+    handler (step 11d), and a setopt from the timer callback during `curl_multi_add_handle`
+    (step 10).
+29. **http: authenticate.** **To do.** Basic from the options, then netrc, Bearer and Digest,
+    and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15) with it.
+30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
+    share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`.
+31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
+    the proxy options and the scheme table, each trace's host checked on the C leg. Then the
+    absolute request target and Proxy-Authorization; then CONNECT, after the dial result is
+    split from the pooled `Conn` (§4.2's `TunnelEvent` and `&mut ProxyAuth`); then SOCKS.
+32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as
+    C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a
+    binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and
+    Content-Encoding.
+
+Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
+generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting
+connect and DO states and connection-scoped protocol state, with the first stage-6 protocol or
+STARTTLS; the request renderer writing each part through a field sink, when HTTP/2 starts.

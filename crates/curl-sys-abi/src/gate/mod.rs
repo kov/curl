@@ -357,6 +357,8 @@ mod tests {
             assert!(e.enter(EasyCall::Pause, Some(&m)).is_ok());
         });
         assert!(!m.in_event());
+        // Out of the notification, an add may not recurse again.
+        assert_eq!(m.enter(MultiCall::AddHandle).err(), Some(Recursive));
     }
 
     /// Calls nest no deeper than C lets them.

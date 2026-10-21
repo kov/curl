@@ -25,6 +25,8 @@ mod callbacks;
 mod easy;
 mod gate;
 mod getinfo;
+#[cfg(test)]
+mod handle_tests;
 mod multi;
 mod printf;
 mod root;

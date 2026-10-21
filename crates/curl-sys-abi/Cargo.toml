@@ -23,6 +23,10 @@ curl-alloc = { version = "0.1.0", path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 libc = "0.2"
 
+[dev-dependencies]
+# The `script:` test protocol, for bodies sent again.
+curl-core = { path = "../curl-core", features = ["test-util"] }
+
 [lints]
 workspace = true
 

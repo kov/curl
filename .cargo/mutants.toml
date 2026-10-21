@@ -97,4 +97,16 @@ exclude_re = [
     'curl-tool/src/operate\.rs:.*: replace <impl Rewind for UploadFile>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\)$',
     # Sequence numbers are unique: two entries never compare equal.
     'multi/timers\.rs:.*: replace < with <= in Entry<T>::before$',
+    # Past the depth limit every call is refused whether the callback is
+    # counted or not, and the count comes back down when it returns.
+    'curl-sys-abi/src/gate/mod\.rs:.*: replace < with <= in MultiStack::lend$',
+    # Without a timer function `ShimEvents::timer` does nothing: whether
+    # the core asks it cannot be seen.
+    'curl-sys-abi/src/multi\.rs:.*: replace <impl MultiEvents<CHost> for ShimEvents<._>>::wants_timer -> bool with true$',
+    # The private multi only drives the handle's own transfer, and only
+    # an allocation the tests cannot fail on its own reports OutOfMemory.
+    'curl-sys-abi/src/easy\.rs:.*: delete match arm MultiErrorKind::OutOfMemory in perform$',
+    # A private multi kept past an add is freed with the handle instead;
+    # nothing else can see it.
+    'curl-sys-abi/src/easy\.rs:.*: replace ShimEasy::drop_private with \(\)$',
 ]

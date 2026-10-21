@@ -172,3 +172,17 @@ pub unsafe extern "C" fn curl_easy_getinfo(
     CURLE_OK
 }
 const _: ffi::proto::curl_easy_getinfo = curl_easy_getinfo;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn times_are_c_s_units() {
+        let d = Duration::from_micros(1_500_250);
+        assert_eq!(micros(d), 1_500_250);
+        assert_eq!(secs(d), 1.50025);
+        assert_eq!(micros(Duration::MAX), curl_off_t::MAX);
+        assert_eq!(proto_bit(Protocol::File), 1 << 10);
+    }
+}

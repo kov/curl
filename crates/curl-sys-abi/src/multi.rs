@@ -405,7 +405,7 @@ unsafe fn put<T>(out: *mut T, n: T) {
     }
 }
 
-fn running(n: u32) -> c_int {
+pub(crate) fn running(n: u32) -> c_int {
     c_int::try_from(n).unwrap_or(c_int::MAX)
 }
 
@@ -626,7 +626,7 @@ pub unsafe extern "C" fn curl_multi_get_offt(
 const _: ffi::proto::curl_multi_get_offt = curl_multi_get_offt;
 
 /// The kind of notification C's number names.
-fn notify_kind(n: c_uint) -> Option<NotifyKind> {
+pub(crate) fn notify_kind(n: c_uint) -> Option<NotifyKind> {
     match c_int::try_from(n).ok()? {
         ffi::CURLMNOTIFY_INFO_READ => Some(NotifyKind::InfoRead),
         ffi::CURLMNOTIFY_EASY_DONE => Some(NotifyKind::EasyDone),
@@ -722,7 +722,7 @@ pub unsafe extern "C" fn curl_multi_setopt(
 const _: ffi::proto::curl_multi_setopt = curl_multi_setopt;
 
 /// What C polls an extra descriptor for.
-fn wait_events(events: i16) -> Events {
+pub(crate) fn wait_events(events: i16) -> Events {
     let events = c_int::from(events);
     let mut e = Events::NONE;
     if events & CURL_WAIT_POLLIN != 0 {
@@ -738,7 +738,7 @@ fn wait_events(events: i16) -> Events {
 }
 
 /// What C reports for an extra descriptor.
-fn wait_revents(r: Events) -> i16 {
+pub(crate) fn wait_revents(r: Events) -> i16 {
     let mut mask = 0;
     if r.contains(Events::IN) {
         mask |= CURL_WAIT_POLLIN;

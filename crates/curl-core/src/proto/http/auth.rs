@@ -7,7 +7,8 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::request::Trusted;
 use crate::error::UrlErrorKind;
-use crate::options::{AuthMethods, Login};
+use crate::netrc::Found;
+use crate::options::{AuthMethods, Login, NetrcMode};
 use crate::url::{GetOptions, Part, Url, decode_but_zero};
 
 /// Authenticating with the origin, over a handle's transfers (C's
@@ -278,10 +279,6 @@ pub(crate) struct Credentials {
     password: Vec<u8>,
     /// An OAuth 2.0 token, empty for none.
     bearer: Vec<u8>,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "netrc reads it, MILESTONES step 29")
-    )]
     source: Source,
     trusted: Trusted,
 }
@@ -291,6 +288,15 @@ pub(crate) struct Credentials {
 pub(crate) enum Source {
     Options,
     Url,
+    Netrc,
+}
+
+/// Whether a `.netrc` file is read for a request, and for which user.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NetrcLookup<'c> {
+    No,
+    /// For any user, or the one named.
+    For(Option<&'c [u8]>),
 }
 
 /// Why a URL's credentials could not be taken.
@@ -353,6 +359,45 @@ impl Credentials {
             // A login gets this far only trusted; the URL's own always.
             trusted: trusted.unwrap_or_else(Trusted::own_url),
         }))
+    }
+
+    /// Whether `credentials` leave a `.netrc` file to read in `mode`, and
+    /// for which user (`url_set_data_creds_netrc`): never over the
+    /// options', and over the URL's only to complete them, or to replace
+    /// the password where the file is required.
+    pub(crate) fn netrc_lookup(
+        credentials: Option<&Credentials>,
+        mode: NetrcMode,
+    ) -> NetrcLookup<'_> {
+        if mode == NetrcMode::Ignored {
+            return NetrcLookup::No;
+        }
+        let Some(c) = credentials else {
+            return NetrcLookup::For(None);
+        };
+        match c.source {
+            Source::Options => NetrcLookup::No,
+            Source::Url
+                if mode == NetrcMode::Required || c.user.is_empty() || c.password.is_empty() =>
+            {
+                NetrcLookup::For(Some(&c.user))
+            }
+            Source::Url => NetrcLookup::No,
+            Source::Netrc => NetrcLookup::For(None),
+        }
+    }
+
+    /// `credentials` with a `.netrc` entry's user and password in place
+    /// of theirs, a token kept (`Curl_creds_merge`). The entry is for the
+    /// request's own host, so goes there wherever the transfer started.
+    pub(crate) fn with_netrc(credentials: Option<Credentials>, found: Found) -> Credentials {
+        Credentials {
+            user: found.user,
+            password: found.password,
+            bearer: credentials.map(|c| c.bearer).unwrap_or_default(),
+            source: Source::Netrc,
+            trusted: Trusted::own_url(),
+        }
     }
 
     /// What `url` carries, if it has a user or a password: decoded,
@@ -565,6 +610,35 @@ mod tests {
         );
         assert_eq!(bearer(false, "http://h/"), None);
         assert_eq!(bearer(false, "http://u@h/"), Some((b"u".to_vec(), vec![])));
+    }
+
+    /// As C's `url_set_data_creds_netrc` decides: never over the
+    /// options', over the URL's to complete them or, if required, to
+    /// replace the password, naming the URL's user.
+    #[test]
+    fn looks_in_netrc_as_c() {
+        let creds = |user: &[u8], password: &[u8], source| Credentials {
+            user: user.to_vec(),
+            password: password.to_vec(),
+            bearer: Vec::new(),
+            source,
+            trusted: Trusted::own_url(),
+        };
+        let (opt, req, ign) = (NetrcMode::Optional, NetrcMode::Required, NetrcMode::Ignored);
+        fn look(c: Option<&Credentials>, mode: NetrcMode) -> NetrcLookup<'_> {
+            Credentials::netrc_lookup(c, mode)
+        }
+        assert_eq!(look(None, ign), NetrcLookup::No);
+        assert_eq!(look(None, opt), NetrcLookup::For(None));
+        let options = creds(b"u", b"", Source::Options);
+        assert_eq!(look(Some(&options), req), NetrcLookup::No);
+        let whole = creds(b"u", b"p", Source::Url);
+        assert_eq!(look(Some(&whole), opt), NetrcLookup::No);
+        assert_eq!(look(Some(&whole), req), NetrcLookup::For(Some(b"u")));
+        let user_only = creds(b"u", b"", Source::Url);
+        assert_eq!(look(Some(&user_only), opt), NetrcLookup::For(Some(b"u")));
+        let password_only = creds(b"", b"p", Source::Url);
+        assert_eq!(look(Some(&password_only), opt), NetrcLookup::For(Some(b"")));
     }
 
     /// Methods are read at the start of each comma-separated part, whole

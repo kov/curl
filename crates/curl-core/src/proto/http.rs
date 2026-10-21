@@ -24,7 +24,10 @@ use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing};
 use super::http1::request::{self, Authorization, CredentialGate, RequestHead};
 use super::{Inherited, ProtoStep};
-use auth::{Credentials, CredentialsError};
+use crate::netrc::{self, NetrcError};
+use crate::options::NetrcMode;
+use auth::{Credentials, CredentialsError, NetrcLookup};
+use std::ffi::CStr;
 
 pub(crate) mod auth;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
@@ -136,6 +139,69 @@ enum Body {
     UntilClose,
 }
 
+/// `credentials` completed or replaced from a `.netrc` file, if the
+/// options ask for one and leave room for it (`url_set_data_creds_netrc`).
+fn with_netrc<H: Host>(
+    credentials: Option<Credentials>,
+    host: &[u8],
+    cx: &mut StepCx<'_, H>,
+) -> Result<Option<Credentials>, ErrorKind> {
+    let copy = |bytes: &[u8]| {
+        let mut v = Vec::new();
+        v.try_extend_from_slice(bytes)
+            .map(|()| v)
+            .map_err(|_| ErrorKind::OutOfMemory)
+    };
+    let netrc = &cx.easy().options().netrc;
+    let mode = netrc.mode;
+    let user = match Credentials::netrc_lookup(credentials.as_ref(), mode) {
+        NetrcLookup::No => return Ok(credentials),
+        NetrcLookup::For(user) => user.map(copy).transpose()?,
+    };
+    let path = match &netrc.file {
+        Some(file) => Some(copy(file)?),
+        None => netrc::default_path().map_err(|_| ErrorKind::OutOfMemory)?,
+    };
+    let found = match path {
+        None => Err(NetrcError::FileMissing),
+        Some(mut path) => {
+            path.try_push(0).map_err(|_| ErrorKind::OutOfMemory)?;
+            match CStr::from_bytes_with_nul(&path) {
+                Ok(path) => {
+                    netrc::load(path).and_then(|text| netrc::scan(&text, host, user.as_deref()))
+                }
+                Err(_) => Err(NetrcError::FileMissing),
+            }
+        }
+    };
+    match found {
+        Ok(found) => Ok(Some(Credentials::with_netrc(credentials, found))),
+        Err(NetrcError::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+        Err(e) if e == NetrcError::NoMatch || mode == NetrcMode::Optional => {
+            let file = match &cx.easy().options().netrc.file {
+                Some(file) => copy(file)?,
+                None => copy(b".netrc")?,
+            };
+            trace::info_with(
+                cx,
+                &[
+                    b"Could not find host ",
+                    host,
+                    b" in the ",
+                    &file,
+                    b" file; using defaults",
+                ],
+            );
+            Ok(credentials)
+        }
+        Err(e) => Err(trace::fail(
+            cx,
+            ErrorKind::ReadError,
+            format_args!(".netrc error: {}", e.text()),
+        )),
+    }
+}
+
 impl Request {
     /// A request for `url`, whose scheme is `http`, after the transfer's
     /// earlier ones left it `inherited`.
@@ -197,6 +263,7 @@ impl Request {
                 ));
             }
         };
+        let credentials = with_netrc(credentials, &host, cx)?;
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,

@@ -1470,7 +1470,12 @@ The gate holds back what the application said; credentials in the request's own 
 origin regardless (`Trusted::own_url`), as C takes them per leg in `url_set_data_creds`. Each
 request composes its `Credentials` so (`for_request`): the application's `Login`, if the gate
 trusts the origin; the URL's parts in place of the login's unless the login named a user. The
-`Trusted` leave travels inside them, so no credentials reach a header without it.
+`Trusted` leave travels inside them, so no credentials reach a header without it. A `.netrc`
+file (`Options::netrc`) is read last, per request, for the request's own host: never over the
+login, over the URL's only to complete them, or, when required, to replace their password
+(`netrc_lookup`); an entry found replaces the user and password and goes to its host wherever
+the transfer started. `netrc.rs` is the file's parser, a port of `lib/netrc.c` bounded as C's
+is. Unlike C, the entry is not written into the request's URL: the next leg looks it up again.
 What one request takes from the ones before it is `Inherited` on `Run`, reset at a transfer's
 start: the first origin, the method (C's `state.httpreq`), whether the custom method is still
 sent (`state.http_ignorecustom`) and whether a response said HTTP/1.0 (`rcvd_min`, which makes

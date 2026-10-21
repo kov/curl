@@ -1804,6 +1804,93 @@ fn a_token_goes_as_bearer() {
     }
 }
 
+/// A `.netrc` file gives the host's credentials where the options give
+/// none; a missing one is passed over if optional and fails the
+/// transfer if required; an entry not found is passed over either way.
+#[test]
+fn a_netrc_file_gives_the_host_s_credentials() {
+    use crate::options::NetrcMode;
+    let path = std::env::temp_dir().join(format!("curl-core-netrc-{}", std::process::id()));
+    std::fs::write(&path, b"machine 127.0.0.1 login nu password np\n").unwrap();
+    let file = path.as_os_str().as_encoded_bytes().to_vec();
+    let missing = [&file[..], b".missing"].concat();
+    let none = Ok(());
+    let read_error = Err(ErrorKind::ReadError);
+    for (mode, file, login, url_user, result, sent) in [
+        (
+            NetrcMode::Required,
+            &file,
+            None,
+            "",
+            &none,
+            Some("bnU6bnA="),
+        ),
+        (
+            NetrcMode::Optional,
+            &file,
+            None,
+            "",
+            &none,
+            Some("bnU6bnA="),
+        ),
+        (NetrcMode::Ignored, &file, None, "", &none, None),
+        (
+            NetrcMode::Required,
+            &file,
+            Some(&b"o:p"[..]),
+            "",
+            &none,
+            Some("bzpw"),
+        ),
+        // The URL's user names the entry, which has no other.
+        (
+            NetrcMode::Required,
+            &file,
+            None,
+            "other@",
+            &none,
+            Some("b3RoZXI6"),
+        ),
+        (NetrcMode::Optional, &missing, None, "", &none, None),
+        (NetrcMode::Required, &missing, None, "", &read_error, None),
+    ] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let url = format!("http://{url_user}127.0.0.1:{PORT}/a");
+        let ran = get(&mut m, "/a", talk.clone(), |o| {
+            o.set_url(Some(url.as_bytes())).unwrap();
+            o.netrc.mode = mode;
+            o.netrc.file = Some(file.clone());
+            if let Some(pair) = login {
+                o.login = crate::options::Login::from_pair(pair).unwrap();
+            }
+        });
+        assert_eq!(&ran.result, result, "{mode:?} {login:?} {url_user}");
+        let received = talk.received();
+        let line = sent.map(|token| format!("Authorization: Basic {token}\r\n"));
+        match &line {
+            Some(line) => assert!(
+                fixture::find(&received, line.as_bytes()).is_some(),
+                "{mode:?} {login:?} {url_user}: {}",
+                String::from_utf8_lossy(&received)
+            ),
+            None => assert!(fixture::find(&received, b"Authorization").is_none()),
+        }
+        let text = ran.seen.text();
+        if file == &missing {
+            let said = if result.is_ok() {
+                format!(
+                    "Could not find host 127.0.0.1 in the {} file; using defaults\n",
+                    String::from_utf8_lossy(&missing)
+                )
+            } else {
+                ".netrc error: no such file\n".to_string()
+            };
+            assert!(text.contains(&said), "{text:?}");
+        }
+    }
+    std::fs::remove_file(&path).unwrap();
+}
+
 /// Basic sent and offered again is refused: the 401 is the answer, and
 /// fails a request that asked to fail on errors. Without credentials, a
 /// 401 is no different from any other error.

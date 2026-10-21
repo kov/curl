@@ -40,7 +40,8 @@ pub(crate) struct Trusted(());
 impl Trusted {
     /// Credentials the request's own URL carries go to its origin, which
     /// they were given for, wherever the transfer started
-    /// (`url_set_data_creds`).
+    /// (`url_set_data_creds`); so do those a `.netrc` entry gives for
+    /// its host.
     pub(crate) fn own_url() -> Trusted {
         Trusted(())
     }

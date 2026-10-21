@@ -487,6 +487,18 @@ fn apply(
             // SAFETY: as above.
             options.login.password = unsafe { owned(p) }?;
         }
+        (ffi::CURLOPT_NETRC, Long(n)) => {
+            options.netrc.mode = match n {
+                ffi::CURL_NETRC_IGNORED => curl_core::options::NetrcMode::Ignored,
+                ffi::CURL_NETRC_OPTIONAL => curl_core::options::NetrcMode::Optional,
+                ffi::CURL_NETRC_REQUIRED => curl_core::options::NetrcMode::Required,
+                _ => return Err(Refused::Bad),
+            };
+        }
+        (ffi::CURLOPT_NETRC_FILE, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.netrc.file = unsafe { owned(p) }?;
+        }
         (ffi::CURLOPT_XOAUTH2_BEARER, Ptr(p)) => {
             // SAFETY: as above.
             options.login.bearer = unsafe { owned(p) }?;

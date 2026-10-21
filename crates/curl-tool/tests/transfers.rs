@@ -288,6 +288,22 @@ fn reports_a_failure() {
     assert_eq!(r.code, 0);
 }
 
+/// `--netrc-file` names a file that must exist when the option is read.
+#[test]
+fn refuses_a_netrc_file_that_is_not_there() {
+    let s = Scratch::new("netrc");
+    let r = curl(&s, &["--netrc-file", "missing", &s.url("f")]);
+    assert_eq!(r.code, 2);
+    assert!(
+        r.stderr.starts_with(
+            "curl: The file 'missing' provided to --netrc-file does not exist\n\
+             curl: option --netrc-file: is badly used here\n"
+        ),
+        "{}",
+        r.stderr
+    );
+}
+
 /// `--include` writes a file's header lines before its body.
 #[test]
 fn includes_headers() {

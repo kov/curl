@@ -402,12 +402,13 @@ cargo-mutants run on the milestone's diff.
     Digest, and the 401/407 retry as a second leg; FAILONERROR's 401/407 exception (step 15)
     with it. T1 tests 1876 and 1877. Done: the login (`CURLOPT_USERPWD`, `USERNAME`,
     `PASSWORD`, `XOAUTH2_BEARER`, the tool's `-u` and `--oauth2-bearer`) composed with the
-    URL's per request, gated to the first origin; the methods asked for (`CURLOPT_HTTPAUTH`,
-    `--basic`, `--anyauth`), a 401's challenges read and answered as a second request,
-    FAILONERROR's 401 exception, `CURLINFO_HTTPAUTH_AVAIL` and `_USED`; Basic and Bearer. To
-    do: netrc, Digest and its body-less probe; `http_perhapsrewind`'s early close of a large
-    body not yet sent, on a 401 or a redirect. Waiting: the tool's password prompt for `-u`
-    without one; 407, with the proxies (step 31).
+    URL's per request, gated to the first origin; `.netrc` files (`CURLOPT_NETRC`,
+    `NETRC_FILE`, `--netrc`, `--netrc-optional`, `--netrc-file`); the methods asked for
+    (`CURLOPT_HTTPAUTH`, `--basic`, `--anyauth`), a 401's challenges read and answered as a
+    second request, FAILONERROR's 401 exception, `CURLINFO_HTTPAUTH_AVAIL` and `_USED`; Basic
+    and Bearer. T1 tests 1876 and 1877 pass. To do: Digest and its body-less probe;
+    `http_perhapsrewind`'s early close of a large body not yet sent, on a 401 or a redirect.
+    Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31).
 30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
     share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`;
     then `-R` (step 27) on the date parser.

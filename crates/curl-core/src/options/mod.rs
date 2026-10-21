@@ -62,6 +62,7 @@ pub struct Options {
     pub upload: UploadSource,
     /// Who the transfer authenticates as.
     pub login: Login,
+    pub netrc: Netrc,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -80,6 +81,29 @@ pub struct Login {
     pub password: Option<Vec<u8>>,
     /// An OAuth 2.0 token, for Bearer (`CURLOPT_XOAUTH2_BEARER`).
     pub bearer: Option<Vec<u8>>,
+}
+
+/// Whether a `.netrc` file gives credentials, and which
+/// (`CURLOPT_NETRC`, `CURLOPT_NETRC_FILE`).
+#[derive(Debug, Default)]
+pub struct Netrc {
+    pub mode: NetrcMode,
+    /// The file; none for `$NETRC`, or `.netrc` in the home directory.
+    pub file: Option<Vec<u8>>,
+}
+
+/// How a `.netrc` file is used (`CURL_NETRC_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NetrcMode {
+    /// Not read.
+    #[default]
+    Ignored,
+    /// Read where the options and the URL leave a user or password out;
+    /// a file missing or malformed is passed over.
+    Optional,
+    /// Read even where the URL has both, its user kept; a file missing
+    /// or malformed fails the transfer.
+    Required,
 }
 
 impl Login {
@@ -162,6 +186,10 @@ impl Options {
             progress: self.progress.clone(),
             upload: self.upload.clone(),
             login: self.login.try_clone()?,
+            netrc: Netrc {
+                mode: self.netrc.mode,
+                file: self.netrc.file.as_deref().map(copy).transpose()?,
+            },
             http: self.http.try_clone()?,
             tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]

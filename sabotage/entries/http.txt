@@ -995,3 +995,71 @@ witness: curl-core proto::http::tests::a_token_goes_as_bearer
                 (credentials.has_bearer() && !custom).then_some(AuthMethods::BEARER)
 --- new
                 None
+
+=== a netrc file overrides the application's login
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::looks_in_netrc_as_c
+--- old
+            Source::Options => NetrcLookup::No,
+--- new
+            Source::Options => NetrcLookup::For(None),
+
+=== a required netrc file leaves a whole URL login alone
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::looks_in_netrc_as_c
+--- old
+                if mode == NetrcMode::Required || c.user.is_empty() || c.password.is_empty() =>
+--- new
+                if c.user.is_empty() || c.password.is_empty() =>
+
+=== a required netrc file that is missing is passed over
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_netrc_file_gives_the_host_s_credentials
+--- old
+        Err(e) if e == NetrcError::NoMatch || mode == NetrcMode::Optional => {
+--- new
+        Err(_) => {
+
+=== a netrc machine matches only in the same case
+file: crates/curl-core/src/netrc.rs
+witness: curl-core netrc::tests::finds_entries_as_c
+--- old
+                Token::Literal => entry.matches_host = lexer.literal.eq_ignore_ascii_case(host),
+--- new
+                Token::Literal => entry.matches_host = lexer.literal == host,
+
+=== a netrc entry for a named user needs no password
+file: crates/curl-core/src/netrc.rs
+witness: curl-core netrc::tests::reads_the_rest_of_the_grammar
+--- old
+        (Some(login), Some(user)) => login == user && entry.password.is_some(),
+--- new
+        (Some(login), Some(user)) => login == user,
+
+=== netrc comment lines are read as entries
+file: crates/curl-core/src/netrc.rs
+witness: curl-core netrc::tests::leaves_out_comments_and_bounds_lines
+--- old
+        if line.first() != Some(&b'#') {
+--- new
+        if line.first() != Some(&b'%') {
+
+=== a netrc token of the longest length is refused
+file: crates/curl-core/src/netrc.rs
+witness: curl-core netrc::tests::reads_the_rest_of_the_grammar
+--- old
+        if self.literal.len() + bytes.len() > MAX_TOKEN {
+--- new
+        if self.literal.len() + bytes.len() >= MAX_TOKEN {
+
+=== a blank after a carriage return is skipped
+file: crates/curl-core/src/netrc.rs
+witness: curl-core netrc::tests::reads_the_rest_of_the_grammar
+--- old
+                self.at += 1;
+            }
+            while self.peek() == Some(b'\r') {
+--- new
+                self.at += 1;
+            }
+            while self.peek().is_some_and(|b| b == b'\r' || blank(b)) {

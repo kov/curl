@@ -224,6 +224,26 @@ fn http_options_reach_the_request() {
     assert_eq!(login(c), (some(b"x"), None));
     pointer(c, ffi::CURLOPT_USERPWD, ptr::null_mut::<c_char>());
     assert_eq!(login(c), (None, None));
+    use curl_core::options::NetrcMode;
+    let netrc = |c| options(c, |o| (o.netrc.mode, o.netrc.file.clone()));
+    assert_eq!(
+        long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_REQUIRED),
+        CURLE_OK
+    );
+    pointer(c, ffi::CURLOPT_NETRC_FILE, c"/n".as_ptr().cast_mut());
+    assert_eq!(netrc(c), (NetrcMode::Required, some(b"/n")));
+    assert_eq!(
+        long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_OPTIONAL),
+        CURLE_OK
+    );
+    assert_eq!(netrc(c).0, NetrcMode::Optional);
+    assert_eq!(long(c, ffi::CURLOPT_NETRC, 3), CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(long(c, ffi::CURLOPT_NETRC, -1), CURLE_BAD_FUNCTION_ARGUMENT);
+    assert_eq!(
+        long(c, ffi::CURLOPT_NETRC, ffi::CURL_NETRC_IGNORED),
+        CURLE_OK
+    );
+    assert_eq!(netrc(c).0, NetrcMode::Ignored);
     pointer(c, ffi::CURLOPT_XOAUTH2_BEARER, c"tok".as_ptr().cast_mut());
     assert_eq!(options(c, |o| o.login.bearer.clone()), some(b"tok"));
     use curl_core::options::AuthMethods as M;

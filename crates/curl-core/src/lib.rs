@@ -15,6 +15,7 @@ pub mod error;
 pub mod handler;
 pub mod id;
 pub mod multi;
+mod netrc;
 pub mod options;
 mod progress;
 mod proto;

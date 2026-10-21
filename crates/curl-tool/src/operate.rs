@@ -924,6 +924,14 @@ fn configure(
     if let Some(pair) = op.user {
         o.login = options::Login::from_pair(pair)?;
     }
+    o.netrc.mode = if op.netrc_optional {
+        options::NetrcMode::Optional
+    } else if op.netrc || op.netrc_file.is_some() {
+        options::NetrcMode::Required
+    } else {
+        options::NetrcMode::Ignored
+    };
+    o.netrc.file = op.netrc_file.map(copy).transpose()?;
     if let Some(token) = op.bearer {
         o.login.bearer = Some(copy(token)?);
     }

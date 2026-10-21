@@ -8,6 +8,8 @@
 //! placed, and a command line using an unimplemented option is refused
 //! rather than run without it.
 
+use std::os::unix::ffi::OsStrExt as _;
+
 use curl_alloc::TryVec;
 use curl_core::options::{AuthMethods, Follow, PostRedir};
 use curl_core::version::Protocol;
@@ -144,6 +146,12 @@ pub(crate) struct Operation<'a> {
     pub(crate) user: Option<&'a [u8]>,
     /// `--oauth2-bearer`.
     pub(crate) bearer: Option<&'a [u8]>,
+    /// `--netrc`: the file is required.
+    pub(crate) netrc: bool,
+    /// `--netrc-optional`.
+    pub(crate) netrc_optional: bool,
+    /// `--netrc-file`, which requires it unless `--netrc-optional`.
+    pub(crate) netrc_file: Option<&'a [u8]>,
     /// The methods to authenticate with; none for the library's default
     /// (C's `authtype`).
     pub(crate) auth: AuthMethods,
@@ -659,6 +667,21 @@ pub(crate) fn apply<'a>(
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
         Opt::User => line.current().user = Some(value.text()),
         Opt::Anyauth => line.current().auth = AuthMethods::ANY,
+        Opt::Netrc => line.current().netrc = value.toggle(),
+        Opt::NetrcOptional => line.current().netrc_optional = value.toggle(),
+        Opt::NetrcFile => {
+            let file = value.text();
+            // `existingfile`.
+            if std::fs::metadata(std::ffi::OsStr::from_bytes(file)).is_err() {
+                msgs.error(&[
+                    b"The file '",
+                    file,
+                    b"' provided to --netrc-file does not exist",
+                ]);
+                return Err(ParamError::BadUse);
+            }
+            line.current().netrc_file = Some(file);
+        }
         Opt::Oauth2Bearer => {
             let text = value.text();
             if text.is_empty() {
@@ -994,9 +1017,6 @@ pub(crate) fn apply<'a>(
         | Opt::Metalink
         | Opt::Mptcp
         | Opt::Negotiate
-        | Opt::Netrc
-        | Opt::NetrcFile
-        | Opt::NetrcOptional
         | Opt::Noproxy
         | Opt::Npn
         | Opt::Ntlm

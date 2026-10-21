@@ -356,7 +356,7 @@ witness: curl-core multi::tests::a_refused_connect_fails_as_c_says
             let lip = Ip(lip);
             let why = OsError(&error);
             let _ = (lip, lport, why, remote);
-            return ErrorKind::CouldntConnect;
+            return;
 
 === a kept IPv6 connection is named without its brackets
 file: crates/curl-core/src/multi/state.rs

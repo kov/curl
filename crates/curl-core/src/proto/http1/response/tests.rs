@@ -10,7 +10,7 @@ const ASKED: Asked = Asked {
     decode_codings: false,
     raw_codings: false,
     fail_on_error: false,
-    resuming: false,
+    resume_from: None,
 };
 
 const PLAIN: Exchange = Exchange {
@@ -600,7 +600,7 @@ fn error_codes_fail_when_asked() {
     assert_eq!(code(416, |a| a.fail_on_error = true), returned(416));
     let resumed = |a: &mut Asked| {
         a.fail_on_error = true;
-        a.resuming = true;
+        a.resume_from = Some(1);
     };
     assert_eq!(code(416, resumed), None);
     assert_eq!(code(417, resumed), returned(417));

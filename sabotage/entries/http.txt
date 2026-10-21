@@ -203,15 +203,15 @@ witness: curl-core proto::http::tests::a_head_s_end_fails_around_its_blank_line
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_failing_code_ends_the_transfer_at_its_head
 --- old
-    asked.fail_on_error && code >= 400 && !(asked.resuming && code == 416)
+    asked.fail_on_error && code >= 400 && !(asked.resume_from.is_some() && code == 416)
 --- new
-    asked.fail_on_error && code >= 500 && !(asked.resuming && code == 416)
+    asked.fail_on_error && code >= 500 && !(asked.resume_from.is_some() && code == 416)
 
 === a resumed GET fails on 416
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http1::response::tests::error_codes_fail_when_asked
 --- old
-    asked.fail_on_error && code >= 400 && !(asked.resuming && code == 416)
+    asked.fail_on_error && code >= 400 && !(asked.resume_from.is_some() && code == 416)
 --- new
     asked.fail_on_error && code >= 400
 
@@ -250,3 +250,35 @@ witness: curl-core proto::http::auth::tests::encodes_basic_as_c
         if self.user.is_empty() && self.password.is_empty() {
 --- new
         if false {
+
+=== a resumed GET asks for the whole document
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
+--- old
+                if let Some(from) = head.range_from
+--- new
+                if let Some(from) = None::<u64>
+
+=== a response starting anywhere satisfies a resume
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
+--- old
+                && start as u64 == from
+--- new
+                && start as u64 != from.wrapping_add(1)
+
+=== `Content-Range: */total` still fails a resume
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
+--- old
+            self.whole = true;
+--- new
+            self.whole = false;
+
+=== a stored file that is the whole document fails its resume
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
+--- old
+            if self.size != Some(from) {
+--- new
+            if true {

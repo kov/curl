@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 
 use crate::conn::io::{Conversation, FakeNet, Peer};
@@ -10,7 +11,7 @@ use crate::handler::{
 };
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, TransferCx, drive_to_completion};
-use crate::options::{Method, Options};
+use crate::options::{Method, Options, Resume, UserHeaders};
 use crate::proto::http1::fixture;
 use crate::time::{Clock as _, ManualClock};
 
@@ -545,4 +546,99 @@ fn an_exchange_waits_to_read_its_socket() {
     assert_eq!(waits(&m), [Events::IN]);
     m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
     assert_eq!(waits(&m), []);
+}
+
+/// A resumed GET asks for the rest with `Range`, and takes a response that
+/// starts where it asked, or the whole document when the server says so
+/// (`Content-Range: */total`) or the stored part is all of it; anything
+/// else fails at the head (`http_firstwrite`, checked against the C
+/// binary).
+#[test]
+fn a_resumed_get_takes_only_the_rest() {
+    let resume = |o: &mut Options| o.resume = Some(Resume::At(NonZeroU64::new(18).unwrap()));
+    let ran = run(
+        "/",
+        b"HTTP/1.1 206 P\r\nContent-Range: bytes 18-21/22\r\nContent-Length: 4\r\n\r\nabc\n",
+        false,
+        resume,
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        ran.request,
+        format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nRange: bytes=18-\r\n\
+             User-Agent: curl/test\r\nAccept: */*\r\n\r\n"
+        )
+        .as_bytes()
+    );
+    assert_eq!(ran.seen.body(), b"abc\n");
+    // The application's own Range replaces it.
+    let ran = run(
+        "/",
+        b"HTTP/1.1 206 P\r\nContent-Range: bytes 18-\r\n\r\n",
+        true,
+        |o| {
+            resume(o);
+            o.http.headers = UserHeaders::new([&b"Range: bytes=1-"[..]]).unwrap();
+        },
+    );
+    assert!(
+        String::from_utf8(ran.request)
+            .unwrap()
+            .contains("\r\nRange: bytes=1-\r\n")
+    );
+    let cannot = "HTTP server does not seem to support byte ranges. Cannot resume.\n";
+    for reply in [
+        &b"HTTP/1.1 206 P\r\nContent-Range: bytes 5-8/22\r\nContent-Length: 4\r\n\r\nabc\n"[..],
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nabc\n",
+        b"HTTP/1.0 200 OK\r\n\r\nall of it\n",
+    ] {
+        let ran = run("/", reply, true, resume);
+        assert_eq!(ran.result, Err(ErrorKind::RangeError));
+        assert_eq!(ran.seen.body(), b"");
+        assert!(ran.seen.text().iter().any(|l| l == cannot));
+    }
+    let ran = run(
+        "/",
+        b"HTTP/1.1 200 OK\r\nContent-Range: */22\r\nContent-Length: 4\r\n\r\nall\n",
+        false,
+        resume,
+    );
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"all\n".to_vec()));
+    let ran = run(
+        "/",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 18\r\n\r\n",
+        false,
+        resume,
+    );
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), Vec::new()));
+    assert!(
+        ran.seen
+            .text()
+            .iter()
+            .any(|l| l == "The entire document is already downloaded\n")
+    );
+}
+
+/// A 416 to a resumed GET is the file being whole already: its body is
+/// read and dropped, neither written nor traced, and the connection kept
+/// (`ignorebody`, checked against the C binary).
+#[test]
+fn a_416_to_a_resumed_get_is_read_and_dropped() {
+    let ran = run(
+        "/",
+        b"HTTP/1.1 416 No\r\nContent-Length: 4\r\n\r\nnope",
+        false,
+        |o| {
+            o.resume = Some(Resume::At(NonZeroU64::new(18).unwrap()));
+            o.http.fail_on_error = true;
+        },
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"");
+    assert!(ran.seen.of("data").is_empty());
+    let text = ran.seen.text();
+    assert!(text.iter().any(|l| l == "setting size while ignoring\n"));
+    assert!(text.last().unwrap().ends_with("left intact\n"));
+    assert_eq!(ran.easy.report().sizes().download(), 4);
 }

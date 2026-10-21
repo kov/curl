@@ -103,9 +103,11 @@ impl Pipeline {
         cx: &mut StepCx<'_, H>,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
-        raw_trace(cx, bytes);
-        self.accountant.response_started(cx);
         let expect = self.accountant.expect;
+        if !expect.ignore {
+            raw_trace(cx, bytes);
+        }
+        self.accountant.response_started(cx);
         if expect.no_body && !bytes.is_empty() {
             // The body goes; the response is fine if a head came.
             self.accountant.close = true;
@@ -117,6 +119,11 @@ impl Pipeline {
             };
         }
         let (wanted, excess) = self.accountant.cut(bytes.len());
+        if expect.ignore {
+            self.accountant.bytecount += wanted as u64;
+            cx.report_mut().sizes_mut().download += wanted as u64;
+            return Ok(());
+        }
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(wanted, max_filesize);
         self.out.body(cx, &bytes[..allowed], self.pausable())?;
@@ -233,6 +240,9 @@ pub(crate) struct Expect {
     pub(crate) no_body: bool,
     /// No head came before the body (HTTP/0.9).
     pub(crate) no_head: bool,
+    /// The body is read, counted and dropped: neither written nor traced
+    /// nor held to a limit (`ignorebody`).
+    pub(crate) ignore: bool,
 }
 
 /// A size as C prints one: -1 for none.

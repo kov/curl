@@ -370,7 +370,7 @@ mod tests {
                 decode_codings: false,
                 raw_codings: raw,
                 fail_on_error: false,
-                resuming: false,
+                resume_from: None,
             },
         };
         let mut head = HeadParser::new(exchange);

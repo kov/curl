@@ -12,7 +12,7 @@ use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
 use crate::multi::state::{OsError, StepCx, url_error};
-use crate::options::{HttpVersion, Method};
+use crate::options::{HttpVersion, Method, Resume};
 use crate::report::Timer;
 use crate::trace;
 use crate::url::{GetOptions, Part, Url};
@@ -176,6 +176,12 @@ impl Request {
             // A request body is not sent over HTTP yet.
             Method::Upload => return Err(ErrorKind::NotBuiltIn),
         };
+        let resume_from = match options.resume {
+            None => None,
+            Some(Resume::At(at)) => Some(at.get()),
+            // C's -1, which for a download names no range a server knows.
+            Some(Resume::AtEnd) => return Err(ErrorKind::NotBuiltIn),
+        };
         let shown_port = (self.port != DEFAULT_PORT).then_some(self.port);
         let peer = request::Peer {
             scheme: b"http",
@@ -202,6 +208,7 @@ impl Request {
             user_agent: http.user_agent.as_deref(),
             referer: http.referer.as_deref(),
             basic,
+            range_from: resume_from,
             headers: &http.headers,
         };
         let mut out = Vec::new();
@@ -220,7 +227,7 @@ impl Request {
                 decode_codings: http.transfer_encoding,
                 raw_codings: http.raw,
                 fail_on_error: http.fail_on_error,
-                resuming: options.resume.is_some() && options.method == Method::Get,
+                resume_from: resume_from.filter(|_| options.method == Method::Get),
             },
         };
         if authenticates {
@@ -426,6 +433,10 @@ impl Request {
         line.then.map_err(|e| head_failed(cx, &e))?;
         if kind == (LineKind::End { interim: false }) {
             self.body_start(cx);
+            let abandoned = self.head().framing() == Some(Framing::Abandoned);
+            if abandoned {
+                return Ok(&[]);
+            }
             if matches!(self.stage, Stage::Done) && !rest.is_empty() {
                 // Body where none is to come: the accountant judges it.
                 self.pipeline.body(cx, rest)?;
@@ -449,9 +460,10 @@ impl Request {
             max: size,
             no_body,
             no_head: false,
+            ignore: head.meta().ignore_body(),
         });
         self.stage = match framing {
-            Framing::None => Stage::Done,
+            Framing::None | Framing::Abandoned => Stage::Done,
             Framing::Length(_) => Stage::Body(Body::Length),
             Framing::Chunked => {
                 let raw = cx.easy().options().http.raw;

@@ -31,8 +31,9 @@ pub(crate) struct Asked {
     pub(crate) raw_codings: bool,
     /// A code of 400 or more fails the response (`CURLOPT_FAILONERROR`).
     pub(crate) fail_on_error: bool,
-    /// A GET resuming at an offset, which a 416 does not fail.
-    pub(crate) resuming: bool,
+    /// The offset a GET resumes at: a 416 does not fail it, and the
+    /// response must start there.
+    pub(crate) resume_from: Option<u64>,
 }
 
 /// How the body after a final head ends.
@@ -44,6 +45,9 @@ pub(crate) enum Framing {
     Chunked,
     /// When the connection closes.
     UntilClose,
+    /// None is read: the transfer ends at the head, and whatever follows
+    /// it goes with the connection.
+    Abandoned,
 }
 
 /// Something C says of a head as it reads it (`infof`).
@@ -53,6 +57,8 @@ pub(crate) enum Note {
     Http10KeepAlive,
     LengthOverflow,
     AssumeClose,
+    AlreadyDownloaded,
+    SizeWhileIgnoring,
 }
 
 impl fmt::Display for Note {
@@ -62,6 +68,8 @@ impl fmt::Display for Note {
             Note::Http10KeepAlive => "HTTP/1.0 connection set to keep alive",
             Note::LengthOverflow => "Overflow Content-Length: value",
             Note::AssumeClose => "no chunk, no close, no size. Assume close to signal end",
+            Note::AlreadyDownloaded => "The entire document is already downloaded",
+            Note::SizeWhileIgnoring => "setting size while ignoring",
         })
     }
 }
@@ -80,6 +88,8 @@ pub(crate) enum FramingError {
     MultipleLocations,
     /// The response's code is an error the request asked to fail on.
     Returned(u16),
+    /// The response to a resumed GET starts elsewhere than asked.
+    CannotResume,
     OutOfMemory,
 }
 
@@ -124,6 +134,9 @@ impl fmt::Display for FramingError {
             FramingError::Returned(code) => {
                 write!(f, "The requested URL returned error: {code}")
             }
+            FramingError::CannotResume => {
+                f.write_str("HTTP server does not seem to support byte ranges. Cannot resume.")
+            }
             FramingError::OutOfMemory => Ok(()),
         }
     }
@@ -139,7 +152,7 @@ impl From<OutOfMemory> for FramingError {
 /// (`http_should_fail`). No credentials are sent yet, so a 401 or 407
 /// fails as one to a request without them.
 fn should_fail(code: u16, asked: &Asked) -> bool {
-    asked.fail_on_error && code >= 400 && !(asked.resuming && code == 416)
+    asked.fail_on_error && code >= 400 && !(asked.resume_from.is_some() && code == 416)
 }
 
 /// What a request's response heads said so far.
@@ -161,6 +174,14 @@ pub(crate) struct Meta {
     location: Option<Vec<u8>>,
     /// The response announced trailers.
     trailer: bool,
+    /// `Content-Range` starts at the offset the GET resumes at.
+    content_range: bool,
+    /// `Content-Range` with no start, on a success: the whole document
+    /// comes, and the resume is off (`resume_from = 0`).
+    whole: bool,
+    /// The body is read and dropped: a 416 to a resumed GET
+    /// (`ignorebody`).
+    ignore_body: bool,
 }
 
 impl Meta {
@@ -237,10 +258,39 @@ impl Meta {
             self.location = Some(copy(v)?);
             return Ok(None);
         }
+        if !self.bodyless
+            && let Some(v) = value_of(line, b"Content-Range:")
+        {
+            self.range(v, status, asked);
+            return Ok(None);
+        }
         if value_of(line, b"Trailer:").is_some() {
             self.trailer = true;
         }
         Ok(None)
+    }
+
+    /// `Content-Range`: `bytes N-`, `bytes: N-`, `N-`, or `*/total` for
+    /// a range not satisfied. Only where it starts is read.
+    fn range(&mut self, v: &[u8], status: Status, asked: &Asked) {
+        let at = v
+            .iter()
+            .position(|&b| b.is_ascii_digit() || b == b'*')
+            .unwrap_or(v.len());
+        let v = &v[at..];
+        let digits = v.iter().take_while(|b| b.is_ascii_digit()).count();
+        if digits > 0 {
+            let start = std::str::from_utf8(&v[..digits])
+                .ok()
+                .and_then(|d| d.parse::<i64>().ok());
+            if let (Some(start), Some(from)) = (start, asked.resume_from)
+                && start as u64 == from
+            {
+                self.content_range = true;
+            }
+        } else if status.code < 300 {
+            self.whole = true;
+        }
     }
 
     /// `Content-Length`: a number, or a list of the same number, or the
@@ -332,10 +382,28 @@ impl Meta {
         }
         if self.length_void || self.chunked {
             self.size = None;
-        } else if let (Some(size), Some(max)) = (self.size, asked.max_filesize)
-            && size > max.get()
+        }
+        // `http_firstwrite`.
+        let resume_from = asked.resume_from.filter(|_| !self.whole);
+        self.ignore_body = resume_from.is_some() && status.code == 416;
+        if let Some(from) = resume_from
+            && !self.content_range
+            && !self.ignore_body
         {
-            return (note, Err(FramingError::FileTooLarge));
+            if self.size != Some(from) {
+                return (note, Err(FramingError::CannotResume));
+            }
+            // What is stored is the whole document.
+            self.close = true;
+            return (Some(Note::AlreadyDownloaded), Ok(Framing::Abandoned));
+        }
+        // `http_size`.
+        if let Some(size) = self.size {
+            if self.ignore_body {
+                note = Some(Note::SizeWhileIgnoring);
+            } else if asked.max_filesize.is_some_and(|max| size > max.get()) {
+                return (note, Err(FramingError::FileTooLarge));
+            }
         }
         let framing = if asked.head {
             Framing::None
@@ -371,6 +439,11 @@ impl Meta {
     )]
     pub(crate) fn trailer(&self) -> bool {
         self.trailer
+    }
+
+    /// The body is read and dropped.
+    pub(crate) fn ignore_body(&self) -> bool {
+        self.ignore_body
     }
 
     /// The body's size as the head gives it.

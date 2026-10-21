@@ -1196,6 +1196,7 @@ fn a_body_past_its_expected_size_is_cut() {
             max: Some(5),
             no_body: false,
             no_head: false,
+            ignore: false,
         });
         p.body(cx, b"abc").unwrap();
         assert!(!p.body_done());
@@ -1222,6 +1223,7 @@ fn a_body_past_its_expected_size_is_cut() {
             max: Some(3),
             no_body: false,
             no_head: false,
+            ignore: false,
         });
         p.body(cx, b"abc").unwrap();
         assert_eq!(
@@ -1258,6 +1260,7 @@ fn a_short_body_is_a_partial_file() {
             max: Some(6),
             no_body: false,
             no_head: false,
+            ignore: false,
         });
         p.body(cx, b"abc").unwrap();
         assert_eq!(p.end(cx), Err(ErrorKind::PartialFile));
@@ -1281,6 +1284,7 @@ fn an_unwanted_body_is_dropped() {
             max: Some(0),
             no_body: true,
             no_head: false,
+            ignore: false,
         });
         p.body(cx, b"").unwrap();
         assert!(!p.body_closes(), "nothing came");

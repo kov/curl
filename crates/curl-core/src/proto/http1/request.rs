@@ -304,6 +304,8 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) user_agent: Option<&'o [u8]>,
     pub(crate) referer: Option<&'o [u8]>,
     pub(crate) basic: Option<Basic<'o>>,
+    /// The offset a GET or HEAD asks the rest from.
+    pub(crate) range_from: Option<u64>,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -394,6 +396,14 @@ fn write_h1(
                     out.line(&[b"Authorization: Basic ", token])?;
                 }
             }
+            Part::Range => {
+                if let Some(from) = head.range_from
+                    && head.headers.replacing(b"Range").is_none()
+                {
+                    let mut digits = [0u8; 20];
+                    out.line(&[b"Range: bytes=", decimal(from, &mut digits), b"-"])?;
+                }
+            }
             Part::UserAgent => {
                 if let Some(ua) = head.user_agent.filter(|ua| !ua.is_empty())
                     && head.headers.replacing(b"User-Agent").is_none()
@@ -418,7 +428,6 @@ fn write_h1(
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
             Part::ProxyAuthorization
-            | Part::Range
             | Part::Te
             | Part::AcceptEncoding
             | Part::ProxyConnection
@@ -431,6 +440,19 @@ fn write_h1(
         }
     }
     Ok(())
+}
+
+/// `n` in decimal, in `buf`.
+fn decimal(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
+    let mut at = buf.len();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            return &buf[at..];
+        }
+    }
 }
 
 /// `:port` in `buf`.
@@ -556,6 +578,7 @@ mod tests {
             user_agent: Some(UA),
             referer: None,
             basic: None,
+            range_from: None,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -617,6 +640,7 @@ mod tests {
                 user_agent: Some(b"ua/1"),
                 referer: Some(b"http://ref.example/x"),
                 basic: None,
+                range_from: None,
                 headers: &headers,
             };
             let here = peer(b"127.0.0.1");
@@ -658,6 +682,7 @@ mod tests {
                 user_agent: Some(b"ua/1"),
                 referer: None,
                 basic: Basic::new(b"OmV4YW1wbGU=", trusted, &headers),
+                range_from: None,
                 headers: &headers,
             };
             let mut out = Vec::new();
@@ -756,6 +781,7 @@ mod tests {
             user_agent: None,
             referer: None,
             basic: None,
+            range_from: None,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -800,6 +826,7 @@ mod tests {
                 user_agent: None,
                 referer: None,
                 basic: None,
+                range_from: None,
                 headers: &headers,
             };
             let here = peer(b"h");

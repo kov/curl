@@ -933,7 +933,7 @@ witness: curl-core proto::http::tests::a_401_to_credentials_sent_is_the_answer
 --- old
                     if asked.picked == method {
 --- new
-                    if asked.picked == method && asked.done {
+                    if asked.picked == method && asked.probe {
 
 === a method's name matches a longer word
 file: crates/curl-core/src/proto/http/auth.rs

@@ -436,6 +436,22 @@ mod tests {
         assert_eq!(run(&["-o", ""]), Err(ParamError::BlankString));
         // `--next` needs a URL in the first node, not just in any.
         assert_eq!(run(&["-o", "a", "--next", "x"]), Err(ParamError::BadUse));
+        // A pattern of files to upload.
+        assert_eq!(run(&["-T", "a", "x"]), Ok((1, None, None)));
+        for pattern in ["a[1-2]", "{a,b}"] {
+            let refused = Some("upload file globbing");
+            assert_eq!(run(&["-T", pattern, "x"]), Ok((1, refused, None)));
+        }
+        // One URL can save its ETag.
+        let etag = Some("etag-save");
+        assert_eq!(run(&["--etag-save", "e", "x"]), Ok((1, etag, None)));
+        assert_eq!(run(&["x", "--etag-save", "e"]), Ok((1, etag, None)));
+    }
+
+    #[test]
+    fn reads_the_progress_meter_switch() {
+        assert!(line(&["x", "--no-progress-meter"]).global.no_progress);
+        assert!(!line(&["x", "--progress-meter"]).global.no_progress);
     }
 
     /// `-v` counts within a word only, and resets the trace time

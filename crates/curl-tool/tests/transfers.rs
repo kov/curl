@@ -160,6 +160,64 @@ fn resumes_into_the_output_file() {
     let r = curl(&s, &["-s", "-C", "-", "-o", "out", &s.url("f")]);
     assert_eq!(r.code, 0);
     assert_eq!(s.read("out"), b"abc3456789");
+    // From 0 is from the start: the file is written over.
+    s.write("out", b"abc");
+    let r = curl(&s, &["-s", "-C", "0", "-o", "out", &s.url("f")]);
+    assert_eq!(r.code, 0);
+    assert_eq!(s.read("out"), b"0123456789");
+}
+
+/// An output file that cannot be created fails the transfer, with the
+/// reason; one that cannot be opened to resume into fails setting it up,
+/// which is still reported as the transfer's result.
+#[test]
+fn reports_an_output_it_cannot_open() {
+    let s = Scratch::new("unwritable");
+    s.write("f", b"x");
+    let quiet = "--no-progress-meter";
+    let r = curl(
+        &s,
+        &[quiet, "-o", "no/out", "-w", "<%{exitcode}>", &s.url("f")],
+    );
+    assert_eq!((r.code, &r.stdout[..]), (23, &b"<23>"[..]));
+    assert!(
+        r.stderr.starts_with(
+            "Warning: Failed to open the file no/out: No such file or directory\ncurl: (23) "
+        ),
+        "{:?}",
+        r.stderr
+    );
+    let args = [quiet, "-C", "4", "-o", "no/out", "-w", "<%{exitcode}>"];
+    let r = curl(&s, &[&args[..], &[&s.url("f"), &s.url("f")]].concat());
+    assert_eq!((r.code, &r.stdout[..]), (23, &b"<23>"[..]));
+    assert!(
+        r.stderr
+            .starts_with("curl: cannot open 'no/out'\ncurl: (23) "),
+        "{:?}",
+        r.stderr
+    );
+}
+
+/// Standard output is buffered, as stdio buffers it: a write that fails
+/// fails when the transfer's output is flushed at its end.
+#[test]
+fn reports_standard_output_it_cannot_write() {
+    let s = Scratch::new("full");
+    s.write("f", b"x\n");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let out = Command::new(tool)
+        .args(["-q", "-sS", &s.url("f")])
+        .stdout(
+            std::fs::File::options()
+                .write(true)
+                .open("/dev/full")
+                .unwrap(),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(23));
+    assert_eq!(out.stderr, b"curl: Failed writing body\n");
 }
 
 /// `--skip-existing` leaves an output file there alone, and says so when
@@ -299,6 +357,36 @@ fn traces_to_a_file() {
         trace.contains("<= Recv data, 6 bytes (0x6)\n0000: line\n"),
         "{trace:?}"
     );
+}
+
+/// A trace option that changes the kind of trace says so; one that keeps
+/// it does not.
+#[test]
+fn warns_of_trace_options_overridden() {
+    let s = Scratch::new("overrides");
+    s.write("f", b"x");
+    let warned = |args: &[&str]| {
+        let r = curl(
+            &s,
+            &[&["--no-progress-meter", "-o", "out"], args, &[&s.url("f")]].concat(),
+        );
+        assert_eq!(r.code, 0, "{args:?}");
+        r.stderr
+            .lines()
+            .filter(|l| l.starts_with("Warning: "))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let to_trace = "Warning: --trace overrides an earlier trace/verbose option";
+    let to_ascii = "Warning: --trace-ascii overrides an earlier trace/verbose option";
+    let to_verbose = "Warning: -v, --verbose overrides an earlier trace option";
+    assert_eq!(warned(&["--trace", "t"]), [""; 0]);
+    assert_eq!(warned(&["--trace", "t", "--trace", "t"]), [""; 0]);
+    assert_eq!(warned(&["--trace-ascii", "t", "--trace", "t"]), [to_trace]);
+    assert_eq!(warned(&["--trace", "t", "--trace-ascii", "t"]), [to_ascii]);
+    assert_eq!(warned(&["-v", "--trace", "t"]), [to_trace]);
+    assert_eq!(warned(&["--trace", "t", "-v"]), [to_verbose]);
+    assert_eq!(warned(&["--trace-ascii", "t", "-v"]), [to_verbose]);
 }
 
 /// `--proto-default file` makes a path a URL (test 1146).

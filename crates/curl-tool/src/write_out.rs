@@ -9,6 +9,8 @@ use std::io::Write;
 
 use curl_alloc::TryVec;
 
+use crate::stdout::Stdout;
+
 /// C's limit on a variable's name, its terminating zero included: a longer
 /// one ends the output there.
 const MAX_NAME: usize = 24;
@@ -184,8 +186,6 @@ fn pieces<'f>(format: &'f [u8], mut each: impl FnMut(Piece<'f>) -> bool) {
             (b'%', Some(_)) if rest[1..].starts_with(b"output{") => {
                 (Piece::Function("--write-out %output{}"), rest.len())
             }
-            // Anything else after `%` is written with it.
-            (b'%', Some(_)) => (Piece::Text(&rest[..2]), 2),
             (b'\\', Some(escape @ (b'r' | b'n' | b't'))) => (
                 Piece::Byte(match escape {
                     b'r' => b'\r',
@@ -194,14 +194,10 @@ fn pieces<'f>(format: &'f [u8], mut each: impl FnMut(Piece<'f>) -> bool) {
                 }),
                 2,
             ),
-            (b'\\', Some(_)) => (Piece::Text(&rest[..2]), 2),
-            _ => {
-                let run = rest[1..]
-                    .iter()
-                    .position(|&b| b == b'%' || b == b'\\')
-                    .map_or(rest.len(), |n| n + 1);
-                (Piece::Text(&rest[..run]), run)
-            }
+            // Any other `%` or `\` is written with what follows it, which
+            // is not read for itself.
+            (b'%' | b'\\', Some(_)) => (Piece::Text(&rest[..2]), 2),
+            _ => (Piece::Text(&rest[..1]), 1),
         };
         at += used;
         if !each(piece) {
@@ -229,8 +225,8 @@ pub(crate) fn unimplemented(format: &[u8]) -> Option<&'static str> {
 /// Write `format` for a transfer that reports `facts`, to standard output
 /// unless it says otherwise. A failed write has nowhere to be reported,
 /// as in C.
-pub(crate) fn write(format: &[u8], facts: &Facts<'_>) {
-    let mut stdout = std::io::stdout().lock();
+pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
+    let mut stdout = Buffered(stdout);
     let mut stderr = std::io::stderr();
     let mut to_stderr = false;
     pieces(format, |piece| {
@@ -279,7 +275,20 @@ pub(crate) fn write(format: &[u8], facts: &Facts<'_>) {
         }
         true
     });
-    let _ = stdout.flush();
+}
+
+/// Standard output as a `Write`.
+struct Buffered<'a>(&'a Stdout);
+
+impl Write for Buffered<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -316,6 +325,8 @@ mod tests {
         assert_eq!(render(b"\\"), b"\\");
         assert_eq!(render(b"a%%b"), b"a%b");
         assert_eq!(render(b"%x\\x"), b"%x\\x");
+        // What follows a `%` or a `\` is not read for itself.
+        assert_eq!(render(b"%\\n\\%{url}%\\\\n"), b"%\\n\\%{url}%\\\n");
         assert_eq!(render(b"\\r\\n\\t"), b"\r\n\t");
         assert_eq!(render(b"%{url}!"), b"<url>!");
         assert_eq!(render(b"%{nope}%{"), b"<?nope>%{");

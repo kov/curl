@@ -15,6 +15,7 @@ use curl_os::fs::{self, Keep};
 
 use crate::msgs::Messages;
 use crate::os_message;
+use crate::stdout::Stdout;
 
 /// What `fopen` creates a file with, before the umask.
 const NEW_FILE_MODE: u32 = 0o666;
@@ -48,7 +49,7 @@ pub(crate) struct Stream {
 }
 
 enum Target {
-    Stdout,
+    Stdout(Stdout),
     /// `--out-null`.
     Null,
     /// A file, by name with a zero byte after it; opened when needed.
@@ -60,8 +61,8 @@ enum Target {
 
 impl Output {
     /// Output to standard output.
-    pub(crate) fn stdout(msgs: Messages) -> Result<Output, OutOfMemory> {
-        Output::new(Target::Stdout, msgs)
+    pub(crate) fn stdout(stdout: &Stdout, msgs: Messages) -> Result<Output, OutOfMemory> {
+        Output::new(Target::Stdout(stdout.clone()), msgs)
     }
 
     /// Output dropped.
@@ -115,16 +116,12 @@ impl Stream {
     pub(crate) fn file_name(&self) -> Option<&[u8]> {
         match &self.target {
             Target::File { name, .. } => Some(&name[..name.len() - 1]),
-            Target::Stdout | Target::Null => None,
+            Target::Stdout(_) | Target::Null => None,
         }
     }
 
     fn c_name(name: &[u8]) -> &CStr {
         CStr::from_bytes_with_nul(name).expect("a file name, ended by a zero byte")
-    }
-
-    pub(crate) fn is_null(&self) -> bool {
-        matches!(self.target, Target::Null)
     }
 
     /// Open the output file to add to what it holds, for a resumed
@@ -173,7 +170,7 @@ impl Stream {
 
     fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         match &mut self.target {
-            Target::Stdout => std::io::stdout().lock().write_all(bytes),
+            Target::Stdout(out) => out.write_all(bytes),
             Target::Null => Ok(()),
             Target::File { file, .. } => file
                 .as_mut()
@@ -184,26 +181,14 @@ impl Stream {
 
     /// Flush standard output; a file is written straight through.
     pub(crate) fn flush(&mut self) -> std::io::Result<()> {
-        match self.target {
-            Target::Stdout => std::io::stdout().lock().flush(),
+        match &self.target {
+            Target::Stdout(out) => out.flush(),
             Target::Null | Target::File { .. } => Ok(()),
-        }
-    }
-
-    /// Close the output file, if one is open.
-    pub(crate) fn close(&mut self) {
-        if let Target::File { file, .. } = &mut self.target {
-            // A `File` reports nothing on closing: what `fclose` would
-            // have found unwritten was written, or failed, already.
-            *file = None;
         }
     }
 
     /// `tool_write_cb`.
     fn body(&mut self, body: &[u8]) -> Write {
-        if self.is_null() {
-            return Write::Accepted;
-        }
         if !self.create() {
             return Write::Fail;
         }
@@ -228,7 +213,7 @@ impl Stream {
     /// names in bold on a terminal.
     fn header(&mut self, line: &[u8], protocol: Option<Protocol>) -> Write {
         // C shows them for HTTP, HTTPS, RTSP and FILE.
-        if !self.show_headers || self.is_null() || protocol != Some(Protocol::File) {
+        if !self.show_headers || protocol != Some(Protocol::File) {
             return Write::Accepted;
         }
         if !self.create() {
@@ -267,5 +252,88 @@ impl HeaderHandler for Headers {
     fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         let protocol = cx.info(cx.me()).and_then(|r| r.protocol());
         self.0.stream().header(line, protocol)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quiet() -> Messages {
+        let mut msgs = Messages::new();
+        msgs.silent = true;
+        msgs
+    }
+
+    fn to_terminal() -> Output {
+        let out = Output::null(quiet()).unwrap();
+        out.stream().terminal = true;
+        out
+    }
+
+    /// Binary output to a terminal is refused in its first 2000 bytes,
+    /// unless `--output -` asks for it.
+    #[test]
+    fn refuses_binary_at_the_start_of_a_terminal() {
+        let out = to_terminal();
+        let mut s = out.stream();
+        assert_eq!(s.body(b"text"), Write::Accepted);
+        assert_eq!(s.body(b"a\0b"), Write::Fail);
+        let out = to_terminal();
+        let mut s = out.stream();
+        assert_eq!(s.body(&[b'a'; 1999]), Write::Accepted);
+        assert_eq!(s.body(b"\0"), Write::Fail);
+        let out = to_terminal();
+        let mut s = out.stream();
+        assert_eq!(s.body(&[b'a'; 1000]), Write::Accepted);
+        assert_eq!(s.body(&[b'a'; 1000]), Write::Accepted);
+        assert_eq!(s.body(b"\0"), Write::Accepted);
+        let out = to_terminal();
+        let mut s = out.stream();
+        s.binary_ok = true;
+        assert_eq!(s.body(b"\0"), Write::Accepted);
+        let out = Output::null(quiet()).unwrap();
+        assert_eq!(out.stream().body(b"\0"), Write::Accepted);
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("curl-tool-output-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join(name)
+    }
+
+    /// What `--include` writes of `lines` from a protocol, to a terminal or
+    /// not.
+    fn shown(lines: &[&[u8]], protocol: Option<Protocol>, terminal: bool) -> Vec<u8> {
+        let path = scratch(&format!("{protocol:?}-{terminal}"));
+        let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+        {
+            let mut s = out.stream();
+            s.show_headers = true;
+            s.terminal = terminal;
+            for line in lines {
+                assert_eq!(s.header(line, protocol), Write::Accepted);
+            }
+            assert!(s.create());
+        }
+        drop(out);
+        let shown = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        shown
+    }
+
+    /// Header names are bold on a terminal; lines without one are not.
+    #[test]
+    fn shows_header_names_in_bold_on_a_terminal() {
+        let lines: [&[u8]; 3] = [b"Name: a:b\r\n", b"plain\r\n", b"\r\n"];
+        assert_eq!(
+            shown(&lines, Some(Protocol::File), true),
+            b"\x1b[1mName\x1b[0m: a:b\r\nplain\r\n\r\n"
+        );
+        assert_eq!(
+            shown(&lines, Some(Protocol::File), false),
+            b"Name: a:b\r\nplain\r\n\r\n"
+        );
+        assert_eq!(shown(&lines, None, false), b"");
     }
 }

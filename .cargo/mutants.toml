@@ -8,6 +8,8 @@
 #   cd build/mutants-tree && systemd-run --user --scope -p MemoryMax=6G \
 #     -p MemorySwapMax=0 -p OOMPolicy=continue \
 #     cargo mutants -o .. --in-diff ../mutants.diff -p <crate>
+# (with `--features debug-hooks` for curl-tool: its terminal tests need the
+# debug build's `CURL_ISATTY`, and without them those mutants survive)
 # (`OOMPolicy=continue` kills only the runaway test, which then counts as
 # caught; the default stops the whole run.)
 #   git worktree remove build/mutants-tree
@@ -90,6 +92,9 @@ exclude_re = [
     # The waker holds both ends of its nonblocking pair, so no error but
     # would-block can be made to happen.
     'curl-os/src/wake\.rs:.*: replace match guard e\.kind\(\) == io::ErrorKind::WouldBlock with true in Waker::(wake|drain)$',
+    # Nothing starts an upload to file:// over, and milestone 1's HTTP
+    # transfers are downloads: no transfer asks the tool to rewind yet.
+    'curl-tool/src/operate\.rs:.*: replace <impl Rewind for UploadFile>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\)$',
     # Sequence numbers are unique: two entries never compare equal.
     'multi/timers\.rs:.*: replace < with <= in Entry<T>::before$',
 ]

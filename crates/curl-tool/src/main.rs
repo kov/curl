@@ -16,6 +16,7 @@ mod msgs;
 mod operate;
 mod options;
 mod output;
+mod stdout;
 mod trace;
 mod write_out;
 

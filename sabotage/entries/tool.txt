@@ -61,16 +61,16 @@ witness: curl-tool keeps_the_remote_time
 file: crates/curl-tool/src/output.rs
 witness: curl-tool includes_headers
 --- old
-        if !self.show_headers || self.is_null() || protocol != Some(Protocol::File) {
+        if !self.show_headers || protocol != Some(Protocol::File) {
 --- new
-        if !self.show_headers || self.is_null() || protocol == Some(Protocol::File) {
+        if !self.show_headers || protocol == Some(Protocol::File) {
 
 === an upload that cannot be opened is not reported as a transfer
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_an_upload_it_cannot_open
 --- old
                     let result =
-                        finish(op, url, &easy, &out, Err(ErrorKind::ReadError), false, msgs);
+                        finish(op, run, url, &easy, &out, Err(ErrorKind::ReadError), false);
 --- new
                     let result: Result<(), ErrorKind> = Err(ErrorKind::ReadError);
 
@@ -129,9 +129,9 @@ witness: curl-tool write_out::tests::reads_formats_as_c
 file: crates/curl-tool/src/trace.rs
 witness: curl-tool trace::tests::dumps_ascii_as_c
 --- old
-                next = i + c + 2;
+                next = i + 2;
 --- new
-                next = i + c + 1;
+                next = i + 1;
 
 === `--verbose` notes data every time
 file: crates/curl-tool/src/trace.rs
@@ -165,3 +165,27 @@ witness: curl-tool options::parse::tests::fills_nodes_in_turn
         let at = match self.nodes.iter().position(|n| !taken(n)) {
 --- new
         let at = match self.nodes.iter().position(|_| false) {
+
+=== a transfer that fails to set up is not reported
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool reports_an_output_it_cannot_open
+--- old
+            return failed(&easy, ErrorKind::WriteError);
+--- new
+            return Step::Failed(ErrorKind::WriteError);
+
+=== standard output is written as it comes
+file: crates/curl-tool/src/stdout.rs
+witness: curl-tool reports_standard_output_it_cannot_write
+--- old
+        if b.line && bytes.contains(&b'\n') {
+--- new
+        if true {
+
+=== a header line is shown in bold without its name
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::shows_header_names_in_bold_on_a_terminal
+--- old
+            Some(at) => [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]]
+--- new
+            Some(at) => [BOLD, BOLD_OFF, &line[..at], b":", &line[at + 1..]]

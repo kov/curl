@@ -13,6 +13,7 @@ use curl_os::fs::{self, Keep};
 use curl_os::time::local_time_of_day;
 
 use crate::options::{Global, Trace};
+use crate::stdout::Stdout;
 
 /// What `fopen` creates a file with, before the umask.
 const NEW_FILE_MODE: u32 = 0o666;
@@ -36,7 +37,7 @@ struct State {
 }
 
 enum Sink {
-    Stdout,
+    Stdout(Stdout),
     Stderr,
     /// A file, by name with a zero byte after it, open once opened.
     File {
@@ -47,13 +48,13 @@ enum Sink {
 
 impl Tracer {
     /// The tracer `global` asks for, if any.
-    pub(crate) fn new(global: &Global<'_>) -> Result<Option<Tracer>, OutOfMemory> {
+    pub(crate) fn new(global: &Global<'_>, stdout: &Stdout) -> Result<Option<Tracer>, OutOfMemory> {
         if global.trace == Trace::None {
             return Ok(None);
         }
         let dump = global.trace_dump.expect("set with the trace");
         let sink = match dump {
-            b"-" => Sink::Stdout,
+            b"-" => Sink::Stdout(stdout.clone()),
             b"%" => Sink::Stderr,
             name => {
                 let mut owned = Vec::new();
@@ -129,7 +130,7 @@ impl Sink {
     /// Write an entry. A failed write has nowhere to be reported.
     fn write(&mut self, bytes: &[u8]) {
         let _ = match self {
-            Sink::Stdout => std::io::stdout().lock().write_all(bytes),
+            Sink::Stdout(out) => out.write_all(bytes),
             Sink::Stderr | Sink::File { file: None, .. } => std::io::stderr().write_all(bytes),
             Sink::File { file: Some(f), .. } => f.write_all(bytes),
         };
@@ -138,7 +139,7 @@ impl Sink {
     /// Whether entries go to standard output or error.
     fn is_standard(&self) -> bool {
         match self {
-            Sink::Stdout | Sink::Stderr => true,
+            Sink::Stdout(_) | Sink::Stderr => true,
             Sink::File { file, .. } => file.is_none(),
         }
     }
@@ -311,7 +312,9 @@ fn dump(
         let mut c = 0;
         while c < width && i + c < data.len() {
             if ascii && crlf_at(i + c) {
-                next = i + c + 2;
+                // Only ever at the line's start: anywhere else the check of
+                // the byte after found it first.
+                next = i + 2;
                 break;
             }
             let b = data[i + c];

@@ -20,6 +20,7 @@ use crate::msgs::Messages;
 use crate::options::{CommandLine, Global, Node, Operation, Output, Resume, Upload, exit_code};
 use crate::os_message;
 use crate::output;
+use crate::stdout::Stdout;
 use crate::trace::Tracer;
 use crate::write_out::{self, Facts};
 
@@ -46,10 +47,28 @@ enum Step {
 
 /// Run every operation's transfers in turn (`serial_transfers`).
 pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
-    let tracer = match Tracer::new(&line.global) {
+    let Ok(stdout) = Stdout::new() else {
+        return Ending::Done(Err(ErrorKind::OutOfMemory));
+    };
+    let tracer = match Tracer::new(&line.global, &stdout) {
         Ok(tracer) => tracer,
         Err(OutOfMemory) => return Ending::Done(Err(ErrorKind::OutOfMemory)),
     };
+    let run = Shared {
+        global: &line.global,
+        stdout: &stdout,
+        tracer: tracer.as_ref(),
+        msgs,
+    };
+    let ending = run_all(line, &run);
+    // What is left is written at exit; a failure then goes unreported, as
+    // it does in C.
+    drop(stdout.flush());
+    ending
+}
+
+fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
+    let msgs = run.msgs;
     // The result of the last transfer that ran.
     let mut last = Ok(());
     for op in &line.operations {
@@ -62,7 +81,7 @@ pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
                 msgs.warn(&[b"Got more output options than URLs"]);
                 break;
             };
-            match transfer(op, &line.global, tracer.as_ref(), node, url, msgs) {
+            match transfer(op, run, node, url) {
                 Step::Ran(result) => {
                     last = result;
                     if result.is_err_and(fatal) {
@@ -89,36 +108,38 @@ fn fatal(e: ErrorKind) -> bool {
     )
 }
 
+/// What every transfer of the run shares.
+struct Shared<'a, 'l> {
+    global: &'a Global<'l>,
+    stdout: &'a Stdout,
+    tracer: Option<&'a Tracer>,
+    msgs: Messages,
+}
+
 /// Set up, run and finish one URL's transfer (`create_single`,
 /// `pre_transfer`, the perform and `post_per_transfer`).
-fn transfer(
-    op: &Operation<'_>,
-    global: &Global<'_>,
-    tracer: Option<&Tracer>,
-    node: &Node<'_>,
-    url: &[u8],
-    msgs: Messages,
-) -> Step {
+fn transfer(op: &Operation<'_>, run: &Shared<'_, '_>, node: &Node<'_>, url: &[u8]) -> Step {
+    let msgs = run.msgs;
     let upload = match node.upload {
         Upload::File(file) => Some(file),
         Upload::Unset | Upload::Nothing => None,
     };
-    if upload.is_some() {
-        match needs_file_name(url) {
-            Ok(false) => {}
-            Ok(true) => return Step::NotImplemented("uploading to a URL without a file name"),
-            Err(e) => return Step::Failed(e),
-        }
-    }
     let to_stdout = matches!(node.output, Output::Unset | Output::File(b"-"));
     let made = match node.output {
         Output::Null => output::Output::null(msgs),
-        _ if to_stdout => output::Output::stdout(msgs),
+        _ if to_stdout => output::Output::stdout(run.stdout, msgs),
         Output::File(name) => output::Output::file(name, msgs),
         Output::Unset => unreachable!("standard output"),
     };
     let Ok(out) = made else {
         return Step::Failed(ErrorKind::OutOfMemory);
+    };
+    let mut easy = Easy::new();
+    // From here the transfer exists: a failure to set it up is its
+    // result, and is finished as one (`run_all_transfers`'s cleanup).
+    let failed = |easy: &Easy, e| {
+        let result = finish(op, run, url, easy, &out, Err(e), false);
+        Step::Failed(result.expect_err("a failure stays one"))
     };
     // Where the transfer starts (`setup_outfile`, `setup_transfer_upload`).
     let mut resume_from = match op.resume {
@@ -138,7 +159,14 @@ fn transfer(
             resume_from = exists.as_ref().ok().map(|m| m.len());
         }
         if resume_from.is_some_and(|n| n > 0) && !out.stream().open_to_append() {
-            return Step::Failed(ErrorKind::WriteError);
+            return failed(&easy, ErrorKind::WriteError);
+        }
+    }
+    if upload.is_some() {
+        match needs_file_name(url) {
+            Ok(false) => {}
+            Ok(true) => return Step::NotImplemented("uploading to a URL without a file name"),
+            Err(e) => return failed(&easy, e),
         }
     }
     let resume = if upload.is_some() && op.resume == Some(Resume::FromOutput) {
@@ -156,78 +184,73 @@ fn transfer(
         stream.terminal = terminal;
         stream.binary_ok = node.output == Output::File(b"-");
     }
-    let mut easy = match configure(
-        op,
-        global,
-        tracer,
+    let config = Config {
         url,
-        &out,
         resume,
-        upload.is_some(),
+        upload: upload.is_some(),
         terminal,
-        msgs,
-    ) {
-        Ok(easy) => easy,
-        Err(OutOfMemory) => return Step::Failed(ErrorKind::OutOfMemory),
     };
+    if configure(&mut easy, op, run, &out, &config).is_err() {
+        return failed(&easy, ErrorKind::OutOfMemory);
+    }
     let result = if skip {
         Ok(())
     } else {
         if let Some(file) = upload {
             match open_upload(file) {
                 Ok(source) => easy.options_mut().upload = source,
-                Err(Unopened::OutOfMemory) => return Step::Failed(ErrorKind::OutOfMemory),
+                Err(Unopened::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
                 Err(Unopened::Io) => {
                     msgs.help(&[b"cannot open '", file, b"'"]);
                     let result =
-                        finish(op, url, &easy, &out, Err(ErrorKind::ReadError), false, msgs);
+                        finish(op, run, url, &easy, &out, Err(ErrorKind::ReadError), false);
                     return Step::Unopened(result.expect_err("a failure stays one"));
                 }
             }
         }
         easy.perform().map_err(|e| e.kind())
     };
-    Step::Ran(finish(op, url, &easy, &out, result, skip, msgs))
+    Step::Ran(finish(op, run, url, &easy, &out, result, skip))
 }
 
-/// The transfer of `url`, set up as `config2setopts` sets it.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "C's per-transfer state, taken apart"
-)]
-fn configure(
-    op: &Operation<'_>,
-    global: &Global<'_>,
-    tracer: Option<&Tracer>,
-    url: &[u8],
-    out: &output::Output,
+/// What one transfer is set up with, beyond its operation's options.
+struct Config<'a> {
+    url: &'a [u8],
     resume: Option<options::Resume>,
     upload: bool,
+    /// Standard output is a terminal, and the output goes there.
     terminal: bool,
-    msgs: Messages,
-) -> Result<Easy, OutOfMemory> {
-    let mut easy = Easy::new();
+}
+
+/// Set up the transfer of `config.url` as `config2setopts` sets it.
+fn configure(
+    easy: &mut Easy,
+    op: &Operation<'_>,
+    run: &Shared<'_, '_>,
+    out: &output::Output,
+    config: &Config<'_>,
+) -> Result<(), OutOfMemory> {
     let o = easy.options_mut();
-    o.set_url(Some(url))?;
+    o.set_url(Some(config.url))?;
     if let Some(protocol) = op.default_protocol {
         o.set_default_protocol(Some(protocol.name().as_bytes()))?;
     }
-    if upload {
+    if config.upload {
         o.method = Method::Upload;
     }
-    o.resume = resume;
-    o.progress = if global.no_progress || msgs.silent || terminal {
+    o.resume = config.resume;
+    o.progress = if run.global.no_progress || run.msgs.silent || config.terminal {
         Progress::Off
     } else {
         Progress::Meter
     };
-    if let Some(tracer) = tracer {
+    if let Some(tracer) = run.tracer {
         o.output.verbose = true;
-        o.callbacks.debug = Some(tracer.handler(terminal)?);
+        o.callbacks.debug = Some(tracer.handler(config.terminal)?);
     }
     o.callbacks.write = Some(out.body_handler()?);
     o.callbacks.header = Some(out.header_handler()?);
-    Ok(easy)
+    Ok(())
 }
 
 /// What is done after a transfer, run or skipped, whatever its result
@@ -235,13 +258,14 @@ fn configure(
 /// `--write-out` written. Gives the result as it ends up.
 fn finish(
     op: &Operation<'_>,
+    run: &Shared<'_, '_>,
     url: &[u8],
     easy: &Easy,
     out: &output::Output,
     mut result: Result<(), ErrorKind>,
     skipped: bool,
-    msgs: Messages,
 ) -> Result<(), ErrorKind> {
+    let msgs = run.msgs;
     if !skipped {
         // `post_check_result`.
         if let Err(e) = result {
@@ -260,8 +284,6 @@ fn finish(
             msgs.error(&[b"Failed writing body"]);
             result = Err(ErrorKind::WriteError);
         }
-        // `post_close_output`.
-        stream.close();
         if result.is_ok()
             && op.remote_time
             && let Some(name) = stream.file_name()
@@ -279,7 +301,7 @@ fn finish(
             size_download: easy.report().sizes().download(),
             size_upload: easy.report().sizes().upload(),
         };
-        write_out::write(format, &facts);
+        write_out::write(format, &facts, run.stdout);
     }
     result
 }
@@ -400,6 +422,70 @@ impl Rewind for UploadFile {
         match self.0.borrow_mut().seek(SeekFrom::Start(0)) {
             Ok(_) => Ok(()),
             Err(_) => Err(RewindFailed),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// C's `is_fatal_error`.
+    #[test]
+    fn stops_at_fatal_errors() {
+        for e in [
+            ErrorKind::FailedInit,
+            ErrorKind::OutOfMemory,
+            ErrorKind::UnknownOption,
+            ErrorKind::BadFunctionArgument,
+        ] {
+            assert!(fatal(e), "{e:?}");
+        }
+        assert!(!fatal(ErrorKind::WriteError));
+        assert!(!fatal(ErrorKind::FileCouldntReadFile));
+    }
+
+    #[test]
+    fn expects_output_of_downloads_and_http_uploads() {
+        assert!(output_expected(b"file:///f", false));
+        assert!(!output_expected(b"file:///f", true));
+        assert!(output_expected(b"HTTP://h/f", true));
+        assert!(output_expected(b"https://h/f", true));
+        assert!(!output_expected(b"http:/", true));
+        assert!(!output_expected(b"https:/", true));
+    }
+
+    /// `add_file_name_to_url`: a path that ends in `/`, or has none, takes
+    /// the file's name; a query keeps the URL as it is.
+    #[test]
+    fn adds_a_file_name_to_a_bare_path() {
+        assert_eq!(needs_file_name(b"file:///dir/"), Ok(true));
+        assert_eq!(needs_file_name(b"file:///dir/f"), Ok(false));
+        assert_eq!(needs_file_name(b"file:///dir/?q"), Ok(false));
+        assert_eq!(needs_file_name(b"http://host"), Ok(true));
+        // Without a scheme one is guessed; one not supported is still read.
+        assert_eq!(needs_file_name(b"host/dir/"), Ok(true));
+        assert_eq!(needs_file_name(b"nosuch://host/f"), Ok(false));
+        assert_eq!(
+            needs_file_name(b"http://[bad/"),
+            Err(ErrorKind::UrlMalformat)
+        );
+    }
+
+    /// `urlerr_cvt`.
+    #[test]
+    fn maps_url_errors_as_c() {
+        for (e, want) in [
+            (UrlErrorKind::OutOfMemory, ErrorKind::OutOfMemory),
+            (
+                UrlErrorKind::UnsupportedScheme,
+                ErrorKind::UnsupportedProtocol,
+            ),
+            (UrlErrorKind::LacksIdn, ErrorKind::NotBuiltIn),
+            (UrlErrorKind::BadHandle, ErrorKind::BadFunctionArgument),
+            (UrlErrorKind::MalformedInput, ErrorKind::UrlMalformat),
+        ] {
+            assert_eq!(url_error(e), want, "{e:?}");
         }
     }
 }

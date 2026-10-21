@@ -16,6 +16,7 @@ use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Timer, TransferReport};
 use crate::time::Instant;
 use crate::url::{self, GetOptions, ParseOptions, Part, Url};
+use crate::version::Protocol;
 
 use super::cx::{EngineRest, TransferCalls};
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind};
@@ -482,6 +483,9 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> TransferState {
         Ok(s) => s,
         Err(e) => return TransferState::Init.fail(url_error(e)),
     };
+    // Known before the protocol opens anything, as C records it.
+    cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
+    let options = cx.easy().options();
     let proto = match ProtoState::start(&scheme, &url, options) {
         Ok(Some(proto)) => proto,
         Ok(None) => return TransferState::Init.fail(ErrorKind::UnsupportedProtocol),

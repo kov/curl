@@ -9,6 +9,7 @@ use std::time::Duration;
 pub use headers::{HeaderCursor, HeaderError, HeaderStore, HeaderView, Origins, Request};
 
 use crate::time::Instant;
+use crate::version::Protocol;
 
 /// One transfer's report. The default is that of a transfer never run.
 #[derive(Clone, Debug, Default)]
@@ -18,6 +19,7 @@ pub struct TransferReport {
     speeds: Speeds,
     headers: HeaderStore,
     filetime: Option<i64>,
+    protocol: Option<Protocol>,
 }
 
 impl TransferReport {
@@ -65,6 +67,16 @@ impl TransferReport {
 
     pub(crate) fn set_filetime(&mut self, t: i64) {
         self.filetime = Some(t);
+    }
+
+    /// The protocol the transfer used, once it is known
+    /// (`CURLINFO_SCHEME`).
+    pub fn protocol(&self) -> Option<Protocol> {
+        self.protocol
+    }
+
+    pub(crate) fn set_protocol(&mut self, protocol: Option<Protocol>) {
+        self.protocol = protocol;
     }
 
     pub(crate) fn speeds_mut(&mut self) -> &mut Speeds {

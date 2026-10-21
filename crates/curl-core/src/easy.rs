@@ -155,6 +155,7 @@ mod tests {
     use crate::multi::TransferCx;
     use crate::options::{Method, Resume, UploadSource};
     use crate::time::{ManualClock, TimeLimit};
+    use crate::version::Protocol;
 
     /// A directory of its own for a test, removed after it.
     struct Scratch(PathBuf);
@@ -208,10 +209,16 @@ mod tests {
         assert_eq!(e.perform(), Ok(()));
         assert_eq!(*body.0.borrow(), b"hello");
         assert_eq!(e.report().sizes().download(), 5);
+        assert_eq!(e.report().protocol(), Some(Protocol::File));
         assert!(e.private.is_some(), "kept");
         e.options_mut().set_url(Some(&s.url("missing"))).unwrap();
         let err = e.perform().unwrap_err();
         assert_eq!(err.kind(), ErrorKind::FileCouldntReadFile);
+        // Known before the file is looked for.
+        assert_eq!(e.report().protocol(), Some(Protocol::File));
+        e.options_mut().set_url(Some(b"nosuch://x/")).unwrap();
+        assert!(e.perform().is_err());
+        assert_eq!(e.report().protocol(), None);
         assert!(e.private.is_some(), "kept after a failure");
         e.options_mut().set_url(Some(&s.url("f"))).unwrap();
         assert_eq!(e.perform(), Ok(()));

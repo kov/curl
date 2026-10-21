@@ -182,3 +182,10 @@ witness: curl-core deliver::tests::an_invalid_header_line_fails_the_transfer
             cx.report_mut().headers_mut().push(line, origin)?;
         }
         Ok(())
+
+=== the transfer's protocol is not recorded
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core easy::tests::performs_a_file_url_on_its_own
+--- old
+    cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
+--- new

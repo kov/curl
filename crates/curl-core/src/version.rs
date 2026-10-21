@@ -47,6 +47,14 @@ pub enum Protocol {
 }
 
 impl Protocol {
+    /// The protocol of `scheme`, in lowercase, if the build has it.
+    pub fn of_scheme(scheme: &[u8]) -> Option<Protocol> {
+        match scheme {
+            b"file" => Some(Protocol::File),
+            _ => None,
+        }
+    }
+
     /// The scheme, in lowercase.
     pub fn name(self) -> &'static str {
         match self {

@@ -217,6 +217,9 @@ pub struct Http {
     /// Codings other than chunked are asked for and decoded
     /// (`CURLOPT_TRANSFER_ENCODING`).
     pub transfer_encoding: bool,
+    /// A response code of 400 or more fails the transfer at the end of
+    /// its head (`CURLOPT_FAILONERROR`).
+    pub fail_on_error: bool,
 }
 
 impl Http {
@@ -229,6 +232,7 @@ impl Http {
             ignore_content_length: self.ignore_content_length,
             raw: self.raw,
             transfer_encoding: self.transfer_encoding,
+            fail_on_error: self.fail_on_error,
         })
     }
 }

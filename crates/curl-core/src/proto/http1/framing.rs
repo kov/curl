@@ -29,6 +29,10 @@ pub(crate) struct Asked {
     /// Transfer codings are passed on undecoded
     /// (`CURLOPT_HTTP_TRANSFER_DECODING` off).
     pub(crate) raw_codings: bool,
+    /// A code of 400 or more fails the response (`CURLOPT_FAILONERROR`).
+    pub(crate) fail_on_error: bool,
+    /// A GET resuming at an offset, which a 416 does not fail.
+    pub(crate) resuming: bool,
 }
 
 /// How the body after a final head ends.
@@ -74,6 +78,8 @@ pub(crate) enum FramingError {
     ChunkedNotLast,
     /// A second `Location` that says something else.
     MultipleLocations,
+    /// The response's code is an error the request asked to fail on.
+    Returned(u16),
     OutOfMemory,
 }
 
@@ -115,6 +121,9 @@ impl fmt::Display for FramingError {
                 f.write_str("Reject response due to 'chunked' not being the last Transfer-Encoding")
             }
             FramingError::MultipleLocations => f.write_str("Multiple Location headers"),
+            FramingError::Returned(code) => {
+                write!(f, "The requested URL returned error: {code}")
+            }
             FramingError::OutOfMemory => Ok(()),
         }
     }
@@ -124,6 +133,13 @@ impl From<OutOfMemory> for FramingError {
     fn from(_: OutOfMemory) -> FramingError {
         FramingError::OutOfMemory
     }
+}
+
+/// Whether a final response with `code` fails the request
+/// (`http_should_fail`). No credentials are sent yet, so a 401 or 407
+/// fails as one to a request without them.
+fn should_fail(code: u16, asked: &Asked) -> bool {
+    asked.fail_on_error && code >= 400 && !(asked.resuming && code == 416)
 }
 
 /// What a request's response heads said so far.
@@ -310,6 +326,9 @@ impl Meta {
             // RFC 2616, section 4.4, point 5.
             self.close = true;
             note = Some(Note::AssumeClose);
+        }
+        if should_fail(status.code, asked) {
+            return (note, Err(FramingError::Returned(status.code)));
         }
         if self.length_void || self.chunked {
             self.size = None;

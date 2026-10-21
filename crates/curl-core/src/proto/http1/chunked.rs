@@ -369,6 +369,8 @@ mod tests {
                 max_filesize: None,
                 decode_codings: false,
                 raw_codings: raw,
+                fail_on_error: false,
+                resuming: false,
             },
         };
         let mut head = HeadParser::new(exchange);
@@ -382,7 +384,7 @@ mod tests {
                     let (used, event) = head.feed(input, &mut transfer).unwrap();
                     input = &input[used..];
                     if let Some(HeadEvent::Line(line)) = event {
-                        line.then.unwrap();
+                        line.early.and(line.then).unwrap();
                     }
                     if head.is_done() {
                         assert_eq!(head.framing(), Some(Framing::Chunked));

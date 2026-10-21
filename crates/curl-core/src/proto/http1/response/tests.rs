@@ -9,6 +9,8 @@ const ASKED: Asked = Asked {
     max_filesize: None,
     decode_codings: false,
     raw_codings: false,
+    fail_on_error: false,
+    resuming: false,
 };
 
 const PLAIN: Exchange = Exchange {
@@ -64,7 +66,7 @@ fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outc
                 Some(HeadEvent::Line(line)) => {
                     out.notes.extend(line.note);
                     out.lines.push((line.kind, line.bytes.to_vec()));
-                    if let Err(e) = line.then {
+                    if let Err(e) = line.early.and(line.then) {
                         out.error = Some(e);
                         return out;
                     }
@@ -580,6 +582,34 @@ fn a_response_has_one_location() {
     assert_eq!(
         got.error,
         Some(HeadError::Framing(FramingError::MultipleLocations))
+    );
+}
+
+/// Failing on errors fails a final code of 400 or more, but not a 416 to
+/// a resumed GET (`http_should_fail`).
+#[test]
+fn error_codes_fail_when_asked() {
+    let code = |code: u16, f: fn(&mut Asked)| {
+        let reply = format!("HTTP/1.1 {code} X\r\nContent-Length: 0\r\n\r\n");
+        outcome(reply.as_bytes(), asked(f)).error
+    };
+    let returned = |code| Some(HeadError::Framing(FramingError::Returned(code)));
+    assert_eq!(code(400, |a| a.fail_on_error = true), returned(400));
+    assert_eq!(code(399, |a| a.fail_on_error = true), None);
+    assert_eq!(code(404, |_| {}), None);
+    assert_eq!(code(416, |a| a.fail_on_error = true), returned(416));
+    let resumed = |a: &mut Asked| {
+        a.fail_on_error = true;
+        a.resuming = true;
+    };
+    assert_eq!(code(416, resumed), None);
+    assert_eq!(code(417, resumed), returned(417));
+    assert_eq!(
+        returned(404).map(|e| (e.to_string(), e.kind())),
+        Some((
+            "The requested URL returned error: 404".into(),
+            ErrorKind::HttpReturnedError
+        ))
     );
 }
 

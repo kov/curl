@@ -191,6 +191,8 @@ impl Request {
                 max_filesize: options.limits.max_filesize,
                 decode_codings: http.transfer_encoding,
                 raw_codings: http.raw,
+                fail_on_error: http.fail_on_error,
+                resuming: options.resume.is_some() && options.method == Method::Get,
             },
         };
         self.out = out;
@@ -372,6 +374,7 @@ impl Request {
         if let Some(note) = line.note {
             trace::info(cx, format_args!("{note}"));
         }
+        let early = line.early.map_err(|e| head_failed(cx, &e));
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
         let origin = if *interim {
             HeaderOrigin::Interim
@@ -387,6 +390,7 @@ impl Request {
             LineKind::End { .. } => pipeline.header(cx, line.bytes, origin)?,
         }
         let kind = line.kind;
+        early?;
         line.then.map_err(|e| head_failed(cx, &e))?;
         if kind == (LineKind::End { interim: false }) {
             self.body_start(cx);

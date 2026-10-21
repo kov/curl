@@ -406,6 +406,79 @@ fn a_head_answered_in_http_0_9_is_refused() {
     );
 }
 
+/// With failing on errors asked for, a code of 400 or more fails the
+/// transfer at the end of its head: the reason is traced before the blank
+/// line, which is still delivered, the body is not, and the connection
+/// closes (C's `http_on_response`, checked against the C binary).
+#[test]
+fn a_failing_code_ends_the_transfer_at_its_head() {
+    let reply = b"HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\nA: b\r\n\r\nabcde";
+    let ran = run("/", reply, false, |o| o.http.fail_on_error = true);
+    assert_eq!(ran.result, Err(ErrorKind::HttpReturnedError));
+    assert_eq!(ran.seen.body(), b"");
+    assert_eq!(ran.seen.of("header").last().unwrap(), b"\r\n");
+    let lines: Vec<(&str, Vec<u8>)> = ran
+        .seen
+        .0
+        .borrow()
+        .iter()
+        .filter(|(w, _)| matches!(*w, "text" | "in"))
+        .cloned()
+        .collect();
+    let failed = lines
+        .iter()
+        .position(|(_, l)| l == b"The requested URL returned error: 404\n")
+        .expect("the reason");
+    assert_eq!(lines[failed + 1], ("in", b"\r\n".to_vec()));
+    assert_eq!(ran.seen.text().last().unwrap(), "closing connection #0\n");
+    // Below 400, or without asking, nothing fails.
+    for (reply, fail) in [
+        (&b"HTTP/1.1 399 X\r\nContent-Length: 0\r\n\r\n"[..], true),
+        (b"HTTP/1.1 500 X\r\nContent-Length: 0\r\n\r\n", false),
+    ] {
+        let ran = run("/", reply, false, |o| o.http.fail_on_error = fail);
+        assert_eq!(ran.result, Ok(()));
+    }
+    // A HEAD fails too.
+    let ran = run("/", b"HTTP/1.1 401 X\r\n\r\n", false, |o| {
+        o.http.fail_on_error = true;
+        o.method = Method::Head;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::HttpReturnedError));
+}
+
+/// What the end of a final head fails on is said before its blank line
+/// is traced, the line still delivered; a code below 100 is said after
+/// (`http_on_response`, checked against the C binary).
+#[test]
+fn a_head_s_end_fails_around_its_blank_line() {
+    let order = |reply: &[u8], set: fn(&mut Options)| {
+        let ran = run("/", reply, false, set);
+        assert_eq!(ran.seen.of("header").last().unwrap(), b"\r\n");
+        let seen = ran.seen.0.borrow();
+        let blank = seen.iter().position(|(w, l)| *w == "in" && l == b"\r\n");
+        let said = seen.iter().position(|(w, l)| {
+            *w == "text"
+                && matches!(
+                    &l[..],
+                    b"Maximum file size exceeded\n"
+                        | b"Unsupported response code in HTTP response\n"
+                )
+        });
+        (ran.result, said < blank)
+    };
+    assert_eq!(
+        order(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc", |o| {
+            o.limits.max_filesize = std::num::NonZeroU64::new(10);
+        }),
+        (Err(ErrorKind::FilesizeExceeded), true)
+    );
+    assert_eq!(
+        order(b"HTTP/1.1 099 X\r\nA: b\r\n\r\nabc", |_| {}),
+        (Err(ErrorKind::UnsupportedProtocol), false)
+    );
+}
+
 /// A body of a known size is read no further than its end: what follows
 /// it in a later read stays unread, and the connection is kept
 /// (`xfer_recv_resp`).

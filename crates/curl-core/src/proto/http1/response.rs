@@ -63,6 +63,11 @@ pub(crate) struct Line<'a> {
     pub(crate) kind: LineKind,
     /// What C says of the line before it delivers it.
     pub(crate) note: Option<Note>,
+    /// A failure C reports before it delivers the line, and raises after
+    /// (`http_on_response`, which writes the head's last line on its way
+    /// out).
+    pub(crate) early: Result<(), HeadError>,
+    /// A failure C finds after it delivered the line.
     pub(crate) then: Result<(), HeadError>,
 }
 
@@ -124,6 +129,7 @@ impl HeadError {
             HeadError::Framing(FramingError::BadLength | FramingError::MultipleLocations) => {
                 ErrorKind::WeirdServerReply
             }
+            HeadError::Framing(FramingError::Returned(_)) => ErrorKind::HttpReturnedError,
             HeadError::Framing(FramingError::FileTooLarge) => ErrorKind::FilesizeExceeded,
             HeadError::Framing(
                 FramingError::Unsolicited(_)
@@ -403,7 +409,7 @@ impl HeadParser {
     fn line_out(&mut self, transfer_bytes: &mut u64) -> Result<HeadEvent<'_>, HeadError> {
         self.given = true;
         let mut note = None;
-        // An error found before the line is delivered, but raised after.
+        // An error said before the line is delivered, and raised after.
         let mut first = Ok(());
         let mut bad_code = false;
         let kind = if is_newline(self.line[0]) {
@@ -457,13 +463,13 @@ impl HeadParser {
         if kind == (LineKind::End { interim: true }) {
             self.interim_bytes = self.request_bytes;
         }
-        let then = first
-            .and(counted)
-            .and_then(|()| (!bad_code).then_some(()).ok_or(HeadError::BadCode));
+        // Below 200, C writes the line before it looks at the code.
+        let then = counted.and_then(|()| (!bad_code).then_some(()).ok_or(HeadError::BadCode));
         Ok(HeadEvent::Line(Line {
             bytes: &self.line,
             kind,
             note,
+            early: first,
             then,
         }))
     }

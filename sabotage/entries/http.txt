@@ -188,3 +188,30 @@ witness: curl-core easy::tests::connects_over_loopback
             s.revents = one[0].revents();
 --- new
             s.revents = Events::NONE;
+
+=== a head's end failure is said after its blank line
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_head_s_end_fails_around_its_blank_line
+--- old
+        let early = line.early.map_err(|e| head_failed(cx, &e));
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+--- new
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+        let early = line.early.map_err(|e| head_failed(cx, &e));
+
+=== failing on errors starts at 500
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_failing_code_ends_the_transfer_at_its_head
+--- old
+    asked.fail_on_error && code >= 400 && !(asked.resuming && code == 416)
+--- new
+    asked.fail_on_error && code >= 500 && !(asked.resuming && code == 416)
+
+=== a resumed GET fails on 416
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::error_codes_fail_when_asked
+--- old
+    asked.fail_on_error && code >= 400 && !(asked.resuming && code == 416)
+--- new
+    asked.fail_on_error && code >= 400
+

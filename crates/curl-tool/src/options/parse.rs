@@ -65,6 +65,7 @@ pub(crate) fn parse<'a>(
     }
     // C rejects `--remote-header-name` with `--continue-at -` here; both
     // are still unimplemented, which `line.unimplemented` records.
+    line.note_globs();
     Ok(Parsed::Run(line))
 }
 
@@ -404,6 +405,14 @@ mod tests {
         // What would need more than one URL, or a pattern of them, is not
         // run without it.
         assert_eq!(run(&["x{a,b}"]), Ok((1, Some("URL globbing"), None)));
+        // `--globoff` anywhere in the operation takes them as they are;
+        // in another operation it does not.
+        assert_eq!(run(&["x{a,b}", "-g"]), Ok((1, None, None)));
+        assert_eq!(run(&["-g", "-T", "{a,b}", "x"]), Ok((1, None, None)));
+        assert_eq!(
+            run(&["-g", "x", "--next", "y[1-2]"]),
+            Ok((2, Some("URL globbing"), None))
+        );
         assert_eq!(
             run(&["-T", "-", "x"]),
             Ok((1, Some("uploading standard input"), None))
@@ -474,6 +483,10 @@ mod tests {
             "1.5k",
             "-f",
             "-N",
+            "-m",
+            "1.5",
+            "--connect-timeout",
+            "2",
         ]);
         let op = &l.operations[0];
         assert_eq!(op.headers, [&b"A: 1"[..], b"B;"]);
@@ -482,6 +495,7 @@ mod tests {
         assert_eq!(op.http_version, Some(crate::options::HttpVersion::Http10));
         assert!(op.http09 && op.raw && op.ignore_content_length && op.fail && op.no_buffer);
         assert_eq!((op.dump_header, op.max_filesize), (Some(&b"h"[..]), 1536));
+        assert_eq!((op.timeout_ms, op.connect_timeout_ms), (1500, 2000));
         // `;auto` alone sets no referer; a later `-e` without it clears it.
         let op = &line(&["x", "-e", ";auto"]).operations[0];
         assert_eq!((op.referer, op.auto_referer), (None, true));

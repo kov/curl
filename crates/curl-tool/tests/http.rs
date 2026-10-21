@@ -172,6 +172,28 @@ fn limits_the_file_size() {
     );
 }
 
+/// `-m` ends a transfer that takes too long, counted from its start.
+#[test]
+fn gives_up_after_the_time_allowed() {
+    // Connected by the backlog, never answered.
+    let silent = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/", silent.local_addr().unwrap().port());
+    let started = std::time::Instant::now();
+    let run = curl(&["-sS", "-m", "0.3", &url]);
+    let took = started.elapsed();
+    assert_eq!(run.code, 28, "{}", run.stderr);
+    assert!(
+        run.stderr
+            .starts_with("curl: (28) Operation timed out after 3")
+            && run
+                .stderr
+                .ends_with(" milliseconds with 0 bytes received\n"),
+        "{}",
+        run.stderr
+    );
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+}
+
 /// `-I` with `-T` asks for two methods: the transfer is not made.
 #[test]
 fn takes_one_method() {

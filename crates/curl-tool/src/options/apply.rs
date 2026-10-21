@@ -50,6 +50,13 @@ impl<'a> Value<'a> {
             other => unreachable!("a string option got {other:?}"),
         }
     }
+
+    fn millis(self) -> u64 {
+        match self {
+            Value::Millis(ms) => ms,
+            other => unreachable!("an option of seconds got {other:?}"),
+        }
+    }
 }
 
 /// What parsing does after an option.
@@ -124,6 +131,12 @@ pub(crate) struct Operation<'a> {
     pub(crate) ignore_content_length: bool,
     /// `--max-filesize`, in bytes; 0 is no limit.
     pub(crate) max_filesize: u64,
+    /// `--max-time`, in milliseconds; 0 is no limit.
+    pub(crate) timeout_ms: u64,
+    /// `--connect-timeout`, in milliseconds; 0 is the library's default.
+    pub(crate) connect_timeout_ms: u64,
+    /// `--globoff`: URLs and uploads are taken as they are.
+    pub(crate) globoff: bool,
     /// `--head`: no body is asked for.
     pub(crate) no_body: bool,
     /// The HTTP method the options chose (C's `config->httpreq`).
@@ -363,6 +376,26 @@ impl<'a> CommandLine<'a> {
             .get_or_insert(Unimplemented::Option(spec, prefix));
     }
 
+    /// Record globbing as not implemented where a URL or an upload would
+    /// be expanded: C expands `{}` and `[]` patterns unless `--globoff` is
+    /// anywhere in the operation.
+    pub(crate) fn note_globs(&mut self) {
+        let pattern = |s: &[u8]| s.iter().any(|&b| b == b'{' || b == b'[');
+        let globbed = self
+            .operations
+            .iter()
+            .filter(|op| !op.globoff)
+            .flat_map(|op| op.nodes.iter())
+            .find_map(|n| match n.upload {
+                _ if n.url.is_some_and(pattern) => Some("URL globbing"),
+                Upload::File(f) if pattern(f) => Some("upload file globbing"),
+                _ => None,
+            });
+        if let Some(feature) = globbed {
+            self.feature_not_implemented(feature);
+        }
+    }
+
     /// Record that `feature` was asked for and is not implemented.
     fn feature_not_implemented(&mut self, feature: &'static str) {
         self.unimplemented
@@ -394,10 +427,6 @@ pub(crate) fn apply<'a>(
             if url.is_empty() {
                 return Err(ParamError::BlankString);
             }
-            if url.iter().any(|&b| b == b'{' || b == b'[') {
-                // C expands these as a pattern unless `--globoff`.
-                line.feature_not_implemented("URL globbing");
-            }
             let op = line.current();
             op.free_node(|n| n.url.is_some())?.url = Some(url);
             if op.url_count() > 1 && (op.etag_save.is_some() || op.etag_compare.is_some()) {
@@ -423,8 +452,6 @@ pub(crate) fn apply<'a>(
             } else {
                 if file == b"-" || file == b"." {
                     line.feature_not_implemented("uploading standard input");
-                } else if file.iter().any(|&b| b == b'{' || b == b'[') {
-                    line.feature_not_implemented("upload file globbing");
                 }
                 Upload::File(file)
             };
@@ -564,6 +591,9 @@ pub(crate) fn apply<'a>(
         Opt::Raw => line.current().raw = value.toggle(),
         Opt::IgnoreContentLength => line.current().ignore_content_length = value.toggle(),
         Opt::MaxFilesize => line.current().max_filesize = number::size(value.text())?,
+        Opt::MaxTime => line.current().timeout_ms = value.millis(),
+        Opt::ConnectTimeout => line.current().connect_timeout_ms = value.millis(),
+        Opt::Globoff => line.current().globoff = value.toggle(),
         Opt::Fail => line.current().fail = value.toggle(),
         Opt::Buffer => line.current().no_buffer = !value.toggle(),
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
@@ -637,7 +667,6 @@ pub(crate) fn apply<'a>(
         | Opt::Compressed
         | Opt::CompressedSsh
         | Opt::Config
-        | Opt::ConnectTimeout
         | Opt::ConnectTo
         | Opt::Cookie
         | Opt::CookieJar
@@ -690,7 +719,6 @@ pub(crate) fn apply<'a>(
         | Opt::FtpSslControl
         | Opt::FtpSslReqd
         | Opt::Get
-        | Opt::Globoff
         | Opt::HappyEyeballsTimeoutMs
         | Opt::HaproxyClientip
         | Opt::HaproxyProtocol
@@ -733,7 +761,6 @@ pub(crate) fn apply<'a>(
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
         | Opt::MaxRedirs
-        | Opt::MaxTime
         | Opt::Metalink
         | Opt::Mptcp
         | Opt::Negotiate

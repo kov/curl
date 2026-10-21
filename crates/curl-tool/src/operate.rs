@@ -14,6 +14,7 @@ use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
 use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
+use curl_core::time::TimeLimit;
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
 use crate::msgs::Messages;
@@ -300,6 +301,8 @@ fn configure(
     http.ignore_content_length = op.ignore_content_length;
     http.fail_on_error = op.fail;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
+    o.limits.total = TimeLimit::from_millis(op.timeout_ms);
+    o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
     Ok(())
 }
 

@@ -247,3 +247,19 @@ witness: curl-tool shows_the_headers_of_http
         if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
 --- new
         if !self.show_headers || !matches!(protocol, Some(Protocol::File)) {
+
+=== `--max-time` is not given to the transfer
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool gives_up_after_the_time_allowed
+--- old
+    o.limits.total = TimeLimit::from_millis(op.timeout_ms);
+--- new
+    o.limits.total = None;
+
+=== `--globoff` does not stop globbing
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::reads_urls_and_operations
+--- old
+            .filter(|op| !op.globoff)
+--- new
+            .filter(|_| true)

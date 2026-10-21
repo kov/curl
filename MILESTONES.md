@@ -143,8 +143,9 @@ yet meet.
      rewind; the report's upload size, expected size and speed; POSTTRANSFER when a body is
      sent; script pieces that send and rewind. Resume is the protocols' (step 8 for file://,
      the FTP stage): C's reader-level resume is dead code.
-   - 7g. The pause torture scenario, every allocation refused in turn while output is held
-     (the only test that sees `HeldOutput::append` reserve its entry before it copies).
+   - 7g. **Done.** The pause torture scenario: a transfer whose handlers pause again and again,
+     replayed by unpauses from outside while it sends a body and reports progress, run with
+     every allocation refused in turn.
 8. **proto: add file:// and Easy::perform.** `proto/file.rs` (no pause support: PAUSE is a
    WriteError, READFUNC_PAUSE a ReadError), the private multi, `version` reporting `file`.
    Setup gains `DISALLOW_USER` and `PATH_AS_IS` from their options. Tests:

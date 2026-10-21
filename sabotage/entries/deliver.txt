@@ -303,3 +303,13 @@ witness: curl-core deliver::held::tests::delivered_bytes_are_dropped_only_past_t
         } else if self.entries[self.first].range.start > MAX_HELD {
 --- new
         } else if self.entries[self.first].range.start > 0 {
+
+=== held output reserves its entry only when it joins one
+file: crates/curl-core/src/deliver/held.rs
+witness: curl-core pausing_and_replaying_survives_every_allocation_failing
+--- old
+        if !joins {
+            self.entries
+--- new
+        if joins {
+            self.entries

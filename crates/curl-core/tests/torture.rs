@@ -1,4 +1,4 @@
-//! The multi under allocation failure: a scenario run once for every
+//! The multi under allocation failure: each scenario run once for every
 //! allocation it makes, each run with that allocation and every later one
 //! refused (`ENGINE.md` 8.2). Every run must end cleanly, with refusals
 //! reported as `OutOfMemory` where an operation can allocate, and leave
@@ -9,34 +9,52 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
+use std::cell::Cell;
 use std::time::Duration;
 
 use curl_alloc::track::{self, Tracker};
-use curl_alloc::{OutOfMemory, TryArc, try_box};
+use curl_alloc::{OutOfMemory, TryArc, TryRc, try_box};
 use curl_core::conn::io::{FakeNet, Net, Waker};
 use curl_core::easy::Easy;
-use curl_core::error::MultiErrorKind;
+use curl_core::error::{ErrorKind, MultiErrorKind};
+use curl_core::handler::{
+    Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow, ProgressVerdict, Write,
+    WriteHandler,
+};
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::Multi;
 use curl_core::multi::{
-    Abort, AddError, Env, EventCx, MultiEvents, NoHost, Notification, NotifyCx, NotifyKind,
-    SocketEvent, TimerChange, WaitMode,
+    Abort, AddError, Env, EventCx, MultiEvents, NoEvents, NoHost, Notification, NotifyCx,
+    NotifyKind, PauseRequest, SocketEvent, TimerChange, TransferCx, WaitMode,
 };
+use curl_core::options::script::{Piece, Script};
+use curl_core::options::{Progress, UploadSource};
 use curl_core::time::{Clock, ManualClock, TimeLimit};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
 
 fn main() {
-    // Reported as libtest does, the name before the run, so that a run that
-    // aborts still shows which test it was in.
-    track::untracked(|| {
-        use std::io::Write as _;
-        print!("test add_perform_remove_survives_every_allocation_failing ... ");
-        std::io::stdout().flush().unwrap();
-    });
-    add_perform_remove_survives_every_allocation_failing();
-    track::untracked(|| println!("ok"));
+    for (name, test) in [
+        (
+            "add_perform_remove_survives_every_allocation_failing",
+            add_perform_remove_survives_every_allocation_failing as fn(),
+        ),
+        (
+            "pausing_and_replaying_survives_every_allocation_failing",
+            pausing_and_replaying_survives_every_allocation_failing,
+        ),
+    ] {
+        // Reported as libtest does, the name before the run, so that a run
+        // that aborts still shows which test it was in.
+        track::untracked(|| {
+            use std::io::Write as _;
+            print!("test {name} ... ");
+            std::io::stdout().flush().unwrap();
+        });
+        test();
+        track::untracked(|| println!("ok"));
+    }
 }
 
 /// More transfers than the arena's first 16 rows, so it grows.
@@ -145,6 +163,12 @@ fn add_perform_remove_survives_every_allocation_failing() {
         messages: TRANSFERS,
         removed: TRANSFERS,
     };
+    torture(scenario, Ok(full));
+}
+
+/// Run `scenario` once for each allocation it makes, that one and every
+/// later one refused, until a run that refuses nothing gives `full`.
+fn torture<T: PartialEq + std::fmt::Debug>(scenario: fn() -> T, full: T) {
     let mut limit = 0;
     loop {
         let live = track::live_tracked();
@@ -155,7 +179,7 @@ fn add_perform_remove_survives_every_allocation_failing() {
             "a run allowed {limit} allocations left blocks behind"
         );
         if !refused {
-            assert_eq!(outcome, Ok(full), "a run with nothing refused");
+            assert_eq!(outcome, full, "a run with nothing refused");
             // Every allocation of the scenario has been refused in turn.
             assert!(limit > 0, "the scenario allocates nothing");
             track::untracked(|| eprintln!("torture: {limit} allocations, each refused in turn"));
@@ -164,4 +188,163 @@ fn add_perform_remove_survives_every_allocation_failing() {
         limit += 1;
         assert!(limit < 100_000, "the scenario never ran to the end");
     }
+}
+
+/// What the pausing transfer's handlers took.
+#[derive(Default)]
+struct Taken {
+    calls: Cell<u32>,
+    body: Cell<u64>,
+    headers: Cell<u64>,
+}
+
+/// Pauses every third call of either handler; takes the rest.
+struct Pauser(TryRc<Taken>);
+
+impl Pauser {
+    fn take(&self, n: usize, into: &Cell<u64>) -> Write {
+        let call = self.0.calls.get();
+        self.0.calls.set(call + 1);
+        if call.is_multiple_of(3) {
+            return Write::Pause;
+        }
+        into.set(into.get() + n as u64);
+        Write::Accepted
+    }
+}
+
+impl WriteHandler for Pauser {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        self.take(body.len(), &self.0.body)
+    }
+}
+
+impl HeaderHandler for Pauser {
+    fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+        self.take(line.len(), &self.0.headers)
+    }
+}
+
+struct GoOn;
+
+impl ProgressHandler for GoOn {
+    fn progress(&self, _: &mut TransferCx<'_>, _: ProgressNow) -> ProgressVerdict {
+        ProgressVerdict::Continue
+    }
+}
+
+const STATUS: &[u8] = b"HTTP/1.1 200 OK\r\n";
+const HEADER: &[u8] = b"A: 1\r\n";
+const BODY: usize = 40000;
+
+/// What the pause scenario got through: its result, what its handlers
+/// took and what it sent.
+#[derive(Debug, PartialEq, Eq)]
+struct Paused {
+    result: Result<(), ErrorKind>,
+    body: u64,
+    headers: u64,
+    sent: u64,
+}
+
+/// A transfer whose handlers pause again and again, its output held and
+/// replayed by unpauses from outside, while it also sends a body and
+/// reports progress. `Err` where setting up refused; the transfer itself
+/// may fail for memory, and nothing else.
+fn pause_scenario() -> Result<Paused, OutOfMemory> {
+    let clock = ManualClock::new()?;
+    let env = Env {
+        clock: try_box(clock.clone())?,
+        net: try_box(FakeNet::new(clock))?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env)?;
+    let mut easy = Easy::new();
+    easy.options_mut().set_url(Some(b"script://a"))?;
+    easy.options_mut().output.include_header = true;
+    let taken = TryRc::try_new(Taken::default())?;
+    let cb = &mut easy.options_mut().callbacks;
+    cb.write = Some(Handler::write(Pauser(taken.clone()))?);
+    cb.header = Some(Handler::header(Pauser(taken.clone()))?);
+    easy.options_mut().progress = Progress::Handler(Handler::progress(GoOn)?);
+    let mut upload = Vec::new();
+    upload.try_reserve_exact(300).map_err(|_| OutOfMemory)?;
+    upload.resize(300, b'u');
+    easy.options_mut().upload = UploadSource::Bytes(TryRc::try_new(upload)?);
+    let pieces = |n: usize| -> Result<Vec<u8>, OutOfMemory> {
+        let mut v = Vec::new();
+        v.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
+        v.resize(n, b'x');
+        Ok(v)
+    };
+    let mut script = Vec::new();
+    script.try_reserve_exact(9).map_err(|_| OutOfMemory)?;
+    script.push(Piece::Send(100));
+    script.push(Piece::Status(STATUS.to_vec_fallible()?));
+    script.push(Piece::Header(HEADER.to_vec_fallible()?));
+    script.push(Piece::Header(b"\r\n".to_vec_fallible()?));
+    script.push(Piece::Body(pieces(BODY)?));
+    script.push(Piece::Yield);
+    script.push(Piece::SendAll);
+    script.push(Piece::Body(pieces(10)?));
+    easy.options_mut().script = Some(Script::new(script)?);
+    let id = match m.add(easy, (), &mut NoEvents) {
+        Ok(id) => id,
+        Err(AddError {
+            kind: MultiErrorKind::OutOfMemory,
+            ..
+        }) => return Err(OutOfMemory),
+        Err(e) => panic!("add refused with {:?}, not for memory", e.kind),
+    };
+    let mut result = None;
+    for _ in 0..100 {
+        m.perform(&mut NoEvents).expect("a pass allocates nothing");
+        if let Some(msg) = m.info_read() {
+            result = Some(msg.result);
+            break;
+        }
+        match m.pause(id, PauseRequest::CONT, &mut NoEvents) {
+            Ok(()) => {}
+            Err(e) => panic!("an unpause failed with {e:?}"),
+        }
+    }
+    let result = result.expect("the transfer ends");
+    assert!(
+        matches!(result, Ok(()) | Err(ErrorKind::OutOfMemory)),
+        "{result:?}"
+    );
+    let sent = m.easy(id).expect("in the multi").report().sizes().upload();
+    m.remove(id, &mut NoEvents).expect("in the multi");
+    Ok(Paused {
+        result,
+        body: taken.body.get(),
+        headers: taken.headers.get(),
+        sent,
+    })
+}
+
+trait ToVecFallible {
+    fn to_vec_fallible(&self) -> Result<Vec<u8>, OutOfMemory>;
+}
+
+impl ToVecFallible for [u8] {
+    fn to_vec_fallible(&self) -> Result<Vec<u8>, OutOfMemory> {
+        let mut v = Vec::new();
+        v.try_reserve_exact(self.len()).map_err(|_| OutOfMemory)?;
+        v.extend_from_slice(self);
+        Ok(v)
+    }
+}
+
+fn pausing_and_replaying_survives_every_allocation_failing() {
+    let head = (STATUS.len() + HEADER.len() + 2) as u64;
+    let full = Paused {
+        result: Ok(()),
+        // With the headers included, the write handler takes them too.
+        body: head + BODY as u64 + 10,
+        headers: head,
+        sent: 300,
+    };
+    torture(pause_scenario, Ok(full));
 }

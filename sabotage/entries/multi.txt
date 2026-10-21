@@ -58,10 +58,10 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- old
             let expired = matches!(
-                run.deadlines.time_left(cx.rest.now, Phase::Transferring),
+                run.deadlines
 --- new
             let expired = false && matches!(
-                run.deadlines.time_left(cx.rest.now, Phase::Transferring),
+                run.deadlines
 
 === a fired timer stays armed
 file: crates/curl-core/src/multi/mod.rs
@@ -279,9 +279,9 @@ witness: curl-core multi::props::random_calls_keep_the_multi_consistent
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core add_perform_remove_survives_every_allocation_failing
 --- old
-        let Ok(run) = try_box(Run::new(self.clock.now())) else {
+        let Ok(run) = try_box(Run::new()) else {
 --- new
-        let Ok::<_, OutOfMemory>(run) = Ok(Box::new(Run::new(self.clock.now()))) else {
+        let Ok::<_, OutOfMemory>(run) = Ok(Box::new(Run::new())) else {
 
 === an add refused for memory leaks the run it made
 file: crates/curl-core/src/multi/mod.rs
@@ -332,9 +332,9 @@ witness: curl-core easy::tests::performs_a_path_with_the_default_protocol
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_silent_peer_times_out_at_the_connect_limit
 --- old
-    if let TimeLeft::Expired(_) = run.deadlines.time_left(now, Phase::Connecting) {
+    if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
 --- new
-    if let TimeLeft::Expired(_) = run.deadlines.time_left(now, Phase::Transferring) {
+    if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Transferring) {
 
 === a paused transfer connects
 file: crates/curl-core/src/multi/state.rs

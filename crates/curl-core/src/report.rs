@@ -239,11 +239,11 @@ pub(crate) enum Timer {
 pub struct Timings {
     /// The transfer's start; `None` before it ran.
     start: Option<Instant>,
-    /// Since the start, in µs: when the transfer started running, the
-    /// last request started, the last queueing started, and the last
-    /// redirect happened.
-    startop: u64,
-    startsingle: u64,
+    /// When the transfer started running and its last request started;
+    /// `None` before it ran. Its time limits are judged from them.
+    starts: Option<Starts>,
+    /// Since the start, in µs: when the last queueing started, and the
+    /// last redirect happened.
     startqueue: u64,
     startredirect: u64,
     /// Sums over the requests, in µs.
@@ -260,18 +260,39 @@ pub struct Timings {
     starttransfer_added: bool,
 }
 
+/// When a transfer started running (`TIMER_STARTOP`) and its last request
+/// started (`TIMER_STARTSINGLE`): its total and connect limits are judged
+/// from them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Starts {
+    pub(crate) op: Instant,
+    pub(crate) single: Instant,
+}
+
 impl Timings {
+    /// When the transfer and its last request started, once it ran.
+    pub(crate) fn starts(&self) -> Option<Starts> {
+        self.starts
+    }
+
     /// Take the time of `timer` as `now` (`Curl_pgrsTimeWas`).
     pub(crate) fn mark(&mut self, timer: Timer, now: Instant) {
         let since_start = self.since_start(now);
+        let since_single = since_start.saturating_sub(self.since_single_start());
         let phase = match timer {
             Timer::StartOp => {
-                self.startop = since_start;
+                self.starts = Some(Starts {
+                    op: now,
+                    single: now,
+                });
                 self.startqueue = since_start;
                 return;
             }
             Timer::StartSingle => {
-                self.startsingle = since_start;
+                self.starts
+                    .as_mut()
+                    .expect("a request starts after its transfer")
+                    .single = now;
                 self.starttransfer_added = false;
                 return;
             }
@@ -297,7 +318,7 @@ impl Timings {
             Timer::PreTransfer => &mut self.pretransfer,
             Timer::PostTransfer => &mut self.posttransfer,
         };
-        *phase += since_start.saturating_sub(self.startsingle).max(1);
+        *phase += since_single.max(1);
     }
 
     /// The transfer is over (`Curl_pgrsCompleted`), or a progress pass
@@ -314,7 +335,14 @@ impl Timings {
     /// Milliseconds from the last request's start to `now`
     /// (`Curl_pgrs_since_ms` from `TIMER_STARTSINGLE`).
     pub(crate) fn since_single_ms(&self, now: Instant) -> u64 {
-        self.since_start(now).saturating_sub(self.startsingle) / 1000
+        self.since_start(now)
+            .saturating_sub(self.since_single_start())
+            / 1000
+    }
+
+    /// Microseconds from the transfer's start to its last request's.
+    fn since_single_start(&self) -> u64 {
+        self.starts.map_or(0, |s| self.since_start(s.single))
     }
 
     fn since_start(&self, now: Instant) -> u64 {
@@ -467,6 +495,7 @@ mod tests {
     fn phases_add_up_across_a_redirect() {
         let start = 12_345_678_000_000;
         let mut t = started(at(start));
+        t.mark(Timer::StartOp, at(start));
         t.mark(Timer::StartSingle, at(start));
         let now = start + 2_250_000;
         for timer in [
@@ -496,11 +525,16 @@ mod tests {
         t.mark(Timer::StartTransfer, at(now + 1_000_000));
         assert_eq!(phases(&t), [Duration::from_micros(3_750_000); 5]);
         assert_eq!(t.redirect(), Duration::from_micros(3_250_000));
+        // The second request's time, for the timeout texts, is its own.
+        assert_eq!(t.since_single_ms(at(now)), 1_500);
+        let starts = t.starts().unwrap();
+        assert_eq!((starts.op, starts.single), (at(start), at(now - 1_500_000)));
     }
 
     #[test]
     fn a_phase_reached_at_its_start_counts_a_microsecond() {
         let mut t = started(at(5));
+        t.mark(Timer::StartOp, at(5));
         t.mark(Timer::StartSingle, at(5));
         t.mark(Timer::PreTransfer, at(5));
         assert_eq!(t.pretransfer(), Duration::from_micros(1));

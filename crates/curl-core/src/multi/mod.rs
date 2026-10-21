@@ -281,7 +281,7 @@ impl<H: Host> Multi<H> {
         // private multi goes.
         let mut easy = easy;
         easy.private = None;
-        let Ok(run) = try_box(Run::new(self.clock.now())) else {
+        let Ok(run) = try_box(Run::new()) else {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         };
         let Ok(vacancy) = self.slots.reserve() else {

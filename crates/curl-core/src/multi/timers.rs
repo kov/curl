@@ -13,6 +13,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec};
 
 use crate::id::Key;
+use crate::report::Starts;
 use crate::time::{Instant, TimeLimit};
 
 /// The longest wait a timer is armed for, or announced: C caps both at
@@ -63,15 +64,10 @@ pub(crate) enum TimeLeft {
     Expired(Duration),
 }
 
-/// A transfer's time limits and armed timers.
+/// A transfer's time limits and armed timers. The instants the limits are
+/// judged from are the report's (`Starts`).
 #[derive(Debug)]
 pub(crate) struct Deadlines {
-    /// When the transfer started (C's `TIMER_STARTOP`): the total limit
-    /// is judged from here.
-    started_op: Instant,
-    /// When the current leg started (`TIMER_STARTSINGLE`): the connect
-    /// limit is judged, and both limits armed, from here.
-    started_single: Instant,
     total: Option<TimeLimit>,
     connect: Option<TimeLimit>,
     /// When each timer fires, if armed. A timer stays armed until an
@@ -80,11 +76,9 @@ pub(crate) struct Deadlines {
 }
 
 impl Deadlines {
-    /// A transfer starting at `now`, with its limits.
-    pub(crate) fn new(now: Instant, total: Option<TimeLimit>, connect: Option<TimeLimit>) -> Self {
+    /// A transfer's limits, no timer armed.
+    pub(crate) fn new(total: Option<TimeLimit>, connect: Option<TimeLimit>) -> Self {
         Deadlines {
-            started_op: now,
-            started_single: now,
             total,
             connect,
             armed: [None; TimerKind::COUNT],
@@ -95,7 +89,6 @@ impl Deadlines {
     /// from it. The total limit is still judged from the transfer's start,
     /// so it wakes the transfer later than it is due; C does the same.
     pub(crate) fn start_leg(&mut self, now: Instant) {
-        self.started_single = now;
         if let Some(total) = self.total {
             self.arm_in(TimerKind::Total, now, total.duration());
         }
@@ -138,26 +131,9 @@ impl Deadlines {
         }
     }
 
-    /// Whole milliseconds since the transfer started (`Curl_pgrs_since_ms`
-    /// with `TIMER_STARTOP`): the N of the multi's "timed out" error once
-    /// past connecting (multi.c:1820).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the timeout error texts, from step 9")
-    )]
-    pub(crate) fn since_op_ms(&self, now: Instant) -> u64 {
-        whole_ms(now.since(self.started_op))
-    }
-
-    /// Whole milliseconds since the leg started (`TIMER_STARTSINGLE`): the
-    /// N of the multi's error while connecting, and of the receive/send
-    /// pass's error in any phase (transfer.c:382).
-    pub(crate) fn since_leg_ms(&self, now: Instant) -> u64 {
-        whole_ms(now.since(self.started_single))
-    }
-
-    /// What is left of the transfer's time at `now` (`timeleft_now_ms`).
-    pub(crate) fn time_left(&self, now: Instant, phase: Phase) -> TimeLeft {
+    /// What is left at `now` of the time of a transfer that started at
+    /// `starts` (`timeleft_now_ms`).
+    pub(crate) fn time_left(&self, starts: Starts, now: Instant, phase: Phase) -> TimeLeft {
         // C's arithmetic, in signed milliseconds where 0 means no limit.
         let left = |limit: Duration, anchor: Instant| -> i64 {
             let limit = i64::try_from(limit.as_millis()).unwrap_or(i64::MAX);
@@ -170,13 +146,11 @@ impl Deadlines {
         let connect = match phase {
             Phase::Connecting => left(
                 self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration),
-                self.started_single,
+                starts.single,
             ),
             Phase::Transferring => 0,
         };
-        let total = self
-            .total
-            .map_or(0, |t| left(t.duration(), self.started_op));
+        let total = self.total.map_or(0, |t| left(t.duration(), starts.op));
         let ms = match (connect, total) {
             (0, t) => t,
             (c, 0) => c,
@@ -372,10 +346,6 @@ impl<T> TimerQueue<T> {
         self.position[row_of(self.heap[a].key)] = Some(a);
         self.position[row_of(self.heap[b].key)] = Some(b);
     }
-}
-
-fn whole_ms(d: Duration) -> u64 {
-    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn row_of<T>(key: Key<T>) -> usize {
@@ -592,11 +562,14 @@ mod tests {
         for case in c_tests::UNIT1303 {
             let start = Instant::EPOCH.after(Duration::from_secs(c_tests::UNIT1303_BASE));
             let mut d = Deadlines::new(
-                start,
                 TimeLimit::from_millis(case.timeout_ms),
                 TimeLimit::from_millis(case.connect_timeout_ms),
             );
             d.start_leg(start);
+            let starts = Starts {
+                op: start,
+                single: start,
+            };
             let now =
                 Instant::EPOCH.after(Duration::from_micros(case.now_s * 1_000_000 + case.now_us));
             let phase = if case.connecting {
@@ -604,7 +577,7 @@ mod tests {
             } else {
                 Phase::Transferring
             };
-            let got = match d.time_left(now, phase) {
+            let got = match d.time_left(starts, now, phase) {
                 TimeLeft::Unlimited => 0,
                 TimeLeft::Remaining(d) => i64::try_from(d.as_millis()).unwrap(),
                 TimeLeft::Expired(d) => -i64::try_from(d.as_millis()).unwrap(),
@@ -616,31 +589,32 @@ mod tests {
     #[test]
     fn limits_are_armed_per_leg_and_judged_from_their_anchors() {
         let mut d = Deadlines::new(
-            at_ms(0),
             TimeLimit::from_millis(10_000),
             TimeLimit::from_millis(3_000),
         );
         assert_eq!(d.wake_at(), None);
         d.start_leg(at_ms(4_000));
+        let starts = Starts {
+            op: at_ms(0),
+            single: at_ms(4_000),
+        };
         assert_eq!(d.wake_at(), Some(at_ms(7_000)));
         // The connect limit counts from the leg, the total from the start.
         assert_eq!(
-            d.time_left(at_ms(6_000), Phase::Connecting),
+            d.time_left(starts, at_ms(6_000), Phase::Connecting),
             TimeLeft::Remaining(Duration::from_secs(1))
         );
         assert_eq!(
-            d.time_left(at_ms(6_000), Phase::Transferring),
+            d.time_left(starts, at_ms(6_000), Phase::Transferring),
             TimeLeft::Remaining(Duration::from_secs(4))
         );
         d.expire(at_ms(7_000));
         // The total wakes from the leg, though it is due from the start.
         assert_eq!(d.wake_at(), Some(at_ms(14_000)));
         assert_eq!(
-            d.time_left(at_ms(12_000), Phase::Transferring),
+            d.time_left(starts, at_ms(12_000), Phase::Transferring),
             TimeLeft::Expired(Duration::from_secs(2))
         );
-        assert_eq!(d.since_op_ms(at_ms(12_000)), 12_000);
-        assert_eq!(d.since_leg_ms(at_ms(12_000)), 8_000);
         d.arm_in(
             TimerKind::Connect,
             at_ms(12_000),

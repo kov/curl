@@ -29,7 +29,8 @@ numbers are those of `SCOPE.md`.
    Counters are an index with one writer (the transition function) and a full recount in the
    debug build after every pass.
 4. **`Deadlines` is the only owner of time limits.** The wake-up and the "is it late" check are
-   both derived from the same stored instants. The timer queue is an index over it.
+   both derived from the same stored instants, the report's `Starts`, which the getinfo times
+   are taken from too. The timer queue is an index over it.
 5. **Connection identity is an immutable `Route`; reuse matching follows its `Eq`.** A new
    field joins the comparison automatically. Nothing on a pooled connection is rewritten on
    reuse.
@@ -87,7 +88,7 @@ numbers are those of `SCOPE.md`.
 20. **C's read cap at `size - bytecount` is kept**, deliberately, for byte-identical `DATA_IN`
     traces and reuse decisions, until a C-leg comparison on 1701 and 3223 shows it can go.
 21. **C's two-anchor total timeout is ported as is** (wake-up from the leg start, lateness from
-    the operation start), both derived from `Deadlines`. A single anchor needs a test on the C
+    the operation start), both judged from the report's `Starts`. A single anchor needs a test on the C
     build reproducing the late wake-up first.
 
 **Delivery**
@@ -416,8 +417,8 @@ pub(crate) enum Message { Unread, Read }
   parent's callback). `remove` and the dead-multi path call it through `fail`.
 - **Server push and `add_perform`** use a typed constructor, `TransferState::pushed(lease,
   proto)`, which enters `Exchanging` directly. "Really alive" is derived as "has left `Init`".
-- **Follow and retry** build a new `Plan` from `AfterRequest`. `Deadlines` keeps `started_op`
-  and sets a fresh `started_single`.
+- **Follow and retry** build a new `Plan` from `AfterRequest`. The report keeps `Starts::op` and
+  marks a fresh `Starts::single`.
 
 ### 3.2 Per-request substates
 
@@ -442,8 +443,8 @@ sides, not a stored field.
 
 | From | To | Condition and work (C's order) |
 |---|---|---|
-| Init | Exchanging setup | pretransfer: fresh `TransferReport` (header store empties), cookies and resolve list, `started_op`; on failure `fail` → Completed |
-| (setup) | Connecting / Exchanging / Pending | `started_single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait` |
+| Init | Exchanging setup | pretransfer: fresh `TransferReport` (header store empties), cookies and resolve list, `Starts::op`; on failure `fail` → Completed |
+| (setup) | Connecting / Exchanging / Pending | `Starts::single`; arm Total and Connect; `pool.acquire(route)` → `Connecting(lease)`, `Ready(lease)` (reused or `file:`), or `Wait` |
 | Pending | (setup) | `schedule_pending` (one per call, round robin from `pending_cursor`), dirty while pending, or the expiry sweep finding it late |
 | Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |
 | ProtoConnect | Do | the protocol's connect is done (none has one yet) |
@@ -471,8 +472,6 @@ elsewhere "Operation timed out after N milliseconds with X out of Y bytes receiv
 
 ```rust
 pub(crate) struct Deadlines {
-    started_op: Instant,                 // once per transfer (C TIMER_STARTOP)
-    started_single: Instant,             // per leg (C TIMER_STARTSINGLE)
     total: Option<TimeLimit>, connect: Option<TimeLimit>,
     armed: [Option<Instant>; TimerKind::COUNT],   // C's per-transfer expire list
 }
@@ -484,22 +483,21 @@ impl Deadlines {
     fn clear(&mut self, kind: TimerKind); fn clear_all(&mut self);
     fn wake_at(&self) -> Option<Instant>;                  // earliest armed timer
     fn expire(&mut self, now: Instant);                    // an expiry pass consumed them
-    fn time_left(&self, now: Instant, phase: Phase) -> TimeLeft;   // timeleft_now_ms
-    fn since_op_ms(&self, now: Instant) -> u64;            // the N in the error texts:
-    fn since_leg_ms(&self, now: Instant) -> u64;           //   which one, see below
+    fn time_left(&self, starts: Starts, now: Instant, phase: Phase) -> TimeLeft;  // timeleft_now_ms
 }
+pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_STARTOP, _STARTSINGLE
 ```
 
-- **The C behaviour is ported**: `start_leg` arms `Total` and `Connect` from `started_single`
+- **The C behaviour is ported**: `start_leg` arms `Total` and `Connect` from the leg's start
   (C arms EXPIRE_TIMEOUT and EXPIRE_CONNECTTIMEOUT at every SETUP, multi.c:2497), and
-  `time_left` judges the total limit from `started_op` and the connect limit (300 s when unset)
-  from `started_single` (connect.c:70), in C's whole-millisecond arithmetic, where a limit
+  `time_left` judges the total limit from `Starts::op` and the connect limit (300 s when unset)
+  from `Starts::single` (connect.c:70), in C's whole-millisecond arithmetic, where a limit
   reached exactly counts as passed by 1 ms. The connect timer is armed only when the limit is
   set, as in C. A timer stays armed after its instant until an expiry pass consumes it
   (`add_next_timeout`), so a timer armed in the past still wakes the transfer at once. The N
-  in the error text follows C's two checks: the multi-level check reports `since_leg_ms` while
-  connecting and `since_op_ms` after (multi.c:1820), the check at the end of a receive/send pass
-  always `since_leg_ms` (transfer.c:382-393).
+  in the error text follows C's two checks: the multi-level check reports the time since
+  `Starts::single` while connecting and since `Starts::op` after (multi.c:1820), the check at the
+  end of a receive/send pass always since `Starts::single` (transfer.c:382-393).
 - `MultiPending` is not a kind: C declares EXPIRE_MULTI_PENDING (urldata.h:498) and never arms
   it.
 - **`TimerQueue`** is an indexed binary min-heap with one entry per transfer, holding

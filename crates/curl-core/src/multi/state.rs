@@ -20,7 +20,7 @@ use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::Options;
 use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
-use crate::report::{Timer, TransferReport};
+use crate::report::{Starts, Timer, TransferReport};
 use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
 use crate::trace;
@@ -43,10 +43,10 @@ pub(crate) struct Run {
 }
 
 impl Run {
-    pub(crate) fn new(now: Instant) -> Run {
+    pub(crate) fn new() -> Run {
         Run {
             state: TransferState::Init,
-            deadlines: Deadlines::new(now, None, None),
+            deadlines: Deadlines::new(None, None),
             #[cfg(feature = "debug-hooks")]
             warn: false,
         }
@@ -455,13 +455,22 @@ pub(crate) fn flush<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<()
     }
 }
 
+/// When the running transfer and its request started.
+fn starts<H: Host>(cx: &StepCx<'_, H>) -> Starts {
+    cx.easy()
+        .report()
+        .timings()
+        .starts()
+        .expect("a running transfer has started")
+}
+
 /// Run one step of `run`.
 pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     let state = std::mem::replace(&mut run.state, TransferState::Init);
     let (next, wake) = match state {
         TransferState::Init => {
             let limits = cx.easy().options().limits;
-            run.deadlines = Deadlines::new(cx.rest.now, limits.total, limits.connect);
+            run.deadlines = Deadlines::new(limits.total, limits.connect);
             let now = cx.rest.now;
             cx.report_mut().restart(now);
             *cx.speedometer_mut() = Speedometer::default();
@@ -506,7 +515,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Exchanging(mut x) => {
             let stepped = x.proto.step(cx, &x.lease);
             let expired = matches!(
-                run.deadlines.time_left(cx.rest.now, Phase::Transferring),
+                run.deadlines
+                    .time_left(starts(cx), cx.rest.now, Phase::Transferring),
                 TimeLeft::Expired(_)
             );
             match stepped {
@@ -629,8 +639,8 @@ fn connecting<H: Host>(
     cx: &mut StepCx<'_, H>,
 ) -> (TransferState, Wake) {
     let now = cx.rest.now;
-    if let TimeLeft::Expired(_) = run.deadlines.time_left(now, Phase::Connecting) {
-        let ms = run.deadlines.since_leg_ms(now);
+    if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
+        let ms = cx.easy().report().timings().since_single_ms(now);
         let kind = ErrorKind::OperationTimedout;
         let kind = trace::fail(
             cx,

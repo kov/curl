@@ -66,8 +66,9 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
 - **A request's two directions are states, not flags.** Sending is head, waiting for
   `100-continue`, body, done or aborted; receiving is head, body or done. How the body is framed
   (length, chunked, until close) is decided once when the headers end.
-- **Time limits have one owner.** `Deadlines` holds the transfer's start instants and limits;
-  both the wake-up and the "is it late" check are computed from it, and the timer queue is an
+- **Time limits have one owner.** `Deadlines` holds the limits and the armed timers, and the
+  report's `Timings` the start instants (`Starts`) the limits are judged from; both the wake-up
+  and the "is it late" check are computed from them, and the timer queue is an
   index over it with one entry per transfer, reserved when the transfer is added. C's two anchors
   for the total timeout (the wake-up from the current request, lateness from the whole
   operation) are kept until a test on the C build shows the difference is a bug.

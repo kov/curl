@@ -29,13 +29,11 @@ const DEFAULT_CONNECT: Duration = Duration::from_secs(301);
 file: crates/curl-core/src/multi/timers.rs
 witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
 --- old
-            Phase::Connecting => left(
                 self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration),
-                self.started_single,
+                starts.single,
 --- new
-            Phase::Connecting => left(
                 self.connect.map_or(DEFAULT_CONNECT, TimeLimit::duration),
-                self.started_op,
+                starts.op,
 
 === the time left under two limits is the larger, not the smaller
 file: crates/curl-core/src/multi/timers.rs
@@ -46,12 +44,13 @@ witness: curl-core multi::timers::tests::unit1303_time_left
             (c, t) => c.max(t),
 
 === the error text's leg time is measured from the transfer's start
-file: crates/curl-core/src/multi/timers.rs
-witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::phases_add_up_across_a_redirect
 --- old
-        whole_ms(now.since(self.started_single))
+            .saturating_sub(self.since_single_start())
+            / 1000
 --- new
-        whole_ms(now.since(self.started_op))
+            / 1000
 
 === a timer due exactly now survives the expiry pass
 file: crates/curl-core/src/multi/timers.rs

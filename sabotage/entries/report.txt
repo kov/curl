@@ -12,17 +12,17 @@ witness: curl-core report::tests::phases_add_up_across_a_redirect
 file: crates/curl-core/src/report.rs
 witness: curl-core report::tests::phases_add_up_across_a_redirect
 --- old
-        *phase += since_start.saturating_sub(self.startsingle).max(1);
+        let since_single = since_start.saturating_sub(self.since_single_start());
 --- new
-        *phase += since_start.max(1);
+        let since_single = since_start;
 
 === a phase reached at once counts nothing
 file: crates/curl-core/src/report.rs
 witness: curl-core report::tests::a_phase_reached_at_its_start_counts_a_microsecond
 --- old
-        *phase += since_start.saturating_sub(self.startsingle).max(1);
+        *phase += since_single.max(1);
 --- new
-        *phase += since_start.saturating_sub(self.startsingle);
+        *phase += since_single;
 
 === queue time is not summed over requests
 file: crates/curl-core/src/report.rs

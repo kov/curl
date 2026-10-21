@@ -12,6 +12,7 @@ mod check;
 mod cx;
 mod notify;
 mod sched;
+mod sockets;
 pub(crate) mod state;
 mod timers;
 mod wait;
@@ -21,7 +22,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::Pool;
-use crate::conn::io::{Events, Net, Socket, Waker};
+use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
 use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -34,18 +35,22 @@ use cx::EngineRest;
 pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
 pub use sched::Counts;
+pub use sockets::{SocketWhat, UnknownSocket};
 pub use timers::TimerChange;
 pub use wait::{WaitMode, drive_to_completion};
 
 use notify::NotifyQueue;
 use sched::{RowSet, Tally};
+use sockets::SocketTable;
 use state::{Message as MessageState, Run, StepCx, TransferState, Wake};
 use timers::{Due, TimerAnnounce, TimerQueue};
 
 /// The application's types a multi carries: a value per transfer, handed
-/// back with its messages and on removal.
+/// back with its messages and on removal, and a value per socket it
+/// watches, handed back to its socket callback (`curl_multi_assign`).
 pub trait Host {
     type Transfer;
+    type Socket: Copy;
 }
 
 /// A multi that carries nothing for the application.
@@ -54,6 +59,7 @@ pub struct NoHost;
 
 impl Host for NoHost {
     type Transfer = ();
+    type Socket = ();
 }
 
 /// What `TransferId`s name.
@@ -87,6 +93,29 @@ pub trait MultiEvents<H: Host> {
     /// Whether `timer` is wanted. Without it the multi keeps no record of
     /// what it announced, as C without a timer callback.
     fn wants_timer(&self) -> bool {
+        false
+    }
+
+    /// Watch socket `s` for `what` for transfer `who`, or stop
+    /// (`CURLMOPT_SOCKETFUNCTION`). Called on a change only, after a
+    /// transfer runs in `socket_action`, inside `remove` and `pause`, and
+    /// before a socket a transfer waits on closes. `assigned` is the
+    /// application's value for the socket.
+    fn socket(
+        &mut self,
+        cx: &mut EventCx<'_, H>,
+        who: TransferId,
+        s: SocketKey,
+        what: SocketWhat,
+        assigned: Option<H::Socket>,
+    ) -> Result<(), Abort> {
+        let _ = (cx, who, s, what, assigned);
+        Ok(())
+    }
+
+    /// Whether `socket` is wanted. Without it the multi keeps no record of
+    /// the sockets, as C without a socket callback.
+    fn wants_sockets(&self) -> bool {
         false
     }
 }
@@ -158,6 +187,9 @@ pub struct Message<'a, H: Host> {
 pub enum SocketEvent {
     /// The timer the multi asked for ran out (`CURL_SOCKET_TIMEOUT`).
     Timeout,
+    /// Something happened on a socket the multi asked to watch; one it
+    /// does not know runs only what is due.
+    Socket(SocketKey),
 }
 
 pub struct Multi<H: Host = NoHost> {
@@ -169,6 +201,7 @@ pub struct Multi<H: Host = NoHost> {
     /// Notifications are being delivered.
     delivering: bool,
     pool: Pool,
+    sockets: SocketTable<H::Socket>,
     clock: Box<dyn Clock>,
     net: Box<dyn Net>,
     waker: Option<TryArc<Waker>>,
@@ -189,6 +222,7 @@ impl<H: Host> Multi<H> {
             notify: NotifyQueue::default(),
             delivering: false,
             pool: Pool::new()?,
+            sockets: SocketTable::new(),
             clock: env.clock,
             net: env.net,
             waker: env.waker,
@@ -306,7 +340,10 @@ impl<H: Host> Multi<H> {
             .take()
             .expect("no transfer is out while the multi is called");
         self.counts.removed(run.state.is_completed());
-        self.abandon(id, run);
+        self.abandon(id, run, ev);
+        // Waiting on nothing now; C does not mind the callback's answer
+        // (`Curl_multi_ev_xfer_done`).
+        let _ = self.tell_wants(id, None, ev);
         let slot = self.slots.remove(id).expect("still in the multi");
         self.timers.remove(id);
         self.dirty.remove(id.index());
@@ -332,7 +369,7 @@ impl<H: Host> Multi<H> {
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
             cursor = Some(id);
-            self.run_single(id, now);
+            self.run_single(id, now, ev);
         }
         self.dispatch(ev);
         // Timers due by the pass's start have been dealt with.
@@ -363,14 +400,22 @@ impl<H: Host> Multi<H> {
             // The application ran its timer: tell it the next one even if
             // unchanged.
             SocketEvent::Timeout => self.announce.forget(),
+            // Every transfer waiting on it runs (`Curl_multi_ev_dirty_xfers`).
+            SocketEvent::Socket(key) => {
+                for id in self.sockets.users(key) {
+                    self.dirty.insert(id.index());
+                }
+            }
         }
         let now = self.clock.now();
         self.mark_expired_dirty(now);
-        if self.run_dirty(now) > 0 {
+        // A socket callback's abort ends the call before notifications and
+        // the timer (`multi_socket`'s `goto out`).
+        if self.run_dirty(now, ev)? > 0 {
             // Running took time: catch what came due meanwhile, once.
             let now = self.clock.now();
             self.mark_expired_dirty(now);
-            self.run_dirty(now);
+            self.run_dirty(now, ev)?;
         }
         self.dispatch(ev);
         self.update_timer(ev)?;
@@ -431,21 +476,28 @@ impl<H: Host> Multi<H> {
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<(), ErrorKind> {
         let now = self.clock.now();
-        let mut rest = EngineRest {
-            slots: &mut self.slots,
-            pool: &mut self.pool,
-            net: &mut *self.net,
-            dirty: &mut self.dirty,
-            now,
-        };
-        let result = pause_transfer(&mut rest, id, req);
+        let was = self.slots.get(id).map(|s| s.pause);
+        let result = pause_transfer(&mut self.rest(now, ev), id, req);
         // The timer hears only of a change: one that leaves the transfer
         // running, which it marks dirty (easy.c:1229).
         let timer = self
             .update_timer(ev)
             .map_err(|_| ErrorKind::AbortedByCallback);
+        // Then the socket callback, of a change to a transfer not done
+        // (easy.c:1233).
+        let changed = self.slots.get(id).map(|s| s.pause) != was;
+        let sockets = if result.is_ok()
+            && timer.is_ok()
+            && changed
+            && !self.run_of(id).state.is_completed()
+        {
+            self.assess(id, ev)
+                .map_err(|_| ErrorKind::AbortedByCallback)
+        } else {
+            Ok(())
+        };
         self.check();
-        result.and(timer)
+        result.and(timer).and(sockets)
     }
 
     /// The transfer after `after` in the multi, or the first; transfers
@@ -477,20 +529,88 @@ impl<H: Host> Multi<H> {
         pollsets(&self.slots, &self.pool, f);
     }
 
+    /// The multi but for the runs out of their slots, for a step or a
+    /// call-out.
+    fn rest<'a>(&'a mut self, now: Instant, ev: &'a mut dyn MultiEvents<H>) -> EngineRest<'a, H> {
+        EngineRest {
+            slots: &mut self.slots,
+            pool: &mut self.pool,
+            net: &mut *self.net,
+            dirty: &mut self.dirty,
+            sockets: &mut self.sockets,
+            notify: &mut self.notify,
+            counts: &self.counts,
+            life: &mut self.life,
+            events: ev,
+            now,
+        }
+    }
+
+    /// Tell the socket callback what transfer `id` now waits on
+    /// (`Curl_multi_ev_assess_xfer`): nothing once it is out of the multi.
+    fn assess(
+        &mut self,
+        id: TransferId,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), MultiErrorKind> {
+        if !ev.wants_sockets() {
+            return Ok(());
+        }
+        let wants = self.slots.get(id).and_then(|slot| {
+            let run = slot
+                .run
+                .as_ref()
+                .expect("no transfer is out while the multi is called");
+            run.state
+                .pollset(&self.pool, slot.pause)
+                .map(|(s, events)| (s.key(), events))
+        });
+        self.tell_wants(id, wants, ev)
+    }
+
+    /// Tell the socket callback that transfer `id` waits on `wants`.
+    fn tell_wants(
+        &mut self,
+        id: TransferId,
+        wants: Option<(SocketKey, Events)>,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<(), MultiErrorKind> {
+        if !ev.wants_sockets() {
+            return Ok(());
+        }
+        let mut changes = Vec::new();
+        self.sockets
+            .assess(id, wants.as_slice(), &mut changes)
+            .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
+        cx::tell(
+            &changes,
+            id,
+            ev,
+            &mut cx::Telling {
+                slots: &mut self.slots,
+                notify: &mut self.notify,
+                counts: &self.counts,
+                sockets: &mut self.sockets,
+                life: &mut self.life,
+            },
+        )
+        .map_err(|Abort| MultiErrorKind::AbortedByCallback)
+    }
+
+    /// Tag socket `s` with the application's value, handed back to the
+    /// socket callback (`curl_multi_assign`).
+    pub fn assign(&mut self, s: SocketKey, value: Option<H::Socket>) -> Result<(), UnknownSocket> {
+        self.sockets.assign(s, value)
+    }
+
     /// Give back the connection of transfer `id`, whose `Run` is out of
     /// its slot, as a premature end: traced to the transfer, as C's
     /// `multi_done` runs with it still attached.
-    fn abandon(&mut self, id: TransferId, run: Box<Run>) {
+    fn abandon(&mut self, id: TransferId, run: Box<Run>, ev: &mut dyn MultiEvents<H>) {
         let now = self.clock.now();
         let mut cx = StepCx {
             me: id,
-            rest: EngineRest {
-                slots: &mut self.slots,
-                pool: &mut self.pool,
-                net: &mut *self.net,
-                dirty: &mut self.dirty,
-                now,
-            },
+            rest: self.rest(now, ev),
         };
         run.state.abandon(&mut cx);
     }
@@ -506,22 +626,17 @@ impl<H: Host> Multi<H> {
     ) -> R {
         let run = self.slots.get_mut(id).expect("in the multi").run.take();
         let now = self.clock.now();
+        let mut quiet = NoEvents;
         let mut cx = StepCx {
             me: id,
-            rest: EngineRest {
-                slots: &mut self.slots,
-                pool: &mut self.pool,
-                net: &mut *self.net,
-                dirty: &mut self.dirty,
-                now,
-            },
+            rest: self.rest(now, &mut quiet),
         };
         let r = f(&mut cx);
         self.slots.get_mut(id).expect("still in the multi").run = run;
         r
     }
 
-    fn run_single(&mut self, id: TransferId, now: Instant) {
+    fn run_single(&mut self, id: TransferId, now: Instant, ev: &mut dyn MultiEvents<H>) {
         self.dirty.remove(id.index());
         let slot = self.slots.get_mut(id).expect("a transfer in the multi");
         if slot.run.as_ref().is_some_and(|r| r.state.is_completed()) {
@@ -539,13 +654,7 @@ impl<H: Host> Multi<H> {
         }
         let mut cx = StepCx {
             me: id,
-            rest: EngineRest {
-                slots: &mut self.slots,
-                pool: &mut self.pool,
-                net: &mut *self.net,
-                dirty: &mut self.dirty,
-                now,
-            },
+            rest: self.rest(now, ev),
         };
         while state::step(&mut run, &mut cx) == Wake::Again {}
         let completed = run.state.is_completed();
@@ -616,7 +725,11 @@ impl<H: Host> Multi<H> {
 
     /// Run the dirty transfers in id order, those made dirty meanwhile
     /// included (`multi_run_dirty`). Returns how many ran.
-    fn run_dirty(&mut self, now: Instant) -> u32 {
+    fn run_dirty(
+        &mut self,
+        now: Instant,
+        ev: &mut dyn MultiEvents<H>,
+    ) -> Result<u32, MultiErrorKind> {
         let mut ran = 0;
         let mut from = 0;
         while let Some(row) = self.dirty.first_from(from) {
@@ -630,9 +743,10 @@ impl<H: Host> Multi<H> {
                 continue;
             }
             ran += 1;
-            self.run_single(id, now);
+            self.run_single(id, now, ev);
+            self.assess(id, ev)?;
         }
-        ran
+        Ok(ran)
     }
 
     /// Mark every transfer with a timer due by `now` dirty
@@ -687,6 +801,7 @@ impl<H: Host> Multi<H> {
             slots: &mut self.slots,
             notify: &mut self.notify,
             counts: self.counts.get(),
+            sockets: &mut self.sockets,
         };
         ev.timer(&mut cx, change).map_err(|Abort| {
             self.life = Life::Dead;
@@ -798,13 +913,7 @@ fn pause_transfer<H: Host>(
     {
         let mut cx = StepCx {
             me: id,
-            rest: EngineRest {
-                slots: &mut *rest.slots,
-                pool: &mut *rest.pool,
-                net: &mut *rest.net,
-                dirty: &mut *rest.dirty,
-                now: rest.now,
-            },
+            rest: rest.reborrow(),
         };
         let replayed = state::flush(&mut run, &mut cx);
         rest.slots.get_mut(id).expect("still in the multi").run = Some(run);
@@ -822,7 +931,7 @@ impl<H: Host> Drop for Multi<H> {
             cursor = Some(id);
             let slot = self.slots.get_mut(id).expect("just found");
             if let Some(run) = slot.run.take() {
-                self.abandon(id, run);
+                self.abandon(id, run, &mut NoEvents);
             }
         }
         self.pool.close_idle(&mut *self.net);
@@ -831,5 +940,7 @@ impl<H: Host> Drop for Multi<H> {
 
 #[cfg(test)]
 mod props;
+#[cfg(test)]
+mod socket_tests;
 #[cfg(test)]
 mod tests;

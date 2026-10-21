@@ -20,6 +20,11 @@ pub use curl_os::wake::Waker;
 pub struct SocketKey(i32);
 
 impl SocketKey {
+    /// The socket C calls `n`, as the application names it back.
+    pub fn new(n: i32) -> SocketKey {
+        SocketKey(n)
+    }
+
     pub fn get(self) -> i32 {
         self.0
     }

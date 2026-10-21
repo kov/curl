@@ -1560,3 +1560,106 @@ fn the_transfers_sockets_are_listed() {
         assert_eq!(curl_multi_cleanup(m), CURLM_OK);
     }
 }
+
+/// What the socket function saw, and the multi it assigns on.
+struct SocketLog {
+    m: *mut CURLM,
+    calls: Vec<(*mut CURL, c_int, c_int, *mut c_void)>,
+    abort: bool,
+}
+
+unsafe extern "C" fn socket_fn(
+    easy: *mut CURL,
+    s: ffi::curl_socket_t,
+    what: c_int,
+    data: *mut c_void,
+    socketp: *mut c_void,
+) -> c_int {
+    // SAFETY: the test's log, given as the socket data.
+    let log = unsafe { &mut *data.cast::<SocketLog>() };
+    log.calls.push((easy, s, what, socketp));
+    if socketp.is_null() {
+        // SAFETY: inside the multi's socket function, as C allows.
+        let rc = unsafe { crate::multi::curl_multi_assign(log.m, s, ptr::from_mut(log).cast()) };
+        assert_eq!(rc, CURLM_OK);
+    }
+    if log.abort { -1 } else { 0 }
+}
+
+/// The socket function hears of a transfer's socket from `socket_action`
+/// with the handle and the data, keeps what `curl_multi_assign` tags it
+/// with, and hears it removed when the transfer is; -1 aborts.
+#[test]
+fn the_socket_function_is_called_as_c_calls_it() {
+    use crate::ffi::{
+        CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT, CURLM_ABORTED_BY_CALLBACK,
+        CURLM_BAD_SOCKET,
+    };
+    use crate::multi::{ShimMulti, curl_multi_assign, curl_multi_socket_action};
+    use curl_core::conn::io::{FakeNet, Peer};
+    use curl_core::time::ManualClock;
+
+    let clock = ManualClock::new().unwrap();
+    let silent = std::net::SocketAddr::from(([127, 0, 0, 1], 3));
+    let net = FakeNet::new(clock).with_peer(silent, Peer::Silent);
+    let m: *mut CURLM = ShimMulti::boxed_with(Box::new(net))
+        .unwrap()
+        .as_ptr()
+        .cast();
+    let mut log = SocketLog {
+        m,
+        calls: Vec::new(),
+        abort: false,
+    };
+    let me: *mut c_void = ptr::from_mut(&mut log).cast();
+    let c = curl_easy_init();
+    let url = c"tcp://127.0.0.1:3/";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let mut running_now: c_int = -1;
+    // SAFETY: a live multi and handle; the log outlives them.
+    unsafe {
+        let f: ffi::curl_socket_callback = Some(socket_fn);
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_SOCKETFUNCTION, f),
+            CURLM_OK
+        );
+        assert_eq!(curl_multi_setopt(m, ffi::CURLMOPT_SOCKETDATA, me), CURLM_OK);
+        assert_eq!(
+            curl_multi_assign(m, 1000, me),
+            CURLM_BAD_SOCKET,
+            "not yet watched"
+        );
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        let rc = curl_multi_socket_action(m, CURL_SOCKET_TIMEOUT, 0, &raw mut running_now);
+        assert_eq!((rc, running_now), (CURLM_OK, 1));
+        let rc = curl_multi_socket_action(m, 1000, 0, &raw mut running_now);
+        assert_eq!((rc, running_now), (CURLM_OK, 1), "still connecting");
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+    }
+    assert_eq!(
+        log.calls,
+        [
+            (c, 1000, CURL_POLL_OUT, ptr::null_mut()),
+            (c, 1000, CURL_POLL_REMOVE, me),
+        ]
+    );
+    // An abort ends the call with the count still told.
+    log.calls.clear();
+    log.abort = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        running_now = -1;
+        let rc = curl_multi_socket_action(m, CURL_SOCKET_TIMEOUT, 0, &raw mut running_now);
+        assert_eq!((rc, running_now), (CURLM_ABORTED_BY_CALLBACK, 1));
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+    }
+    // The aborted announcement is not recorded, so no removal follows
+    // (`mev_sh_entry_update` returns before marking it announced).
+    assert_eq!(log.calls.len(), 1);
+}

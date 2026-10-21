@@ -15,11 +15,9 @@ witness: curl-core multi::tests::completions_are_read_in_id_order
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::removing_a_running_transfer_gives_its_connection_back
 --- old
-        self.abandon(id, run);
-        let slot = self.slots.remove(id).expect("still in the multi");
+        self.abandon(id, run, ev);
 --- new
         std::mem::forget(run);
-        let slot = self.slots.remove(id).expect("still in the multi");
 
 === the timer callback is not called inside add
 file: crates/curl-core/src/multi/mod.rs
@@ -137,10 +135,10 @@ witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- old
         let now = self.clock.now();
         self.mark_expired_dirty(now);
-        if self.run_dirty(now) > 0 {
+        // A socket callback's abort
 --- new
         let now = self.clock.now();
-        if self.run_dirty(now) > 0 {
+        // A socket callback's abort
 
 === a transfer's message is announced before the transfer is done
 file: crates/curl-core/src/multi/mod.rs
@@ -199,22 +197,22 @@ witness: curl-core multi::tests::info_read_is_notified_again_once_every_message_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::socket_action_delivers_notifications
 --- old
-            self.run_dirty(now);
+            self.run_dirty(now, ev)?;
         }
         self.dispatch(ev);
 --- new
-            self.run_dirty(now);
+            self.run_dirty(now, ev)?;
         }
 
 === perform never delivers notifications
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
 --- old
-            self.run_single(id, now);
+            self.run_single(id, now, ev);
         }
         self.dispatch(ev);
 --- new
-            self.run_single(id, now);
+            self.run_single(id, now, ev);
         }
 
 === the timer callback's context reads no messages

@@ -253,8 +253,9 @@ fn release<H: Host>(
     finish: Finish,
     origin: Option<&Origin>,
 ) {
-    let rest = &mut cx.rest;
-    match rest.pool.release(lease, finish, &mut *rest.net, rest.now) {
+    let now = cx.rest.now;
+    let (pool, mut net) = cx.rest.pool_net(cx.me);
+    match pool.release(lease, finish, &mut net, now) {
         Released::Idle(n) => {
             let origin = origin.expect("a connection kept has a host");
             let (host, port) = (origin.shown(), origin.port);
@@ -599,8 +600,8 @@ fn connecting<H: Host>(
     if StepCx::pause(cx).recv != RecvPause::Running {
         return (TransferState::Connecting(c), Wake::Idle);
     }
-    let rest = &mut cx.rest;
-    match rest.pool.connect(&c.lease, &mut *rest.net, now) {
+    let (pool, mut net) = cx.rest.pool_net(cx.me);
+    match pool.connect(&c.lease, &mut net, now) {
         Ok(Connected::Connecting(Progress::Trying(to))) => {
             // A literal's name is known at once.
             cx.mark(Timer::NameLookup);
@@ -890,10 +891,9 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
         max_age: limits.max_age.map(TimeLimit::duration),
     };
     let mut notes = Vec::new();
-    let rest = &mut cx.rest;
-    let acquired = rest
-        .pool
-        .acquire(route, rules, &mut *rest.net, rest.now, &mut notes)?;
+    let now = cx.rest.now;
+    let (pool, mut net) = cx.rest.pool_net(cx.me);
+    let acquired = pool.acquire(route, rules, &mut net, now, &mut notes)?;
     for note in notes {
         match note {
             PoolNote::IdleTooLong { idle_ms, max_ms } => trace::info(

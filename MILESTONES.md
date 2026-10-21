@@ -209,10 +209,13 @@ yet meet.
       multi that goes, traces "closing connection #N". Plain TCP closes at once, as
       `cf_socket_shutdown` is done in one call, so `ShutdownSet` comes with TLS; the 1 KB drain
       before the close comes with step 12's reads.
-    - **d. The socket callback.** **To do.** `SocketTable`, `Host::Socket`,
+    - **d. The socket callback.** **Done.** `SocketTable`, `Host::Socket`,
       `MultiEvents::socket`, `socket_action` on a socket, `assign`, each transfer's pollset
       re-assessed after it runs in `socket_action` and inside `remove` and `pause`, and REMOVE
-      before a socket closes (`Curl_multi_will_close`, before CLOSESOCKETFUNCTION).
+      before a socket closes through the pool's `Announcing` network; the shim's
+      SOCKETFUNCTION, SOCKETDATA and `curl_multi_assign`. Left: the socket callback inside a
+      pause from a transfer's own handler (with e), `curl_multi_assign` from a transfer's
+      handler (BAD_SOCKET until `TransferCx` can reach the table), and `curl_multi_socket_all`.
     - **e. The pollset's basis.** **To do.** Which directions a transfer wants, so a pause
       blocks it only when every direction it wants is paused (`Curl_xfer_is_blocked`); until
       then `pause_transfer` judges the receiving direction alone.

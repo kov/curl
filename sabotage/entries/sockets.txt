@@ -1,0 +1,77 @@
+# The socket callback: SocketTable and its telling
+# (crates/curl-core/src/multi/sockets.rs, cx.rs, mod.rs) and the shim's
+# socket function, against multi_ev.c.
+
+=== a transfer that ran in socket_action is not assessed
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::socket_tests::a_transfer_s_socket_is_announced_and_removed
+--- old
+            self.assess(id, ev)?;
+--- new
+
+=== a socket's event runs none of its transfers
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::socket_tests::a_transfer_s_socket_is_announced_and_removed
+--- old
+                for id in self.sockets.users(key) {
+                    self.dirty.insert(id.index());
+                }
+--- new
+
+=== an announcement is not recorded as told
+file: crates/curl-core/src/multi/sockets.rs
+witness: curl-core multi::socket_tests::a_transfer_s_socket_is_announced_and_removed
+--- old
+            entry.told = Some(entry.wanted());
+--- new
+
+=== a socket is removed after it closes
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::a_socket_is_removed_before_it_closes
+--- old
+        self.forget(socket.key());
+        self.net.close(socket);
+--- new
+        let key = socket.key();
+        self.net.close(socket);
+        self.forget(key);
+
+=== a pause does not tell the socket callback
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::socket_tests::a_pause_is_heard_inside_the_call
+--- old
+            self.assess(id, ev)
+                .map_err(|_| ErrorKind::AbortedByCallback)
+--- new
+            Ok(())
+
+=== a pause that changes nothing tells the socket callback
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::socket_tests::a_pause_is_heard_inside_the_call
+--- old
+            && changed
+            && !self.run_of(id).state.is_completed()
+--- new
+            && !self.run_of(id).state.is_completed()
+
+=== a removed transfer stays on its sockets
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::socket_tests::a_removed_transfer_leaves_its_sockets
+--- old
+        let _ = self.tell_wants(id, None, ev);
+--- new
+
+=== an aborting socket callback leaves the multi alive
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::an_aborting_socket_callback_kills_the_multi
+--- old
+            *t.life = Life::Dead;
+--- new
+
+=== the shim tells a writing socket as reading
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_socket_function_is_called_as_c_calls_it
+--- old
+            SocketWhat::Out => ffi::CURL_POLL_OUT,
+--- new
+            SocketWhat::Out => ffi::CURL_POLL_IN,

@@ -16,12 +16,12 @@ use std::os::fd::BorrowedFd;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
-use curl_core::conn::io::{Events, Net, PollFd, SystemNet, Waker};
+use curl_core::conn::io::{Events, Net, PollFd, SocketKey, SystemNet, Waker};
 use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::{
     Abort, Env, EventCx, Host, Message, Multi, MultiEvents, Notification, NotifyCx, NotifyKind,
-    SocketEvent, TimerChange, WaitMode,
+    SocketEvent, SocketWhat, TimerChange, TransferId, UnknownSocket, WaitMode,
 };
 use curl_core::time::SystemClock;
 
@@ -32,7 +32,7 @@ use crate::ffi::{
     CURLM_BAD_EASY_HANDLE, CURLM_BAD_FUNCTION_ARGUMENT, CURLM_BAD_HANDLE, CURLM_OK,
     CURLM_OUT_OF_MEMORY, CURLM_RECURSIVE_API_CALL, CURLM_UNKNOWN_OPTION, CURLM_WAKEUP_FAILURE,
     CURLMSG_DONE, CURLMcode, CURLMinfo_offt, CURLMoption, CURLMsg, curl_multi_timer_callback,
-    curl_notify_callback, curl_off_t, curl_socket_t, curl_waitfd,
+    curl_notify_callback, curl_off_t, curl_socket_callback, curl_socket_t, curl_waitfd,
 };
 use crate::gate::{Frame, MultiCall, MultiEntry, MultiStack, Reach, Recursive};
 use crate::setopt::function;
@@ -45,11 +45,15 @@ pub(crate) struct CHost;
 
 impl Host for CHost {
     type Transfer = NonNull<ShimEasy>;
+    /// The socket's `socketp` (`curl_multi_assign`).
+    type Socket = *mut c_void;
 }
 
 /// The application's multi callbacks, as setopt left them.
 #[derive(Clone, Copy)]
 struct MultiCallbacks {
+    socket: curl_socket_callback,
+    socket_data: *mut c_void,
     timer: curl_multi_timer_callback,
     timer_data: *mut c_void,
     notify: curl_notify_callback,
@@ -93,6 +97,8 @@ impl ShimMulti {
             core: UnsafeCell::new(Multi::new(env)?),
             waker,
             cb: Cell::new(MultiCallbacks {
+                socket: None,
+                socket_data: ptr::null_mut(),
                 timer: None,
                 timer_data: ptr::null_mut(),
                 notify: None,
@@ -245,6 +251,62 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
     fn wants_timer(&self) -> bool {
         self.multi.cb.get().timer.is_some()
     }
+
+    fn socket(
+        &mut self,
+        cx: &mut EventCx<'_, CHost>,
+        who: TransferId,
+        s: SocketKey,
+        what: SocketWhat,
+        assigned: Option<*mut c_void>,
+    ) -> Result<(), Abort> {
+        let cb = self.multi.cb.get();
+        let Some(f) = cb.socket else { return Ok(()) };
+        let what = match what {
+            SocketWhat::In => ffi::CURL_POLL_IN,
+            SocketWhat::Out => ffi::CURL_POLL_OUT,
+            SocketWhat::InOut => ffi::CURL_POLL_INOUT,
+            SocketWhat::Remove => ffi::CURL_POLL_REMOVE,
+        };
+        let easy: *mut CURL = cx.owner(who).map_or(ptr::null_mut(), |e| e.as_ptr().cast());
+        let socketp = assigned.unwrap_or(ptr::null_mut());
+        let frame = Frame::Event(NonNull::from(cx).cast());
+        // `cx` is not used again until `lend` returns.
+        let rc = self.multi.stack.lend(frame, || {
+            // SAFETY: the application's socket function takes its data.
+            unsafe { f(easy, s.get(), what, cb.socket_data, socketp) }
+        });
+        if crate::callbacks::aborts(rc) {
+            Err(Abort)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn wants_sockets(&self) -> bool {
+        self.multi.cb.get().socket.is_some()
+    }
+}
+
+/// The application's callbacks as `curl_multi_cleanup` calls them: the
+/// socket callback only.
+struct Cleanup<'a>(ShimEvents<'a>);
+
+impl MultiEvents<CHost> for Cleanup<'_> {
+    fn socket(
+        &mut self,
+        cx: &mut EventCx<'_, CHost>,
+        who: TransferId,
+        s: SocketKey,
+        what: SocketWhat,
+        assigned: Option<*mut c_void>,
+    ) -> Result<(), Abort> {
+        self.0.socket(cx, who, s, what, assigned)
+    }
+
+    fn wants_sockets(&self) -> bool {
+        self.0.wants_sockets()
+    }
 }
 
 /// What adds and removes transfers: the multi's core, or the context a
@@ -342,11 +404,11 @@ pub unsafe extern "C" fn curl_multi_cleanup(m: *mut CURLM) -> CURLMcode {
     // SAFETY: cleanup does not recurse, so nothing else runs on the multi.
     let core = unsafe { multi.core_mut() };
     // The handles stay the application's, on their own again; the timer
-    // is not told (multi.c's cleanup removes nothing through it).
+    // is not told (multi.c's cleanup removes nothing through it), but the
+    // socket callback hears of each socket that closes.
+    let mut ev = Cleanup(ShimEvents::new(multi));
     while let Some(id) = core.next_transfer(None) {
-        let removed = core
-            .remove(id, &mut curl_core::multi::NoEvents)
-            .expect("just found");
+        let removed = core.remove(id, &mut ev).expect("just found");
         // SAFETY: a transfer's owner is a live handle while it is added.
         unsafe { removed.owner.as_ref() }.return_home(removed.easy);
     }
@@ -472,24 +534,62 @@ pub unsafe extern "C" fn curl_multi_socket_action(
         matches!(entry.reach, Reach::Direct),
         "socket_action does not recurse"
     );
-    if s != CURL_SOCKET_TIMEOUT {
-        // No transfer owns a socket before connections exist: C ignores
-        // a socket it does not know and runs the timers.
-    }
+    let what = if s == CURL_SOCKET_TIMEOUT {
+        SocketEvent::Timeout
+    } else {
+        SocketEvent::Socket(SocketKey::new(s))
+    };
     // SAFETY: admitted on `m`, which nothing else runs on.
     let multi = unsafe { multi(m) };
     // SAFETY: as above.
-    let result = unsafe { multi.core_mut() }
-        .socket_action(SocketEvent::Timeout, &mut ShimEvents::new(multi));
+    let core = unsafe { multi.core_mut() };
+    let result = core.socket_action(what, &mut ShimEvents::new(multi));
+    // Told even when a callback aborted (`multi_socket`'s `out`).
+    // SAFETY: as the caller guarantees.
+    unsafe { put(running_handles, running(core.counts().running)) };
     match result {
-        Ok(n) => {
-            // SAFETY: as the caller guarantees.
-            unsafe { put(running_handles, running(n)) };
-            CURLM_OK
-        }
+        Ok(_) => CURLM_OK,
         Err(kind) => multi_code(kind),
     }
 }
+
+/// # Safety
+///
+/// `m` is NULL or a live multi.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_multi_assign(
+    m: *mut CURLM,
+    s: curl_socket_t,
+    socketp: *mut c_void,
+) -> CURLMcode {
+    // SAFETY: as the caller guarantees.
+    let entry = match unsafe { enter(m, MultiCall::Assign) } {
+        Ok(entry) => entry,
+        Err(code) => return code,
+    };
+    let key = SocketKey::new(s);
+    let value = (!socketp.is_null()).then_some(socketp);
+    let assigned = match entry.reach {
+        Reach::Direct => {
+            // SAFETY: admitted on `m`, which nothing else runs on.
+            let multi = unsafe { multi(m) };
+            // SAFETY: as above.
+            unsafe { multi.core_mut() }.assign(key, value)
+        }
+        // SAFETY: the callback lent its context and does not use it until
+        // it returns.
+        Reach::Frame(Frame::Event(cx)) => unsafe { &mut *cx.as_ptr() }.assign(key, value),
+        // SAFETY: as above.
+        Reach::Frame(Frame::Notify(cx)) => unsafe { &mut *cx.as_ptr() }.assign(key, value),
+        // A transfer's handler reaches only its transfers.
+        Reach::Frame(Frame::Transfer(_)) => Err(UnknownSocket),
+    };
+    match assigned {
+        Ok(()) => CURLM_OK,
+        Err(UnknownSocket) => ffi::CURLM_BAD_SOCKET,
+    }
+}
+const _: ffi::proto::curl_multi_assign = curl_multi_assign;
 const _: ffi::proto::curl_multi_socket_action = curl_multi_socket_action;
 
 /// The message to point the application at, kept in the transfer's
@@ -719,6 +819,9 @@ pub unsafe extern "C" fn curl_multi_setopt(
     // options, and a function of the option's type.
     let p = unsafe { args.next_arg::<*mut c_void>() };
     match option {
+        // SAFETY: as above.
+        ffi::CURLMOPT_SOCKETFUNCTION => cb.socket = unsafe { function(p) },
+        ffi::CURLMOPT_SOCKETDATA => cb.socket_data = p,
         // SAFETY: as above.
         ffi::CURLMOPT_TIMERFUNCTION => cb.timer = unsafe { function(p) },
         ffi::CURLMOPT_TIMERDATA => cb.timer_data = p,

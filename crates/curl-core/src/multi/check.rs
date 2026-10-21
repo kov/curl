@@ -71,6 +71,13 @@ impl<H: Host> Multi<H> {
             leases,
             "the pool's leased connections are not the transfers' leases"
         );
+        // Removal takes a transfer off every socket (`Curl_multi_ev_xfer_done`).
+        self.sockets.each_user(|id, key| {
+            assert!(
+                self.slots.get(id).is_some(),
+                "{key:?} names {id:?}, which is not in the multi"
+            );
+        });
         let mut row = 0;
         while let Some(r) = self.dirty.first_from(row) {
             assert!(

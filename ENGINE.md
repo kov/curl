@@ -286,7 +286,7 @@ multi.c:495), by `Drop`.
 ### 2.7 Multi, slots and the transfer
 
 ```rust
-pub trait Host { type Transfer; type Socket; }   // app values per transfer and per socket
+pub trait Host { type Transfer; type Socket: Copy; } // app values per transfer and per socket
 pub struct NoHost;                                // Host<Transfer = (), Socket = ()>
 
 pub struct Multi<H: Host = NoHost> {
@@ -294,7 +294,7 @@ pub struct Multi<H: Host = NoHost> {
     sched: Sched,                    // dirty set, pending cursor, Counts
     timers: TimerQueue,              // one entry per slot, reserved at add
     announce: TimerAnnounce,         // what the timer callback was last told (unit 3230)
-    sockets: SocketTable<H>,         // fd → users, announced interest, assigned app value
+    sockets: SocketTable<H::Socket>, // fd → users and what each waits for, told, assigned value
     notify: NotifyQueue,
     pool: PoolRef,                   // own, or the share's
     dns: DnsRef,
@@ -315,7 +315,6 @@ pub(crate) struct Slot<H: Host> {
 pub(crate) struct TransferShared {
     pause: Pause,
     speedometer: Speedometer,        // beside the pause, which starts it over
-    announced: PollSet,              // what this transfer last contributed to the SocketTable
 }
 pub(crate) struct Run {              // created at add, dropped at removal
     state: TransferState,
@@ -350,8 +349,8 @@ pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, p: &PrereqIn
 pub trait Rewind        { fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>; }
 pub struct Handler<T: ?Sized>(TryRc<Box<T>>);     // Clone shares it; Handler::write(h) etc. box one
 pub trait MultiEvents<H: Host> {
-    fn socket(&mut self, cx: &mut EventCx<'_, H>, who: SocketOwner<'_, H>, s: SocketKey,
-              what: SocketWhat, assigned: Option<&H::Socket>) -> Result<(), Abort>;
+    fn socket(&mut self, cx: &mut EventCx<'_, H>, who: TransferId, s: SocketKey,
+              what: SocketWhat, assigned: Option<H::Socket>) -> Result<(), Abort>;
     fn timer(&mut self, cx: &mut EventCx<'_, H>, t: TimerChange) -> Result<(), Abort>;
     fn notify(&mut self, cx: &mut NotifyCx<'_, H>, n: Notification);
     fn wants_sockets(&self) -> bool;     // C keeps socket bookkeeping only with socket_cb set
@@ -581,7 +580,20 @@ Dropping a `Multi` removes every transfer still in it (`curl_multi_cleanup`).
 3. mark expired timer entries dirty, then `run_dirty(now)`, which after each transfer
    re-assesses that transfer's pollset and calls the socket callback for the changes, at once;
 4. if anything ran: `now2 = clock.now()`, expire and `run_dirty(now2)` exactly once more;
-5. `schedule_pending` if flagged, dispatch notifications, `timer_update`.
+5. `schedule_pending` if flagged, dispatch notifications, `timer_update`. A socket callback's
+   abort ends the call after step 3 or 4 with `AbortedByCallback`, before notifications and the
+   timer, as `multi_socket`'s `goto out`.
+
+The `SocketTable` (`multi/sockets.rs`, C's `multi_ev.c`) is the one record of who waits on each
+socket: an entry holds its users and what each waits for, what the application was last told,
+and the value it assigned; a transfer keeps no copy and is found by asking the table. It is kept
+only while the events want sockets, as C keeps it only with a socket callback. A transfer is
+assessed after it runs in `socket_action`, inside `pause` when the pause changed and the
+transfer is not done (easy.c:1233, after the timer), and with nothing to wait on inside `remove`
+(`Curl_multi_ev_xfer_done`); `perform` assesses nothing. A change is told when the sockets'
+users together want something else than the application last heard; an announcement whose
+callback aborts is not recorded, so no REMOVE follows it. The shim's `curl_multi_cleanup` tells
+the socket callback but not the timer.
 
 **`wait`** (multi.c:1522) polls the multi's sockets, the application's `extra` descriptors and,
 when the wait will be one (`WaitMode::Poll`, or anything else to poll), the waker, through
@@ -918,9 +930,12 @@ impl Pool {
   close_notify, TCP drain of up to 1 KB, scheme disconnect handler once) or is terminated at once
   (aborted, CONNECT_ONLY, share-owned pool). Closing connections count toward host and total
   limits, as in C.
-- **Socket close order** is enforced by `Pool::close`: forget the socket in the `SocketTable`
-  first (socket callback REMOVE, C's `Curl_multi_will_close`), then drop the transport through
-  `Net::close`, which the shim maps to CLOSESOCKETFUNCTION.
+- **Socket close order** is enforced by the network the pool is handed: inside a multi it is
+  `Announcing` (`EngineRest::pool_net`), whose `close` forgets the socket in the `SocketTable`
+  first (socket callback REMOVE if the application was told of it, C's
+  `Curl_multi_will_close`), then closes it through `Net::close`, which the shim maps to
+  CLOSESOCKETFUNCTION. Every pool path that closes a socket goes through it, so none can skip
+  the order.
 
 ### 4.7 No admin easy
 

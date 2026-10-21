@@ -4,8 +4,12 @@
 
 use curl_alloc::OutOfMemory;
 
+use std::io;
+use std::net::SocketAddr;
+use std::time::Duration;
+
 use crate::conn::Pool;
-use crate::conn::io::Net;
+use crate::conn::io::{Connect, Net, PollFd, Socket, SocketKey, SocketPoll};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
@@ -15,10 +19,11 @@ use crate::report::TransferReport;
 use crate::time::Instant;
 
 use super::notify::{NotifyKind, NotifyQueue};
-use super::sched::RowSet;
+use super::sched::{RowSet, Tally};
+use super::sockets::{Change, SocketTable, SocketWhat, UnknownSocket};
 use super::{
-    AddError, Counts, Host, Message, Multi, MultiEvents, Removed, Slot, Transfer, TransferId,
-    read_message,
+    Abort, AddError, Counts, Host, Life, Message, Multi, MultiEvents, Removed, Slot, Transfer,
+    TransferId, read_message,
 };
 
 /// The multi minus the transfer being stepped, whose `Run` is out of its
@@ -29,8 +34,146 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) pool: &'a mut Pool,
     pub(super) net: &'a mut dyn Net,
     pub(super) dirty: &'a mut RowSet,
+    pub(super) sockets: &'a mut SocketTable<H::Socket>,
+    pub(super) notify: &'a mut NotifyQueue,
+    pub(super) counts: &'a Tally,
+    pub(super) life: &'a mut Life,
+    /// What the multi was driven with: the socket callback hears of a
+    /// socket closing.
+    pub(super) events: &'a mut dyn MultiEvents<H>,
     /// The pass's time, read once.
     pub(super) now: Instant,
+}
+
+impl<H: Host> EngineRest<'_, H> {
+    /// The same, borrowed again.
+    pub(super) fn reborrow(&mut self) -> EngineRest<'_, H> {
+        EngineRest {
+            slots: &mut *self.slots,
+            pool: &mut *self.pool,
+            net: &mut *self.net,
+            dirty: &mut *self.dirty,
+            sockets: &mut *self.sockets,
+            notify: &mut *self.notify,
+            counts: self.counts,
+            life: &mut *self.life,
+            events: &mut *self.events,
+            now: self.now,
+        }
+    }
+
+    /// The pool, and the network it is to use for transfer `who`: one
+    /// that tells the socket callback of a socket before it closes.
+    pub(crate) fn pool_net(&mut self, who: TransferId) -> (&mut Pool, Announcing<'_, H>) {
+        let net = Announcing {
+            net: &mut *self.net,
+            sockets: &mut *self.sockets,
+            slots: &mut *self.slots,
+            notify: &mut *self.notify,
+            counts: self.counts,
+            life: &mut *self.life,
+            events: &mut *self.events,
+            who,
+        };
+        (&mut *self.pool, net)
+    }
+}
+
+/// The multi's network as its pool uses it: a socket a transfer waits on
+/// is forgotten, and the socket callback told so, before it closes
+/// (`Curl_multi_will_close`, before CLOSESOCKETFUNCTION).
+pub(crate) struct Announcing<'a, H: Host> {
+    net: &'a mut dyn Net,
+    sockets: &'a mut SocketTable<H::Socket>,
+    slots: &'a mut Arena<Slot<H>, Transfer>,
+    notify: &'a mut NotifyQueue,
+    counts: &'a Tally,
+    life: &'a mut Life,
+    events: &'a mut dyn MultiEvents<H>,
+    /// The transfer the pool acts for.
+    who: TransferId,
+}
+
+impl<H: Host> Net for Announcing<'_, H> {
+    fn poll(
+        &mut self,
+        sockets: &mut [SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> io::Result<u32> {
+        self.net.poll(sockets, fds, timeout)
+    }
+
+    fn connect(&mut self, addr: SocketAddr) -> io::Result<(Box<dyn Socket>, Connect)> {
+        self.net.connect(addr)
+    }
+
+    fn close(&mut self, socket: Box<dyn Socket>) {
+        self.forget(socket.key());
+        self.net.close(socket);
+    }
+}
+
+impl<H: Host> Announcing<'_, H> {
+    fn forget(&mut self, key: SocketKey) {
+        if let Some(change) = self.sockets.forget(key) {
+            // An abort leaves the multi dead; the socket closes anyway, as
+            // C ignores the callback's answer here.
+            let _ = tell(
+                &[change],
+                self.who,
+                &mut *self.events,
+                &mut Telling {
+                    slots: &mut *self.slots,
+                    notify: &mut *self.notify,
+                    counts: self.counts,
+                    sockets: &mut *self.sockets,
+                    life: &mut *self.life,
+                },
+            );
+        }
+    }
+}
+
+/// What telling the socket callback reaches.
+pub(super) struct Telling<'a, H: Host> {
+    pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
+    pub(super) notify: &'a mut NotifyQueue,
+    pub(super) counts: &'a Tally,
+    pub(super) sockets: &'a mut SocketTable<H::Socket>,
+    pub(super) life: &'a mut Life,
+}
+
+/// Tell the socket callback of `changes` for transfer `who`, in order,
+/// recording each as told; an abort leaves the multi dead and the rest
+/// untold (`mev_sh_entry_update`, `mev_forget_socket`).
+pub(super) fn tell<H: Host>(
+    changes: &[Change<H::Socket>],
+    who: TransferId,
+    events: &mut dyn MultiEvents<H>,
+    t: &mut Telling<'_, H>,
+) -> Result<(), Abort> {
+    if !events.wants_sockets() {
+        return Ok(());
+    }
+    for change in changes {
+        let assigned = match change.what {
+            SocketWhat::Remove => change.removed_with,
+            _ => t.sockets.assigned(change.key),
+        };
+        let mut cx = EventCx {
+            slots: &mut *t.slots,
+            notify: &mut *t.notify,
+            counts: t.counts.get(),
+            sockets: &mut *t.sockets,
+        };
+        if let Err(Abort) = events.socket(&mut cx, who, change.key, change.what, assigned) {
+            *t.life = Life::Dead;
+            return Err(Abort);
+        }
+        t.sockets.told(change.key, change.what);
+    }
+    Ok(())
 }
 
 /// The multi as a transfer's own handlers see it: the calls api.c lets a
@@ -102,6 +245,7 @@ pub struct EventCx<'a, H: Host> {
     pub(super) slots: &'a mut Arena<Slot<H>, Transfer>,
     pub(super) notify: &'a mut NotifyQueue,
     pub(super) counts: Counts,
+    pub(super) sockets: &'a mut SocketTable<H::Socket>,
 }
 
 impl<H: Host> EventCx<'_, H> {
@@ -132,6 +276,16 @@ impl<H: Host> EventCx<'_, H> {
     /// A copy of a transfer's `Easy` (`curl_easy_duphandle`).
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.slots.get(id).map(|s| s.easy.try_clone())
+    }
+
+    /// What the application gave with the transfer when it added it.
+    pub fn owner(&self, id: TransferId) -> Option<&H::Transfer> {
+        self.slots.get(id).map(|s| &s.owner)
+    }
+
+    /// As `Multi::assign`.
+    pub fn assign(&mut self, s: SocketKey, value: Option<H::Socket>) -> Result<(), UnknownSocket> {
+        self.sockets.assign(s, value)
     }
 }
 
@@ -205,5 +359,10 @@ impl<H: Host> NotifyCx<'_, H> {
 
     pub fn duplicate(&self, id: TransferId) -> Option<Result<Easy, OutOfMemory>> {
         self.multi.easy(id).map(Easy::try_clone)
+    }
+
+    /// As `Multi::assign`.
+    pub fn assign(&mut self, s: SocketKey, value: Option<H::Socket>) -> Result<(), UnknownSocket> {
+        self.multi.assign(s, value)
     }
 }

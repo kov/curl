@@ -47,6 +47,7 @@ exclude_re = [
     # Joining parts whose bits cannot overlap: `|` and `^` agree.
     'url/host\.rs:.*: replace \| with \^ in (ipv4|pton6)$',
     'url/encode\.rs:.*: replace \| with \^ in (escaped_byte|decode)$',
+    'proto/http/auth\.rs:.*: replace \| with \^ in base64$',
     'curl-os/src/net\.rs:.*: replace \| with \^ in connect$',
     'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.
@@ -74,6 +75,12 @@ exclude_re = [
     # Only a fake socket's readiness is known without a poll, and the fake
     # network polls with no timeout; the sum only sizes a reservation.
     'conn/io\.rs:.*: replace (> with (==|>=|<)|\+ with (-|\*)) in poll_together$',
+    # One socket alone is polled without a list: the same poll, made
+    # without allocating.
+    'conn/io\.rs:.*: replace match guard fds\.is_empty\(\) with false in poll_together$',
+    # A fake peer: no test sends more requests than its conversation has
+    # replies.
+    'conn/io\.rs:.*: replace < with <= in Wire::answering$',
     # A fake socket ready exactly at the timeout is reported or not; a real
     # poll may do either.
     'conn/io\.rs:.*: replace < with <= in <impl Net for FakeNet>::poll$',
@@ -86,9 +93,10 @@ exclude_re = [
     # The debug build's invariant check fails only on a broken invariant;
     # the sabotage entries witnessed by the property test show it does.
     'multi/(mod|check)\.rs:.*: replace Multi<H>::check(_invariants)? with \(\)$',
-    # Only the invariant check asks whether output is held; the sabotage
-    # entry that leaves a completed transfer held shows the check fires.
-    '(proto/mod|proto/script|multi/state)\.rs:.*: replace (ProtoState|Player|TransferState)::holds_output -> bool with true$',
+    # Only the invariant check asks the transfer whether output is held;
+    # the sabotage entry that leaves a completed transfer held shows the
+    # check fires.
+    'multi/state\.rs:.*: replace TransferState::holds_output -> bool with true$',
     # When delivered bytes are compacted away is a choice of threshold:
     # one byte either way changes nothing observable.
     'deliver/held\.rs:.*: replace > with >= in HeldOutput::consume$',
@@ -99,11 +107,6 @@ exclude_re = [
     # Running a transfer clears its dirty row, so resuming the walk at
     # the row itself finds the same next one.
     'multi/mod\.rs:.*: replace \+ with \* in Multi<H>::run_dirty$',
-    # A premature end only picks `Released::Terminated` over `Closed`,
-    # which nothing observes until connections do I/O (milestone 1,
-    # step 11).
-    'multi/state\.rs:.*: replace \|\| with && in step$',
-    'multi/state\.rs:.*: replace is_premature -> bool with (true|false)$',
     # Reserving more than needed.
     '(sched|timers|notify)\.rs:.*: replace (< with <=|- with \+) in (RowSet|TimerQueue<T>|NotifyQueue)::reserve$',
     # The waker holds both ends of its nonblocking pair, so no error but
@@ -129,4 +132,26 @@ exclude_re = [
     # `c_long` is 64 bits here, so every time fits it; the clamps serve
     # the targets where it is 32.
     'curl-sys-abi/src/getinfo\.rs:.*: replace < with (==|>|<=) in long_time$',
+    # Reservation sizes: a wrong one only changes how often the vector
+    # grows.
+    'proto/http/auth\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Credentials::basic$',
+    'proto/http1/request\.rs:.*: replace - with \+ in render_h1$',
+    'curl-sys-abi/src/(headers|getinfo)\.rs:.*: replace \+ with (-|\*) in (HeaderOut::show|effective_url)$',
+    # `Curl_compareheader`'s arithmetic where it cannot change the answer:
+    # a line as long as the name has an empty value, which says nothing;
+    # a comma at the value's last byte or past it ends the search either
+    # way; the walk skips the comma it lands on; and a step that takes it
+    # exactly to the value's end leaves nothing to compare.
+    'proto/http1/fields\.rs:.*: replace (< with <=|\+ with (-|\*)|> with >=) in header_says$',
+    # C's `HD_IS_AND_SAYS` length check before `Curl_compareheader`: every
+    # header line carries its line ending, so one as long as name and
+    # token says nothing either way.
+    'proto/http1/framing\.rs:.*: replace (> with >=|\+ with -) in says$',
+    # Only a first line that cannot be a status line is told apart.
+    'proto/http1/response\.rs:.*: replace >= with < in HeadParser::looks$',
+    # A line held at done is counted in the request's own counts, which
+    # nothing reads once it is done.
+    'proto/http1/response\.rs:.*: replace HeadParser::count_held -> Result<\(\), HeadError> with Ok\(\(\)\)$',
+    # The version below none is matched before this arm can see it.
+    'curl-sys-abi/src/setopt/mod\.rs:.*: replace < with <= in http_version$',
 ]

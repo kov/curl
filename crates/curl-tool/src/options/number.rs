@@ -109,7 +109,7 @@ pub(crate) fn size(s: &[u8]) -> Result<u64, ParamError> {
                 _ => return Err(ParamError::BadUse),
             };
             let mut add = 0;
-            if prec > 0 {
+            if prec != 0 {
                 // Digits past what the unit can tell apart are dropped.
                 while mlen <= plen {
                     prec /= 10;

@@ -232,6 +232,11 @@ mod tests {
             to("127.0.0.1", 1)
         );
         assert_eq!(via_of(&foo, &["foo.test:1:foo.test:1", "::z:3"]), Ok(None));
+        assert_eq!(
+            via_of(&foo, &["foo.test:1:", "::z:3"]),
+            to("z", 3),
+            "an entry naming nothing is passed over"
+        );
         assert_eq!(via_of(&foo, &["foo.test:1:FOO.test:"]), Ok(None));
         // An IPv6 origin matches by its address with brackets or without.
         let v6 = peer("[::1]", 1);

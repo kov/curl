@@ -24,7 +24,7 @@ mod trace;
 mod write_out;
 
 use msgs::Messages;
-use options::{Parsed, Request, Trace, Unimplemented, exit_code};
+use options::{CommandLine, Parsed, Request, Trace, Unimplemented, exit_code};
 
 /// Exit status for anything not implemented yet. No test expects it, so a
 /// missing feature cannot pass a test by accident.
@@ -76,44 +76,57 @@ fn main() -> ExitCode {
     #[cfg(feature = "debug-hooks")]
     memory_tracking_init();
     let mut msgs = Messages::new();
-    if config::reads_curlrc(&argv) {
+    let curlrc = if config::reads_curlrc(&argv) {
         match config::find_curlrc(
             |var| std::env::var_os(var),
             curl_os::users::home_directory,
             config::readable,
         ) {
-            Ok(None) => {}
-            Ok(Some(path)) => {
-                let path = path.as_os_str().as_encoded_bytes();
-                msgs.error(&[
-                    b"reading the configuration file ",
-                    path,
-                    b" is not implemented yet",
-                ]);
-                return ExitCode::from(NOT_IMPLEMENTED);
-            }
+            Ok(found) => found,
             Err(OutOfMemory) => {
                 msgs.error(&[b"out of memory"]);
                 return ExitCode::from(exit_code(ErrorKind::OutOfMemory));
             }
         }
-    }
-    if argv.len() < 2 {
-        // With no arguments, only a configuration file could name a URL.
-        msgs.help(&[]);
-        return ExitCode::from(exit_code(ErrorKind::FailedInit));
-    }
+    } else {
+        None
+    };
+    let curlrc_name = curlrc
+        .as_ref()
+        .map(|path| path.as_os_str().as_encoded_bytes());
     let mut wipe = |index, offset| {
         assert!(
             curl_os::args::wipe(index, offset),
             "argument {index} has {offset} bytes to keep"
         );
     };
-    let line = match options::parse(&argv, &mut msgs, &mut wipe) {
-        Ok(Parsed::Run(line)) => line,
-        Ok(Parsed::Request(request)) => return show(request, &msgs),
-        Err(e) => return ExitCode::from(exit_code(e.kind())),
-    };
+    options::parse(
+        &argv,
+        curlrc_name,
+        &mut msgs,
+        &mut wipe,
+        |parsed, msgs| match parsed {
+            Ok(Parsed::Run(line)) => run(&line, argv.len(), curlrc_name, msgs),
+            Ok(Parsed::Request(request)) => show(request, msgs),
+            Err(e) => ExitCode::from(exit_code(e.kind())),
+        },
+    )
+}
+
+/// Run what `line` asks for; `argc` words were given, and `curlrc` is the
+/// default configuration file, if one was read.
+fn run(
+    line: &CommandLine<'_>,
+    argc: usize,
+    curlrc: Option<&[u8]>,
+    msgs: &mut Messages,
+) -> ExitCode {
+    // With no arguments, only a configuration file could name a URL.
+    let first_url = line.operations[0].nodes.first().and_then(|n| n.url);
+    if argc < 2 && first_url.is_none() {
+        msgs.help(&[]);
+        return ExitCode::from(exit_code(ErrorKind::FailedInit));
+    }
     match line.unimplemented {
         Some(Unimplemented::Option(spec, prefix)) => {
             let name = [prefix.as_bytes(), spec.long.as_bytes()];
@@ -127,7 +140,13 @@ fn main() -> ExitCode {
         None => {}
     }
     msgs.tracing = line.global.trace != Trace::None;
-    match operate::run(&line, msgs) {
+    // Noted once the verbosity is known.
+    if line.read_curlrc
+        && let Some(name) = curlrc
+    {
+        msgs.note(&[b"Read config file from '", name, b"'"]);
+    }
+    match operate::run(line, *msgs) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => ExitCode::from(exit_code(e)),
     }

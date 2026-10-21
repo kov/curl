@@ -384,7 +384,8 @@ cargo-mutants run on the milestone's diff.
     name added to a URL whose path has none (74, 75, 86, 87, 214, 490-492, 759, 761, 994, 2053
     and others); `--create-dirs` (3011, 3031); `-J`, from `Content-Disposition` or a
     redirect's `Location` (1210, 1310-1313, 1338-1341, 1368-1371, 1422, 1460, 1487, 1492, 1584,
-    1585, 1641-1643, 3012, 3037). To do: `-K` (468, 1639); `--retry` (1635); URLs
+    1585, 1641-1643, 3012, 3037); `-K` and the default `.curlrc`, a file's text kept while
+    what was parsed from it lives (17, 56, 411, 430-436, 468, 1639, 3228 and others). To do: `--retry` (1635); URLs
     read from a file (2012). `-R` waits for the date parser (step 30) to read `Last-Modified`
     (762, 1443).
 28. **multi: event mode.** **To do.** `curl_easy_perform_ev`, `curl_multi_assign` from a

@@ -75,6 +75,8 @@ pub(crate) enum Flow<'a> {
     NextOperation,
     /// Stop and show something instead of running transfers.
     Request(Request<'a>),
+    /// `--config`: read the options in this file next.
+    Config(&'a [u8]),
 }
 
 /// What the command line asked to be shown.
@@ -407,6 +409,8 @@ pub(crate) struct CommandLine<'a> {
     pub(crate) global: Global<'a>,
     /// The first thing asked for that is not implemented yet.
     pub(crate) unimplemented: Option<Unimplemented>,
+    /// The default configuration file was read without a failure.
+    pub(crate) read_curlrc: bool,
     /// Options read so far in the current word, as C's `verbose_nopts`:
     /// `-vv` counts twice, `-v -v` once.
     pub(crate) options_in_word: usize,
@@ -429,6 +433,7 @@ impl<'a> CommandLine<'a> {
             operations,
             global: Global::default(),
             unimplemented: None,
+            read_curlrc: false,
             options_in_word: 0,
         })
     }
@@ -753,6 +758,7 @@ pub(crate) fn apply<'a>(
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::CreateDirs => line.current().create_dirs = value.toggle(),
+        Opt::Config => return Ok(Flow::Config(value.text())),
         Opt::RemoteHeaderName => line.current().remote_header_name = value.toggle(),
         Opt::WriteOut => {
             let format = match value.text().strip_prefix(b"@") {
@@ -846,7 +852,6 @@ pub(crate) fn apply<'a>(
         | Opt::Ciphers
         | Opt::Compressed
         | Opt::CompressedSsh
-        | Opt::Config
         | Opt::Cookie
         | Opt::CookieJar
         | Opt::CreateFileMode

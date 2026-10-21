@@ -5,9 +5,13 @@ use std::ffi::OsString;
 
 use curl_core::version::version;
 
+use curl_alloc::{OutOfMemory, TryVec as _, try_format};
+
 use super::apply::{CommandLine, Flow, Request, Value, apply};
 use super::{ArgKind, MAX_OPTION_LEN, ParamError, Spec, find_long, find_short, number};
+use crate::config::{self, Entry, Unread};
 use crate::msgs::Messages;
+use crate::slurp::{As, ReadFailed};
 
 /// A command line that parsed.
 pub(crate) enum Parsed<'a> {
@@ -21,55 +25,386 @@ pub(crate) enum Parsed<'a> {
 /// `index`, from byte `offset` to its end.
 pub(crate) type Wipe<'w> = &'w mut dyn FnMut(usize, usize);
 
-/// Parse `argv`, the program name first. A rejected command line has been
-/// reported, with the hint to try `--help`, when this returns. Arguments of
-/// options holding secrets are passed to `wipe` once read, as C's
-/// `cleanarg` overwrites them.
-pub(crate) fn parse<'a>(
+/// How deep configuration files may name one another, the command line
+/// counted (`CONFIG_MAX_LEVELS`).
+const CONFIG_LEVELS: u32 = 5;
+
+/// Parse `argv`, the program name first, after `curlrc`, the default
+/// configuration file, if it is to be read, and give `then` what was
+/// parsed. A rejected command line has been reported, with the hint to try
+/// `--help`, when `then` is called. Arguments of options holding secrets
+/// are passed to `wipe` once read, as C's `cleanarg` overwrites them.
+///
+/// A configuration file is read as `--config` names it, and its text kept
+/// until `then` returns: what was parsed borrows from it as it does from
+/// `argv`.
+pub(crate) fn parse<'a, R>(
+    argv: &'a [OsString],
+    curlrc: Option<&'a [u8]>,
+    msgs: &mut Messages,
+    wipe: Wipe<'_>,
+    then: impl for<'p> FnOnce(Result<Parsed<'p>, ParamError>, &mut Messages) -> R,
+) -> R {
+    let parser = match Parser::new(argv) {
+        Ok(parser) => parser,
+        Err(e) => return then(Err(e), msgs),
+    };
+    let step = match curlrc {
+        Some(name) => Step::Read(
+            parser,
+            Wanted {
+                name,
+                levels: CONFIG_LEVELS,
+                curlrc: true,
+            },
+        ),
+        None => parser.drive(msgs, wipe),
+    };
+    go_on(step, msgs, wipe, then)
+}
+
+/// Parse `argv` as `parse` does, but for configuration files: none may be
+/// named. For tests.
+#[cfg(test)]
+fn parse_args<'a>(
     argv: &'a [OsString],
     msgs: &mut Messages,
     wipe: Wipe<'_>,
 ) -> Result<Parsed<'a>, ParamError> {
-    let mut line = CommandLine::new()?;
-    let mut still_flags = true;
-    let mut i = 1;
-    while let Some(arg) = argv.get(i) {
-        let arg = arg.as_encoded_bytes();
-        let step = if still_flags && arg.first() == Some(&b'-') {
-            if arg == b"--" {
-                // The end of the options: what follows are URLs, even if
-                // they start with `-`.
-                still_flags = false;
-                Ok((Flow::Continue, false))
-            } else {
-                let next = argv.get(i + 1).map(|a| a.as_encoded_bytes());
-                getparameter(arg, i, next, &mut line, msgs, wipe)
-            }
-        } else {
-            // A URL: it is the argument of an implied `--url`, not a word
-            // after this one to skip.
-            getparameter(b"--url", i, Some(arg), &mut line, msgs, wipe)
-                .map(|(flow, _)| (flow, false))
-        };
-        match step {
-            Ok((Flow::Continue, used_next)) => i += usize::from(used_next),
-            Ok((Flow::NextOperation, _)) => {
-                if let Err(e) = line.next_operation(msgs) {
-                    return Err(report(msgs, arg, e));
-                }
-            }
-            Ok((Flow::Request(r), _)) => return Ok(Parsed::Request(r)),
-            Err(e) => return Err(report(msgs, arg, e)),
+    match Parser::new(argv)?.drive(msgs, wipe) {
+        Step::Done(parsed) => parsed,
+        Step::Read(..) => panic!("a configuration file was named"),
+    }
+}
+
+/// Where the parse is.
+enum Step<'a> {
+    Done(Result<Parsed<'a>, ParamError>),
+    /// It goes on once this configuration file is read.
+    Read(Parser<'a>, Wanted<'a>),
+}
+
+/// A configuration file to read.
+struct Wanted<'a> {
+    name: &'a [u8],
+    /// How many more files it may name in turn.
+    levels: u32,
+    /// It is the default file, whose failure is ignored.
+    curlrc: bool,
+}
+
+/// Read each configuration file the parse wants, then give `then` its
+/// result. Each file's text lives in a frame of its own, for as long as
+/// what is parsed after it.
+fn go_on<'a, R>(
+    step: Step<'a>,
+    msgs: &mut Messages,
+    wipe: Wipe<'_>,
+    then: impl for<'p> FnOnce(Result<Parsed<'p>, ParamError>, &mut Messages) -> R,
+) -> R {
+    let (parser, wanted) = match step {
+        Step::Done(parsed) => return then(parsed, msgs),
+        Step::Read(parser, wanted) => (parser, wanted),
+    };
+    let mut text = match crate::slurp::read(wanted.name, As::Binary) {
+        Ok(text) => text,
+        Err(e) => {
+            let e = match e {
+                ReadFailed::OutOfMemory => ParamError::NoMem,
+                ReadFailed::Open | ReadFailed::Read => ParamError::ReadError,
+            };
+            let step = unread(parser, &wanted, e, msgs, wipe);
+            return go_on(step, msgs, wipe, then);
         }
-        i += 1;
+    };
+    let entries = match config::entries(&mut text) {
+        Ok(entries) => entries,
+        Err(e) => {
+            let e = match e {
+                Unread::OutOfMemory => ParamError::NoMem,
+                Unread::TooLong => ParamError::ReadError,
+            };
+            let step = unread(parser, &wanted, e, msgs, wipe);
+            return go_on(step, msgs, wipe, then);
+        }
+    };
+    // What is parsed from here borrows the file's text.
+    let mut parser: Parser<'_> = parser;
+    let file = Source::File {
+        name: wanted.name,
+        entries: &entries,
+        at: 0,
+        levels: wanted.levels,
+        curlrc: wanted.curlrc,
+    };
+    let step = match parser.sources.try_push(file) {
+        Ok(()) => parser.drive(msgs, wipe),
+        Err(OutOfMemory) => parser.fail(ParamError::NoMem, msgs),
+    };
+    go_on(step, msgs, wipe, then)
+}
+
+/// Where the parse goes when `wanted` cannot be read: on without it if it
+/// is the default file, which is then not one, or to failure with `e`,
+/// after `cannot read config from '...'` for a file that could not be
+/// read.
+fn unread<'a>(
+    parser: Parser<'a>,
+    wanted: &Wanted<'_>,
+    e: ParamError,
+    msgs: &mut Messages,
+    wipe: Wipe<'_>,
+) -> Step<'a> {
+    if wanted.curlrc {
+        return parser.drive(msgs, wipe);
     }
-    // The last operation's name cannot come from both the response and
-    // the file there.
-    let op = line.operations.last().expect("there is always one");
-    if op.remote_header_name && op.resume == Some(super::Resume::FromOutput) {
-        return Err(report(msgs, b":", ParamError::ContdispResumeFrom));
+    if e == ParamError::ReadError {
+        msgs.error(&[b"cannot read config from '", shown_name(wanted.name), b"'"]);
     }
-    Ok(Parsed::Run(line))
+    parser.fail(e, msgs)
+}
+
+/// A configuration file's name as messages show it.
+fn shown_name(name: &[u8]) -> &[u8] {
+    if name == b"-" { b"<stdin>" } else { name }
+}
+
+/// The command line being read, and where from.
+struct Parser<'a> {
+    argv: &'a [OsString],
+    line: CommandLine<'a>,
+    /// The command line, then each configuration file being read from
+    /// it, the innermost last.
+    sources: Vec<Source<'a>>,
+}
+
+enum Source<'a> {
+    Args {
+        /// The next word.
+        at: usize,
+        /// The word being read, for its errors.
+        word: usize,
+        /// `--` is not met yet.
+        still_flags: bool,
+    },
+    File {
+        name: &'a [u8],
+        entries: &'a [Entry<'a>],
+        /// The next entry.
+        at: usize,
+        levels: u32,
+        curlrc: bool,
+    },
+}
+
+impl<'a> Parser<'a> {
+    fn new(argv: &'a [OsString]) -> Result<Parser<'a>, ParamError> {
+        let mut sources = Vec::new();
+        sources.try_push(Source::Args {
+            at: 1,
+            word: 1,
+            still_flags: true,
+        })?;
+        Ok(Parser {
+            argv,
+            line: CommandLine::new()?,
+            sources,
+        })
+    }
+
+    /// Read words until the end, an error, or a configuration file to
+    /// read (`parse_args`, `parseconfig`).
+    fn drive(mut self, msgs: &mut Messages, wipe: Wipe<'_>) -> Step<'a> {
+        loop {
+            let step = match self.sources.last_mut() {
+                None => return self.finish(msgs),
+                Some(Source::Args {
+                    at,
+                    word,
+                    still_flags,
+                }) => {
+                    let Some(arg) = self.argv.get(*at) else {
+                        self.sources.pop();
+                        continue;
+                    };
+                    let arg = arg.as_encoded_bytes();
+                    let i = *at;
+                    *word = i;
+                    let step = if *still_flags && arg.first() == Some(&b'-') {
+                        if arg == b"--" {
+                            // The end of the options: what follows are URLs,
+                            // even if they start with `-`.
+                            *still_flags = false;
+                            Ok((Flow::Continue, false))
+                        } else {
+                            let next = self.argv.get(i + 1).map(|a| a.as_encoded_bytes());
+                            getparameter(arg, i, next, &mut self.line, msgs, wipe)
+                        }
+                    } else {
+                        // A URL: it is the argument of an implied `--url`, not
+                        // a word after this one to skip.
+                        getparameter(b"--url", i, Some(arg), &mut self.line, msgs, wipe)
+                            .map(|(flow, _)| (flow, false))
+                    };
+                    if let Ok((_, used_next)) = &step {
+                        *at = i + 1 + usize::from(*used_next);
+                    }
+                    match step {
+                        Ok((Flow::NextOperation, _)) => {
+                            self.line.next_operation(msgs).map(|()| Flow::Continue)
+                        }
+                        Ok((flow, _)) => Ok(flow),
+                        Err(e) => Err(e),
+                    }
+                    .map(|flow| (flow, CONFIG_LEVELS))
+                }
+                Some(Source::File {
+                    name,
+                    entries,
+                    at,
+                    levels,
+                    curlrc,
+                }) => {
+                    let (name, entries, levels) = (*name, *entries, *levels);
+                    let Some(entry) = entries.get(*at) else {
+                        // The default file read whole is noted.
+                        self.line.read_curlrc |= *curlrc;
+                        self.sources.pop();
+                        continue;
+                    };
+                    *at += 1;
+                    for warning in entry.warnings {
+                        if let Ok(number) = try_format(format_args!(":{} Option '", entry.number)) {
+                            msgs.warn(&[
+                                shown_name(name),
+                                number.as_bytes(),
+                                entry.option,
+                                warning.text(),
+                            ]);
+                        }
+                    }
+                    let argument = entry.argument;
+                    let step = getparameter(
+                        entry.option,
+                        0,
+                        argument,
+                        &mut self.line,
+                        msgs,
+                        &mut |_, _| {},
+                    );
+                    match step {
+                        // An argument given that the option takes none.
+                        Ok((_, false)) if argument.is_some_and(|a| !a.is_empty()) => {
+                            Err(ParamError::GotExtraParameter)
+                        }
+                        // `--next` in a file starts an operation only after a
+                        // URL, and is no error before one.
+                        Ok((Flow::NextOperation, _)) => {
+                            let has_url = self
+                                .line
+                                .operations
+                                .last()
+                                .and_then(|op| op.nodes.first())
+                                .is_some_and(|n| n.url.is_some());
+                            if has_url {
+                                self.line
+                                    .operations
+                                    .try_push(Default::default())
+                                    .map(|()| Flow::Continue)
+                                    .map_err(ParamError::from)
+                            } else {
+                                Ok(Flow::Continue)
+                            }
+                        }
+                        // What a file asks to be shown is not.
+                        Ok((Flow::Request(_), _)) => Ok(Flow::Continue),
+                        Ok((flow, _)) => Ok(flow),
+                        Err(e) => Err(e),
+                    }
+                    .map(|flow| (flow, levels))
+                }
+            };
+            match step {
+                Ok((Flow::Continue, _)) => {}
+                Ok((Flow::NextOperation, _)) => unreachable!("started above"),
+                Ok((Flow::Request(r), _)) => return Step::Done(Ok(Parsed::Request(r))),
+                Ok((Flow::Config(name), levels)) => {
+                    // Each file read uses up a level (`C_CONFIG`).
+                    if levels == 0 {
+                        if let Ok(message) = try_format(format_args!(
+                            "Max config file recursion level reached ({CONFIG_LEVELS})"
+                        )) {
+                            msgs.error(&[message.as_bytes()]);
+                        }
+                        return self.fail(ParamError::BadUse, msgs);
+                    }
+                    let wanted = Wanted {
+                        name,
+                        levels: levels - 1,
+                        curlrc: false,
+                    };
+                    return Step::Read(self, wanted);
+                }
+                Err(e) => return self.fail(e, msgs),
+            }
+        }
+    }
+
+    /// The checks after the last word.
+    fn finish(self, msgs: &Messages) -> Step<'a> {
+        // The last operation's name cannot come from both the response and
+        // the file there.
+        let op = self.line.operations.last().expect("there is always one");
+        if op.remote_header_name && op.resume == Some(super::Resume::FromOutput) {
+            return Step::Done(Err(report(msgs, b":", ParamError::ContdispResumeFrom)));
+        }
+        Step::Done(Ok(Parsed::Run(self.line)))
+    }
+
+    /// Report `e`, met reading the innermost source: each file reading it
+    /// reports it in turn on the line that named the next, as
+    /// `process_config_result` does, then the command line, as
+    /// `parse_args` does. A failure in the default file ends only that
+    /// file.
+    fn fail(mut self, mut e: ParamError, msgs: &mut Messages) -> Step<'a> {
+        loop {
+            match self.sources.last() {
+                Some(Source::File {
+                    name,
+                    entries,
+                    at,
+                    curlrc,
+                    ..
+                }) => {
+                    let entry = &entries[*at - 1];
+                    if let Ok(number) =
+                        try_format(format_args!(":{} config file option '", entry.number))
+                    {
+                        msgs.error(&[
+                            shown_name(name),
+                            number.as_bytes(),
+                            entry.option,
+                            b"' ",
+                            e.text().as_bytes(),
+                        ]);
+                    }
+                    if e == ParamError::OptionUnknown {
+                        e = ParamError::ConfigOptionUnknown;
+                    }
+                    let curlrc = *curlrc;
+                    self.sources.pop();
+                    if curlrc {
+                        return self.drive(msgs, &mut |_, _| {});
+                    }
+                }
+                Some(Source::Args { word, .. }) => {
+                    let arg = self.argv[*word].as_encoded_bytes();
+                    return Step::Done(Err(report(msgs, arg, e)));
+                }
+                None => unreachable!("the command line is read last"),
+            }
+        }
+    }
 }
 
 /// Report `err` about argument `arg`, as `parse_args` does.
@@ -248,8 +583,6 @@ fn unicode_warning(msgs: &Messages, spec: &Spec, arg: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use curl_alloc::TryVec as _;
-
     use super::*;
     use crate::options::{Output, Trace, Unimplemented, Upload};
 
@@ -261,7 +594,7 @@ mod tests {
         let argv: &'static [OsString] = Vec::leak(argv);
         let mut msgs = Messages::new();
         msgs.silent = true;
-        parse(argv, &mut msgs, &mut |_, _| {})
+        parse_args(argv, &mut msgs, &mut |_, _| {})
     }
 
     fn run(args: &[&str]) -> Result<(usize, Option<&'static str>, Option<String>), ParamError> {
@@ -358,7 +691,7 @@ mod tests {
             let mut msgs = Messages::new();
             msgs.silent = true;
             let mut at = Vec::new();
-            let _ = parse(&argv, &mut msgs, &mut |i, o| at.try_push((i, o)).unwrap());
+            let _ = parse_args(&argv, &mut msgs, &mut |i, o| at.try_push((i, o)).unwrap());
             at
         };
         assert_eq!(wiped(&["-u", "a:b", "x"]), [(2, 0)]);

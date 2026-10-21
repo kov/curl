@@ -499,3 +499,43 @@ witness: curl-tool output::tests::reads_a_file_name_as_c_does
     for separator in *b"/\\" {
 --- new
     for separator in *b"" {
+
+=== a configuration file's comments are counted as lines
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_lines_as_c_does
+--- old
+        if first.is_some_and(|at| text[start + at] != b'#') {
+            number += 1;
+--- new
+        number += 1;
+        if first.is_some_and(|at| text[start + at] != b'#') {
+
+=== a quoted argument keeps its escapes
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_lines_as_c_does
+--- old
+                b't' => b'\t',
+--- new
+                b't' => b't',
+
+=== a file reading another does not report its failure
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool reads_options_from_files
+--- old
+                    if let Ok(number) =
+                        try_format(format_args!(":{} config file option '", entry.number))
+                    {
+--- new
+                    if let Ok(number) =
+                        try_format(format_args!(":{} config file option '", entry.number))
+                        && e == ParamError::OptionUnknown
+                    {
+
+=== an unknown option in a file is reported as one on the command line
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool reads_options_from_files
+--- old
+                    if e == ParamError::OptionUnknown {
+                        e = ParamError::ConfigOptionUnknown;
+                    }
+--- new

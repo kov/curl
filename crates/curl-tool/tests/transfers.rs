@@ -130,6 +130,41 @@ fn umask(dir: &Scratch) -> u32 {
     u32::from_str_radix(String::from_utf8(out.stdout).unwrap().trim(), 8).unwrap()
 }
 
+/// `-K` reads options from a file as they are met, one file naming the
+/// next; an error in one is reported at each level that read it.
+#[test]
+fn reads_options_from_files() {
+    let dir = Scratch::new("config");
+    dir.write("in", b"data");
+    let inner = format!("output = \"{}\"\n", dir.path("out"));
+    dir.write("inner", inner.as_bytes());
+    let outer = format!(
+        "# a comment\nurl {}\n-K {}\n",
+        dir.url("in"),
+        dir.path("inner")
+    );
+    dir.write("outer", outer.as_bytes());
+    let run = curl(&dir, &["-K", &dir.path("outer")]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(dir.read("out"), b"data");
+    // Comments and blank lines are not counted. Short names keep the
+    // messages from being wrapped.
+    dir.write("bad", b"\n# no\nfail\n--bogus\n");
+    dir.write("cfg", b"fail\nconfig=bad\n");
+    let run = curl(&dir, &["--config", "cfg", &dir.url("in")]);
+    assert_eq!(run.code, 2);
+    // The hint after names the manual if the build has it.
+    let lines: Vec<&str> = run.stderr.lines().take(3).collect();
+    assert_eq!(
+        lines,
+        [
+            "curl: bad:2 config file option '--bogus' is unknown",
+            "curl: cfg:2 config file option 'config' found an unknown config option",
+            "curl: option --config: found an unknown config option",
+        ]
+    );
+}
+
 #[test]
 fn downloads_to_a_file_or_standard_output() {
     let s = Scratch::new("download");

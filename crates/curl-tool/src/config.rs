@@ -1,5 +1,7 @@
-//! Finding the default configuration file, as `findfile(".curlrc", ...)`
-//! in `src/tool_findfile.c` finds it on Unix.
+//! Configuration files: finding the default one, as `findfile(".curlrc",
+//! ...)` in `src/tool_findfile.c` finds it on Unix, and reading one into
+//! options and their arguments, as `parseconfig` in `src/tool_parsecfg.c`
+//! reads it.
 
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -74,6 +76,191 @@ fn join(parts: &[&[u8]]) -> Result<PathBuf, OutOfMemory> {
 /// Whether `path` can be opened for reading, as `checkhome` checks it.
 pub(crate) fn readable(path: &Path) -> bool {
     std::fs::File::open(path).is_ok()
+}
+
+/// The longest line a configuration file may have
+/// (`MAX_CONFIG_LINE_LENGTH`).
+const MAX_LINE: usize = 10 * 1024 * 1024;
+
+/// One line of a configuration file: an option, with or without its
+/// dashes, and what follows it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Entry<'t> {
+    /// The line's number, from 1, as C counts them: blank lines and
+    /// comments are not.
+    pub(crate) number: usize,
+    pub(crate) option: &'t [u8],
+    /// The argument; a quoted empty one is there, an unquoted one is not.
+    pub(crate) argument: Option<&'t [u8]>,
+    /// What to warn of, in order, before the option is read.
+    pub(crate) warnings: &'static [Warning],
+}
+
+/// A line whose argument is likely not what was meant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Warning {
+    LeadingSingleQuote,
+    UnquotedWhitespace,
+}
+
+impl Warning {
+    /// The warning's text after the option's name.
+    pub(crate) fn text(self) -> &'static [u8] {
+        match self {
+            Warning::LeadingSingleQuote => {
+                b"' uses argument with leading single quote. It is probably a mistake. \
+                  Consider double quotes."
+            }
+            Warning::UnquotedWhitespace => {
+                b"' uses argument with unquoted whitespace. This may cause side-effects. \
+                  Consider double quotes."
+            }
+        }
+    }
+}
+
+/// Why a configuration file was not read whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unread {
+    /// A line too long (`my_get_line`'s error).
+    TooLong,
+    OutOfMemory,
+}
+
+/// An entry as places in the text, before the text is borrowed.
+struct Spans {
+    number: usize,
+    option: (usize, usize),
+    argument: Option<(usize, usize)>,
+    warnings: &'static [Warning],
+}
+
+/// The entries of `text`, a configuration file's bytes. Blank lines and
+/// those whose first byte not a blank is `#` are passed over. A quoted
+/// argument is undone in place, as it is never longer than the quoted.
+pub(crate) fn entries(text: &mut [u8]) -> Result<Vec<Entry<'_>>, Unread> {
+    let mut spans = Vec::new();
+    let mut start = 0;
+    let mut number = 0;
+    while start < text.len() {
+        let end = text[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(text.len(), |at| start + at);
+        if end - start > MAX_LINE {
+            return Err(Unread::TooLong);
+        }
+        // C reads it as a string.
+        let line_end = text[start..end]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(end, |at| start + at);
+        let first = text[start..line_end].iter().position(|b| !is_blank(*b));
+        if first.is_some_and(|at| text[start + at] != b'#') {
+            number += 1;
+            spans
+                .try_push(entry(text, start, line_end, number))
+                .map_err(|OutOfMemory| Unread::OutOfMemory)?;
+        }
+        start = end + 1;
+    }
+    let text: &[u8] = text;
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(spans.len())
+        .map_err(|_| Unread::OutOfMemory)?;
+    for span in spans {
+        let entry = Entry {
+            number: span.number,
+            option: &text[span.option.0..span.option.1],
+            argument: span.argument.map(|(from, to)| &text[from..to]),
+            warnings: span.warnings,
+        };
+        entries
+            .try_push(entry)
+            .map_err(|OutOfMemory| Unread::OutOfMemory)?;
+    }
+    Ok(entries)
+}
+
+fn is_blank(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+/// `parseconfig`'s reading of the line `text[start..end]`, and
+/// `extract_param`'s.
+fn entry(text: &mut [u8], start: usize, end: usize, number: usize) -> Spans {
+    // A name without dashes may be followed by `=` or `:`.
+    let dashed = text[start] == b'-';
+    let separator = |b: u8| !dashed && (b == b'=' || b == b':');
+    let name_end = text[start..end]
+        .iter()
+        .position(|&b| is_blank(b) || separator(b))
+        .map_or(end, |at| start + at);
+    // The byte that ended the name is passed over, then blanks and
+    // separators.
+    let mut at = (name_end + 1).min(end);
+    while at < end && (is_blank(text[at]) || separator(text[at])) {
+        at += 1;
+    }
+    let mut quote = false;
+    let mut space = false;
+    let argument = if at < end && text[at] == b'"' {
+        Some(unquote(text, at + 1, end))
+    } else {
+        quote = at < end && text[at] == b'\'';
+        let is_space = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+        let arg_end = text[at..end]
+            .iter()
+            .position(|&b| is_space(b))
+            .map_or(end, |len| at + len);
+        // Something after the argument but a comment is likely a mistake.
+        if arg_end < end {
+            let more = text[arg_end + 1..end].iter().find(|&&b| !is_blank(b));
+            space = more.is_some_and(|b| !matches!(b, b'\r' | b'\n' | b'#'));
+        }
+        (arg_end > at).then_some((at, arg_end))
+    };
+    let warnings: &[Warning] = match (quote, space) {
+        (false, false) => &[],
+        (true, false) => &[Warning::LeadingSingleQuote],
+        (false, true) => &[Warning::UnquotedWhitespace],
+        (true, true) => &[Warning::LeadingSingleQuote, Warning::UnquotedWhitespace],
+    };
+    Spans {
+        number,
+        option: (start, name_end),
+        argument,
+        warnings,
+    }
+}
+
+/// Undo the quoting of `text[from..end]` up to its closing double quote, in
+/// place: `\t`, `\n`, `\r` and `\v` are those bytes, any other escaped
+/// byte itself (`unslashquote`). Where the unquoted bytes are.
+fn unquote(text: &mut [u8], from: usize, end: usize) -> (usize, usize) {
+    let mut read = from;
+    let mut write = from;
+    while read < end && text[read] != b'"' {
+        let mut b = text[read];
+        if b == b'\\' {
+            read += 1;
+            if read == end {
+                break;
+            }
+            b = match text[read] {
+                b't' => b'\t',
+                b'n' => b'\n',
+                b'r' => b'\r',
+                b'v' => 0x0b,
+                other => other,
+            };
+        }
+        text[write] = b;
+        write += 1;
+        read += 1;
+    }
+    (from, write)
 }
 
 #[cfg(test)]
@@ -152,6 +339,51 @@ mod tests {
             Some("/h/.curlrc")
         );
         assert_eq!(find_with_home(&[], None, &files), None);
+    }
+
+    fn read(text: &str) -> Vec<(usize, String, Option<String>, &'static [Warning])> {
+        let mut text = text.as_bytes().to_vec();
+        entries(&mut text)
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e.number,
+                    String::from_utf8(e.option.to_vec()).unwrap(),
+                    e.argument.map(|a| String::from_utf8(a.to_vec()).unwrap()),
+                    e.warnings,
+                )
+            })
+            .collect()
+    }
+
+    /// `parseconfig`: a name, separators if it has no dashes, then an
+    /// argument plain or quoted; comments and blank lines are skipped, and
+    /// not counted. A line's first byte starts the name, even a blank.
+    #[test]
+    fn reads_lines_as_c_does() {
+        use Warning::*;
+        let s = |t: &str| Some(t.to_string());
+        let text = "# comment\n  \nurl = \"http://a/\\\"q\\t\"\n-o:x\nsilent\n\
+                    header: 'a b' c\nreferer=\"\"\n\tfail # yes\noutput   y\r\nlast";
+        assert_eq!(
+            read(text),
+            [
+                (1, "url".into(), s("http://a/\"q\t"), &[][..]),
+                (2, "-o:x".into(), None, &[]),
+                (3, "silent".into(), None, &[]),
+                (
+                    4,
+                    "header".into(),
+                    s("'a"),
+                    &[LeadingSingleQuote, UnquotedWhitespace]
+                ),
+                (5, "referer".into(), s(""), &[]),
+                (6, "".into(), s("fail"), &[]),
+                (7, "output".into(), s("y"), &[]),
+                (8, "last".into(), None, &[]),
+            ]
+        );
     }
 
     #[test]

@@ -31,6 +31,15 @@ pub(crate) fn read(name: &[u8], how: As) -> Result<Vec<u8>, ReadFailed> {
         std::fs::File::open(path).map_err(|_| ReadFailed::Open)?
     };
     let mut bytes = Vec::new();
+    // A file's size is known: one allocation holds it, as it was then.
+    if let Ok(meta) = file.metadata()
+        && meta.is_file()
+    {
+        let size = usize::try_from(meta.len()).map_err(|_| ReadFailed::OutOfMemory)?;
+        bytes
+            .try_reserve_exact(size)
+            .map_err(|_| ReadFailed::OutOfMemory)?;
+    }
     let mut buf = [0; 4096];
     loop {
         let n = match file.read(&mut buf) {

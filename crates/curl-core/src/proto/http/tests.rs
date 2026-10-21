@@ -595,6 +595,103 @@ fn a_kept_connection_carries_the_next_request() {
     );
 }
 
+/// A head cut short by the close, with its size known, ends as the C
+/// tool ends it: short by the whole body, unless it is empty or no body
+/// was asked for.
+#[test]
+fn a_head_cut_short_misses_its_body() {
+    let reply = |size: u32| format!("HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nX: y\r\n");
+    let ran = run("/", reply(5).as_bytes(), true, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::PartialFile));
+    assert!(
+        ran.seen
+            .text()
+            .iter()
+            .any(|l| l == "transfer closed with 5 bytes remaining to read\n")
+    );
+    assert_eq!(run("/", reply(0).as_bytes(), true, |_| {}).result, Ok(()));
+    let head = run("/", reply(5).as_bytes(), true, |o| o.method = Method::Head);
+    assert_eq!(head.result, Ok(()));
+}
+
+/// Bytes after the last chunk are left over, and said so; none, nothing
+/// is said.
+#[test]
+fn bytes_after_the_chunks_are_left_over() {
+    let chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n";
+    let ran = run("/", format!("{chunked}extra").as_bytes(), false, |_| {});
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"ok".to_vec()));
+    let leftovers = |ran: &Ran| {
+        ran.seen
+            .text()
+            .into_iter()
+            .filter(|l| l.starts_with("Leftovers"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(leftovers(&ran), ["Leftovers after chunking: 5 bytes\n"]);
+    let ran = run("/", chunked.as_bytes(), false, |_| {});
+    assert_eq!(leftovers(&ran), Vec::<String>::new());
+}
+
+/// Counts its calls, aborting at the one numbered `abort_at`.
+#[derive(Clone, Default)]
+struct AbortsAt {
+    calls: Rc<std::cell::Cell<u32>>,
+    abort_at: u32,
+}
+
+impl crate::handler::ProgressHandler for AbortsAt {
+    fn progress(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        let n = self.calls.get() + 1;
+        self.calls.set(n);
+        if n == self.abort_at {
+            crate::handler::ProgressVerdict::Abort
+        } else {
+            crate::handler::ProgressVerdict::Continue
+        }
+    }
+}
+
+/// A progress handler that aborts at the last pass, once the request is
+/// done, fails the transfer and closes its connection, as the C library
+/// does (checked with a program on the C build: the next transfer
+/// connects anew).
+#[test]
+fn an_abort_at_the_last_progress_pass_closes_the_connection() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+    let (mut m, talk, _clock) = server(&[reply, reply], false);
+    let counting = AbortsAt::default();
+    let progress = |h: &AbortsAt| {
+        let h = h.clone();
+        move |o: &mut Options| {
+            o.progress = crate::options::Progress::Handler(Handler::progress(h).unwrap());
+        }
+    };
+    let one = get(&mut m, "/1", talk.clone(), progress(&counting));
+    assert_eq!(one.result, Ok(()));
+    assert!(one.seen.text().last().unwrap().ends_with("left intact\n"));
+    let last = AbortsAt {
+        calls: Rc::default(),
+        abort_at: counting.calls.get(),
+    };
+    let two = get(&mut m, "/2", talk, progress(&last));
+    assert_eq!(two.result, Err(ErrorKind::AbortedByCallback));
+    assert_eq!(
+        last.calls.get(),
+        counting.calls.get(),
+        "aborted at the last"
+    );
+    let text = two.seen.text();
+    assert!(
+        text.iter().any(|l| l == "closing connection #0\n"),
+        "{text:?}"
+    );
+}
+
 /// While its response is to come, a request waits to read its socket;
 /// paused, it waits on nothing (`Curl_http_perform_pollset`).
 #[test]
@@ -661,6 +758,8 @@ fn a_resumed_get_takes_only_the_rest() {
         &b"HTTP/1.1 206 P\r\nContent-Range: bytes 5-8/22\r\nContent-Length: 4\r\n\r\nabc\n"[..],
         b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nabc\n",
         b"HTTP/1.0 200 OK\r\n\r\nall of it\n",
+        // No start is the whole document only on a success.
+        b"HTTP/1.1 300 X\r\nContent-Range: bytes */100\r\nContent-Length: 3\r\n\r\nabc",
     ] {
         let ran = run("/", reply, true, resume);
         assert_eq!(ran.result, Err(ErrorKind::RangeError));
@@ -674,6 +773,13 @@ fn a_resumed_get_takes_only_the_rest() {
         resume,
     );
     assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"all\n".to_vec()));
+    let ran = run(
+        "/",
+        b"HTTP/1.1 299 X\r\nContent-Range: bytes */100\r\nContent-Length: 3\r\n\r\nabc",
+        false,
+        resume,
+    );
+    assert_eq!((ran.result, ran.seen.body()), (Ok(()), b"abc".to_vec()));
     let ran = run(
         "/",
         b"HTTP/1.1 200 OK\r\nContent-Length: 18\r\n\r\n",
@@ -786,6 +892,14 @@ fn the_report_s_url_has_no_credentials() {
         },
     );
     assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.seen
+            .text()
+            .iter()
+            .any(|l| l == "Server auth using Basic with user 'u'\n"),
+        "{:?}",
+        ran.seen.text()
+    );
     assert_eq!(
         ran.easy.report().url().unwrap(),
         format!("http://127.0.0.1:{PORT}/x?q").as_bytes()

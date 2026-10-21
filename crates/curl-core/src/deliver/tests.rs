@@ -1272,6 +1272,29 @@ fn a_short_body_is_a_partial_file() {
     );
 }
 
+/// An ignored body (a 416 to a resumed GET) is counted as it is read,
+/// written nowhere, and done at its size.
+#[test]
+fn an_ignored_body_is_counted_to_its_end() {
+    let (mut m, id, log, _) = accounting();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(Reach::Network);
+        p.expect(Expect {
+            size: Some(6),
+            max: Some(6),
+            no_body: false,
+            no_head: false,
+            ignore: true,
+        });
+        p.body(cx, b"abc").unwrap();
+        assert_eq!((p.body_done(), p.bytecount()), (false, 3));
+        p.body(cx, b"def").unwrap();
+        assert_eq!((p.body_done(), p.bytecount()), (true, 6));
+        p.end(cx).unwrap();
+    });
+    assert_eq!(lengths(&log.borrow(), "write"), [0usize; 0]);
+}
+
 /// A body where none is wanted is dropped, the connection with it; the
 /// response stands (a HEAD's).
 #[test]

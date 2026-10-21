@@ -53,6 +53,10 @@ fn main() {
             a_get_takes_no_refusal_for_success,
         ),
         (
+            "a_get_with_credentials_takes_no_refusal_for_success",
+            a_get_with_credentials_takes_no_refusal_for_success,
+        ),
+        (
             "a_get_stays_within_its_allocation_budget",
             a_get_stays_within_its_allocation_budget,
         ),
@@ -402,9 +406,15 @@ impl HeaderHandler for Taker {
     }
 }
 
-/// The request the GET sends.
+/// The GET's URL, and the request it sends.
+const URL: &[u8] = b"http://127.0.0.1/1?q";
 const REQUEST: &[u8] =
     b"GET /1?q HTTP/1.1\r\nHost: 127.0.0.1\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n";
+
+/// The same with the URL's credentials, sent as Basic.
+const AUTHED_URL: &[u8] = b"http://u:p@127.0.0.1/1?q";
+const AUTHED_REQUEST: &[u8] = b"GET /1?q HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+    Authorization: Basic dTpw\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n";
 
 /// A network with a server at port 80 answering test 1's reply, and the
 /// server, made untracked: the test's peer is not the library's to
@@ -426,6 +436,17 @@ fn test_1_server() -> (ManualClock, FakeNet, Conversation) {
 /// memory, and nothing else, and when it succeeds it sent the whole
 /// request.
 fn get(clock: ManualClock, net: FakeNet, talk: &Conversation) -> Result<Got, OutOfMemory> {
+    get_of(clock, net, talk, URL, REQUEST)
+}
+
+/// A GET of `url` that sends `request`, as `get`.
+fn get_of(
+    clock: ManualClock,
+    net: FakeNet,
+    talk: &Conversation,
+    url: &[u8],
+    request: &[u8],
+) -> Result<Got, OutOfMemory> {
     let env = Env {
         clock: try_box(clock)?,
         net: try_box(net)?,
@@ -435,7 +456,7 @@ fn get(clock: ManualClock, net: FakeNet, talk: &Conversation) -> Result<Got, Out
     let mut m: Multi = Multi::new(env)?;
     let mut easy = Easy::new();
     let o = easy.options_mut();
-    o.set_url(Some(b"http://127.0.0.1/1?q"))?;
+    o.set_url(Some(url))?;
     o.http.user_agent = Some(b"curl/test".to_vec_fallible()?);
     let took = TryRc::try_new(Took::default())?;
     o.callbacks.write = Some(Handler::write(Taker(took.clone()))?);
@@ -454,7 +475,7 @@ fn get(clock: ManualClock, net: FakeNet, talk: &Conversation) -> Result<Got, Out
         track::untracked(|| panic!("the GET ended with {result:?}"));
     }
     if result.is_ok() {
-        track::untracked(|| assert_eq!(talk.received(), REQUEST, "the request sent"));
+        track::untracked(|| assert_eq!(talk.received(), request, "the request sent"));
     }
     m.remove(id, &mut NoEvents).expect("in the multi");
     Ok(Got {
@@ -503,6 +524,25 @@ fn refused_alone<T: std::fmt::Debug>(scenario: fn() -> T, failed: fn(&T) -> bool
         limit += 1;
         assert!(limit < 100_000, "the scenario never ran to the end");
     }
+}
+
+/// A refusal while taking the URL's credentials fails the transfer: it
+/// never goes without them.
+fn a_get_with_credentials_takes_no_refusal_for_success() {
+    fn scenario() -> Result<Got, OutOfMemory> {
+        let (clock, net, talk) = test_1_server();
+        get_of(clock, net, &talk, AUTHED_URL, AUTHED_REQUEST)
+    }
+    refused_alone(scenario, |got| {
+        matches!(
+            got,
+            Err(OutOfMemory)
+                | Ok(Got {
+                    result: Err(ErrorKind::OutOfMemory),
+                    ..
+                })
+        )
+    });
 }
 
 fn a_get_takes_no_refusal_for_success() {

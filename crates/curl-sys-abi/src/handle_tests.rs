@@ -210,6 +210,8 @@ fn http_options_reach_the_request() {
         assert_eq!(pointer(c, o, null), CURLE_OK);
     }
     assert_eq!(strings(c), (None, None, vec![]));
+    // Nothing raises a signal: the option is taken and changes nothing.
+    assert_eq!(long(c, ffi::CURLOPT_NOSIGNAL, 1), CURLE_OK);
     let version = |c| options(c, |o| o.http.version);
     assert_eq!(
         long(c, ffi::CURLOPT_HTTP_VERSION, ffi::CURL_HTTP_VERSION_1_0),

@@ -7,7 +7,7 @@ along with the tests it flipped as `runtests.pl` reported them.
 
 ## Milestone 1: `file://`, then HTTP/1.1 GET
 
-Status: steps 1 to 14 are **done**; every other step is **to do**.
+Status: steps 1 to 15 are **done**; every other step is **to do**.
 
 Constraints the order follows, checked in the tree:
 - `runtests.pl` gates every test on the protocols in the `Protocols:` line of `curl -V`
@@ -279,10 +279,12 @@ yet meet.
       the second `Location` (772) and HEAD over HTTP/0.9 (1144). The plain-GET torture
       scenario and allocation budget (38) are in `tests/torture.rs`; the scenario found memory
       failures reported as `UrlMalformat`, `CouldntConnect` and `RecvError`.
-15. **tool: run HTTP transfers.** The tool maps the remaining milestone options (`-H`, `-A`,
-    `-e`, `-0`/`--http1.0`/`--http1.1`/`--http0.9`, `-D`, `--raw`, `--ignore-content-length`,
-    `--max-filesize`, `--show-headers`, `-f`, `-N`, `--tr-encoding`). Measure test 1's
-    whole-process count against its 140/136000 limit.
+15. **tool: run HTTP transfers.** **Done.** The tool maps `-H`, `-A`, `-e`, `-0`/`--http1.0`/
+    `--http1.1`/`--http0.9`, `-D`, `--raw`, `--ignore-content-length`, `--max-filesize`, `-I`,
+    `-f` and `-N`, checked against the C tool by `crates/curl-tool/tests/http.rs`; the library
+    gained the referer and failing on error codes. `--tr-encoding` and `-H @file` stay refused.
+    Test 1 as runtests.pl runs it makes 60 allocations and 41357 bytes at most (the C tool 95
+    and 126805), within its 140/136000.
 16. **version: report http**, as soon as the basic GET works. Ring A flips: 1, 14, 22, 23, 47, 59, 151, 260, 334, 367, 461, 1109,
     1121, 1292 and the `-A`/`-e`/`-0` cases. Tests 1, 497, 747 and 767 also need their
     `<limits>`.

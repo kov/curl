@@ -153,6 +153,38 @@ pub(crate) fn verify_line(line: &[u8], number: u32) -> Result<(), BadLine> {
 mod tests {
     use super::*;
 
+    /// C's limits (`curlx_str_until`, `curlx_str_untilnl` at 300 KiB): a
+    /// name of 300 KiB is one, a byte more is none; a value of 300 KiB is
+    /// read, a byte more reads as empty.
+    #[test]
+    fn values_are_read_within_c_s_limits() {
+        let line = |name: usize, value: usize| {
+            let mut l = vec![b'n'; name];
+            l.push(b':');
+            l.resize(name + 1 + value, b'v');
+            l.extend_from_slice(b"\r\n");
+            l
+        };
+        let max = MAX_HEADERS;
+        assert_eq!(header_value(&line(max, 1)), Some(&b"v"[..]));
+        assert_eq!(header_value(&line(max + 1, 1)), None);
+        assert_eq!(header_value(&line(1, max)).map(<[u8]>::len), Some(max));
+        assert_eq!(header_value(&line(1, max + 1)), Some(&b""[..]));
+    }
+
+    /// Lines `Curl_compareheader` refuses without reading past them: one
+    /// shorter than the name, and values whose commas and blanks take
+    /// the search to or past their end.
+    #[test]
+    fn says_reads_no_further_than_the_value() {
+        let says = |line: &[u8]| header_says(line, b"Connection:", b"close");
+        assert!(!says(b"Conn"));
+        assert!(!says(b"Connection:      x,   \r\n"));
+        assert!(!says(b"Connection: a,b"));
+        assert!(!says(b"Connection: a,b\r\n"));
+        assert!(says(b"Connection: a,  close\r\n"));
+    }
+
     /// Unit 1626's table.
     #[test]
     fn values_are_read_as_c_reads_them() {

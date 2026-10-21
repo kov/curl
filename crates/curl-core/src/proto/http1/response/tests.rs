@@ -170,6 +170,8 @@ fn status_lines_are_read_as_c_reads_them() {
     );
     assert_eq!(first("HTTP/1.2 200 OK"), Err(HeadError::BadSubversion));
     assert_eq!(first("HTTP/1.1  200 OK"), Err(HeadError::BadSubversion));
+    // The C tool: "Unsupported HTTP/1 subversion in response".
+    assert_eq!(first("HTTP/1.1X200 OK"), Err(HeadError::BadSubversion));
     assert_eq!(first("HTTP/4 200 OK"), Err(HeadError::UnknownVersion));
     // What starts with `HTTP/` in any case is a 200 in HTTP/1.0.
     let alias = Ok(status(HttpVersion::Http10, 200));
@@ -714,4 +716,51 @@ fn the_content_type_is_kept() {
     }
     assert_eq!(p.meta().content_type(), Some(&b"text/html"[..]));
     assert!(p.meta().trailer());
+    let mut p = HeadParser::new(PLAIN);
+    let mut input = &b"HTTP/1.1 200 OK\r\nX-Trailer: x\r\n\r\n"[..];
+    while !p.is_done() {
+        let (used, _) = p.feed(input, &mut 0).unwrap();
+        input = &input[used..];
+    }
+    assert!(!p.meta().trailer(), "no Trailer header");
+}
+
+/// The limits are C's (`Curl_bump_headersize`): a request's heads may
+/// come to 300 KiB and the transfer's to twenty times that, each exactly;
+/// a line of 300 KiB or more is refused counting what came before it.
+#[test]
+fn head_bytes_are_counted_to_c_s_limits() {
+    let max = MAX_HEADERS as u64;
+    let (mut request, mut transfer) = (0, 0);
+    assert_eq!(count_head(max - 1, &mut request, &mut transfer), Ok(()));
+    assert_eq!(count_head(1, &mut request, &mut transfer), Ok(()));
+    assert_eq!(
+        count_head(1, &mut request, &mut transfer),
+        Err(HeadError::TooLarge {
+            bytes: max + 1,
+            max
+        })
+    );
+    let (mut request, mut transfer) = (0, max * 20 - 1);
+    assert_eq!(count_head(1, &mut request, &mut transfer), Ok(()));
+    assert_eq!(
+        count_head(1, &mut request, &mut transfer),
+        Err(HeadError::TooLarge {
+            bytes: max * 20 + 1,
+            max: max * 20
+        })
+    );
+    let (mut request, mut transfer) = (10, 0);
+    assert_eq!(
+        count_head(max, &mut request, &mut transfer),
+        Err(HeadError::TooLarge {
+            bytes: max + 10,
+            max
+        })
+    );
+    assert_eq!(
+        (request, transfer),
+        (10, 0),
+        "a refused line is not counted"
+    );
 }

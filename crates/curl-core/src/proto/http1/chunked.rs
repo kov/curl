@@ -617,6 +617,13 @@ mod tests {
             read(&[&endless], false).error,
             Some(ChunkError::TrailerTooLong)
         );
+        // One byte fewer is still a line that may end: the input ends
+        // with it outstanding, not too long.
+        endless.pop();
+        assert_eq!(
+            read(&[&endless], false).error,
+            Some(ChunkError::Outstanding)
+        );
     }
 
     /// Trailers count against the request's head limit.

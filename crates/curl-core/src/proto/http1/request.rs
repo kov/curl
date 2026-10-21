@@ -744,6 +744,61 @@ mod tests {
         );
     }
 
+    /// Lines the C tool sends, or not, as `-H` gives them: a value ends at
+    /// a CR, a header named as the library's but with no colon replaces
+    /// nothing, and a semicolon asks for a blank header only at the end
+    /// of a name with no colon.
+    #[test]
+    fn the_application_s_odd_headers_go_as_in_c() {
+        let got = render(
+            b"GET",
+            b"/",
+            Version::Http11,
+            &[
+                b"Connection: close\r",
+                b"Accept",
+                b"X-A: b\r",
+                b"X-B: \r",
+                b"X-C: a;",
+                b"X;y",
+                b"X-D;",
+            ],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            "GET / HTTP/1.1\r\n\
+             Host: 127.0.0.1:8990\r\n\
+             User-Agent: curl/8.99.0-test\r\n\
+             Accept: */*\r\n\
+             X-A: b\r\r\n\
+             X-C: a;\r\n\
+             X-D:\r\n\
+             Connection: close\r\n\
+             \r\n"
+        );
+    }
+
+    /// The lines come back as given, and a copy has them all.
+    #[test]
+    fn the_application_s_headers_are_kept_as_given() {
+        let lines: [&[u8]; 3] = [b"X-A: 1", b"Accept;", b"No colon"];
+        let headers = UserHeaders::new(lines).unwrap();
+        assert!(headers.lines().eq(lines));
+        assert!(headers.try_clone().unwrap().lines().eq(lines));
+    }
+
+    /// Endpoints are the same only with scheme, host and port alike, the
+    /// first two in any case.
+    #[test]
+    fn peers_are_the_same_only_wholly() {
+        let at = |scheme, host, port| Peer { scheme, host, port };
+        let here = at(&b"http"[..], &b"Example.COM"[..], 80);
+        assert!(here.same(&at(b"HTTP", b"example.com", 80)));
+        assert!(!here.same(&at(b"http", b"example.com", 81)));
+        assert!(!here.same(&at(b"http", b"example.org", 80)));
+        assert!(!here.same(&at(b"https", b"example.com", 80)));
+    }
+
     /// The application's Connection headers: the first with a value as
     /// the library's, trimmed, then the others as given, after the rest.
     #[test]

@@ -407,9 +407,21 @@ mod tests {
         let mut easy = Easy::new();
         easy.options_mut().set_url(Some(b"file:///x")).unwrap();
         easy.options_mut().limits.total = TimeLimit::from_millis(5);
+        let http = &mut easy.options_mut().http;
+        http.user_agent = Some(b"me".to_vec());
+        http.referer = Some(b"r".to_vec());
+        http.headers = crate::options::UserHeaders::new([&b"X-A: 1"[..]]).unwrap();
+        http.fail_on_error = true;
         let copy = easy.try_clone().unwrap();
         assert_eq!(copy.options().url(), Some(&b"file:///x"[..]));
         assert_eq!(copy.options().limits.total, TimeLimit::from_millis(5));
+        let http = &copy.options().http;
+        assert_eq!(
+            (http.user_agent.as_deref(), http.referer.as_deref()),
+            (Some(&b"me"[..]), Some(&b"r"[..]))
+        );
+        assert!(http.headers.lines().eq([&b"X-A: 1"[..]]));
+        assert!(http.fail_on_error);
         easy.reset();
         assert_eq!(easy.options().url(), None);
         assert_eq!(easy.options().limits.total, None);

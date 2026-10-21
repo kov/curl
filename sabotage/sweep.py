@@ -7,8 +7,9 @@ text to change, the replacement that breaks it, and the test that must
 fail (its witness). The sweep applies one entry at a time, runs only its
 witness, and puts the file back, whatever happens. Verdicts:
 
-  RED       the witness failed (named), the suite hung, or the build
-            refused the change outside the replaced text: caught
+  RED       the witness failed (named), the suite hung, the witness was
+            killed at the memory cap, or the build refused the change
+            outside the replaced text: caught
   BROKEN    the replacement itself does not compile, or the witness ran
             no test: the entry checks nothing
   SURVIVED  the witness passed with the invariant broken: a hole
@@ -108,6 +109,9 @@ def run(e, timeout):
         os.killpg(proc.pid, signal.SIGKILL)
         proc.communicate()
         return "hung", ""
+    # The cap kills the test binary; cargo says so and fails.
+    if proc.returncode != 0 and re.search(r"\(signal: 9, SIGKILL", out):
+        return "killed", out
     return ("passed" if proc.returncode == 0 else "failed"), out
 
 
@@ -164,6 +168,8 @@ def main():
             path.write_text(original)
         if verdict == "hung":
             result = "RED       the suite hung"
+        elif verdict == "killed":
+            result = "RED       the witness ran out of memory"
         elif verdict == "failed" and "could not compile" in out:
             if build_error_inside(out, e, start, end):
                 result, holes = "BROKEN    the replacement does not compile", holes + 1

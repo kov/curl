@@ -346,19 +346,21 @@ cargo-mutants run on the milestone's diff.
     and libtest 500 within its memory limit now that a multi's rows hold their transfers
     boxed. The rest of the ring waits on the steps named for it below: `%{method}` and
     `%{referer}` are tested only through redirects.
-25. **http: send request bodies.** **In progress.** Done: `Directions` derived from the
-    protocol where a pause is judged, no longer stored; a body of known size sent behind the
-    head from one 64 KiB send buffer, with its `Content-Length`, a POST's form type and C's
-    end-of-send trace; a body of unknown size, or one the application asks so, sent chunked;
-    `CURLOPT_CUSTOMREQUEST`; the tool's `-d` family, `--json`, `-X` and `-T -`;
-    `Expect: 100-continue`, waited for until a 100 or the timeout, and an error response
-    before the body has gone stopping it or not (`KEEP_SENDING_ON_ERROR`); T1 tests 1295,
-    1740, 1741 and 2093. To do: the method's options (NOBODY, POST, POSTFIELDS,
-    COPYPOSTFIELDS, POSTFIELDSIZE, UPLOAD, HTTPGET) combining in the shim. The 417 retry
-    and the body's rewind for a new leg come with step 26's legs.
+25. **http: send request bodies.** **Done.** `Directions` derived from the protocol where a
+    pause is judged, no longer stored; a body of known size sent behind the head from one
+    64 KiB send buffer, with its `Content-Length`, a POST's form type and C's end-of-send
+    trace; a body of unknown size, or one the application asks so, sent chunked, ending
+    with the trailer handler's trailers; `Expect: 100-continue`, waited for until a 100 or
+    the timeout, and an error response before the body has gone stopping it or not
+    (`KEEP_SENDING_ON_ERROR`); `CURLOPT_CUSTOMREQUEST`; the method's options (NOBODY, POST,
+    POSTFIELDS, COPYPOSTFIELDS, POSTFIELDSIZE, UPLOAD, HTTPGET) combined in the shim; the
+    tool's `-d` family, `--json`, `-X`, `-T -` and `--expect100-timeout`. T1 tests 1295,
+    1740, 1741 and 2093. The 417 retry and the body's rewind for a new leg come with step
+    26's legs; `-T .` (standard input without blocking) is still refused.
 26. **http: follow redirects.** **To do.** Opening commit: relative URL resolution and the
     part setters (the rest of lib1560). Then FOLLOWLOCATION, MAXREDIRS, 301/302/303 method
-    changes, a request body rewound for the next leg, a 417 sent again without `Expect`, the credential gate's first origin kept in `Run`, credentials and a custom Host
+    changes, a request body rewound for the next leg, a 417 sent again without `Expect`,
+    the credential gate's first origin kept in `Run`, credentials and a custom Host
     dropped across hosts through the gate,
     `-e ";auto"` and `CURLINFO_REDIRECT_URL`. Flips 3010, 1940, 1942 and 1943 and the
     followlocation family; T1 tests 193, 1029, 1067, 1080, 1081, 1089, 1090, 1159, 1197,

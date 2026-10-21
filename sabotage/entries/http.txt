@@ -87,3 +87,11 @@ witness: curl-core proto::http::tests::an_exchange_waits_to_read_its_socket
         if !matches!(self.stage, Stage::Done) && !pause.recv_paused() {
 --- new
         if !matches!(self.stage, Stage::Done) {
+
+=== a body by length is read until the close
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::suite::the_milestone_s_http_cases
+--- old
+                Some(n) => Framing::Length(n),
+--- new
+                Some(_) => Framing::UntilClose,

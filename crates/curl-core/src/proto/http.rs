@@ -562,4 +562,6 @@ fn chunks_failed<H: Host>(cx: &mut StepCx<'_, H>, e: &ChunkError) -> ErrorKind {
 }
 
 #[cfg(test)]
+mod suite;
+#[cfg(test)]
 mod tests;

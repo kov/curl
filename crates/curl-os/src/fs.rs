@@ -2,13 +2,15 @@
 //! and listing a directory are system calls of their own, so neither the
 //! path nor an entry's name is ever copied; reading, writing, seeking and
 //! the file's status go through the std `File` that opening gives.
+//! Standard error is pointed at a file here too, as the tool's `--stderr`
+//! asks.
 
 #![allow(unsafe_code)]
 
 use core::ffi::CStr;
 use std::fs::File;
 use std::io;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 
 /// What opening for writing does to what the file holds.
@@ -50,6 +52,18 @@ fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File>
     }
     // SAFETY: `open` returned a new descriptor that nothing else owns.
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// Make standard error write where `to` writes, as `freopen` of `stderr`
+/// does: every later write to descriptor 2, from anywhere in the process,
+/// goes there.
+pub fn stderr_to(to: &impl AsFd) -> io::Result<()> {
+    // SAFETY: `to`'s descriptor is open for the call, as its borrow says;
+    // `dup2` replaces descriptor 2 in one step, whatever it was.
+    if unsafe { libc::dup2(to.as_fd().as_raw_fd(), libc::STDERR_FILENO) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// A directory's entries, as `readdir` gives them, in no order.
@@ -138,6 +152,26 @@ mod tests {
 
     fn c(path: &Path) -> CString {
         CString::new(path.as_os_str().as_bytes()).unwrap()
+    }
+
+    /// Standard error writes to the file it is pointed at, until pointed
+    /// back. Another test's writes may land there meanwhile, so only this
+    /// one's are looked for.
+    #[test]
+    fn points_standard_error_at_a_file() {
+        let s = Scratch::new("stderr");
+        let file = open_write(&s.c("err"), Keep::Nothing, 0o600).unwrap();
+        let saved = std::io::stderr().as_fd().try_clone_to_owned().unwrap();
+        stderr_to(&file).unwrap();
+        let written = std::io::stderr().write_all(b"to the file\n");
+        stderr_to(&saved).unwrap();
+        written.unwrap();
+        let mut read = String::new();
+        std::fs::File::open(s.0.join("err"))
+            .unwrap()
+            .read_to_string(&mut read)
+            .unwrap();
+        assert!(read.contains("to the file\n"), "{read:?}");
     }
 
     #[test]

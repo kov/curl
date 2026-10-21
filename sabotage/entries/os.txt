@@ -148,3 +148,11 @@ witness: curl-os time::tests::follows_the_time_zone
     let filled = unsafe { libc::localtime_r(&raw const t, &raw mut tm) };
 --- new
     let filled = unsafe { libc::gmtime_r(&raw const t, &raw mut tm) };
+
+=== standard error is pointed nowhere new
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::points_standard_error_at_a_file
+--- old
+    if unsafe { libc::dup2(to.as_fd().as_raw_fd(), libc::STDERR_FILENO) } < 0 {
+--- new
+    if unsafe { libc::dup2(to.as_fd().as_raw_fd(), to.as_fd().as_raw_fd()) } < 0 {

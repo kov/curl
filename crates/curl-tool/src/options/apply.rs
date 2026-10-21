@@ -623,6 +623,15 @@ pub(crate) fn apply<'a>(
         Opt::Globoff => line.current().globoff = value.toggle(),
         Opt::Fail => line.current().fail = value.toggle(),
         Opt::Buffer => line.current().no_buffer = !value.toggle(),
+        Opt::Stderr => crate::output::redirect_stderr(value.text(), msgs),
+        // `--no-remote-name` gives a URL its own output only where
+        // `--remote-name-all` named every URL's, which it cannot yet: off,
+        // both change nothing.
+        Opt::RemoteName | Opt::RemoteNameAll => {
+            if value.toggle() {
+                line.not_implemented(spec, "--");
+            }
+        }
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::WriteOut => {
@@ -867,8 +876,6 @@ pub(crate) fn apply<'a>(
         | Opt::Range
         | Opt::Rate
         | Opt::RemoteHeaderName
-        | Opt::RemoteName
-        | Opt::RemoteNameAll
         | Opt::Request
         | Opt::RequestTarget
         | Opt::Retry
@@ -900,7 +907,6 @@ pub(crate) fn apply<'a>(
         | Opt::SslSessions
         | Opt::Sslv2
         | Opt::Sslv3
-        | Opt::Stderr
         | Opt::StyledOutput
         | Opt::SuppressConnectHeaders
         | Opt::TcpFastopen

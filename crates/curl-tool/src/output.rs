@@ -356,6 +356,22 @@ impl Stream {
     }
 }
 
+/// `--stderr`: from now on standard error goes to the file `name`,
+/// emptied, or to standard output for `-` (`tool_set_stderr_file`). A file
+/// that cannot be opened is warned of, and standard error stays.
+pub(crate) fn redirect_stderr(name: &[u8], msgs: &Messages) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let moved = if name == b"-" {
+        fs::stderr_to(&std::io::stdout())
+    } else {
+        File::create(std::ffi::OsStr::from_bytes(name)).and_then(|file| fs::stderr_to(&file))
+    };
+    if moved.is_err() {
+        // C's text, with its prefix twice.
+        msgs.warn(&[b"Warning: Failed to open ", name]);
+    }
+}
+
 struct Body(Output);
 
 impl WriteHandler for Body {

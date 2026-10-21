@@ -345,3 +345,13 @@ witness: curl-tool bar::tests::counts_what_a_resumed_transfer_had
             ),
 --- new
             Some(_) => (total_all, now_all),
+
+=== `%output{>>}` empties the file
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_to_the_file_output_names
+--- old
+                if append {
+                    open.append(true);
+--- new
+                if append {
+                    open.write(true).truncate(true);

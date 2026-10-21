@@ -5,7 +5,10 @@
 //! from one not implemented yet; a format using the latter is refused
 //! when the option is read, never written without it.
 
+use std::ffi::OsStr;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt as _;
 use std::time::Duration;
 
 use curl_alloc::TryVec;
@@ -259,7 +262,13 @@ enum Piece<'f> {
     Variable(&'static Variable),
     /// A name C does not know, reported when met.
     Unknown(&'f [u8]),
-    /// `%header{`, `%time{` or `%output{`, not implemented yet.
+    /// `%output{name}`, or `%output{>>name}` to `append`: what follows is
+    /// written to that file, if it opens.
+    Output {
+        name: &'f [u8],
+        append: bool,
+    },
+    /// `%header{` or `%time{`, not implemented yet.
     Function(&'static str),
     /// A name too long for C's buffer: nothing more is written.
     End,
@@ -294,7 +303,26 @@ fn pieces<'f>(format: &'f [u8], mut each: impl FnMut(Piece<'f>) -> bool) {
                 (Piece::Function("--write-out %time{}"), rest.len())
             }
             (b'%', Some(_)) if rest[1..].starts_with(b"output{") => {
-                (Piece::Function("--write-out %output{}"), rest.len())
+                let after = &rest[8..];
+                let (append, name_at) = match after.strip_prefix(b">>") {
+                    Some(_) => (true, 10),
+                    None => (false, 8),
+                };
+                match rest[name_at..].iter().position(|&b| b == b'}') {
+                    // C's buffer holds 511 bytes of name: a longer one is
+                    // passed over.
+                    Some(len) if len < 512 => (
+                        Piece::Output {
+                            name: &rest[name_at..name_at + len],
+                            append,
+                        },
+                        name_at + len + 1,
+                    ),
+                    Some(len) => (Piece::Text(b""), name_at + len + 1),
+                    // Unclosed: written, the `>>` lost, and reading goes on
+                    // after it.
+                    None => (Piece::Text(b"%output{"), name_at),
+                }
             }
             (b'\\', Some(escape @ (b'r' | b'n' | b't'))) => (
                 Piece::Byte(match escape {
@@ -336,11 +364,25 @@ pub(crate) fn unimplemented(format: &[u8]) -> Option<&'static str> {
 /// unless it says otherwise. A failed write has nowhere to be reported,
 /// as in C.
 pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
-    let mut stdout = Buffered(stdout);
-    let mut stderr = std::io::stderr();
-    let mut to_stderr = false;
+    write_to(format, facts, &mut Buffered(stdout), &mut std::io::stderr());
+}
+
+/// Where the format's text goes now.
+enum To {
+    Stdout,
+    Stderr,
+    /// The file `%output{}` named, closed when another is chosen.
+    File(File),
+}
+
+fn write_to(format: &[u8], facts: &Facts<'_>, stdout: &mut dyn Write, stderr: &mut dyn Write) {
+    let mut to = To::Stdout;
     pieces(format, |piece| {
-        let out: &mut dyn Write = if to_stderr { &mut stderr } else { &mut stdout };
+        let out: &mut dyn Write = match &mut to {
+            To::Stdout => &mut *stdout,
+            To::Stderr => &mut *stderr,
+            To::File(file) => file,
+        };
         match piece {
             Piece::Text(text) => {
                 let _ = out.write_all(text);
@@ -351,8 +393,8 @@ pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
             Piece::Variable(v) => match v.var.expect("refused when the option was read") {
                 Var::OnError if facts.result.is_ok() => return false,
                 Var::OnError => {}
-                Var::Stdout => to_stderr = false,
-                Var::Stderr => to_stderr = true,
+                Var::Stdout => to = To::Stdout,
+                Var::Stderr => to = To::Stderr,
                 var => {
                     let _ = value(var, facts, out);
                 }
@@ -365,6 +407,21 @@ pub(crate) fn write(format: &[u8], facts: &Facts<'_>, stdout: &Stdout) {
                     }
                 }
                 let _ = stderr.write_all(&line);
+            }
+            Piece::Output { name, append } => {
+                let mut open = OpenOptions::new();
+                open.create(true);
+                if append {
+                    open.append(true);
+                } else {
+                    open.write(true).truncate(true);
+                }
+                // C's name ends at a zero byte; only a file that opens is
+                // written to.
+                let name = name.split(|&b| b == 0).next().unwrap_or_default();
+                if let Ok(file) = open.open(OsStr::from_bytes(name)) {
+                    to = To::File(file);
+                }
             }
             Piece::Function(_) => unreachable!("refused when the option was read"),
             Piece::End => return false,
@@ -516,6 +573,11 @@ mod tests {
                     out.extend_from_slice(n);
                     out.push(b'>');
                 }
+                Piece::Output { name, append } => {
+                    out.extend_from_slice(if append { b"<>>" } else { b"<>" });
+                    out.extend_from_slice(name);
+                    out.push(b'>');
+                }
                 Piece::Function(f) => out.extend_from_slice(f.as_bytes()),
                 Piece::End => return false,
             }
@@ -616,6 +678,38 @@ mod tests {
         assert_eq!(out, b"3.000042");
     }
 
+    /// `%output{}` sends what follows to a file, emptied or added to;
+    /// `%{stdout}` sends it back. A file that does not open changes
+    /// nothing, and an unclosed one is written as it is.
+    #[test]
+    fn writes_to_the_file_output_names() {
+        let dir = std::env::temp_dir().join(format!("curl-wo-out-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("out");
+        std::fs::write(&file, b"old").unwrap();
+        let name = file.to_str().unwrap();
+        let format = format!(
+            "a%output{{{name}}}b%{{stdout}}c%output{{>>{name}}}d%output{{/nonexistent/x}}e"
+        );
+        let report = TransferReport::default();
+        let facts = Facts {
+            result: Ok(()),
+            url: b"",
+            urlnum: 0,
+            num_headers: 0,
+            filename: None,
+            report: &report,
+        };
+        let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        write_to(format.as_bytes(), &facts, &mut stdout, &mut stderr);
+        assert_eq!((&stdout[..], &stderr[..]), (&b"ac"[..], &b""[..]));
+        assert_eq!(std::fs::read(&file).unwrap(), b"bde");
+        let mut stdout = Vec::new();
+        write_to(b"%output{>>x", &facts, &mut stdout, &mut stderr);
+        assert_eq!(stdout, b"%output{x");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A format's file is read without its line ends.
     #[test]
     fn reads_a_format_file_without_line_ends() {
@@ -639,7 +733,7 @@ mod tests {
         assert_eq!(unimplemented(b"x %{json}"), Some("json"));
         assert_eq!(unimplemented(b"%header{a}"), Some("--write-out %header{}"));
         assert_eq!(unimplemented(b"%time{%H}"), Some("--write-out %time{}"));
-        assert_eq!(unimplemented(b"%output{f}"), Some("--write-out %output{}"));
+        assert_eq!(unimplemented(b"%output{f}"), None);
         let after_end = format!("%{{{}}}%{{http_code}}", "a".repeat(24));
         assert_eq!(unimplemented(after_end.as_bytes()), None);
         // The table is C's, sorted for its binary search.

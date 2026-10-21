@@ -542,7 +542,23 @@ impl Url {
             .query
             .as_deref()
             .filter(|q| !q.is_empty() || opts.get_empty);
+        // Room for the parts as they are and their separators, so a URL
+        // that needs no encoding is read back in one allocation.
+        let parts = [
+            self.scheme.as_ref().map(|s| &s.name[..]),
+            self.user.as_deref(),
+            self.password.as_deref(),
+            self.options.as_deref(),
+            self.host.as_deref(),
+            self.zone_id.as_deref(),
+            self.path.as_deref(),
+            query,
+            fragment,
+        ];
+        let room = parts.iter().flatten().map(|p| p.len()).sum::<usize>() + 32;
         let mut out = Bytes::new();
+        out.try_reserve_exact(room.min(MAX_INPUT))
+            .map_err(|_| UrlErrorKind::OutOfMemory)?;
         let tail = |out: &mut Bytes| -> Result<(), UrlErrorKind> {
             if let Some(q) = query {
                 push(out, b"?")?;

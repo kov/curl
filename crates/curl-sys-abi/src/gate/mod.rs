@@ -358,7 +358,9 @@ mod tests {
         });
         assert!(!m.in_event());
         // Out of the notification, an add may not recurse again.
-        assert_eq!(m.enter(MultiCall::AddHandle).err(), Some(Recursive));
+        m.lend(transfer_frame(), || {
+            assert_eq!(m.enter(MultiCall::AddHandle).err(), Some(Recursive));
+        });
     }
 
     /// Calls nest no deeper than C lets them.

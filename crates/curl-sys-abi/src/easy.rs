@@ -219,9 +219,10 @@ impl ShimEasy {
         // SAFETY: the application gave a buffer of `CURL_ERROR_SIZE` bytes,
         // which nothing else holds during the call.
         let buf = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), ERROR_SIZE) };
-        let n = why.len().min(ERROR_SIZE - 1);
-        buf[..n].copy_from_slice(&why[..n]);
-        buf[n] = 0;
+        // The core cuts every reason to fit, as `failf` does: one too long
+        // fails the copy, loudly.
+        buf[..why.len()].copy_from_slice(why);
+        buf[why.len()] = 0;
     }
 
     /// Empty ERRORBUFFER, for a new transfer (`Curl_reset_fail`).

@@ -240,6 +240,9 @@ fn limits_are_checked_as_in_c() {
         long(c, ffi::CURLOPT_LOW_SPEED_TIME, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
+    assert_eq!(long(c, ffi::CURLOPT_LOW_SPEED_TIME, 0), CURLE_OK);
+    assert_eq!(low(c), None, "no time");
+    assert_eq!(long(c, ffi::CURLOPT_LOW_SPEED_TIME, 70000), CURLE_OK);
     assert_eq!(
         long(c, ffi::CURLOPT_LOW_SPEED_LIMIT, -1),
         CURLE_BAD_FUNCTION_ARGUMENT
@@ -505,6 +508,9 @@ fn ids_are_told_apart_as_c_tells_them() {
 fn infos_answer_from_the_report() {
     let (path, url) = file("infos", b"hello");
     let c = curl_easy_init();
+    // Not run yet: no time is known.
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_FILETIME), -1);
+    assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_FILETIME_T), -1);
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
     // SAFETY: a live handle.
@@ -724,6 +730,8 @@ fn a_rewind_asks_the_application() {
         Seek(c_int),
         Ioctl(c_int),
         Stream,
+        /// A stream `fseek` cannot rewind.
+        Pipe,
         ReadFunction,
     }
     let run = |how: How| {
@@ -734,6 +742,7 @@ fn a_rewind_asks_the_application() {
         };
         let mut buf = [0 as c_char; 256];
         let stream = tmpfile();
+        let mut pipe = ptr::null_mut::<libc::FILE>();
         let c = curl_easy_init();
         pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
         long(c, ffi::CURLOPT_UPLOAD, 1);
@@ -766,12 +775,27 @@ fn a_rewind_asks_the_application() {
                 function(c, ffi::CURLOPT_READFUNCTION, read as ReadFn as *const ());
                 pointer(c, ffi::CURLOPT_READDATA, &raw mut feed);
             }
+            How::Pipe => {
+                let mut fds = [0; 2];
+                // SAFETY: room for the pipe's two descriptors; the write
+                // end is closed once written, the read end by `fclose`.
+                unsafe {
+                    assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+                    libc::write(fds[1], b"xyz".as_ptr().cast(), 3);
+                    libc::close(fds[1]);
+                    pipe = libc::fdopen(fds[0], c"r".as_ptr());
+                }
+                pointer(c, ffi::CURLOPT_READDATA, pipe);
+            }
         }
         // SAFETY: a live handle, then not used again.
         let code = unsafe { curl_easy_perform(c) };
         // SAFETY: as above.
         unsafe { curl_easy_cleanup(c) };
         close(stream);
+        if !pipe.is_null() {
+            close(pipe);
+        }
         // SAFETY: the shim ends what it writes with a zero byte.
         let why = unsafe { CStr::from_ptr(buf.as_ptr()) }
             .to_str()
@@ -800,6 +824,11 @@ fn a_rewind_asks_the_application() {
     );
     // The default read function reads `stream`, which `fseek` rewinds.
     assert_eq!(run(How::Stream).0, CURLE_OK);
+    let failed = run(How::Pipe);
+    assert_eq!(
+        failed,
+        (fail, 0, "necessary data rewind was not possible".to_owned())
+    );
     let failed = run(How::ReadFunction);
     assert_eq!(
         failed,

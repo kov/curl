@@ -109,4 +109,7 @@ exclude_re = [
     # A private multi kept past an add is freed with the handle instead;
     # nothing else can see it.
     'curl-sys-abi/src/easy\.rs:.*: replace ShimEasy::drop_private with \(\)$',
+    # `c_long` is 64 bits here, so every time fits it; the clamps serve
+    # the targets where it is 32.
+    'curl-sys-abi/src/getinfo\.rs:.*: replace < with (==|>|<=) in long_time$',
 ]

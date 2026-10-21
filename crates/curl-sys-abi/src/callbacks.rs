@@ -486,9 +486,8 @@ impl TextSink for Adapter {
 
 /// Text to a C stream; a failed write has nowhere else to be told.
 fn to_stream(stream: *mut libc::FILE, text: &[u8]) {
-    if text.is_empty() || stream.is_null() {
-        return;
-    }
+    // Never NULL: setopt makes a NULL STDERR standard error.
+    assert!(!stream.is_null(), "a stream to write to");
     // SAFETY: the application gave `stream` as a `FILE *`, or it is the
     // standard error stream.
     unsafe { libc::fwrite(text.as_ptr().cast(), 1, text.len(), stream) };

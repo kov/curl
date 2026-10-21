@@ -95,7 +95,7 @@ fn time_limit(n: c_long, ms: u64) -> Result<Option<TimeLimit>, Refused> {
 fn resume(n: i64) -> Result<Option<Resume>, Refused> {
     match n {
         -1 => Ok(Some(Resume::AtEnd)),
-        n if n < -1 => Err(Refused::Bad),
+        i64::MIN..=-2 => Err(Refused::Bad),
         n => Ok(NonZeroU64::new(n as u64).map(Resume::At)),
     }
 }

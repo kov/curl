@@ -57,6 +57,15 @@ impl Typed {
     }
 }
 
+/// A time in a `long`, clamped as C clamps it where `long` is 32 bits.
+#[allow(
+    clippy::unnecessary_fallible_conversions,
+    reason = "`c_long` is 32 bits on some targets"
+)]
+fn long_time(t: i64) -> c_long {
+    c_long::try_from(t).unwrap_or(if t < 0 { c_long::MIN } else { c_long::MAX })
+}
+
 fn off(n: u64) -> curl_off_t {
     curl_off_t::try_from(n).unwrap_or(curl_off_t::MAX)
 }
@@ -86,9 +95,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_PRIVATE => Value::Ptr(easy.set.get().private),
         // No protocol yet has a response code.
         ffi::CURLINFO_RESPONSE_CODE => Value::Long(0),
-        ffi::CURLINFO_FILETIME => Value::Long(r.filetime().map_or(-1, |t| {
-            c_long::try_from(t).unwrap_or(if t < 0 { c_long::MIN } else { c_long::MAX })
-        })),
+        ffi::CURLINFO_FILETIME => Value::Long(r.filetime().map_or(-1, long_time)),
         ffi::CURLINFO_FILETIME_T => Value::Off(r.filetime().unwrap_or(-1)),
         ffi::CURLINFO_PROTOCOL => Value::Long(r.protocol().map_or(0, proto_bit)),
         ffi::CURLINFO_TOTAL_TIME => Value::Double(secs(t.total())),

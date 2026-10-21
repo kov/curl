@@ -132,7 +132,12 @@ yet meet.
      where none is supported, the timer told of an unpause. The timer and socket callbacks
      inside `TransferCx::pause` (decision 10) come with step 11's sockets; until then the
      timer hears of it at the end of the pass.
-   - 7e. Progress, the speed check and the meter. Ports units 1606, 1636.
+   - 7e. **Done.** `Speedometer`, the low-speed check and `SpeedCheck` timer, the progress
+     handler (`Progress`, `ProgressNow`, `ProgressVerdict`) and the meter on a `TextSink`; the
+     report's speeds, expected download size and running total; script pieces for a size and
+     a wait. Ports units 1606 and 1636 (generated from the C tests). Tests: calls per pass,
+     aborts, the meter's once-a-second line and titles once per handle, the speed check and
+     pause.
    - 7f. `Upload` with rewind and resume.
    - 7g. The pause torture scenario, every allocation refused in turn while output is held
      (the only test that sees `HeldOutput::append` reserve its entry before it copies).

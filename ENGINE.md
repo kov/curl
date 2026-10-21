@@ -154,6 +154,7 @@ curl-core/src/
   resolve/                   Resolver trait, Literal, DnsCache, ResolveId
   deliver/                   Pipeline, BodyAccountant, PauseGate, ContentDecoder, ClientOut,
                              HeldOutput, Pause
+  progress/                  Speedometer, the low-speed check, the meter
   upload/                    BodySource, Upload, ChunkEncoder, Rewind
   proto/
     mod.rs                   ProtoState enum (File, Http1; later variants)
@@ -303,13 +304,14 @@ pub(crate) struct Slot<H: Host> {
 }
 pub(crate) struct TransferShared {
     pause: Pause,
+    speedometer: Speedometer,        // beside the pause, which starts it over
     announced: PollSet,              // what this transfer last contributed to the SocketTable
 }
 pub(crate) struct Run {              // created at add, dropped at removal
     state: TransferState,
     deadlines: Deadlines,
     url: UrlState, follow: FollowState, auth: AuthState,
-    rate: RateLimits, speed: SpeedCheck,
+    rate: RateLimits,
 }
 ```
 
@@ -332,7 +334,8 @@ pub trait WriteHandler  { fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) 
 pub trait HeaderHandler { fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write; }
 pub trait ReadHandler   { fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read; }
 pub trait DebugHandler  { fn debug(&self, cx: &mut TransferCx<'_>, k: DebugKind, data: &[u8]); }
-pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: Progress) -> ProgressVerdict; }
+pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: ProgressNow) -> ProgressVerdict; }
+pub trait TextSink      { fn write(&self, text: &[u8]); }  // CURLOPT_STDERR; None is the process's
 pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, p: &PrereqInfo) -> Result<(), Abort>; }
 pub trait Rewind {
     fn rewind(&self, cx: &mut TransferCx<'_>) -> RewindResult;      // Ok | Fail
@@ -1019,11 +1022,27 @@ write handler the download size leaves out the write in progress, the delivered 
 piece in progress. A transfer the dead multi ends before it ran gets a report started and
 completed at once.
 
-The progress handler runs only with progress enabled: after every receive/send pass (with the
-speed check), at the tail of every `run_single` iteration once connected, in throttled states,
-and a final forced call from `Done::finish` unless the outcome is AbortedByCallback or the
-transfer never connected. The meter is core code writing to the stderr sink, redrawn at most once
-per second (unit 1636).
+`options.progress` is `Off` (NOPROGRESS, the default), `Meter`, or `Handler(h)`; the shim
+derives it from NOPROGRESS and the two callbacks. `ProgressNow` gives sizes not known as `None`;
+the shim passes 0. Stock is taken at every pass whatever the mode (`Speedometer::take_stock`,
+C's `progress_calc`): the average speeds into the report, TOTAL as of then, and the current speed
+over the last five one-second records. The handler is called, or the meter drawn, only when not
+`Off`:
+- after every receive/send pass, with the low-speed check unless the request is done or either
+  direction is paused; while `LowSpeed` is set the check re-arms `SpeedCheck` for a second;
+- after every step that went well while holding a connection (the tail of `multi_runsingle`'s
+  loop), with held output a handler unpaused replayed at once. One step here may be several C
+  states; the count before the first byte is pinned against C with file:// (step 8);
+- in throttled states (with rate limits);
+- a last call from the `Done` step, shown whatever the time but only if the request is done or a
+  second has passed, unless the outcome is AbortedByCallback. An `Abort` there fails a transfer
+  that had succeeded.
+An unpause of a direction starts the records over; any unpause that leaves the transfer
+running forgets the slow time. The meter's titles are written once per handle, its line is
+drawn at most once a second and at the end, and only `Meter` ends the line with a newline
+(`ContinueWithMeter` leaves it to the application). The meter's columns are unit 1636's; the
+low-speed check is unit 1606's. Its "Resuming transfer from byte position" line comes with
+resume (7f).
 
 ---
 

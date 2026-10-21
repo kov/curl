@@ -60,6 +60,8 @@ impl Player {
                 Piece::Header(line) => self.pipeline.header(cx, line, HeaderOrigin::Header)?,
                 Piece::Connect(line) => self.pipeline.header(cx, line, HeaderOrigin::Connect)?,
                 Piece::Body(bytes) => self.pipeline.body(cx, bytes)?,
+                Piece::Size(size) => self.pipeline.announce_size(cx, Some(*size)),
+                Piece::Yield => return Ok(ProtoStep::Blocked),
             }
         }
     }

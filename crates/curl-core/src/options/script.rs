@@ -13,6 +13,10 @@ pub enum Piece {
     /// A header line of a proxy's answer to CONNECT.
     Connect(Vec<u8>),
     Body(Vec<u8>),
+    /// The body's size, as a response announces it.
+    Size(u64),
+    /// Nothing more until the next step, as if waiting for the network.
+    Yield,
 }
 
 /// The pieces, shared by every copy of the options.

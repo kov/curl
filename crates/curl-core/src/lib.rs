@@ -15,6 +15,7 @@ pub mod handler;
 pub mod id;
 pub mod multi;
 pub mod options;
+mod progress;
 mod proto;
 pub mod report;
 pub mod time;

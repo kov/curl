@@ -15,6 +15,7 @@ use crate::time::Instant;
 pub struct TransferReport {
     timings: Timings,
     sizes: Sizes,
+    speeds: Speeds,
     headers: HeaderStore,
 }
 
@@ -49,6 +50,14 @@ impl TransferReport {
 
     pub fn sizes(&self) -> &Sizes {
         &self.sizes
+    }
+
+    pub fn speeds(&self) -> &Speeds {
+        &self.speeds
+    }
+
+    pub(crate) fn speeds_mut(&mut self) -> &mut Speeds {
+        &mut self.speeds
     }
 
     pub(crate) fn timings_mut(&mut self) -> &mut Timings {
@@ -162,9 +171,15 @@ impl Timings {
         *phase += since_start.saturating_sub(self.startsingle).max(1);
     }
 
-    /// The transfer is over (`Curl_pgrsCompleted`).
+    /// The transfer is over (`Curl_pgrsCompleted`), or a progress pass
+    /// takes stock of it: the total so far.
     pub(crate) fn completed(&mut self, now: Instant) {
         self.total = self.since_start(now);
+    }
+
+    /// Microseconds from the transfer's start to `now`.
+    pub(crate) fn since_start_us(&self, now: Instant) -> u64 {
+        self.since_start(now)
     }
 
     fn since_start(&self, now: Instant) -> u64 {
@@ -174,7 +189,8 @@ impl Timings {
         u64::try_from(now.since(start).as_micros()).unwrap_or(u64::MAX)
     }
 
-    /// `CURLINFO_TOTAL_TIME_T`: zero until the transfer is over.
+    /// `CURLINFO_TOTAL_TIME_T`: until the transfer is over, as of its last
+    /// progress pass.
     pub fn total(&self) -> Duration {
         Duration::from_micros(self.total)
     }
@@ -219,9 +235,16 @@ impl Timings {
 pub struct Sizes {
     pub(crate) download: u64,
     pub(crate) delivered: u64,
+    pub(crate) download_expected: Option<u64>,
 }
 
 impl Sizes {
+    /// The body's size as the response announced it
+    /// (`CURLINFO_CONTENT_LENGTH_DOWNLOAD_T`).
+    pub fn download_expected(&self) -> Option<u64> {
+        self.download_expected
+    }
+
     /// Body bytes received, before content decoding
     /// (`CURLINFO_SIZE_DOWNLOAD_T`).
     pub fn download(&self) -> u64 {
@@ -232,6 +255,20 @@ impl Sizes {
     /// (`CURLINFO_SIZE_DELIVERED`).
     pub fn delivered(&self) -> u64 {
         self.delivered
+    }
+}
+
+/// Average speeds since the transfer started, in bytes a second, as of
+/// its last progress pass (`CURLINFO_SPEED_DOWNLOAD_T`; upload with the
+/// send side).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Speeds {
+    pub(crate) download: u64,
+}
+
+impl Speeds {
+    pub fn download(&self) -> u64 {
+        self.download
     }
 }
 

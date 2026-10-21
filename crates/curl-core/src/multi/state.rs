@@ -8,13 +8,14 @@ use crate::conn::{ConnLease, Finish, Pool, Route};
 use crate::deliver::{Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
+use crate::progress::{self, Speedometer};
 use crate::proto::{ProtoState, ProtoStep};
 use crate::report::{Timer, TransferReport};
 use crate::time::Instant;
 use crate::url::{GetOptions, ParseOptions, Part, Url};
 
 use super::cx::{EngineRest, TransferCalls};
-use super::timers::{Deadlines, Phase, TimeLeft};
+use super::timers::{Deadlines, Phase, TimeLeft, TimerKind};
 use super::{Host, TransferId};
 
 /// A transfer from `add` to `remove`.
@@ -180,6 +181,38 @@ impl<H: Host> StepCx<'_, H> {
             .pause
     }
 
+    pub(crate) fn now(&self) -> Instant {
+        self.rest.now
+    }
+
+    pub(crate) fn easy_mut(&mut self) -> &mut Easy {
+        &mut self
+            .rest
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .easy
+    }
+
+    pub(crate) fn speedometer_mut(&mut self) -> &mut Speedometer {
+        &mut self
+            .rest
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .speedometer
+    }
+
+    /// The speedometer and the report it writes to.
+    pub(crate) fn progress_parts(&mut self) -> (&mut Speedometer, &mut TransferReport) {
+        let slot = self
+            .rest
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer");
+        (&mut slot.speedometer, slot.easy.report_mut())
+    }
+
     pub(crate) fn mark(&mut self, timer: Timer) {
         let now = self.rest.now;
         self.report_mut().timings_mut().mark(timer, now);
@@ -221,37 +254,59 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             run.deadlines = Deadlines::new(cx.rest.now, limits.total, limits.connect);
             let now = cx.rest.now;
             cx.report_mut().restart(now);
+            *cx.speedometer_mut() = Speedometer::default();
             let next = setup(run, cx);
             if next.is_completed() {
                 enter_completed(cx.report_mut(), now, true);
             }
             (next, Wake::Again)
         }
-        TransferState::Exchanging(mut x) => match x.proto.step(cx) {
-            Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
-            Ok(ProtoStep::Done) => (
-                TransferState::Done(Done {
-                    lease: x.lease,
-                    result: Ok(()),
-                    premature: false,
-                }),
-                Wake::Again,
-            ),
-            // Out of time at the end of the pass (transfer.c:382).
-            Ok(ProtoStep::Blocked)
-                if matches!(
-                    run.deadlines.time_left(cx.rest.now, Phase::Transferring),
-                    TimeLeft::Expired(_)
-                ) =>
-            {
-                (
+        TransferState::Exchanging(mut x) => {
+            let stepped = x.proto.step(cx);
+            let expired = matches!(
+                run.deadlines.time_left(cx.rest.now, Phase::Transferring),
+                TimeLeft::Expired(_)
+            );
+            match stepped {
+                Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
+                // Out of time at the end of the pass (transfer.c:382).
+                Ok(ProtoStep::Blocked) if expired => (
                     TransferState::Exchanging(x).fail(ErrorKind::OperationTimedout),
                     Wake::Again,
-                )
+                ),
+                Ok(stepped) => {
+                    // The end of a receive pass (`Curl_sendrecv`).
+                    let done = stepped == ProtoStep::Done;
+                    match progress::check(cx, done) {
+                        Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
+                        Ok(look_again) => {
+                            if let Some(wait) = look_again {
+                                run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
+                            }
+                            if done {
+                                let done = Done {
+                                    lease: x.lease,
+                                    result: Ok(()),
+                                    premature: false,
+                                };
+                                (TransferState::Done(done), Wake::Again)
+                            } else {
+                                (TransferState::Exchanging(x), Wake::Idle)
+                            }
+                        }
+                    }
+                }
             }
-            Ok(ProtoStep::Blocked) => (TransferState::Exchanging(x), Wake::Idle),
-        },
-        TransferState::Done(d) => {
+        }
+        TransferState::Done(mut d) => {
+            // A last progress pass, unless a callback aborted already
+            // (`multi_done`).
+            if d.result != Err(ErrorKind::AbortedByCallback)
+                && let Err(e) = progress::finish(cx, !d.premature)
+                && d.result.is_ok()
+            {
+                d.result = Err(e);
+            }
             let premature = d.premature || is_premature(d.result);
             cx.rest.pool.release(d.lease, Finish { premature });
             // Held output went with the request; a pause the application
@@ -270,8 +325,43 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         }
         s @ TransferState::Completed(_) => (s, Wake::Idle),
     };
+    let (next, wake) = progress_after_step(next, wake, cx);
     run.state = next;
     wake
+}
+
+/// A step that went well, with a connection, ends with a progress pass
+/// (the tail of `multi_runsingle`'s loop, after `is_finished`). The
+/// handler may have unpaused held output: it is replayed at once.
+fn progress_after_step<H: Host>(
+    next: TransferState,
+    wake: Wake,
+    cx: &mut StepCx<'_, H>,
+) -> (TransferState, Wake) {
+    match next {
+        TransferState::Exchanging(mut x) => {
+            let passed = progress::update(cx, false).and_then(|()| match x.proto.pipeline_mut() {
+                Some(p) => p.flush(cx),
+                None => Ok(()),
+            });
+            match passed {
+                Ok(()) => (TransferState::Exchanging(x), wake),
+                Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
+            }
+        }
+        TransferState::Done(d) if d.result.is_ok() => match progress::update(cx, true) {
+            Ok(()) => (TransferState::Done(d), wake),
+            // An abort ends the request early, closing its connection.
+            Err(e) => (
+                TransferState::Done(Done {
+                    result: Err(e),
+                    ..d
+                }),
+                Wake::Again,
+            ),
+        },
+        s => (s, wake),
+    }
 }
 
 /// The report of a transfer completing, from before the request was

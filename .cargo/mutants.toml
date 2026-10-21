@@ -65,6 +65,10 @@ exclude_re = [
     # When delivered bytes are compacted away is a choice of threshold:
     # one byte either way changes nothing observable.
     'deliver/held\.rs:.*: replace > with >= in HeldOutput::consume$',
+    # With six records made, the oldest is at index 0 either way.
+    'progress/mod\.rs:.*: replace < with <= in oldest_record$',
+    # A size of exactly 10000 has the same share counted either way.
+    'progress/meter\.rs:.*: replace > with >= in percent$',
     # Running a transfer clears its dirty row, so resuming the walk at
     # the row itself finds the same next one.
     'multi/mod\.rs:.*: replace \+ with \* in Multi<H>::run_dirty$',

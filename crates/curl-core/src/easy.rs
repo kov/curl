@@ -12,6 +12,8 @@ pub struct Easy {
     options: Options,
     /// The current or last transfer's.
     report: TransferReport,
+    /// The progress meter's titles are out: a handle writes them once.
+    pub(crate) meter_titled: bool,
 }
 
 impl Easy {
@@ -41,6 +43,7 @@ impl Easy {
         Ok(Easy {
             options: self.options.try_clone()?,
             report: TransferReport::default(),
+            meter_titled: false,
         })
     }
 
@@ -49,6 +52,7 @@ impl Easy {
     pub fn reset(&mut self) {
         self.options = Options::default();
         self.report = self.report.cleared();
+        self.meter_titled = false;
     }
 }
 

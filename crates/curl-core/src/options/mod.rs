@@ -8,9 +8,11 @@ pub mod script;
 
 use curl_alloc::{OutOfMemory, TryVec};
 
-use std::num::NonZeroU64;
+use std::num::{NonZeroU16, NonZeroU64};
 
-use crate::handler::{DebugHandler, Handler, HeaderHandler, WriteHandler};
+use crate::handler::{
+    DebugHandler, Handler, HeaderHandler, ProgressHandler, TextSink, WriteHandler,
+};
 use crate::time::TimeLimit;
 
 /// Every option of a transfer. The default sets nothing and allocates
@@ -21,6 +23,7 @@ pub struct Options {
     pub limits: Limits,
     pub output: Output,
     pub callbacks: Callbacks,
+    pub progress: Progress,
     /// What the test protocol `script:` plays.
     #[cfg(any(test, feature = "test-util"))]
     pub script: Option<script::Script>,
@@ -45,6 +48,7 @@ impl Options {
             limits: self.limits,
             output: self.output,
             callbacks: self.callbacks.clone(),
+            progress: self.progress.clone(),
             #[cfg(any(test, feature = "test-util"))]
             script: self.script.clone(),
         })
@@ -67,6 +71,18 @@ pub struct Limits {
     /// The most body bytes a transfer may deliver
     /// (`CURLOPT_MAXFILESIZE_LARGE`).
     pub max_filesize: Option<NonZeroU64>,
+    /// Fail a transfer slower than this for this long
+    /// (`CURLOPT_LOW_SPEED_LIMIT`, `CURLOPT_LOW_SPEED_TIME`).
+    pub low_speed: Option<LowSpeed>,
+}
+
+/// A speed a transfer must keep up, at least once in every `time`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LowSpeed {
+    /// Bytes a second, up and down together.
+    pub limit: NonZeroU64,
+    /// Seconds.
+    pub time: NonZeroU16,
 }
 
 /// What a transfer tells the application besides the body.
@@ -89,4 +105,18 @@ pub struct Callbacks {
     pub header: Option<Handler<dyn HeaderHandler>>,
     /// The trace of a verbose transfer.
     pub debug: Option<Handler<dyn DebugHandler>>,
+    /// Text for the user; without one, the process's standard error.
+    pub stderr: Option<Handler<dyn TextSink>>,
+}
+
+/// How a transfer shows its progress.
+#[derive(Clone, Debug, Default)]
+pub enum Progress {
+    /// Not at all (`CURLOPT_NOPROGRESS`, on by default).
+    #[default]
+    Off,
+    /// The meter, drawn on the standard error sink.
+    Meter,
+    /// A handler, which may ask for the meter too.
+    Handler(Handler<dyn ProgressHandler>),
 }

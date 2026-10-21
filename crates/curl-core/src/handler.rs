@@ -47,6 +47,39 @@ pub enum DebugKind {
     SslDataOut,
 }
 
+/// How far a transfer has come, for its progress handler. A size not
+/// known is `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProgressNow {
+    pub download_total: Option<u64>,
+    pub downloaded: u64,
+    pub upload_total: Option<u64>,
+    pub uploaded: u64,
+}
+
+/// What a progress handler wants done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProgressVerdict {
+    Continue,
+    /// Go on, and draw the meter as if there were no handler
+    /// (`CURL_PROGRESSFUNC_CONTINUE`).
+    ContinueWithMeter,
+    /// The transfer fails with AbortedByCallback.
+    Abort,
+}
+
+/// Told of a transfer's progress, about once a second and whenever it
+/// moves (`CURLOPT_XFERINFOFUNCTION`).
+pub trait ProgressHandler {
+    fn progress(&self, cx: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict;
+}
+
+/// Takes text meant for the user: the progress meter, and messages with
+/// no debug handler to go to (`CURLOPT_STDERR`).
+pub trait TextSink {
+    fn write(&self, text: &[u8]);
+}
+
 /// Takes the trace of a verbose transfer (`CURLOPT_DEBUGFUNCTION`).
 pub trait DebugHandler {
     fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]);
@@ -87,6 +120,18 @@ impl Handler<dyn WriteHandler> {
 
 impl Handler<dyn HeaderHandler> {
     pub fn header(handler: impl HeaderHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn ProgressHandler> {
+    pub fn progress(handler: impl ProgressHandler + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn TextSink> {
+    pub fn text(handler: impl TextSink + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

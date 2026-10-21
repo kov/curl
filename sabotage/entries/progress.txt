@@ -1,0 +1,214 @@
+# A transfer's progress (crates/curl-core/src/progress): its speed, the
+# low-speed check, the progress handler and the meter, against
+# lib/progress.c.
+
+=== the low-speed check never fails
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::the_speed_check_times_out_as_unit1606_says
+--- old
+                return Err(ErrorKind::OperationTimedout);
+--- new
+                return Ok(());
+
+=== the low-speed time counts from each check
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::the_speed_check_times_out_as_unit1606_says
+--- old
+            Some(_) => {}
+        }
+--- new
+            Some(_) => self.slow_since = Some(now),
+        }
+
+=== a speed back over the limit keeps the slow time
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::a_speed_back_over_the_limit_starts_the_time_over
+--- old
+        if self.current >= low.limit.get() {
+            self.slow_since = None;
+--- new
+        if self.current >= low.limit.get() {
+
+=== a paused transfer is judged on its speed
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::a_paused_transfer_is_not_too_slow
+--- old
+    if done || cx.pause().recv_paused() || cx.pause().send_paused() {
+--- new
+    if done {
+
+=== the low-speed check does not look again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core progress::tests::a_transfer_too_slow_for_too_long_times_out
+--- old
+                                run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
+--- new
+                                let _ = wait;
+
+=== an unpause keeps the slow time
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core progress::tests::an_unpause_forgets_the_slow_time
+--- old
+        slot.speedometer.forget_slow();
+        rest.dirty.insert(id.index());
+--- new
+        rest.dirty.insert(id.index());
+
+=== progress is shown at every pass
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::a_done_request_shows_its_progress_at_once
+--- old
+            && elapsed_us.saturating_sub(shown) < SECOND_US
+--- new
+            && elapsed_us.saturating_sub(shown) < 1
+
+=== the current speed spans every record ever made
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::the_current_speed_spans_five_seconds_of_records
+--- old
+        (latest + 1) % RECORDS
+--- new
+        0
+
+=== the end replaces a speed it had
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::the_end_keeps_the_speed_it_had
+--- old
+            if self.current == 0 {
+                self.records[latest] = (amount, elapsed_us);
+            }
+--- new
+            self.records[latest] = (amount, elapsed_us);
+
+=== the step's progress pass is skipped
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core progress::tests::the_handler_is_called_at_each_pass_and_at_the_end
+--- old
+    let (next, wake) = progress_after_step(next, wake, cx);
+--- new
+
+=== a handler's abort is ignored
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_call
+--- old
+                ProgressVerdict::Abort => return Err(ErrorKind::AbortedByCallback),
+--- new
+                ProgressVerdict::Abort => return Ok(()),
+
+=== a transfer aborted by a callback gets a last progress call
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_call
+--- old
+            if d.result != Err(ErrorKind::AbortedByCallback)
+                && let Err(e) = progress::finish(cx, !d.premature)
+--- new
+            if let Err(e) = progress::finish(cx, !d.premature)
+
+=== the last progress call's abort is ignored
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core progress::tests::an_abort_after_the_request_fails_the_transfer
+--- old
+                d.result = Err(e);
+--- new
+                drop(e);
+
+=== a transfer cut short draws its meter at the end
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core progress::tests::a_transfer_cut_short_ends_the_meter_without_drawing_it
+--- old
+                && let Err(e) = progress::finish(cx, !d.premature)
+--- new
+                && let Err(e) = progress::finish(cx, true)
+
+=== the meter's titles are written every run
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::the_meter_draws_once_a_second_and_ends_its_line
+--- old
+    easy.meter_titled = true;
+--- new
+
+=== a handler's meter line is ended
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::a_handler_may_ask_for_the_meter
+--- old
+    if let Progress::Meter = cx.easy().options().progress {
+--- new
+    if !matches!(cx.easy().options().progress, Progress::Off) {
+
+=== progress off still draws the meter
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::progress_off_calls_nothing_but_takes_stock
+--- old
+        Progress::Off => return Ok(()),
+--- new
+        Progress::Off => {}
+
+=== the report's total waits for the end
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::progress_off_calls_nothing_but_takes_stock
+--- old
+    report.timings_mut().completed(now);
+    let show
+--- new
+    let show
+
+=== a progress handler's unpause waits for the next pass
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core progress::tests::an_unpause_from_the_progress_handler_replays_at_once
+--- old
+            let passed = progress::update(cx, false).and_then(|()| match x.proto.pipeline_mut() {
+                Some(p) => p.flush(cx),
+                None => Ok(()),
+            });
+--- new
+            let passed = progress::update(cx, false);
+
+=== an abort after the request is ignored
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core progress::tests::an_abort_after_the_request_fails_the_transfer
+--- old
+                TransferState::Done(Done {
+                    result: Err(e),
+                    ..d
+                }),
+--- new
+                TransferState::Done(Done { ..d }),
+
+=== an unpause keeps the speed records
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core progress::tests::an_unpause_measures_the_speed_afresh
+--- old
+        slot.speedometer.start_over();
+--- new
+
+=== a send unpause keeps the speed records
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core progress::tests::an_unpause_measures_the_speed_afresh
+--- old
+        || (was.send_paused() && !slot.pause.send_paused())
+--- new
+
+=== any unpause starts the speed records over
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core progress::tests::an_unpause_measures_the_speed_afresh
+--- old
+    if (was.recv_paused() && !slot.pause.recv_paused())
+--- new
+    if true
+        || (was.recv_paused() && !slot.pause.recv_paused())
+
+=== a send-paused transfer is judged on its speed
+file: crates/curl-core/src/progress/mod.rs
+witness: curl-core progress::tests::a_send_paused_transfer_is_not_too_slow
+--- old
+    if done || cx.pause().recv_paused() || cx.pause().send_paused() {
+--- new
+    if done || cx.pause().recv_paused() {
+
+=== a size with no speed is divided by it
+file: crates/curl-core/src/progress/meter.rs
+witness: curl-core progress::tests::the_meter_estimates_only_with_a_speed
+--- old
+        Some(total) if d.speed > 0 => (to_i64(total / d.speed), percent(total, d.cur)),
+--- new
+        Some(total) => (to_i64(total / d.speed.max(1)), percent(total, d.cur)),

@@ -26,6 +26,7 @@ use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
+use crate::progress::Speedometer;
 use crate::time::{Clock, Instant};
 
 pub use crate::deliver::PauseRequest;
@@ -119,6 +120,8 @@ struct Slot<H: Host> {
     easy: Easy,
     /// Reachable while the run is out, for the transfer's own handlers.
     pause: Pause,
+    /// Beside the pause, which starts it over.
+    speedometer: Speedometer,
     /// Out only while the transfer is being stepped.
     run: Option<Box<Run>>,
 }
@@ -249,6 +252,7 @@ impl<H: Host> Multi<H> {
             owner,
             easy,
             pause: Pause::default(),
+            speedometer: Speedometer::default(),
             run: Some(run),
         });
         self.counts.added();
@@ -677,11 +681,19 @@ fn pause_transfer<H: Host>(
     if slot.run.as_ref().is_some_and(|r| !r.state.holds_lease()) {
         return Err(ErrorKind::BadFunctionArgument);
     }
-    let was_held = slot.pause.recv == RecvPause::Held;
+    let was = slot.pause;
+    let was_held = was.recv == RecvPause::Held;
     slot.pause.apply(req);
+    // A direction that goes on measures its speed afresh.
+    if (was.recv_paused() && !slot.pause.recv_paused())
+        || (was.send_paused() && !slot.pause.send_paused())
+    {
+        slot.speedometer.start_over();
+    }
     // Unless paused every way it wants (until uploads, only receiving),
-    // the transfer runs again.
+    // the transfer runs again, and is not slow for the time it was not.
     if !slot.pause.recv_paused() {
+        slot.speedometer.forget_slow();
         rest.dirty.insert(id.index());
     }
     if was_held

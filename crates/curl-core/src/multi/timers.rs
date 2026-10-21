@@ -31,10 +31,12 @@ pub(crate) enum TimerKind {
     Total,
     /// The connection's limit, armed at each leg's start when set.
     Connect,
+    /// The low-speed check's next look (`EXPIRE_SPEEDCHECK`).
+    SpeedCheck,
 }
 
 impl TimerKind {
-    const COUNT: usize = 2;
+    const COUNT: usize = 3;
 
     fn slot(self) -> usize {
         self as usize

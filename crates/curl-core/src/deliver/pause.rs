@@ -74,6 +74,10 @@ impl Pause {
     pub(crate) fn recv_paused(&self) -> bool {
         self.recv != RecvPause::Running
     }
+
+    pub(crate) fn send_paused(&self) -> bool {
+        self.send == SendPause::Paused
+    }
 }
 
 #[cfg(test)]

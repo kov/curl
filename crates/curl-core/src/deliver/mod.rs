@@ -53,6 +53,12 @@ impl Pipeline {
         self.out.holds_output()
     }
 
+    /// The body's size, as the response announces it, or not
+    /// (`Curl_pgrsSetDownloadSize`).
+    pub(crate) fn announce_size<H: Host>(&mut self, cx: &mut StepCx<'_, H>, size: Option<u64>) {
+        cx.report_mut().sizes_mut().download_expected = size;
+    }
+
     /// Deliver body bytes, as the protocol decoded them.
     pub(crate) fn body<H: Host>(
         &mut self,

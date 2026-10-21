@@ -325,14 +325,6 @@ witness: curl-core proto::http1::chunked::tests::the_grammar_s_corners
 file: crates/curl-core/src/proto/http1/response.rs
 witness: curl-core proto::http1::response::tests::interim_heads_alone_are_nothing
 --- old
-            self.interim_bytes = if interim { self.request_bytes } else { 0 };
+            self.interim_bytes = self.request_bytes;
 --- new
-            self.interim_bytes = if interim { 0 } else { 0 };
-
-=== a final head keeps the interim deduction
-file: crates/curl-core/src/proto/http1/response.rs
-witness: curl-core proto::http1::response::tests::interim_heads_alone_are_nothing
---- old
-            self.interim_bytes = if interim { self.request_bytes } else { 0 };
---- new
-            self.interim_bytes = if interim { self.request_bytes } else { self.interim_bytes };
+            self.interim_bytes = 0;

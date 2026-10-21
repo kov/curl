@@ -207,7 +207,8 @@ pub(crate) struct HeadParser {
     /// Head bytes of this request's responses (C's `allheadercount`).
     request_bytes: u64,
     /// Of those, the interim heads' up to the last that ended (C's
-    /// `deductheadercount`).
+    /// `deductheadercount`, which a final head resets to no effect: its
+    /// own bytes count).
     interim_bytes: u64,
     /// What the heads said so far.
     meta: Meta,
@@ -439,8 +440,8 @@ impl HeadParser {
             kind
         };
         let counted = self.count(self.line.len() as u64, transfer_bytes);
-        if let LineKind::End { interim } = kind {
-            self.interim_bytes = if interim { self.request_bytes } else { 0 };
+        if kind == (LineKind::End { interim: true }) {
+            self.interim_bytes = self.request_bytes;
         }
         let then = first
             .and(counted)

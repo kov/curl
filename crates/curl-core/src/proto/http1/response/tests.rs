@@ -374,7 +374,7 @@ fn interim_heads_alone_are_nothing() {
     let p = fed(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n");
     assert!(!p.got_nothing(0));
     let p = fed(b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n\r\n");
-    assert!(!p.got_nothing(0), "a final head ends with nothing deducted");
+    assert!(!p.got_nothing(0), "a final head's bytes count");
     assert!(fed(b"").got_nothing(0));
 }
 

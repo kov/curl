@@ -1194,6 +1194,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
         cx.report_mut().set_referer(referer);
     }
     cx.mark(Timer::StartOp);
+    crate::proto::http::cookies::load(cx)?;
     read_resolve(cx)?;
     // Taken as it is parsed, its text not read again.
     if let Some((_, copy)) = shared {

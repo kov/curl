@@ -1037,7 +1037,8 @@ handle's multi in place of its own, and gives them back with nothing leased: one
 time, so nothing locks them, and a connection made by one handle's multi is reused by the next
 (tests 2051, 2052, 3225). A perform on a share already lent (from a handler of a transfer using
 it) fails with `RecursiveApiCall`, where C's would go on under the share's lock. A share's idle
-connections close when its last clone drops (`curl_share_cleanup`).
+connections close when its last clone drops (`curl_share_cleanup`). A share asked to keep
+cookies holds a jar too, lent to the handle in the same way (section 6.5).
 
 Planned, for transfers on one share running at once in several multis (the shim's `CURLSH`
 across threads, or an application multi given handles with a share): the share keeps only the
@@ -1516,6 +1517,29 @@ ends `Follow` to the request's own URL, counted as a redirect, keeping `Options:
 request counts what it moves from nothing (`Sizes::new_request`, `Curl_pgrsReset`); heads and
 request bytes are counted over the transfer. The hashes Digest computes with (MD5, SHA-256,
 SHA-512/256) are `crate::hash`, fixed state and no allocation, ported from C's built-ins.
+
+### 6.5 Cookies
+
+The jar is `cookie::Jar`, a port of `lib/cookie.c` that keeps C's 63 buckets, its hash and the
+order within each bucket, which decide the order `CURLINFO_COOKIELIST` lists and the cap of
+150 a request sends applies in; it does no I/O and reads no clock. It is the `Easy`'s
+(`cookies: Option<Jar>`, C's `cookies` with `cookie_engine`), on once `Cookies::files` names
+any file or `save_to` is set, or the application turns it on (`enable_cookies`,
+`add_cookie`); it is kept through `reset`, and a duplicate gets an empty one if the original's
+is on. A share that keeps cookies (`Share::keep_cookies`, `CURL_LOCK_DATA_COOKIE`) lends its
+jar to a perform whose handle has its jar on, swapped in for the handle's own for its length
+(section 4.6.1); the handle's jar operations (`with_jar`) use the share's in the same way.
+As each transfer starts (pretransfer, before the resolve list), the files are read into it
+again, live cookies kept over a file's, and it is started (`running`): a jar not started is
+not written. The request's `Cookie:` line is the jar's matches for the cookie host (a custom
+`Host:`'s name where the first origin sends one, else the URL's host) and the URL's path,
+then `Cookies::send` if the gate trusts the origin and the application sends no `Cookie:` of
+its own, under C's 8190-byte cap. A `Set-Cookie:` line is stored before it is traced, 50 a
+request at most. `Easy::save_cookies` writes the jar to `save_to` (`Curl_flush_cookies`):
+the shim at `curl_easy_cleanup` and FLUSH, the tool as each transfer's handle is done with.
+Files are written whole and renamed into place (`save::replace`, C's `Curl_fopen`). Domains
+are checked against public suffixes through `cookie::PublicSuffixes`; without a list, a
+domain needs a dot not at its end, or to be `localhost` (`bad_domain`).
 
 ---
 

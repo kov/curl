@@ -223,6 +223,11 @@ impl UserHeaders {
         self.replacing(b"Host")
     }
 
+    /// What the application's Host says, its blanks trimmed.
+    pub(crate) fn host_value(&self, same: SameOrigin) -> Option<&[u8]> {
+        self.host(same)?.value()
+    }
+
     /// The lines that may go as the application gave them: its credentials
     /// among them only with the gate's leave.
     fn sendable(&self, trusted: Option<Trusted>) -> impl Iterator<Item = &UserHeader> {
@@ -364,6 +369,8 @@ pub(crate) struct RequestHead<'o> {
     /// The body is left out to probe for authentication (`authneg`): the
     /// library's `Content-Length: 0` goes in place of the application's.
     pub(crate) probe: bool,
+    /// What the `Cookie:` line says, if the request has one.
+    pub(crate) cookie: Option<&'o [u8]>,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -514,6 +521,11 @@ fn write_h1(
                     out.line(&[b"Transfer-Encoding: chunked"])?;
                 }
             }
+            Part::Cookie => {
+                if let Some(cookie) = head.cookie {
+                    out.line(&[b"Cookie: ", cookie])?;
+                }
+            }
             Part::Custom => custom(head, gate, out)?,
             Part::Connection => connection(head.headers, out)?,
             Part::End => out.put(b"\r\n")?,
@@ -524,7 +536,6 @@ fn write_h1(
             | Part::ProxyConnection
             | Part::AltUsed
             | Part::Upgrade
-            | Part::Cookie
             | Part::Conditionals => {}
         }
     }
@@ -676,6 +687,8 @@ mod tests {
             content: None,
             chunked: false,
             probe: false,
+            cookie: None,
+
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -741,6 +754,8 @@ mod tests {
                 content: None,
                 chunked: false,
                 probe: false,
+                cookie: None,
+
                 headers: &headers,
             };
             let here = peer(b"127.0.0.1");
@@ -786,6 +801,8 @@ mod tests {
                 content: None,
                 chunked: false,
                 probe: false,
+                cookie: None,
+
                 headers: &headers,
             };
             let mut out = Vec::new();
@@ -948,6 +965,8 @@ mod tests {
             content: None,
             chunked: false,
             probe: false,
+            cookie: None,
+
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -992,6 +1011,8 @@ mod tests {
                 content: None,
                 chunked: false,
                 probe: false,
+                cookie: None,
+
                 headers: &headers,
             };
             let here = peer(b"h");

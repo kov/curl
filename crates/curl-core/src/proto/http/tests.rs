@@ -2475,3 +2475,122 @@ fn the_application_s_port_holds_until_an_absolute_redirect() {
         "port 1 is asked for"
     );
 }
+
+/// A redirect that sets a cookie.
+const SETS_A_COOKIE: &[u8] = b"HTTP/1.1 302 Moved\r\nLocation: /b\r\n\
+    Set-Cookie: a=1; path=/\r\nContent-Length: 0\r\n\r\n";
+
+/// A cookie a response sets goes with the next request, before the
+/// application's own; the jar says it stored it before the line is traced
+/// (`http_header`, then `Curl_debug`).
+#[test]
+fn a_cookie_set_goes_with_the_next_request() {
+    let (mut m, talk, _) = server(&[SETS_A_COOKIE, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.http.follow = Follow::All;
+        // An empty name reads nothing, but turns the jar on.
+        o.http.cookies.files.push(b"").unwrap();
+        o.http.cookies.send = Some(b"app=2".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let (first, second) = text.split_at(text.find("GET /b ").unwrap());
+    assert!(first.contains("\r\nCookie: app=2\r\n"), "{first}");
+    assert!(second.contains("\r\nCookie: a=1; app=2\r\n"), "{second}");
+    let seen = ran.seen.0.borrow();
+    let added = seen
+        .iter()
+        .position(|(w, b)| *w == "text" && b.starts_with(b"Added cookie a="));
+    let line = seen
+        .iter()
+        .position(|(w, b)| *w == "in" && b.starts_with(b"Set-Cookie:"));
+    assert!(added.is_some() && added < line, "{added:?} {line:?}");
+}
+
+/// Without the jar on, a server's cookies are not kept.
+#[test]
+fn no_jar_keeps_no_cookies() {
+    let (mut m, talk, _) = server(&[SETS_A_COOKIE, OK], false);
+    let mut ran = get(&mut m, "/a", talk, |o| o.http.follow = Follow::All);
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(!text.contains("Cookie:"), "{text}");
+    assert_eq!(ran.easy.cookie_list().unwrap(), Vec::<Vec<u8>>::new());
+}
+
+/// A custom `Host:` names the cookies' host, without its port
+/// (`req.cookiehost`).
+#[test]
+fn a_custom_host_names_the_cookies_host() {
+    let reply = b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[reply], false);
+    let mut ran = get(&mut m, "/d/e", talk, |o| {
+        o.http.headers = UserHeaders::new([&b"Host: other.example:99"[..]]).unwrap();
+        o.http.cookies.files.push(b"").unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        ran.easy.cookie_list().unwrap(),
+        [b"other.example\tFALSE\t/d\tFALSE\t0\ta\t1".to_vec()]
+    );
+}
+
+/// One request stores 50 `Set-Cookie:` lines at most; the next request
+/// stores its own 50 (`MAX_SET_COOKIE_AMOUNT`, per request).
+#[test]
+fn a_request_stores_50_cookies_at_most() {
+    let mut many = b"HTTP/1.1 302 Moved\r\nLocation: /b\r\n".to_vec();
+    for i in 0..60 {
+        many.extend_from_slice(format!("Set-Cookie: a{i}=1\r\n").as_bytes());
+    }
+    let mut more = b"HTTP/1.1 200 OK\r\n".to_vec();
+    for i in 0..60 {
+        more.extend_from_slice(format!("Set-Cookie: b{i}=1\r\n").as_bytes());
+    }
+    many.extend_from_slice(b"Content-Length: 0\r\n\r\n");
+    more.extend_from_slice(b"Content-Length: 0\r\n\r\n");
+    let (mut m, talk, _) = server(&[&many, &more], false);
+    let mut ran = get(&mut m, "/a", talk, |o| {
+        o.http.follow = Follow::All;
+        o.http.cookies.files.push(b"").unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let list = ran.easy.cookie_list().unwrap();
+    let count = |prefix: u8| {
+        list.iter()
+            .filter(|l| l.split(|&b| b == b'\t').nth(5).unwrap()[0] == prefix)
+            .count()
+    };
+    assert_eq!((count(b'a'), count(b'b')), (50, 50));
+}
+
+/// Handles given a share that keeps cookies use its jar: a cookie one
+/// stores, the other lists and saves; a share that does not keep them
+/// leaves each its own.
+#[test]
+fn a_share_keeps_cookies_for_its_handles() {
+    let line = b"example.com\tFALSE\t/\tFALSE\t0\ta\t1";
+    let share = crate::share::Share::new().unwrap();
+    let mut one = Easy::new();
+    let mut two = Easy::new();
+    one.options_mut().share = Some(share.clone());
+    two.options_mut().share = Some(share.clone());
+    one.add_cookie(line).unwrap();
+    assert!(two.cookie_list().unwrap().is_empty(), "each its own");
+    share.keep_cookies();
+    one.add_cookie(line).unwrap();
+    assert_eq!(two.cookie_list().unwrap(), [line.to_vec()]);
+    // Saved only once a transfer started the jar; reading files does.
+    let dir = std::env::temp_dir().join(format!("curl-share-jar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let jar = dir.join("jar");
+    two.options_mut().http.cookies.save_to = Some(jar.as_os_str().as_encoded_bytes().to_vec());
+    two.save_cookies().unwrap();
+    assert!(!jar.exists(), "no transfer started it");
+    two.options_mut().http.cookies.files.push(b"").unwrap();
+    two.reload_cookies().unwrap();
+    two.save_cookies().unwrap();
+    let saved = std::fs::read(&jar).unwrap();
+    assert!(saved.ends_with(b"\n\nexample.com\tFALSE\t/\tFALSE\t0\ta\t1\n"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

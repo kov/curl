@@ -12,6 +12,7 @@
 mod encode;
 
 pub(crate) use encode::decode_but_zero;
+pub(crate) use host::is_ip_address;
 mod host;
 mod path;
 #[rustfmt::skip]

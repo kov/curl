@@ -1,19 +1,22 @@
 //! The easy handle: one transfer's configuration, added to a multi to run.
 
 use std::fmt;
+use std::io::Write as _;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, try_box};
+use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use crate::conn::io::SystemNet;
+use crate::cookie::Jar;
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::id::ArenaPolicy;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
-use crate::options::Options;
+use crate::options::{Lines, Options};
 use crate::proto::http::auth::HostAuth;
 use crate::report::TransferReport;
+use crate::save::{self, SaveError};
 use crate::share::Lent;
-use crate::time::SystemClock;
+use crate::time::{Clock as _, SystemClock};
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
 /// and `Multi::remove` gives it back; `perform` runs it on its own. The
@@ -35,6 +38,11 @@ pub struct Easy {
     pub(crate) private: Option<Private>,
     /// Authenticating with the origin, from one transfer to the next.
     pub(crate) auth: HostAuth,
+    /// The cookie jar, once the options or the application turn it on
+    /// (C's `cookies` with `cookie_engine`): kept from one transfer to
+    /// the next, and through `reset`. For the length of a perform on a
+    /// share that keeps cookies, the share's, this one set aside.
+    pub(crate) cookies: Option<Jar>,
 }
 
 /// A handle's own multi (C's `multi_easy`).
@@ -97,11 +105,13 @@ impl Easy {
             wildcard_resolve: false,
             auth: HostAuth::default(),
             private: None,
+            // A jar of its own, empty, if this one's is on.
+            cookies: self.cookies.as_ref().map(|_| Jar::default()),
         })
     }
 
     /// Every option back to its default, and the report with them
-    /// (`curl_easy_reset`). The private multi stays.
+    /// (`curl_easy_reset`). The private multi and the cookie jar stay.
     pub fn reset(&mut self) {
         self.options = Options::default();
         self.report = self.report.cleared();
@@ -109,6 +119,152 @@ impl Easy {
         self.resolve_read = 0;
         self.wildcard_resolve = false;
         self.auth = HostAuth::default();
+    }
+
+    /// Turn the cookie jar on: one of the handle's own, empty, if it has
+    /// none (`CURLOPT_COOKIEJAR`).
+    pub fn enable_cookies(&mut self) {
+        if self.cookies.is_none() {
+            self.cookies = Some(Jar::default());
+        }
+    }
+
+    /// Forget the cookie files and the handle's own jar, with its cookies
+    /// (`CURLOPT_COOKIEFILE` NULL). A share's jar is not the handle's to
+    /// forget.
+    pub fn forget_cookies(&mut self) {
+        self.options.http.cookies.files = Lines::default();
+        self.cookies = None;
+    }
+
+    /// Store a cookie the application gives, a `Set-Cookie:` line or one
+    /// in the Netscape format, turning the jar on if it is not
+    /// (`CURLOPT_COOKIELIST`). Its domain is not checked against the
+    /// public suffixes.
+    pub fn add_cookie(&mut self, line: &[u8]) -> Result<(), ErrorKind> {
+        let now = SystemClock::new().unix_time();
+        // C counts the line against the last request's fields; this
+        // counts it alone.
+        let mut set = 0;
+        self.with_jar(true, |jar| jar.add_line(line, None, now, &mut set))?
+            .expect("made if missing")
+            .map_err(oom)
+    }
+
+    /// Forget every cookie (`CURLOPT_COOKIELIST` `ALL`).
+    pub fn clear_cookies(&mut self) -> Result<(), ErrorKind> {
+        self.with_jar(false, Jar::clear)?;
+        Ok(())
+    }
+
+    /// Forget the cookies that last the session (`CURLOPT_COOKIELIST`
+    /// `SESS`).
+    pub fn clear_session_cookies(&mut self) -> Result<(), ErrorKind> {
+        self.with_jar(false, Jar::clear_session)?;
+        Ok(())
+    }
+
+    /// Read the cookie files into the jar again, without checking their
+    /// domains against the public suffixes (`CURLOPT_COOKIELIST`
+    /// `RELOAD`). A file that cannot be opened is passed over.
+    pub fn reload_cookies(&mut self) -> Result<(), ErrorKind> {
+        let cookies = &self.options.http.cookies;
+        if cookies.files.iter().next().is_none() {
+            return Ok(());
+        }
+        let mut texts = Vec::new();
+        // Each file read, even one that is not there, starts the jar.
+        for name in cookies.files.iter() {
+            let text = crate::proto::http::cookies::read_file(name)?;
+            texts.try_push(text.unwrap_or_default()).map_err(oom)?;
+        }
+        let new_session = cookies.new_session;
+        let now = SystemClock::new().unix_time();
+        self.with_jar(true, |jar| {
+            texts
+                .iter()
+                .try_for_each(|text| jar.load(text, new_session, true, None, now))
+        })?
+        .expect("made if missing")
+        .map_err(oom)
+    }
+
+    /// Every cookie the jar holds that has a domain, as a line in the
+    /// Netscape format (`CURLINFO_COOKIELIST`), those expired swept out
+    /// first.
+    pub fn cookie_list(&mut self) -> Result<Vec<Vec<u8>>, ErrorKind> {
+        let now = SystemClock::new().unix_time();
+        let listed = self.with_jar(false, |jar| -> Result<_, OutOfMemory> {
+            let mut lines = Vec::new();
+            if jar.len() == 0 {
+                return Ok(lines);
+            }
+            jar.sweep(now);
+            for co in jar.listed() {
+                let mut line = Vec::new();
+                co.netscape(&mut line)?;
+                lines.try_push(line)?;
+            }
+            Ok(lines)
+        })?;
+        Ok(listed.transpose().map_err(oom)?.unwrap_or_default())
+    }
+
+    /// Run `f` on the jar the handle uses: its share's, if that keeps the
+    /// cookies, else its own, made if `make` and it has none. None if
+    /// there is no jar.
+    fn with_jar<R>(
+        &mut self,
+        make: bool,
+        f: impl FnOnce(&mut Jar) -> R,
+    ) -> Result<Option<R>, ErrorKind> {
+        if let Some(share) = self.options.share.clone() {
+            let lent = share
+                .lend_cookies()
+                .map_err(|Lent| ErrorKind::RecursiveApiCall)?;
+            if let Some(mut jar) = lent {
+                let r = f(&mut jar);
+                share.give_back_cookies(jar);
+                return Ok(Some(r));
+            }
+        }
+        if make && self.cookies.is_none() {
+            self.cookies = Some(Jar::default());
+        }
+        Ok(self.cookies.as_mut().map(f))
+    }
+
+    /// Write the cookie jar to `Cookies::save_to`, `-` standard output
+    /// (`Curl_flush_cookies`): the share's, if it keeps the cookies, else
+    /// the handle's own. A jar no transfer has started since its files
+    /// were read is not written, as they may not all have been. Nothing to
+    /// write is no failure.
+    pub fn save_cookies(&mut self) -> Result<(), ErrorKind> {
+        let Some(to) = &self.options.http.cookies.save_to else {
+            return Ok(());
+        };
+        let share = self.options.share.clone();
+        let mut lent = match &share {
+            Some(share) => share
+                .lend_cookies()
+                .map_err(|Lent| ErrorKind::RecursiveApiCall)?,
+            None => None,
+        };
+        let jar = match &mut lent {
+            Some(jar) => Some(jar),
+            None => self.cookies.as_mut(),
+        };
+        let written = match jar.filter(|jar| jar.running()) {
+            Some(jar) => write_jar(jar, to),
+            None => Ok(()),
+        };
+        if let (Some(share), Some(jar)) = (share, lent) {
+            share.give_back_cookies(jar);
+        }
+        written.map_err(|e| match e {
+            SaveError::OutOfMemory => ErrorKind::OutOfMemory,
+            SaveError::Write => ErrorKind::WriteError,
+        })
     }
 
     /// Run the transfer to its end, blocking (`curl_easy_perform`), in the
@@ -160,17 +316,43 @@ impl Easy {
             ),
             None => None,
         };
+        // A transfer whose jar is on uses its share's, if it keeps one.
+        // The caches are lent with it, so it cannot be lent already.
+        let cookies_lent = match &share {
+            Some(share) if self.cookies.is_some() || self.options.http.cookies.wanted() => {
+                share.lend_cookies().expect("lent with the caches")
+            }
+            _ => None,
+        };
+        let own_cookies = cookies_lent.map(|jar| self.cookies.replace(jar));
         if let Some(caches) = &mut lent {
             multi.swap_caches(caches);
         }
         let (result, easy) = run_to_end(multi, std::mem::take(self), drive);
         *self = easy;
-        if let (Some(share), Some(mut caches)) = (share, lent) {
+        if let (Some(share), Some(mut caches)) = (&share, lent) {
             multi.swap_caches(&mut caches);
             share.give_back(caches);
         }
+        if let (Some(share), Some(own)) = (&share, own_cookies) {
+            let jar = std::mem::replace(&mut self.cookies, own);
+            share.give_back_cookies(jar.expect("the share's jar stays in place"));
+        }
         result.map_err(|kind| Error::with_detail(kind, self.report().failure()))
     }
+}
+
+/// The jar's cookies, swept of those expired, to the file `to`.
+fn write_jar(jar: &mut Jar, to: &[u8]) -> Result<(), SaveError> {
+    let mut text = Vec::new();
+    jar.file(SystemClock::new().unix_time(), &mut text)?;
+    if to == b"-" {
+        let mut out = std::io::stdout().lock();
+        out.write_all(&text)?;
+        out.flush()?;
+        return Ok(());
+    }
+    save::replace(to, &text)
 }
 
 fn oom(_: OutOfMemory) -> ErrorKind {

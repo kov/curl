@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 pub mod conn;
+pub mod cookie;
 pub mod date;
 mod deliver;
 pub mod easy;
@@ -21,6 +22,7 @@ pub mod options;
 mod progress;
 mod proto;
 pub mod report;
+mod save;
 pub mod share;
 mod text;
 pub mod time;

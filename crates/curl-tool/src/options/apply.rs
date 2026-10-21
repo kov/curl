@@ -162,6 +162,14 @@ pub(crate) struct Operation<'a> {
     /// `--referer` ending in `;auto`: a redirect sends the URL it came
     /// from, which only matters with `--location` (not implemented).
     pub(crate) auto_referer: bool,
+    /// `--cookie` strings, in the order given.
+    pub(crate) cookies: Vec<&'a [u8]>,
+    /// `--cookie` files, in the order given.
+    pub(crate) cookie_files: Vec<&'a [u8]>,
+    /// `--cookie-jar`.
+    pub(crate) cookie_jar: Option<&'a [u8]>,
+    /// `--junk-session-cookies`.
+    pub(crate) cookie_session: bool,
     /// `--http1.0` and `--http1.1`.
     pub(crate) http_version: Option<HttpVersion>,
     /// `--http0.9`.
@@ -662,6 +670,26 @@ pub(crate) fn apply<'a>(
             }
             line.current().headers.try_push(header)?;
         }
+        Opt::Cookie => {
+            // A string with `=` is cookies to send, else a file to read.
+            let given = value.text();
+            let op = line.current();
+            if given.contains(&b'=') {
+                op.cookies.try_push(given)?;
+            } else {
+                op.cookie_files.try_push(given)?;
+            }
+        }
+        Opt::CookieJar => {
+            let op = line.current();
+            op.cookie_jar = None;
+            let jar = value.text();
+            if jar.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            op.cookie_jar = Some(jar);
+        }
+        Opt::JunkSessionCookies => line.current().cookie_session = value.toggle(),
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
@@ -945,8 +973,6 @@ pub(crate) fn apply<'a>(
         | Opt::Ciphers
         | Opt::Compressed
         | Opt::CompressedSsh
-        | Opt::Cookie
-        | Opt::CookieJar
         | Opt::CreateFileMode
         | Opt::Crlf
         | Opt::Crlfile
@@ -1003,7 +1029,6 @@ pub(crate) fn apply<'a>(
         | Opt::Interface
         | Opt::IpTos
         | Opt::IpfsGateway
-        | Opt::JunkSessionCookies
         | Opt::Keepalive
         | Opt::KeepaliveCnt
         | Opt::KeepaliveTime

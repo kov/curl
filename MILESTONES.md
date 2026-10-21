@@ -412,9 +412,14 @@ cargo-mutants run on the milestone's diff.
     Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31);
     `http_perhapsrewind`'s early close of a large body, and its "Need to rewind" line on an
     auth reload, with step 34.
-30. **http: cookies.** **To do.** Who owns the jar is decided first (the easy handle, or the
-    share); then the parser, with the date parser, `-b` and `-c`, and the request's `Cookie`;
-    then `-R` (step 27) on the date parser.
+30. **http: cookies.** **In progress.** Done: the jar (ENGINE.md 6.5), the handle's and lent
+    by a share that keeps cookies, as the tool's share does; its files read as each transfer
+    starts; `Set-Cookie:` stored and the request's `Cookie:` sent; `CURLOPT_COOKIE`,
+    `COOKIEFILE`, `COOKIEJAR`, `COOKIESESSION`, `COOKIELIST` and `CURLINFO_COOKIELIST`; the
+    tool's `-b`, `-c` and `-j`. 38 of the 39 cookie tests the Rust leg runs pass. Next: public
+    suffixes through libpsl, which the reference build has (eight tests, and domains without a
+    dot); `-R` (step 27) on the date parser. Waiting: the shim's `curl_share_*` (test 1905);
+    the proxy tests, with step 31.
 31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
     the proxy options and the scheme table, each trace's host checked on the C leg. Then the
     absolute request target and Proxy-Authorization; then CONNECT, after the dial result is

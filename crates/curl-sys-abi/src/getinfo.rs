@@ -13,12 +13,13 @@ use curl_core::options::AuthMethods;
 use curl_core::report::{ResponseVersion, TransferReport};
 use curl_core::version::Protocol;
 
-use crate::easy::{self, ShimEasy};
+use crate::easy::{self, EasyRef, ShimEasy};
 use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_OK, CURLE_RECURSIVE_API_CALL,
     CURLE_UNKNOWN_OPTION, CURLINFO, CURLcode, curl_off_t,
 };
 use crate::gate::{EasyCall, Recursive};
+use crate::strings::{curl_slist_append, curl_slist_free_all};
 
 /// An answer in one of C's types.
 enum Value {
@@ -26,6 +27,8 @@ enum Value {
     Double(f64),
     Off(curl_off_t),
     Ptr(*mut c_void),
+    /// A list the application frees.
+    List(*mut ffi::curl_slist),
     /// No answer, for this reason.
     Failed(CURLcode),
 }
@@ -36,6 +39,7 @@ enum Typed {
     Double(f64),
     Off(curl_off_t),
     Str(*mut c_char),
+    List(*mut ffi::curl_slist),
 }
 
 impl Typed {
@@ -59,6 +63,8 @@ impl Typed {
             Typed::Off(n) => unsafe { put(out, n) },
             // SAFETY: as the caller guarantees.
             Typed::Str(p) => unsafe { put(out, p) },
+            // SAFETY: as the caller guarantees.
+            Typed::List(p) => unsafe { put(out, p) },
         }
     }
 }
@@ -147,6 +153,33 @@ fn effective_method(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
         Some(v) => Ok(Some(v)),
         None => easy.with_report(|r| Some(string(kept(&easy.method, r.method().name())))),
     }
+}
+
+/// The jar's cookies, a line each in the Netscape format, as a list the
+/// application frees (`CURLINFO_COOKIELIST`); NULL for none, or where
+/// the list cannot be made.
+fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
+    let lines = easy.with_easy(|e| match e {
+        EasyRef::Easy(easy) => easy.cookie_list().ok(),
+        // From a callback the jar is not reached.
+        EasyRef::Frame(..) => None,
+    })?;
+    let mut list = core::ptr::null_mut();
+    for line in lines.iter().flatten() {
+        let mut text = Vec::new();
+        let made = text.try_extend_from_slice(line).is_ok() && text.try_push(0).is_ok();
+        // SAFETY: `list` is one this function made, and `text` a C string.
+        let longer = made.then(|| unsafe { curl_slist_append(list, text.as_ptr().cast()) });
+        match longer.filter(|l| !l.is_null()) {
+            Some(longer) => list = longer,
+            None => {
+                // SAFETY: as above; it is not used again.
+                unsafe { curl_slist_free_all(list) };
+                return Ok(Some(Value::List(core::ptr::null_mut())));
+            }
+        }
+    }
+    Ok(Some(Value::List(list)))
 }
 
 /// What `info` asks of the transfer, or none for one not known.
@@ -279,6 +312,8 @@ pub unsafe extern "C" fn curl_easy_getinfo(
     }
     let v = if info == ffi::CURLINFO_EFFECTIVE_METHOD {
         effective_method(easy)
+    } else if info == ffi::CURLINFO_COOKIELIST {
+        cookie_list(easy)
     } else {
         easy.with_report(|r| value(easy, r, info))
     };
@@ -298,6 +333,7 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         Value::Double(n) if kind == ffi::CURLINFO_DOUBLE => Typed::Double(n),
         Value::Off(n) if kind == ffi::CURLINFO_OFF_T => Typed::Off(n),
         Value::Ptr(p) if kind == ffi::CURLINFO_STRING => Typed::Str(p.cast()),
+        Value::List(p) if kind == ffi::CURLINFO_SLIST => Typed::List(p),
         Value::Failed(_) => unreachable!("returned above"),
         _ => unreachable!("info {} answered in the wrong type", info.0 as c_int),
     };

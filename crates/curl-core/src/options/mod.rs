@@ -339,6 +339,11 @@ impl Lines {
         Ok(())
     }
 
+    /// `line` after those given before.
+    pub fn push(&mut self, line: &[u8]) -> Result<(), OutOfMemory> {
+        self.0.try_push(copy(line)?)
+    }
+
     fn try_clone(&self) -> Result<Lines, OutOfMemory> {
         let mut owned = Vec::new();
         for line in self.iter() {
@@ -488,6 +493,42 @@ pub struct Http {
     /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
     pub unrestricted_auth: bool,
     pub auth: HttpAuth,
+    pub cookies: Cookies,
+}
+
+/// Where a transfer's cookies come from and go.
+#[derive(Debug, Default)]
+pub struct Cookies {
+    /// Sent as given, after the jar's, to the first origin only unless
+    /// `Http::unrestricted_auth` says otherwise, and not beside the
+    /// application's own `Cookie:` header (`CURLOPT_COOKIE`).
+    pub send: Option<Vec<u8>>,
+    /// Files read into the jar as each transfer starts, in the Netscape
+    /// format or as `Set-Cookie:` lines; `-` is standard input
+    /// (`CURLOPT_COOKIEFILE`). Any, even an empty name, turns the jar on.
+    pub files: Lines,
+    /// Where `Easy::save_cookies` writes the jar, `-` for standard
+    /// output; set, it turns the jar on (`CURLOPT_COOKIEJAR`).
+    pub save_to: Option<Vec<u8>>,
+    /// The files' cookies that last the session are passed over
+    /// (`CURLOPT_COOKIESESSION`).
+    pub new_session: bool,
+}
+
+impl Cookies {
+    /// Whether the options turn the jar on.
+    pub(crate) fn wanted(&self) -> bool {
+        self.files.iter().next().is_some() || self.save_to.is_some()
+    }
+
+    fn try_clone(&self) -> Result<Cookies, OutOfMemory> {
+        Ok(Cookies {
+            send: self.send.as_deref().map(copy).transpose()?,
+            files: self.files.try_clone()?,
+            save_to: self.save_to.as_deref().map(copy).transpose()?,
+            new_session: self.new_session,
+        })
+    }
 }
 
 /// The methods a request may authenticate with (`CURLOPT_HTTPAUTH`): one
@@ -639,6 +680,7 @@ impl Http {
             auto_referer: self.auto_referer,
             unrestricted_auth: self.unrestricted_auth,
             auth: self.auth,
+            cookies: self.cookies.try_clone()?,
         })
     }
 }

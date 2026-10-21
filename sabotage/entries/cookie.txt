@@ -1,0 +1,122 @@
+# The cookie jar (crates/curl-core/src/cookie.rs) and HTTP's use of it
+# (crates/curl-core/src/proto/http/cookies.rs, proto/http.rs).
+
+=== a cookie is stored after its line is traced
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
+--- old
+        // A cookie is stored before its line is traced (`http_header`).
+        if line.kind == LineKind::Header
+            && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
+        {
+            let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+            cookies::set_by_server(cx, value, &site, &mut self.set_cookies)?;
+        }
+        let early = line.early.map_err(|e| head_failed(cx, &e));
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+--- new
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+        if line.kind == LineKind::Header
+            && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
+        {
+            let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+            cookies::set_by_server(cx, value, &site, &mut self.set_cookies)?;
+        }
+        let early = line.early.map_err(|e| head_failed(cx, &e));
+
+=== the application's cookies go without the jar's
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
+--- old
+        value.try_extend_from_slice(send).map_err(oom)?;
+--- new
+        value.clear();
+        value.try_extend_from_slice(send).map_err(oom)?;
+
+=== a custom Host keeps its port for the cookies
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::a_custom_host_names_the_cookies_host
+--- old
+            let end = value.iter().position(|&b| b == b':').unwrap_or(value.len());
+--- new
+            let end = value.len();
+
+=== a request stores 40 Set-Cookie lines, not 50
+file: crates/curl-core/src/cookie.rs
+witness: curl-core proto::http::tests::a_request_stores_50_cookies_at_most
+--- old
+        if *set >= MAX_SET_PER_REQUEST {
+--- new
+        if *set >= MAX_SET_PER_REQUEST - 10 {
+
+=== a file's cookie replaces one a server set
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::replaces_in_place_of_time_and_keeps_live_cookies
+--- old
+                if !co.live && old.live {
+--- new
+                if !co.live && old.live && false {
+
+=== a replacing cookie is as new as its time of storing
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::replaces_in_place_of_time_and_keeps_live_cookies
+--- old
+                co.created = old.created;
+--- new
+                let _ = old.created;
+
+=== the shortest path goes first
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::matches_hosts_paths_and_security_as_c
+--- old
+    len(&b.path)
+        .cmp(&len(&a.path))
+--- new
+    len(&a.path)
+        .cmp(&len(&b.path))
+
+=== a secure cookie goes over any connection
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::matches_hosts_paths_and_security_as_c
+--- old
+            if co.secure && !secure {
+--- new
+            if co.secure && !secure && false {
+
+=== without public suffixes, a domain without a dot is taken
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::drops_what_c_drops
+--- old
+    if !listed && bad_domain(val) {
+--- new
+    if !listed && bad_domain(val) && false {
+
+=== a domain matches a host it is only the end of
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::matches_hosts_paths_and_security_as_c
+--- old
+    host[at..].eq_ignore_ascii_case(domain) && (at == 0 || host[at - 1] == b'.')
+--- new
+    host[at..].eq_ignore_ascii_case(domain)
+
+=== a path matches one it is only the start of
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::matches_hosts_paths_and_security_as_c
+--- old
+        && (path.len() == cookie_path.len() || path[cookie_path.len()] == b'/')
+--- new
+        && (path.len() >= cookie_path.len())
+
+=== a handle uses its own jar beside its share's
+file: crates/curl-core/src/easy.rs
+witness: curl-core proto::http::tests::a_share_keeps_cookies_for_its_handles
+--- old
+            if let Some(mut jar) = lent {
+                let r = f(&mut jar);
+                share.give_back_cookies(jar);
+                return Ok(Some(r));
+            }
+--- new
+            if let Some(jar) = lent {
+                share.give_back_cookies(jar);
+            }

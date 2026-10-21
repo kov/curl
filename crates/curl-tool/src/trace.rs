@@ -95,9 +95,15 @@ struct Entry {
     terminal: bool,
 }
 
-impl DebugHandler for Entry {
-    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
-        let mut state = self.tracer.0.borrow_mut();
+impl Tracer {
+    /// Trace a line of text of the tool's own, as the library traces one
+    /// (`infof`): `line` with its newline.
+    pub(crate) fn info(&self, line: &[u8]) {
+        self.entry(DebugKind::Text, line, false);
+    }
+
+    fn entry(&self, kind: DebugKind, data: &[u8], terminal: bool) {
+        let mut state = self.0.borrow_mut();
         // Opened first: where the entry goes decides what `--verbose` says.
         state.sink.open();
         let mut out = std::mem::take(&mut state.scratch);
@@ -105,7 +111,7 @@ impl DebugHandler for Entry {
         let stamp = state.time.then(timestamp);
         let stamp = stamp.as_ref().map_or(&b""[..], Stamp::bytes);
         let written = match state.kind {
-            Trace::Plain => plain(&mut state, &mut out, stamp, kind, data, self.terminal),
+            Trace::Plain => plain(&mut state, &mut out, stamp, kind, data, terminal),
             Trace::Ascii | Trace::Binary => dump(&mut out, stamp, kind, data, state.kind),
             Trace::None => unreachable!("no handler without a trace"),
         };
@@ -113,6 +119,12 @@ impl DebugHandler for Entry {
             state.sink.write(&out);
         }
         state.scratch = out;
+    }
+}
+
+impl DebugHandler for Entry {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        self.tracer.entry(kind, data, self.terminal);
     }
 }
 

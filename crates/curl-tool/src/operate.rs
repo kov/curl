@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::fs::{File, FileTimes};
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom};
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt as _;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -58,12 +59,13 @@ pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
         Ok(tracer) => tracer,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
-    // The transfers share their connections and resolved names, as C's
-    // tool gives each handle its share.
+    // The transfers share their connections, resolved names and cookies,
+    // as C's tool gives each handle its share.
     let share = match Share::new() {
         Ok(share) => share,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
+    share.keep_cookies();
     let run = Shared {
         global: &line.global,
         stdout: &stdout,
@@ -390,7 +392,10 @@ fn transfer(
     let Ok(out) = made else {
         return Step::Failed(ErrorKind::OutOfMemory);
     };
-    let mut easy = Easy::new();
+    let mut easy = Handle {
+        easy: Easy::new(),
+        tracer: run.tracer,
+    };
     easy.options_mut().share = Some(run.share.clone());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
@@ -507,9 +512,14 @@ fn transfer(
         terminal,
         bar: bar.as_ref(),
     };
+    let cookies = match joined_cookies(&op.cookies, &run.msgs) {
+        Ok(cookies) => cookies,
+        Err(e) => return failed(&easy, e),
+    };
     if configure(&mut easy, op, run, &out, &config).is_err() {
         return failed(&easy, ErrorKind::OutOfMemory);
     }
+    easy.options_mut().http.cookies.send = cookies;
     let ended = if skip {
         Ended::Skipped
     } else {
@@ -559,9 +569,63 @@ fn transfer(
     Step::Ran(finish(op, run, given, &easy, &out, bar.as_ref(), ended))
 }
 
+/// A transfer's handle, which saves the cookie jar when it is done with,
+/// as C's `curl_easy_cleanup` does (`Curl_flush_cookies`).
+struct Handle<'t> {
+    easy: Easy,
+    tracer: Option<&'t Tracer>,
+}
+
+impl Deref for Handle<'_> {
+    type Target = Easy;
+
+    fn deref(&self) -> &Easy {
+        &self.easy
+    }
+}
+
+impl DerefMut for Handle<'_> {
+    fn deref_mut(&mut self) -> &mut Easy {
+        &mut self.easy
+    }
+}
+
+impl Drop for Handle<'_> {
+    fn drop(&mut self) {
+        let Err(e) = self.easy.save_cookies() else {
+            return;
+        };
+        // Said only in the trace, as C says it.
+        let Some(tracer) = self.tracer else {
+            return;
+        };
+        let jar = self.easy.options().http.cookies.save_to.as_deref();
+        let Ok(why) = try_format(format_args!("{e}")) else {
+            return;
+        };
+        let mut line = Vec::new();
+        for part in [
+            &b"WARNING: failed to save cookies in "[..],
+            jar.unwrap_or_default(),
+            b": ",
+            why.as_bytes(),
+            b"\n",
+        ] {
+            if line.try_extend_from_slice(part).is_err() {
+                return;
+            }
+        }
+        tracer.info(&line);
+    }
+}
+
 /// The longest wait between attempts, unless the server asks for more
 /// (`RETRY_SLEEP_MAX`).
 const RETRY_WAIT_MAX: u64 = 600_000;
+
+/// The longest `--cookie` strings may be together, and a zero byte
+/// (`MAX_REQUEST_COOKIE`).
+const MAX_REQUEST_COOKIE: usize = 8200;
 
 /// What `--retry` keeps across one transfer's attempts (C's
 /// `per_transfer`'s `retry_*`).
@@ -821,6 +885,29 @@ struct Config<'a> {
     bar: Option<&'a Bar>,
 }
 
+/// The `--cookie` strings as one (`cookie_setopts`): `;` between them,
+/// and a blank unless the next starts with one.
+fn joined_cookies(cookies: &[&[u8]], msgs: &Messages) -> Result<Option<Vec<u8>>, ErrorKind> {
+    let Some((first, rest)) = cookies.split_first() else {
+        return Ok(None);
+    };
+    let oom = |_| ErrorKind::OutOfMemory;
+    let mut send = copy(first).map_err(oom)?;
+    for cookie in rest {
+        send.try_extend_from_slice(b";").map_err(oom)?;
+        if !cookie.first().is_some_and(|&b| b == b' ' || b == b'\t') {
+            send.try_extend_from_slice(b" ").map_err(oom)?;
+        }
+        send.try_extend_from_slice(cookie).map_err(oom)?;
+    }
+    // C builds it in a buffer of 8200 bytes, its zero byte counted.
+    if send.len() >= MAX_REQUEST_COOKIE {
+        msgs.warn(&[b"skipped provided cookie, the cookie header would go over 8200 bytes"]);
+        return Err(ErrorKind::TooLarge);
+    }
+    Ok(Some(send))
+}
+
 /// Set up the transfer of `config.url` as `config2setopts` sets it.
 fn configure(
     easy: &mut Easy,
@@ -872,6 +959,11 @@ fn configure(
     http.headers =
         options::UserHeaders::new(op.headers.iter().copied().chain(json.into_iter().flatten()))?;
     http.referer = op.referer.map(copy).transpose()?;
+    for file in &op.cookie_files {
+        http.cookies.files.push(file)?;
+    }
+    http.cookies.save_to = op.cookie_jar.map(copy).transpose()?;
+    http.cookies.new_session = op.cookie_session;
     http.custom_method = op.custom_request.map(copy).transpose()?;
     http.follow = op.follow;
     http.unrestricted_auth = op.unrestricted_auth;

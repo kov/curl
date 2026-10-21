@@ -16,9 +16,10 @@ use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_core::error::ErrorKind;
 use curl_core::options::{
-    ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, LowSpeed, MaxRedirects,
-    Method, Options, PostRedir, Resume, ReuseLimits, UserHeaders,
+    ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines, LowSpeed,
+    MaxRedirects, Method, Options, PostRedir, Resume, ReuseLimits, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -507,6 +508,23 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.http.custom_method = unsafe { owned(p) }?;
         }
+        (ffi::CURLOPT_COOKIE, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.http.cookies.send = unsafe { owned(p) }?;
+        }
+        // NULL also forgets the jar, which `jar_option` does.
+        // SAFETY: as above.
+        (ffi::CURLOPT_COOKIEFILE, Ptr(p)) => match unsafe { string(p) }? {
+            Some(name) => options.http.cookies.files.push(name)?,
+            None => options.http.cookies.files = Lines::default(),
+        },
+        (ffi::CURLOPT_COOKIEJAR, Ptr(p)) => {
+            // SAFETY: as above.
+            options.http.cookies.save_to = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_COOKIESESSION, Long(n)) => options.http.cookies.new_session = n != 0,
+        // On the jar alone, which `jar_option` reaches.
+        (ffi::CURLOPT_COOKIELIST, Ptr(_)) => {}
         (ffi::CURLOPT_USERAGENT, Ptr(p)) => {
             // SAFETY: as above.
             options.http.user_agent = unsafe { owned(p) }?;
@@ -635,6 +653,13 @@ pub unsafe extern "C" fn curl_easy_setopt(
     let Some(arg) = (unsafe { read_arg(option, &mut args) }) else {
         return CURLE_UNKNOWN_OPTION;
     };
+    let jar = match (option, &arg) {
+        (
+            ffi::CURLOPT_COOKIEFILE | ffi::CURLOPT_COOKIEJAR | ffi::CURLOPT_COOKIELIST,
+            Arg::Ptr(p),
+        ) => Some(*p),
+        _ => None,
+    };
     let me = NonNull::from(easy);
     let (mut ccb, mut set, mut errbuf) = (easy.ccb.get(), easy.set.get(), easy.errbuf.get());
     let applied = easy.with_options(|o| apply(me, o, &mut ccb, &mut set, &mut errbuf, option, arg));
@@ -651,7 +676,62 @@ pub unsafe extern "C" fn curl_easy_setopt(
     easy.ccb.set(ccb);
     easy.set.set(set);
     easy.errbuf.set(errbuf);
-    code
+    match jar {
+        // SAFETY: the application passes a C string or NULL.
+        Some(p) => unsafe { jar_option(easy, option, p) },
+        None => code,
+    }
+}
+
+/// What a cookie option does to the handle's jar, beyond its options.
+///
+/// # Safety
+///
+/// `p` is NULL or a C string.
+unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CURLcode {
+    // SAFETY: as the caller guarantees; its length was checked with the
+    // option.
+    let given = unsafe { string(p) }.ok().flatten();
+    let done = shim.with_easy(|e| {
+        let easy = match e {
+            easy::EasyRef::Easy(easy) => easy,
+            // From a callback, only the options are reached: the jar the
+            // files and the save name turn on is made as the next transfer
+            // starts.
+            easy::EasyRef::Frame(..) if option != ffi::CURLOPT_COOKIELIST => return Ok(()),
+            easy::EasyRef::Frame(..) => return Err(ErrorKind::RecursiveApiCall),
+        };
+        match (option, given) {
+            (ffi::CURLOPT_COOKIEFILE, None) => easy.forget_cookies(),
+            (ffi::CURLOPT_COOKIEJAR, _) => easy.enable_cookies(),
+            (ffi::CURLOPT_COOKIELIST, Some(command)) => return cookie_command(easy, command),
+            _ => {}
+        }
+        Ok(())
+    });
+    match done {
+        Ok(Ok(())) => CURLE_OK,
+        Ok(Err(kind)) => crate::error_codes::easy_code(kind),
+        Err(_) => CURLE_RECURSIVE_API_CALL,
+    }
+}
+
+/// `CURLOPT_COOKIELIST`: a command, in any case, or a cookie to store.
+fn cookie_command(easy: &mut curl_core::easy::Easy, command: &[u8]) -> Result<(), ErrorKind> {
+    if command.eq_ignore_ascii_case(b"ALL") {
+        easy.clear_cookies()
+    } else if command.eq_ignore_ascii_case(b"SESS") {
+        easy.clear_session_cookies()
+    } else if command.eq_ignore_ascii_case(b"FLUSH") {
+        // A jar that cannot be written fails nothing, as in C, which says
+        // so only in the trace; outside a transfer, there is none here.
+        easy.save_cookies().ok();
+        Ok(())
+    } else if command.eq_ignore_ascii_case(b"RELOAD") {
+        easy.reload_cookies()
+    } else {
+        easy.add_cookie(command)
+    }
 }
 const _: ffi::proto::curl_easy_setopt = curl_easy_setopt;
 

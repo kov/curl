@@ -8,7 +8,7 @@
 
 const TOGGLES: &[(&str, bool)] = &[
     ("bindlocal", false),
-    ("cookies", false),
+    ("cookies", true),
     ("basic-auth", true),
     ("bearer-auth", true),
     ("digest", true),
@@ -19,7 +19,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("HTTP-auth", true),
     ("Mime", false),
     ("netrc", true),
-    ("parsedate", false),
+    ("parsedate", true),
     ("proxy", false),
     ("shuffle-dns", false),
     ("resolv-threaded", false),

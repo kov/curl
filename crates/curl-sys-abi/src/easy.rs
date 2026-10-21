@@ -316,6 +316,14 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
             return;
         }
     }
+    // The jar is written as the handle goes (`Curl_flush_cookies`); one
+    // that cannot be fails nothing, as in C, which says so only in the
+    // trace, of which there is none outside a transfer here.
+    let saved = easy.with_easy(|e| match e {
+        EasyRef::Easy(easy) => easy.save_cookies().ok(),
+        EasyRef::Frame(..) => unreachable!("not added to a multi any more"),
+    });
+    assert!(saved.is_ok(), "the handle is its own");
     drop(entry);
     let private = easy.private.take();
     easy.magic.set(0);

@@ -124,6 +124,12 @@ fn decimal(buf: &mut [u8; 3], mut v: u8) -> &[u8] {
     }
 }
 
+/// Whether `host` is an IPv4 or IPv6 address, not a name
+/// (`Curl_host_is_ipnum`).
+pub(crate) fn is_ip_address(host: &[u8]) -> bool {
+    pton4(host).is_some() || pton6(host).is_some()
+}
+
 /// An IPv4 address of exactly four decimal octets (`inet_pton4`).
 fn pton4(s: &[u8]) -> Option<[u8; 4]> {
     let mut out = [0u8; 4];

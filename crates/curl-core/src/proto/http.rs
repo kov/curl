@@ -31,6 +31,7 @@ use auth::{AuthRequest, Credentials, CredentialsError, NetrcLookup, OutputError}
 use std::ffi::CStr;
 
 pub(crate) mod auth;
+pub(crate) mod cookies;
 pub(crate) mod digest;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
@@ -107,6 +108,11 @@ pub(crate) struct Request {
     stage: Stage,
     /// The current response is interim (1xx).
     interim: bool,
+    /// The name a custom `Host:` header gives the cookies, in place of
+    /// the URL's host.
+    cookie_host: Option<Vec<u8>>,
+    /// `Set-Cookie:` fields stored from the responses to this request.
+    set_cookies: u8,
 }
 
 #[derive(Debug)]
@@ -263,6 +269,9 @@ impl Request {
             }
         };
         let credentials = with_netrc(credentials, peer.shown(), cx)?;
+        let cookie_host =
+            cookies::custom_host(&cx.easy().options().http.headers, gate.same_origin())
+                .map_err(|_| ErrorKind::OutOfMemory)?;
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,
@@ -293,6 +302,8 @@ impl Request {
             head: None,
             stage: Stage::Head,
             interim: false,
+            cookie_host,
+            set_cookies: 0,
         })
     }
 
@@ -425,6 +436,12 @@ impl Request {
             .auth
             .asked(credentials, auth.probe, get_or_head, &self.peer);
         cx.report_mut().set_auth_used(auth.used);
+        let http = &cx.easy().options().http;
+        let application = http.cookies.send.is_some()
+            && !http.headers.replaces(b"Cookie")
+            && self.gate.trusted().is_some();
+        let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+        let cookie = cookies::request_value(cx, &site, application)?;
         let options = cx.easy().options();
         let http = &options.http;
         let method = self.method_line(http);
@@ -524,6 +541,7 @@ impl Request {
             content,
             chunked: chunked && asked.is_none(),
             probe: auth.probe,
+            cookie: cookie.as_deref(),
             headers: &http.headers,
         };
         let mut out = Vec::new();
@@ -872,6 +890,13 @@ impl Request {
         if line.redirects && upload.as_ref().is_some_and(Upload::needs_rewind) {
             trace::info(cx, format_args!("Need to rewind upload for next request"));
         }
+        // A cookie is stored before its line is traced (`http_header`).
+        if line.kind == LineKind::Header
+            && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
+        {
+            let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+            cookies::set_by_server(cx, value, &site, &mut self.set_cookies)?;
+        }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
         let origin = if *interim {
@@ -1196,6 +1221,25 @@ fn trailer_block<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Vec<u8>, ErrorKind> 
 }
 
 /// A copy of `bytes`; out of memory fails the transfer.
+/// Where a request goes, as its cookies see it.
+fn cookie_site<'a>(
+    custom_host: &'a Option<Vec<u8>>,
+    target: &'a [u8],
+    peer: &'a Peer,
+) -> cookies::Site<'a> {
+    cookies::Site {
+        host: custom_host.as_deref().unwrap_or(peer.name()),
+        path: target.split(|&b| b == b'?').next().unwrap_or_default(),
+    }
+}
+
+/// What follows `name` in a header line that starts with it, in any
+/// case.
+fn strip_name<'a>(line: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
+    (line.len() >= name.len() && line[..name.len()].eq_ignore_ascii_case(name))
+        .then(|| &line[name.len()..])
+}
+
 fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     let mut copy = Vec::new();
     copy.try_extend_from_slice(bytes)

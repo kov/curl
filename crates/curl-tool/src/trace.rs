@@ -34,6 +34,9 @@ struct State {
     mid_line: bool,
     /// `--verbose` said data was not shown since the last other entry.
     noted_data: bool,
+    /// Where an entry is put together, kept to be reused: tracing makes
+    /// no allocation per entry once it has room for the largest.
+    scratch: Vec<u8>,
 }
 
 enum Sink {
@@ -72,6 +75,7 @@ impl Tracer {
             sink,
             mid_line: false,
             noted_data: false,
+            scratch: Vec::new(),
         };
         Ok(Some(Tracer(TryRc::try_new(RefCell::new(state))?)))
     }
@@ -96,18 +100,19 @@ impl DebugHandler for Entry {
         let mut state = self.tracer.0.borrow_mut();
         // Opened first: where the entry goes decides what `--verbose` says.
         state.sink.open();
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut state.scratch);
+        out.clear();
         let stamp = state.time.then(timestamp);
-        let stamp = stamp.as_ref().map_or(&b""[..], |s| s.as_slice());
+        let stamp = stamp.as_ref().map_or(&b""[..], Stamp::bytes);
         let written = match state.kind {
             Trace::Plain => plain(&mut state, &mut out, stamp, kind, data, self.terminal),
             Trace::Ascii | Trace::Binary => dump(&mut out, stamp, kind, data, state.kind),
             Trace::None => unreachable!("no handler without a trace"),
         };
-        if written.is_err() {
-            return;
+        if written.is_ok() {
+            state.sink.write(&out);
         }
-        state.sink.write(&out);
+        state.scratch = out;
     }
 }
 
@@ -147,7 +152,7 @@ impl Sink {
 
 /// `HH:MM:SS.uuuuuu `, the local time of day: midnight where it cannot be
 /// told, as C zeroes its `struct tm`.
-fn timestamp() -> Vec<u8> {
+fn timestamp() -> Stamp {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -157,17 +162,48 @@ fn timestamp() -> Vec<u8> {
         minute: 0,
         second: 0,
     });
-    let mut out = Vec::new();
-    // Room for the stamp is all it needs; without it, there is no stamp.
+    let mut stamp = Stamp {
+        bytes: [0; Stamp::LEN],
+        len: 0,
+    };
+    // Every field is in range, so the stamp fits.
     let _ = write!(
-        Bytes(&mut out),
+        stamp,
         "{:02}:{:02}:{:02}.{:06} ",
         day.hour,
         day.minute,
         day.second,
         now.subsec_micros()
     );
-    out
+    stamp
+}
+
+/// A timestamp, on the stack.
+struct Stamp {
+    bytes: [u8; Stamp::LEN],
+    len: usize,
+}
+
+impl Stamp {
+    const LEN: usize = b"HH:MM:SS.uuuuuu ".len();
+
+    fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl std::io::Write for Stamp {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let room = &mut self.bytes[self.len..];
+        let n = buf.len().min(room.len());
+        room[..n].copy_from_slice(&buf[..n]);
+        self.len += n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Formatted writes into a vector, failing when it cannot grow.

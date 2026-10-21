@@ -55,6 +55,7 @@ fn state() -> State {
         sink: Sink::Stderr,
         mid_line: false,
         noted_data: false,
+        scratch: Vec::new(),
     }
 }
 
@@ -114,7 +115,7 @@ fn tempfile() -> File {
 /// `HH:MM:SS.uuuuuu `.
 #[test]
 fn stamps_the_time_of_day() {
-    let stamp = String::from_utf8(timestamp()).unwrap();
+    let stamp = String::from_utf8(timestamp().bytes().to_vec()).unwrap();
     assert_eq!(stamp.len(), 16, "{stamp:?}");
     let b = stamp.as_bytes();
     assert_eq!(

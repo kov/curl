@@ -37,6 +37,14 @@ impl Protocols {
     }
 }
 
+/// Protocol `name`, in any case, if the library speaks it (`proto_token`).
+pub(crate) fn token(name: &[u8]) -> Option<Protocol> {
+    built_in()
+        .iter()
+        .copied()
+        .find(|p| p.name().as_bytes().eq_ignore_ascii_case(name))
+}
+
 /// The bit of protocol `name`, in any case, if the library speaks it.
 fn bit(name: &[u8]) -> Option<u64> {
     built_in()

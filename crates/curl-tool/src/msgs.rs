@@ -15,11 +15,14 @@ pub(crate) const MANUAL: bool = false;
 const DEFAULT_COLUMNS: usize = 79;
 
 /// Where messages go, and which are muted.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Messages {
     /// `--silent`: no warnings, and no errors unless `--show-error`.
     pub(crate) silent: bool,
     /// `--show-error`.
     pub(crate) show_error: bool,
+    /// Transfers are traced: notes are shown.
+    pub(crate) tracing: bool,
     columns: usize,
 }
 
@@ -47,6 +50,7 @@ impl Messages {
         Messages {
             silent: false,
             show_error: false,
+            tracing: false,
             columns,
         }
     }
@@ -67,6 +71,26 @@ impl Messages {
     pub(crate) fn warn(&self, message: &[&[u8]]) {
         if !self.silent {
             self.wrapped(b"Warning: ", message);
+        }
+    }
+
+    /// `notef`: `Note: ` and the message, only when tracing and not
+    /// silent.
+    pub(crate) fn note(&self, message: &[&[u8]]) {
+        if self.tracing && !self.silent {
+            self.wrapped(b"Note: ", message);
+        }
+    }
+
+    /// A line written as it is, not wrapped, unless errors are muted: a
+    /// transfer's result, which C prints itself.
+    pub(crate) fn error_line(&self, message: &[&[u8]]) {
+        if !self.silent || self.show_error {
+            let mut out = Text::new();
+            for part in message {
+                out.push(part);
+            }
+            emit(out.bytes());
         }
     }
 

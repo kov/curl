@@ -152,18 +152,24 @@ yet meet.
    WriteError, READFUNC_PAUSE a ReadError); `url_rules` (DISALLOW_USER, PATH_AS_IS) in setup;
    `version` reporting `file`; `Easy::perform` in a private multi, returning `Error`. RANGE and
    TIMECONDITION, which file.c honours, come with the options that set them.
-9. **tool: run file:// transfers through the core.** Map `Operation` to `Easy`: the URL,
-   `-o`, `-i`, `-s`/`-S`, `-v`, `--trace-ascii`/`--trace`/`--trace-time` with
-   `tool_cb_dbg.c`'s format, the exit code and the "curl: (N) msg" line, `-C`, `-T`, `-w` for the
-   fields the file tests use; `--proto-default` with DEFAULT_PROTOCOL in setup (C's
-   `Curl_is_absolute_url` and scheme prepending). Measure the tool's whole-process allocation
-   count for a file transfer and record it. Flips: 200, 201, 203, 1145, 1146, 1220, 2071, 2072, 231, 3016, 3203,
-   1445, 1491; then 204, 205, 1490 (upload); then 1440, 1441, 1442 (`-w`). 202 waits for
-   multi-URL support.
+9. **tool: run file:// transfers through the core.** **Done.** Each URL is a node with its output
+   and upload, run in turn (`operate.rs`): output to standard output, nowhere or a file created at
+   the first byte (`output.rs`), `-i`, `-s`/`-S`, `-v`, `--trace`/`--trace-ascii`/`--trace-time`
+   (`trace.rs`, with `curl_os::time`), the result line and exit status, `-C`, `-T`,
+   `--skip-existing`, `--remote-time`, `-w` with the variables a file transfer reports
+   (`write_out.rs`), `--proto-default` (DEFAULT_PROTOCOL in setup). What the parser accepts but
+   the transfers cannot do yet is refused with "not implemented yet": URL globbing, `-T -`, `-vv`,
+   `--proto`, `--proto-redir`, the etag options, `--no-clobber`, `--remove-on-error`, an upload to
+   a URL without a file name, the `-w` variables and functions not written yet.
+   `crates/curl-tool/tests/transfers.rs` runs on either tool (`CURL_TOOL_UNDER_TEST`). Measured
+   2026-10-20: `curl -s -o O file://…` makes 25 allocations, the C tool 59. Flips: 200–205, 231,
+   288, 686, 1145, 1146, 1220, 1440–1442, 1445, 1469, 1490, 1491, 2036, 2044, 2071, 2072, 3016,
+   3203, 4040.
 10. **abi: add easy and multi handles.** `ShimEasy`, `ShimMulti`, the `with_multi`/`with_easy`
     gate, `TABLE` generated from `lib/api.c` with its comparison test, `ShimEvents`, the callback
     adapters, generated setopt for the options so far, getinfo, the error detail for
-    ERRORBUFFER, `curl_easy_perform`, `pause`,
+    ERRORBUFFER and the informational text a verbose transfer traces (`failf`, `infof`; the tool's
+    result line shows the detail), `curl_easy_perform`, `pause`,
     `perform_ev`, the multi entry points (`fdset` and `waitfds` list no sockets until step 11's
     `Multi::sockets`, as no transfer owns one before then). Flips: 1508, 3105, 1564, 2414 (and any `file://`-only
     libtests the inventory lists).

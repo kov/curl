@@ -1,0 +1,167 @@
+# The curl tool (crates/curl-tool), against the C tool running the same
+# command lines (crates/curl-tool/tests/transfers.rs runs either).
+
+=== a successful transfer that wrote nothing leaves no output file
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool an_empty_download_leaves_an_empty_file
+--- old
+        if result.is_ok() && !stream.create() {
+--- new
+        if false && !stream.create() {
+
+=== `-C -` resumes from the start, not the output file's end
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool resumes_into_the_output_file
+--- old
+            resume_from = exists.as_ref().ok().map(|m| m.len());
+--- new
+            resume_from = None;
+
+=== an upload with `-C -` starts at the beginning
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool uploads_a_file
+--- old
+        Some(options::Resume::AtEnd)
+    } else {
+--- new
+        None
+    } else {
+
+=== `--skip-existing` transfers all the same
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool skips_an_existing_output_file
+--- old
+            skip = true;
+--- new
+
+=== a note is shown without tracing
+file: crates/curl-tool/src/msgs.rs
+witness: curl-tool skips_an_existing_output_file
+--- old
+        if self.tracing && !self.silent {
+--- new
+        if !self.silent {
+
+=== `--remote-time` leaves the file's time alone
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool keeps_the_remote_time
+--- old
+            set_file_time(name, t, msgs);
+--- new
+
+=== `--remote-time` sets the modification time only
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool keeps_the_remote_time
+--- old
+            let times = FileTimes::new().set_accessed(at).set_modified(at);
+--- new
+            let times = FileTimes::new().set_modified(at);
+
+=== `--include` shows no header lines of a file
+file: crates/curl-tool/src/output.rs
+witness: curl-tool includes_headers
+--- old
+        if !self.show_headers || self.is_null() || protocol != Some(Protocol::File) {
+--- new
+        if !self.show_headers || self.is_null() || protocol == Some(Protocol::File) {
+
+=== an upload that cannot be opened is not reported as a transfer
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool reports_an_upload_it_cannot_open
+--- old
+                    let result =
+                        finish(op, url, &easy, &out, Err(ErrorKind::ReadError), false, msgs);
+--- new
+                    let result: Result<(), ErrorKind> = Err(ErrorKind::ReadError);
+
+=== the exit status is the first failure, not the last result
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool reports_a_failure
+--- old
+                    last = result;
+--- new
+                    last = last.and(result);
+
+=== `--show-error` does not bring back the result line under `--silent`
+file: crates/curl-tool/src/msgs.rs
+witness: curl-tool reports_a_failure
+--- old
+    pub(crate) fn error_line(&self, message: &[&[u8]]) {
+        if !self.silent || self.show_error {
+--- new
+    pub(crate) fn error_line(&self, message: &[&[u8]]) {
+        if !self.silent {
+
+=== `%{onerror}` ends the output after a failure
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool reports_a_failure
+--- old
+                Var::OnError if facts.exit_code == 0 => return false,
+--- new
+                Var::OnError if facts.exit_code != 0 => return false,
+
+=== `--output -` refuses binary output to a terminal too
+file: crates/curl-tool/src/output.rs
+witness: curl-tool refuses_binary_output_to_a_terminal
+features: debug-hooks
+--- old
+        if self.terminal && self.bytes < BINARY_CHECK && !self.binary_ok && body.contains(&0) {
+--- new
+        if self.terminal && self.bytes < BINARY_CHECK && body.contains(&0) {
+
+=== an unclosed `%{` ends the output
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::reads_formats_as_c
+--- old
+                None => (Piece::Text(&rest[..2]), 2),
+--- new
+                None => (Piece::End, 2),
+
+=== a variable name of 24 bytes fits
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::reads_formats_as_c
+--- old
+                    let piece = if name.len() + 1 > MAX_NAME {
+--- new
+                    let piece = if name.len() > MAX_NAME {
+
+=== a CR LF in a dump does not end its line
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::dumps_ascii_as_c
+--- old
+                next = i + c + 2;
+--- new
+                next = i + c + 1;
+
+=== `--verbose` notes data every time
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::writes_plain_lines_as_c
+--- old
+                state.mid_line = false;
+                state.noted_data = true;
+--- new
+                state.mid_line = false;
+
+=== `--verbose` marks the rest of a header line split in two
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::writes_plain_lines_as_c
+--- old
+                state.mid_line = last != b'\n';
+--- new
+                state.mid_line = false;
+
+=== every `-v` starts the count over
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::reads_tracing_as_c
+--- old
+    if first_in_word {
+--- new
+    if true {
+
+=== a URL, an output and an upload each start a node
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::fills_nodes_in_turn
+--- old
+        let at = match self.nodes.iter().position(|n| !taken(n)) {
+--- new
+        let at = match self.nodes.iter().position(|_| false) {

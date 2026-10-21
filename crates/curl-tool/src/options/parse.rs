@@ -100,6 +100,7 @@ fn getparameter<'a>(
     msgs: &mut Messages,
     wipe: Wipe<'_>,
 ) -> Result<(Flow<'a>, bool), ParamError> {
+    line.options_in_word = 0;
     let mut toggle = true;
     let mut separate = true;
     let mut long = None;
@@ -213,6 +214,7 @@ fn getparameter<'a>(
             apply(line, msgs, spec, Value::Switch)
         };
         let flow = applied?;
+        line.options_in_word += 1;
         at += 1;
         // A deprecated option ends the word, as in C.
         let more =
@@ -245,8 +247,9 @@ mod tests {
     use curl_alloc::TryVec as _;
 
     use super::*;
+    use crate::options::{Output, Trace, Unimplemented, Upload};
 
-    fn run(args: &[&str]) -> Result<(usize, Option<&'static str>, Option<String>), ParamError> {
+    fn parsed(args: &[&str]) -> Result<Parsed<'static>, ParamError> {
         let argv: Vec<OsString> = std::iter::once("curl")
             .chain(args.iter().copied())
             .map(OsString::from)
@@ -254,13 +257,28 @@ mod tests {
         let argv: &'static [OsString] = Vec::leak(argv);
         let mut msgs = Messages::new();
         msgs.silent = true;
-        match parse(argv, &mut msgs, &mut |_, _| {})? {
+        parse(argv, &mut msgs, &mut |_, _| {})
+    }
+
+    fn run(args: &[&str]) -> Result<(usize, Option<&'static str>, Option<String>), ParamError> {
+        match parsed(args)? {
             Parsed::Run(line) => Ok((
                 line.operations.len(),
-                line.unimplemented.map(|(s, _)| s.long),
+                line.unimplemented.map(|u| match u {
+                    Unimplemented::Option(s, _) => s.long,
+                    Unimplemented::Feature(f) => f,
+                }),
                 None,
             )),
             Parsed::Request(r) => Ok((0, None, Some(format!("{r:?}")))),
+        }
+    }
+
+    fn line(args: &[&str]) -> CommandLine<'static> {
+        match parsed(args) {
+            Ok(Parsed::Run(line)) => line,
+            Ok(Parsed::Request(r)) => panic!("{args:?} asked for {r:?}"),
+            Err(e) => panic!("{args:?} failed with {e:?}"),
         }
     }
 
@@ -360,20 +378,92 @@ mod tests {
         assert_eq!(run(&["--", "--bogus"]), Ok((1, None, None)));
         assert_eq!(run(&["-hfoo", "http://a/"]), Ok((1, None, None)));
         // A recognised option without its meaning is recorded, not run.
-        assert_eq!(run(&["-ofile", "http://a/"]), Ok((1, Some("output"), None)));
-        assert_eq!(
-            run(&["-o", "file", "http://a/"]),
-            Ok((1, Some("output"), None))
-        );
         assert_eq!(run(&["--retry=3", "x"]), Ok((1, Some("retry"), None)));
         // Each operation has its own URLs and options.
         assert_eq!(
             run(&["x", "--etag-save", "e", "--next", "y", "z", "-C", "1"]),
-            Ok((2, None, None))
+            Ok((2, Some("etag-save"), None))
         );
         assert_eq!(
             run(&["x", "-C", "1", "--clobber", "--no-remove-on-error"]),
             Ok((1, None, None))
         );
+        assert_eq!(run(&["x", "--no-clobber"]), Ok((1, Some("clobber"), None)));
+        assert_eq!(
+            run(&["x", "--remove-on-error"]),
+            Ok((1, Some("remove-on-error"), None))
+        );
+        assert_eq!(
+            run(&["x", "--proto", "=file"]),
+            Ok((1, Some("proto"), None))
+        );
+        // What would need more than one URL, or a pattern of them, is not
+        // run without it.
+        assert_eq!(run(&["x{a,b}"]), Ok((1, Some("URL globbing"), None)));
+        assert_eq!(
+            run(&["-T", "-", "x"]),
+            Ok((1, Some("uploading standard input"), None))
+        );
+        assert_eq!(
+            run(&["-w", "%{http_code}", "x"]),
+            Ok((1, Some("http_code"), None))
+        );
+        assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None, None)));
+    }
+
+    /// A URL, `--output` and `--upload-file` each fill the first node
+    /// without one, as `add_url`, `parse_output` and `parse_upload_file`
+    /// do.
+    #[test]
+    fn fills_nodes_in_turn() {
+        let l = line(&["-o", "a", "x", "-o", "b", "-T", "u", "y", "--out-null", "z"]);
+        let nodes = &l.operations[0].nodes;
+        let urls: Vec<_> = nodes.iter().map(|n| n.url).collect();
+        assert_eq!(urls, [Some(&b"x"[..]), Some(b"y"), Some(b"z")]);
+        let outputs: Vec<_> = nodes.iter().map(|n| n.output).collect();
+        assert_eq!(
+            outputs,
+            [Output::File(b"a"), Output::File(b"b"), Output::Null]
+        );
+        let uploads: Vec<_> = nodes.iter().map(|n| n.upload).collect();
+        assert_eq!(uploads, [Upload::File(b"u"), Upload::Unset, Upload::Unset]);
+        // More outputs than URLs leave a node without one.
+        let l = line(&["x", "-o", "a", "-o", "b", "-T", ""]);
+        let nodes = &l.operations[0].nodes;
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[1].url, None);
+        assert_eq!(nodes[0].upload, Upload::Nothing);
+        assert_eq!(run(&["-o", ""]), Err(ParamError::BlankString));
+        // `--next` needs a URL in the first node, not just in any.
+        assert_eq!(run(&["-o", "a", "--next", "x"]), Err(ParamError::BadUse));
+    }
+
+    /// `-v` counts within a word only, and resets the trace time
+    /// (`parse_verbose`); the trace options override each other.
+    #[test]
+    fn reads_tracing_as_c() {
+        let g = |args: &[&str]| {
+            let l = line(args);
+            (l.global.trace, l.global.trace_dump, l.global.trace_time)
+        };
+        assert_eq!(g(&["x", "-v"]), (Trace::Plain, Some(&b"%"[..]), false));
+        assert_eq!(run(&["x", "-v", "-v"]), Ok((1, None, None)));
+        assert_eq!(run(&["x", "--verbose", "--verbose"]), Ok((1, None, None)));
+        assert_eq!(run(&["x", "-vv"]), Ok((1, Some("-vv"), None)));
+        assert_eq!(run(&["x", "-sv"]), Ok((1, None, None)));
+        assert_eq!(run(&["x", "-vsv"]), Ok((1, Some("-vv"), None)));
+        assert!(!g(&["x", "--trace-time", "-v"]).2);
+        assert!(g(&["x", "-v", "--trace-time"]).2);
+        assert_eq!(
+            g(&["x", "--trace-ascii", "t", "--trace-time"]),
+            (Trace::Ascii, Some(&b"t"[..]), true)
+        );
+        assert_eq!(g(&["x", "-v", "--trace", "t"]).0, Trace::Binary);
+        assert_eq!(
+            g(&["x", "--trace", "t", "-v"]),
+            (Trace::Plain, Some(&b"%"[..]), false)
+        );
+        assert_eq!(g(&["x", "-v", "--no-verbose"]).0, Trace::None);
+        assert_eq!(run(&["x", "--trace", ""]), Err(ParamError::BlankString));
     }
 }

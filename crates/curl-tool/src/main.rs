@@ -13,10 +13,15 @@ use curl_core::version::version;
 mod config;
 mod help;
 mod msgs;
+mod operate;
 mod options;
+mod output;
+mod trace;
+mod write_out;
 
 use msgs::Messages;
-use options::{Parsed, Request, exit_code};
+use operate::Ending;
+use options::{Parsed, Request, Trace, Unimplemented, exit_code};
 
 /// Exit status for anything not implemented yet. No test expects it, so a
 /// missing feature cannot pass a test by accident.
@@ -106,17 +111,43 @@ fn main() -> ExitCode {
         Ok(Parsed::Request(request)) => return show(request, &msgs),
         Err(e) => return ExitCode::from(exit_code(e.kind())),
     };
-    if let Some((spec, prefix)) = line.unimplemented {
-        let name = [prefix.as_bytes(), spec.long.as_bytes()];
-        msgs.error(&[b"option ", name[0], name[1], b": not implemented yet"]);
-        return ExitCode::from(NOT_IMPLEMENTED);
+    match line.unimplemented {
+        Some(Unimplemented::Option(spec, prefix)) => {
+            let name = [prefix.as_bytes(), spec.long.as_bytes()];
+            msgs.error(&[b"option ", name[0], name[1], b": not implemented yet"]);
+            return ExitCode::from(NOT_IMPLEMENTED);
+        }
+        Some(Unimplemented::Feature(feature)) => {
+            msgs.error(&[feature.as_bytes(), b": not implemented yet"]);
+            return ExitCode::from(NOT_IMPLEMENTED);
+        }
+        None => {}
     }
-    if line.operations.iter().any(|op| op.urls.is_empty()) {
-        msgs.help(&[b"(2) no URL specified"]);
-        return ExitCode::from(exit_code(ErrorKind::FailedInit));
+    msgs.tracing = line.global.trace != Trace::None;
+    match operate::run(&line, msgs) {
+        Ending::Done(Ok(())) => ExitCode::SUCCESS,
+        Ending::Done(Err(e)) => ExitCode::from(exit_code(e)),
+        Ending::NotImplemented(what) => {
+            msgs.error(&[what.as_bytes(), b": not implemented yet"]);
+            ExitCode::from(NOT_IMPLEMENTED)
+        }
     }
-    msgs.error(&[b"transfers are not implemented yet"]);
-    ExitCode::from(NOT_IMPLEMENTED)
+}
+
+/// An operating system error's message, as `strerror` gives it: without
+/// the number std adds.
+fn os_message(e: &std::io::Error) -> String {
+    let Ok(shown) = curl_alloc::try_format(format_args!("{e}")) else {
+        return String::new();
+    };
+    match shown.find(" (os error ") {
+        Some(at) => {
+            let mut shown = shown;
+            shown.truncate(at);
+            shown
+        }
+        None => shown,
+    }
 }
 
 /// Show what the command line asked for instead of transfers.

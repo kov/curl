@@ -20,7 +20,9 @@ mod protocols;
 #[rustfmt::skip]
 mod table;
 
-pub(crate) use apply::Request;
+pub(crate) use apply::{
+    CommandLine, Global, Node, Operation, Output, Request, Resume, Trace, Unimplemented, Upload,
+};
 pub(crate) use errors::{ParamError, exit_code};
 pub(crate) use help::{CATEGORIES, HELP, HelpLine};
 pub(crate) use parse::{Parsed, parse};

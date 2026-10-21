@@ -116,6 +116,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) remote_time: bool,
     /// `--skip-existing`.
     pub(crate) skip_existing: bool,
+    /// `--output-dir`: where a file output is written.
+    pub(crate) output_dir: Option<&'a [u8]>,
     /// `--write-out`.
     pub(crate) write_out: Option<write_out::Format<'a>>,
     /// `--header`, in the order given.
@@ -612,6 +614,13 @@ pub(crate) fn apply<'a>(
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
+        Opt::OutputDir => {
+            let text = value.text();
+            if text.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().output_dir = Some(text);
+        }
         Opt::Request => {
             let text = value.text();
             if text.is_empty() {
@@ -924,7 +933,6 @@ pub(crate) fn apply<'a>(
         | Opt::Ntlm
         | Opt::NtlmWb
         | Opt::Oauth2Bearer
-        | Opt::OutputDir
         | Opt::Parallel
         | Opt::ParallelImmediate
         | Opt::ParallelMax

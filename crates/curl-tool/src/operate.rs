@@ -110,6 +110,16 @@ fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
     Ending::Done(last)
 }
 
+/// `dir/name`.
+fn joined(dir: &[u8], name: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    let mut path = Vec::new();
+    path.try_reserve_exact(dir.len() + 1 + name.len())?;
+    path.try_extend_from_slice(dir)?;
+    path.try_push(b'/')?;
+    path.try_extend_from_slice(name)?;
+    Ok(path)
+}
+
 /// Errors after which nothing more is tried (`is_fatal_error`).
 fn fatal(e: ErrorKind) -> bool {
     matches!(
@@ -173,7 +183,19 @@ fn transfer(
         return Step::Failed(ErrorKind::BadFunctionArgument);
     }
     let to_stdout = matches!(node.output, Output::Unset | Output::File(b"-"));
-    let made = match node.output {
+    // A file goes in the output directory (`setup_outfile`).
+    let in_dir;
+    let output = match (node.output, op.output_dir) {
+        (Output::File(name), Some(dir)) if !to_stdout => {
+            in_dir = match joined(dir, name) {
+                Ok(path) => path,
+                Err(OutOfMemory) => return Step::Failed(ErrorKind::OutOfMemory),
+            };
+            Output::File(&in_dir)
+        }
+        (output, _) => output,
+    };
+    let made = match output {
         Output::Null => output::Output::null(msgs),
         _ if to_stdout => output::Output::stdout(run.stdout, msgs),
         Output::File(name) => output::Output::file(name, msgs),
@@ -203,7 +225,7 @@ fn transfer(
         Some(Resume::FromOutput) | None => None,
     };
     let mut skip = false;
-    if let Output::File(name) = node.output
+    if let Output::File(name) = output
         && !to_stdout
     {
         let exists = std::fs::metadata(OsStr::from_bytes(name));

@@ -152,7 +152,6 @@ fn transfer(
         Upload::File(file) => Some(file),
         Upload::Unset | Upload::Nothing => None,
     };
-    // An upload is a PUT, which no other method may be chosen with.
     // The data of `--data` makes a POST, an upload a PUT, and no other
     // method may be chosen with either (`single_transfer`,
     // `create_single`).
@@ -219,7 +218,8 @@ fn transfer(
             return failed(&easy, ErrorKind::WriteError);
         }
     }
-    if upload.is_some() {
+    // Standard input names no file to add (`stdin_upload`).
+    if upload.is_some_and(|file| file != b"-") {
         match needs_file_name(url) {
             Ok(false) => {}
             Ok(true) => return Step::NotImplemented("uploading to a URL without a file name"),
@@ -595,11 +595,18 @@ enum Unopened {
     OutOfMemory,
 }
 
-/// The file to upload, opened, with its size if it is a regular file.
+/// The file to upload, opened, with its size if it is a regular file;
+/// standard input for `-`, of a size not known, and started over only if
+/// it is a file.
 fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
-    let file = File::open(OsStr::from_bytes(name)).map_err(|_| Unopened::Io)?;
-    let meta = file.metadata().map_err(|_| Unopened::Io)?;
-    let size = meta.is_file().then_some(meta.len());
+    let (file, size) = if name == b"-" {
+        (curl_os::fs::stdin().map_err(|_| Unopened::Io)?, None)
+    } else {
+        let file = File::open(OsStr::from_bytes(name)).map_err(|_| Unopened::Io)?;
+        let meta = file.metadata().map_err(|_| Unopened::Io)?;
+        let size = meta.is_file().then_some(meta.len());
+        (file, size)
+    };
     let file = curl_alloc::TryRc::try_new(std::cell::RefCell::new(file))
         .map_err(|_| Unopened::OutOfMemory)?;
     let handler = Handler::read(UploadFile(file.clone())).map_err(|_| Unopened::OutOfMemory)?;

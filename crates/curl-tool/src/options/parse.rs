@@ -414,8 +414,8 @@ mod tests {
             Ok((2, Some("URL globbing"), None))
         );
         assert_eq!(
-            run(&["-T", "-", "x"]),
-            Ok((1, Some("uploading standard input"), None))
+            run(&["-T", ".", "x"]),
+            Ok((1, Some("uploading standard input without blocking"), None))
         );
         assert_eq!(run(&["-w", "%{json}", "x"]), Ok((1, Some("json"), None)));
         assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None, None)));

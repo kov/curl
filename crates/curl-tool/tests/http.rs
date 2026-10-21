@@ -30,7 +30,7 @@ impl Server {
             };
             let mut got = Vec::new();
             let mut buf = [0; 4096];
-            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            while !request_ended(&got) {
                 match peer.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => got.extend_from_slice(&buf[..n]),
@@ -51,6 +51,25 @@ impl Server {
     fn request(self) -> String {
         String::from_utf8(self.request.join().unwrap()).unwrap()
     }
+}
+
+/// Whether `got` holds a whole request: its head, and the body its
+/// Content-Length or chunked coding says.
+fn request_ended(got: &[u8]) -> bool {
+    let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&got[..end]).to_ascii_lowercase();
+    let body = &got[end + 4..];
+    if head.contains("\r\ntransfer-encoding: chunked") {
+        return body.ends_with(b"0\r\n\r\n");
+    }
+    let length = head
+        .split("\r\n")
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or(0);
+    body.len() >= length
 }
 
 struct Run {
@@ -252,6 +271,35 @@ fn posts_the_data_given() {
             "Content-Length: {}\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n{body}",
             body.len()
         )),
+        "{request}"
+    );
+}
+
+/// `-T -` sends standard input, chunked as its size is not known.
+#[test]
+fn uploads_standard_input() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut child = Command::new(tool)
+        .args(["-q", "-sS", "-T", "-", "-H", "Expect:", &s.url()])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let request = s.request();
+    assert!(request.starts_with("PUT / HTTP/1.1\r\n"), "{request}");
+    assert!(
+        request.ends_with("Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"),
         "{request}"
     );
 }

@@ -411,3 +411,19 @@ witness: curl-tool slurp::tests::reads_text_and_binary
                 .split(|&b| matches!(b, b'\r' | b'\n' | 0))
 --- new
                 .split(|&b| matches!(b, b'\r' | b'\n'))
+
+=== -T - opens a file named -
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool uploads_standard_input
+--- old
+    let (file, size) = if name == b"-" {
+--- new
+    let (file, size) = if name == b"--" {
+
+=== -T - has a file name added to the URL
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool uploads_standard_input
+--- old
+    if upload.is_some_and(|file| file != b"-") {
+--- new
+    if upload.is_some() {

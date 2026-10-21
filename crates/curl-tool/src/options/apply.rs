@@ -289,7 +289,7 @@ pub(crate) enum Upload<'a> {
     Unset,
     /// `--upload-file ""`: nothing, as if not set.
     Nothing,
-    /// `--upload-file`: this file.
+    /// `--upload-file`: this file, or standard input for `-`.
     File(&'a [u8]),
 }
 
@@ -499,8 +499,8 @@ pub(crate) fn apply<'a>(
             let upload = if file.is_empty() {
                 Upload::Nothing
             } else {
-                if file == b"-" || file == b"." {
-                    line.feature_not_implemented("uploading standard input");
+                if file == b"." {
+                    line.feature_not_implemented("uploading standard input without blocking");
                 }
                 Upload::File(file)
             };

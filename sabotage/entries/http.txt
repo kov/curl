@@ -66,7 +66,7 @@ witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 
 === an exchanging transfer waits on nothing
 file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
+witness: curl-core proto::http::tests::an_exchange_waits_to_read_its_socket
 --- old
                 let events = x.proto.interest(pause);
 --- new
@@ -79,3 +79,11 @@ witness: curl-core proto::http::tests::a_kept_connection_carries_the_next_reques
         let reused = cx.conn(lease).reused();
 --- new
         let reused = false;
+
+=== a paused exchange still waits to read
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_exchange_waits_to_read_its_socket
+--- old
+        if !matches!(self.stage, Stage::Done) && !pause.recv_paused() {
+--- new
+        if !matches!(self.stage, Stage::Done) {

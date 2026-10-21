@@ -431,3 +431,25 @@ fn a_kept_connection_carries_the_next_request() {
             .contains(&"Invalid status line\n".to_string())
     );
 }
+
+/// While its response is to come, a request waits to read its socket;
+/// paused, it waits on nothing (`Curl_http_perform_pollset`).
+#[test]
+fn an_exchange_waits_to_read_its_socket() {
+    use crate::conn::io::Events;
+    use crate::deliver::PauseRequest;
+    let (mut m, _talk, _clock) = server(&[], false);
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let waits = |m: &Multi| {
+        let mut seen = Vec::new();
+        m.sockets(|_, events| seen.push(events));
+        seen
+    };
+    assert_eq!(waits(&m), [Events::IN]);
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    assert_eq!(waits(&m), []);
+}

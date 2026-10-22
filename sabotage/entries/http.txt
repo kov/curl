@@ -1212,3 +1212,12 @@ witness: curl-core proto::http::tests::a_connection_that_answered_http10_is_aske
     if after_http10 || seen == Some(ResponseVersion::Http10) {
 --- new
     if after_http10 {
+
+=== a new connection's first request does not say its HTTP version
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
+--- old
+        if !reused {
+            trace::info(cx, format_args!("using HTTP/1.x"));
+        }
+--- new

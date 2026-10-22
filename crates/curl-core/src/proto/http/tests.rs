@@ -196,6 +196,7 @@ fn a_get_is_sent_and_its_response_delivered() {
     assert_eq!(
         &text[2..],
         [
+            "using HTTP/1.x\n",
             "Request completely sent off\n",
             "shutting down connection #0\n"
         ]

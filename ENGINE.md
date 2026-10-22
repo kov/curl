@@ -35,10 +35,11 @@ numbers are those of `SCOPE.md`.
    comparison destructures each struct it compares without `..`, so a new field does not
    compile until it is compared or excused with a reason. Nothing on a pooled connection is rewritten on
    reuse.
-6. **A connection is `ConnSlot::{Connecting, Open, Closing}` under a stable `ConnId`.**
-   `Connecting` holds a typed `ConnectMachine` (resolve, eyeballs, SOCKS, tunnel, TLS), each
-   stage owning the output of the one before. Operations that need a handshaken connection
-   exist only on `Open`.
+6. **A connection is `ConnSlot::{Connecting, Open, Failed}` under a stable `ConnId`.**
+   `Connecting` holds a typed `ConnectMachine` (resolve, eyeballs, then the proxy's tunnel or
+   SOCKS handshake over the `Dialed` connection), each stage owning the output of the one
+   before. Operations that need a handshaken connection exist only on `Open`. A `Closing`
+   state, for connections shut down gracefully, comes with TLS and the shutdown set.
 7. **Generational ids everywhere**: `TransferId`, `ConnId` (whose generation is the
    "Connection #N" number), `ResolveId`, `HeaderCursor`. A stale id fails its own lookup.
 
@@ -105,18 +106,22 @@ numbers are those of `SCOPE.md`.
 ### 2.1 Crates
 
 ```
-curl-alloc     rc.rs      TryRc<T>, TryArc<T>: fallible reference-counted pointers, sized T only
-curl-os      + net.rs     nonblocking TCP/UDP/Unix sockets over OwnedFd (new unsafe module)
-             + poll.rs    poll(2) over a slice of PollFd (new unsafe module)
-             + wake.rs    socketpair waker, Send + Sync (new unsafe module)
-curl-core    #![forbid(unsafe_code)]; depends on curl-alloc and curl-os (feature "net")
-curl-sys-abi the shim: handles, frames, callback adapters, generated setopt and api table
-curl-tool    drives transfers through the Rust API
+curl-alloc    fallible Box, Vec and String growth, TryRc and TryArc; the debug build's tracker
+curl-os       the OS interfaces as safe functions: the command line, the environment, the
+              terminal, local time, users, random bytes; sockets, poll(2), the system's
+              resolver and the waker (feature "net"); files (feature "fs")
+curl-core     #![forbid(unsafe_code)]; depends on curl-alloc and curl-os ("net", "fs")
+curl-psl      libpsl, the public suffixes cookies are checked against
+curl-zlib     zlib's inflate, curl-brotli brotli's decoder, curl-zstd zstd's decoder: the
+              content codings, behind `curl_core::coding::Decoder`
+curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
+curl-tool     drives transfers through the Rust API
 ```
 
 `curl-os` exposes safe functions; it does not implement `curl-core` traits (that would be a
 dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net` trait in safe
-code.
+code. The libraries the core does not depend on (libpsl and the decoders) are handed to a
+handle by whoever builds it: the shim and the tool.
 
 ### 2.2 `curl-core` modules
 
@@ -127,15 +132,23 @@ curl-core/src/
   version.rs                 the features and protocols this build reports
   time.rs                    Instant, TimeLimit, Clock, SystemClock, ManualClock (test-util)
   id/                        Arena<T>, ArenaPolicy, Key<T>, TransferId; C's mid order (generated)
-  url/                       Url and its parts; urlapi.c-compatible parser (host, path, encode)
-  options/                   typed config groups: Network, Http, Output, Limits, Callbacks…;
-                             script.rs: what the test protocol `script:` plays (test-util)
+  url/                       Url and its parts; urlapi.c-compatible parser (host, path, encode,
+                             schemes)
+  options/                   typed config groups: Network, Http, Output, Limits, Callbacks…,
+                             the seldom-set ones in `Cold<T>`; script.rs: what the test
+                             protocol `script:` plays (test-util)
   easy.rs                    Easy, Easy::perform
   report.rs, report/         TransferReport, Timings, Starts, Sizes; HeaderStore, HeaderCursor
   handler.rs                 handler traits, their verdict enums, Handler
   trace.rs, text.rs          failf/infof: a failure's reason and text lines, on a stack buffer
+  share.rs                   Share, Kind, ShareLock: what transfers of several handles keep
+  cookie.rs                  Jar, Cookie, Suffixes: the cookie jar (cookie.c)
+  netrc.rs                   .netrc files: the file's path, its entries for a host
+  coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
+  hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
+  save.rs                    a file written whole under a name of its own, then renamed
   multi/
-    mod.rs                   Multi<H>, Host, Slot, the public API
+    mod.rs                   Multi<H>, Host, Slot, ConnLimits, the public API
     state.rs                 Run, TransferState and its variant structs, StepCx, the steps;
                              state/tunnel.rs, state/socks.rs, state/haproxy.rs: the
                              CONNECT and SOCKS handshakes and the PROXY line a transfer
@@ -145,36 +158,44 @@ curl-core/src/
     sockets.rs               SocketTable, pollset diff, announce
     notify.rs                NotifyQueue, Notification, NotifyKind
     check.rs                 the debug build's invariant check
-    cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx
+    cx.rs                    EngineRest, TransferCx, EventCx, NotifyCx, CloseLater
     wait.rs                  wait, the waker, drive_to_completion over Net
+    props.rs                 random call sequences checked against a model (tests)
   conn/
-    mod.rs                   ConnSlot, Conn, Route, Tcp, Scheme, Peer, Transport, ConnNumber
-    pool.rs                  Pool, ConnLease, ReuseRules, Lock
+    mod.rs                   Caches, ConnSlot, Conn, Route, ProxyRoute, Tcp, Scheme, Peer,
+                             Transport, ConnNumber
+    pool.rs                  Pool, ConnLease, ReuseRules, Released
     connect.rs               ConnectMachine, Eyeballs, Racing, Dialed
+    proxy.rs                 the proxy a transfer goes through: the options' or the
+                             environment's, the no-proxy list, a proxy URL parsed
     socks.rs                 the SOCKS4, 4a and 5 handshakes, sans-IO
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
-  deliver/                   Pipeline, BodyAccountant, ClientOut, HeldOutput;
-                             decode.rs: Decoder, Gate;
+  deliver/                   BodyAccountant, ClientOut; held.rs: HeldOutput;
+                             decode.rs: Gate, the decoders' chain;
                              pause.rs: Pause, PauseRequest, Directions
-  progress/                  Speedometer, the low-speed check, the meter
+  progress/                  Speedometer, the low-speed check; meter.rs, the meter's text
   upload/                    Upload, Readout (C's client readers)
   proto/
-    mod.rs                   ProtoState (File, Http; test-util: Null, Stall, Script, Tcp)
+    mod.rs                   ProtoState (File, Http; test-util: Null, Stall, Script, Tcp),
+                             Inherited
     file.rs
-    http.rs, http/auth.rs    the HTTP/1 driver: the request sent, the response read; Basic
+    http.rs, http/           the HTTP/1 driver: the request sent, the response read;
+                             auth.rs (Basic, Bearer), digest.rs, cookies.rs (the jar as
+                             HTTP uses it); suite.rs, C's test cases over the fake network
     script.rs                the test protocol `script:` (test-util)
     http1/                   the parsers and the renderer, sans-IO: request.rs, response.rs,
-                             framing.rs, chunked.rs, fields.rs; tunnel.rs, CONNECT and
-                             the proxy's answer
+                             framing.rs, chunked.rs (decoder and encoder), fields.rs,
+                             follow.rs (where a `Location:` leads); tunnel.rs, CONNECT and
+                             the proxy's answer; fixture.rs, the test cases' sections (tests)
+  untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: `conn/layer.rs` (Layer, LayerStack), `conn/mux.rs`,
-`conn/shutdown.rs` (ShutdownSet, with TLS), a `Resolver` for names the cache and the shortcuts
-do not answer,
-`DebugNet`, the content decoders, the upload chunk encoder, and `http1/follow.rs`.
+Planned, not built: `conn/layer.rs` (Layer, LayerStack), `conn/mux.rs`, `conn/shutdown.rs`
+(ShutdownSet, with TLS), a `Resolver` for names the cache and the shortcuts do not answer, and
+`DebugNet`.
 
 ### 2.3 Ids and the arena
 
@@ -273,10 +294,12 @@ the handle is no longer borrowed, so the function may call back into it.
 
 C's `CURLE_AGAIN` has three meanings (would-block, "rebuild the sub-chain", "nothing yet") and
 "OK with 0 bytes" means EOF; here they are distinct variants. `NO_CONNECTION_AVAILABLE` is
-`Acquire::Wait`, never an `Error`. `Again`, `NoConnectionAvailable` and `RecursiveApiCall`
-remain in the generated `ErrorKind` (error/kinds.rs:145, :161, :169) because the generator emits
-every code; the engine never constructs them, and the error generator marks them as shim-only
-so the type system enforces it.
+`Acquired::Wait`, never an `Error`. The generated enums (`ErrorKind`, `MultiErrorKind`,
+`ShareErrorKind`) hold every code C's headers define, as `gen/errors.py` emits them all; nothing
+in the types separates the codes only the shim produces. The engine never constructs `Again`,
+`NoConnectionAvailable`, `RecursiveApiCall` or `UnknownOption`, nor most multi codes, but a Rust
+caller matching on the enums still meets them. Moving those codes into an enum of the shim's is
+milestone 3's.
 
 ### 2.6 Easy
 
@@ -320,16 +343,20 @@ pub struct Multi<H: Host = NoHost> {
     timers: TimerQueue<Transfer>,    // one entry per slot, reserved at add
     announce: TimerAnnounce,         // what the timer callback was last told (unit 3230)
     notify: NotifyQueue, delivering: bool,
-    pool: Pool,
+    caches: Caches,                  // the connection pool and the DNS cache
+    limits: ConnLimits,              // MAXCONNECTS, MAX_HOST_CONNECTIONS, MAX_TOTAL_CONNECTIONS
+    pending_after: Option<TransferId>, // the transfer last let look for a connection again
     sockets: SocketTable<H::Socket>, // fd → users and what each waits for, told, assigned value
     clock: Box<dyn Clock>,
-    net: Box<dyn Net>,
+    net: Box<dyn Net + Send>,
     waker: Option<TryArc<Waker>>,
     counts: Tally,
     life: Life,                      // Alive | Dead (a callback returned Abort)
+    #[cfg(feature = "debug-hooks")]
+    warned: bool,                    // a transfer was told the library is a debug build
 }
 
-pub(crate) struct Slot<H: Host> {
+struct Slot<H: Host> {
     owner: H::Transfer,
     easy: Box<Easy>,                 // options + live report; reachable from contexts
     pause: Pause,                    // reachable while the run is out (§3.6)
@@ -342,11 +369,16 @@ pub(crate) struct Run {              // created at add, dropped at removal
     deadlines: Deadlines,
     url: Vec<u8>,                    // the request's URL read back whole (C's state.url)
     retries: u8,                     // fresh connections tried this transfer (retrycount)
+    inherited: Inherited,            // what a request takes from the ones before it: the
+                                     // first origin, the method a redirect changed, HTTP/1.0
+                                     // seen, Expect refused, whether CURLOPT_PORT applies
+    #[cfg(feature = "debug-hooks")]
+    warn: bool,                      // this transfer says the library is a debug build
 }
 ```
 
 Planned with the steps that need them: an internal owner for transfers the engine makes itself
-(`Owner::Internal`, with server push), the pending cursor (with `WaitReason`), the shutdown set, and, in `Run`, the follow, auth and rate-limit state.
+(`Owner::Internal`, with server push), the shutdown set, and, in `Run`, the rate-limit state.
 
 A row holds its slot boxed: a slot is most of a kilobyte, and a table starts with C's sixteen
 rows, which C's limits on a transfer's memory count as pointers (libtest 500).
@@ -434,7 +466,8 @@ pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Re
                          premature: bool, reached: Reached, origin: Option<Origin>,
                          next: AfterRequest }
 enum Reached { Unmade, Made, Exchanged }  // DID's times taken; the exchange ran to its end
-pub(crate) enum AfterRequest { Complete, Retry }  // the protocol's done is told which
+pub(crate) enum AfterRequest { Complete, Retry, Follow { location: Vec<u8>, code: u16 } }
+                                                  // the protocol's done is told which
 pub(crate) struct Completed { outcome: Result<(), ErrorKind>, message: Message }
 pub(crate) enum Message { Unread, Read }
 ```
@@ -442,11 +475,10 @@ pub(crate) enum Message { Unread, Read }
 `Pending` and `Setup` hold what the setup made before it looked for a connection, so that only
 the search is made again: the route, built once per leg, which `Connecting` keeps and reads its
 destination and target from. Its IP version alone is read again as a waiting transfer looks
-again, as C, which makes its connection anew then, reads `set.ipver`. Planned for milestone 2, with the leg loop: the `Plan` grown into
-`Plan { target, leg }`, carried by every state from `Connecting` to `Exchanging`, a throttle
-instant in `Exchanging` (C's
-RATELIMITING), and `AfterRequest::Follow(FollowKind, Target)`, which the protocol's `done`
-decides from a `Location:`, with redirects (step 26).
+again, as C, which makes its connection anew then, reads `set.ipver`. A redirect is
+`AfterRequest::Follow`, which the protocol's `done` decides from a `Location:` (§6.4); the next
+leg's `Plan` is built from where it leads. Planned with the rate limits: a throttle instant in
+`Exchanging` (C's RATELIMITING).
 
 **A transfer runs as legs.** Init runs C's pretransfer once (the report restarted, `Starts::op`,
 the option's URL parsed) and `start_leg` for the first request: `Starts::single`, the limits
@@ -797,9 +829,9 @@ The rules that keep this sound:
   it. A `pause` reaching a transfer whose `Run` is already out (the stepping one, or one being
   flushed) finds no pipeline to flush and only changes the value; nesting is bounded by that,
   not by a counter.
-- **A connection being driven** is driven in place: `Pool::connect` replaces the
-  `ConnSlot::Connecting` with the drive's result (`Arena::replace_with`), while the pool is
-  borrowed, and no call-out to the application happens during a drive. The socket open hooks
+- **A connection being driven** is driven in its lease: `ConnLease::connect` replaces the
+  lease's `ConnSlot::Connecting` with the drive's result, the pool not borrowed at all, and no
+  call-out to the application happens during a drive. The socket open hooks
   (OPENSOCKET, SOCKOPT) will be the first call-outs inside one; their context carries no pool
   access, and they are the reason a drive may later move the machine out of its slot (§4.2).
 - **Nested flushes cannot happen.** A callback of the transfer being stepped or replayed runs
@@ -844,8 +876,8 @@ the number still unread.
 ### 4.1 Connection slots
 
 ```rust
-pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNumber),
-                           Closing(Box<Closing>) }
+pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNumber) }
+                           // Closing(Box<Closing>) comes with the shutdown set
 
 pub(crate) struct Conn {
     route: Route,
@@ -868,9 +900,9 @@ empty `rx` that allocates nothing; the file protocol reads the file into the pip
 keeps one lease-holding path through `Done` for every protocol, as C attaches a connection for
 `file:` too.
 
-`Pool::connect` drives the leased slot's machine by one event and the pool replaces the slot in
-place (`Arena::replace_with`): `Established(conn)` makes it `Open`, a failure `Failed`, which
-holds nothing open and goes when its lease is released. The `ConnId` and every outstanding lease
+`ConnLease::connect` drives the machine of the slot its lease holds by one event and replaces
+the slot in the lease: `Established(conn)` makes it `Open`, a failure `Failed`, which holds
+nothing open and goes when its lease is released. The `ConnId` and every outstanding lease
 survive the handshake. Send,
 receive, reuse matching, health checks and upkeep exist only on `Conn`. A `Connecting` slot with
 a matching route counts toward the limits and makes `acquire` return
@@ -1059,7 +1091,9 @@ through it and the traces name the proxy, and the request names the whole URL wi
 fragment or credentials (`Request::forward`, made from the `Url` before it goes to the report)
 with `Proxy-Connection: Keep-Alive`; the response's `Proxy-Connection` keeps or closes the
 connection (`Asked::http_proxy`). A tunnel (`CURLOPT_HTTPPROXYTUNNEL`, or a connect-to peer)
-and SOCKS fail with `NotBuiltIn` until they are built.
+is set up with `CONNECT` (`multi/state/tunnel.rs`), SOCKS4, 4a and 5 with their handshakes
+(`conn/socks.rs`, driven from `multi/state/socks.rs`), over the connection to the proxy the
+setup dialed. An HTTPS proxy fails with `NotBuiltIn` until TLS is built.
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate
@@ -1137,15 +1171,15 @@ impl Pool {
   transfer joining its multi is one more with nothing done (`Curl_cpool_xfer_init`). Test 1554
   pins this sequence (SHARE, CONNECT ×3 on first perform; CONNECT on return), so these four
   never merge or split.
-- Leaving the pool, a connection becomes `Closing` in the multi's `ShutdownSet` (graceful TLS
-  close_notify, TCP drain of up to 1 KB, scheme disconnect handler once) or is terminated at once
-  (aborted, CONNECT_ONLY, share-owned pool). Closing connections count toward host and total
-  limits, as in C.
+- Leaving the pool, a connection is closed at once. Planned with TLS: it becomes `Closing` in
+  the multi's `ShutdownSet` (graceful TLS close_notify, TCP drain of up to 1 KB, scheme
+  disconnect handler once) or is terminated at once (aborted, CONNECT_ONLY, share-owned pool),
+  and closing connections count toward host and total limits, as in C.
 - **Socket close order** is enforced by the network the pool is handed: inside a multi it is
   `Announcing` (`EngineRest::net`, `EngineRest::pool_section`), whose `close` forgets the socket in the `SocketTable`
   first (socket callback REMOVE if the application was told of it, C's
-  `Curl_multi_will_close`), then closes it through `Net::close`, which the shim maps to
-  CLOSESOCKETFUNCTION. Every pool path that closes a socket goes through it, so none can skip
+  `Curl_multi_will_close`), then closes it through `Net::close`, where the shim is to call CLOSESOCKETFUNCTION once the
+  socket hooks land (the option is not wired yet). Every pool path that closes a socket goes through it, so none can skip
   the order.
 
 ### 4.6.1 The share
@@ -1153,7 +1187,8 @@ impl Pool {
 `Share` (`share.rs`, `CURLSH`) keeps what it is asked to (`Share::keep`, `CURLSHOPT_SHARE`):
 idle connections (`Kind::Connections`), names (`Kind::Names`), cookies (`Kind::Cookies`), each
 behind a mutex of its own, and the network its idle connections close through at the end, as
-C's share closes them through its own internal handle, never CLOSESOCKETFUNCTION. What it
+C's share closes them through its own internal handle, and so, it is assumed, never through
+CLOSESOCKETFUNCTION: not yet checked against C, to be tested when the socket hooks land. What it
 keeps cannot change while a handle holds it (`Share::holders`). A handle holds its share
 (`Easy::set_share`, C's `data->share`): kept through `reset`, not copied by `try_clone`, as C's
 `duphandle` links none. Each transfer uses its share's pool, names or jar where the share keeps
@@ -1240,8 +1275,8 @@ are given the lease the transfer's state holds. Inside an `Exchanging` step of `
 3. EOF decides: a head cut short with a size known is "transfer closed with N bytes remaining to
    read" (18), a short body "end of response with N bytes missing" (18), unfinished chunks
    "transfer closed with outstanding read data remaining" (18), an `UntilClose` body ends. A
-   connection that read EOF is not reused. Retrying a reused connection that delivered nothing
-   is not built yet.
+   connection that read EOF is not reused. A request on a reused connection that delivered
+   nothing is made again on a fresh one (`AfterRequest::Retry`, at most `MAX_RETRIES` times).
 4. `ProtoState::done`, before the last progress pass (`multi_done` calls the handler's `done`
    first), delivers a line the head parser still holds after the trace of whatever failed, as
    `Curl_http_done` does, ignoring what comes of it, and judges GOT_NOTHING ("Empty reply from
@@ -1503,8 +1538,8 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   the deadline ("Done waiting for 100-continue") or keep-sending-on-error opens it. A final
   response of 300 or more before the body has gone, the connection not closing anyway, stops
   the send ("HTTP error before end of send, stop sending", then "abort upload") and the
-  connection is not used again, unless keep-sending-on-error. A 417 retries without it, which
-  needs a second leg and comes with redirects; until then it is NotBuiltIn.
+  connection is not used again, unless keep-sending-on-error. A 417 makes the request again
+  without it, on a second leg (`Inherited::no_expect`).
   Unknown body length on HTTP/1.1 uses the chunk encoder (chunks ≤ 64 KiB, trailers from the
   trailer handler); on HTTP/1.0 it is UploadFailed.
 
@@ -1622,7 +1657,7 @@ the transfer fails TooManyRedirects), counts the redirect in the report (C's
 `state.followlocation`, which is also what "this is a follow" means), resolves the location as
 FOLLOW_REDIR does and starts the next leg through `next_leg`, the tail it shares with a retry.
 That leg's URL replaces `Run::url` whole (C's `state.url`). A redirect reaches only HTTP and FTP
-schemes (`CURLPROTO_REDIR`). `Run::first` holds the first leg's origin (`state.initial_origin`):
+schemes (`CURLPROTO_REDIR`). `Inherited::first`, in the `Run`, holds the first leg's origin (`state.initial_origin`):
 each request's `CredentialGate` is fixed when the request is made, from that origin and its own.
 The gate holds back what the application said; credentials in the request's own URL go to its
 origin regardless (`Trusted::own_url`), as C takes them per leg in `url_set_data_creds`. Each

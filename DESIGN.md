@@ -12,7 +12,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-sys-abi` | The C ABI over `curl-core`, built as `libcurl.so.4`. | yes: it is the shim |
 | `curl-tool` | The `curl` binary, written against the Rust API, not the C ABI. | forbidden |
 | `curl-alloc` | Fallible allocation; the debug build's memory tracker. | in named modules |
-| `curl-os` | Operating-system interfaces: the command line, the terminal, the user database, sockets and polling. | in named modules |
+| `curl-os` | Operating-system interfaces: the command line, the environment, the terminal, the user database, random bytes, files, sockets, polling and the system's resolver. | in named modules |
 | `curl-psl` | libpsl's public suffix list, behind `curl_core::cookie::PublicSuffixes`. | yes: it is a binding |
 | `curl-zlib` | zlib's inflate, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |

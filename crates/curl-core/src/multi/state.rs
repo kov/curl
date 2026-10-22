@@ -991,9 +991,7 @@ fn connecting<H: Host>(
             (c.attached(), Wake::Again)
         }
         Err(e) => {
-            let route = &c.route;
-            let proxy = route.proxy.as_ref().map(|p| &*p.peer);
-            let kind = connect_failed(cx, &route.origin, route.via.as_deref(), proxy, e);
+            let kind = connect_failed(cx, &c.route, e);
             (TransferState::Connecting(c).fail(kind), Wake::Again)
         }
     }
@@ -1066,19 +1064,20 @@ fn up<H: Host>(
 
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,
 /// `is_connected`).
-fn connect_failed<H: Host>(
-    cx: &mut StepCx<'_, H>,
-    origin: &Origin,
-    via: Option<&Peer>,
-    proxy: Option<&Peer>,
-    e: ConnectError,
-) -> ErrorKind {
+fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError) -> ErrorKind {
+    // The peer connected to: the first proxy, else what a connect-to
+    // names in the origin's place, else the origin
+    // (`Curl_conn_get_first_peer`).
+    let first = route.destination();
+    // The proxy named in a failure: the SOCKS one when there are two
+    // (`socks_proxy` before `http_proxy`), which is the first.
+    let proxy = route.proxy.as_ref().map(ProxyRoute::first_peer);
     match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Unresolved(why) => {
-            let to = via.unwrap_or(origin);
-            let (host, port) = (Bytes(to.name()), to.port());
-            // With a proxy, the name looked up is the proxy's.
+            // The name looked up is the first peer's: with a proxy, the
+            // first proxy's.
+            let (host, port) = (Bytes(first.name()), first.port());
             let (what, kind) = match proxy {
                 Some(_) => ("proxy", ErrorKind::CouldntResolveProxy),
                 None => ("host", ErrorKind::CouldntResolveHost),
@@ -1111,8 +1110,10 @@ fn connect_failed<H: Host>(
         }
         ConnectError::Failed(failure) => trace_failure(cx, failure),
     }
+    let origin = &*route.origin;
     let (host, port) = (Bytes(origin.name()), origin.port());
-    let via = Via(via);
+    // A peer that is neither the origin nor the proxy named is shown.
+    let via = Via(Some(first).filter(|&f| f != origin && Some(f) != proxy));
     let over = OverProxy(proxy);
     let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
     trace::fail(

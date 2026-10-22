@@ -480,3 +480,28 @@ witness: curl-core proto::http::tests::a_progress_abort_ends_the_tunnel_at_once
         for _ in 0..owed {
 --- new
         for _ in 0..0 {
+
+=== an unresolved SOCKS proxy is named as the origin
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::an_unresolved_proxy_is_named_in_the_failure
+--- old
+            let (host, port) = (Bytes(first.name()), first.port());
+--- new
+            let to = route.via.as_deref().unwrap_or(&route.origin);
+            let (host, port) = (Bytes(to.name()), to.port());
+
+=== a failed connect names the HTTP proxy behind a pre-proxy
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
+--- old
+    let proxy = route.proxy.as_ref().map(ProxyRoute::first_peer);
+--- new
+    let proxy = route.proxy.as_ref().map(|p| &*p.peer);
+
+=== a connect-to's peer is shown with a proxy
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
+--- old
+    let via = Via(Some(first).filter(|&f| f != origin && Some(f) != proxy));
+--- new
+    let via = Via(route.via.as_deref());

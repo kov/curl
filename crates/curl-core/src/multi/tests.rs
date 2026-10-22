@@ -1507,6 +1507,110 @@ fn unresolved_and_immediate_failures() {
     );
 }
 
+/// A transfer through proxies, `proxy` and `pre` the pre-proxy, set up
+/// to fail: the error and the failure's first trace lines.
+fn through_proxies(
+    url: &str,
+    proxy: &str,
+    pre: Option<&str>,
+    tunnel: bool,
+    connect_to: Option<&str>,
+) -> (Result<(), ErrorKind>, Vec<String>) {
+    let (mut m, _clock) = networked();
+    let (mut e, lines) = traced(url);
+    let o = e.options_mut();
+    o.proxy.url = Some(proxy.as_bytes().to_vec());
+    o.proxy.pre_proxy = pre.map(|p| p.as_bytes().to_vec());
+    o.proxy.tunnel = tunnel;
+    if let Some(to) = connect_to {
+        o.connect_to.set([to.as_bytes()]).unwrap();
+    }
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    for _ in 0..4 {
+        m.perform(&mut NoEvents).unwrap();
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
+            .unwrap();
+    }
+    let done = messages(&mut m);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].0, id.index());
+    let failure = trace_of(&lines)
+        .into_iter()
+        .filter(|l| l.starts_with("Could not resolve") || l.starts_with("Failed to connect"))
+        .collect();
+    (done[0].1, failure)
+}
+
+/// A proxy whose name is not found is the name the failure gives, with
+/// its port, whatever its kind; the first of two, the pre-proxy, is the
+/// one looked up first (`Curl_conn_get_first_peer`, test with the C
+/// build's `-x socks5://nonexist.invalid`).
+#[test]
+fn an_unresolved_proxy_is_named_in_the_failure() {
+    let names = |port| {
+        [
+            "Could not resolve proxy: example.com (Domain name not found)\n".to_string(),
+            "Could not resolve proxy: example.com\n".to_string(),
+            format!("Could not resolve: example.com:{port}\n"),
+        ]
+    };
+    let url = "http://v4.test:1/";
+    for kind in ["socks4", "socks4a", "socks5", "socks5h"] {
+        for tunnel in [false, true] {
+            let proxy = format!("{kind}://example.com");
+            let ran = through_proxies(url, &proxy, None, tunnel, None);
+            assert_eq!(
+                ran,
+                (Err(ErrorKind::CouldntResolveProxy), names(1080).to_vec()),
+                "{proxy}"
+            );
+        }
+    }
+    for tunnel in [false, true] {
+        let ran = through_proxies(url, "http://example.com", None, tunnel, None);
+        assert_eq!(
+            ran,
+            (Err(ErrorKind::CouldntResolveProxy), names(80).to_vec())
+        );
+        let pre = Some("socks5://example.com");
+        let ran = through_proxies(url, "http://127.0.0.1:2", pre, tunnel, None);
+        assert_eq!(
+            ran,
+            (Err(ErrorKind::CouldntResolveProxy), names(1080).to_vec())
+        );
+    }
+}
+
+/// A connection to a proxy that fails names the origin, then the proxy
+/// it went over: the SOCKS one, which is first when there are two; a
+/// connect-to's peer is never shown with a proxy, which is connected to
+/// in its place (`cf_ip_happy_connect`, against the C build).
+#[test]
+fn a_failed_connect_names_the_first_proxy() {
+    let failed = |what: &str| {
+        (
+            Err(ErrorKind::CouldntConnect),
+            vec![format!(
+                "Failed to connect to {what} after 0 ms: Could not connect to server\n"
+            )],
+        )
+    };
+    let url = "http://v4.test:1/";
+    let pre = Some("socks5://127.0.0.1:2");
+    let ran = through_proxies(url, "http://v4.test:3", pre, false, None);
+    assert_eq!(ran, failed("v4.test:3 over proxy 127.0.0.1"));
+    let ran = through_proxies(url, "http://v4.test:3", pre, true, None);
+    assert_eq!(ran, failed("v4.test:1 over proxy 127.0.0.1"));
+    let to = Some("::127.0.0.1:1");
+    for (proxy, tunnel) in [
+        ("http://127.0.0.1:2", true),
+        ("socks5://127.0.0.1:2", false),
+    ] {
+        let ran = through_proxies(url, proxy, None, tunnel, to);
+        assert_eq!(ran, failed("v4.test:1 over proxy 127.0.0.1"), "{proxy}");
+    }
+}
+
 /// Removing a transfer while it connects closes its socket, traced to the
 /// transfer as `multi_done` traces it.
 #[test]

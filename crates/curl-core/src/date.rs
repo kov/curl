@@ -43,14 +43,10 @@ pub fn parse(date: &[u8]) -> Result<i64, BadDate> {
         return Err(BadDate);
     }
     let seconds = to_epoch(year, mon, mday, w.dsecs.unwrap_or(0));
-    // A zone ahead of UTC is subtracted; no year before 1583 can take
-    // this below `i64::MIN`.
+    // A zone ahead of UTC is subtracted. A time past the latest is the
+    // latest, as C caps it, though no year of eight digits comes near.
     let zone = i64::from(w.zone.unwrap_or(0));
-    Ok(if zone > 0 && seconds > i64::MAX - zone {
-        i64::MAX
-    } else {
-        seconds + zone
-    })
+    Ok(seconds.saturating_add(zone))
 }
 
 /// The most parts a date is read in.
@@ -323,7 +319,6 @@ fn zone(word: &[u8]) -> Option<i32> {
         (b"WAST", -420),
     ];
     let minutes = match word {
-        [] => None,
         &[letter] => letter
             .is_ascii_uppercase()
             .then(|| LETTERS[usize::from(letter - b'A')])
@@ -471,6 +466,12 @@ mod tests {
     }
 
     #[test]
+    fn a_compact_date_s_month_is_at_most_12() {
+        assert_eq!(parse(b"19941206"), Ok(786_672_000));
+        assert_eq!(parse(b"19941306"), Err(BadDate));
+    }
+
+    #[test]
     fn six_parts_are_read_and_the_rest_ignored() {
         assert_eq!(parse(b"Sun 06 Nov 1994 08:49:37 GMT junk"), Ok(784_111_777));
         assert_eq!(parse(b"Sun 06 Nov 1994 08:49:37 junk"), Err(BadDate));
@@ -479,7 +480,10 @@ mod tests {
     #[test]
     fn the_latest_year_has_eight_digits() {
         // In a zone behind UTC, and still far from the latest time.
-        assert!(parse(b"31 Dec 99999999 23:59:59 -1400").unwrap() > 3_000_000_000_000_000);
+        assert_eq!(
+            parse(b"31 Dec 99999999 23:59:59 -1400"),
+            Ok(3_155_633_032_831_199)
+        );
         assert_eq!(parse(b"1 Jan 999999999"), Err(BadDate));
     }
 }

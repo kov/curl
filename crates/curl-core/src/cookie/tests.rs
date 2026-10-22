@@ -762,6 +762,13 @@ fn a_secure_cookie_is_not_overlaid_from_a_domain_it_covers() {
         set(&mut jar, b"www.example.com", b"/", b"a=plain; path=/logi")
             .is_some_and(|s| s.starts_with("Added"))
     );
+    // A cookie for a sibling host, hashed with it, overlays nothing.
+    jar.set_by(b"b=s; secure; path=/login", secure, None, NOW, &mut n)
+        .unwrap();
+    assert!(
+        set(&mut jar, b"api.example.com", b"/", b"b=plain; path=/login")
+            .is_some_and(|s| s.starts_with("Added"))
+    );
 }
 
 #[test]

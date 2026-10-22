@@ -586,4 +586,89 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// C's bounds: a pair's name of 256 bytes, a value read in 1024 bytes
+    /// with its escapes, a qop token of 32, a quoted string of 2047 and a
+    /// response of 4095.
+    #[test]
+    fn bounds_challenges_and_responses_as_c() {
+        let realm = |challenge: &str| {
+            decoded(challenge)
+                .unwrap()
+                .realm
+                .map(|r| String::from_utf8(r).unwrap())
+        };
+        let named = |n: usize| format!("nonce=n, {}=v, realm=r", "x".repeat(n));
+        assert_eq!(realm(&named(256)).as_deref(), Some("r"));
+        assert_eq!(realm(&named(257)), None, "a name too long ends the reading");
+        assert_eq!(
+            decoded("=x, nonce=\"n\"").err(),
+            Some(DigestError::Bad),
+            "an empty name ends the reading"
+        );
+        // An escape takes one of the 1024 bytes and keeps nothing: the
+        // value ends after 512 escaped quotes, the rest is no pair.
+        let escaped = format!("nonce=n, realm=\"{}\", opaque=o", "\\\"".repeat(600));
+        let d = decoded(&escaped).unwrap();
+        assert_eq!(d.realm, Some(vec![b'"'; 512]));
+        assert_eq!(d.opaque, None);
+        let qop = |token: usize| {
+            decoded(&format!("nonce=n, qop=\"{},auth\"", "x".repeat(token)))
+                .unwrap()
+                .qop
+        };
+        assert_eq!(qop(32), Some(Qop::Auth));
+        assert_eq!(qop(33), None, "a token too long ends the list");
+        assert_eq!(qop(0), None, "so does an empty one");
+        let uri = |n: usize| {
+            let mut d = decoded("nonce=\"n\"").unwrap();
+            d.response(b"u", b"p", b"GET", "/".repeat(n).as_bytes(), |_| {})
+        };
+        assert!(uri(2047).is_ok());
+        assert!(uri(2048).is_err());
+        // What a response takes besides its user and its URI.
+        let around = uri(1).unwrap().len() - 2;
+        let response = |user: usize| {
+            let mut d = decoded("nonce=\"n\"").unwrap();
+            let uri = "/".repeat(2000);
+            d.response(
+                "u".repeat(user).as_bytes(),
+                b"p",
+                b"GET",
+                uri.as_bytes(),
+                |_| {},
+            )
+            .map(|r| r.len())
+        };
+        let fits = 4095 - around - 2000;
+        assert_eq!(response(fits), Ok(4095));
+        assert!(response(fits + 1).is_err());
+    }
+
+    /// A bare value ends at a comma or a line's end and takes a backslash
+    /// as it is; only `userhash=true` asks for the user's hash.
+    #[test]
+    fn reads_bare_values_as_c() {
+        let d = decoded("nonce=n\rrealm=a\\b").unwrap();
+        assert_eq!(d.nonce.as_deref(), Some(&b"n"[..]));
+        assert_eq!(d.realm.as_deref(), Some(&b"a\\b"[..]));
+        let d = decoded("nonce=n\nopaque=o").unwrap();
+        assert_eq!(d.nonce.as_deref(), Some(&b"n"[..]));
+        assert_eq!(d.opaque.as_deref(), Some(&b"o"[..]));
+        for challenge in ["nonce=n, userhash=false", "nonce=n, other=true"] {
+            let out = respond(challenge, "u", "p", "GET", "/");
+            assert!(out.starts_with("username=\"u\""), "{out}");
+            assert!(!out.contains("userhash"), "{out}");
+        }
+    }
+
+    /// The nonce count is sent as eight hex digits.
+    #[test]
+    fn counts_nonces_in_hex() {
+        let mut d = decoded("nonce=\"n\", qop=auth").unwrap();
+        d.nc = 0x1234abcd;
+        let out = d.response(b"u", b"p", b"GET", b"/", |_| {}).unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains(", nc=1234abcd, "), "{out}");
+    }
 }

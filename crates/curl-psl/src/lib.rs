@@ -160,4 +160,28 @@ mod tests {
         assert!(!list.accepts(b"a\0b", b"b"));
         assert!(list.is_public_suffix(&[b'a'; NAME]));
     }
+
+    /// A name is asked about only if it fits C's buffer with its zero
+    /// byte, and holds none of its own.
+    #[test]
+    fn names_end_in_one_zero_byte() {
+        let longest = c_name(&[b'a'; NAME - 1]).unwrap();
+        assert_eq!(longest[..NAME - 1], [b'a'; NAME - 1]);
+        assert_eq!(longest[NAME - 1], 0);
+        assert_eq!(c_name(b"example.com").unwrap()[..12], *b"example.com\0");
+        assert_eq!(c_name(&[b'a'; NAME]), None);
+        assert_eq!(c_name(b"a\0b"), None);
+    }
+
+    /// Without a list every name is a suffix, and no cookie domain is
+    /// accepted.
+    #[test]
+    fn without_a_list_nothing_is_accepted() {
+        let none = List {
+            loaded: OnceLock::from(None),
+        };
+        assert!(!none.available());
+        assert!(none.is_public_suffix(b"example.com"));
+        assert!(!none.accepts(b"www.example.com", b"example.com"));
+    }
 }

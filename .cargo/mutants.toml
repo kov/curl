@@ -47,6 +47,7 @@ exclude_re = [
     # the tests run under none that sees C's heap (Miri cannot run FFI).
     # A successful `getaddrinfo` never leaves the list null.
     'curl-os/src/resolve\.rs:.*: (replace <impl Drop for List>::drop with \(\)|delete ! in <impl Drop for List>::drop)$',
+    'curl-psl/src/lib\.rs:.*: replace <impl Drop for Ctx>::drop with \(\)$',
     # A debug format nothing reads.
     'easy\.rs:.*: replace <impl fmt::Debug for Private>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     # Seeking a file just opened to its start changes nothing.

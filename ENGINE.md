@@ -461,7 +461,7 @@ and starts the next leg. The fifth retry of a transfer fails it with SendError.
 ### 3.2 Per-request substates
 
 A request's substates belong to its protocol, inside `ProtoState`; the engine sees only
-`ProtoStep { Done, Blocked }` from a step and asks whether output is held. The HTTP driver
+`ProtoStep { Done, Blocked, Unread }` from a step and asks whether output is held. The HTTP driver
 (`proto/http.rs`) keeps the head being sent (`out`, `sent`), the response's `Stage { Head,
 Body(Body), Done }`, with `Body` the framing decided once at the end of the head (length,
 chunked, until close), and whether the response is interim. Each C flag is a variant there:
@@ -471,9 +471,16 @@ is the send buffer with what of it has gone, `eos_read`, `sent_all` (`upload_don
 (`upload_aborted`) and `ExpectState { None, Head, Awaiting(Instant), Open }` (`expect100`).
 The request is over when its response is and nothing more of it is to send.
 
-A step reads first, until the socket has nothing or the response is over, then sends what is
-left with at most one more buffer of the body (`Curl_sendrecv`), so a response that comes while
-the body goes is heard within a buffer. One that asks for another request, by a location to
+A step reads first, until the socket has nothing, the response is over or receiving pauses, and
+at most eleven times (`sendrecv_dl`'s `maxloops`), then sends what is left with at most one more
+buffer of the body (`Curl_sendrecv`), so a response that comes while the body goes is heard
+within a buffer. A step that stops at the eleventh read says `ProtoStep::Unread`, and the engine,
+past the step's timeout and progress checks, marks the transfer dirty (`Curl_multi_mark_dirty`):
+it runs in the next pass without waiting on its socket, and the multi's timeout is 0 until then.
+A peer that sends faster than it is read thus cannot keep a pass from ending, so the time limits,
+the progress handler and the other transfers get their turn as in C. C's other exits from that
+loop have nothing to act on yet: no receive rate limit is implemented, and no layer holds
+received bytes a poll cannot see (`data_pending`; TLS will). One that asks for another request, by a location to
 follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
 parser, fed a `Sending` with each piece): 2000 bytes or more, or an unknown amount, and the
 connection closes rather than carry it, the response ending at its head; less, and it goes to be

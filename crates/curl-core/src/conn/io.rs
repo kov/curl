@@ -287,7 +287,17 @@ struct Wire {
     /// Sends past this many fail, the peer gone though nothing says so
     /// to a poll yet: a reset that arrives as the request goes.
     breaks_after: Option<usize>,
+    /// After its last reply the peer sends without end, each read of it
+    /// moving the clock on by this much: a peer faster than its reader.
+    endless: Option<Duration>,
+    /// The reads of the endless part so far.
+    endless_reads: usize,
 }
+
+/// The most reads of an endless reply before the test fails: a transfer
+/// that never stops reading would otherwise hang it.
+#[cfg(any(test, feature = "test-util"))]
+const ENDLESS_READS: usize = 20_000;
 
 #[cfg(any(test, feature = "test-util"))]
 impl Wire {
@@ -311,7 +321,9 @@ impl Wire {
 
     /// The socket has something to read: reply bytes, or the end.
     fn readable(&self) -> bool {
-        self.hung_up || self.answering() || (self.answered == self.replies.len() && self.then_close)
+        self.hung_up
+            || self.answering()
+            || (self.answered == self.replies.len() && (self.then_close || self.endless.is_some()))
     }
 }
 
@@ -380,6 +392,25 @@ impl Conversation {
             .expect("no test panics holding the wire")
             .breaks_after = Some(n);
         self
+    }
+
+    /// The same peer, sending without end after its last reply, each
+    /// read of that taking `per_read` of the clock: a peer that sends
+    /// faster than it is read. Reading on and on fails the test.
+    pub fn endless(self, per_read: Duration) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .endless = Some(per_read);
+        self
+    }
+
+    /// How many reads the endless part of the reply has had.
+    pub fn endless_reads(&self) -> usize {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .endless_reads
     }
 
     /// The same peer, closing the connection when a request comes that
@@ -703,6 +734,17 @@ impl Socket for FakeSocket {
             if let Some(got) = std::num::NonZeroUsize::new(n) {
                 return Ok(Recv::Data(got));
             }
+        }
+        if let Some(per_read) = wire.endless {
+            wire.endless_reads += 1;
+            assert!(
+                wire.endless_reads <= ENDLESS_READS,
+                "the transfer never stopped reading"
+            );
+            buf.fill(b'x');
+            self.clock.advance(per_read);
+            let n = std::num::NonZeroUsize::new(buf.len()).expect("checked above");
+            return Ok(Recv::Data(n));
         }
         Ok(if wire.then_close {
             Recv::Eof

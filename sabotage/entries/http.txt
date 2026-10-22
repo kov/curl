@@ -1219,3 +1219,17 @@ witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
             trace::info(cx, format_args!("using HTTP/1.x"));
         }
 --- new
+
+=== a step reads for as long as its peer sends
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::an_endless_body_ends_at_the_time_limit
+--- old
+            reads += 1;
+--- new
+
+=== a step that stopped reading with more to read waits for its socket
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_step_reads_eleven_times_at_most_and_runs_again_at_once
+--- old
+                                    cx.rest.dirty.insert(cx.me.index());
+--- new

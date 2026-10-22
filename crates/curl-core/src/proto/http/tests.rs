@@ -4444,3 +4444,148 @@ fn a_location_without_a_scheme_keeps_the_applied_port() {
     assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
     assert!(second_request(&ran).starts_with("GET /b HTTP/1.1\r\n"));
 }
+
+/// A head with no size: the body lasts until the connection closes.
+const UNTIL_CLOSE: &[u8] = b"HTTP/1.1 200 OK\r\n\r\n";
+
+/// Counts the body's bytes and drops them.
+#[derive(Clone, Default)]
+struct Drops(Arc<crate::test_cell::Cell<u64>>);
+
+impl WriteHandler for Drops {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        self.0.set(self.0.get() + body.len() as u64);
+        Write::Accepted
+    }
+}
+
+/// A multi whose server at `PORT` answers each connection with a head
+/// and then a body without end, each read of it taking a millisecond;
+/// one conversation for each of `connections`.
+fn endless(connections: usize) -> (Multi, Vec<Conversation>) {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+    let mut talks = Vec::new();
+    for _ in 0..connections {
+        let talk = Conversation::new(UNTIL_CLOSE, false).endless(Duration::from_millis(1));
+        net = net.with_conversation(at, talk.clone());
+        talks.push(talk);
+    }
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), talks)
+}
+
+/// A GET whose body is dropped, counted in the `Drops`, with the options
+/// `set` makes.
+fn endless_get(set: impl FnOnce(&mut Options)) -> (Easy, Drops) {
+    let mut e = Easy::new();
+    let drops = Drops::default();
+    let o = e.options_mut();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.callbacks.write = Some(Handler::write(drops.clone()).unwrap());
+    set(o);
+    (e, drops)
+}
+
+/// A step reads at most eleven times, and one that stops with more
+/// perhaps to read is run again at once, not when its socket is next
+/// ready (`sendrecv_dl`: `maxloops` and `Curl_multi_mark_dirty`).
+#[test]
+fn a_step_reads_eleven_times_at_most_and_runs_again_at_once() {
+    let (mut m, talks) = endless(1);
+    let (e, drops) = endless_get(|_| {});
+    m.add(e, (), &mut NoEvents).unwrap();
+    while talks[0].endless_reads() == 0 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    for _ in 0..3 {
+        let (reads, got) = (talks[0].endless_reads(), drops.0.get());
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(talks[0].endless_reads() - reads, 11);
+        assert_eq!(drops.0.get() - got, 11 * 16384);
+        assert_eq!(m.timeout(), Some(Duration::ZERO));
+    }
+}
+
+/// A body that never ends, from a peer faster than its reader, still
+/// ends at the total time limit (C ends test 3237's the same way).
+#[test]
+fn an_endless_body_ends_at_the_time_limit() {
+    let (mut m, talks) = endless(1);
+    let seen = Seen::default();
+    let (e, drops) = endless_get(|o| {
+        o.limits.total = crate::time::TimeLimit::from_millis(1000);
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::OperationTimedout));
+    let text = seen.text();
+    let said = text
+        .iter()
+        .find(|l| l.starts_with("Operation timed out after "))
+        .unwrap_or_else(|| panic!("{text:?}"));
+    let after: u64 = said
+        .strip_prefix("Operation timed out after ")
+        .and_then(|s| s.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("{said:?}"));
+    // Late by no more than one step's reads.
+    assert!((1000..=1011).contains(&after), "{said:?}");
+    let bytes = drops.0.get();
+    assert!(
+        said.ends_with(&format!(" with {bytes} bytes received\n")),
+        "{said:?}"
+    );
+    assert!(talks[0].endless_reads() <= 1011);
+}
+
+/// The progress handler runs while a body faster than its reader comes,
+/// and can abort it.
+#[test]
+fn a_progress_abort_stops_an_endless_body() {
+    let (mut m, _talks) = endless(1);
+    let aborts = AbortsAt {
+        calls: Arc::default(),
+        abort_at: 5,
+    };
+    let progress = aborts.clone();
+    let (e, _) = endless_get(move |o| {
+        o.progress = crate::options::Progress::Handler(Handler::progress(progress).unwrap());
+    });
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::AbortedByCallback));
+    assert_eq!(aborts.calls.get(), 5);
+}
+
+/// Two transfers each with a body faster than its reader both move on
+/// in every pass: neither starves the other.
+#[test]
+fn transfers_with_endless_bodies_take_turns() {
+    let (mut m, talks) = endless(2);
+    let (one, one_got) = endless_get(|_| {});
+    let (two, two_got) = endless_get(|_| {});
+    m.add(one, (), &mut NoEvents).unwrap();
+    m.add(two, (), &mut NoEvents).unwrap();
+    while talks.iter().any(|t| t.endless_reads() == 0) {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    for _ in 0..3 {
+        let reads: Vec<usize> = talks.iter().map(Conversation::endless_reads).collect();
+        let got = (one_got.0.get(), two_got.0.get());
+        m.perform(&mut NoEvents).unwrap();
+        for (talk, before) in talks.iter().zip(reads) {
+            assert_eq!(talk.endless_reads() - before, 11);
+        }
+        assert!(one_got.0.get() > got.0 && two_got.0.get() > got.1);
+    }
+}

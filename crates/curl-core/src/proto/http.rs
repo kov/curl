@@ -45,6 +45,11 @@ use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, L
 /// The most one read takes (`CURL_MAX_WRITE_SIZE`, BUFFERSIZE's default).
 const READ_SIZE: usize = 16384;
 
+/// The most reads one step makes (`sendrecv_dl`: the first and
+/// `maxloops`' ten more), so a peer that sends faster than it is read
+/// cannot keep the step from returning.
+const MAX_READS: usize = 11;
+
 /// The send buffer the head and the body share (`UPLOADBUFFER_DEFAULT`).
 const UPLOAD_BUFFER: usize = 65536;
 
@@ -168,6 +173,15 @@ enum ExpectState {
     /// The 100 came, the wait ran out or an error response lets the body
     /// go on.
     Open,
+}
+
+/// How a step's reading ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Read {
+    /// A read would block, the response is over or receiving paused.
+    Waits,
+    /// The step read its most: more may be there already.
+    Stopped,
 }
 
 /// How the body ends.
@@ -900,16 +914,17 @@ impl Request {
     }
 
     /// Read until the connection has nothing more now, the response is
-    /// over or receiving pauses, then send what is left with at most one
-    /// more buffer of the body (`Curl_sendrecv`): a response that comes
-    /// while the body goes is heard before more of it is sent.
+    /// over, receiving pauses or the step has read its most, then send
+    /// what is left with at most one more buffer of the body
+    /// (`Curl_sendrecv`): a response that comes while the body goes is
+    /// heard before more of it is sent.
     pub(crate) fn step<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
-        self.receive(cx, lease)?;
+        let read = self.receive(cx, lease)?;
         // The request is over once its response is and nothing more of it
         // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
         if self.sending() && self.send(cx, lease, true)? {
@@ -918,21 +933,29 @@ impl Request {
         }
         Ok(if matches!(self.stage, Stage::Done) && !self.sending() {
             ProtoStep::Done
+        } else if read == Read::Stopped {
+            ProtoStep::Unread
         } else {
             ProtoStep::Blocked
         })
     }
 
-    /// Read what the connection has now, until the response is over or
-    /// receiving pauses (`sendrecv_dl`).
+    /// Read what the connection has now, at most `MAX_READS` times, until
+    /// the response is over or receiving pauses (`sendrecv_dl`).
     fn receive<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
-    ) -> Result<(), ErrorKind> {
+    ) -> Result<Read, ErrorKind> {
+        let mut reads = 0;
         loop {
             if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
-                return Ok(());
+                return Ok(Read::Waits);
+            }
+            if reads == MAX_READS {
+                // Neither the end nor a read that would block: there may
+                // be more to read already.
+                return Ok(Read::Stopped);
             }
             let max = self.read_size();
             if max == 0 {
@@ -940,8 +963,9 @@ impl Request {
                 self.stage = Stage::Done;
                 continue;
             }
+            reads += 1;
             match lease.get().recv(max) {
-                Ok(Recv::WouldBlock) => return Ok(()),
+                Ok(Recv::WouldBlock) => return Ok(Read::Waits),
                 Ok(Recv::Eof) => {
                     self.end(cx)?;
                     self.stage = Stage::Done;

@@ -934,7 +934,7 @@ impl Request {
         Ok(if matches!(self.stage, Stage::Done) && !self.sending() {
             ProtoStep::Done
         } else if read == Read::Stopped {
-            ProtoStep::Unread
+            ProtoStep::AtReadLimit
         } else {
             ProtoStep::Blocked
         })

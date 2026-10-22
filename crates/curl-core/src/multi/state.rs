@@ -708,7 +708,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 },
                 Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                 // Out of time at the end of the pass (transfer.c:382).
-                Ok(ProtoStep::Blocked | ProtoStep::Unread) if expired => {
+                Ok(ProtoStep::Blocked | ProtoStep::AtReadLimit) if expired => {
                     let kind = timed_out(cx);
                     (TransferState::Exchanging(x).fail(kind), Wake::Again)
                 }
@@ -749,7 +749,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                     Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                                 }
                             } else {
-                                if stepped == ProtoStep::Unread {
+                                if stepped == ProtoStep::AtReadLimit {
                                     // Run again in the next pass, without
                                     // waiting for the socket
                                     // (`Curl_multi_mark_dirty`).

@@ -100,10 +100,10 @@ pub(crate) enum ProtoStep {
     Done,
     /// Nothing more until something happens.
     Blocked,
-    /// Stopped reading with more perhaps already there: to run again at
-    /// once, not when its socket is next ready (`sendrecv_dl`'s
-    /// `Curl_multi_mark_dirty`).
-    Unread,
+    /// Stopped reading at the most one step reads, with more perhaps
+    /// already there: to run again at once, not when its socket is next
+    /// ready (`sendrecv_dl`'s `maxloops`, `Curl_multi_mark_dirty`).
+    AtReadLimit,
 }
 
 impl ProtoState {

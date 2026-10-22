@@ -194,7 +194,7 @@ pub unsafe extern "C" fn curl_easy_nextheader(
         return ptr::null_mut();
     }
     // A header from either call goes on from where it stands; any other
-    // pointer, where C would follow it, leads nowhere.
+    // pointer, where C would follow it, leads nowhere (DIVERGENCE.md).
     let from = if prev.is_null() {
         None
     } else {

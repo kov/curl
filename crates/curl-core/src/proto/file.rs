@@ -31,6 +31,16 @@ const READ_BUFFER: usize = 16384 - 1;
 /// The most of an upload's body read at once (`UPLOADBUFFER_DEFAULT`).
 const UPLOAD_BUFFER: usize = 65536;
 
+/// The failures a test has a transfer meet, where the file system will
+/// not fail on demand.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Faults {
+    /// Reading the file, or the directory, fails once this much of the
+    /// body is delivered.
+    pub(crate) read_fails_at: Option<u64>,
+}
+
 /// A request for one path.
 #[derive(Debug)]
 pub(crate) struct Request {
@@ -210,10 +220,11 @@ impl Request {
                 usize::try_from(n).map_or(READ_BUFFER, |n| n.min(READ_BUFFER))
             });
             // C ends the transfer, successfully, where a read fails; here
-            // it fails.
-            let n = file
-                .read(&mut buf[..want])
-                .map_err(|_| ErrorKind::ReadError)?;
+            // it fails (DIVERGENCE.md).
+            let read = file.read(&mut buf[..want]);
+            #[cfg(test)]
+            let read = injected(cx, &self.pipeline).map_or(read, Err);
+            let n = read.map_err(|_| ErrorKind::ReadError)?;
             if n == 0 {
                 return Ok(());
             }
@@ -230,8 +241,10 @@ impl Request {
     fn list<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let mut dir = Dir::open(self.c_path()).map_err(|_| ErrorKind::ReadError)?;
         // C stops at a failed read of the directory as at its end; here it
-        // fails.
+        // fails (DIVERGENCE.md).
         while let Some(name) = dir.next_name() {
+            #[cfg(test)]
+            let name = injected(cx, &self.pipeline).map_or(name, Err);
             let name = name.map_err(|_| ErrorKind::ReadError)?;
             if name.first() == Some(&b'.') {
                 continue;
@@ -300,6 +313,13 @@ impl Request {
         }
         progress::update(cx, false)
     }
+}
+
+/// The failure a test has the next read meet, if any.
+#[cfg(test)]
+fn injected<H: Host>(cx: &StepCx<'_, H>, pipeline: &Pipeline) -> Option<std::io::Error> {
+    let at = cx.easy().options().file_faults.read_fails_at?;
+    (pipeline.bytecount() >= at).then(|| std::io::Error::other("injected"))
 }
 
 /// The header line of a modification time, `t` seconds after the epoch,

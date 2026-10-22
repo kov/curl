@@ -221,3 +221,19 @@ witness: curl-core proto::file::tests::the_url_rules_apply_to_a_file_url
 --- old
         path_as_is: options.url_rules.path_as_is,
 --- new
+
+=== a failed read of the file ends it as if at its end
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_read_failing_partway_fails
+--- old
+            let n = read.map_err(|_| ErrorKind::ReadError)?;
+--- new
+            let n = read.unwrap_or(0);
+
+=== a failed read of the directory ends the listing as if at its end
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_listing_failing_partway_fails
+--- old
+            let name = name.map_err(|_| ErrorKind::ReadError)?;
+--- new
+            let Ok(name) = name else { break };

@@ -323,6 +323,48 @@ fn a_directory_is_its_names() {
     assert_eq!(e.report().sizes().download_expected(), None);
 }
 
+/// A file whose read fails is a read error, though its headers went out:
+/// `/proc/self/mem` opens, and its first read, at address 0, fails. C
+/// takes the failed read for the end of the file and succeeds with an
+/// empty body (DIVERGENCE.md).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_file_that_cannot_be_read_fails() {
+    let (e, seen) = easy(b"file:///proc/self/mem");
+    assert_eq!(run(e).0, Err(ErrorKind::ReadError));
+    assert_eq!(seen.headers().last().unwrap(), b"\r\n");
+    assert_eq!(seen.body(), b"");
+}
+
+/// A read failing partway through the file fails the transfer after what
+/// was read; C ends there and reports success for the truncated body
+/// (DIVERGENCE.md).
+#[test]
+fn a_read_failing_partway_fails() {
+    let s = Scratch::new("readfail");
+    s.file("f", &[7; 40000], Y2K_NOON);
+    let (mut e, seen) = easy(&s.url("f"));
+    e.options_mut().file_faults.read_fails_at = Some(1);
+    assert_eq!(run(e).0, Err(ErrorKind::ReadError));
+    assert_eq!(seen.body(), [7; 16383]);
+}
+
+/// A directory's read failing partway through the listing fails the
+/// transfer after the names read; C ends there and reports success for
+/// the truncated listing (DIVERGENCE.md).
+#[test]
+fn a_listing_failing_partway_fails() {
+    let s = Scratch::new("listfail");
+    std::fs::create_dir(s.0.join("d")).unwrap();
+    for name in ["a", "b", "c"] {
+        std::fs::write(s.0.join("d").join(name), b"").unwrap();
+    }
+    let (mut e, seen) = easy(&s.url("d/"));
+    e.options_mut().file_faults.read_fails_at = Some(1);
+    assert_eq!(run(e).0, Err(ErrorKind::ReadError));
+    assert_eq!(seen.body().len(), 2, "one name and its newline");
+}
+
 /// A file that cannot be opened ends the transfer before a connection,
 /// without progress, every time taken at the end.
 #[test]

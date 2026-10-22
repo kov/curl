@@ -517,13 +517,28 @@ fn uploads_a_file() {
 
 /// A file that opens but cannot be read fails its upload with a read
 /// error; C sends nothing and succeeds. A deliberate difference from C
-/// (SCOPE.md, "Where it differs from C"), so this test fails on its tool.
+/// (DIVERGENCE.md), so this test fails on its tool.
 #[test]
 fn an_upload_that_cannot_be_read_fails() {
     let s = Scratch::new("unreadable");
     std::fs::create_dir(s.0.join("dir")).unwrap();
     let r = curl(&s, &["-s", "-T", "dir", &s.url("dst"), "-w", "%{exitcode}"]);
     assert_eq!((r.code, &r.stdout[..]), (26, &b"26"[..]));
+}
+
+/// A header line `-i` fails to write fails the transfer, though no body
+/// write follows to fail. C does not check that write, and fails when it
+/// closes the output it could not flush.
+#[test]
+fn an_included_header_that_cannot_be_written_fails() {
+    let s = Scratch::new("headerfull");
+    s.write("empty", b"");
+    let w = "[%{exitcode}]";
+    let r = curl(
+        &s,
+        &["-s", "-i", "-o", "/dev/full", &s.url("empty"), "-w", w],
+    );
+    assert_eq!((r.code, &r.stdout[..]), (23, &b"[23]"[..]));
 }
 
 /// An upload that cannot be opened stops everything, with C's hint and

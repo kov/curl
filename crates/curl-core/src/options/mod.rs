@@ -70,6 +70,10 @@ pub struct Options {
     /// What the test protocol `script:` plays.
     #[cfg(any(test, feature = "test-util"))]
     pub script: Option<script::Script>,
+    /// The failures a `file:` transfer meets, for the tests of what it
+    /// does then.
+    #[cfg(test)]
+    pub(crate) file_faults: crate::proto::file::Faults,
 }
 
 /// The user, password and token the application gives
@@ -356,6 +360,8 @@ impl Options {
             tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]
             script: self.script.clone(),
+            #[cfg(test)]
+            file_faults: self.file_faults,
         })
     }
 }

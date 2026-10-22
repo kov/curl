@@ -133,3 +133,11 @@ witness: curl-psl tests::answers_as_libpsl
         unsafe { psl_is_public_suffix(ctx.as_ptr(), domain.as_ptr().cast()) != 0 }
 --- new
         unsafe { psl_is_public_suffix(ctx.as_ptr(), domain.as_ptr().cast()) == 0 }
+
+=== an application's cookie is held to a spent per-response limit
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::the_application_s_cookies_have_no_limit
+--- old
+        let mut set = 0;
+--- new
+        let mut set = crate::cookie::MAX_SET_PER_REQUEST;

@@ -92,6 +92,7 @@ shim.
 traced, returned, reported and called back — follows the C unless the C's is a clear bug. Where
 compatibility and performance or efficiency pull apart, compatibility wins, and the faster way
 comes later as an addition or an opt-in. That choice is not a question for the user: take C's.
+A deliberate difference from C is recorded, with the test that pins it, in `DIVERGENCE.md`.
 
 **Two values that must agree are one value.** A count and its pointer, an offset and its base, a
 capacity and its buffer. Passed onward as a pair, every layer in between has to be trusted to keep

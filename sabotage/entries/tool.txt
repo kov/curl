@@ -688,3 +688,29 @@ witness: curl-tool asks_for_each_operation_s_password
     let numbered = operations.len() > 1;
 --- new
     let numbered = false;
+
+=== a config line's zero byte does not end it
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::a_zero_byte_ends_its_line_alone
+--- old
+        let line_end = text[start..end]
+            .iter()
+            .position(|&b| b == 0)
+--- new
+        let line_end = text[start..end]
+            .iter()
+            .position(|&b| b == 0xff)
+
+=== a failed write of an included header line is ignored
+file: crates/curl-tool/src/output.rs
+witness: curl-tool an_included_header_that_cannot_be_written_fails
+--- old
+        match written {
+            Ok(()) => Write::Accepted,
+            Err(_) => Write::Fail,
+        }
+--- new
+        match written {
+            Ok(()) => Write::Accepted,
+            Err(_) => Write::Accepted,
+        }

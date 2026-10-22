@@ -316,7 +316,7 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
         unsafe { unlock(ptr::null_mut(), ffi::CURL_LOCK_DATA_SHARE, user) };
     }
     // Its connections close under their lock (`Curl_cpool_destroy`), told
-    // with no handle where C gives its share's own.
+    // with no handle where C gives its share's own (DIVERGENCE.md).
     let locks = LockCalls {
         curl: ptr::null_mut(),
         lock,

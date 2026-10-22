@@ -28,14 +28,7 @@ memdump records its allocations and that `tests/memanalyze.pl` finds nothing wro
 ## Where it differs from C
 
 The rewrite does what the C does, but for C behaviour that is a clear bug (see `CLAUDE.md`).
-Each such difference is listed here, with the test that pins it; a test that pins one says so.
-
-- **An upload that cannot be read fails.** `curl -T dir URL`, or any upload file whose read
-  fails, exits 26 (`CURLE_READ_ERROR`). C's tool takes the failed read for the end of the file,
-  sends an empty body and exits 0: it reports success for an upload that never had the file.
-  Pinned by `an_upload_that_cannot_be_read_fails` (`crates/curl-tool/tests/transfers.rs`). A
-  sample of 161 shell scripts on GitHub using `-T` (2026-10-21) showed no argument that could
-  name a directory.
+Each such difference is listed, with the test that pins it, in [`DIVERGENCE.md`](DIVERGENCE.md).
 
 ## Platforms
 

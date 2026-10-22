@@ -7,7 +7,7 @@
 //! which connects to its URL's host and port and completes once
 //! connected.
 
-mod file;
+pub(crate) mod file;
 pub(crate) mod http;
 pub(crate) mod http1;
 #[cfg(any(test, feature = "test-util"))]

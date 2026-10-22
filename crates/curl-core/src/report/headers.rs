@@ -454,7 +454,7 @@ mod tests {
     }
 
     /// A cursor from an earlier store leads nowhere, where C reads freed
-    /// memory.
+    /// memory (DIVERGENCE.md).
     #[test]
     fn a_cursor_from_an_earlier_transfer_leads_nowhere() {
         let old = store(&[(b"A: 1\r\n", H)]);

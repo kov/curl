@@ -429,6 +429,31 @@ mod tests {
         assert_eq!(read("url \"abc"), [(1, "url".into(), s("abc"), &[][..])]);
     }
 
+    /// A zero byte ends its line and nothing more: the next line is read
+    /// as its own, and so is a line after one starting with a zero. C reads
+    /// in 128-byte `fgets` pieces and stops a piece at its zero: the rest
+    /// of the piece is lost, its newline with it, and the next line is
+    /// glued on (`write-out "A-s`); a piece starting with a zero ends the
+    /// file there (DIVERGENCE.md).
+    #[test]
+    fn a_zero_byte_ends_its_line_alone() {
+        let s = |t: &str| Some(t.to_string());
+        assert_eq!(
+            read("write-out \"A\0zz\n-s\n"),
+            [
+                (1, "write-out".into(), s("A"), &[][..]),
+                (2, "-s".into(), None, &[]),
+            ]
+        );
+        assert_eq!(
+            read("write-out X\n\0\nwrite-out Y\n"),
+            [
+                (1, "write-out".into(), s("X"), &[][..]),
+                (2, "write-out".into(), s("Y"), &[]),
+            ]
+        );
+    }
+
     /// A line, its newline and C's zero fit in 10 MiB, on any line.
     #[test]
     fn refuses_a_line_too_long() {

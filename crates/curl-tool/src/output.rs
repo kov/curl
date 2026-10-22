@@ -582,8 +582,9 @@ impl Stream {
                 .try_for_each(|part| self.write_all(part)),
             None => self.write_all(line),
         };
-        // C does not check these writes; here a failed one fails the
-        // transfer, as a failed body write does.
+        // C does not check these writes, and fails when the output is
+        // flushed or closed after the transfer; here a failed one fails
+        // the transfer, as a failed body write does.
         match written {
             Ok(()) => Write::Accepted,
             Err(_) => Write::Fail,

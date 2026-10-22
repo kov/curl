@@ -234,8 +234,9 @@ impl Easy {
     /// public suffixes.
     pub fn add_cookie(&mut self, line: &[u8]) -> Result<(), ErrorKind> {
         let now = SystemClock::new().unix_time();
-        // C counts the line against the last request's fields; this
-        // counts it alone.
+        // C counts the line against the last request's fields, and drops
+        // it silently past their limit; this counts it alone
+        // (DIVERGENCE.md).
         let mut set = 0;
         let suffixes = self.public_suffixes().map_err(oom)?;
         let list = suffixes.as_ref().map(Suffixes::list);
@@ -793,6 +794,23 @@ mod tests {
         e.forget_cookies();
         assert!(e.cookie_list().unwrap().is_empty());
         assert!(e.options().http.cookies.files.iter().next().is_none());
+    }
+
+    /// Every cookie the application gives is kept, past the limit of 50 a
+    /// response may set. C counts `Set-Cookie:` lines given here against
+    /// that limit until the next request starts, and once it is reached
+    /// drops every line given, silently: it keeps 50 of these 61
+    /// (DIVERGENCE.md).
+    #[test]
+    fn the_application_s_cookies_have_no_limit() {
+        let mut e = Easy::new();
+        for i in 0..60 {
+            let line = format!("Set-Cookie: c{i}=v; domain=example.com");
+            e.add_cookie(line.as_bytes()).unwrap();
+        }
+        e.add_cookie(b"example.com\tFALSE\t/\tFALSE\t0\tnetscape\tv")
+            .unwrap();
+        assert_eq!(e.cookie_list().unwrap().len(), 61);
     }
 
     /// Driven by events, a transfer runs to its end as when waited on.

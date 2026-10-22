@@ -17,7 +17,8 @@ impl<H: Host> Multi<H> {
     pub(super) fn check_invariants(&self, at: At) {
         let mut running = 0;
         let mut current = 0;
-        let mut leases = 0;
+        // Those of the multi's own pool; a share's may be any multi's.
+        let mut own_leases = 0;
         let mut queued = 0;
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
@@ -31,8 +32,8 @@ impl<H: Host> Multi<H> {
             if !run.state.is_completed() {
                 running += 1;
             }
-            if run.state.holds_lease() {
-                leases += 1;
+            if run.state.lease().is_some_and(|l| l.home().is_none()) {
+                own_leases += 1;
             }
             assert!(
                 !matches!(run.state, TransferState::Done(_)),
@@ -68,7 +69,7 @@ impl<H: Host> Multi<H> {
         );
         assert_eq!(
             self.caches.pool.leased(),
-            leases,
+            own_leases,
             "the pool's leased connections are not the transfers' leases"
         );
         // Removal takes a transfer off every socket (`Curl_multi_ev_xfer_done`).

@@ -17,7 +17,7 @@ use curl_core::handler::{Handler, HeaderOrigin, Read, ReadHandler, Rewind, Rewin
 use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
 use curl_core::report::Request as HeaderRequest;
-use curl_core::share::Share;
+use curl_core::share::{Kind, Share};
 use curl_core::time::TimeLimit;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 use curl_core::version::Protocol;
@@ -66,7 +66,9 @@ pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
         Ok(share) => share,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
-    share.keep_cookies();
+    for kind in [Kind::Connections, Kind::Names, Kind::Cookies] {
+        share.keep(kind).expect("held by none yet");
+    }
     // And one list of public suffixes (`CURL_LOCK_DATA_PSL`).
     let suffixes = match curl_psl::suffixes() {
         Ok(suffixes) => suffixes,

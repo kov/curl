@@ -82,12 +82,13 @@ witness: curl-core conn::pool::tests::a_search_prunes_once_a_second
 --- new
             .is_none_or(|_| true)
 
-=== a transfer's arrival takes no lock
-file: crates/curl-core/src/conn/pool.rs
-witness: curl-core conn::pool::tests::the_lock_is_taken_where_c_takes_it
+=== a transfer's arrival is told of to no one
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-        drop(Locked::take(&*self.lock));
+            watched(watch, share, Kind::Connections, || ());
 --- new
+            drop((watch, share));
 
 === a connection cut short is kept
 file: crates/curl-core/src/conn/pool.rs
@@ -355,9 +356,9 @@ witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
 --- old
-            && !rules.fresh
+    matches!(route, Route::Tcp(..)) && !rules.fresh
 --- new
-            && !rules.fresh.then_some(()).is_some_and(|()| false)
+    matches!(route, Route::Tcp(..))
 
 === a transfer finding room lets no one waiting look
 file: crates/curl-core/src/multi/state.rs

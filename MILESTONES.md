@@ -376,9 +376,8 @@ cargo-mutants run on the milestone's diff.
     connection's own memory of HTTP/1.0 (`conn->httpversion_seen`).
 27. **tool: several URLs, then globbing.** **Done**, but for what waits on later work. The
     multi's pool and DNS cache are one `Caches`, and `Telling` the one bundle of what the
-    socket callback reaches, which `EngineRest` and `Announcing` hold; a `Share` lends its
-    `Caches` to each perform, and the tool's transfers share one, so they reuse connections and
-    names across URLs (2051, 2052, 3225, 3226, 1080, 1081); `-O` and `--remote-name-all` (422,
+    socket callback reaches, which `EngineRest` and `Announcing` hold; the tool's transfers share
+    one `Share`, so they reuse connections and names across URLs (2051, 2052, 3225, 3226, 1080, 1081); `-O` and `--remote-name-all` (422,
     681, 690, 691, 1334-1347, 1644, 3008, 3009, 3013), `--no-clobber` (481, 1681, 1683, 4644)
     and `--output-dir` (1682); URL and upload file globbing, with output names reading the
     patterns, and an upload's file name added to a URL whose path has none (74, 75, 86, 87,
@@ -469,7 +468,9 @@ cargo-mutants run on the milestone's diff.
     release builds, a 256 MiB PUT and GET over plain HTTP to a local server, medians of 9:
     upload client CPU 0.065 s before, 0.072 s after, C 0.078 s; downloads unchanged at 0.025 s.
 
-35. **share: safe across threads.** **To do**, before this milestone closes; approved. C's
+35. **share: safe across threads.** **In progress**: the share keeps each kind behind its
+    own lock, with the application's lock functions told around each use (506, 1554); the
+    shim's `CURLSH` being `Sync`, `Easy` being `Send` and the two-thread tests remain. C's
     `CURLSH` may be used from several threads, guarded by the application's lock functions;
     ours is `TryRc` and `RefCell`, so that is a data race. The share becomes `Send + Sync`
     with its own locks, one per kind of data, so safety never rests on the application's:

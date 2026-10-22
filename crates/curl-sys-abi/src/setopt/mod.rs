@@ -793,7 +793,8 @@ pub unsafe extern "C" fn curl_easy_setopt(
         // SAFETY: the application passes a share or NULL.
         return match unsafe { crate::share::set(easy, *sh) } {
             Ok(()) => CURLE_OK,
-            Err(_) => CURLE_BAD_FUNCTION_ARGUMENT,
+            Err(crate::share::Refused::Running) => CURLE_BAD_FUNCTION_ARGUMENT,
+            Err(crate::share::Refused::OutOfMemory) => ffi::CURLE_OUT_OF_MEMORY,
         };
     }
     let jar = match (option, &arg) {

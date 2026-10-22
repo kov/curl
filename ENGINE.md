@@ -1006,24 +1006,26 @@ health-checked before reuse; input pending on an idle HTTP/1 connection makes it
 
 ```rust
 #[must_use]
-pub struct ConnLease { id: ConnId }          // no Clone/Copy; only Pool creates or consumes one
-impl Pool {
-    pub fn with_lock(lock: Box<dyn Lock>) -> Result<Pool, OutOfMemory>;        // a share's pool
-    pub fn xfer_init(&self);                                                    // lock point 1
-    pub fn acquire(&mut self, route: Route, rules: ReuseRules, limits: AddLimits,
-                   net: &mut dyn Net, now: Instant, notes: &mut Vec<PoolNote>)
-        -> Result<Acquired, OutOfMemory>;                                       // lock points 2, 3
-    pub fn connect(&mut self, lease: &ConnLease, net: &mut dyn Net, now: Instant)
+pub struct ConnLease { id: ConnId, conn: Option<ConnSlot>, home: Option<Share> }  // no Clone/Copy
+impl ConnLease {
+    pub fn connect(&mut self, net: &mut dyn Net, now: Instant, setup: Setup<'_>)
         -> Result<Connected, ConnectError>;                     // Connecting, Established, AlreadyUp
-    pub fn get(&mut self, lease: &ConnLease) -> &mut Conn;                      // once up
+    pub fn get(&mut self) -> &mut Conn;                                         // once up
+    pub fn home(&self) -> Option<&Share>;                     // the share whose pool it is from
+}
+impl Pool {
+    pub fn find(&mut self, route: &Route, rules: ReuseRules, net: &mut dyn Net, now: Instant,
+                notes: &mut Vec<PoolNote>) -> Result<Option<ConnLease>, OutOfMemory>;
+    pub fn add(&mut self, route: Route, limits: AddLimits, net: &mut dyn Net, now: Instant)
+        -> Result<Acquired, OutOfMemory>;
     pub fn release(&mut self, lease: ConnLease, finish: Finish, limit: Limit, net: &mut dyn Net,
-                   now: Instant) -> Released;                                   // lock point 4
-    pub fn get_conn(&self, id: ConnId) -> Option<&Conn>;                        // stale: None
+                   now: Instant) -> Released;
+    pub fn get_conn(&self, id: ConnId) -> Option<&Conn>;               // idle only; stale: None
     pub fn close_idle(&mut self, net: &mut dyn Net);                            // multi drop
 }
 ```
 
-- `acquire` searches before it adds (`Curl_cpool_find`), unless the transfer wants a fresh
+- A transfer searches before it adds (`find`, `Curl_cpool_find`), unless the transfer wants a fresh
   connection (`CURLOPT_FRESH_CONNECT`, but for a redirect's request): at most once a second it first prunes
   the idle connections that are not healthy, silently, as C's prune traces to its internal
   handle; then it takes the first idle connection, in table order, whose route is equal. One
@@ -1061,15 +1063,16 @@ impl Pool {
   variant cannot disagree because only `acquire` and `release` change them. The per-route index
   is maintained by those same functions; a dangling id in it is an assertion, never repaired.
 - A debug-build drop check on `ConnLease` asserts it was released (internal invariant).
-- `acquire` takes the share lock exactly at `find` and at `add`, as two separate critical
-  sections; `xfer_init` and `release` take it once each. Test 1554 pins this sequence (SHARE,
-  CONNECT ×3 on first perform; CONNECT on return), so these four never merge or split.
+- On a share's pool, `find`, `add` and `release` are each one use of it under its lock, and a
+  transfer joining its multi is one more with nothing done (`Curl_cpool_xfer_init`). Test 1554
+  pins this sequence (SHARE, CONNECT ×3 on first perform; CONNECT on return), so these four
+  never merge or split.
 - Leaving the pool, a connection becomes `Closing` in the multi's `ShutdownSet` (graceful TLS
   close_notify, TCP drain of up to 1 KB, scheme disconnect handler once) or is terminated at once
   (aborted, CONNECT_ONLY, share-owned pool). Closing connections count toward host and total
   limits, as in C.
 - **Socket close order** is enforced by the network the pool is handed: inside a multi it is
-  `Announcing` (`EngineRest::pool_net`), whose `close` forgets the socket in the `SocketTable`
+  `Announcing` (`EngineRest::net`, `EngineRest::pool_section`), whose `close` forgets the socket in the `SocketTable`
   first (socket callback REMOVE if the application was told of it, C's
   `Curl_multi_will_close`), then closes it through `Net::close`, which the shim maps to
   CLOSESOCKETFUNCTION. Every pool path that closes a socket goes through it, so none can skip
@@ -1077,31 +1080,32 @@ impl Pool {
 
 ### 4.6.1 The share
 
-The pool and the DNS cache are one `conn::Caches`, which a multi holds unless a share lends it
-its own. `Share` (`share.rs`, `CURLOPT_SHARE` with `CURL_LOCK_DATA_CONNECT` and
-`CURL_LOCK_DATA_DNS`) keeps a `Caches` and the network its idle connections close through at
-the end, as C's share closes them through its own internal handle, never CLOSESOCKETFUNCTION.
-A handle holds its share (`Easy::set_share`, C's `data->share`): kept through `reset`, not
-copied by `try_clone`, as C's `duphandle` links none. `Easy::perform` takes the share's caches
-for the length of the perform, swapped into the
-handle's multi in place of its own, and gives them back with nothing leased: one owner at a
-time, so nothing locks them, and a connection made by one handle's multi is reused by the next
-(tests 2051, 2052, 3225). A perform on a share already lent (from a handler of a transfer using
-it) fails with `RecursiveApiCall`, where C's would go on under the share's lock. A share's idle
-connections close when its last clone drops (`curl_share_cleanup`), and it is in use while a
-clone other than its owner's lives (`Share::holders`). A share asked to keep cookies holds a
-jar too, which a handle borrows for one operation on it at a time, whichever multi runs the
-transfer (section 6.5).
+`Share` (`share.rs`, `CURLSH`) keeps what it is asked to (`Share::keep`, `CURLSHOPT_SHARE`):
+idle connections (`Kind::Connections`), names (`Kind::Names`), cookies (`Kind::Cookies`), each
+behind a mutex of its own, and the network its idle connections close through at the end, as
+C's share closes them through its own internal handle, never CLOSESOCKETFUNCTION. What it
+keeps cannot change while a handle holds it (`Share::holders`). A handle holds its share
+(`Easy::set_share`, C's `data->share`): kept through `reset`, not copied by `try_clone`, as C's
+`duphandle` links none. Each transfer uses its share's pool, names or jar where the share keeps
+that kind, else its multi's (or, for cookies, its handle's), whichever multi or thread runs it,
+so a connection one handle's multi made is reused by the next (tests 2051, 2052, 3225).
 
-Planned, for transfers on one share running at once in several multis (the shim's `CURLSH`
-across threads, or an application multi given handles with a share): the share keeps only the
-idle connections, the route index and the DNS cache; a connection moves into its multi's table
-for the life of its lease and back at release, as C's `conn->attached_multi` makes a busy
-connection one multi's. The lock is then taken only at the pool's four points, by the `Lock`
-trait the shim maps to the application's callbacks, and `Pool::get(lease)` reads the multi's
-own table. Until then the pool owns busy connections too, the whole `Caches` moves, the
-share's pool is made with no lock, and a transfer an application's multi runs uses that
-multi's caches, not its share's.
+Each use is one short section under that kind's mutex, with nothing called out from inside:
+a search of the pool, an addition to it, a release; a lookup, a name kept, the names pruned at
+a transfer's end; a cookie file read, a `Set-Cookie:` stored, a `Cookie:` line built, the
+application's calls on the jar, a save. Sockets a pool section closes are held and closed once
+the lock is let go (`CloseLater`), as closing one tells the socket callback; what a cookie
+section would trace is held and traced after (`Held`). A connection a transfer uses is out of
+the pool, its lease's, until it is released to the pool `ConnLease::home` names.
+
+The application's lock functions are told around each use, for the kinds the share keeps,
+where and as C calls them (test 506 for names and cookies, 1554 for connections): the handle
+holds them as a watch with its share (`Easy::set_share_watched`, a `ShareLock`), and they are
+called outside the share's own mutex, so they can neither guard nor break it. Some of C's
+lock points do nothing here and are told all the same: a transfer joining its multi, a setup
+letting go of its answer (`Curl_dns_entry_unlink`), the jar's start and a flush with no file.
+The share's cleanup tells CONNECT around closing its connections with no handle, where C gives
+its internal one. A share's idle connections close when its last clone drops.
 
 ### 4.7 No admin easy
 
@@ -1604,11 +1608,10 @@ order within each bucket, which decide the order `CURLINFO_COOKIELIST` lists and
 (`cookies: Option<Jar>`, C's `cookies` with `cookie_engine`), on once `Cookies::files` names
 any file or `save_to` is set, or the application turns it on (`enable_cookies`,
 `add_cookie`); it is kept through `reset`, and a duplicate gets an empty one if the original's
-is on. A share that keeps cookies (`Share::keep_cookies`, `CURL_LOCK_DATA_COOKIE`) lends its
-jar in place of the handle's own, whose presence then only says the jar is on: for one
-operation at a time (reading the files, storing a `Set-Cookie:`, building a `Cookie:` line,
-the application's `with_jar` calls, saving), taken out and given back around it, as C locks
-`CURL_LOCK_DATA_COOKIE` around each; so handles in different multis take turns with it.
+is on. A share that keeps cookies (`Kind::Cookies`, `CURL_LOCK_DATA_COOKIE`) has its jar used
+in place of the handle's own, whose presence then only says the jar is on: one operation at a
+time under the share's lock (section 4.6.1), as C locks `CURL_LOCK_DATA_COOKIE` around each, so
+handles on different threads take turns with it.
 As each transfer starts (pretransfer, before the resolve list), the files are read into it
 again, live cookies kept over a file's, and it is started (`running`): a jar not started is
 not written. The request's `Cookie:` line is the jar's matches for the cookie host (a custom

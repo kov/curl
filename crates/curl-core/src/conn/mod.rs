@@ -11,13 +11,13 @@ mod connect;
 mod connect_to;
 mod dns;
 pub mod io;
-mod pool;
+pub(crate) mod pool;
 pub(crate) mod proxy;
 pub(crate) mod socks;
 
 pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup, Unresolved};
 pub(crate) use connect_to::{BadVia, via};
-pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, parse_entry};
+pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, Names, parse_entry};
 pub(crate) use pool::{
     Acquired, AddLimits, ConnLease, Connected, Finish, Full, Limit, Pool, PoolNote, Released,
     ReuseRules, WaitReason,

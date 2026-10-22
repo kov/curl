@@ -4,8 +4,9 @@
 //! kinds of data the application asked to share and its lock functions.
 //! A handle given the share holds a clone of the core's, so the share is
 //! in use while more than its own exists. The lock functions are called
-//! for `CURL_LOCK_DATA_SHARE` as a handle is linked and unlinked, as C
-//! calls them.
+//! for `CURL_LOCK_DATA_SHARE` as a handle is linked and unlinked, and,
+//! through the watch the core is given with the share, around each use a
+//! handle's transfer makes of what is shared, as C calls them.
 
 #![allow(unsafe_code)]
 
@@ -14,7 +15,8 @@ use core::ffi::{c_int, c_void};
 use core::ptr::{self, NonNull};
 
 use curl_alloc::try_box;
-use curl_core::share::Share;
+use curl_core::handler::Handler;
+use curl_core::share::{Kind, Share, ShareLock};
 
 use crate::easy::{EasyRef, ShimEasy};
 use crate::ffi::{
@@ -176,23 +178,74 @@ const _: ffi::proto::curl_share_setopt = curl_share_setopt;
 /// Start or stop sharing `data`, as this build can.
 fn kind(sh: &ShimShare, data: curl_lock_data, on: bool) -> CURLSHcode {
     match data {
-        // Connections and names are kept in the share whatever is asked.
-        ffi::CURL_LOCK_DATA_DNS | ffi::CURL_LOCK_DATA_CONNECT => CURLSHE_OK,
-        ffi::CURL_LOCK_DATA_COOKIE if on => {
-            sh.core.keep_cookies();
+        ffi::CURL_LOCK_DATA_DNS | ffi::CURL_LOCK_DATA_CONNECT | ffi::CURL_LOCK_DATA_COOKIE => {
+            let kind = core_kind(data).expect("one the core keeps");
+            let kept = match on {
+                true => sh.core.keep(kind),
+                false => sh.core.stop_keeping(kind),
+            };
+            kept.expect("no handle holds it, checked above");
             CURLSHE_OK
         }
-        ffi::CURL_LOCK_DATA_COOKIE => match sh.core.forget_cookies() {
-            Ok(()) => CURLSHE_OK,
-            // Lent only while a handle holds the share, refused above.
-            Err(_) => unreachable!("not in use"),
-        },
         // Each handle loads its own list; sharing it changes nothing a
         // transfer can see.
         ffi::CURL_LOCK_DATA_PSL if on => CURLSHE_OK,
         // HSTS and TLS sessions are not built in yet.
         ffi::CURL_LOCK_DATA_HSTS | ffi::CURL_LOCK_DATA_SSL_SESSION => ffi::CURLSHE_NOT_BUILT_IN,
         _ => CURLSHE_BAD_OPTION,
+    }
+}
+
+/// The kind of data the core keeps for `data`, if it keeps it.
+fn core_kind(data: curl_lock_data) -> Option<Kind> {
+    match data {
+        ffi::CURL_LOCK_DATA_CONNECT => Some(Kind::Connections),
+        ffi::CURL_LOCK_DATA_DNS => Some(Kind::Names),
+        ffi::CURL_LOCK_DATA_COOKIE => Some(Kind::Cookies),
+        _ => None,
+    }
+}
+
+/// The application's lock functions, called with the handle `curl`
+/// around each use its transfer makes of what is shared
+/// (`Curl_share_lock`, `Curl_share_unlock`).
+struct LockCalls {
+    curl: *mut CURL,
+    lock: curl_lock_function,
+    unlock: curl_unlock_function,
+    user: *mut c_void,
+}
+
+fn lock_data(kind: Kind) -> curl_lock_data {
+    match kind {
+        Kind::Connections => ffi::CURL_LOCK_DATA_CONNECT,
+        Kind::Names => ffi::CURL_LOCK_DATA_DNS,
+        Kind::Cookies => ffi::CURL_LOCK_DATA_COOKIE,
+    }
+}
+
+impl ShareLock for LockCalls {
+    fn lock(&self, kind: Kind) {
+        if let Some(lock) = self.lock {
+            // SAFETY: the application's lock function, called as C calls
+            // it, with the handle it was given for, which outlives its
+            // link to the share.
+            unsafe {
+                lock(
+                    self.curl,
+                    lock_data(kind),
+                    ffi::CURL_LOCK_ACCESS_SINGLE,
+                    self.user,
+                )
+            };
+        }
+    }
+
+    fn unlock(&self, kind: Kind) {
+        if let Some(unlock) = self.unlock {
+            // SAFETY: as in `lock`.
+            unsafe { unlock(self.curl, lock_data(kind), self.user) };
+        }
     }
 }
 
@@ -214,11 +267,26 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
     // handle holds it, and the caller does not use it again. The lock
     // functions are copied out before it goes.
     let gone = unsafe { Box::from_raw(sh.cast::<ShimShare>()) };
-    let (unlock, user) = (gone.unlock.get(), gone.user.get());
-    drop(gone);
+    let (lock, unlock, user) = (gone.lock.get(), gone.unlock.get(), gone.user.get());
+    let connections = gone.kinds.get() & bit(ffi::CURL_LOCK_DATA_CONNECT) != 0;
     if locked && let Some(unlock) = unlock {
         // SAFETY: as in `lock_share`.
         unsafe { unlock(ptr::null_mut(), ffi::CURL_LOCK_DATA_SHARE, user) };
+    }
+    // Its connections close under their lock (`Curl_cpool_destroy`), told
+    // with no handle where C gives its share's own.
+    let locks = LockCalls {
+        curl: ptr::null_mut(),
+        lock,
+        unlock,
+        user,
+    };
+    if connections {
+        locks.lock(Kind::Connections);
+    }
+    drop(gone);
+    if connections {
+        locks.unlock(Kind::Connections);
     }
     CURLSHE_OK
 }
@@ -240,7 +308,7 @@ pub(crate) unsafe fn set(easy: &ShimEasy, sh: *mut CURLSH) -> Result<(), Refused
     };
     let curl = easy.as_curl();
     let locked = new.lock_share(curl);
-    let linked = set_core(easy, Some(new.core.clone()));
+    let linked = set_core(easy, Some(new));
     if linked.is_ok() {
         easy.share.set(Some(NonNull::from(new)));
         new.linked_once.set(true);
@@ -270,19 +338,42 @@ pub(crate) fn unlink(easy: &ShimEasy) -> Result<(), Refused> {
 
 /// Give the handle's transfer `share`, unless a callback of its own runs,
 /// when it has a connection in C and the change is refused.
-fn set_core(easy: &ShimEasy, share: Option<Share>) -> Result<(), Refused> {
+/// The share's lock functions, if any is set, are told of the uses it
+/// makes of what is shared.
+fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
+    let watch = match share {
+        Some(sh) if sh.lock.get().is_some() || sh.unlock.get().is_some() => {
+            let calls = LockCalls {
+                curl: easy.as_curl(),
+                lock: sh.lock.get(),
+                unlock: sh.unlock.get(),
+                user: sh.user.get(),
+            };
+            let calls: Box<dyn ShareLock> = try_box(calls).map_err(|_| Refused::OutOfMemory)?;
+            Some(Handler::new(calls).map_err(|_| Refused::OutOfMemory)?)
+        }
+        _ => None,
+    };
     match easy.with_easy(|e| match e {
         EasyRef::Easy(e) => {
-            e.set_share(share);
+            match (share, watch) {
+                (Some(sh), Some(watch)) => e.set_share_watched(sh.core.clone(), watch),
+                (sh, _) => e.set_share(sh.map(|sh| sh.core.clone())),
+            }
             Ok(())
         }
-        EasyRef::Frame(..) => Err(Refused),
+        EasyRef::Frame(..) => Err(Refused::Running),
     }) {
         Ok(set) => set,
-        Err(_) => Err(Refused),
+        Err(_) => Err(Refused::Running),
     }
 }
 
-/// The handle's transfer cannot be reached: a callback of its own runs.
+/// Why the handle's share was not changed.
 #[derive(Debug)]
-pub(crate) struct Refused;
+pub(crate) enum Refused {
+    /// The handle's transfer cannot be reached: a callback of its own
+    /// runs.
+    Running,
+    OutOfMemory,
+}

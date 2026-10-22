@@ -15,17 +15,21 @@ use super::dns::Answer;
 use super::io::{Events, Net, Socket, SocketPoll};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, RecvBuf, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
+use crate::share::Share;
 use crate::time::Instant;
 
 /// A transfer's hold on a connection, and the connection, being set up or
-/// up. Only the pool makes one, and only `Pool::release` takes one back;
-/// dropping one is a bug, caught in debug builds.
+/// up. Only the pool makes one, and only `Pool::release` takes one back,
+/// that pool being the one `home` names; dropping one is a bug, caught in
+/// debug builds.
 #[must_use]
 #[derive(Debug)]
 pub(crate) struct ConnLease {
     id: ConnId,
     /// None only as the pool takes it back.
     conn: Option<ConnSlot>,
+    /// The share whose pool it is from; none for the multi's own.
+    home: Option<Share>,
 }
 
 impl ConnLease {
@@ -167,10 +171,23 @@ impl ConnLease {
     /// The lease taken apart, as only the pool does.
     fn into_parts(mut self) -> (ConnId, ConnSlot) {
         let conn = self.conn.take().expect("held until given back");
+        let home = self.home.take();
         let id = self.id;
         // Taken apart, not dropped: it held nothing more.
         std::mem::forget(self);
+        drop(home);
         (id, conn)
+    }
+
+    /// The share whose pool the lease is from; none for the multi's own.
+    pub(crate) fn home(&self) -> Option<&Share> {
+        self.home.as_ref()
+    }
+
+    /// The lease is from `share`'s pool, given it by the multi that took
+    /// it from there.
+    pub(crate) fn set_home(&mut self, share: Share) {
+        self.home = Some(share);
     }
 
     fn slot(&self) -> &ConnSlot {
@@ -189,39 +206,6 @@ impl Drop for ConnLease {
             "the lease on {:?} was dropped, not released",
             self.id
         );
-    }
-}
-
-/// The lock of a pool that handles share (`CURL_LOCK_DATA_CONNECT`). The
-/// pool takes it at the four places C does, each a critical section of
-/// its own: a transfer's arrival, the search for a connection to reuse,
-/// the addition of a new one, and a connection's return.
-pub(crate) trait Lock: Send {
-    fn lock(&self);
-    fn unlock(&self);
-}
-
-/// The lock of a pool no other multi shares: nothing to take.
-struct Unshared;
-
-impl Lock for Unshared {
-    fn lock(&self) {}
-    fn unlock(&self) {}
-}
-
-/// A lock held until dropped.
-struct Locked<'a>(&'a dyn Lock);
-
-impl<'a> Locked<'a> {
-    fn take(lock: &'a dyn Lock) -> Locked<'a> {
-        lock.lock();
-        Locked(lock)
-    }
-}
-
-impl Drop for Locked<'_> {
-    fn drop(&mut self) {
-        self.0.unlock();
     }
 }
 
@@ -379,37 +363,26 @@ impl Place {
 pub(crate) struct Pool {
     conns: Arena<Place, ConnSlot>,
     next_number: u64,
-    lock: Box<dyn Lock>,
     /// When the search last pruned dead connections (`last_cleanup`).
     last_prune: Option<Instant>,
 }
 
 impl Pool {
     pub(crate) fn new() -> Result<Pool, OutOfMemory> {
-        Pool::with_lock(curl_alloc::try_box(Unshared)?)
-    }
-
-    pub(crate) fn with_lock(lock: Box<dyn Lock>) -> Result<Pool, OutOfMemory> {
         Ok(Pool {
             conns: Arena::new(ArenaPolicy::DOUBLING)?,
             next_number: 0,
-            lock,
             last_prune: None,
         })
-    }
-
-    /// A transfer joins the multi (`Curl_cpool_xfer_init`): C hands it an
-    /// id under the lock; here its id is the multi's, and only the lock is
-    /// taken, as an application sharing the pool sees it.
-    pub(crate) fn xfer_init(&self) {
-        drop(Locked::take(&*self.lock));
     }
 
     /// A connection for `route`, leased to the caller: an idle one whose
     /// route is equal, healthy and young enough, or a new one within
     /// `limits`, open at once without a network and set up by
-    /// `Pool::connect` over one; or none, for want of room. What the
-    /// search did is added to `notes`.
+    /// `ConnLease::connect` over one; or none, for want of room. What the
+    /// search did is added to `notes`. A pool others share is searched,
+    /// and added to, one under its lock at a time, as C does.
+    #[cfg(test)]
     pub(crate) fn acquire(
         &mut self,
         route: Route,
@@ -419,13 +392,23 @@ impl Pool {
         now: Instant,
         notes: &mut Vec<PoolNote>,
     ) -> Result<Acquired, OutOfMemory> {
-        if let Route::Tcp(..) = route
-            && !rules.fresh
+        if searches(&route, rules)
             && let Some(lease) = self.find(&route, rules, net, now, notes)?
         {
             return Ok(Acquired::Reused(lease));
         }
-        let _locked = Locked::take(&*self.lock);
+        self.add(route, limits, net, now)
+    }
+
+    /// A new connection for `route`, within `limits`, or none, for want
+    /// of room (`Curl_cpool_add`).
+    pub(crate) fn add(
+        &mut self,
+        route: Route,
+        limits: AddLimits,
+        net: &mut dyn Net,
+        now: Instant,
+    ) -> Result<Acquired, OutOfMemory> {
         // A connection without a network is added with no limits
         // (`Curl_cpool_add(data, needle, 0, 0)`).
         if let Route::Tcp(tcp) = &route
@@ -460,14 +443,15 @@ impl Pool {
         Ok(Acquired::New(ConnLease {
             id,
             conn: Some(slot),
+            home: None,
         }))
     }
 
     /// The search for an idle connection to reuse (`Curl_cpool_find`,
-    /// `url_match_conn`), under the lock: a prune of the dead ones at most
-    /// once a second, then the first match in the table's order. A match
-    /// too old or not healthy is closed and the search goes on.
-    fn find(
+    /// `url_match_conn`): a prune of the dead ones at most once a second,
+    /// then the first match in the table's order. A match too old or not
+    /// healthy is closed and the search goes on.
+    pub(crate) fn find(
         &mut self,
         route: &Route,
         rules: ReuseRules,
@@ -475,8 +459,6 @@ impl Pool {
         now: Instant,
         notes: &mut Vec<PoolNote>,
     ) -> Result<Option<ConnLease>, OutOfMemory> {
-        let lock = &*self.lock;
-        let _locked = Locked::take(lock);
         if self
             .last_prune
             .is_none_or(|at| now.since(at) >= Duration::from_secs(1))
@@ -525,6 +507,7 @@ impl Pool {
                     return Ok(Some(ConnLease {
                         id,
                         conn: Some(slot),
+                        home: None,
                     }));
                 }
                 Err(sick) => {
@@ -575,7 +558,6 @@ impl Pool {
         now: Instant,
     ) -> Released {
         let (id, mut slot) = lease.into_parts();
-        let _locked = Locked::take(&*self.lock);
         assert!(
             matches!(self.conns.get(id), Some(Place::Away(_))),
             "a lease on {id:?}, which the pool no longer has"
@@ -637,6 +619,12 @@ impl Pool {
         }
         leased
     }
+}
+
+/// Whether a transfer on `route` looks for an idle connection to reuse:
+/// only over a network, and only unless it must have a fresh one.
+pub(crate) fn searches(route: &Route, rules: ReuseRules) -> bool {
+    matches!(route, Route::Tcp(..)) && !rules.fresh
 }
 
 /// How many connections a pool keeps once one goes idle

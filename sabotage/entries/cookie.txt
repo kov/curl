@@ -111,15 +111,12 @@ witness: curl-core cookie::tests::matches_hosts_paths_and_security_as_c
 file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::a_share_keeps_cookies_for_its_handles
 --- old
-            if let Some(mut jar) = lent {
-                let r = f(&mut jar);
-                share.give_back_cookies(jar);
-                return Ok(Some(r));
-            }
+        let f = match self.with_shared_jar(f) {
+            Ok(r) => return r,
+            Err(f) => f,
+        };
 --- new
-            if let Some(jar) = lent {
-                share.give_back_cookies(jar);
-            }
+        let f = f;
 
 === a list that could not be had refuses nothing
 file: crates/curl-core/src/cookie.rs

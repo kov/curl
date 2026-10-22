@@ -372,8 +372,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
         c.handshake = None;
-        let (_, mut net) = cx.rest.pool_net(cx.me);
-        if !c.lease.redial(&mut net) {
+        if !c.lease.redial(&mut cx.rest.net(cx.me)) {
             return Err(ErrorKind::CouldntConnect);
         }
         return Ok(Ran::Again);

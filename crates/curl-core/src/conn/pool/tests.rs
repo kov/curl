@@ -1,6 +1,6 @@
 use super::*;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
-use crate::conn::{DnsCache, Failure, Limit, Scheme, Setup, Tcp};
+use crate::conn::{DnsCache, Failure, Limit, Names, Scheme, Setup, Tcp};
 
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
@@ -25,7 +25,7 @@ fn connect(
     now: Instant,
 ) -> Result<Connected, ConnectError> {
     let setup = Setup {
-        dns: &mut DnsCache::default(),
+        dns: Names::Own(&mut DnsCache::default()),
         wildcard: false,
         max_age: Some(Duration::from_secs(60)),
         delay: Duration::from_millis(200),
@@ -810,69 +810,6 @@ fn a_search_prunes_once_a_second() {
         &mut net,
         now,
     );
-}
-
-/// The pool's lock is taken at the four places C takes it, one critical
-/// section each: SHARE and CONNECT as test 1554 records them for one
-/// transfer, a new connection and its return, then the next transfer
-/// reusing it.
-#[test]
-fn the_lock_is_taken_where_c_takes_it() {
-    #[derive(Clone, Default)]
-    struct Recording(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
-    impl Lock for Recording {
-        fn lock(&self) {
-            self.0.lock().unwrap().push("lock");
-        }
-        fn unlock(&self) {
-            self.0.lock().unwrap().push("unlock");
-        }
-    }
-    let (mut net, clock) = net();
-    let now = clock.now();
-    let log = Recording::default();
-    let mut pool = Pool::with_lock(Box::new(log.clone())).unwrap();
-    let sections = |log: &Recording| {
-        let taken = std::mem::take(&mut *log.0.lock().unwrap());
-        assert!(
-            taken.chunks(2).all(|c| c == ["lock", "unlock"]),
-            "{taken:?}"
-        );
-        taken.len() / 2
-    };
-    // The first transfer: added, searched, a connection added.
-    pool.xfer_init();
-    let mut lease = new(&mut pool, tcp(1), &mut net, now);
-    assert_eq!(sections(&log), 3);
-    up(&mut lease, &mut net, now);
-    assert_eq!(sections(&log), 0, "the setup takes no lock");
-    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
-    assert_eq!(sections(&log), 1);
-    // The next one: added, and finds it.
-    pool.xfer_init();
-    let mut notes = Vec::new();
-    let got = pool
-        .acquire(
-            tcp(1),
-            RULES,
-            AddLimits::default(),
-            &mut net,
-            now,
-            &mut notes,
-        )
-        .unwrap();
-    assert_eq!(sections(&log), 2);
-    let Acquired::Reused(lease) = got else {
-        panic!("{got:?}")
-    };
-    pool.release(lease, Finish::default(), UNLIMITED, &mut net, now);
-    assert_eq!(sections(&log), 1);
-    // A networkless connection is added without a search.
-    let local = new(&mut pool, Route::Local, &mut net, now);
-    assert_eq!(sections(&log), 1);
-    pool.release(local, Finish::default(), UNLIMITED, &mut net, now);
-    pool.close_idle(&mut net);
-    assert_eq!((pool.len(), net.open_sockets()), (0, 0));
 }
 
 #[test]

@@ -37,22 +37,22 @@ witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 --- old
-        .put(answer.clone(), port, now, false)
+        .section(|c| c.put(answer.clone(), port, now, false))
         .map_err(oom)?;
     Ok((answer, found))
 --- new
-        .put(answer.clone(), port, now, false)
+        .section(|c| c.put(answer.clone(), port, now, false))
         .map_err(oom)?;
-    setup.dns.remove(name, port);
+    setup.dns.section(|c| c.remove(name, port));
     Ok((answer, found))
 
 === a transfer's end drops nothing stale
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::stale_answers_are_dropped
 --- old
-            cx.rest.caches.dns.prune(cx.rest.now, max_age);
+            names.section(|dns| dns.prune(now, max_age));
 --- new
-            let _ = max_age;
+            names.section(|_| drop((now, max_age)));
 
 === a resolve list is read by every transfer
 file: crates/curl-core/src/multi/state.rs
@@ -76,9 +76,9 @@ witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- old
-                setup.dns.put(none, port, now, false).map_err(oom)?;
+                    .section(|c| c.put(none, port, now, false))
 --- new
-                drop((none, port));
+                    .section(|_| Ok::<(), OutOfMemory>(drop((none, port))))
 
 === an answer for one family answers for both
 file: crates/curl-core/src/conn/dns.rs
@@ -92,8 +92,18 @@ witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- old
+        self.forget(socket.key());
+        self.net.close(socket);
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
         self.net.resolve(name, family)
 --- new
+        self.forget(socket.key());
+        self.net.close(socket);
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
         let _ = (name, family);
         Err(ResolveFailure::NotFound)
 
@@ -110,17 +120,17 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let (_, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+    let kept = cx.rest.kept(cx.me, Kind::Names);
 --- new
     let max_age = Some(std::time::Duration::from_secs(60));
-    let (_, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+    let kept = cx.rest.kept(cx.me, Kind::Names);
 
 === a transfer's end never reads the cache's timeout
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
             let max_age = cx.easy().options().limits.reuse.dns_max_age;
-            cx.rest.caches.dns.prune(cx.rest.now, max_age);
+            let now = cx.rest.now;
 --- new
             let max_age = Some(std::time::Duration::from_secs(60));
-            cx.rest.caches.dns.prune(cx.rest.now, max_age);
+            let now = cx.rest.now;

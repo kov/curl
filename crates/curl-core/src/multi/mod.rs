@@ -29,6 +29,7 @@ use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
 use crate::progress::Speedometer;
+use crate::share::{Kind, watched};
 use crate::time::{Clock, Instant};
 
 pub use crate::deliver::PauseRequest;
@@ -365,7 +366,14 @@ impl<H: Host> Multi<H> {
         };
         let id = vacancy.fill(slot);
         self.counts.added();
-        self.caches.pool.xfer_init();
+        // A transfer joins the pool (`Curl_cpool_xfer_init`): C hands it
+        // an id under the lock; here its id is the multi's, and only the
+        // application sees the use.
+        let easy = &self.slots.get(id).expect("just added").easy;
+        if let Some(share) = easy.share() {
+            let watch = easy.share_watch();
+            watched(watch, share, Kind::Connections, || ());
+        }
         self.dirty.insert(id.index());
         ev.added(id, &self.slots.get(id).expect("just added").owner);
         // Inside the add, as C, so the application hears of the 0 ms run.
@@ -583,12 +591,6 @@ impl<H: Host> Multi<H> {
 
     fn run_of(&self, id: TransferId) -> &Run {
         run_in(&self.slots, id)
-    }
-
-    /// Use `caches` in place of the multi's own, which `caches` then
-    /// holds: a share's, lent for one perform.
-    pub(crate) fn swap_caches(&mut self, caches: &mut Caches) {
-        std::mem::swap(&mut self.caches, caches);
     }
 
     /// Every socket the transfers wait on, and for what, in id order

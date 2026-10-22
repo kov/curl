@@ -2,6 +2,7 @@
 //! (`lib/vdns/dnscache.c`), and the entries an application gives for them
 //! (`CURLOPT_RESOLVE`, `Curl_loadhostpairs`).
 
+use crate::share::{Kind, Share, ShareLock, watched};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
@@ -66,6 +67,36 @@ const MAX_ENTRIES: usize = 29999;
 #[derive(Debug, Default)]
 pub(crate) struct DnsCache {
     entries: Vec<Entry>,
+}
+
+/// The answers a transfer looks up and keeps: its multi's, or its
+/// share's, each use of those under the share's lock with the
+/// application told around it.
+pub(crate) enum Names<'a> {
+    Own(&'a mut DnsCache),
+    Shared {
+        share: &'a Share,
+        watch: Option<&'a dyn ShareLock>,
+    },
+}
+
+impl Names<'_> {
+    /// Run `f` on the answers, as one use of them.
+    pub(crate) fn section<R>(&mut self, f: impl FnOnce(&mut DnsCache) -> R) -> R {
+        match self {
+            Names::Own(cache) => f(cache),
+            Names::Shared { share, watch } => {
+                watched(*watch, share, Kind::Names, || f(&mut share.dns()))
+            }
+        }
+    }
+
+    /// Tell the application of the use C makes as a setup lets go of the
+    /// answer it was given (`Curl_dns_entry_unlink`): here the answer is
+    /// counted, and nothing of the share is used.
+    pub(crate) fn release(&mut self) {
+        self.section(|_| ());
+    }
 }
 
 #[derive(Debug)]

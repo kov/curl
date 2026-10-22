@@ -82,11 +82,11 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
   equal, plus the deliberate allowances C makes (a TLS connection serving the plain scheme,
   multiplexing limits). A setting added to the route joins the comparison by construction, and
   nothing is written onto a pooled connection when it is reused.
-- **The pool owns every connection and issues leases.** A connection is connecting, open or
-  closing under one id that survives its handshake; setup is a pipeline of stages (resolve, race
-  the addresses, proxy, TLS), each owning what the one before produced. Operations that need a
-  handshaken connection exist only on an open one. The share lock is taken at the same four
-  points as in C.
+- **The pool owns the idle connections and issues leases; a lease owns its busy one.** A
+  connection is connecting, open or closing under one id that survives its handshake; setup is a
+  pipeline of stages (resolve, race the addresses, proxy, TLS), each owning what the one before
+  produced. Operations that need a handshaken connection exist only on an open one. The lease
+  names the pool it came from, and goes back only there.
 - **Pause is one value per direction.** Receiving is running, stopped by `curl_easy_pause` (the
   current buffer still finishes) or held by a callback's pause (output is held at once); sending
   is running or paused. A multiplexed connection buffers per stream, so a paused stream never
@@ -137,11 +137,12 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
 - **Typestate is used where C keeps flags.** Examples are a connection before and after its
   handshake, and a response before and after its headers. An operation that is valid in only
   one state exists only on that state's type.
-- **Shared caches live in one owner.** The share handle holds them, and lends them whole to the
-  multi a transfer runs in for the length of its perform. Once transfers on one share run at
-  once, only idle connections and names stay in the share, and a busy connection belongs to its
-  multi; locking is then a trait, taken at C's lock points, which the shim implements with the
-  application's lock callbacks, which tests observe.
+- **Shared caches live in one owner, behind their own locks.** The share keeps each kind it is
+  asked for (idle connections, names, cookies) behind a mutex of its own, held for one use at a
+  time and never across a callback, so the share is `Send + Sync` and its safety never rests on
+  the application's lock functions. Those are told around each use, where and as C calls them
+  (a watch the handle holds with its share), outside the share's own locks. A kind not kept is
+  the multi's or the handle's own.
 
 ## Types
 

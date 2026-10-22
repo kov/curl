@@ -2494,9 +2494,24 @@ fn a_share_is_held_and_locked_as_in_c() {
     );
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(two) };
+    // The jar locked for each use of it, the flush at cleanup among them,
+    // as C locks `CURL_LOCK_DATA_COOKIE`.
+    let cookie = |c: *mut CURL| (true, ffi::CURL_LOCK_DATA_COOKIE.0 as c_int, c as usize);
+    let uncookie = |c: *mut CURL| (false, ffi::CURL_LOCK_DATA_COOKIE.0 as c_int, c as usize);
     assert_eq!(
         std::mem::take(&mut *LOCKS.lock().unwrap()),
-        [share(one), unshare(one), share(two), unshare(two)]
+        [
+            cookie(one),
+            uncookie(one),
+            cookie(two),
+            uncookie(two),
+            share(one),
+            unshare(one),
+            cookie(two),
+            uncookie(two),
+            share(two),
+            unshare(two)
+        ]
     );
     // SAFETY: a live share, held by none, the copy included; then no
     // share at all; then live handles, not used again.
@@ -2506,10 +2521,13 @@ fn a_share_is_held_and_locked_as_in_c() {
         curl_easy_cleanup(one);
         curl_easy_cleanup(copy);
     }
+    // Its connections closed under their lock (`Curl_cpool_destroy`).
     let null = ptr::null_mut();
+    let connect = (true, ffi::CURL_LOCK_DATA_CONNECT.0 as c_int, 0);
+    let unconnect = (false, ffi::CURL_LOCK_DATA_CONNECT.0 as c_int, 0);
     assert_eq!(
         std::mem::take(&mut *LOCKS.lock().unwrap()),
-        [share(null), unshare(null)]
+        [share(null), unshare(null), connect, unconnect]
     );
 }
 

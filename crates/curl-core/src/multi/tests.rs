@@ -1,5 +1,6 @@
 use super::*;
 use curl_alloc::TryArc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::conn::io::{Events, FakeNet, Net, PollFd, Waker};
 use crate::options::{IpVersion, Options};
@@ -1557,7 +1558,7 @@ fn the_next_transfer_reuses_the_connection_left() {
 }
 
 /// A network that counts the sockets it closes.
-struct Closes(FakeNet, std::rc::Rc<std::cell::Cell<u32>>);
+struct Closes(FakeNet, std::sync::Arc<AtomicU32>);
 
 impl Net for Closes {
     fn poll(
@@ -1577,7 +1578,7 @@ impl Net for Closes {
     }
 
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
-        self.1.set(self.1.get() + 1);
+        self.1.fetch_add(1, Ordering::Relaxed);
         self.0.close(socket);
     }
 
@@ -1590,9 +1591,9 @@ impl Net for Closes {
     }
 }
 
-/// One network behind several owners: a share and the multis it lends
-/// its connections to.
-struct OneNet(std::rc::Rc<std::cell::RefCell<Closes>>);
+/// One network behind several owners: a share and the multis whose
+/// transfers use its connections.
+struct OneNet(std::sync::Arc<std::sync::Mutex<Closes>>);
 
 impl Net for OneNet {
     fn poll(
@@ -1601,18 +1602,18 @@ impl Net for OneNet {
         fds: &mut [PollFd<'_>],
         timeout: Duration,
     ) -> std::io::Result<u32> {
-        self.0.borrow_mut().poll(sockets, fds, timeout)
+        self.0.lock().unwrap().poll(sockets, fds, timeout)
     }
 
     fn connect(
         &mut self,
         addr: std::net::SocketAddr,
     ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.borrow_mut().connect(addr)
+        self.0.lock().unwrap().connect(addr)
     }
 
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
-        self.0.borrow_mut().close(socket);
+        self.0.lock().unwrap().close(socket);
     }
 
     fn resolve(
@@ -1620,21 +1621,23 @@ impl Net for OneNet {
         name: &[u8],
         family: crate::conn::io::Family,
     ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.borrow_mut().resolve(name, family)
+        self.0.lock().unwrap().resolve(name, family)
     }
 }
 
-/// Handles given one share use one connection, in multis of their own:
-/// it outlives the multi that made it, and closes with the share
-/// (`curl_share_cleanup`). A perform on a share already lent is refused.
+/// Handles given one share that keeps connections use one connection,
+/// in multis of their own: it outlives the multi that made it, and closes
+/// with the share (`curl_share_cleanup`). Each use of the share's pool is
+/// one the application is told of, where C locks it (test 1554): as a
+/// transfer joins, searches, adds a connection and gives it back.
 #[test]
 fn a_share_keeps_connections_across_handles() {
     use crate::conn::io::Peer;
-    use crate::share::Share;
+    use crate::share::{Kind, Share, Told};
     let clock = ManualClock::new().unwrap();
-    let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+    let closed = std::sync::Arc::new(AtomicU32::new(0));
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
-    let net = std::rc::Rc::new(std::cell::RefCell::new(Closes(
+    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
         FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
         closed.clone(),
     )));
@@ -1645,26 +1648,36 @@ fn a_share_keeps_connections_across_handles() {
         waker: None,
     };
     let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let told = Told::new(&share);
     let mut connects = Vec::new();
+    let mut uses = Vec::new();
     for _ in 0..2 {
         let mut m: Multi = Multi::new(env()).unwrap();
         let mut e = easy("tcp://127.0.0.1:1/");
-        e.set_share(Some(share.clone()));
+        e.set_share_watched(share.clone(), told.handler());
         e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
         connects.push(e.report().connects());
+        uses.push(told.uses());
         drop(m);
     }
     assert_eq!(connects, [1, 0], "the second reused the first's");
-    assert_eq!(closed.get(), 0, "kept by the share");
-    let lent = share.lend().unwrap();
+    // Joined, searched, added and given back; then the same but added.
+    let c = Kind::Connections;
+    assert_eq!(uses, [vec![c; 4], vec![c; 3]], "the second added none");
+    assert_eq!(closed.load(Ordering::Relaxed), 0, "kept by the share");
+    // A handle whose share keeps no connections uses its multi's.
+    let other = Share::new().unwrap();
     let mut e = easy("tcp://127.0.0.1:1/");
-    e.set_share(Some(share.clone()));
-    let refused = e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits);
-    assert_eq!(refused.unwrap_err().kind(), ErrorKind::RecursiveApiCall);
-    share.give_back(lent);
-    drop(e);
-    drop(share);
-    assert_eq!(closed.get(), 1, "closed with the share");
+    e.set_share_watched(other, told.handler());
+    e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits)
+        .unwrap();
+    assert_eq!(e.report().connects(), 1);
+    assert_eq!(told.uses(), [], "none told of");
+    assert_eq!(closed.load(Ordering::Relaxed), 1, "closed with its multi");
+    // The watch held a clone of it.
+    drop((e, told, share));
+    assert_eq!(closed.load(Ordering::Relaxed), 2, "closed with the share");
 }
 
 /// The connections left idle are closed with their multi
@@ -1673,7 +1686,7 @@ fn a_share_keeps_connections_across_handles() {
 fn a_multi_closes_its_idle_connections_when_dropped() {
     use crate::conn::io::Peer;
     let clock = ManualClock::new().unwrap();
-    let closed = std::rc::Rc::new(std::cell::Cell::new(0));
+    let closed = std::sync::Arc::new(AtomicU32::new(0));
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
     let net = Closes(
         FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
@@ -1691,9 +1704,9 @@ fn a_multi_closes_its_idle_connections_when_dropped() {
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
-    assert_eq!(closed.get(), 0, "kept");
+    assert_eq!(closed.load(Ordering::Relaxed), 0, "kept");
     drop(m);
-    assert_eq!(closed.get(), 1);
+    assert_eq!(closed.load(Ordering::Relaxed), 1);
 }
 
 /// C names an IPv6 host with its brackets where it shows the URL's host,

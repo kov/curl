@@ -2,7 +2,7 @@
 //! of calls allowed inside each callback, as types. A method exists on a
 //! context only if C allows that call from that callback.
 
-use curl_alloc::OutOfMemory;
+use curl_alloc::{OutOfMemory, TryVec as _};
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -11,12 +11,14 @@ use std::time::Duration;
 use crate::conn::io::{
     Connect, Family, Net, PollFd, ResolveFailure, Socket, SocketKey, SocketPoll,
 };
-use crate::conn::{Caches, DnsCache, Pool};
+use crate::conn::{Caches, Names, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
+use crate::handler::Handler;
 use crate::options::Options;
 use crate::report::TransferReport;
+use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock, Instant};
 
 use super::notify::{NotifyKind, NotifyQueue};
@@ -62,27 +64,155 @@ impl<H: Host> EngineRest<'_, H> {
         }
     }
 
-    /// The pool, the network it is to use for transfer `who`, and the
-    /// answers kept, for a connection's setup.
-    pub(crate) fn pool_net_dns(
+    /// The network transfer `who` is to use: one that tells the socket
+    /// callback of a socket before it closes.
+    pub(crate) fn net(&mut self, who: TransferId) -> Announcing<'_, H> {
+        Announcing {
+            net: &mut *self.net,
+            tell: self.tell.reborrow(),
+            events: &mut *self.events,
+            who,
+        }
+    }
+
+    /// Transfer `who`'s share, if it keeps `kind`, and what the
+    /// application watches the share's uses with.
+    pub(crate) fn kept(&self, who: TransferId, kind: Kind) -> Option<Kept> {
+        let easy = &self
+            .tell
+            .slots
+            .get(who)
+            .expect("a transfer of the multi")
+            .easy;
+        let share = easy.share().filter(|s| s.keeps(kind))?.clone();
+        Some(Kept {
+            share,
+            watch: easy.share_watch.clone(),
+        })
+    }
+
+    /// Run `section` for transfer `who` on the pool of `home`, with the
+    /// network to use: that share's, under its lock with the application
+    /// told around it, or with none the multi's own. The sockets the
+    /// section closes are closed once the share's lock is let go, as
+    /// closing one tells the socket callback.
+    pub(crate) fn pool_section<R>(
         &mut self,
         who: TransferId,
-    ) -> (&mut Pool, Announcing<'_, H>, &mut DnsCache) {
+        home: Option<&Share>,
+        section: impl FnOnce(&mut Pool, &mut dyn Net) -> R,
+    ) -> R {
+        let watch = self
+            .tell
+            .slots
+            .get(who)
+            .expect("a transfer of the multi")
+            .easy
+            .share_watch
+            .clone();
+        let mut net = Announcing {
+            net: &mut *self.net,
+            tell: self.tell.reborrow(),
+            events: &mut *self.events,
+            who,
+        };
+        let Some(share) = home else {
+            return section(&mut self.caches.pool, &mut net);
+        };
+        watched(watch.as_deref(), share, Kind::Connections, || {
+            let mut later = CloseLater::new(&mut net);
+            let r = section(&mut share.pool(), &mut later);
+            later.close();
+            r
+        })
+    }
+
+    /// The names transfer `who`'s setups look up and keep, with the
+    /// network it is to use: its share's names, if that keeps them, else
+    /// the multi's own; `kept` is what `kept` gave for `Kind::Names`.
+    pub(crate) fn net_names<'k>(
+        &'k mut self,
+        who: TransferId,
+        kept: Option<&'k Kept>,
+    ) -> (Announcing<'k, H>, Names<'k>) {
         let net = Announcing {
             net: &mut *self.net,
             tell: self.tell.reborrow(),
             events: &mut *self.events,
             who,
         };
-        let Caches { pool, dns } = &mut *self.caches;
-        (pool, net, dns)
+        let names = match kept {
+            Some(k) => Names::Shared {
+                share: &k.share,
+                watch: k.watch(),
+            },
+            None => Names::Own(&mut self.caches.dns),
+        };
+        (net, names)
+    }
+}
+
+/// A transfer's share, which keeps a kind of data, and what the
+/// application watches its uses with.
+pub(crate) struct Kept {
+    pub(crate) share: Share,
+    watch: Option<Handler<dyn ShareLock>>,
+}
+
+impl Kept {
+    pub(crate) fn watch(&self) -> Option<&dyn ShareLock> {
+        self.watch.as_deref()
+    }
+}
+
+/// A network whose sockets closed are held, to be closed later: out of
+/// a share's lock. A socket it cannot hold, for want of memory, it
+/// closes at once.
+struct CloseLater<'n> {
+    net: &'n mut dyn Net,
+    sockets: Vec<Box<dyn Socket>>,
+}
+
+impl<'n> CloseLater<'n> {
+    fn new(net: &'n mut dyn Net) -> CloseLater<'n> {
+        CloseLater {
+            net,
+            sockets: Vec::new(),
+        }
     }
 
-    /// The pool, and the network it is to use for transfer `who`: one
-    /// that tells the socket callback of a socket before it closes.
-    pub(crate) fn pool_net(&mut self, who: TransferId) -> (&mut Pool, Announcing<'_, H>) {
-        let (pool, net, _) = self.pool_net_dns(who);
-        (pool, net)
+    /// Close the sockets held, in the order they were.
+    fn close(self) {
+        for socket in self.sockets {
+            self.net.close(socket);
+        }
+    }
+}
+
+impl Net for CloseLater<'_> {
+    fn poll(
+        &mut self,
+        sockets: &mut [SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> io::Result<u32> {
+        self.net.poll(sockets, fds, timeout)
+    }
+
+    fn connect(&mut self, addr: SocketAddr) -> io::Result<(Box<dyn Socket>, Connect)> {
+        self.net.connect(addr)
+    }
+
+    fn close(&mut self, socket: Box<dyn Socket>) {
+        if self.sockets.try_reserve(1).is_err() {
+            self.net.close(socket);
+            return;
+        }
+        self.sockets.try_push(socket).expect("reserved");
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+        self.net.resolve(name, family)
     }
 }
 

@@ -10,6 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
 use crate::conn::io::{Events, ResolveFailure};
+use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
     Acquired, Answer, BadEntry, BadVia, ConnLease, ConnectError, Connected, Failure, Finish, Found,
@@ -22,6 +23,7 @@ use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::{Follow, Lines, Method, Options, ProxyType, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
+use crate::share::Kind;
 
 mod haproxy;
 mod socks;
@@ -246,8 +248,16 @@ pub(crate) enum Wake {
 impl TransferState {
     /// Whether the transfer holds a connection lease.
     pub(crate) fn holds_lease(&self) -> bool {
-        self.attached().is_some()
-            || matches!(self, TransferState::Connecting(_) | TransferState::Done(_))
+        self.lease().is_some()
+    }
+
+    /// The lease the transfer holds, if it holds one.
+    pub(crate) fn lease(&self) -> Option<&ConnLease> {
+        match self {
+            TransferState::Connecting(c) => Some(&c.lease),
+            TransferState::Done(d) => Some(&d.lease),
+            _ => self.attached().map(|a| &a.lease),
+        }
     }
 
     fn attached(&self) -> Option<&Attached> {
@@ -369,8 +379,15 @@ fn release<H: Host>(
         max: cx.rest.tell.limits.max_connects,
         attached: cx.rest.tell.slots.len(),
     };
-    let (pool, mut net) = cx.rest.pool_net(cx.me);
-    let released = pool.release(lease, finish, limit, &mut net, now);
+    if lease.answer().is_some() {
+        // A setup given up lets its answer go (`CF_CTRL_DATA_DONE`).
+        let kept = cx.rest.kept(cx.me, Kind::Names);
+        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
+    }
+    let home = lease.home().cloned();
+    let released = cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
+        pool.release(lease, finish, limit, net, now)
+    });
     if let Released::Idle {
         full: Some(full), ..
     }
@@ -776,7 +793,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 premature |= is_premature(d.result);
             }
             let max_age = cx.easy().options().limits.reuse.dns_max_age;
-            cx.rest.caches.dns.prune(cx.rest.now, max_age);
+            let now = cx.rest.now;
+            let kept = cx.rest.kept(cx.me, Kind::Names);
+            let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
+            names.section(|dns| dns.prune(now, max_age));
             release(cx, d.lease, premature, d.origin.as_ref());
             // Held output went with the request; a pause the application
             // asked for stays.
@@ -911,7 +931,9 @@ fn connecting<H: Host>(
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let (_, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+    let kept = cx.rest.kept(cx.me, Kind::Names);
+    let answered = c.lease.answer().is_some();
+    let (mut net, dns) = cx.rest.net_names(cx.me, kept.as_ref());
     let setup = Setup {
         dns,
         wildcard,
@@ -919,6 +941,10 @@ fn connecting<H: Host>(
         delay,
     };
     let connected = c.lease.connect(&mut net, now, setup);
+    if answered && c.lease.answer().is_none() {
+        // Connected, or failed: the answer is let go.
+        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
+    }
     if !matches!(connected, Ok(Connected::Connecting(_))) {
         run.deadlines.clear(TimerKind::Eyeballs);
     }
@@ -1383,7 +1409,9 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
         let (name, port, addrs, permanent, given) = match parse_entry(line) {
             Ok(None) => continue,
             Ok(Some(ListEntry::Remove { name, port })) => {
-                cx.rest.caches.dns.remove(name, port);
+                let kept = cx.rest.kept(cx.me, Kind::Names);
+                let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
+                names.section(|dns| dns.remove(name, port));
                 continue;
             }
             Ok(Some(ListEntry::Add {
@@ -1410,18 +1438,22 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
         };
         let answer = Answer::new(name, addrs).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         let answer = TryArc::try_new(answer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        if cx.rest.caches.dns.remove(name, port) {
+        // One use of the names, the old answer discarded and the new kept
+        // (`Curl_loadhostpairs`).
+        let kept = cx.rest.kept(cx.me, Kind::Names);
+        let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
+        let (discarded, put) = names.section(|dns| {
+            let discarded = dns.remove(name, port);
+            (discarded, dns.put(answer, port, now, permanent))
+        });
+        if discarded {
             let name = Bytes(name);
             trace::info(
                 cx,
                 format_args!("RESOLVE {name}:{port} - old addresses discarded"),
             );
         }
-        cx.rest
-            .caches
-            .dns
-            .put(answer, port, now, permanent)
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        put.map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         let (shown, given) = (Bytes(name), Bytes(given));
         let kept = if permanent { "" } else { " (non-permanent)" };
         trace::info(
@@ -2237,8 +2269,25 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     let mut notes = Vec::new();
     let now = cx.rest.now;
     let add = cx.rest.tell.limits.add();
-    let (pool, mut net) = cx.rest.pool_net(cx.me);
-    let acquired = pool.acquire(route, rules, add, &mut net, now, &mut notes)?;
+    // The search and the addition, each a use of the pool of its own
+    // (`Curl_cpool_find`, `Curl_cpool_add`).
+    let home = cx.rest.kept(cx.me, Kind::Connections).map(|k| k.share);
+    let found = if pool::searches(&route, rules) {
+        cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
+            pool.find(&route, rules, net, now, &mut notes)
+        })?
+    } else {
+        None
+    };
+    let mut acquired = match found {
+        Some(lease) => Acquired::Reused(lease),
+        None => cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
+            pool.add(route, add, net, now)
+        })?,
+    };
+    if let (Some(share), Acquired::Reused(lease) | Acquired::New(lease)) = (home, &mut acquired) {
+        lease.set_home(share);
+    }
     for note in notes {
         match note {
             PoolNote::IdleTooLong { idle_ms, max_ms } => trace::info(

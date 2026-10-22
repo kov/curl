@@ -1,29 +1,67 @@
 # The share (crates/curl-core/src/share.rs).
 
-=== a perform ignores its share
-file: crates/curl-core/src/easy.rs
+=== a transfer ignores its share's connections
+file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-        if let Some(caches) = &mut lent {
-            multi.swap_caches(caches);
-        }
+    let home = cx.rest.kept(cx.me, Kind::Connections).map(|k| k.share);
 --- new
+    let home: Option<crate::share::Share> = None;
 
 === a share leaves its idle connections open
 file: crates/curl-core/src/share.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-        caches.pool.close_idle(&mut **self.net.get_mut());
+            .close_idle(&mut **net);
 --- new
-        let _ = caches;
+            .len();
+        let _ = net;
 
-=== a share's jar is used only by a perform
+=== a share keeps every kind whatever is asked
+file: crates/curl-core/src/share.rs
+witness: curl-core multi::tests::a_share_keeps_connections_across_handles
+--- old
+        self.0.keeps.load(Ordering::Relaxed) & kind.bit() != 0
+--- new
+        self.0.keeps.load(Ordering::Relaxed) & kind.bit() != 0 || kind == Kind::Connections
+
+=== the application is told of a use under the share's own lock
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::a_share_keeps_connections_across_handles
+--- old
+        watched(watch.as_deref(), share, Kind::Connections, || {
+            let mut later = CloseLater::new(&mut net);
+            let r = section(&mut share.pool(), &mut later);
+--- new
+        let mut held = share.pool();
+        watched(watch.as_deref(), share, Kind::Connections, || {
+            let mut later = CloseLater::new(&mut net);
+            let r = section(&mut held, &mut later);
+
+=== a transfer's jar ignores its share's
 file: crates/curl-core/src/proto/http/cookies.rs
 witness: curl-core proto::http::tests::a_share_s_jar_serves_the_transfers_of_a_multi
 --- old
-    if let Some(share) = easy.share().cloned() {
+    match easy.with_shared_jar(f) {
 --- new
-    if let Some(share) = None::<Share> {
+    match Err::<Option<R>, _>(f) {
+
+=== a setup lets go of its answer untold
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_them
+--- old
+        // Connected, or failed: the answer is let go.
+        cx.rest.net_names(cx.me, kept.as_ref()).1.release();
+--- new
+        // Connected, or failed: the answer is let go.
+
+=== a transfer's cookie files, all empty names, are read untold
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_them
+--- old
+    if !texts.is_empty() || matches!(read, Ok(Some(()))) {
+--- new
+    if !texts.is_empty() {
 
 === a held share takes options
 file: crates/curl-sys-abi/src/share.rs

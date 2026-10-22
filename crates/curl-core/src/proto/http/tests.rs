@@ -2773,7 +2773,12 @@ fn a_share_keeps_cookies_for_its_handles() {
     two.set_share(Some(share.clone()));
     one.add_cookie(line).unwrap();
     assert!(two.cookie_list().unwrap().is_empty(), "each its own");
-    share.keep_cookies();
+    // Kept from when no handle holds the share.
+    one.set_share(None);
+    two.set_share(None);
+    share.keep(crate::share::Kind::Cookies).unwrap();
+    one.set_share(Some(share.clone()));
+    two.set_share(Some(share.clone()));
     one.add_cookie(line).unwrap();
     assert_eq!(two.cookie_list().unwrap(), [line.to_vec()]);
     // Saved only once a transfer started the jar; reading files does.
@@ -2819,12 +2824,36 @@ fn last_modified_gives_the_file_time_when_asked() {
     assert_eq!(ran.easy.report().filetime(), Some(0));
 }
 
+/// A transfer on a share that keeps names and cookies tells the
+/// application of each use it makes of them, where C locks them (test
+/// 506): the jar read and started, the name looked up, kept and let go,
+/// the cookies the request sends and the one the server sets, the names
+/// pruned at the end; then the jar at its flush.
+#[test]
+fn a_share_s_uses_are_told_where_c_locks_them() {
+    use crate::share::{Kind, Told};
+    let share = crate::share::Share::new().unwrap();
+    share.keep(Kind::Names).unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    let told = Told::new(&share);
+    let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
+    let mut e = Easy::new();
+    e.set_share_watched(share.clone(), told.handler());
+    let jar_on = |o: &mut Options| o.http.cookies.files.push(b"").unwrap();
+    let mut ran = get_with(&mut m, e, "/a", talk, jar_on);
+    assert_eq!(ran.result, Ok(()));
+    let (c, n) = (Kind::Cookies, Kind::Names);
+    assert_eq!(told.uses(), [c, c, n, n, n, c, c, n]);
+    ran.easy.save_cookies().unwrap();
+    assert_eq!(told.uses(), [c]);
+}
+
 /// Handles on a share that keeps cookies use its jar in whichever multi
 /// runs them: what one transfer stores, the next sends.
 #[test]
 fn a_share_s_jar_serves_the_transfers_of_a_multi() {
     let share = crate::share::Share::new().unwrap();
-    share.keep_cookies();
+    share.keep(crate::share::Kind::Cookies).unwrap();
     let jar_on = |o: &mut Options| o.http.cookies.files.push(b"").unwrap();
     let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
     let mut one = Easy::new();

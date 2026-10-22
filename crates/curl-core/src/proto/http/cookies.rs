@@ -3,22 +3,22 @@
 //! (`http_header_s`), and asked what a request sends (`http_cookies`).
 //!
 //! The jar is the handle's own, or its share's if that keeps the cookies,
-//! as C's `data->cookies` is either. It is taken out for one operation at
-//! a time, so that what it says can be traced, and put back however that
-//! ends: as C locks `CURL_LOCK_DATA_COOKIE` around each, so that handles
-//! sharing the jar take turns with it whichever multis run them.
+//! as C's `data->cookies` is either. A share's is used one operation at a
+//! time under its lock, as C locks `CURL_LOCK_DATA_COOKIE` around each, so
+//! that handles sharing the jar take turns with it whichever threads run
+//! them; what an operation says is traced once the lock is let go.
 
 use std::io::Read as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::cookie::{Jar, Source, Suffixes};
+use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Lines;
 use crate::proto::http1::request::{SameOrigin, UserHeaders};
-use crate::share::{Lent, Share};
 use crate::trace;
 
 /// The longest `Cookie:` line a request sends (`MAX_COOKIE_HEADER_LEN`).
@@ -83,66 +83,57 @@ pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     if easy.options().http.cookies.wanted() {
         easy.enable_cookies();
     }
-    // Asked for before the jar is out, as making them can fail.
-    let suffixes = match easy.cookies {
-        Some(_) => easy.public_suffixes().map_err(oom)?,
-        None => return Ok(()),
-    };
-    let Some((mut jar, from)) = take_jar(cx)? else {
-        return Ok(());
-    };
+    let on = easy.cookies.is_some();
     // Out of the options while the trace is reached; put back however
     // reading them ends.
-    let files = std::mem::take(&mut cx.easy_mut().options_mut().http.cookies.files);
-    let list = suffixes.as_ref().map(Suffixes::list);
-    let read = read_files(cx, &mut jar, &files, list);
-    if read.is_ok() {
-        jar.start();
-    }
+    let files = std::mem::take(&mut easy.options_mut().http.cookies.files);
+    let mut texts = Vec::new();
+    let read = match on && files.iter().next().is_some() {
+        true => read_files(cx, &files, &mut texts).map(Some),
+        false => Ok(None),
+    };
     cx.easy_mut().options_mut().http.cookies.files = files;
-    put_back(cx, jar, from);
-    read
-}
-
-/// Whose jar a transfer took out.
-enum Owner {
-    Handle,
-    Share(Share),
-}
-
-/// The jar the handle uses, taken out, if its jar is on: its share's, if
-/// that keeps the cookies, else its own.
-fn take_jar<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Option<(Jar, Owner)>, ErrorKind> {
+    // Those read before one failed are kept, and the jar not started.
+    if !texts.is_empty() || matches!(read, Ok(Some(()))) {
+        let new_session = cx.easy().options().http.cookies.new_session;
+        let now = cx.unix_time();
+        let easy = cx.easy_mut();
+        let suffixes = easy.public_suffixes().map_err(oom)?;
+        let list = suffixes.as_ref().map(Suffixes::list);
+        let loaded = jar_section(easy, |jar| {
+            texts
+                .iter()
+                .try_for_each(|text| jar.load(text, new_session, false, list, now))
+        });
+        loaded.expect("on, checked above").map_err(oom)?;
+    }
+    read?;
+    // Started, a use of the share's cookies whether or not the handle's
+    // jar is on.
     let easy = cx.easy_mut();
-    if easy.cookies.is_none() {
-        return Ok(None);
+    if jar_section(easy, Jar::start).is_none() {
+        easy.watch_shared_jar();
     }
-    if let Some(share) = easy.share().cloned() {
-        // Lent only to a call made from inside this operation's trace.
-        let lent = share
-            .lend_cookies()
-            .map_err(|Lent| ErrorKind::RecursiveApiCall)?;
-        if let Some(jar) = lent {
-            return Ok(Some((jar, Owner::Share(share))));
-        }
-    }
-    Ok(easy.cookies.take().map(|jar| (jar, Owner::Handle)))
+    Ok(())
 }
 
-fn put_back<H: Host>(cx: &mut StepCx<'_, H>, jar: Jar, owner: Owner) {
-    match owner {
-        Owner::Handle => cx.easy_mut().cookies = Some(jar),
-        Owner::Share(share) => share.give_back_cookies(jar),
+/// Run `f` on the jar the handle uses, if its jar is on: its share's, if
+/// that keeps the cookies, as one use of it, else its own.
+fn jar_section<R>(easy: &mut Easy, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
+    easy.cookies.as_ref()?;
+    match easy.with_shared_jar(f) {
+        Ok(r) => r,
+        Err(f) => easy.cookies.as_mut().map(f),
     }
 }
 
+/// Read the cookie files `files` names onto `texts`, tracing those that
+/// cannot be.
 fn read_files<H: Host>(
     cx: &mut StepCx<'_, H>,
-    jar: &mut Jar,
     files: &Lines,
-    list: Option<&dyn crate::cookie::PublicSuffixes>,
+    texts: &mut Vec<Vec<u8>>,
 ) -> Result<(), ErrorKind> {
-    let new_session = cx.easy().options().http.cookies.new_session;
     for name in files.iter() {
         // An empty name reads nothing, and turns the jar on all the same.
         if name.is_empty() {
@@ -169,10 +160,50 @@ fn read_files<H: Host>(
                 continue;
             }
         };
-        jar.load(&text, new_session, false, list, cx.unix_time())
-            .map_err(oom)?;
+        texts.try_push(text).map_err(oom)?;
     }
     Ok(())
+}
+
+/// Trace lines said while the jar was in use, traced once it is not; held
+/// only for a verbose transfer.
+struct Held {
+    verbose: bool,
+    lines: Vec<Vec<u8>>,
+    /// A line could not be held, for want of memory.
+    failed: bool,
+}
+
+impl Held {
+    fn new<H: Host>(cx: &StepCx<'_, H>) -> Held {
+        Held {
+            verbose: cx.easy().options().output.verbose,
+            lines: Vec::new(),
+            failed: false,
+        }
+    }
+
+    fn hold(&mut self, parts: &[&[u8]]) {
+        if !self.verbose || self.failed {
+            return;
+        }
+        let mut line = Vec::new();
+        let made = parts
+            .iter()
+            .try_for_each(|part| line.try_extend_from_slice(part));
+        self.failed = made.and_then(|()| self.lines.try_push(line)).is_err();
+    }
+
+    /// Trace the lines held.
+    fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        for line in &self.lines {
+            trace::info_with(cx, &[line]);
+        }
+        match self.failed {
+            true => Err(ErrorKind::OutOfMemory),
+            false => Ok(()),
+        }
+    }
 }
 
 /// A cookie file, as it was opened.
@@ -245,24 +276,22 @@ pub(super) fn set_by_server<H: Host>(
     }
     let suffixes = cx.easy_mut().public_suffixes().map_err(oom)?;
     let list = suffixes.as_ref().map(Suffixes::list);
-    let (mut jar, owner) = take_jar(cx)?.expect("on, checked above");
     let source = Source::Server {
         host: site.host,
         path: site.path,
         secure: site.secure(),
     };
     let now = cx.unix_time();
-    let stored = match jar.set_by(value, source, list, now, set) {
-        Ok(said) => {
-            if let Some(said) = said {
-                said.lines(|parts| trace::info_with(cx, parts));
-            }
-            Ok(())
+    let mut held = Held::new(cx);
+    let stored = jar_section(cx.easy_mut(), |jar| {
+        let said = jar.set_by(value, source, list, now, set)?;
+        if let Some(said) = said {
+            said.lines(|parts| held.hold(parts));
         }
-        Err(OutOfMemory) => Err(ErrorKind::OutOfMemory),
-    };
-    put_back(cx, jar, owner);
-    stored
+        Ok(())
+    });
+    held.trace(cx)?;
+    stored.expect("on, checked above").map_err(oom)
 }
 
 /// What the request's `Cookie:` line says, if it has one (`http_cookies`):
@@ -277,11 +306,13 @@ pub(super) fn request_value<H: Host>(
     let mut count = 0;
     // The line is full: the application's do not go either.
     let mut full = false;
-    if let Some((mut jar, owner)) = take_jar(cx)? {
-        let made = jar_cookies(cx, &mut jar, site, &mut value, &mut count, &mut full);
-        put_back(cx, jar, owner);
-        made?;
-    }
+    let now = cx.unix_time();
+    let mut held = Held::new(cx);
+    let made = jar_section(cx.easy_mut(), |jar| {
+        jar_cookies(jar, site, now, &mut held, &mut value, &mut count, &mut full)
+    });
+    held.trace(cx)?;
+    made.transpose()?;
     if application && !full {
         let send = cx.easy().options().http.cookies.send.as_deref();
         let send = send.expect("asked for only where the application sends some");
@@ -294,34 +325,32 @@ pub(super) fn request_value<H: Host>(
     Ok((count > 0).then_some(value))
 }
 
-fn jar_cookies<H: Host>(
-    cx: &mut StepCx<'_, H>,
+fn jar_cookies(
     jar: &mut Jar,
     site: &Site<'_>,
+    now: i64,
+    held: &mut Held,
     value: &mut Vec<u8>,
     count: &mut usize,
     full: &mut bool,
 ) -> Result<(), ErrorKind> {
-    jar.sweep(cx.unix_time());
+    jar.sweep(now);
     let matching = jar
         .matching(site.host, site.path, site.secure())
         .map_err(oom)?;
     if matching.capped {
-        matching.capped_line(|parts| trace::info_with(cx, parts));
+        matching.capped_line(|parts| held.hold(parts));
     }
     // "Cookie: " counts.
     let mut len = 8;
     for co in &matching.cookies {
         let add = co.name().len() + co.value().len() + 1;
         if len + add >= MAX_LINE {
-            trace::info_with(
-                cx,
-                &[
-                    b"Restricted outgoing cookies due to header size, '",
-                    co.name(),
-                    b"' not sent",
-                ],
-            );
+            held.hold(&[
+                b"Restricted outgoing cookies due to header size, '",
+                co.name(),
+                b"' not sent",
+            ]);
             *full = true;
             break;
         }

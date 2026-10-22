@@ -10,13 +10,14 @@ use crate::coding::Decoders;
 use crate::conn::io::SystemNet;
 use crate::cookie::{Jar, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
+use crate::handler::Handler;
 use crate::id::ArenaPolicy;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::{Lines, Options};
 use crate::proto::http::auth::Auth;
 use crate::report::TransferReport;
 use crate::save::{self, SaveError};
-use crate::share::{Lent, Share};
+use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock as _, SystemClock};
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
@@ -49,6 +50,9 @@ pub struct Easy {
     /// C's `data->share`): kept through `reset`, not copied with the
     /// handle.
     share: Option<Share>,
+    /// Told around each use the transfers make of what the share keeps;
+    /// goes with the share.
+    pub(crate) share_watch: Option<Handler<dyn ShareLock>>,
     /// The public suffixes cookies are checked against: without them, a
     /// domain needs a dot, as in C built without libpsl.
     suffixes: SuffixList,
@@ -129,6 +133,7 @@ impl Easy {
             // A jar of its own, empty, if this one's is on.
             cookies: self.cookies.as_ref().map(|_| Jar::default()),
             share: None,
+            share_watch: None,
             suffixes: match &self.suffixes {
                 SuffixList::Given(given) => SuffixList::Given(given.clone()),
                 SuffixList::Made(make) => SuffixList::Made(*make),
@@ -157,6 +162,19 @@ impl Easy {
     /// Use `share` for the transfers from now on, or none.
     pub fn set_share(&mut self, share: Option<Share>) {
         self.share = share;
+        self.share_watch = None;
+    }
+
+    /// Use `share` for the transfers from now on, `watch` told around
+    /// each use they make of what it keeps.
+    pub fn set_share_watched(&mut self, share: Share, watch: Handler<dyn ShareLock>) {
+        self.share = Some(share);
+        self.share_watch = Some(watch);
+    }
+
+    /// What is told around each use of the share, if anything is.
+    pub(crate) fn share_watch(&self) -> Option<&dyn ShareLock> {
+        self.share_watch.as_deref()
     }
 
     /// The content codings the handle's responses can be undone from,
@@ -221,21 +239,21 @@ impl Easy {
         let mut set = 0;
         let suffixes = self.public_suffixes().map_err(oom)?;
         let list = suffixes.as_ref().map(Suffixes::list);
-        self.with_jar(true, |jar| jar.add_line(line, list, now, &mut set))?
+        self.with_jar(true, |jar| jar.add_line(line, list, now, &mut set))
             .expect("made if missing")
             .map_err(oom)
     }
 
     /// Forget every cookie (`CURLOPT_COOKIELIST` `ALL`).
     pub fn clear_cookies(&mut self) -> Result<(), ErrorKind> {
-        self.with_jar(false, Jar::clear)?;
+        self.with_jar(false, Jar::clear);
         Ok(())
     }
 
     /// Forget the cookies that last the session (`CURLOPT_COOKIELIST`
     /// `SESS`).
     pub fn clear_session_cookies(&mut self) -> Result<(), ErrorKind> {
-        self.with_jar(false, Jar::clear_session)?;
+        self.with_jar(false, Jar::clear_session);
         Ok(())
     }
 
@@ -261,7 +279,7 @@ impl Easy {
             texts
                 .iter()
                 .try_for_each(|text| jar.load(text, new_session, true, list, now))
-        })?
+        })
         .expect("made if missing")
         .map_err(oom)
     }
@@ -283,32 +301,46 @@ impl Easy {
                 lines.try_push(line)?;
             }
             Ok(lines)
-        })?;
+        });
         Ok(listed.transpose().map_err(oom)?.unwrap_or_default())
     }
 
     /// Run `f` on the jar the handle uses: its share's, if that keeps the
-    /// cookies, else its own, made if `make` and it has none. None if
-    /// there is no jar.
-    fn with_jar<R>(
-        &mut self,
-        make: bool,
-        f: impl FnOnce(&mut Jar) -> R,
-    ) -> Result<Option<R>, ErrorKind> {
-        if let Some(share) = self.share.clone() {
-            let lent = share
-                .lend_cookies()
-                .map_err(|Lent| ErrorKind::RecursiveApiCall)?;
-            if let Some(mut jar) = lent {
-                let r = f(&mut jar);
-                share.give_back_cookies(jar);
-                return Ok(Some(r));
-            }
-        }
+    /// cookies, as one use of it, else its own, made if `make` and it has
+    /// none. None if there is no jar.
+    fn with_jar<R>(&mut self, make: bool, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
+        let f = match self.with_shared_jar(f) {
+            Ok(r) => return r,
+            Err(f) => f,
+        };
         if make && self.cookies.is_none() {
             self.cookies = Some(Jar::default());
         }
-        Ok(self.cookies.as_mut().map(f))
+        self.cookies.as_mut().map(f)
+    }
+
+    /// Tell the application of a use of the share's jar that makes none
+    /// of it, where C locks the jar and finds nothing to do.
+    pub(crate) fn watch_shared_jar(&self) {
+        if let Some(share) = &self.share {
+            watched(self.share_watch(), share, Kind::Cookies, || ());
+        }
+    }
+
+    /// Run `f` on the share's jar, as one use of it, under its lock and
+    /// with the application told around it; `Err(f)` back if the handle
+    /// has no share keeping cookies.
+    pub(crate) fn with_shared_jar<R, F: FnOnce(&mut Jar) -> R>(
+        &self,
+        f: F,
+    ) -> Result<Option<R>, F> {
+        let Some(share) = self.share.as_ref().filter(|s| s.keeps(Kind::Cookies)) else {
+            return Err(f);
+        };
+        let watch = self.share_watch();
+        Ok(watched(watch, share, Kind::Cookies, || {
+            share.cookies().as_mut().map(f)
+        }))
     }
 
     /// Write the cookie jar to `Cookies::save_to`, `-` standard output
@@ -318,27 +350,18 @@ impl Easy {
     /// write is no failure.
     pub fn save_cookies(&mut self) -> Result<(), ErrorKind> {
         let Some(to) = &self.options.http.cookies.save_to else {
+            self.watch_shared_jar();
             return Ok(());
         };
-        let share = self.share.clone();
-        let mut lent = match &share {
-            Some(share) => share
-                .lend_cookies()
-                .map_err(|Lent| ErrorKind::RecursiveApiCall)?,
-            None => None,
+        let save = |jar: &mut Jar| match jar.running() {
+            true => write_jar(jar, to),
+            false => Ok(()),
         };
-        let jar = match &mut lent {
-            Some(jar) => Some(jar),
-            None => self.cookies.as_mut(),
+        let written = match self.with_shared_jar(save) {
+            Ok(written) => written,
+            Err(save) => self.cookies.as_mut().map(save),
         };
-        let written = match jar.filter(|jar| jar.running()) {
-            Some(jar) => write_jar(jar, to),
-            None => Ok(()),
-        };
-        if let (Some(share), Some(jar)) = (share, lent) {
-            share.give_back_cookies(jar);
-        }
-        written.map_err(|e| match e {
+        written.unwrap_or(Ok(())).map_err(|e| match e {
             SaveError::OutOfMemory => ErrorKind::OutOfMemory,
             SaveError::Write => ErrorKind::WriteError,
         })
@@ -377,31 +400,12 @@ impl Easy {
         result
     }
 
-    /// Run the transfer to its end in `multi`, driven as `drive` says,
-    /// with its share's caches in place of the multi's own for the length
-    /// of it.
+    /// Run the transfer to its end in `multi`, driven as `drive` says.
     pub(crate) fn perform_in(&mut self, multi: &mut Multi, drive: Drive) -> Result<(), Error> {
         // The easy handle's limit is its multi's (`curl_easy_perform`).
         multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
-        let share = self.share.clone();
-        let mut lent = match &share {
-            // A perform from a handler of a transfer on the same share.
-            Some(share) => Some(
-                share
-                    .lend()
-                    .map_err(|Lent| Error::from(ErrorKind::RecursiveApiCall))?,
-            ),
-            None => None,
-        };
-        if let Some(caches) = &mut lent {
-            multi.swap_caches(caches);
-        }
         let (result, easy) = run_to_end(multi, std::mem::take(self), drive);
         *self = easy;
-        if let (Some(share), Some(mut caches)) = (&share, lent) {
-            multi.swap_caches(&mut caches);
-            share.give_back(caches);
-        }
         result.map_err(|kind| Error::with_detail(kind, self.report().failure()))
     }
 }

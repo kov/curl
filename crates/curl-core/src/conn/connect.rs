@@ -16,7 +16,9 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use super::dns::{Answer, DnsCache, Lookup};
+#[cfg(test)]
+use super::dns::DnsCache;
+use super::dns::{Answer, Lookup, Names};
 use super::io::{Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketPoll};
 use super::{Conn, ConnNumber, Peer, RecvBuf, RecvFailed, Route, Tcp, Transport, Use};
 use crate::options::IpVersion;
@@ -126,7 +128,7 @@ struct Racing {
 /// What a drive needs beyond the network.
 pub(crate) struct Setup<'a> {
     /// The answers kept from the setups before.
-    pub(crate) dns: &'a mut DnsCache,
+    pub(crate) dns: Names<'a>,
     /// A `*` entry answers for any name (C's `wildcard_resolve`).
     pub(crate) wildcard: bool,
     /// How long an answer is kept (`CURLOPT_DNS_CACHE_TIMEOUT`).
@@ -579,7 +581,7 @@ fn resolve(
     peer: &Peer,
     ip: IpVersion,
     net: &mut dyn Net,
-    setup: Setup<'_>,
+    mut setup: Setup<'_>,
     now: Instant,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let (name, port) = (peer.name(), peer.port());
@@ -588,9 +590,10 @@ fn resolve(
         IpVersion::V4 => Family::V4,
         IpVersion::V6 => Family::V6,
     };
+    let (wildcard, max_age) = (setup.wildcard, setup.max_age);
     let found = match setup
         .dns
-        .lookup((name, port), family, setup.wildcard, setup.max_age, now)
+        .section(|c| c.lookup((name, port), family, wildcard, max_age, now))
     {
         Lookup::Found(answer) => return Ok((answer, Found::Cached)),
         Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
@@ -606,7 +609,10 @@ fn resolve(
             Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
                 let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
                 let none = TryArc::try_new(none).map_err(oom)?;
-                setup.dns.put(none, port, now, false).map_err(oom)?;
+                setup
+                    .dns
+                    .section(|c| c.put(none, port, now, false))
+                    .map_err(oom)?;
                 return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
             }
             Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
@@ -615,7 +621,7 @@ fn resolve(
     let answer = TryArc::try_new(answer).map_err(oom)?;
     setup
         .dns
-        .put(answer.clone(), port, now, false)
+        .section(|c| c.put(answer.clone(), port, now, false))
         .map_err(oom)?;
     Ok((answer, found))
 }
@@ -716,7 +722,7 @@ mod tests {
         for _ in 0..5000 {
             let ms = u64::try_from(clock.now().since(start).as_millis()).unwrap();
             let setup = Setup {
-                dns: &mut DnsCache::default(),
+                dns: Names::Own(&mut DnsCache::default()),
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
@@ -770,7 +776,7 @@ mod tests {
         let mut dns = DnsCache::default();
         let conn = loop {
             let setup = Setup {
-                dns: &mut dns,
+                dns: Names::Own(&mut dns),
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,

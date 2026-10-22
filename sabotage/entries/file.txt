@@ -109,8 +109,10 @@ file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_head_request_is_the_headers
 --- old
         if options.method == Method::Head {
+            return Ok(());
 --- new
         if options.method == Method::Upload {
+            return Ok(());
 
 === a zero byte in the path is a name
 file: crates/curl-core/src/url/encode.rs
@@ -237,3 +239,21 @@ witness: curl-core proto::file::tests::a_listing_failing_partway_fails
             let name = name.map_err(|_| ErrorKind::ReadError)?;
 --- new
             let Ok(name) = name else { break };
+
+=== a file that cannot be stat'ed fails
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_that_cannot_be_stated_is_read_without_its_size
+--- old
+            return self.download_unstated(cx);
+--- new
+            return Err(ErrorKind::ReadError);
+
+=== a head request on a file that cannot be stat'ed takes its body
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_head_request_on_a_file_that_cannot_be_stated_reads_its_body
+--- old
+                no_body: true,
+                no_head: true,
+--- new
+                no_body: false,
+                no_head: true,

@@ -12,7 +12,7 @@ use curl_alloc::TryVec;
 use curl_os::fs::{self, Dir, Keep};
 
 use crate::date::HttpDate;
-use crate::deliver::{Pipeline, Reach};
+use crate::deliver::{Expect, Pipeline, Reach};
 use crate::error::ErrorKind;
 use crate::handler::HeaderOrigin;
 use crate::multi::Host;
@@ -39,6 +39,8 @@ pub(crate) struct Faults {
     /// Reading the file, or the directory, fails once this much of the
     /// body is delivered.
     pub(crate) read_fails_at: Option<u64>,
+    /// The opened file cannot be stat'ed.
+    pub(crate) stat_fails: bool,
 }
 
 /// A request for one path.
@@ -102,14 +104,16 @@ impl Request {
     }
 
     fn download<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-        // Where C cannot stat the file it reads it all the same; here a
-        // failure is a failure.
-        let meta = self
-            .file
-            .as_ref()
-            .expect("opened to read")
-            .metadata()
-            .map_err(|_| ErrorKind::ReadError)?;
+        let meta = self.file.as_ref().expect("opened to read").metadata();
+        #[cfg(test)]
+        let meta = if cx.easy().options().file_faults.stat_fails {
+            Err(std::io::Error::other("injected"))
+        } else {
+            meta
+        };
+        let Ok(meta) = meta else {
+            return self.download_unstated(cx);
+        };
         let is_dir = meta.is_dir();
         let st_size = i64::try_from(meta.len()).expect("a file's size fits its offset type");
         cx.report_mut().set_filetime(meta.mtime());
@@ -191,6 +195,45 @@ impl Request {
         } else {
             self.read_body(cx, known)?;
         }
+        progress::update(cx, false)
+    }
+
+    /// Read a file that cannot be stat'ed all the same, as C does: without
+    /// headers, its size unknown, and with no time condition, as nothing
+    /// is known to check it against; a resume needs the size, and fails.
+    fn download_unstated<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        let options = cx.easy().options();
+        match options.resume {
+            None => {}
+            Some(Resume::AtEnd) => {
+                let kind = ErrorKind::ReadError;
+                return Err(trace::fail(
+                    cx,
+                    kind,
+                    format_args!("cannot get the size of file."),
+                ));
+            }
+            // Past the size of -1 C has for it.
+            Some(Resume::At(_)) => {
+                let kind = ErrorKind::BadDownloadResume;
+                return Err(trace::fail(
+                    cx,
+                    kind,
+                    format_args!("failed to resume file:// transfer"),
+                ));
+            }
+        }
+        // C returns before the body for a head request only after the
+        // headers, which it has not made: the body is read, and its first
+        // bytes, wanted by none and after no head, are a weird reply.
+        if options.method == Method::Head {
+            self.pipeline.expect(Expect {
+                no_body: true,
+                no_head: true,
+                ..Expect::default()
+            });
+        }
+        self.read_body(cx, None)?;
         progress::update(cx, false)
     }
 

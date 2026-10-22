@@ -365,6 +365,77 @@ fn a_listing_failing_partway_fails() {
     assert_eq!(seen.body().len(), 2, "one name and its newline");
 }
 
+fn unstated(s: &Scratch, setup: impl FnOnce(&mut Easy)) -> (Result<(), ErrorKind>, Seen, Easy) {
+    let (mut e, seen) = easy(&s.url("f"));
+    e.options_mut().file_faults.stat_fails = true;
+    setup(&mut e);
+    let (r, e) = run(e);
+    (r, seen, e)
+}
+
+/// A file that cannot be stat'ed is read all the same, as C reads it
+/// (`file_do`): no headers, no size, no file time, and a time condition
+/// that would rule it out not checked.
+#[test]
+fn a_file_that_cannot_be_stated_is_read_without_its_size() {
+    use crate::options::{Condition, TimeCondition};
+    let s = Scratch::new("unstated");
+    s.file("f", b"hello", Y2K_NOON);
+    let (r, seen, e) = unstated(&s, |_| {});
+    assert_eq!(r, Ok(()));
+    assert!(seen.headers().is_empty());
+    assert_eq!(seen.body(), b"hello");
+    assert_eq!(e.report().sizes().download_expected(), None);
+    assert_eq!(e.report().filetime(), None);
+    let mut want = vec![down(None, 0); 2];
+    want.extend(vec![down(None, 5); 5]);
+    assert_eq!(seen.progress(), want);
+    let (r, seen, e) = unstated(&s, |e| {
+        e.options_mut().time_condition = Some(TimeCondition {
+            when: Condition::ModifiedSince,
+            time: Y2K_NOON as i64,
+        });
+    });
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.body(), b"hello");
+    assert!(!e.report().condition_unmet());
+}
+
+/// Without its size, a file cannot be resumed: from its end is a read
+/// error, from anywhere else past the size C takes for unknown, -1.
+#[test]
+fn a_file_that_cannot_be_stated_cannot_be_resumed() {
+    let s = Scratch::new("unstatedresume");
+    s.file("f", b"hello", Y2K_NOON);
+    let (r, seen, _) = unstated(&s, |e| e.options_mut().resume = Some(Resume::AtEnd));
+    assert_eq!(r, Err(ErrorKind::ReadError));
+    assert_eq!(seen.body(), b"");
+    let (r, seen, _) = unstated(&s, |e| e.options_mut().resume = Some(at(1)));
+    assert_eq!(r, Err(ErrorKind::BadDownloadResume));
+    assert_eq!(seen.body(), b"");
+}
+
+/// A head request on a file that cannot be stat'ed has no headers to end
+/// at: C reads the body, and its first bytes, after no head, are a weird
+/// reply; an empty file is fine.
+#[test]
+fn a_head_request_on_a_file_that_cannot_be_stated_reads_its_body() {
+    let s = Scratch::new("unstatedhead");
+    s.file("f", b"hello", Y2K_NOON);
+    let head = |e: &mut Easy| e.options_mut().method = Method::Head;
+    let (r, seen, _) = unstated(&s, head);
+    assert_eq!(r, Err(ErrorKind::WeirdServerReply));
+    assert!(
+        seen.events()
+            .iter()
+            .all(|e| matches!(e, Event::Progress(_)))
+    );
+    s.file("f", b"", Y2K_NOON);
+    let (r, seen, _) = unstated(&s, head);
+    assert_eq!(r, Ok(()));
+    assert!(seen.headers().is_empty());
+}
+
 /// A file that cannot be opened ends the transfer before a connection,
 /// without progress, every time taken at the end.
 #[test]

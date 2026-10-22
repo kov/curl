@@ -291,6 +291,9 @@ pub(crate) fn parse(
             (kind, scheme_named(&scheme))
         }
         Err(UrlErrorKind::NoScheme) => (kind, scheme_of(kind)),
+        // A parsed URL's scheme or host not read back is out of memory,
+        // whatever the reason, as C's `parse_proxy` and
+        // `Curl_peer_from_proxy_url` report it.
         Err(_) => return Err(Refused::OutOfMemory),
     };
     if matches!(
@@ -318,6 +321,7 @@ pub(crate) fn parse(
     };
     let host = match url.get(Part::Host, decoded) {
         Ok(host) => host,
+        // As for the scheme.
         Err(_) => return Err(Refused::OutOfMemory),
     };
     let zone = match url.get(Part::ZoneId, GetOptions::NONE) {

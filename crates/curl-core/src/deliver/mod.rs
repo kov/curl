@@ -210,6 +210,16 @@ impl Pipeline {
         self.head_line(cx, line, HeaderOrigin::Header)
     }
 
+    /// Deliver a proxy's answer to `CONNECT`'s status line, which the
+    /// store does not keep either.
+    pub(crate) fn connect_status<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        line: &[u8],
+    ) -> Result<(), ErrorKind> {
+        self.head_line(cx, line, HeaderOrigin::Connect)
+    }
+
     fn head_line<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,

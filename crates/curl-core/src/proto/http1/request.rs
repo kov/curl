@@ -561,7 +561,7 @@ fn write_h1(
 }
 
 /// `n` in decimal, in `buf`.
-fn decimal(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
+pub(crate) fn decimal(mut n: u64, buf: &mut [u8; 20]) -> &[u8] {
     let mut at = buf.len();
     loop {
         at -= 1;

@@ -129,3 +129,62 @@ witness: curl-core proto::http::tests::a_custom_proxy_authorization_goes_beside_
 --- new
             proxy_secret,
             http.headers.replaces(b"Proxy-Authorization"),
+
+=== a route through a proxy tunnels where it forwards
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection
+--- old
+        self.proxy.as_ref().is_some_and(|p| p.http() && !p.forward)
+--- new
+        self.proxy.as_ref().is_some_and(|p| p.http() && p.forward)
+
+=== a 407's body to CONNECT is left on the connection
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection
+--- old
+            self.body = Body::Ignore(self.length);
+--- new
+            self.body = Body::Done;
+
+=== a 407 saying a length and chunks is dropped by its length
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http1::tunnel::tests::decodes_chunks_over_a_length
+--- old
+        if self.chunked {
+            self.body = Body::Chunked(ChunkDecoder::new(true, 0, 0));
+--- new
+        if self.chunked && self.length == 0 {
+            self.body = Body::Chunked(ChunkDecoder::new(true, 0, 0));
+
+=== an answer to CONNECT that ended is waited on for more
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection
+--- old
+        if t.answer.done() {
+--- new
+        if false {
+
+=== the proxy's status to CONNECT is not kept
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection
+--- old
+        cx.report_mut().set_connect_code(code);
+--- new
+        cx.report_mut().set_connect_code(0);
+
+=== CONNECT is sent again over a connection its proxy closed
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
+--- old
+    if closes {
+--- new
+    if false {
+
+=== a connection redialed to the proxy is not counted
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
+--- old
+    cx.report_mut().count_connect();
+    trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
+--- new
+    trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));

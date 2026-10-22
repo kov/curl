@@ -135,7 +135,8 @@ curl-core/src/
   trace.rs, text.rs          failf/infof: a failure's reason and text lines, on a stack buffer
   multi/
     mod.rs                   Multi<H>, Host, Slot, the public API
-    state.rs                 Run, TransferState and its variant structs, StepCx, the steps
+    state.rs                 Run, TransferState and its variant structs, StepCx, the steps;
+                             state/tunnel.rs: the CONNECT handshake a transfer makes
     sched.rs                 RowSet (the dirty set), Counts, Tally
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
     sockets.rs               SocketTable, pollset diff, announce
@@ -146,7 +147,7 @@ curl-core/src/
   conn/
     mod.rs                   ConnSlot, Conn, Route, Tcp, Scheme, Peer, Transport, ConnNumber
     pool.rs                  Pool, ConnLease, ReuseRules, Lock
-    connect.rs               ConnectMachine, Eyeballs, Racing
+    connect.rs               ConnectMachine, Eyeballs, Racing, Dialed
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
@@ -161,10 +162,11 @@ curl-core/src/
     http.rs, http/auth.rs    the HTTP/1 driver: the request sent, the response read; Basic
     script.rs                the test protocol `script:` (test-util)
     http1/                   the parsers and the renderer, sans-IO: request.rs, response.rs,
-                             framing.rs, chunked.rs, fields.rs
+                             framing.rs, chunked.rs, fields.rs; tunnel.rs, CONNECT and
+                             the proxy's answer
 ```
 
-Planned, not built: `conn/layer.rs` (Layer, LayerStack, TunnelEvent), `conn/mux.rs`,
+Planned, not built: `conn/layer.rs` (Layer, LayerStack), `conn/mux.rs`,
 `conn/shutdown.rs` (ShutdownSet, with TLS), a `Resolver` for names the cache and the shortcuts
 do not answer,
 `DebugNet`, the content decoders, the upload chunk encoder, and `http1/follow.rs`.
@@ -825,7 +827,7 @@ pub(crate) enum ConnectError { Unresolved, Immediate { .. }, Attempt { remote, l
 ```
 
 The enum is the target shape; what is built is a struct with a `Stage { Resolving,
-Racing(Racing) }`. Resolving answers what C answers without a resolver backend: an IP literal,
+Racing(Racing), Tunnel(Dialed) }`. Resolving answers what C answers without a resolver backend: an IP literal,
 and the loopback addresses for `localhost` and the names under it. `Eyeballs` holds the `Answer`
 and picks the next address as `cf_ip_ballers_run` does, the families alternating, IPv6 first;
 `IpVersion` limits a name's addresses, never a literal's. `Racing` runs up to six attempts, oldest
@@ -851,14 +853,19 @@ machine through the pool, and NAMELOOKUP is marked when it resolves.
   pushes its finished `Layer`. Happy eyeballs never reads DNS sideways (C's
   `Curl_conn_dns_get_ai`), and the resolve record lives with the machine that started it, not
   on whichever transfer happens to call.
-- `ConnectStep::Restart(ProxyClosedForAuth)` is C's "AGAIN means rebuild the sub-chain", counted
-  by the machine, at most 5 (cf-setup.c).
-- The tunnel handshake reads through its own transport and layers, not through "the first
-  connected filter from the top". It emits `TunnelEvent`s (status line, header lines, auth
-  challenge, response code); the transfer applies them to its report, header callback and auth
-  state. A filter never writes into a transfer.
-- Proxy authentication state is lent as `&mut PeerAuth`, the proxy's side of the transfer's `Auth`,
-  for the call.
+- A route through an HTTP proxy that tunnels (`Tcp::tunnels`) does not end at the winning
+  attempt: the machine keeps its socket as `Stage::Tunnel(Dialed)`, with a receive buffer, and
+  returns `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
+  (`multi/state/tunnel.rs`) makes it. It renders the `CONNECT` with the proxy's side of its
+  `Auth`, sends it and reads the answer through `Pool::dialed`, parses it with
+  `proto::http1::tunnel::Answer`, and delivers each line through its own pipeline as
+  `HeaderOrigin::Connect`, so the report, header handler and auth state are the transfer's to
+  write. A 407 is answered with another `CONNECT` on the same connection, its body dropped;
+  a 2xx makes the `Conn` (`Pool::tunneled`), keeping what came after the answer, and is
+  traced as established only then.
+- A proxy that closes the connection on its 407 starts the setup over from resolving
+  (`Pool::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
+  the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.
 - Socket open order is one function in `conn::io` with C's sequence: OPENSOCKET callback (or
   `Net::open`), "Trying" trace, nodelay/keepalive, SOCKOPT callback (`AlreadyConnected` skips
   connect; other failure is AbortedByCallback), bind, nonblock, connect.

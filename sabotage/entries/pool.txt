@@ -224,9 +224,9 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 --- old
                         r.close_all(net);
-                        return Ok(Drove::Established(self.established(won, now)));
+                        if self.route.tunnels() {
 --- new
-                        return Ok(Drove::Established(self.established(won, now)));
+                        if self.route.tunnels() {
 
 === a transfer is not woken for its next attempt
 file: crates/curl-core/src/multi/state.rs

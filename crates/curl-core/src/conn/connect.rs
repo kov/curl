@@ -1,6 +1,7 @@
 //! Setting a connection up: the name resolved, then attempts raced to its
 //! addresses until one connects (`lib/connect.c`, `cf-ip-happy.c`,
-//! `cf-socket.c`).
+//! `cf-socket.c`), then, through a proxy that tunnels, the tunnel's
+//! handshake over what connected (`cf-h1-proxy.c`).
 //!
 //! Each stage owns what the one before produced. A drive moves the machine
 //! on by at most one event, which it returns for the transfer to trace:
@@ -16,8 +17,8 @@ use std::num::NonZeroU32;
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use super::dns::{Answer, DnsCache, Lookup};
-use super::io::{Connect, Events, Family, Net, ResolveFailure, Socket, SocketPoll};
-use super::{Conn, ConnNumber, RecvBuf, Route, Tcp, Transport, Use};
+use super::io::{Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketPoll};
+use super::{Conn, ConnNumber, RecvBuf, RecvFailed, Route, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
 
@@ -29,6 +30,9 @@ pub(crate) struct ConnectMachine {
     /// When the setup started (C's `conn->created`).
     created: Instant,
     stage: Stage,
+    /// The setup was started over, for a proxy that closed the connection
+    /// when asking for credentials (`retry_count`).
+    redials: u8,
 }
 
 #[derive(Debug)]
@@ -37,6 +41,50 @@ enum Stage {
     Resolving,
     /// Attempts are made to the addresses it resolved to.
     Racing(Racing),
+    /// Connected to the proxy, the tunnel's handshake is made.
+    Tunnel(Dialed),
+}
+
+/// The most times a setup is started over (cf-setup.c's arbitrary 5).
+const MAX_REDIALS: u8 = 5;
+
+/// A connection to a proxy, over which a tunnel is being set up (the
+/// chain below C's tunnel filter). The handshake's own bytes go through
+/// it; what comes after them is kept for the tunnel's first reader.
+#[derive(Debug)]
+pub(crate) struct Dialed {
+    remote: SocketAddr,
+    socket: Box<dyn Socket>,
+    connected_at: Instant,
+    rx: RecvBuf,
+}
+
+impl Dialed {
+    pub(crate) fn send(&self, bytes: &[u8]) -> io::Result<Sent> {
+        self.socket.send(bytes)
+    }
+
+    /// Read up to `max` bytes behind what was received and not used.
+    pub(crate) fn recv(&mut self, max: usize) -> Result<Recv, RecvFailed> {
+        let room = self.rx.room(max).map_err(|_| RecvFailed::OutOfMemory)?;
+        let got = self.socket.recv(room).map_err(RecvFailed::Os);
+        let n = match got {
+            Ok(Recv::Data(n)) => n.get(),
+            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
+        };
+        self.rx.commit(max, n);
+        got
+    }
+
+    /// What was received and not used.
+    pub(crate) fn received(&self) -> &[u8] {
+        self.rx.filled()
+    }
+
+    /// The first `n` bytes received were used.
+    pub(crate) fn consume(&mut self, n: usize) {
+        self.rx.consume(n);
+    }
 }
 
 /// The most attempts running at once (`IP_HE_MAX_CONCURRENT_ATTEMPTS`).
@@ -165,6 +213,9 @@ pub(crate) enum Progress {
     /// Nothing until a socket is ready, or until `until`, when the next
     /// attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
     Waiting { until: Option<Instant> },
+    /// Connected to a proxy, through which a tunnel is to be made: its
+    /// handshake goes over `Pool::dialed`.
+    Dialed,
 }
 
 /// How an attempt failed.
@@ -213,6 +264,7 @@ impl ConnectMachine {
             route,
             created,
             stage: Stage::Resolving,
+            redials: 0,
         }
     }
 
@@ -226,19 +278,59 @@ impl ConnectMachine {
 
     /// The sockets of the attempts running.
     pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
-        let running = match &self.stage {
-            Stage::Resolving => &[][..],
-            Stage::Racing(r) => &r.attempts[..],
+        let (running, dialed) = match &self.stage {
+            Stage::Resolving => (&[][..], None),
+            Stage::Racing(r) => (&r.attempts[..], None),
+            Stage::Tunnel(d) => (&[][..], Some(&*d.socket)),
         };
-        running.iter().map(|a| &*a.socket)
+        running.iter().map(|a| &*a.socket).chain(dialed)
     }
 
     /// The addresses the name resolved to, once it has.
     pub(crate) fn answer(&self) -> Option<&TryRc<Answer>> {
         match &self.stage {
-            Stage::Resolving => None,
+            Stage::Resolving | Stage::Tunnel(_) => None,
             Stage::Racing(r) => Some(&r.eyeballs.answer),
         }
+    }
+
+    /// The connection to the proxy, while the tunnel is set up.
+    pub(crate) fn dialed(&mut self) -> &mut Dialed {
+        match &mut self.stage {
+            Stage::Tunnel(d) => d,
+            Stage::Resolving | Stage::Racing(_) => panic!("no tunnel is set up"),
+        }
+    }
+
+    /// The tunnel is up: the connection is.
+    pub(crate) fn tunneled(self) -> Conn {
+        let Stage::Tunnel(d) = self.stage else {
+            panic!("no tunnel is set up");
+        };
+        let at = d.connected_at;
+        Self::conn(
+            self.number,
+            self.route,
+            self.created,
+            d.socket,
+            d.remote,
+            at,
+            d.rx,
+        )
+    }
+
+    /// The proxy closed the connection as it asked for credentials: the
+    /// setup starts over, from resolving its name (`cf_setup_connect`).
+    /// False, and nothing done, if it was started over too often.
+    pub(crate) fn redial(&mut self, net: &mut dyn Net) -> bool {
+        if self.redials >= MAX_REDIALS {
+            return false;
+        }
+        self.redials += 1;
+        if let Stage::Tunnel(d) = std::mem::replace(&mut self.stage, Stage::Resolving) {
+            net.close(d.socket);
+        }
+        true
     }
 
     /// Move the setup on by one event.
@@ -264,6 +356,7 @@ impl ConnectMachine {
                 return Ok(Drove::Connecting(self, Progress::Resolved(found)));
             }
             Stage::Racing(r) => r,
+            Stage::Tunnel(_) => unreachable!("a tunnel is driven by its handshake"),
         };
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
@@ -278,7 +371,22 @@ impl ConnectMachine {
                     Ok(None) => {
                         let won = r.attempts.remove(i);
                         r.close_all(net);
-                        return Ok(Drove::Established(self.established(won, now)));
+                        if self.route.tunnels() {
+                            // The connection is the proxy's; the tunnel
+                            // through it is still to be made.
+                            self.stage = Stage::Tunnel(Dialed {
+                                remote: won.remote,
+                                socket: won.socket,
+                                connected_at: now,
+                                rx: RecvBuf::default(),
+                            });
+                            return Ok(Drove::Connecting(self, Progress::Dialed));
+                        }
+                        let rx = RecvBuf::default();
+                        let (number, route, created) = (self.number, self.route, self.created);
+                        let conn =
+                            Self::conn(number, route, created, won.socket, won.remote, now, rx);
+                        return Ok(Drove::Established(conn));
                     }
                     Ok(Some(error)) | Err(error) => error,
                 },
@@ -372,19 +480,28 @@ impl ConnectMachine {
         Ok((answer, found))
     }
 
-    /// The connection `won` set up, found connected at `now`.
-    fn established(self, won: Attempt, now: Instant) -> Conn {
-        let local = won.socket.local_addr().ok();
+    /// The connection set up over `socket` to `remote`, found connected
+    /// at `at`, with what was received over it and not used.
+    fn conn(
+        number: ConnNumber,
+        route: Tcp,
+        created: Instant,
+        socket: Box<dyn Socket>,
+        remote: SocketAddr,
+        at: Instant,
+        rx: RecvBuf,
+    ) -> Conn {
+        let local = socket.local_addr().ok();
         Conn {
-            number: self.number,
-            route: Route::Tcp(self.route),
-            transport: Transport::Tcp(won.socket),
-            remote: Some(won.remote),
+            number,
+            route: Route::Tcp(route),
+            transport: Transport::Tcp(socket),
+            remote: Some(remote),
             local,
-            created: self.created,
-            connected_at: now,
+            created,
+            connected_at: at,
             use_: Use::Leased(NonZeroU32::MIN),
-            rx: RecvBuf::default(),
+            rx,
             served: false,
             close: false,
         }
@@ -395,6 +512,7 @@ impl ConnectMachine {
         match self.stage {
             Stage::Resolving => {}
             Stage::Racing(mut r) => r.close_all(net),
+            Stage::Tunnel(d) => net.close(d.socket),
         }
     }
 }
@@ -545,6 +663,7 @@ mod tests {
                         Progress::Failed(_) => {}
                         Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
                         Progress::Resolved(_) => unreachable!("resolved already"),
+                        Progress::Dialed => unreachable!("no proxy"),
                     }
                 }
                 Ok(Drove::Established(conn)) => panic!("{conn:?}"),

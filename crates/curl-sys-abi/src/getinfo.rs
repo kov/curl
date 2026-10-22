@@ -237,6 +237,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
             Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))
         }
         ffi::CURLINFO_RESPONSE_CODE => Value::Long(r.response_code().map_or(0, c_long::from)),
+        ffi::CURLINFO_HTTP_CONNECTCODE => Value::Long(r.connect_code().map_or(0, c_long::from)),
         ffi::CURLINFO_HTTP_VERSION => Value::Long(r.response_version().map_or(
             ffi::CURL_HTTP_VERSION_NONE,
             |v| match v {

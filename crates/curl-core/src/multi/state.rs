@@ -22,6 +22,8 @@ use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::{Follow, Lines, Method, Options, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
+
+mod tunnel;
 use crate::proto::http1::follow;
 use crate::proto::{Inherited, ProtoState, ProtoStep};
 use crate::report::{Ends, Starts, Timer, TransferReport};
@@ -138,13 +140,23 @@ pub(crate) struct Connecting {
     /// in their place, as the failure names them.
     origin: Origin,
     via: Option<TryRc<Peer>>,
-    /// The proxy, as the failure names it.
-    proxy: Option<TryRc<Peer>>,
+    /// The proxy the route goes through.
+    proxy: Option<ProxyRoute>,
+    /// The tunnel through it being set up, once connected to it.
+    tunnel: Option<Box<tunnel::Tunnel>>,
 }
 
 impl Connecting {
     /// The peer connected to (`Curl_conn_get_destination`).
     fn destination(&self) -> &Peer {
+        match &self.proxy {
+            Some(proxy) => &proxy.peer,
+            None => self.target(),
+        }
+    }
+
+    /// The peer the request reaches, through a proxy's tunnel or not.
+    fn target(&self) -> &Peer {
         self.via.as_deref().unwrap_or(&self.origin)
     }
 }
@@ -373,8 +385,10 @@ impl TransferState {
         let mut set = Pollset::new();
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
+                // A tunnel's handshake waits for what it sends or reads.
+                let events = c.tunnel.as_ref().map_or(Events::OUT, |t| t.interest());
                 for s in pool.sockets(&c.lease) {
-                    set.add(s, Events::OUT);
+                    set.add(s, events);
                 }
             }
             TransferState::Exchanging(x) => {
@@ -398,6 +412,7 @@ impl Connecting {
             origin,
             via: _,
             proxy: _,
+            tunnel: _,
         } = self;
         TransferState::ProtoConnect(Attached {
             lease,
@@ -840,15 +855,25 @@ fn connecting<H: Host>(
     if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
         let ms = cx.easy().report().timings().since_single_ms(now);
         let kind = ErrorKind::OperationTimedout;
-        let kind = trace::fail(
-            cx,
-            kind,
-            format_args!("Connection timed out after {ms} milliseconds"),
-        );
+        let kind = match c.tunnel {
+            Some(_) => trace::fail(
+                cx,
+                kind,
+                format_args!("Proxy CONNECT aborted due to timeout"),
+            ),
+            None => trace::fail(
+                cx,
+                kind,
+                format_args!("Connection timed out after {ms} milliseconds"),
+            ),
+        };
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
     if StepCx::pause(cx).recv != RecvPause::Running {
         return (TransferState::Connecting(c), Wake::Idle);
+    }
+    if c.tunnel.is_some() {
+        return tunnel::step(c, cx);
     }
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
@@ -895,6 +920,7 @@ fn connecting<H: Host>(
             }
             (TransferState::Connecting(c), Wake::Again)
         }
+        Ok(Connected::Connecting(Progress::Dialed)) => tunnel::dialed(c, cx),
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
             match until {
                 Some(at) => run
@@ -904,24 +930,7 @@ fn connecting<H: Host>(
             }
             (TransferState::Connecting(c), Wake::Idle)
         }
-        Ok(Connected::Established { remote, local, at }) => {
-            cx.report_mut().timings_mut().mark(Timer::Connect, at);
-            cx.report_mut().count_connect();
-            cx.report_mut().set_primary(Ends { remote, local });
-            // `CURL_CONN_HOST_DISPNAME`.
-            let host = Bytes(c.destination().shown());
-            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-            let lip = Ip(lip);
-            trace::info(
-                cx,
-                format_args!(
-                    "Established connection to {host} ({} port {}) from {lip} port {lport} ",
-                    remote.ip(),
-                    remote.port()
-                ),
-            );
-            (c.attached(), Wake::Again)
-        }
+        Ok(Connected::Established { remote, local, at }) => established(c, cx, remote, local, at),
         // A reused connection is up: nothing to trace or time
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
         Ok(Connected::AlreadyUp { remote, local }) => {
@@ -931,10 +940,41 @@ fn connecting<H: Host>(
             (c.attached(), Wake::Again)
         }
         Err(e) => {
-            let kind = connect_failed(cx, &c.origin, c.via.as_deref(), c.proxy.as_deref(), e);
+            let proxy = c.proxy.as_ref().map(|p| &*p.peer);
+            let kind = connect_failed(cx, &c.origin, c.via.as_deref(), proxy, e);
             (TransferState::Connecting(c).fail(kind), Wake::Again)
         }
     }
+}
+
+/// The connection is up, from `local` to `remote`, connected at `at`
+/// (`conn_connect_trace`): timed and traced, and counted unless through
+/// a tunnel, whose connections were counted as each was made.
+fn established<H: Host>(
+    c: Connecting,
+    cx: &mut StepCx<'_, H>,
+    remote: SocketAddr,
+    local: Option<SocketAddr>,
+    at: Instant,
+) -> (TransferState, Wake) {
+    cx.report_mut().timings_mut().mark(Timer::Connect, at);
+    if c.tunnel.is_none() {
+        cx.report_mut().count_connect();
+    }
+    cx.report_mut().set_primary(Ends { remote, local });
+    // `CURL_CONN_HOST_DISPNAME`.
+    let host = Bytes(c.destination().shown());
+    let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
+    let lip = Ip(lip);
+    trace::info(
+        cx,
+        format_args!(
+            "Established connection to {host} ({} port {}) from {lip} port {lport} ",
+            remote.ip(),
+            remote.port()
+        ),
+    );
+    (c.attached(), Wake::Again)
 }
 
 /// Why the setup failed, as C traces it (`cf_tcp_connect`,
@@ -1892,15 +1932,9 @@ fn choose_proxy<H: Host>(
     // A request goes to an HTTP proxy whole, unless it is asked to
     // tunnel, or reaches the origin through another peer; HTTP is the
     // only scheme here, and it is not secured.
-    if cx.easy().options().proxy.tunnel || via {
-        return Err(trace::fail(
-            cx,
-            ErrorKind::NotBuiltIn,
-            format_args!("Proxy tunnels are not built in yet"),
-        ));
-    }
+    let tunnel = cx.easy().options().proxy.tunnel || via;
     Ok(Some(ProxyRoute {
-        forward: true,
+        forward: !tunnel,
         ..route
     }))
 }
@@ -1993,7 +2027,8 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         proto,
         origin,
         via,
-        proxy: proxy.map(|p| p.peer),
+        proxy,
+        tunnel: None,
     })
 }
 

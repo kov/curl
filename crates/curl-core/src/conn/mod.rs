@@ -145,9 +145,23 @@ pub(crate) struct Tcp {
 }
 
 impl Tcp {
-    /// The peer connected to (`Curl_conn_get_destination`).
+    /// The peer connected to (`Curl_conn_get_destination`): the proxy,
+    /// if the route has one.
     pub(crate) fn destination(&self) -> &Peer {
+        match &self.proxy {
+            Some(proxy) => &proxy.peer,
+            None => self.target(),
+        }
+    }
+
+    /// The peer the requests reach, through a proxy's tunnel or not.
+    pub(crate) fn target(&self) -> &Peer {
         self.via.as_deref().unwrap_or(&self.origin)
+    }
+
+    /// The route goes through a proxy's tunnel, which the setup makes.
+    pub(crate) fn tunnels(&self) -> bool {
+        self.proxy.as_ref().is_some_and(|p| p.http() && !p.forward)
     }
 }
 

@@ -95,6 +95,8 @@ pub struct TransferReport {
     auth_used: AuthMethods,
     /// The methods the proxy's challenges offered (`info.proxyauthavail`).
     proxy_auth_offered: AuthMethods,
+    /// The status a proxy answered `CONNECT` with (`info.httpproxycode`).
+    connect_code: Option<u16>,
     /// The method the last request authenticated with to the proxy, or
     /// was chosen for the next (`info.proxyauthpicked`).
     proxy_auth_used: AuthMethods,
@@ -228,6 +230,16 @@ impl TransferReport {
 
     pub(crate) fn set_auth_used(&mut self, method: AuthMethods) {
         self.auth_used = method;
+    }
+
+    /// The status a proxy last answered `CONNECT` with
+    /// (`CURLINFO_HTTP_CONNECTCODE`).
+    pub fn connect_code(&self) -> Option<u16> {
+        self.connect_code
+    }
+
+    pub(crate) fn set_connect_code(&mut self, code: u16) {
+        self.connect_code = Some(code);
     }
 
     /// The methods the proxy's challenges offered

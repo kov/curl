@@ -8,3 +8,4 @@ pub(crate) mod follow;
 pub(crate) mod framing;
 pub(crate) mod request;
 pub(crate) mod response;
+pub(crate) mod tunnel;

@@ -41,6 +41,17 @@ impl Auth {
         self.proxy.start(proxy);
     }
 
+    /// Authenticating went wrong, and stops (`state.authproblem`).
+    pub(crate) fn problem(&self) -> bool {
+        self.problem
+    }
+
+    /// Whether the proxy offered methods not picked from, these
+    /// challenges among them (`authproxy.avail`).
+    pub(crate) fn proxy_offers(&self, challenges: &Challenges) -> bool {
+        !challenges.open.unwrap_or(self.proxy.avail).is_empty()
+    }
+
     pub(crate) fn side(&mut self, side: Side) -> &mut PeerAuth {
         match side {
             Side::Host => &mut self.host,
@@ -184,6 +195,12 @@ impl From<OutOfMemory> for OutputError {
 }
 
 impl PeerAuth {
+    /// Authenticating is as far as it goes: a tunnel is up through the
+    /// proxy (`H1_TUNNEL_ESTABLISHED`).
+    pub(crate) fn finish(&mut self) {
+        self.done = true;
+    }
+
     /// A transfer starts, wanting `want`.
     fn start(&mut self, want: AuthMethods) {
         self.want = want;
@@ -494,6 +511,11 @@ impl Challenges {
         }
         self.open = Some(open);
         Ok(heard)
+    }
+
+    /// The credentials were refused, or a challenge could not be read.
+    pub(crate) fn refused(&self) -> bool {
+        self.refused
     }
 
     /// The methods open: those left from before, until a challenge is

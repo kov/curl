@@ -2753,6 +2753,99 @@ fn a_custom_proxy_authorization_goes_beside_the_proxy_s() {
     assert!(text.contains("\r\nProxy-Authorization: Mine\r\n"), "{text}");
 }
 
+/// A tunnel's `CONNECT`, as test 1287's proxy sees it: the origin's
+/// authority, and only what the proxy is given.
+fn connect_of(proxy_authorization: &str) -> String {
+    format!(
+        "CONNECT origin.example:80 HTTP/1.1\r\nHost: origin.example:80\r\n\
+         {proxy_authorization}User-Agent: curl/test\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+    )
+}
+
+const TUNNEL_UP: &[u8] = b"HTTP/1.1 200 Fine\r\n\r\n";
+
+/// Through a proxy that tunnels, its 407 is answered with another
+/// `CONNECT` over the same connection, its body dropped; the request then
+/// goes through the tunnel as to the origin, and the proxy's status is
+/// kept (`CURLINFO_HTTP_CONNECTCODE`).
+#[test]
+fn a_tunnel_answers_a_407_over_the_same_connection() {
+    let challenge = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Basic realm=\"p\"\r\nContent-Length: 3\r\n\r\nabc";
+    let (mut m, talk, _) = server(&[challenge, TUNNEL_UP, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.tunnel = true;
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.auth = crate::options::HttpAuth(AuthMethods::ANY);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let get = "GET /a HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\n\
+               Accept: */*\r\n\r\n";
+    assert_eq!(
+        text,
+        connect_of("") + &connect_of("Proxy-Authorization: Basic dTpw\r\n") + get
+    );
+    let report = ran.easy.report();
+    assert_eq!(report.connect_code(), Some(200));
+    assert_eq!(report.connects(), 1);
+    assert_eq!(report.proxy_auth_used(), AuthMethods::BASIC);
+    let said = ran.seen.text();
+    assert!(
+        said.iter()
+            .any(|l| l == "CONNECT tunnel established, response 200\n"),
+        "{said:?}"
+    );
+}
+
+/// A proxy that closes the connection on its 407 is connected to again,
+/// and asked again with its credentials (`Connect me again please`).
+#[test]
+fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let challenge: &[u8] = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Basic realm=\"p\"\r\nProxy-Connection: close\r\n\
+        Content-Length: 0\r\n\r\n";
+    let first = Conversation::replies(&[challenge], true);
+    let second = Conversation::replies(&[TUNNEL_UP, OK], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, first.clone())
+        .with_conversation(at, second.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let ran = get(&mut m, "/", second.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.tunnel = true;
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.auth = crate::options::HttpAuth(AuthMethods::ANY);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(String::from_utf8_lossy(&first.received()), connect_of(""));
+    let text = String::from_utf8_lossy(&second.received()).into_owned();
+    assert!(
+        text.starts_with(&connect_of("Proxy-Authorization: Basic dTpw\r\n")),
+        "{text}"
+    );
+    assert_eq!(ran.easy.report().connects(), 2);
+    let said = ran.seen.text();
+    assert!(
+        said.iter().any(|l| l == "Connect me again please\n"),
+        "{said:?}"
+    );
+}
+
 /// Through a proxy, the origin's Digest challenge is kept for the origin,
 /// not for the proxy the connection goes to, and answered.
 #[test]

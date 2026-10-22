@@ -59,6 +59,8 @@ enum Var {
     FilenameEffective,
     /// The last response's status code, in three digits.
     HttpCode,
+    /// The status a proxy last answered `CONNECT` with, likewise.
+    HttpConnect,
     HttpVersion,
     /// The scheme of the connection used, lowercase.
     Scheme,
@@ -125,7 +127,7 @@ const VARIABLES: &[Variable] = &[
     known("ftp_entry_path"),
     known("header_json"),
     written("http_code", Var::HttpCode),
-    known("http_connect"),
+    written("http_connect", Var::HttpConnect),
     written("http_version", Var::HttpVersion),
     known("json"),
     written("local_ip", Var::LocalIp),
@@ -445,6 +447,7 @@ fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()
             None => Ok(()),
         },
         Var::HttpCode => write!(out, "{:03}", r.response_code().unwrap_or(0)),
+        Var::HttpConnect => write!(out, "{:03}", r.connect_code().unwrap_or(0)),
         Var::HttpVersion => out.write_all(match r.response_version() {
             None => b"0",
             Some(ResponseVersion::Http10) => b"1",

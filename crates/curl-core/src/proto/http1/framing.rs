@@ -608,7 +608,7 @@ pub(crate) fn retry_after(line: &[u8], now: i64) -> Option<Duration> {
 
 /// The rest of `line` after its name `name`, which includes the colon
 /// (C's `HD_VAL`).
-fn value_of<'l>(line: &'l [u8], name: &[u8]) -> Option<&'l [u8]> {
+pub(crate) fn value_of<'l>(line: &'l [u8], name: &[u8]) -> Option<&'l [u8]> {
     (line.len() >= name.len() && line[..name.len()].eq_ignore_ascii_case(name))
         .then(|| &line[name.len()..])
 }

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
-use super::connect::{ConnectError, ConnectMachine, Drove, Progress, Setup};
+use super::connect::{ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
 use super::dns::Answer;
 use super::io::{Events, Net, Socket, SocketPoll};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, RecvBuf, Route, Transport, Use};
@@ -385,6 +385,45 @@ impl Pool {
                 ConnSlot::Failed(_) => unreachable!("a failed setup is not driven again"),
             })
             .unwrap_or_else(|| panic!("a lease on {:?}, which the pool no longer has", lease.id))
+    }
+
+    /// The connection to the proxy a leased setup tunnels through.
+    pub(crate) fn dialed(&mut self, lease: &ConnLease) -> &mut Dialed {
+        match self.conns.get_mut(lease.id) {
+            Some(ConnSlot::Connecting(machine)) => machine.dialed(),
+            Some(_) => panic!("{:?} is not setting up", lease.id),
+            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
+        }
+    }
+
+    /// The leased setup's tunnel is up, and so the connection.
+    pub(crate) fn tunneled(&mut self, lease: &ConnLease) -> Connected {
+        self.conns
+            .replace_with(lease.id, |slot| match slot {
+                ConnSlot::Connecting(machine) => {
+                    let conn = machine.tunneled();
+                    let up = Connected::Established {
+                        remote: conn.remote.expect("set up over the network"),
+                        local: conn.local,
+                        at: conn.connected_at,
+                    };
+                    (ConnSlot::Open(conn), up)
+                }
+                ConnSlot::Open(_) | ConnSlot::Failed(_) => {
+                    panic!("{:?} is not setting up", lease.id)
+                }
+            })
+            .unwrap_or_else(|| panic!("a lease on {:?}, which the pool no longer has", lease.id))
+    }
+
+    /// Start the leased setup over, as its proxy closed the connection;
+    /// false if it was started over too often.
+    pub(crate) fn redial(&mut self, lease: &ConnLease, net: &mut dyn Net) -> bool {
+        match self.conns.get_mut(lease.id) {
+            Some(ConnSlot::Connecting(machine)) => machine.redial(net),
+            Some(_) => panic!("{:?} is not setting up", lease.id),
+            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
+        }
     }
 
     /// The connection a lease holds, once up.

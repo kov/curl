@@ -40,7 +40,9 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
 - **The application drives the I/O.** `curl_multi_socket_action` and the socket and timer
   callbacks hand the event loop to the application, so the core cannot own one.
 - **No async runtime and no threads of our own** beyond those the C library uses for the same
-  job.
+  job. The application's threads are its own: a handle is `Send` and moves to whichever runs its
+  next transfer, its handlers `Send + Sync` because copies of it share them; a share is `Sync`;
+  a multi is used by one thread at a time.
 - **Parsers are sans-IO; drivers do I/O only through a connection.** A protocol's parsers and
   renderers (`proto/http1/`) consume bytes and the current time and produce bytes and events,
   with no I/O. Its driver (`proto/http.rs`) sends and receives through the leased `Conn` only,

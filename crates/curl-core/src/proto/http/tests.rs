@@ -1,7 +1,7 @@
-use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::conn::io::{Conversation, FakeNet, Peer};
@@ -29,12 +29,13 @@ type Saw = (&'static str, Vec<u8>);
 
 /// What a transfer saw, in the order it saw it.
 #[derive(Clone, Default)]
-struct Seen(Rc<RefCell<Vec<Saw>>>);
+struct Seen(Arc<Mutex<Vec<Saw>>>);
 
 impl Seen {
     fn of(&self, what: &str) -> Vec<Vec<u8>> {
         self.0
-            .borrow()
+            .lock()
+            .unwrap()
             .iter()
             .filter(|(w, _)| *w == what)
             .map(|(_, b)| b.clone())
@@ -58,7 +59,7 @@ impl Seen {
 
 impl WriteHandler for Seen {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
-        self.0.borrow_mut().push(("body", body.to_vec()));
+        self.0.lock().unwrap().push(("body", body.to_vec()));
         Write::Accepted
     }
 }
@@ -70,7 +71,7 @@ impl HeaderHandler for Seen {
             HeaderOrigin::Interim => "interim",
             HeaderOrigin::Header | HeaderOrigin::Connect => "header",
         };
-        self.0.borrow_mut().push((what, line.to_vec()));
+        self.0.lock().unwrap().push((what, line.to_vec()));
         Write::Accepted
     }
 }
@@ -85,7 +86,7 @@ impl DebugHandler for Seen {
             DebugKind::DataOut => "dataout",
             _ => "other",
         };
-        self.0.borrow_mut().push((what, data.to_vec()));
+        self.0.lock().unwrap().push((what, data.to_vec()));
     }
 }
 
@@ -231,8 +232,8 @@ fn a_long_line_ending_the_head_is_delivered_whole() {
 /// Takes the body, pausing at its first piece.
 #[derive(Clone, Default)]
 struct PausesOnce {
-    got: Rc<RefCell<Vec<u8>>>,
-    paused: Rc<std::cell::Cell<bool>>,
+    got: Arc<Mutex<Vec<u8>>>,
+    paused: Arc<crate::test_cell::Cell<bool>>,
 }
 
 impl WriteHandler for PausesOnce {
@@ -240,7 +241,7 @@ impl WriteHandler for PausesOnce {
         if !self.paused.replace(true) {
             return Write::Pause;
         }
-        self.got.borrow_mut().extend_from_slice(body);
+        self.got.lock().unwrap().extend_from_slice(body);
         Write::Accepted
     }
 }
@@ -269,7 +270,7 @@ fn a_paused_last_piece_waits_to_be_delivered() {
         m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
         let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
         assert_eq!(result, Ok(()));
-        assert_eq!(*writer.got.borrow(), b"abc", "{reply:?}");
+        assert_eq!(*writer.got.lock().unwrap(), b"abc", "{reply:?}");
     }
 }
 
@@ -388,7 +389,8 @@ fn a_held_line_is_delivered_at_the_end() {
     let order: Vec<_> = ran
         .seen
         .0
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .filter(|(w, _)| matches!(*w, "text" | "header"))
         .map(|(w, b)| (*w, String::from_utf8_lossy(b).into_owned()))
@@ -506,7 +508,8 @@ fn a_failing_code_ends_the_transfer_at_its_head() {
     let lines: Vec<(&str, Vec<u8>)> = ran
         .seen
         .0
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .filter(|(w, _)| matches!(*w, "text" | "in"))
         .cloned()
@@ -541,7 +544,7 @@ fn a_head_s_end_fails_around_its_blank_line() {
     let order = |reply: &[u8], set: fn(&mut Options)| {
         let ran = run("/", reply, false, set);
         assert_eq!(ran.seen.of("header").last().unwrap(), b"\r\n");
-        let seen = ran.seen.0.borrow();
+        let seen = ran.seen.0.lock().unwrap();
         let blank = seen.iter().position(|(w, l)| *w == "in" && l == b"\r\n");
         let said = seen.iter().position(|(w, l)| {
             *w == "text"
@@ -670,7 +673,7 @@ fn bytes_after_the_chunks_are_left_over() {
 /// Counts its calls, aborting at the one numbered `abort_at`.
 #[derive(Clone, Default)]
 struct AbortsAt {
-    calls: Rc<std::cell::Cell<u32>>,
+    calls: Arc<crate::test_cell::Cell<u32>>,
     abort_at: u32,
 }
 
@@ -709,7 +712,7 @@ fn an_abort_at_the_last_progress_pass_closes_the_connection() {
     assert_eq!(one.result, Ok(()));
     assert!(one.seen.text().last().unwrap().ends_with("left intact\n"));
     let last = AbortsAt {
-        calls: Rc::default(),
+        calls: Arc::default(),
         abort_at: counting.calls.get(),
     };
     let two = get(&mut m, "/2", talk, progress(&last));
@@ -857,7 +860,7 @@ fn a_416_to_a_resumed_get_is_read_and_dropped() {
 /// line (`http_size` runs before the last header is written, as test
 /// 1485 reads it).
 #[derive(Clone, Default)]
-struct Watched(Rc<RefCell<Vec<WatchedLine>>>);
+struct Watched(Arc<Mutex<Vec<WatchedLine>>>);
 
 /// A header line, with the response code and body size known then.
 type WatchedLine = (Vec<u8>, Option<u16>, Option<u64>);
@@ -870,7 +873,7 @@ impl HeaderHandler for Watched {
             r.response_code(),
             r.sizes().download_expected(),
         );
-        self.0.borrow_mut().push(seen);
+        self.0.lock().unwrap().push(seen);
         Write::Accepted
     }
 }
@@ -886,7 +889,7 @@ fn the_report_knows_the_response_as_its_lines_arrive() {
         move |o| o.callbacks.header = Some(Handler::header(w).unwrap()),
     );
     assert_eq!(ran.result, Ok(()));
-    let seen = watched.0.borrow();
+    let seen = watched.0.lock().unwrap();
     let at = |i: usize| (seen[i].1, seen[i].2);
     assert_eq!(seen[0].0, b"HTTP/1.1 100 Go\r\n");
     assert_eq!(at(0), (Some(100), None));
@@ -1180,7 +1183,7 @@ fn with_body(method: Method, body: &[u8], set: impl FnOnce(&mut Options)) -> Ran
         |o| {
             o.method = method;
             o.upload =
-                crate::options::UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+                crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(body).unwrap());
             set(o);
         },
     )
@@ -1264,7 +1267,7 @@ fn expecting(reply: &[u8], body: &[u8], set: impl FnOnce(&mut Options)) -> (Ran,
     let body = body.to_vec();
     let ran = get(&mut m, "/p", talk, |o| {
         o.method = Method::Post;
-        o.upload = crate::options::UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+        o.upload = crate::options::UploadSource::Bytes(curl_alloc::TryArc::try_new(body).unwrap());
         set(o);
     });
     let waited = clock.now().since(start);
@@ -1404,10 +1407,10 @@ fn a_custom_method_is_sent_with_the_body_kept() {
 
 /// A body read in these pieces, of unknown size.
 fn pieces(pieces: &[&[u8]]) -> crate::options::UploadSource {
-    struct Pieces(RefCell<Vec<Vec<u8>>>);
+    struct Pieces(Mutex<Vec<Vec<u8>>>);
     impl crate::handler::ReadHandler for Pieces {
         fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
-            let mut left = self.0.borrow_mut();
+            let mut left = self.0.lock().unwrap();
             if left.is_empty() {
                 return crate::handler::Read::Eof;
             }
@@ -1418,7 +1421,7 @@ fn pieces(pieces: &[&[u8]]) -> crate::options::UploadSource {
     }
     let left = pieces.iter().map(|p| p.to_vec()).collect();
     crate::options::UploadSource::Read {
-        handler: Handler::read(Pieces(RefCell::new(left))).unwrap(),
+        handler: Handler::read(Pieces(Mutex::new(left))).unwrap(),
         rewind: None,
         size: None,
     }
@@ -1804,7 +1807,7 @@ fn a_digest_post_probes_without_its_body() {
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
         o.method = Method::Post;
-        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(b"a=b".to_vec()).unwrap());
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
         o.http.headers = UserHeaders::new([&b"Content-Length: 3"[..]]).unwrap();
         o.login = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
@@ -1840,7 +1843,7 @@ fn a_probe_let_through_is_made_again_with_its_body() {
     let (mut m, talk, _) = server(&[OK, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
         o.method = Method::Post;
-        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(b"a=b".to_vec()).unwrap());
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
         o.login = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
@@ -2090,7 +2093,7 @@ fn redirected(code: u16, method: Method, body: &[u8], set: impl FnOnce(&mut Opti
     let body = body.to_vec();
     get(&mut m, "/a", talk, |o| {
         o.method = method;
-        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(body).unwrap());
         o.http.follow = Follow::All;
         set(o);
     })
@@ -2206,16 +2209,16 @@ fn a_custom_method_follows_as_the_mode_says() {
 #[derive(Clone)]
 struct Stream {
     data: &'static [u8],
-    at: Rc<std::cell::Cell<usize>>,
-    rewinds: Rc<std::cell::Cell<u32>>,
+    at: Arc<crate::test_cell::Cell<usize>>,
+    rewinds: Arc<crate::test_cell::Cell<u32>>,
 }
 
 impl Stream {
     fn new(data: &'static [u8]) -> Stream {
         Stream {
             data,
-            at: Rc::default(),
-            rewinds: Rc::default(),
+            at: Arc::default(),
+            rewinds: Arc::default(),
         }
     }
 
@@ -2596,7 +2599,7 @@ fn a_417_has_the_request_made_again_without_expect() {
     let body = vec![b'x'; 2 * 1024 * 1024];
     let ran = get(&mut m, "/a", talk, |o| {
         o.method = Method::Upload;
-        o.upload = UploadSource::Bytes(curl_alloc::TryRc::try_new(body).unwrap());
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(body).unwrap());
     });
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -2693,7 +2696,7 @@ fn a_cookie_set_goes_with_the_next_request() {
     let (first, second) = text.split_at(text.find("GET /b ").unwrap());
     assert!(first.contains("\r\nCookie: app=2\r\n"), "{first}");
     assert!(second.contains("\r\nCookie: a=1; app=2\r\n"), "{second}");
-    let seen = ran.seen.0.borrow();
+    let seen = ran.seen.0.lock().unwrap();
     let added = seen
         .iter()
         .position(|(w, b)| *w == "text" && b.starts_with(b"Added cookie a="));

@@ -253,6 +253,13 @@ fn lock_data(kind: Kind) -> curl_lock_data {
     }
 }
 
+// SAFETY: the lock functions and their userdata are the application's,
+// made for the share's use from any thread (`CURLSHOPT_LOCKFUNC`); the
+// handle is passed back, never reached.
+unsafe impl Send for LockCalls {}
+// SAFETY: as for `Send`: shared, it is only read.
+unsafe impl Sync for LockCalls {}
+
 impl ShareLock for LockCalls {
     fn lock(&self, kind: Kind) {
         if let Some(lock) = self.lock {

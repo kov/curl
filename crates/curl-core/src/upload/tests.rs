@@ -1,9 +1,10 @@
-use std::cell::{Cell, RefCell};
+use crate::test_cell::Cell;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
-use curl_alloc::TryRc;
+use curl_alloc::TryArc;
 
 use crate::conn::io::FakeNet;
 use crate::easy::Easy;
@@ -46,7 +47,7 @@ fn result(m: &mut Multi) -> Option<Result<(), ErrorKind>> {
 #[derive(Default)]
 struct Seen {
     /// The room of each read call.
-    reads: RefCell<Vec<usize>>,
+    reads: Mutex<Vec<usize>>,
     rewinds: Cell<u32>,
 }
 
@@ -54,15 +55,15 @@ struct Seen {
 /// `answer` says for the call numbered from 0. Its rewinder resets `at`.
 struct Feeder {
     data: Vec<u8>,
-    at: Rc<Cell<usize>>,
-    seen: Rc<Seen>,
-    answer: Box<dyn Fn(usize) -> Option<Read>>,
+    at: Arc<Cell<usize>>,
+    seen: Arc<Seen>,
+    answer: Box<dyn Fn(usize) -> Option<Read> + Send + Sync>,
 }
 
 impl ReadHandler for Feeder {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
-        let call = self.seen.reads.borrow().len();
-        self.seen.reads.borrow_mut().push(buf.len());
+        let call = self.seen.reads.lock().unwrap().len();
+        self.seen.reads.lock().unwrap().push(buf.len());
         if let Some(answer) = (self.answer)(call) {
             return answer;
         }
@@ -75,8 +76,8 @@ impl ReadHandler for Feeder {
 }
 
 struct Rewinder {
-    feeder_at: Rc<Cell<usize>>,
-    seen: Rc<Seen>,
+    feeder_at: Arc<Cell<usize>>,
+    seen: Arc<Seen>,
     ok: bool,
 }
 
@@ -99,10 +100,10 @@ fn fed(
     data: &[u8],
     size: Option<u64>,
     rewind: Option<bool>,
-    answer: impl Fn(usize) -> Option<Read> + 'static,
-) -> Rc<Seen> {
-    let seen = Rc::new(Seen::default());
-    let at = Rc::new(Cell::new(0));
+    answer: impl Fn(usize) -> Option<Read> + Send + Sync + 'static,
+) -> Arc<Seen> {
+    let seen = Arc::new(Seen::default());
+    let at = Arc::new(Cell::new(0));
     let feeder = Feeder {
         data: data.to_vec(),
         at: at.clone(),
@@ -130,12 +131,12 @@ fn plain(_: usize) -> Option<Read> {
 
 /// Records the bytes traced as sent.
 #[derive(Clone, Default)]
-struct Traced(Rc<RefCell<Vec<u8>>>);
+struct Traced(Arc<Mutex<Vec<u8>>>);
 
 impl DebugHandler for Traced {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
         if kind == DebugKind::DataOut {
-            self.0.borrow_mut().extend_from_slice(data);
+            self.0.lock().unwrap().extend_from_slice(data);
         }
     }
 }
@@ -166,11 +167,11 @@ fn a_known_size_bounds_the_reads_and_ends_the_body() {
     let (r, sizes) = run(e);
     assert_eq!(r, Ok(()));
     assert_eq!(
-        *seen.reads.borrow(),
+        *seen.reads.lock().unwrap(),
         [20, 10],
         "room for the rest, then no more"
     );
-    assert_eq!(*sent.0.borrow(), [7; 30]);
+    assert_eq!(*sent.0.lock().unwrap(), [7; 30]);
     assert_eq!((sizes.upload(), sizes.upload_expected()), (30, Some(30)));
 }
 
@@ -181,7 +182,7 @@ fn an_unknown_size_ends_at_the_handler_s_eof() {
     let seen = fed(&mut e, &[1; 40000], None, None, plain);
     let (r, sizes) = run(e);
     assert_eq!(r, Ok(()));
-    assert_eq!(*seen.reads.borrow(), [16384, 16384, 16384, 16384]);
+    assert_eq!(*seen.reads.lock().unwrap(), [16384, 16384, 16384, 16384]);
     assert_eq!((sizes.upload(), sizes.upload_expected()), (40000, None));
 }
 
@@ -202,7 +203,7 @@ fn an_empty_size_never_calls_the_handler() {
     let seen = fed(&mut e, b"", Some(0), Some(true), plain);
     let (r, sizes) = run(e);
     assert_eq!(r, Ok(()));
-    assert!(seen.reads.borrow().is_empty());
+    assert!(seen.reads.lock().unwrap().is_empty());
     assert_eq!(seen.rewinds.get(), 0, "nothing to rewind");
     assert_eq!((sizes.upload(), sizes.upload_expected()), (0, Some(0)));
 }
@@ -212,11 +213,11 @@ fn an_empty_size_never_calls_the_handler() {
 #[test]
 fn bytes_and_no_source_send_what_they_hold() {
     let mut e = script(vec![Piece::Send(4), Piece::SendAll]);
-    e.options_mut().upload = UploadSource::Bytes(TryRc::try_new(b"0123456789".to_vec()).unwrap());
+    e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"0123456789".to_vec()).unwrap());
     let sent = traced(&mut e);
     let (r, sizes) = run(e);
     assert_eq!(r, Ok(()));
-    assert_eq!(*sent.0.borrow(), b"0123456789");
+    assert_eq!(*sent.0.lock().unwrap(), b"0123456789");
     assert_eq!(sizes.upload_expected(), Some(10));
     let e = script(vec![Piece::SendAll]);
     let (r, sizes) = run(e);
@@ -272,7 +273,11 @@ fn the_handler_s_end_and_failures_stick() {
             assert_eq!(upload.read(cx, &mut buf, true), want, "{answer:?}");
             assert_eq!(upload.read(cx, &mut buf, true), want, "{answer:?} again");
         });
-        assert_eq!(seen.reads.borrow().len(), 1, "{answer:?}: called once");
+        assert_eq!(
+            seen.reads.lock().unwrap().len(),
+            1,
+            "{answer:?}: called once"
+        );
     }
 }
 
@@ -313,12 +318,16 @@ fn a_pausing_handler_pauses_the_sending() {
     m.perform(&mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(result(&mut m), None, "paused");
-    assert_eq!(seen.reads.borrow().len(), 1, "not asked while paused");
+    assert_eq!(
+        seen.reads.lock().unwrap().len(),
+        1,
+        "not asked while paused"
+    );
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(result(&mut m), Some(Ok(())));
-    assert_eq!(*seen.reads.borrow(), [5, 5, 16384]);
-    assert_eq!(*sent.0.borrow(), b"hello");
+    assert_eq!(*seen.reads.lock().unwrap(), [5, 5, 16384]);
+    assert_eq!(*sent.0.lock().unwrap(), b"hello");
 
     let (mut m, _clock) = multi();
     let mut e = script(vec![]);
@@ -341,18 +350,18 @@ fn a_pausing_handler_pauses_the_sending() {
 #[test]
 fn a_rewind_sends_the_body_again() {
     let mut e = script(vec![Piece::SendAll, Piece::Rewind, Piece::SendAll]);
-    e.options_mut().upload = UploadSource::Bytes(TryRc::try_new(b"abc".to_vec()).unwrap());
+    e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"abc".to_vec()).unwrap());
     let sent = traced(&mut e);
     assert_eq!(run(e).0, Ok(()));
-    assert_eq!(*sent.0.borrow(), b"abcabc");
+    assert_eq!(*sent.0.lock().unwrap(), b"abcabc");
 
     let mut e = script(vec![Piece::SendAll, Piece::Rewind, Piece::SendAll]);
     let seen = fed(&mut e, b"xyz", None, Some(true), plain);
     let sent = traced(&mut e);
     assert_eq!(run(e).0, Ok(()));
-    assert_eq!(*sent.0.borrow(), b"xyzxyz");
+    assert_eq!(*sent.0.lock().unwrap(), b"xyzxyz");
     assert_eq!(seen.rewinds.get(), 1);
-    assert_eq!(seen.reads.borrow().len(), 4, "read to its end twice");
+    assert_eq!(seen.reads.lock().unwrap().len(), 4, "read to its end twice");
 }
 
 /// Fails to rewind, saying why.
@@ -367,7 +376,7 @@ impl Rewind for Explains {
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct Trace(Rc<RefCell<Vec<Vec<u8>>>>);
+struct Trace(Arc<Mutex<Vec<Vec<u8>>>>);
 
 impl crate::handler::DebugHandler for Trace {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
@@ -376,7 +385,7 @@ impl crate::handler::DebugHandler for Trace {
         let warning =
             data.starts_with(b"!!! WARNING") || data.starts_with(b"This is a debug build");
         if kind == crate::handler::DebugKind::Text && !warning {
-            self.0.borrow_mut().push(data.to_vec());
+            self.0.lock().unwrap().push(data.to_vec());
         }
     }
 }
@@ -403,7 +412,7 @@ fn a_rewind_handler_s_reason_is_the_transfer_s() {
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(result(&mut m), Some(Err(ErrorKind::SendFailRewind)));
         let kept = m.easy(id).unwrap().report().failure().map(<[u8]>::to_vec);
-        let traced = trace.0.borrow().clone();
+        let traced = trace.0.lock().unwrap().clone();
         (kept, traced)
     };
     let mine = b"seek callback returned error 1";
@@ -483,7 +492,7 @@ fn a_request_with_a_body_is_sent_when_its_body_is() {
 /// Progress is told of what is sent, its size, and the upload speed.
 #[test]
 fn progress_counts_what_is_sent() {
-    struct Last(Rc<Cell<Option<ProgressNow>>>);
+    struct Last(Arc<Cell<Option<ProgressNow>>>);
     impl ProgressHandler for Last {
         fn progress(&self, _: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
             self.0.set(Some(now));
@@ -493,7 +502,7 @@ fn progress_counts_what_is_sent() {
     let (mut m, clock) = multi();
     let mut e = script(vec![Piece::Send(500), Piece::Yield, Piece::Yield]);
     fed(&mut e, &[0; 800], Some(800), None, plain);
-    let last = Rc::new(Cell::new(None));
+    let last = Arc::new(Cell::new(None));
     e.options_mut().progress = Progress::Handler(Handler::progress(Last(last.clone())).unwrap());
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
@@ -558,7 +567,7 @@ fn a_pause_in_the_step_that_sent_the_body_blocks() {
         Piece::Body(b"x".to_vec()),
         Piece::Body(b"y".to_vec()),
     ]);
-    e.options_mut().upload = UploadSource::Bytes(TryRc::try_new(b"ab".to_vec()).unwrap());
+    e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"ab".to_vec()).unwrap());
     e.options_mut().callbacks.write = Some(Handler::write(PauseOnWrite).unwrap());
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
@@ -581,7 +590,7 @@ fn a_pause_in_a_step_still_sending_runs_it_again() {
         Piece::Yield,
         Piece::SendAll,
     ]);
-    e.options_mut().upload = UploadSource::Bytes(TryRc::try_new(b"ab".to_vec()).unwrap());
+    e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"ab".to_vec()).unwrap());
     e.options_mut().callbacks.write = Some(Handler::write(PauseOnWrite).unwrap());
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();

@@ -140,7 +140,7 @@ impl<H: Host> MultiEvents<H> for NoEvents {}
 /// nothing can (C always makes one; the shim does too).
 pub struct Env {
     pub clock: Box<dyn Clock>,
-    pub net: Box<dyn Net>,
+    pub net: Box<dyn Net + Send>,
     pub arena: ArenaPolicy,
     pub waker: Option<TryArc<Waker>>,
 }
@@ -250,7 +250,7 @@ pub struct Multi<H: Host = NoHost> {
     pending_after: Option<TransferId>,
     sockets: SocketTable<H::Socket>,
     clock: Box<dyn Clock>,
-    net: Box<dyn Net>,
+    net: Box<dyn Net + Send>,
     waker: Option<TryArc<Waker>>,
     counts: Tally,
     life: Life,

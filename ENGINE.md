@@ -226,10 +226,10 @@ own when the connection is gone.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Instant(u64);                         // µs since the clock's epoch; saturating ops
 pub struct TimeLimit(NonZeroU64);                // ms; C's 0 ("no limit") is None
-pub trait Clock { fn now(&self) -> Instant; fn unix_time(&self) -> i64; }
+pub trait Clock: Send { fn now(&self) -> Instant; fn unix_time(&self) -> i64; }
 pub struct SystemClock { base: std::time::Instant }
 #[cfg(any(test, feature = "test-util"))]
-pub struct ManualClock(TryRc<Cell<u64>>);        // tests hold a second handle and advance it
+pub struct ManualClock(TryArc<ManualTime>);       // tests hold a second handle and advance it
 ```
 
 `Multi` owns `Box<dyn Clock>`. A pass reads `now` once at entry; steps, decoders, limiters and
@@ -364,7 +364,7 @@ pub trait ProgressHandler { fn progress(&self, cx: &mut TransferCx<'_>, p: Progr
 pub trait TextSink      { fn write(&self, text: &[u8]); }  // CURLOPT_STDERR; None is the process's
 pub trait PrereqHandler { fn prereq(&self, cx: &mut TransferCx<'_>, p: &PrereqInfo) -> Result<(), Abort>; }
 pub trait Rewind        { fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>; }
-pub struct Handler<T: ?Sized>(TryRc<Box<T>>);     // Clone shares it; Handler::write(h) etc. box one
+pub struct Handler<T: ?Sized>(TryArc<Box<T>>);    // Clone shares it; Handler::write(h) etc. box one
 pub trait MultiEvents<H: Host> {
     fn socket(&mut self, cx: &mut EventCx<'_, H>, who: TransferId, s: SocketKey,
               what: SocketWhat, assigned: Option<H::Socket>) -> Result<(), Abort>;
@@ -377,8 +377,12 @@ pub trait MultiEvents<H: Host> {
 
 Handlers live in `Options::callbacks` as `Handler<dyn …>`, shared: a copy of the options
 (`curl_easy_duphandle`) shares each handler, as C's copies share a callback and its userdata
-pointer. So a handler is called through `&self` and keeps its state in cells, and `Easy` is not
-`Send` (nor is `Multi`, whose clock and network are boxed without `Send`).
+pointer. So a handler is called through `&self`, and every handler trait is `Send + Sync`: a
+copy of a handle sent to another thread calls the same handler, so its state is behind a lock
+or an atomic. With that, `Easy` is `Send` (a compile-time assertion holds it), its private
+multi too, whose clock and network are boxed `Send`; a multi is not `Sync`. The shim's
+adapters, which hold a handle's pointer and the application's userdata, are declared `Send +
+Sync` on C's contract that one thread at a time uses a handle.
 
 `TransferCx` names no `Host`: the handlers live in an `Easy`, which has none. It wraps a
 crate-private object-safe trait, `TransferCalls`, which the step context implements for each

@@ -46,7 +46,7 @@ impl Kind {
 /// share's lock functions with the transfer's handle
 /// (`CURLSHOPT_LOCKFUNC`, `CURLSHOPT_UNLOCKFUNC`). The share's own locks
 /// guard the data; this lets the application see each use.
-pub trait ShareLock {
+pub trait ShareLock: Send + Sync {
     fn lock(&self, kind: Kind);
     fn unlock(&self, kind: Kind);
 }

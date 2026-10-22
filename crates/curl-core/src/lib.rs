@@ -25,6 +25,8 @@ mod proto;
 pub mod report;
 mod save;
 pub mod share;
+#[cfg(test)]
+mod test_cell;
 mod text;
 pub mod time;
 mod trace;

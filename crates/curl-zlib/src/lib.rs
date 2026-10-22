@@ -360,6 +360,10 @@ impl Inflater {
     }
 }
 
+// SAFETY: the stream and its state are this decoder's alone, reached only
+// through `&mut self`; zlib keeps no tie to the thread that made them.
+unsafe impl Send for Inflater {}
+
 impl Decoder for Inflater {
     fn decode(&mut self, input: &[u8], out: &mut dyn Sink) -> Result<(), ErrorKind> {
         let Ok(len) = c_uint::try_from(input.len()) else {

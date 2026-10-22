@@ -2,14 +2,14 @@
 //! expectation of headers, sizes, calls and results was read off the C
 //! build running the same transfer.
 
-use std::cell::RefCell;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use curl_alloc::TryRc;
+use curl_alloc::TryArc;
 
 use crate::conn::io::FakeNet;
 use crate::easy::Easy;
@@ -70,7 +70,7 @@ const Y2K_NOON: u64 = 946_728_000;
 
 /// What a transfer's handlers saw, in order.
 #[derive(Clone, Default)]
-struct Seen(Rc<RefCell<Vec<Event>>>);
+struct Seen(Arc<Mutex<Vec<Event>>>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {
@@ -81,7 +81,7 @@ enum Event {
 
 impl WriteHandler for Seen {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
-        self.0.borrow_mut().push(Event::Body(body.to_vec()));
+        self.0.lock().unwrap().push(Event::Body(body.to_vec()));
         Write::Accepted
     }
 }
@@ -89,21 +89,21 @@ impl WriteHandler for Seen {
 impl HeaderHandler for Seen {
     fn header(&self, _: &mut TransferCx<'_>, line: &[u8], o: HeaderOrigin) -> Write {
         assert_eq!(o, HeaderOrigin::Header);
-        self.0.borrow_mut().push(Event::Header(line.to_vec()));
+        self.0.lock().unwrap().push(Event::Header(line.to_vec()));
         Write::Accepted
     }
 }
 
 impl ProgressHandler for Seen {
     fn progress(&self, _: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
-        self.0.borrow_mut().push(Event::Progress(now));
+        self.0.lock().unwrap().push(Event::Progress(now));
         ProgressVerdict::Continue
     }
 }
 
 impl Seen {
     fn events(&self) -> Vec<Event> {
-        self.0.borrow().clone()
+        self.0.lock().unwrap().clone()
     }
 
     fn headers(&self) -> Vec<Vec<u8>> {
@@ -129,7 +129,7 @@ impl Seen {
     }
 
     fn filter<T>(&self, f: impl Fn(&Event) -> Option<T>) -> Vec<T> {
-        self.0.borrow().iter().filter_map(f).collect()
+        self.0.lock().unwrap().iter().filter_map(f).collect()
     }
 }
 
@@ -456,7 +456,7 @@ fn a_pausing_write_fails() {
 
 /// Reads `left` bytes of `u`, as much as each read has room for.
 struct Feeder {
-    left: std::cell::Cell<usize>,
+    left: crate::test_cell::Cell<usize>,
 }
 
 impl ReadHandler for Feeder {
@@ -478,7 +478,7 @@ fn upload(url: &[u8], source: UploadSource) -> (Easy, Seen) {
 fn fed(n: usize) -> UploadSource {
     UploadSource::Read {
         handler: Handler::read(Feeder {
-            left: std::cell::Cell::new(n),
+            left: crate::test_cell::Cell::new(n),
         })
         .unwrap(),
         rewind: None,
@@ -487,7 +487,7 @@ fn fed(n: usize) -> UploadSource {
 }
 
 fn bytes(b: &[u8]) -> UploadSource {
-    UploadSource::Bytes(TryRc::try_new(b.to_vec()).unwrap())
+    UploadSource::Bytes(TryArc::try_new(b.to_vec()).unwrap())
 }
 
 /// An upload writes the body to the file, created or emptied, in pieces of
@@ -656,11 +656,11 @@ fn the_calendar_has_its_leap_years() {
 
 /// Text for the user, kept.
 #[derive(Clone, Default)]
-struct Stderr(Rc<RefCell<Vec<u8>>>);
+struct Stderr(Arc<Mutex<Vec<u8>>>);
 
 impl TextSink for Stderr {
     fn write(&self, text: &[u8]) {
-        self.0.borrow_mut().extend_from_slice(text);
+        self.0.lock().unwrap().extend_from_slice(text);
     }
 }
 
@@ -678,7 +678,7 @@ fn a_file_draws_its_meter_once() {
     e.options_mut().callbacks.stderr = Some(Handler::text(stderr.clone()).unwrap());
     let (result, _) = run(e);
     assert_eq!(result, Ok(()));
-    let drawn = String::from_utf8(stderr.0.borrow().clone()).unwrap();
+    let drawn = String::from_utf8(stderr.0.lock().unwrap().clone()).unwrap();
     assert_eq!(
         drawn,
         "  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\n                                 Dload  Upload  Total   Spent   Left   Speed\n\r  0      0   0      0   0      0      0      0                              0\n"

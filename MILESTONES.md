@@ -468,9 +468,11 @@ cargo-mutants run on the milestone's diff.
     release builds, a 256 MiB PUT and GET over plain HTTP to a local server, medians of 9:
     upload client CPU 0.065 s before, 0.072 s after, C 0.078 s; downloads unchanged at 0.025 s.
 
-35. **share: safe across threads.** **In progress**: the share keeps each kind behind its
-    own lock, with the application's lock functions told around each use (506, 1554); the
-    shim's `CURLSH` being `Sync`, `Easy` being `Send` and the two-thread tests remain. C's
+35. **share: safe across threads.** **Done**: the share keeps each kind behind its own lock,
+    with the application's lock functions told around each use (506, 1554); the shim's
+    `CURLSH` is `Sync`, tested by two threads through the C ABI and, for the jar, under Miri;
+    `Easy` is `Send`, its handlers `Send + Sync`. Not done: 3234, which waits on
+    `CURLOPT_CONNECT_ONLY`. C's
     `CURLSH` may be used from several threads, guarded by the application's lock functions;
     ours is `TryRc` and `RefCell`, so that is a data race. The share becomes `Send + Sync`
     with its own locks, one per kind of data, so safety never rests on the application's:

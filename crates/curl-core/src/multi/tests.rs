@@ -236,7 +236,7 @@ fn a_timer_abort_inside_remove_still_removes() {
 /// running the transfers took that long.
 struct LaggingClock {
     inner: ManualClock,
-    lag: std::rc::Rc<std::cell::Cell<Duration>>,
+    lag: std::sync::Arc<crate::test_cell::Cell<Duration>>,
 }
 
 impl Clock for LaggingClock {
@@ -251,8 +251,8 @@ impl Clock for LaggingClock {
     }
 }
 
-fn lagging_multi() -> (Multi, std::rc::Rc<std::cell::Cell<Duration>>) {
-    let lag = std::rc::Rc::new(std::cell::Cell::new(Duration::ZERO));
+fn lagging_multi() -> (Multi, std::sync::Arc<crate::test_cell::Cell<Duration>>) {
+    let lag = std::sync::Arc::new(crate::test_cell::Cell::new(Duration::ZERO));
     let inner = ManualClock::new().unwrap();
     let env = Env {
         clock: Box::new(LaggingClock {
@@ -1080,13 +1080,13 @@ fn callbacks_read_reports_and_the_multi_counts_messages() {
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct TextLines(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+struct TextLines(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 
 impl crate::handler::DebugHandler for TextLines {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
         if kind == crate::handler::DebugKind::Text {
             let line = String::from_utf8(data.to_vec()).unwrap();
-            self.0.borrow_mut().push(line);
+            self.0.lock().unwrap().push(line);
         }
     }
 }
@@ -1291,7 +1291,8 @@ fn traced(url: &str) -> (Easy, TextLines) {
 fn trace_of(lines: &TextLines) -> Vec<String> {
     lines
         .0
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .filter(|l| !l.starts_with("!!!") && !l.starts_with("This is a debug build"))
         .cloned()
@@ -1841,7 +1842,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
     );
     // The same handle again: the list was read.
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
-    lines.0.borrow_mut().clear();
+    lines.0.lock().unwrap().clear();
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
@@ -1851,7 +1852,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
         trace_of(&lines)
     );
     let mut e = m.remove(id, &mut NoEvents).unwrap().easy;
-    lines.0.borrow_mut().clear();
+    lines.0.lock().unwrap().clear();
     e.options_mut().set_url(Some(b"tcp://foo.test:1/")).unwrap();
     e.options_mut()
         .resolve
@@ -1873,7 +1874,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
     );
     // Any other name on the port is the wildcard's.
     let mut e = m.remove(id, &mut NoEvents).unwrap().easy;
-    lines.0.borrow_mut().clear();
+    lines.0.lock().unwrap().clear();
     e.options_mut()
         .set_url(Some(b"tcp://other.test:1/"))
         .unwrap();
@@ -2032,7 +2033,7 @@ fn a_bad_resolve_entry_fails_the_transfer() {
         ]
     );
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
-    lines.0.borrow_mut().clear();
+    lines.0.lock().unwrap().clear();
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
@@ -2391,7 +2392,7 @@ fn a_pause_never_blocks_a_setup() {
 }
 
 /// A fake network the test reaches while the multi holds it.
-struct SharedNet(std::rc::Rc<std::cell::RefCell<FakeNet>>);
+struct SharedNet(std::sync::Arc<std::sync::Mutex<FakeNet>>);
 
 impl Net for SharedNet {
     fn poll(
@@ -2400,18 +2401,18 @@ impl Net for SharedNet {
         fds: &mut [PollFd<'_>],
         timeout: Duration,
     ) -> std::io::Result<u32> {
-        self.0.borrow_mut().poll(sockets, fds, timeout)
+        self.0.lock().unwrap().poll(sockets, fds, timeout)
     }
 
     fn connect(
         &mut self,
         addr: std::net::SocketAddr,
     ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.borrow_mut().connect(addr)
+        self.0.lock().unwrap().connect(addr)
     }
 
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
-        self.0.borrow_mut().close(socket);
+        self.0.lock().unwrap().close(socket);
     }
 
     fn resolve(
@@ -2419,7 +2420,7 @@ impl Net for SharedNet {
         name: &[u8],
         family: crate::conn::io::Family,
     ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.borrow_mut().resolve(name, family)
+        self.0.lock().unwrap().resolve(name, family)
     }
 }
 
@@ -2430,7 +2431,7 @@ fn connections_are_numbered_in_their_traces() {
     use crate::conn::io::{Peer, SocketKey};
     let clock = ManualClock::new().unwrap();
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 4));
-    let net = std::rc::Rc::new(std::cell::RefCell::new(
+    let net = std::sync::Arc::new(std::sync::Mutex::new(
         FakeNet::new(clock.clone()).with_peer(at, Peer::AcceptsAfter(Duration::from_millis(5))),
     ));
     let env = Env {
@@ -2466,8 +2467,8 @@ fn connections_are_numbered_in_their_traces() {
     );
     // Both hang up while idle; the next search, within the second of the
     // last prune, finds each dead.
-    net.borrow().hang_up(SocketKey::new(1000));
-    net.borrow().hang_up(SocketKey::new(1001));
+    net.lock().unwrap().hang_up(SocketKey::new(1000));
+    net.lock().unwrap().hang_up(SocketKey::new(1001));
     let (c, c_lines) = traced(url);
     m.add(c, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();

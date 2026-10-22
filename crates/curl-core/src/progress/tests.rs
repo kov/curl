@@ -1,6 +1,6 @@
-use std::cell::RefCell;
 use std::num::{NonZeroU16, NonZeroU64};
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::conn::io::FakeNet;
@@ -272,27 +272,29 @@ fn body(n: usize) -> Piece {
 
 /// Every call a progress handler saw: what it was told, the total time
 /// and download speed its report gave then, and its answer.
-type Calls = Rc<RefCell<Vec<(ProgressNow, Duration, u64)>>>;
+type Calls = Arc<Mutex<Vec<(ProgressNow, Duration, u64)>>>;
 
 struct Recorder<F> {
     calls: Calls,
     answer: F,
 }
 
-impl<F: Fn(&mut TransferCx<'_>, usize) -> ProgressVerdict> ProgressHandler for Recorder<F> {
+impl<F: Fn(&mut TransferCx<'_>, usize) -> ProgressVerdict + Send + Sync> ProgressHandler
+    for Recorder<F>
+{
     fn progress(&self, cx: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
         let me = cx.me();
         let report = cx.info(me).unwrap();
         let seen = (now, report.timings().total(), report.speeds().download());
-        let n = self.calls.borrow().len();
-        self.calls.borrow_mut().push(seen);
+        let n = self.calls.lock().unwrap().len();
+        self.calls.lock().unwrap().push(seen);
         (self.answer)(cx, n)
     }
 }
 
 fn recorded<F>(e: &mut Easy, answer: F) -> Calls
 where
-    F: Fn(&mut TransferCx<'_>, usize) -> ProgressVerdict + 'static,
+    F: Fn(&mut TransferCx<'_>, usize) -> ProgressVerdict + Send + Sync + 'static,
 {
     let calls = Calls::default();
     let h = Recorder {
@@ -332,7 +334,7 @@ fn the_handler_is_called_at_each_pass_and_at_the_end() {
         download_total: None,
         ..known(0)
     };
-    let seen: Vec<_> = calls.borrow().iter().map(|c| c.0).collect();
+    let seen: Vec<_> = calls.lock().unwrap().iter().map(|c| c.0).collect();
     // After the setup, protocol connect, request and request-made steps;
     // after the receive pass, and after its step.
     assert_eq!(
@@ -342,10 +344,10 @@ fn the_handler_is_called_at_each_pass_and_at_the_end() {
     clock.advance(Duration::from_millis(500));
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(result(&mut m), Some(Ok(())));
-    let seen: Vec<_> = calls.borrow().iter().skip(6).map(|c| c.0).collect();
+    let seen: Vec<_> = calls.lock().unwrap().iter().skip(6).map(|c| c.0).collect();
     // The receive pass that ended the request, its step, and the end.
     assert_eq!(seen, [known(1000); 3]);
-    let last = calls.borrow()[8];
+    let last = calls.lock().unwrap()[8];
     // It started at the first perform.
     assert_eq!(last.1, Duration::from_millis(500), "the total so far");
     assert_eq!(last.2, 2000);
@@ -365,7 +367,7 @@ fn progress_off_calls_nothing_but_takes_stock() {
     clock.advance(Duration::from_millis(10));
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(result(&mut m), None, "still going");
-    assert!(calls.borrow().is_empty());
+    assert!(calls.lock().unwrap().is_empty());
     assert_eq!(text(&sink), "", "no meter either");
     let report = m.easy(id).unwrap().report();
     assert_eq!(report.timings().total(), Duration::from_millis(10));
@@ -392,7 +394,11 @@ fn an_abort_fails_the_transfer_with_no_last_call() {
             Some(Err(ErrorKind::AbortedByCallback)),
             "abort at {abort_at}"
         );
-        assert_eq!(calls.borrow().len(), abort_at + 1, "abort at {abort_at}");
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            abort_at + 1,
+            "abort at {abort_at}"
+        );
     }
 }
 
@@ -419,17 +425,21 @@ fn an_abort_after_the_request_fails_the_transfer() {
             Some(Err(ErrorKind::AbortedByCallback)),
             "abort at {abort_at}"
         );
-        assert_eq!(calls.borrow().len(), calls_made, "abort at {abort_at}");
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            calls_made,
+            "abort at {abort_at}"
+        );
     }
 }
 
 /// What the meter wrote.
 #[derive(Clone, Default)]
-struct Sink(Rc<RefCell<Vec<u8>>>);
+struct Sink(Arc<Mutex<Vec<u8>>>);
 
 impl TextSink for Sink {
     fn write(&self, text: &[u8]) {
-        self.0.borrow_mut().extend_from_slice(text);
+        self.0.lock().unwrap().extend_from_slice(text);
     }
 }
 
@@ -441,7 +451,7 @@ fn metered(e: &mut Easy) -> Sink {
 }
 
 fn text(sink: &Sink) -> String {
-    String::from_utf8(sink.0.borrow().clone()).unwrap()
+    String::from_utf8(sink.0.lock().unwrap().clone()).unwrap()
 }
 
 /// The meter: titles once per handle, a line at the first pass and once a
@@ -601,12 +611,12 @@ fn a_paused_transfer_is_not_too_slow() {
 fn an_unpause_from_the_progress_handler_replays_at_once() {
     let (mut m, _clock) = multi();
     let mut e = script(vec![body(10), Piece::Yield]);
-    let written = Rc::new(RefCell::new(Vec::new()));
-    struct Once(Rc<RefCell<Vec<usize>>>);
+    let written = Arc::new(Mutex::new(Vec::new()));
+    struct Once(Arc<Mutex<Vec<usize>>>);
     impl WriteHandler for Once {
         fn write(&self, _: &mut TransferCx<'_>, b: &[u8]) -> Write {
-            let first = self.0.borrow().is_empty();
-            self.0.borrow_mut().push(b.len());
+            let first = self.0.lock().unwrap().is_empty();
+            self.0.lock().unwrap().push(b.len());
             if first { Write::Pause } else { Write::Accepted }
         }
     }
@@ -618,8 +628,8 @@ fn an_unpause_from_the_progress_handler_replays_at_once() {
     });
     m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
-    assert_eq!(*written.borrow(), [10, 10], "paused, then replayed");
-    assert_eq!(calls.borrow().len(), 6);
+    assert_eq!(*written.lock().unwrap(), [10, 10], "paused, then replayed");
+    assert_eq!(calls.lock().unwrap().len(), 6);
 }
 
 /// A speed back over the limit starts the low-speed time over.

@@ -481,14 +481,20 @@ fn multi_error(e: MultiErrorKind) -> ErrorKind {
     }
 }
 
+// A handle may move to whichever thread runs its next transfer.
+const _: () = {
+    const fn sendable<T: Send>() {}
+    sendable::<Easy>();
+};
+
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
     use std::num::NonZeroU64;
     use std::path::PathBuf;
-    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::Mutex;
 
-    use curl_alloc::TryRc;
+    use curl_alloc::TryArc;
 
     use super::*;
     use crate::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
@@ -523,11 +529,11 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Body(Rc<RefCell<Vec<u8>>>);
+    struct Body(Arc<Mutex<Vec<u8>>>);
 
     impl WriteHandler for Body {
         fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
-            self.0.borrow_mut().extend_from_slice(body);
+            self.0.lock().unwrap().extend_from_slice(body);
             Write::Accepted
         }
     }
@@ -548,7 +554,7 @@ mod tests {
         std::fs::write(s.0.join("f"), b"hello").unwrap();
         let (mut e, body) = easy(&s.url("f"));
         assert_eq!(e.perform(), Ok(()));
-        assert_eq!(*body.0.borrow(), b"hello");
+        assert_eq!(*body.0.lock().unwrap(), b"hello");
         assert_eq!(e.report().sizes().download(), 5);
         assert_eq!(e.report().protocol(), Some(Protocol::File));
         assert!(e.private.is_some(), "kept");
@@ -563,18 +569,36 @@ mod tests {
         assert!(e.private.is_some(), "kept after a failure");
         e.options_mut().set_url(Some(&s.url("f"))).unwrap();
         assert_eq!(e.perform(), Ok(()));
-        assert_eq!(*body.0.borrow(), b"hellohello");
+        assert_eq!(*body.0.lock().unwrap(), b"hellohello");
+    }
+
+    /// A handle made on one thread, with its handlers and the multi of
+    /// its own its last transfer left, runs its next transfer on another.
+    #[test]
+    fn a_handle_moves_to_another_thread() {
+        let s = Scratch::new("thread");
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let (mut e, body) = easy(&s.url("f"));
+        assert_eq!(e.perform(), Ok(()));
+        let e = std::thread::spawn(move || {
+            assert_eq!(e.perform(), Ok(()));
+            e
+        })
+        .join()
+        .unwrap();
+        assert_eq!(*body.0.lock().unwrap(), b"hellohello");
+        assert_eq!(e.report().sizes().download(), 5);
     }
 
     /// What a debug handler was given, in order.
     type Traced = Vec<(DebugKind, Vec<u8>)>;
 
     #[derive(Clone, Default)]
-    struct Lines(Rc<RefCell<Traced>>);
+    struct Lines(Arc<Mutex<Traced>>);
 
     impl DebugHandler for Lines {
         fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
-            self.0.borrow_mut().push((kind, data.to_vec()));
+            self.0.lock().unwrap().push((kind, data.to_vec()));
         }
     }
 
@@ -594,7 +618,7 @@ mod tests {
         assert_eq!(err.detail(), Some(&why[..]));
         assert_eq!(err.to_string().as_bytes(), why);
         assert_eq!(e.report().failure(), Some(&why[..]));
-        let traced = lines.0.borrow().clone();
+        let traced = lines.0.lock().unwrap().clone();
         // The debug build says what it is first (`multi_warn_debug`), once
         // for the handle's multi.
         #[cfg(feature = "debug-hooks")]
@@ -610,9 +634,9 @@ mod tests {
             traced[2..].to_vec()
         };
         assert_eq!(traced, [(DebugKind::Text, [&why[..], b"\n"].concat())]);
-        lines.0.borrow_mut().clear();
+        lines.0.lock().unwrap().clear();
         e.perform().unwrap_err();
-        assert_eq!(lines.0.borrow().len(), 1, "warned once");
+        assert_eq!(lines.0.lock().unwrap().len(), 1, "warned once");
 
         let why = |url: &[u8]| {
             let (mut e, _) = easy(url);
@@ -682,7 +706,7 @@ mod tests {
         assert_eq!(e.perform().unwrap_err().kind(), ErrorKind::UrlMalformat);
         e.options_mut().set_default_protocol(Some(b"file")).unwrap();
         assert_eq!(e.perform(), Ok(()));
-        assert_eq!(*body.0.borrow(), b"hello");
+        assert_eq!(*body.0.lock().unwrap(), b"hello");
         let copy = e.try_clone().unwrap();
         assert_eq!(copy.options().default_protocol(), Some(&b"file"[..]));
     }
@@ -694,7 +718,7 @@ mod tests {
         let s = Scratch::new("upload");
         let (mut e, _) = easy(&s.url("f"));
         e.options_mut().method = Method::Upload;
-        let body = |b: &[u8]| UploadSource::Bytes(TryRc::try_new(b.to_vec()).unwrap());
+        let body = |b: &[u8]| UploadSource::Bytes(TryArc::try_new(b.to_vec()).unwrap());
         e.options_mut().upload = body(b"01234");
         assert_eq!(e.perform(), Ok(()));
         assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"01234");
@@ -780,7 +804,8 @@ mod tests {
             let result = e.perform().map_err(|err| err.kind());
             let text: Vec<String> = lines
                 .0
-                .borrow()
+                .lock()
+                .unwrap()
                 .iter()
                 .map(|(_, l)| String::from_utf8(l.clone()).unwrap())
                 .filter(|l| !l.starts_with("!!!") && !l.starts_with("This is a debug build"))

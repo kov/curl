@@ -15,7 +15,7 @@ use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use core::ptr::NonNull;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::options::{
     ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines, LowSpeed,
@@ -286,7 +286,7 @@ unsafe fn copy_post_fields(p: *mut c_void, size: i64) -> Result<PostFields, Refu
     };
     let mut copy = Vec::new();
     copy.try_extend_from_slice(fields)?;
-    Ok(PostFields::Copied(TryRc::try_new(copy)?))
+    Ok(PostFields::Copied(TryArc::try_new(copy)?))
 }
 
 /// Apply `option` with `arg` to the handle at `me`.

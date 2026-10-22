@@ -1,12 +1,12 @@
 //! The trace of `--verbose`, `--trace` and `--trace-ascii`
 //! (`src/tool_cb_dbg.c`).
 
-use std::cell::RefCell;
 use std::fs::File;
 use std::io::Write as _;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec};
+use curl_alloc::{OutOfMemory, TryArc, TryVec};
 use curl_core::handler::{DebugHandler, DebugKind, Handler};
 use curl_core::multi::TransferCx;
 use curl_os::fs::{self, Keep};
@@ -24,7 +24,7 @@ const UNPRINTABLE: u8 = b'.';
 /// Where the trace goes, shared by every transfer's handler: the file is
 /// opened at the first entry and stays open.
 #[derive(Clone)]
-pub(crate) struct Tracer(TryRc<RefCell<State>>);
+pub(crate) struct Tracer(TryArc<Mutex<State>>);
 
 struct State {
     kind: Trace,
@@ -77,7 +77,7 @@ impl Tracer {
             noted_data: false,
             scratch: Vec::new(),
         };
-        Ok(Some(Tracer(TryRc::try_new(RefCell::new(state))?)))
+        Ok(Some(Tracer(TryArc::try_new(Mutex::new(state))?)))
     }
 
     /// The debug handler of one transfer; `terminal` says its output goes
@@ -103,7 +103,7 @@ impl Tracer {
     }
 
     fn entry(&self, kind: DebugKind, data: &[u8], terminal: bool) {
-        let mut state = self.0.borrow_mut();
+        let mut state = self.0.lock().expect("no panic holds it");
         // Opened first: where the entry goes decides what `--verbose` says.
         state.sink.open();
         let mut out = std::mem::take(&mut state.scratch);

@@ -12,9 +12,9 @@ use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::num::NonZeroUsize;
 use core::ptr::{self, NonNull};
 
-use core::cell::Cell;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_format};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::handler::{
     DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow,
     ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink, TrailerHandler,
@@ -209,6 +209,11 @@ pub(crate) fn sync_error_buffer(
 /// Copies a transfer's first reason for failing into ERRORBUFFER.
 struct ErrorBuffer(NonNull<ShimEasy>);
 
+// SAFETY: as for `Adapter`.
+unsafe impl Send for ErrorBuffer {}
+// SAFETY: as for `Adapter`.
+unsafe impl Sync for ErrorBuffer {}
+
 impl TextSink for ErrorBuffer {
     fn write(&self, why: &[u8]) {
         // SAFETY: as for `Adapter::easy`.
@@ -274,7 +279,7 @@ pub(crate) enum PostFields {
     /// The application's bytes, read where they are when sent.
     App(NonNull<u8>),
     /// The handle's copy of them.
-    Copied(TryRc<Vec<u8>>),
+    Copied(TryArc<Vec<u8>>),
 }
 
 /// The body the method sends (`Curl_pretransfer`'s `infilesize`,
@@ -312,7 +317,7 @@ pub(crate) fn sync_upload(
                     Some(n) if n < bytes.len() => {
                         let mut prefix = Vec::new();
                         prefix.try_extend_from_slice(&bytes[..n])?;
-                        UploadSource::Bytes(TryRc::try_new(prefix)?)
+                        UploadSource::Bytes(TryArc::try_new(prefix)?)
                     }
                     _ => UploadSource::Bytes(bytes.clone()),
                 },
@@ -323,10 +328,10 @@ pub(crate) fn sync_upload(
                         // size, are a C string.
                         None => unsafe { libc::strlen(at.as_ptr().cast()) },
                     };
-                    let fields = Fields(TryRc::try_new(AppFields {
+                    let fields = Fields(TryArc::try_new(AppFields {
                         at: *at,
                         len,
-                        read: Cell::new(0),
+                        read: AtomicUsize::new(0),
                     })?);
                     UploadSource::Read {
                         handler: Handler::read(fields.clone())?,
@@ -344,18 +349,25 @@ pub(crate) fn sync_upload(
 /// The application's `CURLOPT_POSTFIELDS`, read where they are as they
 /// are sent, by the read and the rewind both.
 #[derive(Clone)]
-struct Fields(TryRc<AppFields>);
+struct Fields(TryArc<AppFields>);
 
 struct AppFields {
     at: NonNull<u8>,
     len: usize,
-    read: Cell<usize>,
+    read: AtomicUsize,
 }
+
+// SAFETY: the fields are the application's, only read, and kept alive and
+// unchanged until the transfer is over (`CURLOPT_POSTFIELDS`); the handle
+// that sends them is used by one thread at a time, as C requires.
+unsafe impl Send for AppFields {}
+// SAFETY: as for `Send`: what is shared is only read.
+unsafe impl Sync for AppFields {}
 
 impl ReadHandler for Fields {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
         let fields = &*self.0;
-        let read = fields.read.get();
+        let read = fields.read.load(Ordering::Relaxed);
         let n = (fields.len - read).min(buf.len());
         let start = fields.at.as_ptr().wrapping_add(read);
         // SAFETY: the application keeps its fields, `len` bytes, alive and
@@ -363,20 +375,27 @@ impl ReadHandler for Fields {
         // requires; `read + n` is within them.
         let from = unsafe { core::slice::from_raw_parts(start, n) };
         buf[..n].copy_from_slice(from);
-        fields.read.set(read + n);
+        fields.read.store(read + n, Ordering::Relaxed);
         NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
     }
 }
 
 impl Rewind for Fields {
     fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
-        self.0.read.set(0);
+        self.0.read.store(0, Ordering::Relaxed);
         Ok(())
     }
 }
 
 /// Calls the application on behalf of the handle at its pointer.
 struct Adapter(NonNull<ShimEasy>);
+
+// SAFETY: an adapter is its handle's alone (a copy of the options is given
+// its own), and is called only by the transfer of that handle, which C
+// lets one thread use at a time; what it reaches is the handle's.
+unsafe impl Send for Adapter {}
+// SAFETY: as for `Send`: no two threads reach one handle at once.
+unsafe impl Sync for Adapter {}
 
 impl Adapter {
     fn easy(&self) -> &ShimEasy {

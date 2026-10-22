@@ -98,6 +98,10 @@ pub fn decoder() -> Result<Box<dyn Decoder>, ErrorKind> {
     Ok(try_box(zstd).map_err(|_| ErrorKind::OutOfMemory)?)
 }
 
+// SAFETY: the stream is this decoder's alone, reached only through
+// `&mut self`; zstd keeps no tie to the thread that made it.
+unsafe impl Send for Zstd {}
+
 impl Decoder for Zstd {
     fn decode(&mut self, input: &[u8], out: &mut dyn Sink) -> Result<(), ErrorKind> {
         let mut input = InBuffer {

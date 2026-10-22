@@ -8,10 +8,10 @@
 //! A case the runner cannot map (a server command, more than one reply, an
 //! option not built, a check it cannot make) is listed with why, not run.
 
-use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::num::NonZeroU64;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use crate::conn::io::{Conversation, FakeNet, Peer};
 use crate::easy::Easy;
@@ -221,19 +221,19 @@ fn expected(test: u32, c: &Command) -> Result<Expected, Skip> {
 #[derive(Clone, Default)]
 struct Got {
     include: bool,
-    written: Rc<RefCell<(Vec<u8>, Vec<u8>)>>,
+    written: Arc<Mutex<(Vec<u8>, Vec<u8>)>>,
 }
 
 impl WriteHandler for Got {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
-        self.written.borrow_mut().0.extend_from_slice(body);
+        self.written.lock().unwrap().0.extend_from_slice(body);
         Write::Accepted
     }
 }
 
 impl HeaderHandler for Got {
     fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
-        let mut got = self.written.borrow_mut();
+        let mut got = self.written.lock().unwrap();
         if self.include {
             got.0.extend_from_slice(line);
         }
@@ -312,7 +312,7 @@ fn run(test: u32) -> Result<Result<(), String>, Skip> {
     let id = m.add(e, (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let code = result.err().map_or(0, code_of);
-    let (output, headers) = got.written.borrow().clone();
+    let (output, headers) = got.written.lock().unwrap().clone();
     let mut wrong = Vec::new();
     if code != want.code {
         wrong.push(format!("exit {code}, not {}", want.code));

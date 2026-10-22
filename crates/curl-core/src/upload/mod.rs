@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests;
 
-use curl_alloc::TryRc;
+use curl_alloc::TryArc;
 
 use crate::deliver::SendPause;
 use crate::error::ErrorKind;
@@ -29,7 +29,7 @@ pub(crate) struct Upload {
 #[derive(Debug)]
 enum Source {
     None,
-    Bytes(TryRc<Vec<u8>>),
+    Bytes(TryArc<Vec<u8>>),
     Read {
         handler: Handler<dyn ReadHandler>,
         rewind: Option<Handler<dyn Rewind>>,

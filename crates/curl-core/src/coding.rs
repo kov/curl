@@ -78,7 +78,7 @@ pub trait Sink {
 
 /// A coding being undone, one response's body at a time (C's unencoding
 /// writers).
-pub trait Decoder: fmt::Debug {
+pub trait Decoder: fmt::Debug + Send {
     /// Undo `input`, giving what it makes to `out` as it makes it.
     fn decode(&mut self, input: &[u8], out: &mut dyn Sink) -> Result<(), ErrorKind>;
 

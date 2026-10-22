@@ -1,8 +1,9 @@
 //! The socket callback, as `lib/multi_ev.c` calls it.
 
-use std::cell::{Cell, RefCell};
+use crate::test_cell::Cell;
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use super::*;
 use crate::conn::io::{Connect, FakeNet, Peer, PollFd, SocketPoll};
@@ -25,7 +26,7 @@ type Call = (u32, i32, SocketWhat, Option<u32>, u32);
 #[derive(Default)]
 struct Sockets {
     calls: Vec<Call>,
-    closed: Rc<Cell<u32>>,
+    closed: Arc<Cell<u32>>,
     tag: u32,
     abort_at: Option<usize>,
     /// Whether the timer callback aborts.
@@ -77,7 +78,7 @@ impl MultiEvents<Tagged> for Sockets {
 }
 
 /// A network that counts the sockets it closes.
-struct Counting(FakeNet, Rc<Cell<u32>>);
+struct Counting(FakeNet, Arc<Cell<u32>>);
 
 impl Net for Counting {
     fn poll(
@@ -112,7 +113,7 @@ impl Net for Counting {
 fn networked() -> (Multi<Tagged>, ManualClock, Sockets) {
     let clock = ManualClock::new().unwrap();
     let at = |port| SocketAddr::from(([127, 0, 0, 1], port));
-    let closed = Rc::new(Cell::new(0));
+    let closed = Arc::new(Cell::new(0));
     let net = FakeNet::new(clock.clone())
         .with_peer(at(2), Peer::Refuses)
         .with_peer(at(3), Peer::Silent)
@@ -249,7 +250,7 @@ fn an_aborting_socket_callback_kills_the_multi() {
 /// The handlers of a socket callback see the multi's transfers.
 #[test]
 fn the_socket_callback_sees_the_transfers() {
-    struct Owners(Rc<RefCell<Vec<Option<u8>>>>);
+    struct Owners(Arc<Mutex<Vec<Option<u8>>>>);
     struct Host8;
     impl Host for Host8 {
         type Transfer = u8;
@@ -264,7 +265,7 @@ fn the_socket_callback_sees_the_transfers() {
             _: SocketWhat,
             _: Option<()>,
         ) -> Result<(), Abort> {
-            self.0.borrow_mut().push(cx.owner(who).copied());
+            self.0.lock().unwrap().push(cx.owner(who).copied());
             Ok(())
         }
         fn wants_sockets(&self) -> bool {
@@ -280,11 +281,11 @@ fn the_socket_callback_sees_the_transfers() {
         waker: None,
     };
     let mut m: Multi<Host8> = Multi::new(env).unwrap();
-    let seen = Rc::new(RefCell::new(Vec::new()));
+    let seen = Arc::new(Mutex::new(Vec::new()));
     let mut ev = Owners(seen.clone());
     m.add(easy("tcp://127.0.0.1:3/"), 42, &mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
-    assert_eq!(*seen.borrow(), [Some(42)]);
+    assert_eq!(*seen.lock().unwrap(), [Some(42)]);
 }
 
 /// A transfer `perform` completed was never assessed after, so the table

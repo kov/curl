@@ -22,9 +22,9 @@ mod schemes;
 mod c_tests;
 
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
-use curl_alloc::{OutOfMemory, TryRc};
+use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::error::UrlErrorKind;
 use encode::{Query, bad_octets, copy, push};
@@ -1177,21 +1177,21 @@ fn path_part(
 /// same URL. It is reached only for the length of one call, so that no
 /// borrow of it outlives what it was taken for.
 #[derive(Clone, Debug)]
-pub struct SharedUrl(TryRc<RefCell<Url>>);
+pub struct SharedUrl(TryArc<Mutex<Url>>);
 
 impl SharedUrl {
     pub fn new(url: Url) -> Result<SharedUrl, OutOfMemory> {
-        Ok(SharedUrl(TryRc::try_new(RefCell::new(url))?))
+        Ok(SharedUrl(TryArc::try_new(Mutex::new(url))?))
     }
 
     /// What `f` reads of the URL.
     pub fn with<R>(&self, f: impl FnOnce(&Url) -> R) -> R {
-        f(&self.0.borrow())
+        f(&self.0.lock().expect("no panic holds it"))
     }
 
     /// What `f` makes of the URL, changing it.
     pub fn update<R>(&self, f: impl FnOnce(&mut Url) -> R) -> R {
-        f(&mut self.0.borrow_mut())
+        f(&mut self.0.lock().expect("no panic holds it"))
     }
 }
 

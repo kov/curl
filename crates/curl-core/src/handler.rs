@@ -8,7 +8,7 @@ use std::fmt;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use crate::multi::TransferCx;
 
@@ -42,14 +42,14 @@ pub enum Read {
 }
 
 /// Gives what a transfer sends (`CURLOPT_READFUNCTION`).
-pub trait ReadHandler {
+pub trait ReadHandler: Send + Sync {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read;
 }
 
 /// Gives the trailers a chunked request body ends with
 /// (`CURLOPT_TRAILERFUNCTION`): each line, `Name: value`, added to
 /// `lines`; a line without a colon and a space after it is skipped.
-pub trait TrailerHandler {
+pub trait TrailerHandler: Send + Sync {
     fn trailers(&self, cx: &mut TransferCx<'_>, lines: &mut TrailerLines) -> Trailers;
 }
 
@@ -94,7 +94,7 @@ pub struct RewindFailed;
 
 /// Starts what a read handler gives over from the beginning, for a request
 /// sent again (`CURLOPT_SEEKFUNCTION` to 0, `CURLOPT_IOCTLFUNCTION`).
-pub trait Rewind {
+pub trait Rewind: Send + Sync {
     fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed>;
 }
 
@@ -146,45 +146,45 @@ pub enum ProgressVerdict {
 
 /// Told of a transfer's progress, about once a second and whenever it
 /// moves (`CURLOPT_XFERINFOFUNCTION`).
-pub trait ProgressHandler {
+pub trait ProgressHandler: Send + Sync {
     fn progress(&self, cx: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict;
 }
 
 /// Takes text meant for the user: the progress meter, and messages with
 /// no debug handler to go to (`CURLOPT_STDERR`).
-pub trait TextSink {
+pub trait TextSink: Send + Sync {
     fn write(&self, text: &[u8]);
 }
 
 /// Takes the trace of a verbose transfer (`CURLOPT_DEBUGFUNCTION`).
-pub trait DebugHandler {
+pub trait DebugHandler: Send + Sync {
     fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]);
 }
 
 /// Takes the body (`CURLOPT_WRITEFUNCTION`), in pieces of at most 16384
 /// bytes (`CURL_MAX_WRITE_SIZE`).
-pub trait WriteHandler {
+pub trait WriteHandler: Send + Sync {
     fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write;
 }
 
 /// Takes each header line whole, with its line ending
 /// (`CURLOPT_HEADERFUNCTION`).
-pub trait HeaderHandler {
+pub trait HeaderHandler: Send + Sync {
     fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write;
 }
 
 /// A handler as a transfer holds it: shared by every copy of the `Easy`.
-pub struct Handler<T: ?Sized>(TryRc<Box<T>>);
+pub struct Handler<T: ?Sized>(TryArc<Box<T>>);
 
 impl<T: ?Sized> Handler<T> {
     /// A handler already boxed; `Handler::write` and the like box one.
     pub fn new(handler: Box<T>) -> Result<Handler<T>, OutOfMemory> {
-        Ok(Handler(TryRc::try_new(handler)?))
+        Ok(Handler(TryArc::try_new(handler)?))
     }
 
     /// Whether `a` and `b` are the same handler.
     pub fn ptr_eq(a: &Handler<T>, b: &Handler<T>) -> bool {
-        TryRc::ptr_eq(&a.0, &b.0)
+        TryArc::ptr_eq(&a.0, &b.0)
     }
 }
 

@@ -9,7 +9,7 @@
 
 use core::ffi::{c_char, c_int};
 use core::ptr::NonNull;
-use std::cell::OnceCell;
+use std::sync::OnceLock;
 
 use curl_alloc::{OutOfMemory, try_box};
 use curl_core::cookie::{PublicSuffixes, Suffixes};
@@ -40,7 +40,7 @@ unsafe extern "C" {
 /// The list, loaded when first asked.
 #[derive(Default)]
 pub struct List {
-    loaded: OnceCell<Option<Ctx>>,
+    loaded: OnceLock<Option<Ctx>>,
 }
 
 /// A loaded list: the system's, which is freed with it, or the library's
@@ -57,6 +57,13 @@ impl Ctx {
         }
     }
 }
+
+// SAFETY: a context is only read once loaded, and libpsl's queries on
+// one may run from several threads at once; it is freed only with the
+// list, which no other thread then reaches.
+unsafe impl Send for Ctx {}
+// SAFETY: as for `Send`: shared, it is only read.
+unsafe impl Sync for Ctx {}
 
 impl Drop for Ctx {
     fn drop(&mut self) {

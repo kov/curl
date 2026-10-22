@@ -3,11 +3,11 @@
 //! the output side of `src/tool_cb_hdr.c`).
 
 use core::ffi::CStr;
-use std::cell::RefCell;
 use std::fs::File;
 use std::io::Write as _;
+use std::sync::Mutex;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec};
+use curl_alloc::{OutOfMemory, TryArc, TryVec};
 use curl_core::handler::{Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler};
 use curl_core::multi::TransferCx;
 use curl_core::version::Protocol;
@@ -32,7 +32,7 @@ const BOLD_OFF: &[u8] = b"\x1b[0m";
 /// A transfer's output, shared by its write and header handlers and the
 /// code that runs the transfer.
 #[derive(Clone)]
-pub(crate) struct Output(TryRc<RefCell<Stream>>);
+pub(crate) struct Output(TryArc<Mutex<Stream>>);
 
 /// Where output goes, and how (C's `struct OutStruct`).
 pub(crate) struct Stream {
@@ -176,11 +176,11 @@ impl Output {
             after_blank: true,
             msgs,
         };
-        Ok(Output(TryRc::try_new(RefCell::new(stream))?))
+        Ok(Output(TryArc::try_new(Mutex::new(stream))?))
     }
 
-    pub(crate) fn stream(&self) -> std::cell::RefMut<'_, Stream> {
-        self.0.borrow_mut()
+    pub(crate) fn stream(&self) -> std::sync::MutexGuard<'_, Stream> {
+        self.0.lock().expect("no panic holds it")
     }
 
     /// Write header lines to `name` too, as `--dump-header` asks: `-` is

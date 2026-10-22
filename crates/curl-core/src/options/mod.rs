@@ -6,7 +6,7 @@
 #[cfg(any(test, feature = "test-util"))]
 pub mod script;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec};
+use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
@@ -984,7 +984,7 @@ pub enum UploadSource {
     None,
     /// These bytes, shared by every copy of the options
     /// (`CURLOPT_COPYPOSTFIELDS`).
-    Bytes(TryRc<Vec<u8>>),
+    Bytes(TryArc<Vec<u8>>),
     /// What a handler reads, `size` bytes if known (`CURLOPT_READFUNCTION`,
     /// `CURLOPT_INFILESIZE_LARGE`). Without a rewind, a request that must be
     /// sent again after reading fails with SendFailRewind.

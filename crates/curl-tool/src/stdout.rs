@@ -2,10 +2,10 @@
 //! a trace sent to `-` and `--write-out` all go through the one buffer,
 //! in the order written, and a write that fails at the end fails there.
 
-use std::cell::RefCell;
 use std::io::{self, IsTerminal as _, Write as _};
+use std::sync::Mutex;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec};
+use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 /// glibc sizes the buffer by the file system's block size: 4096 on the
 /// common ones.
@@ -13,7 +13,7 @@ const BUFFER: usize = 4096;
 
 /// The process's standard output, shared by whatever writes to it.
 #[derive(Clone)]
-pub(crate) struct Stdout(TryRc<RefCell<Buffered>>);
+pub(crate) struct Stdout(TryArc<Mutex<Buffered>>);
 
 struct Buffered {
     held: Vec<u8>,
@@ -28,7 +28,7 @@ impl Stdout {
         let mut held = Vec::new();
         held.try_reserve_exact(BUFFER).map_err(|_| OutOfMemory)?;
         let line = io::stdout().is_terminal();
-        Ok(Stdout(TryRc::try_new(RefCell::new(Buffered {
+        Ok(Stdout(TryArc::try_new(Mutex::new(Buffered {
             held,
             line,
             sink: raw,
@@ -38,7 +38,7 @@ impl Stdout {
     /// Write `bytes`, holding them until the buffer is full (or the line
     /// ends, on a terminal).
     pub(crate) fn write_all(&self, bytes: &[u8]) -> io::Result<()> {
-        let mut b = self.0.borrow_mut();
+        let mut b = self.0.lock().expect("no panic holds it");
         if b.held.len() + bytes.len() > BUFFER {
             b.write_held()?;
         }
@@ -57,7 +57,7 @@ impl Stdout {
 
     /// Write what is held.
     pub(crate) fn flush(&self) -> io::Result<()> {
-        self.0.borrow_mut().write_held()
+        self.0.lock().expect("no panic holds it").write_held()
     }
 }
 
@@ -85,23 +85,23 @@ mod tests {
     #[test]
     fn holds_until_full() {
         let out = Stdout::new().unwrap();
-        out.0.borrow_mut().line = false;
-        out.0.borrow_mut().sink = |_| Ok(());
+        out.0.lock().expect("no panic holds it").line = false;
+        out.0.lock().expect("no panic holds it").sink = |_| Ok(());
         out.write_all(b"abc").unwrap();
-        assert_eq!(out.0.borrow().held, b"abc");
+        assert_eq!(out.0.lock().expect("no panic holds it").held, b"abc");
         out.write_all(&[b'x'; BUFFER - 3]).unwrap();
-        assert_eq!(out.0.borrow().held.len(), BUFFER);
+        assert_eq!(out.0.lock().expect("no panic holds it").held.len(), BUFFER);
         out.write_all(b"y").unwrap();
-        assert_eq!(out.0.borrow().held, b"y");
+        assert_eq!(out.0.lock().expect("no panic holds it").held, b"y");
         out.write_all(&[b'z'; BUFFER]).unwrap();
-        assert!(out.0.borrow().held.is_empty());
+        assert!(out.0.lock().expect("no panic holds it").held.is_empty());
         out.write_all(b"q\n").unwrap();
-        assert_eq!(out.0.borrow().held, b"q\n");
-        out.0.borrow_mut().line = true;
+        assert_eq!(out.0.lock().expect("no panic holds it").held, b"q\n");
+        out.0.lock().expect("no panic holds it").line = true;
         out.write_all(b"r\n").unwrap();
-        assert!(out.0.borrow().held.is_empty());
+        assert!(out.0.lock().expect("no panic holds it").held.is_empty());
         out.write_all(b"s").unwrap();
         out.flush().unwrap();
-        assert!(out.0.borrow().held.is_empty());
+        assert!(out.0.lock().expect("no panic holds it").held.is_empty());
     }
 }

@@ -50,7 +50,7 @@ impl TimeLimit {
 }
 
 /// Where a multi reads the time.
-pub trait Clock {
+pub trait Clock: Send {
     fn now(&self) -> Instant;
 
     /// The calendar time: whole seconds since 1970-01-01 00:00:00 UTC,

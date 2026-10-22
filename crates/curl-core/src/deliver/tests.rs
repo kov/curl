@@ -38,7 +38,7 @@ fn easy(url: &str) -> Easy {
 type Seen = (&'static str, Vec<u8>);
 
 /// What the handlers of a test saw, in order.
-type Log = std::rc::Rc<std::cell::RefCell<Vec<Seen>>>;
+type Log = std::sync::Arc<std::sync::Mutex<Vec<Seen>>>;
 
 /// Records what it is given; answers `verdict`; installs `then` as the
 /// transfer's write handler on its first call.
@@ -46,7 +46,7 @@ struct Recorder {
     name: &'static str,
     log: Log,
     verdict: Write,
-    then: std::cell::RefCell<Option<Handler<dyn WriteHandler>>>,
+    then: std::sync::Mutex<Option<Handler<dyn WriteHandler>>>,
 }
 
 impl Recorder {
@@ -55,15 +55,15 @@ impl Recorder {
             name,
             log: log.clone(),
             verdict: Write::Accepted,
-            then: std::cell::RefCell::new(None),
+            then: std::sync::Mutex::new(None),
         }
     }
 }
 
 impl WriteHandler for Recorder {
     fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
-        self.log.borrow_mut().push((self.name, body.to_vec()));
-        if let Some(next) = self.then.borrow_mut().take() {
+        self.log.lock().unwrap().push((self.name, body.to_vec()));
+        if let Some(next) = self.then.lock().unwrap().take() {
             let me = cx.me();
             cx.options_mut(me).unwrap().callbacks.write = Some(next);
         }
@@ -73,7 +73,7 @@ impl WriteHandler for Recorder {
 
 impl HeaderHandler for Recorder {
     fn header(&self, _: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
-        self.log.borrow_mut().push((self.name, line.to_vec()));
+        self.log.lock().unwrap().push((self.name, line.to_vec()));
         self.verdict
     }
 }
@@ -113,7 +113,7 @@ fn a_script_s_pieces_reach_their_handlers_in_order() {
         Some(Handler::header(Recorder::new("header", &log)).unwrap());
     assert_eq!(run_alone(e), Ok(()));
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         [
             ("header", b"HTTP/1.1 200 OK\r\n".to_vec()),
             ("header", b"\r\n".to_vec()),
@@ -134,12 +134,12 @@ fn without_handlers_the_output_goes_nowhere() {
 fn a_handler_replaced_inside_its_own_call_takes_the_next_piece() {
     let log = Log::default();
     let first = Recorder::new("first", &log);
-    *first.then.borrow_mut() = Some(handler(Recorder::new("second", &log)));
+    *first.then.lock().unwrap() = Some(handler(Recorder::new("second", &log)));
     let mut e = script(vec![body(b"one"), body(b"two"), body(b"three")]);
     e.options_mut().callbacks.write = Some(handler(first));
     assert_eq!(run_alone(e), Ok(()));
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         [
             ("first", b"one".to_vec()),
             ("second", b"two".to_vec()),
@@ -157,7 +157,7 @@ fn a_failed_write_fails_the_transfer() {
     e.options_mut().callbacks.write = Some(handler(h));
     assert_eq!(run_alone(e), Err(ErrorKind::WriteError));
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         [("write", b"one".to_vec())],
         "nothing after it"
     );
@@ -175,7 +175,7 @@ impl WriteHandler for Explains {
 
 /// Keeps the trace's text lines.
 #[derive(Clone, Default)]
-struct Trace(std::rc::Rc<std::cell::RefCell<Vec<Vec<u8>>>>);
+struct Trace(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
 
 /// The debug build's warning, which its first transfer traces.
 fn debug_build_warning(line: &[u8]) -> bool {
@@ -185,14 +185,14 @@ fn debug_build_warning(line: &[u8]) -> bool {
 impl DebugHandler for Trace {
     fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
         if kind == DebugKind::Text && !debug_build_warning(data) {
-            self.0.borrow_mut().push(data.to_vec());
+            self.0.lock().unwrap().push(data.to_vec());
         }
     }
 }
 
 impl crate::handler::TextSink for Trace {
     fn write(&self, text: &[u8]) {
-        self.0.borrow_mut().push(text.to_vec());
+        self.0.lock().unwrap().push(text.to_vec());
     }
 }
 
@@ -214,8 +214,8 @@ fn a_handler_s_own_reason_is_the_only_one() {
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
     assert_eq!(e.report().failure(), Some(&b"mine"[..]));
     let closed = b"closing connection #0\n".to_vec();
-    assert_eq!(*trace.0.borrow(), [b"mine\n".to_vec(), closed]);
-    assert_eq!(*told.0.borrow(), [b"mine".to_vec()]);
+    assert_eq!(*trace.0.lock().unwrap(), [b"mine\n".to_vec(), closed]);
+    assert_eq!(*told.0.lock().unwrap(), [b"mine".to_vec()]);
 }
 
 /// Fails with two reasons.
@@ -246,9 +246,9 @@ fn the_first_reason_is_the_one_kept() {
         .unwrap_err();
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
     assert_eq!(e.report().failure(), Some(&b"first"[..]));
-    assert_eq!(*told.0.borrow(), [b"first".to_vec()]);
+    assert_eq!(*told.0.lock().unwrap(), [b"first".to_vec()]);
     assert_eq!(
-        *trace.0.borrow(),
+        *trace.0.lock().unwrap(),
         [
             b"first\n".to_vec(),
             b"second\n".to_vec(),
@@ -258,7 +258,7 @@ fn the_first_reason_is_the_one_kept() {
 }
 
 /// Sees its own transfer and its options from inside the call.
-struct Introspect(std::cell::Cell<Option<TransferId>>);
+struct Introspect(crate::test_cell::Cell<Option<TransferId>>);
 
 impl WriteHandler for Introspect {
     fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
@@ -274,7 +274,7 @@ impl WriteHandler for Introspect {
 #[test]
 fn a_handler_reaches_its_own_transfer() {
     let mut m = multi();
-    let seen = std::rc::Rc::new(Introspect(std::cell::Cell::new(None)));
+    let seen = std::sync::Arc::new(Introspect(crate::test_cell::Cell::new(None)));
     let mut e = script(vec![body(b"x")]);
     e.options_mut().callbacks.write = Some(Handler::write(RcWrite(seen.clone())).unwrap());
     let id = m.add(e, (), &mut NoEvents).unwrap();
@@ -285,7 +285,7 @@ fn a_handler_reaches_its_own_transfer() {
     assert_eq!(seen.0.get(), Some(id));
 }
 
-struct RcWrite(std::rc::Rc<Introspect>);
+struct RcWrite(std::sync::Arc<Introspect>);
 
 impl WriteHandler for RcWrite {
     fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -320,7 +320,7 @@ impl DebugHandler for Recorder {
             return;
         }
         assert_eq!(kind, DebugKind::DataIn);
-        self.log.borrow_mut().push((self.name, data.to_vec()));
+        self.log.lock().unwrap().push((self.name, data.to_vec()));
     }
 }
 
@@ -338,7 +338,7 @@ fn played(
     o.callbacks.debug = Some(Handler::debug(Recorder::new("debug", &log)).unwrap());
     set(o, &log);
     let result = run_alone(e);
-    let seen = log.borrow().clone();
+    let seen = log.lock().unwrap().clone();
     (result, seen)
 }
 
@@ -534,18 +534,18 @@ fn failed_output_stays_failed() {
         );
         assert_eq!(p.body(cx, b"two"), Err(ErrorKind::WriteError));
     });
-    assert_eq!(*log.borrow(), [("write", b"one".to_vec())]);
+    assert_eq!(*log.lock().unwrap(), [("write", b"one".to_vec())]);
 }
 
 /// What the write handler sees of its own report at each call:
 /// (download, delivered, starttransfer).
-struct SizeProbe(std::cell::RefCell<Vec<(u64, u64, Duration)>>);
+struct SizeProbe(std::sync::Mutex<Vec<(u64, u64, Duration)>>);
 
-impl WriteHandler for std::rc::Rc<SizeProbe> {
+impl WriteHandler for std::sync::Arc<SizeProbe> {
     fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
         let report = cx.info(cx.me()).unwrap();
         let sizes = report.sizes();
-        self.0.borrow_mut().push((
+        self.0.lock().unwrap().push((
             sizes.download(),
             sizes.delivered(),
             report.timings().starttransfer(),
@@ -558,7 +558,7 @@ impl WriteHandler for std::rc::Rc<SizeProbe> {
 /// in progress, the delivered size only the piece in progress
 /// (`cw_download_write`, `cw_out_ptr_flush`); the response had started.
 fn probed(include_header: bool) -> (Vec<(u64, u64, Duration)>, crate::report::Sizes) {
-    let probe = std::rc::Rc::new(SizeProbe(Default::default()));
+    let probe = std::sync::Arc::new(SizeProbe(Default::default()));
     let mut m = multi();
     let mut e = script(vec![
         Piece::Header(b"a: 34567\r\n".to_vec()),
@@ -572,7 +572,7 @@ fn probed(include_header: bool) -> (Vec<(u64, u64, Duration)>, crate::report::Si
         drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
         Ok(())
     );
-    let seen = probe.0.borrow().clone();
+    let seen = probe.0.lock().unwrap().clone();
     (seen, *m.easy(id).unwrap().report().sizes())
 }
 
@@ -617,13 +617,13 @@ fn a_connect_answer_does_not_start_the_response() {
 }
 
 /// Reads `Content-Type` from inside its call.
-struct ReadsHeader(std::cell::RefCell<Option<Vec<u8>>>);
+struct ReadsHeader(std::sync::Mutex<Option<Vec<u8>>>);
 
-impl WriteHandler for std::rc::Rc<ReadsHeader> {
+impl WriteHandler for std::sync::Arc<ReadsHeader> {
     fn write(&self, cx: &mut TransferCx<'_>, _: &[u8]) -> Write {
         let h = cx.info(cx.me()).unwrap().headers();
         let found = h.get(b"content-type", 0, Origins::ALL, Request::Last);
-        *self.0.borrow_mut() = Some(found.unwrap().value.to_vec());
+        *self.0.lock().unwrap() = Some(found.unwrap().value.to_vec());
         Write::Accepted
     }
 }
@@ -654,12 +654,12 @@ fn rerun(m: &mut Multi, e: Easy) -> Easy {
 /// until the next one starts.
 #[test]
 fn a_transfer_s_headers_are_stored_for_its_handlers_and_after() {
-    let probe = std::rc::Rc::new(ReadsHeader(Default::default()));
+    let probe = std::sync::Arc::new(ReadsHeader(Default::default()));
     let mut m = multi();
     let mut e = headed();
     e.options_mut().callbacks.write = Some(Handler::write(probe.clone()).unwrap());
     let e = rerun(&mut m, e);
-    assert_eq!(probe.0.borrow().as_deref(), Some(&b"text/plain"[..]));
+    assert_eq!(probe.0.lock().unwrap().as_deref(), Some(&b"text/plain"[..]));
     let first = next(&e, None).unwrap();
     assert_eq!(first.name, b"Content-Type");
     let cursor = first.cursor;
@@ -700,31 +700,31 @@ fn an_invalid_header_line_fails_the_transfer() {
 
 /// Every call the handlers of one transfer saw, in order: (handler, bytes,
 /// verdict).
-type Calls = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, Vec<u8>, Write)>>>;
+type Calls = std::sync::Arc<std::sync::Mutex<Vec<(&'static str, Vec<u8>, Write)>>>;
 
 /// A write or header handler answering by `plan`, given the number of the
 /// call among all its transfer's handler calls; it may pause transfers.
 struct Planned<F> {
-    plan: std::rc::Rc<F>,
+    plan: std::sync::Arc<F>,
     calls: Calls,
 }
 
-impl<F: Fn(&mut TransferCx<'_>, usize) -> Write> Planned<F> {
+impl<F: Fn(&mut TransferCx<'_>, usize) -> Write + Send + Sync> Planned<F> {
     fn answer(&self, name: &'static str, cx: &mut TransferCx<'_>, bytes: &[u8]) -> Write {
-        let n = self.calls.borrow().len();
+        let n = self.calls.lock().unwrap().len();
         let w = (self.plan)(cx, n);
-        self.calls.borrow_mut().push((name, bytes.to_vec(), w));
+        self.calls.lock().unwrap().push((name, bytes.to_vec(), w));
         w
     }
 }
 
-impl<F: Fn(&mut TransferCx<'_>, usize) -> Write> WriteHandler for Planned<F> {
+impl<F: Fn(&mut TransferCx<'_>, usize) -> Write + Send + Sync> WriteHandler for Planned<F> {
     fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write {
         self.answer("write", cx, body)
     }
 }
 
-impl<F: Fn(&mut TransferCx<'_>, usize) -> Write> HeaderHandler for Planned<F> {
+impl<F: Fn(&mut TransferCx<'_>, usize) -> Write + Send + Sync> HeaderHandler for Planned<F> {
     fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
         self.answer("header", cx, line)
     }
@@ -733,10 +733,10 @@ impl<F: Fn(&mut TransferCx<'_>, usize) -> Write> HeaderHandler for Planned<F> {
 /// Give `e` write and header handlers answering by `plan`.
 fn planned<F>(e: &mut Easy, plan: F) -> Calls
 where
-    F: Fn(&mut TransferCx<'_>, usize) -> Write + 'static,
+    F: Fn(&mut TransferCx<'_>, usize) -> Write + Send + Sync + 'static,
 {
     let calls = Calls::default();
-    let plan = std::rc::Rc::new(plan);
+    let plan = std::sync::Arc::new(plan);
     let cb = &mut e.options_mut().callbacks;
     cb.write = Some(
         Handler::write(Planned {
@@ -759,7 +759,8 @@ where
 /// call.
 fn taken(calls: &Calls) -> Vec<(&'static str, Vec<u8>)> {
     calls
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .filter(|(_, _, w)| *w == Write::Accepted)
         .map(|(n, b, _)| (*n, b.clone()))
@@ -894,8 +895,8 @@ fn output_held_before_a_decoder_is_replayed_in_the_order_it_came() {
 /// Counts what it takes; pauses on its first call.
 #[derive(Clone, Default)]
 struct PausesFirst {
-    calls: std::rc::Rc<std::cell::Cell<usize>>,
-    took: std::rc::Rc<std::cell::Cell<usize>>,
+    calls: std::sync::Arc<crate::test_cell::Cell<usize>>,
+    took: std::sync::Arc<crate::test_cell::Cell<usize>>,
 }
 
 impl WriteHandler for PausesFirst {
@@ -941,7 +942,8 @@ fn the_paused_piece_is_given_again_whole() {
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let lens: Vec<_> = calls
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .map(|(_, b, w)| (b.len(), *w))
         .collect();
@@ -954,7 +956,12 @@ fn the_paused_piece_is_given_again_whole() {
     );
     // The unpause replays at once, before it returns.
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
-    let lens: Vec<_> = calls.borrow().iter().map(|(_, b, _)| b.len()).collect();
+    let lens: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b, _)| b.len())
+        .collect();
     assert_eq!(lens, [16384, 16384, 16384, 7232]);
     assert_eq!(m.easy(id).unwrap().report().sizes().delivered(), 40000);
     m.perform(&mut NoEvents).unwrap();
@@ -992,7 +999,7 @@ fn a_pause_where_none_is_supported_fails_the_write() {
         assert_eq!(p.body(cx, b"x"), Err(ErrorKind::WriteError));
         assert!(!p.holds_output());
     });
-    assert_eq!(calls.borrow().len(), 1);
+    assert_eq!(calls.lock().unwrap().len(), 1);
 }
 
 /// Past 64 MiB held, the transfer fails ("pause buffer not large enough").
@@ -1043,7 +1050,12 @@ fn a_receive_pause_finishes_the_write_under_way() {
     });
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
-    let lens: Vec<_> = calls.borrow().iter().map(|(_, b, _)| b.len()).collect();
+    let lens: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b, _)| b.len())
+        .collect();
     assert_eq!(
         lens,
         [16384, 16384, 7232],
@@ -1051,7 +1063,7 @@ fn a_receive_pause_finishes_the_write_under_way() {
     );
     assert_eq!(m.info_read().map(|msg| msg.id), None);
     m.perform(&mut NoEvents).unwrap();
-    assert_eq!(calls.borrow().len(), 3, "still paused");
+    assert_eq!(calls.lock().unwrap().len(), 3, "still paused");
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     // The unpause marks it to run: a pass that runs only what is due or
     // marked runs it.
@@ -1078,7 +1090,8 @@ fn a_sibling_s_unpause_replays_at_once() {
     m.add(b, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let a_seen: Vec<_> = a_calls
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .map(|(_, b, w)| (b.len(), *w))
         .collect();
@@ -1115,7 +1128,12 @@ fn an_unpause_inside_the_replay_lets_it_go_on() {
     let id = m.add(e, (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
-    let lens: Vec<_> = calls.borrow().iter().map(|(_, b, _)| b.len()).collect();
+    let lens: Vec<_> = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b, _)| b.len())
+        .collect();
     assert_eq!(
         lens,
         [16384, 16384, 16384, 7232],
@@ -1147,7 +1165,7 @@ fn a_failed_replay_fails_the_unpause_and_then_the_transfer() {
         m.info_read().map(|msg| msg.result),
         Some(Err(ErrorKind::WriteError))
     );
-    assert_eq!(calls.borrow().len(), 2);
+    assert_eq!(calls.lock().unwrap().len(), 2);
 }
 
 /// Counts the timer calls.
@@ -1212,7 +1230,8 @@ fn a_receive_pause_inside_the_replay_lets_it_finish() {
     m.perform(&mut NoEvents).unwrap();
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     let seen: Vec<_> = calls
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .map(|(n, b, w)| (*n, b.clone(), *w))
         .collect();
@@ -1226,7 +1245,7 @@ fn a_receive_pause_inside_the_replay_lets_it_finish() {
         ]
     );
     m.perform(&mut NoEvents).unwrap();
-    assert_eq!(calls.borrow().len(), 3, "stopped: nothing more read");
+    assert_eq!(calls.lock().unwrap().len(), 3, "stopped: nothing more read");
     assert_eq!(m.info_read().map(|msg| msg.id), None);
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
@@ -1253,7 +1272,8 @@ fn output_written_while_held_goes_behind_it() {
         assert!(!p.holds_output());
     });
     let seen: Vec<_> = calls
-        .borrow()
+        .lock()
+        .unwrap()
         .iter()
         .map(|(_, b, w)| (b.clone(), *w))
         .collect();
@@ -1304,9 +1324,9 @@ fn a_body_past_its_expected_size_is_cut() {
         );
         p.end(cx).unwrap();
     });
-    assert_eq!(lengths(&log.borrow(), "write"), [3, 2]);
+    assert_eq!(lengths(&log.lock().unwrap(), "write"), [3, 2]);
     assert_eq!(
-        *trace.0.borrow(),
+        *trace.0.lock().unwrap(),
         [
             b"Excess found writing body: excess = 2, size = 5, maxdownload = 5, bytecount = 5\n"
                 .to_vec()
@@ -1341,8 +1361,8 @@ fn a_body_of_no_known_size_is_never_cut() {
         assert_eq!((p.body_done(), p.body_closes()), (false, false));
         p.end(cx).unwrap();
     });
-    assert_eq!(lengths(&log.borrow(), "write"), [6]);
-    assert_eq!(*trace.0.borrow(), Vec::<Vec<u8>>::new());
+    assert_eq!(lengths(&log.lock().unwrap(), "write"), [6]);
+    assert_eq!(*trace.0.lock().unwrap(), Vec::<Vec<u8>>::new());
 }
 
 /// A response ending short of its expected size fails with what is
@@ -1362,9 +1382,9 @@ fn a_short_body_is_a_partial_file() {
         p.body(cx, b"abc").unwrap();
         assert_eq!(p.end(cx), Err(ErrorKind::PartialFile));
     });
-    assert_eq!(lengths(&log.borrow(), "write"), [3]);
+    assert_eq!(lengths(&log.lock().unwrap(), "write"), [3]);
     assert_eq!(
-        *trace.0.borrow(),
+        *trace.0.lock().unwrap(),
         [b"end of response with 3 bytes missing\n".to_vec()]
     );
 }
@@ -1389,7 +1409,7 @@ fn an_ignored_body_is_counted_to_its_end() {
         assert_eq!((p.body_done(), p.bytecount()), (true, 6));
         p.end(cx).unwrap();
     });
-    assert_eq!(lengths(&log.borrow(), "write"), [0usize; 0]);
+    assert_eq!(lengths(&log.lock().unwrap(), "write"), [0usize; 0]);
 }
 
 /// A body where none is wanted is dropped, the connection with it; the
@@ -1422,5 +1442,5 @@ fn an_unwanted_body_is_dropped() {
         });
         assert_eq!(p.body(cx, b"abc"), Err(ErrorKind::WeirdServerReply));
     });
-    assert_eq!(lengths(&log.borrow(), "write"), [0usize; 0]);
+    assert_eq!(lengths(&log.lock().unwrap(), "write"), [0usize; 0]);
 }

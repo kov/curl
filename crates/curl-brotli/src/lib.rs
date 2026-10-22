@@ -117,6 +117,10 @@ impl Brotli {
     }
 }
 
+// SAFETY: the decoder instance is this one's alone, reached only through
+// `&mut self`; brotli keeps no tie to the thread that made it.
+unsafe impl Send for Brotli {}
+
 impl Decoder for Brotli {
     fn decode(&mut self, input: &[u8], out: &mut dyn Sink) -> Result<(), ErrorKind> {
         let Some(state) = self.state else {

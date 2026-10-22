@@ -9,11 +9,10 @@
 
 #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
-use std::cell::Cell;
 use std::time::Duration;
 
 use curl_alloc::track::{self, Tracker};
-use curl_alloc::{OutOfMemory, TryArc, TryRc, try_box};
+use curl_alloc::{OutOfMemory, TryArc, try_box};
 use curl_core::conn::io::{Conversation, FakeNet, Net, Peer, Waker};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
@@ -111,7 +110,7 @@ struct Outcome {
 fn scenario() -> Result<Outcome, OutOfMemory> {
     let clock = ManualClock::new()?;
     let boxed: Box<dyn Clock> = try_box(clock.clone())?;
-    let net: Box<dyn Net> = try_box(fake_net(&clock))?;
+    let net: Box<dyn Net + Send> = try_box(fake_net(&clock))?;
     let waker = TryArc::try_new(Waker::new().expect("a socket pair"))?;
     let env = Env {
         clock: boxed,
@@ -221,7 +220,7 @@ struct Taken {
 }
 
 /// Pauses every third call of either handler; takes the rest.
-struct Pauser(TryRc<Taken>);
+struct Pauser(TryArc<Taken>);
 
 impl Pauser {
     fn take(&self, n: usize, into: &Cell<u64>) -> Write {
@@ -285,7 +284,7 @@ fn pause_scenario() -> Result<Paused, OutOfMemory> {
     let mut easy = Easy::new();
     easy.options_mut().set_url(Some(b"script://a"))?;
     easy.options_mut().output.include_header = true;
-    let taken = TryRc::try_new(Taken::default())?;
+    let taken = TryArc::try_new(Taken::default())?;
     let cb = &mut easy.options_mut().callbacks;
     cb.write = Some(Handler::write(Pauser(taken.clone()))?);
     cb.header = Some(Handler::header(Pauser(taken.clone()))?);
@@ -293,7 +292,7 @@ fn pause_scenario() -> Result<Paused, OutOfMemory> {
     let mut upload = Vec::new();
     upload.try_reserve_exact(300).map_err(|_| OutOfMemory)?;
     upload.resize(300, b'u');
-    easy.options_mut().upload = UploadSource::Bytes(TryRc::try_new(upload)?);
+    easy.options_mut().upload = UploadSource::Bytes(TryArc::try_new(upload)?);
     let pieces = |n: usize| -> Result<Vec<u8>, OutOfMemory> {
         let mut v = Vec::new();
         v.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
@@ -390,7 +389,7 @@ struct Took {
     headers: Cell<u64>,
 }
 
-struct Taker(TryRc<Took>);
+struct Taker(TryArc<Took>);
 
 impl WriteHandler for Taker {
     fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
@@ -458,7 +457,7 @@ fn get_of(
     let o = easy.options_mut();
     o.set_url(Some(url))?;
     o.http.user_agent = Some(b"curl/test".to_vec_fallible()?);
-    let took = TryRc::try_new(Took::default())?;
+    let took = TryArc::try_new(Took::default())?;
     o.callbacks.write = Some(Handler::write(Taker(took.clone()))?);
     o.callbacks.header = Some(Handler::header(Taker(took.clone()))?);
     let id = match m.add(easy, (), &mut NoEvents) {
@@ -580,4 +579,19 @@ fn a_get_stays_within_its_allocation_budget() {
         n <= GET_BUDGET,
         "a plain GET made {n} allocations, over its {GET_BUDGET}"
     );
+}
+
+/// A count the handlers keep, `Sync` as a handler is; a lock makes no
+/// allocation.
+#[derive(Default)]
+struct Cell<T>(std::sync::Mutex<T>);
+
+impl<T: Copy> Cell<T> {
+    fn get(&self) -> T {
+        *self.0.lock().unwrap()
+    }
+
+    fn set(&self, value: T) {
+        *self.0.lock().unwrap() = value;
+    }
 }

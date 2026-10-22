@@ -80,7 +80,7 @@ impl ShimMulti {
         ShimMulti::with_net(try_box(SystemNet)?)
     }
 
-    fn with_net(net: Box<dyn Net>) -> Result<ShimMulti, OutOfMemory> {
+    fn with_net(net: Box<dyn Net + Send>) -> Result<ShimMulti, OutOfMemory> {
         let waker = match Waker::new() {
             Ok(w) => Some(TryArc::try_new(w)?),
             Err(_) => None,
@@ -115,7 +115,7 @@ impl ShimMulti {
 
     /// As `curl_multi_init`, over `net`.
     #[cfg(test)]
-    pub(crate) fn boxed_with(net: Box<dyn Net>) -> Result<NonNull<ShimMulti>, OutOfMemory> {
+    pub(crate) fn boxed_with(net: Box<dyn Net + Send>) -> Result<NonNull<ShimMulti>, OutOfMemory> {
         Ok(NonNull::from(Box::leak(try_box(ShimMulti::with_net(
             net,
         )?)?)))

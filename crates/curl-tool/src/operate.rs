@@ -9,7 +9,7 @@ use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt as _;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _, try_format};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::cookie::Suffixes;
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, UrlErrorKind};
@@ -951,7 +951,7 @@ fn configure(
         let mut body = Vec::new();
         body.try_extend_from_slice(post)?;
         o.method = Method::Post;
-        o.upload = options::UploadSource::Bytes(TryRc::try_new(body)?);
+        o.upload = options::UploadSource::Bytes(TryArc::try_new(body)?);
     } else if op.no_body {
         o.method = Method::Head;
     }
@@ -1390,7 +1390,7 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
         }
         (file, size)
     };
-    let file = curl_alloc::TryRc::try_new(std::cell::RefCell::new(file))
+    let file = curl_alloc::TryArc::try_new(std::sync::Mutex::new(file))
         .map_err(|_| Unopened::OutOfMemory)?;
     let handler = Handler::read(UploadFile(file.clone())).map_err(|_| Unopened::OutOfMemory)?;
     let rewind = Handler::rewind(UploadFile(file)).map_err(|_| Unopened::OutOfMemory)?;
@@ -1403,7 +1403,7 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
 
 /// Reads the file to upload (`tool_read_cb`), and starts it over
 /// (`tool_seek_cb`).
-struct UploadFile(curl_alloc::TryRc<std::cell::RefCell<File>>);
+struct UploadFile(curl_alloc::TryArc<std::sync::Mutex<File>>);
 
 impl ReadHandler for UploadFile {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
@@ -1411,7 +1411,7 @@ impl ReadHandler for UploadFile {
         // the transfer rather than send part of the file as all of it
         // (SCOPE.md, "Where it differs from C").
         loop {
-            match self.0.borrow_mut().read(buf) {
+            match self.0.lock().expect("no panic holds it").read(buf) {
                 Ok(n) => return NonZeroUsize::new(n).map_or(Read::Eof, Read::Data),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => return Read::Fail,
@@ -1422,7 +1422,12 @@ impl ReadHandler for UploadFile {
 
 impl Rewind for UploadFile {
     fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
-        match self.0.borrow_mut().seek(SeekFrom::Start(0)) {
+        match self
+            .0
+            .lock()
+            .expect("no panic holds it")
+            .seek(SeekFrom::Start(0))
+        {
             Ok(_) => Ok(()),
             Err(_) => Err(RewindFailed),
         }

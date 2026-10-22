@@ -9,7 +9,7 @@
 
 use std::cmp::Ordering;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::url::is_ip_address;
 
@@ -50,7 +50,7 @@ const FILE_HEAD: &[u8] = b"# Netscape HTTP Cookie File\n\
 
 /// Which domains are public suffixes, on which no cookie may be set for
 /// all the hosts below (libpsl).
-pub trait PublicSuffixes {
+pub trait PublicSuffixes: Send + Sync {
     /// Whether `domain`, in lower case, is a public suffix
     /// (`psl_is_public_suffix`).
     fn is_public_suffix(&self, domain: &[u8]) -> bool;
@@ -68,11 +68,11 @@ pub trait PublicSuffixes {
 
 /// A list of public suffixes, shared by the handles given it.
 #[derive(Clone)]
-pub struct Suffixes(TryRc<Box<dyn PublicSuffixes>>);
+pub struct Suffixes(TryArc<Box<dyn PublicSuffixes>>);
 
 impl Suffixes {
     pub fn new(list: Box<dyn PublicSuffixes>) -> Result<Suffixes, OutOfMemory> {
-        Ok(Suffixes(TryRc::try_new(list)?))
+        Ok(Suffixes(TryArc::try_new(list)?))
     }
 
     pub(crate) fn list(&self) -> &dyn PublicSuffixes {

@@ -2,11 +2,11 @@
 //! bouncing ball while its size is unknown (`tool_cb_prg.c`). It is drawn
 //! on standard error by the tool's own progress handler.
 
-use std::cell::RefCell;
 use std::io::Write as _;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use curl_alloc::{OutOfMemory, TryRc};
+use curl_alloc::{OutOfMemory, TryArc};
 use curl_core::handler::{Handler, ProgressHandler, ProgressNow, ProgressVerdict};
 use curl_core::multi::TransferCx;
 
@@ -43,7 +43,7 @@ const SINUS: [i32; 200] = [
 /// One transfer's bar, shared by its progress handler and the tool, which
 /// ends the line once the transfer is over.
 #[derive(Clone)]
-pub(crate) struct Bar(TryRc<RefCell<State>>);
+pub(crate) struct Bar(TryArc<Mutex<State>>);
 
 /// C's `struct ProgressData`.
 struct State {
@@ -65,7 +65,7 @@ struct State {
 
 impl Bar {
     pub(crate) fn new(start: Option<u64>) -> Result<Bar, OutOfMemory> {
-        Ok(Bar(TryRc::try_new(RefCell::new(State::new(start)))?))
+        Ok(Bar(TryArc::try_new(Mutex::new(State::new(start)))?))
     }
 
     pub(crate) fn handler(&self) -> Result<Handler<dyn ProgressHandler>, OutOfMemory> {
@@ -74,14 +74,14 @@ impl Bar {
 
     /// The bar was drawn: the line it is on wants ending.
     pub(crate) fn shown(&self) -> bool {
-        self.0.borrow().calls > 0
+        self.0.lock().expect("no panic holds it").calls > 0
     }
 }
 
 impl ProgressHandler for Bar {
     fn progress(&self, _: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
         let mut out = std::io::stderr().lock();
-        let mut state = self.0.borrow_mut();
+        let mut state = self.0.lock().expect("no panic holds it");
         let drawn = state.draw(now, Instant::now(), width());
         // A failed write has nowhere to be reported, as in C.
         let _ = out.write_all(drawn.bytes()).and_then(|()| out.flush());

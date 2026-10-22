@@ -145,7 +145,7 @@ fn codings_that_cannot_be_undone_fail() {
 #[derive(Clone, Default)]
 struct PausesFirst {
     seen: Seen,
-    paused: Rc<std::cell::Cell<bool>>,
+    paused: Arc<crate::test_cell::Cell<bool>>,
 }
 
 impl WriteHandler for PausesFirst {
@@ -191,7 +191,14 @@ fn a_trailer_stays_behind_the_body_held_before_its_decoder() {
         }
         m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     }
-    let order: Vec<&str> = handler.seen.0.borrow().iter().map(|(w, _)| *w).collect();
+    let order: Vec<&str> = handler
+        .seen
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(w, _)| *w)
+        .collect();
     let trailer = order
         .iter()
         .position(|w| *w == "trailer")

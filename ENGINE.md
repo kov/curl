@@ -890,7 +890,11 @@ machine through the pool, and NAMELOOKUP is marked when it resolves.
   `Auth`, sends it and reads the answer through `Pool::dialed`, parses it with
   `proto::http1::tunnel::Answer`, and delivers each line through its own pipeline as
   `HeaderOrigin::Connect`, so the report, header handler and auth state are the transfer's to
-  write. A 407 is answered with another `CONNECT` on the same connection, its body dropped;
+  write. It reads until the socket would block or the answer is whole, as C does, and takes
+  stock of the transfer (`progress::update`) as C's byte-at-a-time read does: once for each
+  byte of the answer, the byte after a header line counted before the line is taken in, once
+  for the connection's end, and once each time it returns for more or has the answer. The
+  SOCKS handshake, like C's, takes none. A 407 is answered with another `CONNECT` on the same connection, its body dropped;
   a 2xx makes the `Conn` (`Pool::tunneled`), keeping what came after the answer, and is
   traced as established only then.
 - SOCKS likewise (`multi/state/socks.rs`, over the sans-IO `conn::socks::Handshake`). For SOCKS4

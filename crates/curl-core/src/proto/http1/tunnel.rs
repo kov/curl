@@ -90,6 +90,9 @@ pub(crate) struct Answer {
     close: bool,
     /// A line ended; the next byte says whether it goes on (`maybe_folded`).
     folded: bool,
+    /// The line given out was found whole by the byte after it, which
+    /// was looked at and left for the next read.
+    looked_ahead: bool,
     /// The line goes on: the blanks leading its next part are skipped
     /// (`leading_unfold`).
     unfold: bool,
@@ -236,6 +239,7 @@ impl Answer {
             chunked: false,
             close: false,
             folded: false,
+            looked_ahead: false,
             unfold: false,
             body: Body::Head,
             chunks_read: false,
@@ -265,6 +269,7 @@ impl Answer {
             self.applied = false;
             self.line.clear();
         }
+        self.looked_ahead = false;
         let mut used = 0;
         while used < input.len() {
             match &mut self.body {
@@ -308,6 +313,7 @@ impl Answer {
                 } else {
                     // The line is whole; the byte waits for the next.
                     self.whole = true;
+                    self.looked_ahead = true;
                     return Ok((used, Read::Line));
                 }
             }
@@ -331,6 +337,12 @@ impl Answer {
             self.folded = true;
         }
         Ok((used, Read::More))
+    }
+
+    /// Whether the last read looked at the byte after the line it gave
+    /// out, as C reads it before it takes the line in.
+    pub(crate) fn looked_ahead(&self) -> bool {
+        self.looked_ahead
     }
 
     /// The connection closed: a line read whole is given out, else the

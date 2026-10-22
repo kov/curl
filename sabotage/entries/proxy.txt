@@ -464,3 +464,19 @@ witness: curl-core proto::http::tests::a_proxy_s_name_is_the_one_found_in_the_ca
                     let name = Bytes(c.route.destination().name());
 --- new
                     let name = Bytes(c.route.origin.name());
+
+=== the byte after a CONNECT answer's line is not counted before the line
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::the_tunnel_takes_stock_for_each_byte_of_the_answer
+--- old
+        let looked = used + usize::from(t.answer.looked_ahead());
+--- new
+        let looked = used;
+
+=== the tunnel takes no stock as it reads the answer
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::a_progress_abort_ends_the_tunnel_at_once
+--- old
+        for _ in 0..owed {
+--- new
+        for _ in 0..0 {

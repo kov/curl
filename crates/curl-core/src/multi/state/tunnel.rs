@@ -16,6 +16,7 @@ use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
 use crate::options::ProxyType;
+use crate::progress;
 use crate::proto::ProtoState;
 use crate::proto::http::auth::{
     AuthAct, AuthRequest, Challenges, HeardNote, Offered, OutputError, PeerAsked, Secret, Side,
@@ -48,6 +49,9 @@ pub(crate) struct Tunnel {
     closed: bool,
     /// The answer's head bytes, against C's limit (`allheadercount`).
     head_bytes: usize,
+    /// Bytes at the front of the connection's input that progress was
+    /// taken for already: the byte a line's end was checked against.
+    counted: usize,
 }
 
 /// The tunnel under way in a handshake.
@@ -172,6 +176,7 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshak
         authorized: output.header.is_some(),
         closed: false,
         head_bytes: 0,
+        counted: 0,
     };
     try_box(Handshake::Connect(tunnel)).map_err(oom)
 }
@@ -220,14 +225,25 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
             continue;
         }
         if t.answer.done() {
+            progress::update(cx, false)?;
             return finish(c, cx);
         }
+        // C reads the answer a byte at a time, taking stock of the
+        // transfer after each read, the end of the connection's too, and
+        // once more as it returns for more or with the answer whole
+        // (`recv_CONNECT_resp`, `H1_CONNECT`).
         let dialed = c.lease.dialed();
         if dialed.received().is_empty() {
             match dialed.recv(READ_SIZE) {
                 Ok(Recv::Data(_)) => {}
-                Ok(Recv::WouldBlock) => return Ok(Ran::Idle),
-                Ok(Recv::Eof) => return closed(c, cx),
+                Ok(Recv::WouldBlock) => {
+                    progress::update(cx, false)?;
+                    return Ok(Ran::Idle);
+                }
+                Ok(Recv::Eof) => {
+                    progress::update(cx, false)?;
+                    return closed(c, cx);
+                }
                 Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
                 Err(RecvFailed::Os(_)) => return Err(ErrorKind::RecvError),
             }
@@ -238,10 +254,21 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
             Err(e) => return Err(refused(cx, e)),
         };
         dialed.consume(used);
+        let looked = used + usize::from(t.answer.looked_ahead());
+        let owed = looked
+            .checked_sub(t.counted)
+            .expect("a byte looked at ahead is read next");
+        t.counted = looked - used;
+        for _ in 0..owed {
+            progress::update(cx, false)?;
+        }
         match read {
             Read::Line => line(c, cx)?,
             Read::More => {}
-            Read::Done => return finish(c, cx),
+            Read::Done => {
+                progress::update(cx, false)?;
+                return finish(c, cx);
+            }
         }
     }
 }
@@ -260,6 +287,7 @@ fn closed<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     if wanted && t.authorized && cx.easy().auth.proxy_offers(&t.challenges) {
         trace::info(cx, format_args!("Proxy CONNECT connection closed"));
         tunnel(&mut c.handshake).closed = true;
+        progress::update(cx, false)?;
         return finish(c, cx);
     }
     Err(trace::fail(

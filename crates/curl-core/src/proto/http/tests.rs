@@ -4056,6 +4056,122 @@ fn a_proxy_s_digest_is_traced_before_its_first_challenge() {
     }
 }
 
+/// The progress calls and the lines traced, in their order: a run of
+/// progress calls as `[xN]`.
+#[derive(Clone, Default)]
+struct Interleaved(Arc<Mutex<Vec<String>>>);
+
+impl Interleaved {
+    fn push(&self, what: String) {
+        self.0.lock().unwrap().push(what);
+    }
+
+    /// From the line starting `from`, up to the one starting `to`.
+    fn between(&self, from: &str, to: &str) -> Vec<String> {
+        let all = self.0.lock().unwrap();
+        let start = all.iter().position(|l| l.starts_with(from)).unwrap();
+        let end = start + all[start..].iter().position(|l| l.starts_with(to)).unwrap();
+        all[start..=end].to_vec()
+    }
+}
+
+impl crate::handler::ProgressHandler for Interleaved {
+    fn progress(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        let mut all = self.0.lock().unwrap();
+        let n = match all.last().and_then(|l| l.strip_prefix("[x")) {
+            Some(n) => n.trim_end_matches(']').parse::<u32>().unwrap(),
+            None => 0,
+        };
+        if n > 0 {
+            all.pop();
+        }
+        all.push(format!("[x{}]", n + 1));
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+impl DebugHandler for Interleaved {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        if matches!(kind, DebugKind::Text | DebugKind::HeaderIn) {
+            self.push(String::from_utf8_lossy(data).into_owned());
+        }
+    }
+}
+
+const ESTABLISHED: &[u8] = b"HTTP/1.1 200 Connection established\r\nX-Proxy: yes\r\n\r\n";
+
+/// The progress handler is called for each byte of the proxy's answer to
+/// `CONNECT`, before the line it ends is taken in (and so after the byte
+/// after a header line, which says whether it goes on), and once more
+/// each time the tunnel returns for more or has the answer, as the C
+/// build calls it (`recv_CONNECT_resp`, `H1_CONNECT`; seen with a
+/// program against it over a socket, where the answer comes after a
+/// first look for it: 39, 14, 1 and 1 calls for this answer, and one
+/// more before the first line for each wait in it).
+#[test]
+fn the_tunnel_takes_stock_for_each_byte_of_the_answer() {
+    for (late, first) in [(false, 38), (true, 39)] {
+        let mut talk = Conversation::replies(&[ESTABLISHED, OK], false);
+        if late {
+            talk = talk.late_replies();
+        }
+        let mut m = serving(Peer::Accepts, &[&talk]);
+        let seen = Interleaved::default();
+        let ran = get(&mut m, "/", talk.clone(), |o| {
+            tunneled(o);
+            o.progress =
+                crate::options::Progress::Handler(Handler::progress(seen.clone()).unwrap());
+            o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        });
+        assert_eq!(ran.result, Ok(()));
+        let x = |n: u32| format!("[x{n}]");
+        assert_eq!(
+            seen.between("Establishing HTTP proxy tunnel", "CONNECT phase completed"),
+            [
+                "Establishing HTTP proxy tunnel to origin.example:80\n".to_string(),
+                x(first),
+                "HTTP/1.1 200 Connection established\r\n".to_string(),
+                x(14),
+                "X-Proxy: yes\r\n".to_string(),
+                x(1),
+                "\r\n".to_string(),
+                x(1),
+                "CONNECT phase completed for HTTP proxy\n".to_string(),
+            ],
+            "late {late}"
+        );
+    }
+}
+
+/// A progress handler's abort in the middle of the proxy's answer ends
+/// the transfer there, as in the C build ("Callback aborted" at the
+/// fifth call).
+#[test]
+fn a_progress_abort_ends_the_tunnel_at_once() {
+    let talk = Conversation::replies(&[ESTABLISHED, OK], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let aborts = AbortsAt {
+        abort_at: 5,
+        ..AbortsAt::default()
+    };
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        tunneled(o);
+        o.progress = crate::options::Progress::Handler(Handler::progress(aborts.clone()).unwrap());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::AbortedByCallback));
+    assert_eq!(aborts.calls.get(), 5);
+    let said = ran.seen.text();
+    assert!(said.contains(&"Callback aborted\n".to_string()), "{said:?}");
+    assert!(
+        !said.iter().any(|l| l.starts_with("CONNECT phase")),
+        "{said:?}"
+    );
+}
+
 /// The same close, read only after the tunnel waited on its socket for
 /// the answer, aborts it: the credentials are no longer held
 /// (`hd_proxy_auth`, freed as `cf_h1_proxy_connect` returns).

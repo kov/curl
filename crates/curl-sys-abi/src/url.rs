@@ -265,6 +265,50 @@ mod tests {
         unsafe { curl_url_cleanup(ptr::null_mut()) };
     }
 
+    /// Each part is named by its number, to set and to get.
+    #[test]
+    fn parts_are_named_as_in_c() {
+        let u = curl_url();
+        let url = c"http://user:pwd@host:8080/path?query#frag";
+        assert_eq!(set(u, ffi::CURLUPART_URL, Some(url), 0), ffi::CURLUE_OK);
+        for (part, want) in [
+            (ffi::CURLUPART_SCHEME, Ok("http")),
+            (ffi::CURLUPART_USER, Ok("user")),
+            (ffi::CURLUPART_PASSWORD, Ok("pwd")),
+            (ffi::CURLUPART_OPTIONS, Err(ffi::CURLUE_NO_OPTIONS)),
+            (ffi::CURLUPART_HOST, Ok("host")),
+            (ffi::CURLUPART_PORT, Ok("8080")),
+            (ffi::CURLUPART_PATH, Ok("/path")),
+            (ffi::CURLUPART_QUERY, Ok("query")),
+            (ffi::CURLUPART_FRAGMENT, Ok("frag")),
+        ] {
+            assert_eq!(
+                get(u, part, 0).as_deref().map_err(|e| *e),
+                want,
+                "{}",
+                part.0
+            );
+        }
+        for (part, value) in [
+            (ffi::CURLUPART_SCHEME, c"https"),
+            (ffi::CURLUPART_USER, c"u2"),
+            (ffi::CURLUPART_PASSWORD, c"p2"),
+            (ffi::CURLUPART_OPTIONS, c"o2"),
+            (ffi::CURLUPART_PORT, c"81"),
+            (ffi::CURLUPART_FRAGMENT, c"f2"),
+        ] {
+            assert_eq!(set(u, part, Some(value), 0), ffi::CURLUE_OK, "{}", part.0);
+            assert_eq!(
+                get(u, part, 0).as_deref(),
+                Ok(value.to_str().unwrap()),
+                "{}",
+                part.0
+            );
+        }
+        // SAFETY: made above, not used again.
+        unsafe { curl_url_cleanup(u) };
+    }
+
     /// lib1560's `urldup`, and the flags reaching the core.
     #[test]
     fn copies_and_reads_back() {

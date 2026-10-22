@@ -3111,3 +3111,375 @@ fn proxy_credentials_are_decoded_as_in_c() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// One request read whole from `peer`: its head and its body, as long as
+/// `Content-Length` says or, chunked, to the end of its trailers. What
+/// came before the peer closed, if it closed first.
+fn read_request(peer: &mut std::net::TcpStream) -> Vec<u8> {
+    use std::io::Read as _;
+    let mut got = Vec::new();
+    let mut buf = [0; 4096];
+    let complete = |got: &[u8]| {
+        let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") else {
+            return false;
+        };
+        let head = String::from_utf8_lossy(&got[..end]).to_ascii_lowercase();
+        let body = &got[end + 4..];
+        if head.contains("transfer-encoding: chunked") {
+            body.ends_with(b"\r\n\r\n")
+                && (body.starts_with(b"0\r\n") || body.windows(5).any(|w| w == b"\r\n0\r\n"))
+        } else {
+            let length = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length: "))
+                .map_or(0, |n| n.trim().parse::<usize>().unwrap());
+            body.len() >= length
+        }
+    };
+    while !complete(&got) {
+        match peer.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    got
+}
+
+/// A server on a local port that answers one request per connection
+/// with each of `replies` in turn, and gives back the requests.
+fn serve(replies: Vec<&'static [u8]>) -> (u16, std::thread::JoinHandle<Vec<Vec<u8>>>) {
+    use std::io::Write as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        for reply in replies {
+            let (mut peer, _) = listener.accept().unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            requests.push(read_request(&mut peer));
+            // A client that gave up may have gone.
+            if let Err(e) = peer.write_all(reply) {
+                let gone = [
+                    std::io::ErrorKind::BrokenPipe,
+                    std::io::ErrorKind::ConnectionReset,
+                ];
+                assert!(gone.contains(&e.kind()), "{e}");
+            }
+        }
+        requests
+    });
+    (port, server)
+}
+
+fn text_of(p: *const c_char) -> String {
+    assert!(!p.is_null());
+    // SAFETY: getinfo gives a string that lives while the handle does.
+    unsafe { CStr::from_ptr(p) }.to_str().unwrap().to_owned()
+}
+
+/// The infos of HTTP transfers: the addresses, the methods the server
+/// offered and the one used, the referer sent, the redirects followed,
+/// and the request asking for every coding the handle undoes.
+#[test]
+fn infos_answer_from_an_http_transfer() {
+    let (port, server) = serve(vec![
+        b"HTTP/1.1 401 No\r\nWWW-Authenticate: Basic realm=\"x\"\r\n\
+          Content-Length: 0\r\nConnection: close\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    ]);
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    pointer(c, ffi::CURLOPT_USERPWD, c"u:p".as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_HTTPAUTH, ffi::CURLAUTH_ANY as c_long);
+    pointer(c, ffi::CURLOPT_REFERER, c"http://r/".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_ACCEPT_ENCODING, c"".as_ptr().cast_mut());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let requests = server.join().unwrap();
+    let head = String::from_utf8(requests[1].clone()).unwrap();
+    assert!(
+        head.contains("\r\nAccept-Encoding: deflate, gzip, br, zstd\r\n"),
+        "{head}"
+    );
+    assert!(head.contains("\r\nAuthorization: Basic dTpw\r\n"), "{head}");
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_RESPONSE_CODE), 200);
+    for ip in [ffi::CURLINFO_PRIMARY_IP, ffi::CURLINFO_LOCAL_IP] {
+        assert_eq!(text_of(info(c, ip)), "127.0.0.1", "{}", ip.0);
+    }
+    assert_eq!(
+        info::<c_long>(c, ffi::CURLINFO_PRIMARY_PORT),
+        c_long::from(port)
+    );
+    let basic = ffi::CURLAUTH_BASIC as c_long;
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_HTTPAUTH_AVAIL), basic);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_HTTPAUTH_USED), basic);
+    assert_eq!(text_of(info(c, ffi::CURLINFO_REFERER)), "http://r/");
+    // The request sent again with credentials counts, as in C.
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_REDIRECT_COUNT), 1);
+
+    // A POST sent again to where a 307 points, its fields read from
+    // their start, with the URL it came from as its referer.
+    let (port, server) = serve(vec![
+        b"HTTP/1.1 307 Again\r\nLocation: /b\r\nContent-Length: 0\r\n\
+          Connection: close\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    ]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/a")).unwrap();
+    let fields = c"abcdef";
+    // SAFETY: a live handle.
+    unsafe { easy::curl_easy_reset(c) };
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    pointer(c, ffi::CURLOPT_POSTFIELDS, fields.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_FOLLOWLOCATION, 1);
+    long(c, ffi::CURLOPT_AUTOREFERER, 1);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let requests = server.join().unwrap();
+    let second = String::from_utf8(requests[1].clone()).unwrap();
+    assert!(second.starts_with("POST /b HTTP/1.1\r\n"), "{second}");
+    assert!(second.ends_with("\r\n\r\nabcdef"), "{second}");
+    let from = format!("http://127.0.0.1:{port}/a");
+    assert!(
+        second.contains(&format!("\r\nReferer: {from}\r\n")),
+        "{second}"
+    );
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_REDIRECT_COUNT), 1);
+    assert_eq!(text_of(info(c, ffi::CURLINFO_REFERER)), from);
+    assert_eq!(text_of(info(c, ffi::CURLINFO_EFFECTIVE_METHOD)), "POST");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// The trailer function's lines end a chunked body, and its abort ends
+/// the transfer as `add_last_chunk` ends it.
+#[test]
+fn the_trailer_function_ends_a_chunked_body() {
+    let run = |answer: c_int| {
+        let (port, server) = serve(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        ]);
+        let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+        let mut feed = Feed {
+            left: b"hello".to_vec(),
+            answer: None,
+        };
+        let mut trailing = Trailing {
+            lines: vec![c"X-T: 1", c"X-U: 2"],
+            answer,
+        };
+        let c = curl_easy_init();
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+        function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+        long(c, ffi::CURLOPT_TIMEOUT, 10);
+        long(c, ffi::CURLOPT_UPLOAD, 1);
+        // The server sends no 100: wait for it no longer than needed.
+        long(c, ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, 1);
+        function(c, ffi::CURLOPT_READFUNCTION, read as ReadFn as *const ());
+        pointer(c, ffi::CURLOPT_READDATA, &raw mut feed);
+        function(
+            c,
+            ffi::CURLOPT_TRAILERFUNCTION,
+            trailers as TrailerFn as *const (),
+        );
+        pointer(c, ffi::CURLOPT_TRAILERDATA, &raw mut trailing);
+        // SAFETY: a live handle, then not used again.
+        let code = unsafe { curl_easy_perform(c) };
+        // SAFETY: as above.
+        unsafe { curl_easy_cleanup(c) };
+        if code != CURLE_OK {
+            // Unblock the server, which waits for a connection still.
+            std::net::TcpStream::connect(("127.0.0.1", port)).ok();
+        }
+        let request = server.join().unwrap().remove(0);
+        (code, String::from_utf8(request).unwrap())
+    };
+    let (code, request) = run(ffi::CURL_TRAILERFUNC_OK);
+    assert_eq!(code, CURLE_OK);
+    assert!(
+        request.ends_with("\r\n\r\n5\r\nhello\r\n0\r\nX-T: 1\r\nX-U: 2\r\n\r\n"),
+        "{request}"
+    );
+    let (code, request) = run(ffi::CURL_TRAILERFUNC_ABORT);
+    assert_eq!(code, CURLE_ABORTED_BY_CALLBACK);
+    assert!(!request.contains("X-T"), "{request}");
+}
+
+/// What a debug function saw sent of the body.
+unsafe extern "C" fn data_out(
+    _: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    data: *mut c_void,
+) -> c_int {
+    if kind == ffi::CURLINFO_DATA_OUT {
+        // SAFETY: the test passes a `Vec` of pieces, and the shim `n`
+        // bytes.
+        unsafe {
+            let pieces = &mut *data.cast::<Vec<Vec<u8>>>();
+            pieces.push(core::slice::from_raw_parts(ptr.cast::<u8>(), n).to_vec());
+        }
+    }
+    0
+}
+
+/// `CURLOPT_POSTFIELDS` are read where they are, `CURLOPT_POSTFIELDSIZE`
+/// of them, piece by piece, and from their start again after a rewind.
+#[test]
+fn post_fields_are_read_in_place_and_rewound() {
+    let fields = c"abcdefghijklmnop";
+    let mut pieces: Vec<Vec<u8>> = Vec::new();
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_TIMEOUT, 5);
+    pointer(c, ffi::CURLOPT_POSTFIELDS, fields.as_ptr().cast_mut());
+    // Fewer than there are: what is past them is not read.
+    long(c, ffi::CURLOPT_POSTFIELDSIZE, 6);
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(
+        c,
+        ffi::CURLOPT_DEBUGFUNCTION,
+        data_out as DebugFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut pieces);
+    options(c, |o| {
+        o.script = Some(
+            Script::new(vec![
+                Piece::Send(2),
+                Piece::Send(2),
+                Piece::Rewind,
+                Piece::Send(4),
+                Piece::SendAll,
+            ])
+            .unwrap(),
+        );
+    });
+    // SAFETY: a live handle, then not used again.
+    let code = unsafe { curl_easy_perform(c) };
+    // SAFETY: as above.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(code, CURLE_OK);
+    assert_eq!(pieces, [&b"ab"[..], b"cd", b"abcd", b"ef"]);
+}
+
+/// A SOCKS5 proxy's failure is reported as its `CURLproxycode`, and an
+/// HTTP proxy's refusal of a tunnel by its code.
+#[test]
+fn proxy_failures_are_reported_as_in_c() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        let mut greeting = [0; 3];
+        peer.read_exact(&mut greeting).unwrap();
+        // A SOCKS4 version where SOCKS5's belongs.
+        peer.write_all(&[4, 0]).unwrap();
+        greeting
+    });
+    let c = curl_easy_init();
+    let proxy = std::ffi::CString::new(format!("socks5://127.0.0.1:{port}")).unwrap();
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"http://127.0.0.1:1/".as_ptr().cast_mut(),
+    );
+    pointer(c, ffi::CURLOPT_PROXY, proxy.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_PROXY);
+    assert_eq!(server.join().unwrap()[0], 5);
+    assert_eq!(
+        info::<c_long>(c, ffi::CURLINFO_PROXY_ERROR),
+        ffi::CURLPX_BAD_VERSION.0 as c_long
+    );
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_HTTP_CONNECTCODE), 0);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+
+    let (port, server) = serve(vec![
+        b"HTTP/1.1 403 No\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    ]);
+    let c = curl_easy_init();
+    let proxy = std::ffi::CString::new(format!("http://127.0.0.1:{port}")).unwrap();
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"http://127.0.0.1:1/".as_ptr().cast_mut(),
+    );
+    pointer(c, ffi::CURLOPT_PROXY, proxy.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_HTTPPROXYTUNNEL, 1);
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    let request = server.join().unwrap().remove(0);
+    assert!(request.starts_with(b"CONNECT 127.0.0.1:1 HTTP/1.1\r\n"));
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_HTTP_CONNECTCODE), 403);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_PROXY_ERROR), 0);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+unsafe extern "C" fn lock_into(
+    _: *mut CURL,
+    data: ffi::curl_lock_data,
+    _: ffi::curl_lock_access,
+    user: *mut c_void,
+) {
+    // SAFETY: the test passes its record as the share's user data.
+    let seen = unsafe { &*user.cast::<std::sync::Mutex<Vec<c_int>>>() };
+    seen.lock().unwrap().push(data.0 as c_int);
+}
+
+/// A lock function set alone is called for what is shared, as
+/// `Curl_share_lock` calls it, though the share itself is locked only
+/// with both functions set (`share_lock_acquire`); the connections are
+/// locked at cleanup only when they are shared.
+#[test]
+fn a_lock_function_alone_locks_what_is_shared() {
+    use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+    let seen = std::sync::Mutex::new(Vec::<c_int>::new());
+    let sh = curl_share_init();
+    // SAFETY: a live share, an int, a lock function and its data, as the
+    // options take.
+    unsafe {
+        let cookie = ffi::CURL_LOCK_DATA_COOKIE.0 as c_int;
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_SHARE, cookie),
+            ffi::CURLSHE_OK
+        );
+        let lock: ffi::curl_lock_function = Some(lock_into);
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_LOCKFUNC, lock),
+            ffi::CURLSHE_OK
+        );
+        let user = (&raw const seen).cast_mut().cast::<c_void>();
+        assert_eq!(
+            curl_share_setopt(sh, ffi::CURLSHOPT_USERDATA, user),
+            ffi::CURLSHE_OK
+        );
+    }
+    let c = curl_easy_init();
+    assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+    let line = c"example.com\tFALSE\t/\tFALSE\t0\ta\t1";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_COOKIELIST, line.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let cookie = ffi::CURL_LOCK_DATA_COOKIE.0 as c_int;
+    assert_eq!(std::mem::take(&mut *seen.lock().unwrap()), [cookie]);
+    // SAFETY: a live handle, not used again; then the share, held by
+    // none.
+    unsafe {
+        curl_easy_cleanup(c);
+        assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
+    }
+    let calls = std::mem::take(&mut *seen.lock().unwrap());
+    assert!(calls.iter().all(|&d| d == cookie), "{calls:?}");
+}

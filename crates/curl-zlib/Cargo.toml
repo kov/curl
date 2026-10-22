@@ -1,0 +1,15 @@
+[package]
+name = "curl-zlib"
+description = "zlib's inflate for the curl rewrite: the deflate and gzip content codings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "z"
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+
+[lints]
+workspace = true

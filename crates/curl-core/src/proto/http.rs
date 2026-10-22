@@ -3,8 +3,9 @@
 //! `Curl_http`, `Curl_http_write_resp` and `Curl_http_done`, and
 //! `lib/transfer.c`'s receive loop).
 
-use curl_alloc::TryVec as _;
+use curl_alloc::{TryVec as _, try_box};
 
+use crate::coding::{AcceptEncoding, Decoder, Identity, Named, Unrecognized};
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{ConnLease, Peer, RecvFailed};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
@@ -22,7 +23,9 @@ use crate::url::{GetOptions, Part, SetOptions, Url};
 
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing, Left, Sending};
-use super::http1::request::{self, Authorization, CredentialGate, Forwarding, RequestHead};
+use super::http1::request::{
+    self, Accepted, Authorization, CredentialGate, Forwarding, RequestHead,
+};
 use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
 use crate::options::AuthMethods;
@@ -650,6 +653,11 @@ impl Request {
             content,
             chunked: chunked && asked.is_none(),
             probe,
+            accept_encoding: match &http.accept_encoding {
+                None => None,
+                Some(AcceptEncoding::All) => Some(Accepted::All(cx.easy().decoders())),
+                Some(AcceptEncoding::Given(value)) => Some(Accepted::Given(value)),
+            },
             cookie: cookie.as_deref(),
             forwarded: forwarded.then(|| Forwarding {
                 own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
@@ -1052,6 +1060,14 @@ impl Request {
             let t = crate::date::parse(value).unwrap_or(0);
             cx.report_mut().set_filetime(t);
         }
+        // Its codings are stacked to be undone (`http_header_c`).
+        if line.kind == LineKind::Header
+            && !bodyless
+            && cx.easy().options().http.accept_encoding.is_some()
+            && let Some(value) = strip_name(line.bytes, b"Content-Encoding:")
+        {
+            content_codings(cx, pipeline, value)?;
+        }
         // A cookie is stored before its line is traced (`http_header`).
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
@@ -1409,6 +1425,44 @@ fn cookie_site<'a>(
 
 /// What follows `name` in a header line that starts with it, in any
 /// case.
+/// Stack a decoder for each of a `Content-Encoding`'s codings, in the
+/// order given, to be undone last first (`Curl_build_unencoding_stack`):
+/// none if they are not to be undone, and one that fails the body for a
+/// coding nothing undoes.
+fn content_codings<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    pipeline: &mut Pipeline,
+    list: &[u8],
+) -> Result<(), ErrorKind> {
+    for name in framing::coding_names(list) {
+        if cx.easy().options().http.raw_content {
+            return Ok(());
+        }
+        if pipeline.decoders() >= MAX_CONTENT_CODINGS {
+            return Err(trace::fail(
+                cx,
+                ErrorKind::BadContentEncoding,
+                format_args!(
+                    "Reject response exceeding limit of {MAX_CONTENT_CODINGS} content encodings"
+                ),
+            ));
+        }
+        let decoder: Box<dyn Decoder> = match Named::of(name) {
+            Named::Identity => try_box(Identity).map_err(|_| ErrorKind::OutOfMemory)?,
+            Named::Coding(coding) => match cx.easy().decoders().maker(coding) {
+                Some(make) => make()?,
+                None => try_box(Unrecognized).map_err(|_| ErrorKind::OutOfMemory)?,
+            },
+            Named::Unknown => try_box(Unrecognized).map_err(|_| ErrorKind::OutOfMemory)?,
+        };
+        pipeline.add_decoder(decoder)?;
+    }
+    Ok(())
+}
+
+/// The most content codings a response may stack (`MAX_ENCODE_STACK`).
+const MAX_CONTENT_CODINGS: usize = 5;
+
 fn strip_name<'a>(line: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
     (line.len() >= name.len() && line[..name.len()].eq_ignore_ascii_case(name))
         .then(|| &line[name.len()..])

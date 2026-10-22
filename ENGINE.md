@@ -1220,6 +1220,16 @@ pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize
   handler (#13337). Held beyond 64 MiB → TooLarge "pause buffer not large enough".
   `max_filesize` against delivered bytes is checked before each piece; SIZE_DELIVERED is bumped
   after the handler returns.
+- **Decoders** (`coding::Decoder`, C's unencoding writers) are stacked as a `Content-Encoding`
+  line is read, before it is traced, when the request asked for codings (`accept_encoding`), the
+  application does not want them raw (`raw_content`) and the response is not bodyless. Each
+  name stacks one: `identity` and `none` a decoder passing the body by, a name the handle has no
+  decoder for one that fails at the first body byte ("Unrecognized content encoding type"); a
+  sixth is BadContentEncoding at once. The last stacked undoes first. The decoders are the
+  handle's (`Easy::set_decoders`, kept through `reset`), given by the tool and the shim from the
+  binding crates, as the public suffixes are; `Accept-Encoding` lists them for
+  `AcceptEncoding::All`. A decoder writes to a `coding::Sink`, which also answers whether the
+  transfer's time is up and says a failure as the transfer's error.
 - **Accounting after the call**: the handler is called with a context that borrows the report;
   the context is dropped; then `accountant` bumps SIZE_DOWNLOAD. The borrow checker enforces the
   order, which reproduces "dlnow inside the write callback excludes this chunk".

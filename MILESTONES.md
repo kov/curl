@@ -445,9 +445,10 @@ cargo-mutants run on the milestone's diff.
     on `--request-target`, 1851 on `--ipfs-gateway`, 2008 on `--get`, and gated test 1001 on
     `--range`. HTTPS proxies wait on TLS.
 32. **http: decompress.** **In progress.** Done: the pause gate holding encoded bytes, as C's
-    does, and the decoder slot, which changes nothing until a decoder is added. To do: a
-    binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and
-    Content-Encoding.
+    does; Content-Encoding, `Accept-Encoding`, `--compressed` and `--raw`'s content half, with
+    zlib (`curl-zlib`) for `deflate` and `gzip`. To do: brotli and zstd, then `--tr-encoding`
+    (387, 418, 1122–1125, 1170, 1171, 1277, 1546, 1617). 3236 waits on C's `write` trace
+    component (`curl_global_trace`), which nothing schedules yet.
 33. **http: the headers API, and time conditions.** **To do.** Each request's headers kept
     for `curl_easy_header` and `curl_easy_nextheader`, by origin and request across step 26's
     redirects; the tool's `%header{}` and `%{header_json}` read from them (T1 tests 421, 764,

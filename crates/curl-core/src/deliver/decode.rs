@@ -3,43 +3,46 @@
 //! a decoder may make far more than it is given, so paused output is kept
 //! as it came, and handed on in small pieces.
 
-use std::fmt;
-
 use super::held::{HeldOutput, OutKind};
+use crate::coding::{Decoder, Sink};
 use crate::error::ErrorKind;
 
 /// The most body a decoder is given at once behind the gate
 /// (`CW_PAUSE_DEC_WRITE_CHUNK`).
 pub(crate) const GATE_PIECE: usize = 4096;
 
-/// A content coding being undone (C's unencoding writers).
-pub(crate) trait Decoder: fmt::Debug {
-    /// Undo `input`, giving what it makes to `out` as it is made.
-    fn decode(
-        &mut self,
-        input: &[u8],
-        out: &mut dyn FnMut(&[u8]) -> Result<(), ErrorKind>,
-    ) -> Result<(), ErrorKind>;
-
-    /// What it makes may be far larger than what it is given
-    /// (`CURL_CW_FLAG_BLOWUP`): the gate goes in front of it.
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "only the test protocol adds one yet")
-    )]
-    fn blows_up(&self) -> bool;
-}
-
 /// Run `input` through `chain`, the last added first (C adds each writer
 /// in front of its phase), and what the first added makes into `last`.
+/// Nothing is given a decoder (`!nbytes`, passed on).
 pub(crate) fn run(
     chain: &mut [Box<dyn Decoder>],
     input: &[u8],
-    last: &mut dyn FnMut(&[u8]) -> Result<(), ErrorKind>,
+    last: &mut dyn Sink,
 ) -> Result<(), ErrorKind> {
     match chain.split_last_mut() {
-        None => last(input),
-        Some((first, rest)) => first.decode(input, &mut |piece| run(rest, piece, &mut *last)),
+        Some((first, rest)) if !input.is_empty() => first.decode(input, &mut Next { rest, last }),
+        _ => last.write(input),
+    }
+}
+
+/// What a decoder writes to: the decoders before it in the chain, then
+/// `last`.
+struct Next<'a> {
+    rest: &'a mut [Box<dyn Decoder>],
+    last: &'a mut dyn Sink,
+}
+
+impl Sink for Next<'_> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
+        run(self.rest, bytes, self.last)
+    }
+
+    fn timed_out(&self) -> bool {
+        self.last.timed_out()
+    }
+
+    fn fail(&mut self, kind: ErrorKind, said: std::fmt::Arguments<'_>) -> ErrorKind {
+        self.last.fail(kind, said)
     }
 }
 

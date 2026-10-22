@@ -207,6 +207,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) dump_header: Option<&'a [u8]>,
     /// `--raw`.
     pub(crate) raw: bool,
+    /// `--compressed`.
+    pub(crate) compressed: bool,
     /// `--happy-eyeballs-timeout-ms`, if given.
     pub(crate) happy_eyeballs_ms: Option<u64>,
     /// `--ipv4` or `--ipv6`, whichever came last.
@@ -868,6 +870,7 @@ pub(crate) fn apply<'a>(
             line.current().dump_header = Some(file);
         }
         Opt::Raw => line.current().raw = value.toggle(),
+        Opt::Compressed => line.current().compressed = value.toggle(),
         Opt::HappyEyeballsTimeoutMs => line.current().happy_eyeballs_ms = Some(value.number()),
         Opt::Ipv4 => line.current().ip_version = Some(IpVersion::V4),
         Opt::Ipv6 => line.current().ip_version = Some(IpVersion::V6),
@@ -1054,7 +1057,6 @@ pub(crate) fn apply<'a>(
         | Opt::CertStatus
         | Opt::CertType
         | Opt::Ciphers
-        | Opt::Compressed
         | Opt::CompressedSsh
         | Opt::CreateFileMode
         | Opt::Crlf

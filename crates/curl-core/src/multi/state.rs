@@ -525,6 +525,18 @@ impl<H: Host> StepCx<'_, H> {
         self.rest.now
     }
 
+    /// The transfer's time is up, as of the step's start
+    /// (`Curl_timeleft_ms` below zero).
+    pub(crate) fn time_up(&self) -> bool {
+        let limits = self.easy().options().limits;
+        let left = Deadlines::new(limits.total, limits.connect).time_left(
+            starts(self),
+            self.now(),
+            Phase::Transferring,
+        );
+        matches!(left, TimeLeft::Expired(_))
+    }
+
     /// The calendar time, read now (`time(NULL)`).
     pub(crate) fn unix_time(&self) -> i64 {
         self.rest.clock.unix_time()

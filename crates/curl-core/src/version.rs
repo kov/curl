@@ -25,6 +25,9 @@ pub enum Feature {
     Debug,
     /// Connections over IPv6, and its addresses in URLs.
     Ipv6,
+    /// The `deflate` and `gzip` content codings are undone by zlib, which
+    /// the tool and the C ABI give every handle.
+    Libz,
     /// Cookies' domains are checked against libpsl's public suffixes,
     /// which the tool and the C ABI give every handle.
     Psl,
@@ -37,15 +40,16 @@ impl Feature {
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
             Feature::Ipv6 => "IPv6",
+            Feature::Libz => "libz",
             Feature::Psl => "PSL",
         }
     }
 }
 
 #[cfg(feature = "debug-hooks")]
-const FEATURES: &[Feature] = &[Feature::Debug, Feature::Ipv6, Feature::Psl];
+const FEATURES: &[Feature] = &[Feature::Debug, Feature::Ipv6, Feature::Libz, Feature::Psl];
 #[cfg(not(feature = "debug-hooks"))]
-const FEATURES: &[Feature] = &[Feature::Ipv6, Feature::Psl];
+const FEATURES: &[Feature] = &[Feature::Ipv6, Feature::Libz, Feature::Psl];
 
 /// A URL scheme the build can transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

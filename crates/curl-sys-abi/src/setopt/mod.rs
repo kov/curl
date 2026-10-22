@@ -390,6 +390,7 @@ fn apply(
             options.http.ignore_content_length = n != 0;
         }
         (ffi::CURLOPT_HTTP_TRANSFER_DECODING, Long(n)) => options.http.raw = n == 0,
+        (ffi::CURLOPT_HTTP_CONTENT_DECODING, Long(n)) => options.http.raw_content = n == 0,
         (ffi::CURLOPT_HTTP_VERSION, Long(n)) => options.http.version = http_version(n)?,
         (ffi::CURLOPT_DISALLOW_USERNAME_IN_URL, Long(n)) => {
             options.url_rules.disallow_user = n != 0;
@@ -471,6 +472,18 @@ fn apply(
             // NULL.
             let shared = unsafe { crate::url::shared(p.cast()) };
             options.set_shared_url(shared.cloned());
+        }
+        (ffi::CURLOPT_ACCEPT_ENCODING, Ptr(p)) => {
+            use curl_core::coding::AcceptEncoding;
+            // SAFETY: the application passes a C string or NULL.
+            options.http.accept_encoding = unsafe { owned(p) }?.map(|value| {
+                // Empty asks for every coding the handle undoes.
+                if value.is_empty() {
+                    AcceptEncoding::All
+                } else {
+                    AcceptEncoding::Given(value)
+                }
+            });
         }
         (ffi::CURLOPT_REFERER, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.

@@ -1,0 +1,83 @@
+=== header lines go around the gate
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::coding::a_trailer_stays_behind_the_body_held_before_its_decoder
+--- old
+            Some(gate) => gate.write(kind, bytes, &mut past),
+            None => past.take(kind, bytes),
+--- new
+            Some(gate) if kind == OutKind::Body => gate.write(kind, bytes, &mut past),
+            _ => past.take(kind, bytes),
+
+=== accept-encoding names one coding of many
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::coding::accept_encoding_says_what_is_asked_for
+--- old
+                            for coding in decoders.codings() {
+--- new
+                            for coding in decoders.codings().take(1) {
+
+=== a coded body is undone unasked
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::coding::a_coded_body_is_undone_when_asked_for
+--- old
+            && cx.easy().options().http.accept_encoding.is_some()
+            && let Some(value) = strip_name(line.bytes, b"Content-Encoding:")
+--- new
+            && let Some(value) = strip_name(line.bytes, b"Content-Encoding:")
+
+=== a raw body is undone all the same
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::coding::a_coded_body_is_undone_when_asked_for
+--- old
+        if cx.easy().options().http.raw_content {
+            return Ok(());
+        }
+--- new
+
+=== a response may stack six codings
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::coding::codings_that_cannot_be_undone_fail
+--- old
+        if pipeline.decoders() >= MAX_CONTENT_CODINGS {
+--- new
+        if pipeline.decoders() > MAX_CONTENT_CODINGS {
+
+=== a raw deflate body is not read again as raw
+file: crates/curl-zlib/src/lib.rs
+witness: curl-zlib tests::a_raw_deflate_body_is_read_as_one
+--- old
+                Z_DATA_ERROR if self.state == State::Init => {
+--- new
+                Z_DATA_ERROR if false => {
+
+=== a raw deflate body lets five bytes after it by
+file: crates/curl-zlib/src/lib.rs
+witness: curl-zlib tests::a_raw_deflate_body_is_read_as_one
+--- old
+                        self.trailer = 4;
+--- new
+                        self.trailer = 5;
+
+=== a deflate stream may turn raw after its start
+file: crates/curl-zlib/src/lib.rs
+witness: curl-zlib tests::a_raw_deflate_body_is_read_as_one
+--- old
+        if !input.is_empty() && self.state == State::Init {
+--- new
+        if false {
+
+=== a second gzip member is read as trailer
+file: crates/curl-zlib/src/lib.rs
+witness: curl-zlib tests::a_second_gzip_member_is_refused
+--- old
+                    if self.started == State::InitGzip && rest.starts_with(&[0x1f, 0x8b]) {
+--- new
+                    if false {
+
+=== decoding goes on past the transfer's time
+file: crates/curl-zlib/src/lib.rs
+witness: curl-zlib tests::a_transfer_out_of_time_stops_decoding
+--- old
+                if out.timed_out() {
+--- new
+                if false {

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
+use crate::coding::Decoders;
 use crate::conn::io::SystemNet;
 use crate::cookie::{Jar, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
@@ -51,6 +52,8 @@ pub struct Easy {
     /// The public suffixes cookies are checked against: without them, a
     /// domain needs a dot, as in C built without libpsl.
     suffixes: SuffixList,
+    /// The content codings the handle can undo.
+    decoders: Decoders,
 }
 
 /// Where a handle's public suffixes come from.
@@ -131,6 +134,7 @@ impl Easy {
                 SuffixList::Made(make) => SuffixList::Made(*make),
                 SuffixList::None => SuffixList::None,
             },
+            decoders: self.decoders,
         })
     }
 
@@ -153,6 +157,16 @@ impl Easy {
     /// Use `share` for the transfers from now on, or none.
     pub fn set_share(&mut self, share: Option<Share>) {
         self.share = share;
+    }
+
+    /// The content codings the handle's responses can be undone from,
+    /// kept through `reset` (those of the libraries C's build has).
+    pub fn set_decoders(&mut self, decoders: Decoders) {
+        self.decoders = decoders;
+    }
+
+    pub(crate) fn decoders(&self) -> Decoders {
+        self.decoders
     }
 
     /// The public suffixes cookies' domains are checked against, kept

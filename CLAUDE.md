@@ -32,6 +32,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-alloc/src/rc.rs`: the fallible reference-counted pointers std lacks on stable.
 - `crates/curl-alloc/src/track.rs`: the debug test build's global allocator and memory tracker.
 - `crates/curl-psl/src/lib.rs`: libpsl, the public suffix list cookies are checked against.
+- `crates/curl-zlib/src/lib.rs`: zlib's inflate, undoing the `deflate` and `gzip` codings.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place.
 - `crates/curl-os/src/fs.rs`: opening files, listing directories, reading standard input

@@ -7,6 +7,7 @@
 // Tests may allocate infallibly; the non-test build is still checked.
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
+pub mod coding;
 pub mod conn;
 pub mod cookie;
 pub mod date;

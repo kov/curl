@@ -3,6 +3,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::coding::{Coding, Decoders};
 use crate::conn::Peer;
 use crate::error::ErrorKind;
 
@@ -413,12 +414,23 @@ pub(crate) struct RequestHead<'o> {
     /// The body is left out to probe for authentication (`authneg`): the
     /// library's `Content-Length: 0` goes in place of the application's.
     pub(crate) probe: bool,
+    /// The codings `Accept-Encoding` asks for, if any.
+    pub(crate) accept_encoding: Option<Accepted<'o>>,
     /// What the `Cookie:` line says, if the request has one.
     pub(crate) cookie: Option<&'o [u8]>,
     /// The request goes to a proxy that sends it on: it asks to keep the
     /// connection to the proxy (`origin_is_proxy`).
     pub(crate) forwarded: Option<Forwarding<'o>>,
     pub(crate) headers: &'o UserHeaders,
+}
+
+/// What an `Accept-Encoding` says.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Accepted<'o> {
+    /// The application's words.
+    Given(&'o [u8]),
+    /// Every coding these undo; `identity` if none.
+    All(Decoders),
 }
 
 /// What the head says of a body (`http_add_content_hds`).
@@ -592,11 +604,35 @@ fn write_h1(
                     out.line(&[b"Proxy-Connection: Keep-Alive"])?;
                 }
             }
-            Part::Te
-            | Part::AcceptEncoding
-            | Part::AltUsed
-            | Part::Upgrade
-            | Part::Conditionals => {}
+            Part::AcceptEncoding => {
+                if let Some(accepted) = head.accept_encoding
+                    && head.headers.replacing(b"Accept-Encoding").is_none()
+                {
+                    match accepted {
+                        Accepted::Given(value) => out.line(&[b"Accept-Encoding: ", value])?,
+                        Accepted::All(decoders) => {
+                            let mut parts: [&[u8]; 1 + 2 * Coding::ALL.len()] =
+                                [b""; 1 + 2 * Coding::ALL.len()];
+                            parts[0] = b"Accept-Encoding: ";
+                            let mut n = 1;
+                            for coding in decoders.codings() {
+                                if n > 1 {
+                                    parts[n] = b", ";
+                                    n += 1;
+                                }
+                                parts[n] = coding.name().as_bytes();
+                                n += 1;
+                            }
+                            if n == 1 {
+                                parts[1] = b"identity";
+                                n = 2;
+                            }
+                            out.line(&parts[..n])?;
+                        }
+                    }
+                }
+            }
+            Part::Te | Part::AltUsed | Part::Upgrade | Part::Conditionals => {}
         }
     }
     Ok(())
@@ -753,6 +789,7 @@ mod tests {
             content: None,
             chunked: false,
             probe: false,
+            accept_encoding: None,
             cookie: None,
             forwarded: None,
             headers: &headers,
@@ -821,6 +858,7 @@ mod tests {
                 content: None,
                 chunked: false,
                 probe: false,
+                accept_encoding: None,
                 cookie: None,
                 forwarded: None,
 
@@ -870,6 +908,7 @@ mod tests {
                 content: None,
                 chunked: false,
                 probe: false,
+                accept_encoding: None,
                 cookie: None,
                 forwarded: None,
 
@@ -1032,6 +1071,7 @@ mod tests {
             content: None,
             chunked: false,
             probe: false,
+            accept_encoding: None,
             cookie: None,
             forwarded,
             headers: &headers,
@@ -1083,6 +1123,7 @@ mod tests {
             content: None,
             chunked: false,
             probe: false,
+            accept_encoding: None,
             cookie: None,
             forwarded: None,
             headers: &headers,
@@ -1130,6 +1171,7 @@ mod tests {
                 content: None,
                 chunked: false,
                 probe: false,
+                accept_encoding: None,
                 cookie: None,
                 forwarded: None,
 

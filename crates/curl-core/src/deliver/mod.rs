@@ -11,13 +11,13 @@ pub(crate) use pause::{Directions, Pause, RecvPause, SendPause};
 
 use curl_alloc::TryVec;
 
+use crate::coding::{Decoder, Sink};
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::report::Timer;
 use crate::trace;
-pub(crate) use decode::Decoder;
 use decode::{Gate, Onward};
 use held::{HeldOutput, OutKind};
 
@@ -61,13 +61,14 @@ impl Pipeline {
         }
     }
 
+    /// How many content codings are stacked.
+    pub(crate) fn decoders(&self) -> usize {
+        self.decoders.len()
+    }
+
     /// Undo a content coding, after those added before it; one that may
     /// blow up puts the gate in front of them all
     /// (`cwriter_ensure_pause_writer`).
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "only the test protocol adds one yet")
-    )]
     pub(crate) fn add_decoder(&mut self, decoder: Box<dyn Decoder>) -> Result<(), ErrorKind> {
         if decoder.blows_up() && self.gate.is_none() {
             let gate = curl_alloc::try_box(Gate::default()).map_err(|_| ErrorKind::OutOfMemory)?;
@@ -314,9 +315,7 @@ impl<H: Host> Onward for Past<'_, '_, H> {
     fn take(&mut self, kind: OutKind, bytes: &[u8]) -> Result<(), ErrorKind> {
         let (cx, out, pausable) = (&mut *self.cx, &mut *self.out, self.pausable);
         match kind {
-            OutKind::Body => decode::run(self.decoders, bytes, &mut |piece| {
-                out.body(cx, piece, pausable)
-            }),
+            OutKind::Body => decode::run(self.decoders, bytes, &mut Client { cx, out, pausable }),
             OutKind::Header(origin) => {
                 // An included line is body, to be held and replayed with it.
                 if cx.easy().options().output.include_header {
@@ -325,6 +324,27 @@ impl<H: Host> Onward for Past<'_, '_, H> {
                 out.header(cx, bytes, origin, pausable)
             }
         }
+    }
+}
+
+/// The handlers, as the last decoder's sink.
+struct Client<'p, 'c, H: Host> {
+    cx: &'p mut StepCx<'c, H>,
+    out: &'p mut ClientOut,
+    pausable: bool,
+}
+
+impl<H: Host> Sink for Client<'_, '_, H> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
+        self.out.body(self.cx, bytes, self.pausable)
+    }
+
+    fn timed_out(&self) -> bool {
+        self.cx.time_up()
+    }
+
+    fn fail(&mut self, kind: ErrorKind, said: std::fmt::Arguments<'_>) -> ErrorKind {
+        trace::fail(self.cx, kind, said)
     }
 }
 

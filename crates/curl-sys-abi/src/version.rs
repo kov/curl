@@ -81,6 +81,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
+        Feature::Libz => (c"libz", crate::ffi::CURL_VERSION_LIBZ),
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
     }
 }
@@ -99,6 +100,7 @@ unsafe impl Send for Data {}
 static COMPONENTS: OnceLock<CBuf<300>> = OnceLock::new();
 static VERSION: OnceLock<CBuf<32>> = OnceLock::new();
 static HOST: OnceLock<CBuf<32>> = OnceLock::new();
+static LIBZ: OnceLock<CBuf<32>> = OnceLock::new();
 static INFO: OnceLock<Data> = OnceLock::new();
 
 fn info() -> &'static curl_version_info_data {
@@ -126,6 +128,7 @@ fn info() -> &'static curl_version_info_data {
     let r = v.release;
     let version = VERSION.get_or_init(|| cbuf(format_args!("{}", v.version)));
     let host = HOST.get_or_init(|| cbuf(format_args!("{}", v.host)));
+    let libz = LIBZ.get_or_init(|| cbuf(format_args!("{}", curl_zlib::version())));
     &INFO
         .get_or_init(|| {
             Data(curl_version_info_data {
@@ -138,7 +141,7 @@ fn info() -> &'static curl_version_info_data {
                 features,
                 ssl_version: ptr::null(),
                 ssl_version_num: 0,
-                libz_version: ptr::null(),
+                libz_version: libz.as_ptr(),
                 protocols: protocol_names.0.as_ptr(),
                 ares: ptr::null(),
                 ares_num: 0,
@@ -225,16 +228,19 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["Debug", "IPv6", "PSL"][..],
-                ffi::CURL_VERSION_DEBUG | ffi::CURL_VERSION_IPV6 | ffi::CURL_VERSION_PSL
+                &["Debug", "IPv6", "libz", "PSL"][..],
+                ffi::CURL_VERSION_DEBUG
+                    | ffi::CURL_VERSION_IPV6
+                    | ffi::CURL_VERSION_LIBZ
+                    | ffi::CURL_VERSION_PSL
             )
         );
         #[cfg(not(feature = "debug-hooks"))]
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["IPv6", "PSL"][..],
-                ffi::CURL_VERSION_IPV6 | ffi::CURL_VERSION_PSL
+                &["IPv6", "libz", "PSL"][..],
+                ffi::CURL_VERSION_IPV6 | ffi::CURL_VERSION_LIBZ | ffi::CURL_VERSION_PSL
             )
         );
     }

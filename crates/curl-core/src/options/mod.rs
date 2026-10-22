@@ -626,6 +626,12 @@ pub struct Http {
     /// Codings other than chunked are asked for and decoded
     /// (`CURLOPT_TRANSFER_ENCODING`).
     pub transfer_encoding: bool,
+    /// The content codings asked for, and a response's undone; without,
+    /// a coded body is delivered as it came (`CURLOPT_ACCEPT_ENCODING`).
+    pub accept_encoding: Option<crate::coding::AcceptEncoding>,
+    /// Content codings are passed on as they came, not decoded
+    /// (`CURLOPT_HTTP_CONTENT_DECODING` off).
+    pub raw_content: bool,
     /// `CURLOPT_REFERER`.
     pub referer: Option<Vec<u8>>,
     /// The request's method as sent, in place of the one `method` implies,
@@ -828,6 +834,16 @@ impl Http {
             ignore_content_length: self.ignore_content_length,
             raw: self.raw,
             transfer_encoding: self.transfer_encoding,
+            accept_encoding: match &self.accept_encoding {
+                None => None,
+                Some(crate::coding::AcceptEncoding::All) => {
+                    Some(crate::coding::AcceptEncoding::All)
+                }
+                Some(crate::coding::AcceptEncoding::Given(v)) => {
+                    Some(crate::coding::AcceptEncoding::Given(copy(v)?))
+                }
+            },
+            raw_content: self.raw_content,
             referer: self.referer.as_deref().map(copy).transpose()?,
             custom_method: self.custom_method.as_deref().map(copy).transpose()?,
             fail_on_error: self.fail_on_error,

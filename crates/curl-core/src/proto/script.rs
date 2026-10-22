@@ -3,7 +3,8 @@
 
 use curl_alloc::TryVec;
 
-use crate::deliver::{Decoder, Pipeline, Reach};
+use crate::coding::{Decoder, Sink};
+use crate::deliver::{Pipeline, Reach};
 use crate::error::ErrorKind;
 use crate::handler::HeaderOrigin;
 use crate::multi::Host;
@@ -47,11 +48,7 @@ impl Default for Player {
 struct Expand(usize);
 
 impl Decoder for Expand {
-    fn decode(
-        &mut self,
-        input: &[u8],
-        out: &mut dyn FnMut(&[u8]) -> Result<(), ErrorKind>,
-    ) -> Result<(), ErrorKind> {
+    fn decode(&mut self, input: &[u8], out: &mut dyn Sink) -> Result<(), ErrorKind> {
         let mut made = Vec::new();
         made.try_reserve(input.len() * self.0)
             .map_err(|_| ErrorKind::OutOfMemory)?;
@@ -60,11 +57,7 @@ impl Decoder for Expand {
                 made.try_push(b).expect("reserved");
             }
         }
-        out(&made)
-    }
-
-    fn blows_up(&self) -> bool {
-        true
+        out.write(&made)
     }
 }
 

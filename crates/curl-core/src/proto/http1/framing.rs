@@ -707,7 +707,7 @@ fn skip_blanks(v: &[u8]) -> &[u8] {
 
 /// The names in a list of codings: between commas, leading blanks gone,
 /// up to the last byte above a space.
-fn coding_names(list: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub(crate) fn coding_names(list: &[u8]) -> impl Iterator<Item = &[u8]> {
     let list = list
         .iter()
         .position(|&b| b == 0)

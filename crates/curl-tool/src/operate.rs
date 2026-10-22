@@ -406,6 +406,7 @@ fn transfer(
     };
     easy.set_share(Some(run.share.clone()));
     easy.set_public_suffixes(Some(run.suffixes.clone()));
+    easy.set_decoders(decoders());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
     let failed = |easy: &Easy, e| {
@@ -1051,6 +1052,10 @@ fn configure(
     }
     http.allow_09 = op.http09;
     http.raw = op.raw;
+    http.raw_content = op.raw;
+    if op.compressed {
+        http.accept_encoding = Some(curl_core::coding::AcceptEncoding::All);
+    }
     http.ignore_content_length = op.ignore_content_length;
     o.filetime = op.remote_time;
     if let Some(proxy) = op.proxy {
@@ -1427,6 +1432,15 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
             && h[..name.len()].eq_ignore_ascii_case(name)
             && matches!(h[name.len()], b':' | b';')
     })
+}
+
+/// The content codings this build undoes: those of the libraries it is
+/// linked with, as C's.
+fn decoders() -> curl_core::coding::Decoders {
+    use curl_core::coding::{Coding, Decoders};
+    Decoders::none()
+        .with(Coding::Deflate, curl_zlib::deflate)
+        .with(Coding::Gzip, curl_zlib::gzip)
 }
 
 #[cfg(test)]

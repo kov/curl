@@ -34,17 +34,6 @@ pub fn local_time_of_day(t: i64) -> Option<TimeOfDay> {
     })
 }
 
-/// Have times formatted in the locale the environment names for them
-/// (`LC_ALL`, `LC_TIME`, `LANG`), as a C program that calls
-/// `setlocale(LC_ALL, "")` has them; the C library starts in the "C"
-/// locale. Call it before any thread starts: the locale is the process's.
-pub fn time_locale_from_environment() {
-    // SAFETY: the empty string is a C string; the caller makes sure no
-    // other thread runs, as `setlocale` is not thread-safe. Failing, it
-    // leaves the locale as it was, which is all there is to do then.
-    unsafe { libc::setlocale(libc::LC_TIME, c"".as_ptr()) };
-}
-
 /// `format`, as `strftime` makes it of the time `t` seconds after the
 /// epoch in UTC, written to `out` with a zero byte after it; how many
 /// bytes it made. None where the time cannot be broken down, or what it

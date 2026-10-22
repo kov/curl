@@ -195,3 +195,19 @@ witness: curl-os time::tests::formats_a_time_in_utc
     (n > 0).then_some(n)
 --- new
     Some(n)
+
+=== the tool takes only the time's locale from the environment
+file: crates/curl-os/src/locale.rs
+witness: curl-os locale::tests::takes_the_environment_s_locale
+--- old
+    unsafe { libc::setlocale(libc::LC_ALL, c"".as_ptr()) };
+--- new
+    unsafe { libc::setlocale(libc::LC_TIME, c"".as_ptr()) };
+
+=== numbers take the environment's locale too
+file: crates/curl-os/src/locale.rs
+witness: curl-os locale::tests::takes_the_environment_s_locale
+--- old
+    unsafe { libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr()) };
+--- new
+    unsafe { libc::setlocale(libc::LC_NUMERIC, c"".as_ptr()) };

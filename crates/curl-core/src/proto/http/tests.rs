@@ -3711,6 +3711,31 @@ fn a_proxy_closing_on_the_credentials_is_connected_to_again() {
         .position(|l| l == "Proxy CONNECT connection closed\n");
     let again = said.iter().position(|l| l == "Connect me again please\n");
     assert!(closed.is_some() && closed < again, "{said:?}");
+    // The proxy's name is not looked up again: the addresses it resolved
+    // to are raced at once, as C's chain below its name's filter is
+    // rebuilt.
+    let trying = format!("  Trying 127.0.0.1:{PORT}...\n");
+    assert_eq!(said.get(again.unwrap() + 1), Some(&trying), "{said:?}");
+}
+
+/// A proxy that closes on every answer asking for credentials is
+/// connected to again five times, then given up on (`cf_setup_connect`'s
+/// `retry_count`), as the C build does against a scripted proxy.
+#[test]
+fn a_proxy_closing_every_time_is_redialed_five_times() {
+    let stale: &[u8] = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Digest realm=\"r\", nonce=\"n\", stale=true\r\n\
+        Proxy-Connection: close\r\nContent-Length: 0\r\n\r\n";
+    let first = Conversation::replies(&[DIGEST_407, stale], true);
+    let talks: Vec<Conversation> = (0..6)
+        .map(|_| Conversation::replies(&[stale], true))
+        .collect();
+    let all: Vec<&Conversation> = std::iter::once(&first).chain(&talks).collect();
+    let mut m = serving(Peer::Accepts, &all);
+    let ran = get(&mut m, "/", first.clone(), tunneled_digest);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let asked: Vec<bool> = talks.iter().map(|t| !t.received().is_empty()).collect();
+    assert_eq!(asked, [true, true, true, true, true, false]);
 }
 
 /// Digest is the proxy's method from the first request, before it has a

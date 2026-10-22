@@ -59,6 +59,8 @@ pub(crate) struct Dialed {
     socket: Box<dyn Socket>,
     connected_at: Instant,
     rx: RecvBuf,
+    /// The addresses raced to reach the proxy, raced again on a redial.
+    answer: TryArc<Answer>,
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name, or why there are none.
     target: Option<Result<(TryArc<Answer>, Found), Unresolved>>,
@@ -345,16 +347,24 @@ impl ConnectMachine {
     }
 
     /// The proxy closed the connection as it asked for credentials: the
-    /// setup starts over, from resolving its name (`cf_setup_connect`).
-    /// False, and nothing done, if it was started over too often.
+    /// setup starts over, racing the addresses its name resolved to
+    /// (`cf_setup_connect` discards the chain below the name's filter,
+    /// which keeps its answer). False, and nothing done, if it was started
+    /// over too often.
     pub(crate) fn redial(&mut self, net: &mut dyn Net) -> bool {
         if self.redials >= MAX_REDIALS {
             return false;
         }
         self.redials += 1;
-        if let Stage::Tunnel(d) = std::mem::replace(&mut self.stage, Stage::Resolving) {
-            net.close(d.socket);
-        }
+        let Stage::Tunnel(d) = std::mem::replace(&mut self.stage, Stage::Resolving) else {
+            panic!("only a tunnel's setup is redialed");
+        };
+        net.close(d.socket);
+        self.stage = Stage::Racing(Racing {
+            eyeballs: Eyeballs::new(d.answer, self.route.ip),
+            attempts: Vec::new(),
+            last_start: None,
+        });
         true
     }
 
@@ -399,6 +409,7 @@ impl ConnectMachine {
                         if self.route.handshakes() {
                             // The connection is the proxy's; the way
                             // through it is still to be made.
+                            let answer = r.eyeballs.answer.clone();
                             let target = self.socks_target(net, setup, now);
                             let target = match target {
                                 Ok(target) => target,
@@ -412,6 +423,7 @@ impl ConnectMachine {
                                 socket: won.socket,
                                 connected_at: now,
                                 rx: RecvBuf::default(),
+                                answer,
                                 target,
                                 socks5_authenticated: false,
                             });

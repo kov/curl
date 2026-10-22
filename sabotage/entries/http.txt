@@ -76,7 +76,7 @@ witness: curl-core proto::http::tests::an_exchange_waits_to_read_its_socket
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_kept_connection_carries_the_next_request
 --- old
-        let reused = cx.conn(lease).reused();
+        let reused = lease.conn().reused();
 --- new
         let reused = false;
 

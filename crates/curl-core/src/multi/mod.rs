@@ -23,7 +23,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
-use crate::conn::{AddLimits, Caches, Pool};
+use crate::conn::{AddLimits, Caches};
 use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -594,7 +594,7 @@ impl<H: Host> Multi<H> {
     /// Every socket the transfers wait on, and for what, in id order
     /// (`curl_multi_fdset`, `curl_multi_waitfds`).
     pub fn sockets(&self, f: impl FnMut(&dyn Socket, Events)) {
-        pollsets(&self.slots, &self.caches.pool, f);
+        pollsets(&self.slots, f);
     }
 
     /// The multi but for the runs out of their slots, for a step or a
@@ -634,7 +634,7 @@ impl<H: Host> Multi<H> {
                 .run
                 .as_ref()
                 .expect("no transfer is out while the multi is called");
-            run.state.pollset(&self.caches.pool, slot.pause).wants()
+            run.state.pollset(slot.pause).wants()
         });
         self.tell_wants(id, wants, ev)
     }
@@ -893,11 +893,7 @@ impl<H: Host> Multi<H> {
 
 /// Every socket the transfers in `slots` wait on, and for what, in id
 /// order: the one computation behind waits, `fdset` and `waitfds`.
-fn pollsets<'a, H: Host>(
-    slots: &'a Slots<H>,
-    pool: &'a Pool,
-    mut f: impl FnMut(&'a dyn Socket, Events),
-) {
+fn pollsets<'a, H: Host>(slots: &'a Slots<H>, mut f: impl FnMut(&'a dyn Socket, Events)) {
     let mut cursor = None;
     while let Some(id) = slots.next_after(cursor) {
         cursor = Some(id);
@@ -906,7 +902,7 @@ fn pollsets<'a, H: Host>(
             .run
             .as_ref()
             .expect("no transfer is out while the multi is called");
-        for (socket, events) in run.state.pollset(pool, slot.pause).iter() {
+        for (socket, events) in run.state.pollset(slot.pause).iter() {
             f(socket, events);
         }
     }

@@ -53,9 +53,9 @@ witness: curl-core conn::pool::tests::refused_and_silent_attempts
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-                            (ConnSlot::Open(conn), Ok(up))
+                    (ConnSlot::Open(conn), Ok(up))
 --- new
-                            (ConnSlot::Failed(conn.number), Ok(up))
+                    (ConnSlot::Failed(conn.number), Ok(up))
 
 === a connection is reused for another route
 file: crates/curl-core/src/conn/pool.rs
@@ -65,19 +65,6 @@ witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal
                 continue;
             }
 --- new
-
-=== a leased connection is reused
-file: crates/curl-core/src/conn/pool.rs
-witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
---- old
-            let Use::Idle { since } = conn.use_ else {
-                continue;
-            };
---- new
-            let since = match conn.use_ {
-                Use::Idle { since } => since,
-                Use::Leased(_) => conn.created,
-            };
 
 === an idle connection is reused without its health checked
 file: crates/curl-core/src/conn/pool.rs
@@ -250,9 +237,9 @@ witness: curl-core multi::tests::a_connection_serves_only_the_peer_it_goes_throu
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_full_pool_closes_its_oldest_idle_connection
 --- old
-                if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms > ms) {
+            if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms > ms) {
 --- new
-                if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms < ms) {
+            if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms < ms) {
 
 === the guessed limit closes connections just idle
 file: crates/curl-core/src/conn/pool.rs
@@ -330,9 +317,9 @@ witness: curl-core conn::pool::tests::a_new_connection_waits_for_room_within_the
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_new_connection_waits_for_room_within_the_limits
 --- old
-    let to_host = |slot: &ConnSlot| slot.destination().is_some_and(|d| d.same_bundle(to));
+    let to_host = |place: &Place| place.destination().is_some_and(|d| d.same_bundle(to));
 --- new
-    let to_host = |slot: &ConnSlot| slot.destination().is_some_and(|d| d == to);
+    let to_host = |place: &Place| place.destination().is_some_and(|d| d == to);
 
 === a connection given back lets no one waiting look again
 file: crates/curl-core/src/multi/state.rs

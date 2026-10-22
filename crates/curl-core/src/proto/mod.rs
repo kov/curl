@@ -175,7 +175,7 @@ impl ProtoState {
     pub(crate) fn do_it<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         match *self {
             ProtoState::File(ref mut f) => f.do_it(cx),
@@ -341,7 +341,7 @@ impl ProtoState {
     pub(crate) fn step<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         match *self {
             ProtoState::File(_) => unreachable!("a file request exchanges nothing once made"),
@@ -384,7 +384,7 @@ impl ProtoState {
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
         next: &AfterRequest,

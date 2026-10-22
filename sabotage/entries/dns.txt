@@ -110,10 +110,10 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- old
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let (pool, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+    let (_, mut net, dns) = cx.rest.pool_net_dns(cx.me);
 --- new
     let max_age = Some(std::time::Duration::from_secs(60));
-    let (pool, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+    let (_, mut net, dns) = cx.rest.pool_net_dns(cx.me);
 
 === a transfer's end never reads the cache's timeout
 file: crates/curl-core/src/multi/state.rs

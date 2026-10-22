@@ -12,9 +12,9 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 use crate::conn::io::{Events, ResolveFailure};
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
-    Acquired, Answer, BadEntry, BadVia, Conn, ConnLease, ConnectError, Connected, Failure, Finish,
-    Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds,
-    ProxyRoute, Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
+    Acquired, Answer, BadEntry, BadVia, ConnLease, ConnectError, Connected, Failure, Finish, Found,
+    Full, Limit, ListEntry, Peer, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute, Released,
+    ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -404,19 +404,19 @@ impl TransferState {
     /// (`Curl_multi_pollset`): a setup waits to write on each, unless
     /// receiving is paused (`mstate_connecting_pollset`); an exchange
     /// waits for what its protocol says (`Curl_http_perform_pollset`).
-    pub(crate) fn pollset<'p>(&self, pool: &'p Pool, pause: Pause) -> Pollset<'p> {
+    pub(crate) fn pollset(&self, pause: Pause) -> Pollset<'_> {
         let mut set = Pollset::new();
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
                 // A tunnel's handshake waits for what it sends or reads.
                 let events = c.handshake.as_ref().map_or(Events::OUT, |h| h.interest());
-                for s in pool.sockets(&c.lease) {
+                for s in c.lease.sockets() {
                     set.add(s, events);
                 }
             }
             TransferState::Exchanging(x) => {
                 let events = x.proto.interest(pause);
-                for s in pool.sockets(&x.lease) {
+                for s in x.lease.sockets() {
                     set.add(s, events);
                 }
             }
@@ -487,11 +487,6 @@ impl<H: Host> StepCx<'_, H> {
 }
 
 impl<H: Host> StepCx<'_, H> {
-    /// The connection `lease` holds.
-    pub(crate) fn conn(&mut self, lease: &ConnLease) -> &mut Conn {
-        self.rest.caches.pool.get(lease)
-    }
-
     pub(crate) fn report_mut(&mut self) -> &mut TransferReport {
         self.rest
             .tell
@@ -659,7 +654,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Connecting(c) => connecting(run, c, cx),
         // No protocol connects over its connection yet.
         TransferState::ProtoConnect(x) => (TransferState::Do(x), Wake::Again),
-        TransferState::Do(mut x) => match x.proto.do_it(cx, &x.lease) {
+        TransferState::Do(mut x) => match x.proto.do_it(cx, &mut x.lease) {
             Ok(()) => {
                 // About to send; sent already, with no body
                 // (`mstate_enter_did`).
@@ -672,8 +667,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             }
             // A reused connection that died may be the request's
             // trouble: it is made again on a fresh one (`multistate_do`).
-            Err(ErrorKind::SendError) if cx.conn(&x.lease).reused() => {
-                let next = match retry_request(run, &x, cx) {
+            Err(ErrorKind::SendError) if x.lease.conn().reused() => {
+                let next = match retry_request(run, &mut x, cx) {
                     Ok(true) => x.retried(Err(ErrorKind::SendError), Reached::Unmade),
                     Ok(false) => x.done(Err(ErrorKind::SendError), false, Reached::Unmade),
                     Err(e) => x.done(Err(e), false, Reached::Unmade),
@@ -694,7 +689,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         ),
         TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
         TransferState::Exchanging(mut x) => {
-            let stepped = x.proto.step(cx, &x.lease);
+            let stepped = x.proto.step(cx, &mut x.lease);
             let expired = matches!(
                 run.deadlines
                     .time_left(starts(cx), cx.rest.now, Phase::Transferring),
@@ -703,7 +698,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             match stepped {
                 // Received nothing, perhaps over a reused connection that
                 // closed as it was reused (`multistate_performing`).
-                Err(ErrorKind::RecvError) => match retry_request(run, &x, cx) {
+                Err(ErrorKind::RecvError) => match retry_request(run, &mut x, cx) {
                     Ok(true) => (
                         TransferState::Done(x.retried(Ok(()), Reached::Made)),
                         Wake::Again,
@@ -734,7 +729,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                 run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
                             }
                             let retry = if ended {
-                                retry_request(run, &x, cx)
+                                retry_request(run, &mut x, cx)
                             } else {
                                 Ok(false)
                             };
@@ -770,7 +765,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // comes first.
             let mut premature = d.premature || is_premature(d.result);
             if let Some(proto) = d.proto.as_mut() {
-                d.result = proto.done(cx, &d.lease, d.result, premature, &d.next);
+                d.result = proto.done(cx, &mut d.lease, d.result, premature, &d.next);
             }
             // A last progress pass, unless a callback aborted already.
             if d.result != Err(ErrorKind::AbortedByCallback)
@@ -883,7 +878,7 @@ fn pending<H: Host>(run: &mut Run, plan: Plan, cx: &mut StepCx<'_, H>) -> (Trans
 /// (`multi_handle_timeout`).
 fn connecting<H: Host>(
     run: &mut Run,
-    c: Connecting,
+    mut c: Connecting,
     cx: &mut StepCx<'_, H>,
 ) -> (TransferState, Wake) {
     let now = cx.rest.now;
@@ -916,14 +911,14 @@ fn connecting<H: Host>(
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
-    let (pool, mut net, dns) = cx.rest.pool_net_dns(cx.me);
+    let (_, mut net, dns) = cx.rest.pool_net_dns(cx.me);
     let setup = Setup {
         dns,
         wildcard,
         max_age,
         delay,
     };
-    let connected = pool.connect(&c.lease, &mut net, now, setup);
+    let connected = c.lease.connect(&mut net, now, setup);
     if !matches!(connected, Ok(Connected::Connecting(_))) {
         run.deadlines.clear(TimerKind::Eyeballs);
     }
@@ -1169,8 +1164,7 @@ fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
 /// (`cf_dns_report`), under the name it was found for; nothing for an
 /// address the URL names.
 fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
-    let (pool, _) = cx.rest.pool_net(cx.me);
-    let Some(answer) = pool.answer(&c.lease) else {
+    let Some(answer) = c.lease.answer() else {
         return;
     };
     report_resolved(cx, &answer, c.destination().port());
@@ -1711,10 +1705,10 @@ fn next_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transfe
 /// have closed as it was reused. The fifth retry fails the transfer.
 fn retry_request<H: Host>(
     run: &mut Run,
-    x: &Attached,
+    x: &mut Attached,
     cx: &mut StepCx<'_, H>,
 ) -> Result<bool, ErrorKind> {
-    if !x.proto.retryable() || !cx.conn(&x.lease).reused() {
+    if !x.proto.retryable() || !x.lease.conn().reused() {
         return Ok(false);
     }
     if run.retries >= MAX_RETRIES {
@@ -1731,7 +1725,7 @@ fn retry_request<H: Host>(
         cx,
         format_args!("Connection died, retrying a fresh connect (retry count: {count})"),
     );
-    cx.conn(&x.lease).mark_close();
+    x.lease.get().mark_close();
     Ok(true)
 }
 

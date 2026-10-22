@@ -38,12 +38,12 @@ impl<H: Host> Multi<H> {
     ) -> Result<u32, MultiErrorKind> {
         let timeout = self.timeout().map_or(max, |t| t.min(max));
         let mut wanted = 0;
-        pollsets(&self.slots, &self.caches.pool, |_, _| wanted += 1);
+        pollsets(&self.slots, |_, _| wanted += 1);
         let mut sockets = Vec::new();
         sockets
             .try_reserve_exact(wanted)
             .map_err(|_| MultiErrorKind::OutOfMemory)?;
-        pollsets(&self.slots, &self.caches.pool, |s, events| {
+        pollsets(&self.slots, |s, events| {
             sockets
                 .try_push(SocketPoll::new(s, events))
                 .expect("reserved");
@@ -98,7 +98,7 @@ impl<H: Host> Multi<H> {
         for _ in watched {
             found.try_push(None).expect("reserved");
         }
-        pollsets(&self.slots, &self.caches.pool, |s, _| {
+        pollsets(&self.slots, |s, _| {
             let key = s.key();
             if let Some(at) = watched.iter().position(|&(k, _)| k == key) {
                 found[at].get_or_insert(s);

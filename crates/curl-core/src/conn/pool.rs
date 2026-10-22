@@ -1,5 +1,8 @@
-//! The connection pool: the owner of every connection, busy or idle, and
-//! the only issuer and consumer of leases (`lib/conncache.c`).
+//! The connection pool: the connections kept idle for the transfers after
+//! the one that used them, and the only issuer and consumer of leases
+//! (`lib/conncache.c`). A leased connection is its lease's, so the
+//! transfer holding it uses it without the pool; the pool keeps its place
+//! and number, and counts it against its limits.
 
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
@@ -14,13 +17,15 @@ use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, RecvBuf, Route, Transport,
 use crate::id::{Arena, ArenaPolicy};
 use crate::time::Instant;
 
-/// A transfer's hold on a connection. Only the pool makes one, and only
-/// `Pool::release` takes one back; dropping one is a bug, caught in debug
-/// builds.
+/// A transfer's hold on a connection, and the connection, being set up or
+/// up. Only the pool makes one, and only `Pool::release` takes one back;
+/// dropping one is a bug, caught in debug builds.
 #[must_use]
 #[derive(Debug)]
 pub(crate) struct ConnLease {
     id: ConnId,
+    /// None only as the pool takes it back.
+    conn: Option<ConnSlot>,
 }
 
 impl ConnLease {
@@ -30,6 +35,150 @@ impl ConnLease {
     )]
     pub(crate) fn id(&self) -> ConnId {
         self.id
+    }
+
+    /// Move the connection's setup on by one event. A connection already
+    /// up says so.
+    pub(crate) fn connect(
+        &mut self,
+        net: &mut dyn Net,
+        now: Instant,
+        setup: Setup<'_>,
+    ) -> Result<Connected, ConnectError> {
+        let number = self.number();
+        let (slot, connected) = match std::mem::replace(self.slot_mut(), ConnSlot::Failed(number)) {
+            ConnSlot::Connecting(machine) => match machine.drive(net, now, setup) {
+                Ok(Drove::Connecting(m, progress)) => {
+                    (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
+                }
+                Ok(Drove::Established(conn)) => {
+                    let up = Connected::Established {
+                        remote: conn.remote.expect("set up over the network"),
+                        local: conn.local,
+                        at: conn.connected_at,
+                    };
+                    (ConnSlot::Open(conn), Ok(up))
+                }
+                Err(e) => (ConnSlot::Failed(number), Err(e)),
+            },
+            ConnSlot::Open(conn) => {
+                let up = Connected::AlreadyUp {
+                    remote: conn.remote,
+                    local: conn.local,
+                };
+                (ConnSlot::Open(conn), Ok(up))
+            }
+            ConnSlot::Failed(_) => unreachable!("a failed setup is not driven again"),
+        };
+        *self.slot_mut() = slot;
+        connected
+    }
+
+    /// The connection to the proxy the setup tunnels through.
+    pub(crate) fn dialed(&mut self) -> &mut Dialed {
+        let id = self.id;
+        match self.slot_mut() {
+            ConnSlot::Connecting(machine) => machine.dialed(),
+            _ => panic!("{id:?} is not setting up"),
+        }
+    }
+
+    /// The setup's tunnel is up, and so the connection.
+    pub(crate) fn tunneled(&mut self) -> Connected {
+        let number = self.number();
+        let ConnSlot::Connecting(machine) =
+            std::mem::replace(self.slot_mut(), ConnSlot::Failed(number))
+        else {
+            panic!("{:?} is not setting up", self.id);
+        };
+        let conn = machine.tunneled();
+        let up = Connected::Established {
+            remote: conn.remote.expect("set up over the network"),
+            local: conn.local,
+            at: conn.connected_at,
+        };
+        *self.slot_mut() = ConnSlot::Open(conn);
+        up
+    }
+
+    /// Start the setup over, as its proxy closed the connection; false if
+    /// it was started over too often.
+    pub(crate) fn redial(&mut self, net: &mut dyn Net) -> bool {
+        let id = self.id;
+        match self.slot_mut() {
+            ConnSlot::Connecting(machine) => machine.redial(net),
+            _ => panic!("{id:?} is not setting up"),
+        }
+    }
+
+    /// The connection, once up.
+    pub(crate) fn conn(&self) -> &Conn {
+        match self.slot() {
+            ConnSlot::Open(conn) => conn,
+            _ => panic!("{:?} is not up", self.id),
+        }
+    }
+
+    /// The connection, once up, to use.
+    pub(crate) fn get(&mut self) -> &mut Conn {
+        let id = self.id;
+        match self.slot_mut() {
+            ConnSlot::Open(conn) => conn,
+            _ => panic!("{id:?} is not up"),
+        }
+    }
+
+    /// What the name of a connection being set up resolved to, once it
+    /// has.
+    pub(crate) fn answer(&self) -> Option<TryArc<Answer>> {
+        match self.slot() {
+            ConnSlot::Connecting(m) => m.answer().cloned(),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
+    /// The connection's sockets: its attempts' while it is set up, none
+    /// without a network.
+    pub(crate) fn sockets(&self) -> impl Iterator<Item = &dyn Socket> {
+        let (setup, open) = match self.slot() {
+            ConnSlot::Connecting(m) => (Some(m), None),
+            ConnSlot::Open(Conn {
+                transport: Transport::Tcp(socket),
+                ..
+            }) => (None, Some(&**socket)),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => (None, None),
+        };
+        setup
+            .into_iter()
+            .flat_map(ConnectMachine::sockets)
+            .chain(open)
+    }
+
+    fn number(&self) -> ConnNumber {
+        match self.slot() {
+            ConnSlot::Connecting(m) => m.number(),
+            ConnSlot::Open(conn) => conn.number,
+            ConnSlot::Failed(number) => *number,
+        }
+    }
+}
+
+impl ConnLease {
+    /// The lease taken apart, as only the pool does.
+    fn into_parts(mut self) -> (ConnId, ConnSlot) {
+        let conn = self.conn.take().expect("held until given back");
+        let id = self.id;
+        // Taken apart, not dropped: it held nothing more.
+        std::mem::forget(self);
+        (id, conn)
+    }
+
+    fn slot(&self) -> &ConnSlot {
+        self.conn.as_ref().expect("held until given back")
+    }
+
+    fn slot_mut(&mut self) -> &mut ConnSlot {
+        self.conn.as_mut().expect("held until given back")
     }
 }
 
@@ -187,9 +336,48 @@ pub(crate) enum Connected {
     },
 }
 
-/// Every connection of a multi (or of a share).
+/// Where a connection of the pool is.
+enum Place {
+    /// Kept for another transfer; always open.
+    Idle(ConnSlot),
+    /// Leased: its lease has it.
+    Away(Away),
+}
+
+/// What the pool knows of a connection leased: enough to count it.
+struct Away {
+    route: Route,
+}
+
+impl Place {
+    /// The idle connection, if this is one.
+    fn idle(&self) -> Option<&Conn> {
+        match self {
+            Place::Idle(slot) => match slot {
+                ConnSlot::Open(conn) => Some(conn),
+                _ => unreachable!("an idle connection is open"),
+            },
+            Place::Away(_) => None,
+        }
+    }
+
+    /// The peer the connection goes to, if over a network.
+    fn destination(&self) -> Option<&Peer> {
+        match self {
+            Place::Idle(slot) => slot.destination(),
+            Place::Away(Away {
+                route: Route::Tcp(tcp),
+                ..
+            }) => Some(tcp.destination()),
+            Place::Away(_) => None,
+        }
+    }
+}
+
+/// Every connection of a multi (or of a share): those idle here, and
+/// where those leased were.
 pub(crate) struct Pool {
-    conns: Arena<ConnSlot>,
+    conns: Arena<Place, ConnSlot>,
     next_number: u64,
     lock: Box<dyn Lock>,
     /// When the search last pruned dead connections (`last_cleanup`).
@@ -246,6 +434,9 @@ impl Pool {
             return Ok(Acquired::Wait(reason));
         }
         let number = ConnNumber(self.next_number);
+        let away = Away {
+            route: route.clone(),
+        };
         let slot = match route {
             Route::Local => ConnSlot::Open(Conn {
                 number,
@@ -264,9 +455,12 @@ impl Pool {
             }),
             Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(number, tcp, now)),
         };
-        let id = self.conns.reserve()?.fill(slot);
+        let id = self.conns.reserve()?.fill(Place::Away(away));
         self.next_number += 1;
-        Ok(Acquired::New(ConnLease { id }))
+        Ok(Acquired::New(ConnLease {
+            id,
+            conn: Some(slot),
+        }))
     }
 
     /// The search for an idle connection to reuse (`Curl_cpool_find`,
@@ -293,11 +487,11 @@ impl Pool {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            let Some(ConnSlot::Open(conn)) = self.conns.get(id) else {
+            let Some(conn) = self.conns.get(id).and_then(Place::idle) else {
                 continue;
             };
             let Use::Idle { since } = conn.use_ else {
-                continue;
+                unreachable!("an idle connection is idle");
             };
             if !conn.serves(route) {
                 continue;
@@ -315,11 +509,23 @@ impl Pool {
             };
             match verdict {
                 Ok(()) => {
-                    let Some(ConnSlot::Open(conn)) = self.conns.get_mut(id) else {
-                        unreachable!("just found open");
+                    let away = Away {
+                        route: conn.route.clone(),
+                    };
+                    let Some(Place::Idle(mut slot)) = self
+                        .conns
+                        .replace_with(id, |place| (Place::Away(away), place))
+                    else {
+                        unreachable!("just found idle");
+                    };
+                    let ConnSlot::Open(conn) = &mut slot else {
+                        unreachable!("an idle connection is open");
                     };
                     conn.use_ = Use::Leased(NonZeroU32::MIN);
-                    return Ok(Some(ConnLease { id }));
+                    return Ok(Some(ConnLease {
+                        id,
+                        conn: Some(slot),
+                    }));
                 }
                 Err(sick) => {
                     if let Some(why) = sick {
@@ -341,140 +547,19 @@ impl Pool {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            if let Some(ConnSlot::Open(conn)) = self.conns.get(id)
-                && let Use::Idle { .. } = conn.use_
-            {
+            if self.conns.get(id).and_then(Place::idle).is_some() {
                 close(&mut self.conns, id, net);
             }
         }
     }
 
-    /// Move the leased connection's setup on by one event. A connection
-    /// already up says so.
-    pub(crate) fn connect(
-        &mut self,
-        lease: &ConnLease,
-        net: &mut dyn Net,
-        now: Instant,
-        setup: Setup<'_>,
-    ) -> Result<Connected, ConnectError> {
-        self.conns
-            .replace_with(lease.id, |slot| match slot {
-                ConnSlot::Connecting(machine) => {
-                    let number = machine.number();
-                    match machine.drive(net, now, setup) {
-                        Ok(Drove::Connecting(m, progress)) => {
-                            (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
-                        }
-                        Ok(Drove::Established(conn)) => {
-                            let up = Connected::Established {
-                                remote: conn.remote.expect("set up over the network"),
-                                local: conn.local,
-                                at: conn.connected_at,
-                            };
-                            (ConnSlot::Open(conn), Ok(up))
-                        }
-                        Err(e) => (ConnSlot::Failed(number), Err(e)),
-                    }
-                }
-                ConnSlot::Open(conn) => {
-                    let up = Connected::AlreadyUp {
-                        remote: conn.remote,
-                        local: conn.local,
-                    };
-                    (ConnSlot::Open(conn), Ok(up))
-                }
-                ConnSlot::Failed(_) => unreachable!("a failed setup is not driven again"),
-            })
-            .unwrap_or_else(|| panic!("a lease on {:?}, which the pool no longer has", lease.id))
-    }
-
-    /// The connection to the proxy a leased setup tunnels through.
-    pub(crate) fn dialed(&mut self, lease: &ConnLease) -> &mut Dialed {
-        match self.conns.get_mut(lease.id) {
-            Some(ConnSlot::Connecting(machine)) => machine.dialed(),
-            Some(_) => panic!("{:?} is not setting up", lease.id),
-            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
-        }
-    }
-
-    /// The leased setup's tunnel is up, and so the connection.
-    pub(crate) fn tunneled(&mut self, lease: &ConnLease) -> Connected {
-        self.conns
-            .replace_with(lease.id, |slot| match slot {
-                ConnSlot::Connecting(machine) => {
-                    let conn = machine.tunneled();
-                    let up = Connected::Established {
-                        remote: conn.remote.expect("set up over the network"),
-                        local: conn.local,
-                        at: conn.connected_at,
-                    };
-                    (ConnSlot::Open(conn), up)
-                }
-                ConnSlot::Open(_) | ConnSlot::Failed(_) => {
-                    panic!("{:?} is not setting up", lease.id)
-                }
-            })
-            .unwrap_or_else(|| panic!("a lease on {:?}, which the pool no longer has", lease.id))
-    }
-
-    /// Start the leased setup over, as its proxy closed the connection;
-    /// false if it was started over too often.
-    pub(crate) fn redial(&mut self, lease: &ConnLease, net: &mut dyn Net) -> bool {
-        match self.conns.get_mut(lease.id) {
-            Some(ConnSlot::Connecting(machine)) => machine.redial(net),
-            Some(_) => panic!("{:?} is not setting up", lease.id),
-            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
-        }
-    }
-
-    /// The connection a lease holds, once up.
-    pub(crate) fn get(&mut self, lease: &ConnLease) -> &mut Conn {
-        match self.conns.get_mut(lease.id) {
-            Some(ConnSlot::Open(conn)) => conn,
-            Some(_) => panic!("{:?} is not up", lease.id),
-            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
-        }
-    }
-
-    /// The connection `id` names, if it is still in the pool and up.
+    /// The connection `id` names, if it is still in the pool and idle.
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "the shim's last connection, from step 10")
     )]
     pub(crate) fn get_conn(&self, id: ConnId) -> Option<&Conn> {
-        match self.conns.get(id)? {
-            ConnSlot::Open(conn) => Some(conn),
-            ConnSlot::Connecting(_) | ConnSlot::Failed(_) => None,
-        }
-    }
-
-    /// What the name of a connection being set up resolved to, once it
-    /// has.
-    pub(crate) fn answer(&self, lease: &ConnLease) -> Option<TryArc<Answer>> {
-        match self.conns.get(lease.id) {
-            Some(ConnSlot::Connecting(m)) => m.answer().cloned(),
-            Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => None,
-            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
-        }
-    }
-
-    /// The sockets of the connection a lease holds: its attempts' while
-    /// it is set up, none without a network.
-    pub(crate) fn sockets(&self, lease: &ConnLease) -> impl Iterator<Item = &dyn Socket> {
-        let (setup, open) = match self.conns.get(lease.id) {
-            Some(ConnSlot::Connecting(m)) => (Some(m), None),
-            Some(ConnSlot::Open(Conn {
-                transport: Transport::Tcp(socket),
-                ..
-            })) => (None, Some(&**socket)),
-            Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => (None, None),
-            None => panic!("a lease on {:?}, which the pool no longer has", lease.id),
-        };
-        setup
-            .into_iter()
-            .flat_map(ConnectMachine::sockets)
-            .chain(open)
+        self.conns.get(id)?.idle()
     }
 
     /// Take a lease back and decide the connection's fate as
@@ -489,10 +574,13 @@ impl Pool {
         net: &mut dyn Net,
         now: Instant,
     ) -> Released {
-        let id = lease.id;
-        std::mem::forget(lease);
+        let (id, mut slot) = lease.into_parts();
         let _locked = Locked::take(&*self.lock);
-        if let Some(ConnSlot::Open(conn)) = self.conns.get_mut(id)
+        assert!(
+            matches!(self.conns.get(id), Some(Place::Away(_))),
+            "a lease on {id:?}, which the pool no longer has"
+        );
+        if let ConnSlot::Open(conn) = &mut slot
             && let Route::Tcp(tcp) = &conn.route
             && tcp.origin.scheme().reuse
             && !finish.premature
@@ -503,6 +591,7 @@ impl Pool {
             conn.use_ = Use::Idle { since: now };
             conn.served = true;
             let number = conn.number;
+            *self.conns.get_mut(id).expect("checked above") = Place::Idle(slot);
             return match over_limit(&mut self.conns, limit, net, now) {
                 Some((full, closed)) if closed == Some(id) => Released::Evicted(full),
                 full => Released::Idle {
@@ -511,10 +600,7 @@ impl Pool {
                 },
             };
         }
-        let slot = self
-            .conns
-            .remove(id)
-            .unwrap_or_else(|| panic!("a lease on {id:?}, which the pool no longer has"));
+        self.conns.remove(id);
         let number = match slot {
             ConnSlot::Connecting(m) => {
                 let number = m.number();
@@ -547,13 +633,7 @@ impl Pool {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            leased += usize::from(!matches!(
-                self.conns.get(id),
-                Some(ConnSlot::Open(Conn {
-                    use_: Use::Idle { .. },
-                    ..
-                }))
-            ));
+            leased += usize::from(matches!(self.conns.get(id), Some(Place::Away(_))));
         }
         leased
     }
@@ -573,7 +653,7 @@ pub(crate) struct Limit {
 /// limit set, the pool keeps twice the transfers, and closes only a
 /// connection idle for a second.
 fn over_limit(
-    conns: &mut Arena<ConnSlot>,
+    conns: &mut Arena<Place, ConnSlot>,
     limit: Limit,
     net: &mut dyn Net,
     now: Instant,
@@ -590,19 +670,19 @@ fn over_limit(
     let mut cursor = None;
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
-        match conns.get(id) {
-            Some(ConnSlot::Failed(_)) | None => continue,
-            Some(ConnSlot::Open(Conn {
-                use_: Use::Idle { since },
-                ..
-            })) => {
-                // In C's milliseconds: of two as old, the first.
-                let idle_ms = now.since(*since).as_millis();
-                if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms > ms) {
-                    oldest = Some((id, idle_ms));
-                }
+        let Some(place) = conns.get(id) else {
+            continue;
+        };
+        if let Some(Conn {
+            use_: Use::Idle { since },
+            ..
+        }) = place.idle()
+        {
+            // In C's milliseconds: of two as old, the first.
+            let idle_ms = now.since(*since).as_millis();
+            if idle_ms >= min_idle_ms && oldest.is_none_or(|(_, ms)| idle_ms > ms) {
+                oldest = Some((id, idle_ms));
             }
-            Some(ConnSlot::Open(_) | ConnSlot::Connecting(_)) => {}
         }
         count += 1;
     }
@@ -621,13 +701,13 @@ fn over_limit(
 /// (`cpool_check_limits`); why there is none, if there is not. The
 /// closes trace nowhere, as C's go to its internal handle.
 fn make_room(
-    conns: &mut Arena<ConnSlot>,
+    conns: &mut Arena<Place, ConnSlot>,
     to: &Peer,
     limits: AddLimits,
     net: &mut dyn Net,
     now: Instant,
 ) -> Option<WaitReason> {
-    let to_host = |slot: &ConnSlot| slot.destination().is_some_and(|d| d.same_bundle(to));
+    let to_host = |place: &Place| place.destination().is_some_and(|d| d.same_bundle(to));
     if let Some(max) = limits.max_host {
         let live = count(conns, to_host);
         for _ in max.get()..=live {
@@ -641,7 +721,7 @@ fn make_room(
         }
     }
     if let Some(max) = limits.max_total {
-        let any = |_: &ConnSlot| true;
+        let any = |_: &Place| true;
         let live = count(conns, any);
         for _ in max.get()..=live {
             let Some(id) = oldest_idle(conns, any, now) else {
@@ -656,17 +736,15 @@ fn make_room(
     None
 }
 
-/// The connections `which` picks, busy, idle or being set up; a failed
-/// setup holds nothing.
-fn count(conns: &Arena<ConnSlot>, which: impl Fn(&ConnSlot) -> bool) -> u32 {
+/// The connections `which` picks, busy, idle or being set up. A failed
+/// setup is counted until its lease is given back, as C counts a
+/// connection until its transfer is done.
+fn count(conns: &Arena<Place, ConnSlot>, which: impl Fn(&Place) -> bool) -> u32 {
     let mut n = 0;
     let mut cursor = None;
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
-        if let Some(slot) = conns.get(id)
-            && !matches!(slot, ConnSlot::Failed(_))
-            && which(slot)
-        {
+        if conns.get(id).is_some_and(&which) {
             n += 1;
         }
     }
@@ -677,21 +755,20 @@ fn count(conns: &Arena<ConnSlot>, which: impl Fn(&ConnSlot) -> bool) -> u32 {
 /// two as old in C's milliseconds, the first (`cpool_get_oldest_idle`,
 /// `cpool_bundle_get_oldest_idle`).
 fn oldest_idle(
-    conns: &Arena<ConnSlot>,
-    which: impl Fn(&ConnSlot) -> bool,
+    conns: &Arena<Place, ConnSlot>,
+    which: impl Fn(&Place) -> bool,
     now: Instant,
 ) -> Option<ConnId> {
     let mut oldest: Option<(ConnId, u128)> = None;
     let mut cursor = None;
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
-        if let Some(
-            slot @ ConnSlot::Open(Conn {
+        if let Some(place) = conns.get(id)
+            && let Some(Conn {
                 use_: Use::Idle { since },
                 ..
-            }),
-        ) = conns.get(id)
-            && which(slot)
+            }) = place.idle()
+            && which(place)
         {
             let idle_ms = now.since(*since).as_millis();
             if oldest.is_none_or(|(_, ms)| idle_ms > ms) {
@@ -704,11 +781,11 @@ fn oldest_idle(
 
 /// Close the idle connections that are not healthy, saying nothing: C's
 /// prune traces to its internal handle (`cpool_prune_dead`).
-fn prune(conns: &mut Arena<ConnSlot>, rules: ReuseRules, net: &mut dyn Net, now: Instant) {
+fn prune(conns: &mut Arena<Place, ConnSlot>, rules: ReuseRules, net: &mut dyn Net, now: Instant) {
     let mut cursor = None;
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
-        if let Some(ConnSlot::Open(conn)) = conns.get(id)
+        if let Some(conn) = conns.get(id).and_then(Place::idle)
             && let Use::Idle { since } = conn.use_
             && health(conn, since, rules, net, now).is_err()
         {
@@ -718,13 +795,14 @@ fn prune(conns: &mut Arena<ConnSlot>, rules: ReuseRules, net: &mut dyn Net, now:
 }
 
 /// Close the connection `id` names, which no one leases.
-fn close(conns: &mut Arena<ConnSlot>, id: ConnId, net: &mut dyn Net) {
+fn close(conns: &mut Arena<Place, ConnSlot>, id: ConnId, net: &mut dyn Net) {
     match conns.remove(id) {
-        Some(ConnSlot::Open(conn)) => {
-            assert!(matches!(conn.use_, Use::Idle { .. }), "{id:?} is leased");
-            close_transport(conn.transport, net);
-        }
-        other => unreachable!("closing {id:?}, which is {other:?}"),
+        Some(Place::Idle(slot)) => match slot {
+            ConnSlot::Open(conn) => close_transport(conn.transport, net),
+            _ => unreachable!("an idle connection is open"),
+        },
+        Some(Place::Away(_)) => panic!("{id:?} is leased"),
+        None => unreachable!("closing {id:?}, which the pool no longer has"),
     }
 }
 

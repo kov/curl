@@ -48,7 +48,7 @@ pub(super) fn dialed<H: Host>(
     cx: &mut StepCx<'_, H>,
     version: Version,
 ) -> (TransferState, Wake) {
-    match start(&c, cx, version) {
+    match start(&mut c, cx, version) {
         Ok(handshake) => {
             c.handshake = Some(handshake);
             (TransferState::Connecting(c), Wake::Again)
@@ -58,13 +58,12 @@ pub(super) fn dialed<H: Host>(
 }
 
 fn start<H: Host>(
-    c: &Connecting,
+    c: &mut Connecting,
     cx: &mut StepCx<'_, H>,
     version: Version,
 ) -> Result<Box<Handshake>, ErrorKind> {
     let ip = cx.easy().options().ip_version;
-    let (pool, _) = cx.rest.pool_net(cx.me);
-    let found = match pool.dialed(&c.lease).target() {
+    let found = match c.lease.dialed().target() {
         None => None,
         Some(Ok((answer, found))) => Some(Ok((answer.clone(), *found))),
         Some(Err(_)) => Some(Err(())),
@@ -118,8 +117,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
     loop {
         let h = socks(&mut c.handshake);
-        let (pool, _) = cx.rest.pool_net(cx.me);
-        let dialed = pool.dialed(&c.lease);
+        let dialed = c.lease.dialed();
         if !h.to_send().is_empty() {
             match dialed.send(h.to_send()) {
                 Ok(Sent::Bytes(n)) => h.sent(n.get()),
@@ -173,8 +171,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
 /// proxy behind it tunnels next, or the connection is up.
 fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let authenticated = socks(&mut c.handshake).authenticated();
-    let (pool, _) = cx.rest.pool_net(cx.me);
-    let dialed = pool.dialed(&c.lease);
+    let dialed = c.lease.dialed();
     if authenticated {
         dialed.socks5_authenticated();
     }
@@ -195,8 +192,7 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
     if proxy.tunnels() {
         return super::tunnel::dialed(c, cx);
     }
-    let (pool, _) = cx.rest.pool_net(cx.me);
-    match pool.tunneled(&c.lease) {
+    match c.lease.tunneled() {
         Connected::Established { remote, local, at } => established(c, cx, remote, local, at),
         _ => unreachable!("the handshake makes the connection"),
     }

@@ -115,7 +115,7 @@ witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
 --- old
-        pollsets(&self.slots, &self.caches.pool, |s, events| {
+        pollsets(&self.slots, |s, events| {
             sockets
                 .try_push(SocketPoll::new(s, events))
                 .expect("reserved");

@@ -467,23 +467,23 @@ impl Request {
     pub(crate) fn do_it<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
-        let reused = cx.conn(lease).reused();
+        let reused = lease.conn().reused();
         // On a connection's first request (`http_check_new_conn`); no
         // other version is spoken here.
         if !reused {
             trace::info(cx, format_args!("using HTTP/1.x"));
         }
-        let http_proxy = cx.conn(lease).http_proxy();
+        let http_proxy = lease.conn().http_proxy();
         self.version = version(
             cx.easy().options().http.version,
             self.after_http10,
-            cx.conn(lease).seen_version(),
+            lease.conn().seen_version(),
         );
         // The proxy the request goes to whole, and what it is given.
-        let forwarding = cx
-            .conn(lease)
+        let forwarding = lease
+            .conn()
             .forwarding()
             .map(|p| (p.peer.clone(), p.creds.clone()));
         let forwarded = forwarding.is_some();
@@ -802,7 +802,7 @@ impl Request {
     fn send<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
         mut read: bool,
     ) -> Result<bool, ErrorKind> {
         while self.sending() {
@@ -835,7 +835,7 @@ impl Request {
                 read = false;
                 continue;
             }
-            let sent = cx.conn(lease).send(&self.out[self.sent..self.filled]);
+            let sent = lease.get().send(&self.out[self.sent..self.filled]);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(false),
@@ -904,7 +904,7 @@ impl Request {
     pub(crate) fn step<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
         self.receive(cx, lease)?;
@@ -926,7 +926,7 @@ impl Request {
     fn receive<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
         loop {
             if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
@@ -938,18 +938,18 @@ impl Request {
                 self.stage = Stage::Done;
                 continue;
             }
-            match cx.conn(lease).recv(max) {
+            match lease.get().recv(max) {
                 Ok(Recv::WouldBlock) => return Ok(()),
                 Ok(Recv::Eof) => {
                     self.end(cx)?;
                     self.stage = Stage::Done;
                 }
                 Ok(Recv::Data(_)) => {
-                    let mut rx = std::mem::take(cx.conn(lease).rx_mut());
+                    let mut rx = std::mem::take(lease.get().rx_mut());
                     let fed = self.input(cx, rx.filled());
                     let all = rx.filled().len();
                     rx.consume(all);
-                    *cx.conn(lease).rx_mut() = rx;
+                    *lease.get().rx_mut() = rx;
                     fed?;
                 }
                 Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
@@ -1369,7 +1369,7 @@ impl Request {
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        lease: &ConnLease,
+        lease: &mut ConnLease,
         result: Result<(), ErrorKind>,
         premature: bool,
         next: &AfterRequest,
@@ -1398,15 +1398,15 @@ impl Request {
         }
         let head = self.head.as_ref().expect("made at DO");
         if let Some(seen) = head.last_version() {
-            cx.conn(lease).saw_version(seen);
+            lease.get().saw_version(seen);
         }
         if head.meta().close() || self.pipeline.body_closes() || self.closing {
-            cx.conn(lease).mark_close();
+            lease.get().mark_close();
         }
         result?;
         if !premature && *next != AfterRequest::Retry && head.got_nothing(self.pipeline.bytecount())
         {
-            cx.conn(lease).mark_close();
+            lease.get().mark_close();
             return Err(trace::fail(
                 cx,
                 ErrorKind::GotNothing,

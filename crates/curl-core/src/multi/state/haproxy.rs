@@ -118,13 +118,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         _ => unreachable!("the PROXY line is being sent"),
     };
     while p.sent < p.line.len() {
-        match cx
-            .rest
-            .pool_net(cx.me)
-            .0
-            .get(&c.lease)
-            .send(&p.line[p.sent..])
-        {
+        match c.lease.get().send(&p.line[p.sent..]) {
             Ok(Sent::Bytes(n)) => p.sent += n.get(),
             Ok(Sent::WouldBlock) => return (TransferState::Connecting(c), Wake::Idle),
             Err(e) => {

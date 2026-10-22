@@ -179,8 +179,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
     loop {
         let t = tunnel(&mut c.handshake);
         if t.sent < t.request.len() {
-            let (pool, _) = cx.rest.pool_net(cx.me);
-            let sent = pool.dialed(&c.lease).send(&t.request[t.sent..]);
+            let sent = c.lease.dialed().send(&t.request[t.sent..]);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(Ran::Idle),
@@ -201,8 +200,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
         if t.answer.done() {
             return finish(c, cx);
         }
-        let (pool, _) = cx.rest.pool_net(cx.me);
-        let dialed = pool.dialed(&c.lease);
+        let dialed = c.lease.dialed();
         if dialed.received().is_empty() {
             match dialed.recv(READ_SIZE) {
                 Ok(Recv::Data(_)) => {}
@@ -331,8 +329,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             cx,
             format_args!("CONNECT tunnel established, response {code}"),
         );
-        let (pool, _) = cx.rest.pool_net(cx.me);
-        return match pool.tunneled(&c.lease) {
+        return match c.lease.tunneled() {
             Connected::Established { remote, local, at } => Ok(Ran::Up(remote, local, at)),
             _ => unreachable!("a tunnel makes the connection"),
         };
@@ -375,8 +372,8 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
         c.handshake = None;
-        let (pool, mut net) = cx.rest.pool_net(cx.me);
-        if !pool.redial(&c.lease, &mut net) {
+        let (_, mut net) = cx.rest.pool_net(cx.me);
+        if !c.lease.redial(&mut net) {
             return Err(ErrorKind::CouldntConnect);
         }
         return Ok(Ran::Again);

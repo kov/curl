@@ -24,6 +24,7 @@ curl-core = { path = "../curl-core" }
 curl-psl = { path = "../curl-psl" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
+curl-zstd = { path = "../curl-zstd" }
 libc = "0.2"
 
 [dev-dependencies]

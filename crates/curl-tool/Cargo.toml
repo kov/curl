@@ -25,6 +25,7 @@ curl-os = { path = "../curl-os", features = ["args"] }
 curl-psl = { path = "../curl-psl" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
+curl-zstd = { path = "../curl-zstd" }
 
 [lints]
 workspace = true

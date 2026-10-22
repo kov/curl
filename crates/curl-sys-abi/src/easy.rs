@@ -297,6 +297,7 @@ fn decoders() -> curl_core::coding::Decoders {
         .with(Coding::Deflate, curl_zlib::deflate)
         .with(Coding::Gzip, curl_zlib::gzip)
         .with(Coding::Brotli, curl_brotli::decoder)
+        .with(Coding::Zstd, curl_zstd::decoder)
 }
 
 #[unsafe(no_mangle)]

@@ -446,8 +446,8 @@ cargo-mutants run on the milestone's diff.
     `--range`. HTTPS proxies wait on TLS.
 32. **http: decompress.** **In progress.** Done: the pause gate holding encoded bytes, as C's
     does; Content-Encoding, `Accept-Encoding`, `--compressed` and `--raw`'s content half, with
-    zlib (`curl-zlib`) for `deflate` and `gzip` and brotli (`curl-brotli`) for `br`. To do:
-    zstd, then `--tr-encoding`
+    zlib (`curl-zlib`) for `deflate` and `gzip`, brotli (`curl-brotli`) for `br` and zstd
+    (`curl-zstd`). To do: `--tr-encoding`
     (387, 418, 1122–1125, 1170, 1171, 1277, 1546, 1617). 3236 waits on C's `write` trace
     component (`curl_global_trace`), which nothing schedules yet.
 33. **http: the headers API, and time conditions.** **To do.** Each request's headers kept

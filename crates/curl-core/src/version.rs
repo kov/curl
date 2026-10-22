@@ -34,6 +34,9 @@ pub enum Feature {
     /// Cookies' domains are checked against libpsl's public suffixes,
     /// which the tool and the C ABI give every handle.
     Psl,
+    /// The `zstd` content coding is undone by zstd, which the tool and the
+    /// C ABI give every handle.
+    Zstd,
 }
 
 impl Feature {
@@ -46,6 +49,7 @@ impl Feature {
             Feature::Ipv6 => "IPv6",
             Feature::Libz => "libz",
             Feature::Psl => "PSL",
+            Feature::Zstd => "zstd",
         }
     }
 }
@@ -57,9 +61,16 @@ const FEATURES: &[Feature] = &[
     Feature::Ipv6,
     Feature::Libz,
     Feature::Psl,
+    Feature::Zstd,
 ];
 #[cfg(not(feature = "debug-hooks"))]
-const FEATURES: &[Feature] = &[Feature::Brotli, Feature::Ipv6, Feature::Libz, Feature::Psl];
+const FEATURES: &[Feature] = &[
+    Feature::Brotli,
+    Feature::Ipv6,
+    Feature::Libz,
+    Feature::Psl,
+    Feature::Zstd,
+];
 
 /// A URL scheme the build can transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

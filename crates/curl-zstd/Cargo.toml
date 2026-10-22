@@ -1,0 +1,15 @@
+[package]
+name = "curl-zstd"
+description = "zstd's decoder for the curl rewrite: the zstd content coding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "zstd"
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+
+[lints]
+workspace = true

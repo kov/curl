@@ -105,6 +105,7 @@ dependencies = [
  "curl-core",
  "curl-psl",
  "curl-zlib",
+ "curl-zstd",
  "libc",
 ]
 
@@ -118,10 +119,19 @@ dependencies = [
  "curl-os",
  "curl-psl",
  "curl-zlib",
+ "curl-zstd",
 ]
 
 [[package]]
 name = "curl-zlib"
+version = "0.1.0"
+dependencies = [
+ "curl-alloc",
+ "curl-core",
+]
+
+[[package]]
+name = "curl-zstd"
 version = "0.1.0"
 dependencies = [
  "curl-alloc",

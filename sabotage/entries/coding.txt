@@ -105,3 +105,19 @@ witness: curl-brotli tests::a_body_not_of_the_coding_fails
         -1 | -15..=-3 | -20..=-18 => ErrorKind::BadContentEncoding,
 --- new
         -1 | -2 | -15..=-3 | -20..=-18 => ErrorKind::BadContentEncoding,
+
+=== zstd decoding goes on past the transfer's time
+file: crates/curl-zstd/src/lib.rs
+witness: curl-zstd tests::a_transfer_out_of_time_stops_decoding
+--- old
+                if out.timed_out() {
+--- new
+                if false {
+
+=== zstd stops at a full buffer
+file: crates/curl-zstd/src/lib.rs
+witness: curl-zstd tests::output_goes_in_pieces_of_at_most_16_kib
+--- old
+            if input.pos == input.size && output.pos < output.size {
+--- new
+            if input.pos == input.size {

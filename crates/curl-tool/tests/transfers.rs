@@ -170,6 +170,30 @@ fn retries_a_failure() {
     assert_eq!(run.stderr, expected);
 }
 
+/// `--retry-max-time` stops the retries once that long has gone by since
+/// the first attempt.
+#[test]
+fn retries_for_as_long_as_allowed() {
+    let dir = Scratch::new("retry-max");
+    let args = [
+        "-s",
+        "--retry",
+        "50",
+        "--retry-all-errors",
+        "--retry-delay",
+        "0.05",
+        "--retry-max-time",
+        "0.3",
+        "-w",
+        "%{num_retries}",
+    ];
+    let missing = dir.url("missing");
+    let run = curl(&dir, &[&args[..], &[&missing]].concat());
+    assert_eq!(run.code, 37);
+    let retries: u32 = String::from_utf8(run.stdout).unwrap().parse().unwrap();
+    assert!((1..20).contains(&retries), "{retries}");
+}
+
 /// `--url @file` reads URLs from a file, one a line, comments and blank
 /// lines left out; each is saved as `-O` names it, and never globbed.
 #[test]
@@ -970,4 +994,29 @@ fn sends_standard_error_where_told() {
     assert_eq!((r.code, &r.stderr[..]), (37, ""));
     assert!(String::from_utf8(r.stdout).unwrap().starts_with(failed));
     assert!(!s.exists("-"));
+}
+
+/// The bar of an upload resumed where the file it adds to ends, of a
+/// size not known, is full from the start: the whole is what the peer
+/// says it is.
+#[test]
+fn draws_the_bar_of_an_upload_resumed_at_its_end() {
+    let s = Scratch::new("bar-resumed");
+    s.write("dst", b"0123");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut child = Command::new(tool)
+        .args(["-q", "-#", "-T", "-", "-C", "-", &s.url("dst")])
+        .env("COLUMNS", "30")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), b"0123456789").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(stderr, format!("\r{} 100.0%\n", "#".repeat(23)));
+    assert_eq!(s.read("dst"), b"0123456789");
 }

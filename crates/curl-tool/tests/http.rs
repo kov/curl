@@ -13,6 +13,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::thread::JoinHandle;
 
+/// Each connection's replies, one for each request on it.
+type Script = Vec<Vec<Vec<u8>>>;
+
 /// A server that answers one request with `reply`, then closes; joining
 /// it gives the request it got, its port written as `PORT`.
 struct Server {
@@ -28,7 +31,7 @@ impl Server {
     /// A server that takes a connection for each of `conns` in turn,
     /// answers each request on it with the connection's next reply, then
     /// closes it; joining it gives the requests, one after another.
-    fn script(conns: Vec<Vec<Vec<u8>>>) -> Server {
+    fn script(conns: Script) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let request = std::thread::spawn(move || {
@@ -881,4 +884,88 @@ fn waits_for_a_continue_as_long_as_told() {
         assert!((at_least..below).contains(&took), "{wait:?}: {took} ms");
         assert!(s.request().contains("\r\nExpect: 100-continue\r\n"));
     }
+}
+
+/// What `-O -J` saves a response as, and with `-i` what it writes:
+/// `Content-Disposition:` without a file name leaves the URL's, a 3xx's
+/// `Location:` names the file until then, and the lines shown before the
+/// name is known wait for it.
+#[test]
+fn reads_the_name_the_server_gives_as_c_does() {
+    let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let disposed = |value: &str| {
+        format!("HTTP/1.1 200 OK\r\nContent-Disposition: {value}\r\nContent-Length: 3\r\n\r\nok\n")
+            .into_bytes()
+    };
+    let moved = |code: u16| {
+        format!(
+            "HTTP/1.1 {code} Moved\r\nLocation: moved-name\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n"
+        )
+        .into_bytes()
+    };
+    let interim = [
+        &b"HTTP/1.1 100 Continue\r\n\r\n"[..],
+        b"HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=cd-name\r\n",
+        b"Content-Length: 3\r\n\r\nok\n",
+    ]
+    .concat();
+    let cases: [(Script, bool, &str, &[u8]); 7] = [
+        (vec![vec![disposed("inline")]], false, "url-name", b"ok\n"),
+        (
+            vec![vec![disposed("abcdefghijk")]],
+            false,
+            "url-name",
+            b"ok\n",
+        ),
+        (
+            vec![vec![disposed("abcdefghij;   ")]],
+            false,
+            "url-name",
+            b"ok\n",
+        ),
+        (
+            vec![vec![moved(301)], vec![ok.clone()]],
+            false,
+            "moved-name",
+            b"ok\n",
+        ),
+        (vec![vec![moved(200)]], false, "url-name", b""),
+        (vec![vec![interim.clone()]], true, "cd-name", &interim),
+        // Without a body, what was held when the file was made is all.
+        (
+            vec![vec![
+                b"HTTP/1.1 200 OK\r\nContent-Disposition: inline\r\nContent-Length: 0\r\n\r\n"
+                    .to_vec(),
+            ]],
+            true,
+            "url-name",
+            b"HTTP/1.1 200 OK\r\n",
+        ),
+    ];
+    let dir = scratch("server-names");
+    let at = dir.to_str().unwrap();
+    for (i, (script, show, file, content)) in cases.into_iter().enumerate() {
+        let s = Server::script(script);
+        let url = format!("{}url-name", s.url());
+        let mut args = vec!["-sS", "-L", "-O", "-J", "--output-dir", at];
+        if show {
+            args.push("-i");
+        }
+        args.push(&url);
+        let run = curl(&args);
+        assert_eq!((run.code, &run.stderr[..]), (0, ""), "{i}");
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(files, [file], "{i}");
+        assert_eq!(
+            String::from_utf8_lossy(&std::fs::read(dir.join(file)).unwrap()),
+            String::from_utf8_lossy(content),
+            "{i}"
+        );
+        std::fs::remove_file(dir.join(file)).unwrap();
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }

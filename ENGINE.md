@@ -1908,7 +1908,7 @@ Each is either unobservable through the ABI or a fixed bug:
 |---|---|---|
 | arena row, timer entry, dirty capacity, socket-user and notification capacity | `add` (fails with the `Easy` handed back) | transfers added |
 | `Box<Slot>` (the `Run` in it) | `add` | one per transfer |
-| `Box<Easy>` | the shim's `curl_easy_init` and `curl_easy_duphandle`; `Easy::perform` | one per handle |
+| `Box<Easy>` | the shim's `curl_easy_init` and `curl_easy_duphandle`; `Easy::perform` | one per handle; one per `Easy::perform`, freed when it returns |
 | `ConnectMachine`, attempts' sockets, `Conn` buffers, layer pipes | acquire / stage entry | limits, BUFFERSIZE, UPLOAD_BUFFERSIZE |
 | `HeaderStore` growth | per line, after the budget check | 300 KiB/response, 20× per transfer, 5000 |
 | `HeldOutput` | only while held | 64 MiB → TooLarge |

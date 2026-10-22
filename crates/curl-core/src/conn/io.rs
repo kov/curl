@@ -279,6 +279,11 @@ struct Wire {
     /// Sends still to be refused as would-block, though the socket polls
     /// writable: a full send buffer that drains by the next poll.
     stalls: usize,
+    /// Each reply arrives a poll after its request: its first read
+    /// would block.
+    late: bool,
+    /// The reply due was read for once already, and would block.
+    waited: bool,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -353,6 +358,13 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .stalls = n;
+        self
+    }
+
+    /// The same peer, each reply arriving only after the read that
+    /// first looks for it: a peer slower than the request's sender.
+    pub fn late_replies(self) -> Conversation {
+        self.0.lock().expect("no test panics holding the wire").late = true;
         self
     }
 
@@ -660,6 +672,10 @@ impl Socket for FakeSocket {
             if !wire.answering() {
                 return Ok(Recv::WouldBlock);
             }
+            if wire.late && !wire.waited {
+                wire.waited = true;
+                return Ok(Recv::WouldBlock);
+            }
             let left = &wire.replies[wire.answered][wire.read..];
             let n = left.len().min(buf.len());
             buf[..n].copy_from_slice(&left[..n]);
@@ -668,6 +684,7 @@ impl Socket for FakeSocket {
                 // Read whole: an idle connection has nothing waiting.
                 wire.answered += 1;
                 wire.read = 0;
+                wire.waited = false;
             }
             if let Some(got) = std::num::NonZeroUsize::new(n) {
                 return Ok(Recv::Data(got));

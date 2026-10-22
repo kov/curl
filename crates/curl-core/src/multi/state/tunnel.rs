@@ -38,8 +38,14 @@ pub(crate) struct Tunnel {
     answer: Answer,
     /// The proxy's challenges, from its answer.
     challenges: Challenges,
-    /// `Proxy-Authorization` went with it (`hd_proxy_auth`).
+    /// `Proxy-Authorization` went with it, and the handshake has not
+    /// waited on its socket since: C holds the header (`hd_proxy_auth`)
+    /// only until `cf_h1_proxy_connect` returns.
     authorized: bool,
+    /// The proxy closed the connection on an answer it may be asked
+    /// again: the next `CONNECT` goes over a new one
+    /// (`close_connection`).
+    closed: bool,
     /// The answer's head bytes, against C's limit (`allheadercount`).
     head_bytes: usize,
 }
@@ -152,6 +158,7 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshak
         answer: Answer::new(),
         challenges: Challenges::default(),
         authorized: output.header.is_some(),
+        closed: false,
         head_bytes: 0,
     };
     try_box(Handshake::Connect(tunnel)).map_err(oom)
@@ -160,7 +167,10 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshak
 /// Move the handshake on as far as its socket lets it.
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     match run(&mut c, cx) {
-        Ok(Ran::Idle) => (TransferState::Connecting(c), Wake::Idle),
+        Ok(Ran::Idle) => {
+            tunnel(&mut c.handshake).authorized = false;
+            (TransferState::Connecting(c), Wake::Idle)
+        }
         Ok(Ran::Again) => (TransferState::Connecting(c), Wake::Again),
         Ok(Ran::Up(remote, local, at)) => established(c, cx, remote, local, at),
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
@@ -226,7 +236,8 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
 
 /// The proxy closed the connection: the answer ends where it is, after
 /// the line it was reading; the end of a 407 is no failure where
-/// credentials were sent and methods are left to try (`recv_CONNECT_resp`).
+/// credentials were sent and methods are left to try, but the connection
+/// is not used again (`recv_CONNECT_resp`).
 fn closed<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
     let t = tunnel(&mut c.handshake);
     if t.answer.closed() == Read::Line {
@@ -236,6 +247,7 @@ fn closed<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     let wanted = !cx.easy().options().proxy.auth.0.is_empty();
     if wanted && t.authorized && cx.easy().auth.proxy_offers(&t.challenges) {
         trace::info(cx, format_args!("Proxy CONNECT connection closed"));
+        tunnel(&mut c.handshake).closed = true;
         return finish(c, cx);
     }
     Err(trace::fail(
@@ -342,7 +354,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             .asked((None, peer), (secret, peer), false, true)
     };
     let t = tunnel(&mut c.handshake);
-    let closes = t.answer.closes();
+    let closes = t.answer.closes() || t.closed;
     let offered = Offered {
         host: Challenges::default(),
         proxy: std::mem::take(&mut t.challenges),

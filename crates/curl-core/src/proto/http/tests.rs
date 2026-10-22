@@ -3666,6 +3666,77 @@ fn a_proxy_closing_mid_answer_aborts_the_tunnel() {
     assert_eq!(ran.seen.of("header").last().unwrap(), challenge.as_bytes());
 }
 
+/// A Digest proxy's 407, then its answer to the credentials cut off by
+/// the proxy closing: a stale nonce, offering Digest again.
+const DIGEST_407: &[u8] = b"HTTP/1.1 407 Who\r\n\
+    Proxy-Authenticate: Digest realm=\"r\", nonce=\"n1\"\r\nContent-Length: 0\r\n\r\n";
+const DIGEST_STALE_CUT: &[u8] = b"HTTP/1.1 407 Who\r\n\
+    Proxy-Authenticate: Digest realm=\"r\", nonce=\"n2\", stale=true\r\n";
+
+/// Through a tunnel to a Digest proxy, as user `u`.
+fn tunneled_digest(o: &mut Options) {
+    tunneled(o);
+    o.proxy.user = Some(b"u".to_vec());
+    o.proxy.password = Some(b"p".to_vec());
+    o.proxy.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+}
+
+/// A proxy closing mid-answer to the `CONNECT` that carried credentials,
+/// read before the tunnel waited on its socket again, while it offers a
+/// method to retry, is a mere disconnect: the tunnel is connected again
+/// and asked again, never over the closed connection
+/// (`recv_CONNECT_resp`'s `close_connection`). Values from the C build
+/// against a scripted proxy.
+#[test]
+fn a_proxy_closing_on_the_credentials_is_connected_to_again() {
+    let first = Conversation::replies(&[DIGEST_407, DIGEST_STALE_CUT], true);
+    let second = Conversation::replies(&[TUNNEL_UP, OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/", second.clone(), tunneled_digest);
+    assert_eq!(ran.result, Ok(()));
+    let n1 = "Proxy-Authorization: Digest username=\"u\", realm=\"r\", nonce=\"n1\", \
+              uri=\"origin.example:80\", response=\"32d7dc5cfe84590e13b74e7264428b0f\"\r\n";
+    let n2 = "Proxy-Authorization: Digest username=\"u\", realm=\"r\", nonce=\"n2\", \
+              uri=\"origin.example:80\", response=\"287634b6a228e2af593b063681ac96cc\"\r\n";
+    assert_eq!(
+        String::from_utf8_lossy(&first.received()),
+        connect_of("") + &connect_of(n1)
+    );
+    let text = String::from_utf8_lossy(&second.received()).into_owned();
+    assert!(text.starts_with(&connect_of(n2)), "{text}");
+    assert_eq!(ran.easy.report().connects(), 2);
+    let said = ran.seen.text();
+    let closed = said
+        .iter()
+        .position(|l| l == "Proxy CONNECT connection closed\n");
+    let again = said.iter().position(|l| l == "Connect me again please\n");
+    assert!(closed.is_some() && closed < again, "{said:?}");
+}
+
+/// The same close, read only after the tunnel waited on its socket for
+/// the answer, aborts it: the credentials are no longer held
+/// (`hd_proxy_auth`, freed as `cf_h1_proxy_connect` returns).
+#[test]
+fn a_proxy_closing_after_a_wait_aborts_the_tunnel() {
+    let first = Conversation::replies(&[DIGEST_407, DIGEST_STALE_CUT], true).late_replies();
+    let mut m = serving(Peer::Accepts, &[&first]);
+    let ran = get(&mut m, "/", first.clone(), tunneled_digest);
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+    let said = ran.seen.text();
+    assert!(
+        said.iter().any(|l| l == "Proxy CONNECT aborted\n"),
+        "{said:?}"
+    );
+    assert!(
+        !said
+            .iter()
+            .any(|l| l == "Proxy CONNECT connection closed\n"),
+        "{said:?}"
+    );
+    let text = String::from_utf8_lossy(&first.received()).into_owned();
+    assert_eq!(text.matches("CONNECT ").count(), 2, "{text}");
+}
+
 /// A 407 that offers again the method already sent is a refusal: its
 /// body is not read, and the method used stays the one sent; one that
 /// offers no method wanted leaves it so too.

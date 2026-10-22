@@ -782,3 +782,12 @@ witness: curl-tool removes_the_file_a_failed_transfer_wrote
         msgs.note(&[b"Removed output file: ", name]);
 --- new
         msgs.warn(&[b"Removed output file: ", name]);
+
+=== a failing close of the output file is not reported
+file: crates/curl-tool/src/stdio.rs
+witness: curl-tool stdio::tests::a_close_fails_with_the_sink_s
+--- old
+    let closed = sink.close().map_err(|_| Failed);
+--- new
+    drop(sink);
+    let closed: Result<(), Failed> = Ok(());

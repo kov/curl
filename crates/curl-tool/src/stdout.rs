@@ -31,6 +31,10 @@ impl Sink for Descriptor {
     fn layout(&self) -> Layout {
         self.0.as_ref().map_or(Layout::UNKNOWN, File::layout)
     }
+
+    fn close(self) -> io::Result<()> {
+        self.0.map_or(Ok(()), Sink::close)
+    }
 }
 
 impl Stdout {

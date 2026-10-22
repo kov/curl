@@ -24,6 +24,8 @@ pub(crate) trait Sink {
     /// How glibc buffers it (`_IO_file_doallocate`): `BUFSIZ`, or the
     /// file's block size when smaller; a line at a time on a terminal.
     fn layout(&self) -> Layout;
+    /// Let go of it (`close(2)`): whether that went.
+    fn close(self) -> io::Result<()>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,6 +59,10 @@ impl Sink for File {
         }
         layout
     }
+
+    fn close(self) -> io::Result<()> {
+        curl_os::fs::close(self)
+    }
 }
 
 /// A write, or the write of what was held, failed.
@@ -65,7 +71,8 @@ pub(crate) struct Failed;
 
 /// A stream opened for writing, as stdio keeps one (`FILE`).
 pub(crate) struct Stdio<S: Sink> {
-    sink: S,
+    /// Taken only as the stream is closed.
+    sink: Option<S>,
     /// What is held, allocated at the first write.
     buf: Option<Buffer>,
     /// A write failed since the stream was opened (`ferror`).
@@ -80,20 +87,20 @@ struct Buffer {
 impl<S: Sink> Stdio<S> {
     pub(crate) fn new(sink: S) -> Stdio<S> {
         Stdio {
-            sink,
+            sink: Some(sink),
             buf: None,
             failed: false,
         }
     }
 
     pub(crate) fn get_ref(&self) -> &S {
-        &self.sink
+        self.sink.as_ref().expect("open until closed")
     }
 
     /// The sink, for calls on the stream's descriptor; what is held is
     /// for the caller to have flushed.
     pub(crate) fn get_mut(&mut self) -> &mut S {
-        &mut self.sink
+        self.sink.as_mut().expect("open until closed")
     }
 
     /// A write failed since the stream was opened (`ferror`).
@@ -182,7 +189,7 @@ impl<S: Sink> Stdio<S> {
     /// The buffer, as glibc sizes it; `None` if it cannot be had, and the
     /// stream is then unbuffered.
     fn allocate(&mut self) -> Option<usize> {
-        let layout = self.sink.layout();
+        let layout = self.get_ref().layout();
         let mut held = Vec::new();
         held.try_reserve_exact(layout.size).ok()?;
         self.buf = Some(Buffer { held, layout });
@@ -238,7 +245,7 @@ impl<S: Sink> Stdio<S> {
     fn write_out(&mut self, data: &[u8]) -> usize {
         let mut at = 0;
         while at < data.len() {
-            match self.sink.write(&data[at..]) {
+            match self.get_mut().write(&data[at..]) {
                 // A write that takes nothing would be tried forever.
                 Ok(0) | Err(_) => {
                     self.failed = true;
@@ -259,9 +266,13 @@ impl<S: Sink> Drop for Stdio<S> {
     }
 }
 
-/// Close `stream` (`fclose`): what is held written; whether that went.
+/// Close `stream` (`fclose`): what is held written, then the sink let
+/// go of, whichever fails; whether both went.
 pub(crate) fn close<S: Sink>(mut stream: Stdio<S>) -> Result<(), Failed> {
-    stream.flush()
+    let flushed = stream.flush();
+    let sink = stream.sink.take().expect("open until closed");
+    let closed = sink.close().map_err(|_| Failed);
+    flushed.and(closed)
 }
 
 #[cfg(test)]
@@ -269,11 +280,12 @@ mod tests {
     use super::*;
 
     /// A sink that takes up to `room` bytes, then fails; each write is
-    /// recorded.
+    /// recorded. Its close fails if `close_fails`.
     struct Script {
         layout: Layout,
         room: usize,
         writes: Vec<usize>,
+        close_fails: bool,
     }
 
     impl Sink for Script {
@@ -289,6 +301,12 @@ mod tests {
         fn layout(&self) -> Layout {
             self.layout
         }
+        fn close(self) -> io::Result<()> {
+            match self.close_fails {
+                true => Err(io::Error::from_raw_os_error(5)),
+                false => Ok(()),
+            }
+        }
     }
 
     fn stream(size: usize, line: bool, room: usize) -> Stdio<Script> {
@@ -296,7 +314,25 @@ mod tests {
             layout: Layout { size, line },
             room,
             writes: Vec::new(),
+            close_fails: false,
         })
+    }
+
+    /// A close fails if writing what is held fails, or if letting go of
+    /// the sink does though all was written (`fclose` returning `EOF`
+    /// when `close(2)` fails).
+    #[test]
+    fn a_close_fails_with_the_sink_s() {
+        let mut s = stream(4096, false, usize::MAX);
+        s.fwrite(b"held");
+        assert_eq!(close(s), Ok(()));
+        let mut s = stream(4096, false, usize::MAX);
+        s.fwrite(b"held");
+        s.get_mut().close_fails = true;
+        assert_eq!(close(s), Err(Failed));
+        let mut s = stream(4096, false, 2);
+        s.fwrite(b"held");
+        assert_eq!(close(s), Err(Failed));
     }
 
     /// The first write makes the buffer and writes the whole blocks past

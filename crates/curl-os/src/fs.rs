@@ -3,14 +3,14 @@
 //! path nor an entry's name is ever copied; reading, writing, seeking and
 //! the file's status go through the std `File` that opening gives.
 //! Standard error is pointed at a file here too, as the tool's `--stderr`
-//! asks.
+//! asks, and a file is closed saying whether that went.
 
 #![allow(unsafe_code)]
 
 use core::ffi::CStr;
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::ptr::NonNull;
 
 /// What opening for writing does to what the file holds.
@@ -63,6 +63,19 @@ fn open(path: &CStr, flags: libc::c_int, mode: libc::mode_t) -> io::Result<File>
     }
     // SAFETY: `open` returned a new descriptor that nothing else owns.
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// Close `file` (`close(2)`), saying whether that went, which dropping
+/// it does not: a write the kernel held may fail only then. The
+/// descriptor is let go of either way, and not closed again.
+pub fn close(file: File) -> io::Result<()> {
+    let fd = OwnedFd::from(file).into_raw_fd();
+    // SAFETY: `fd` was the file's own, which no one else holds, and is
+    // not used again whatever `close` says.
+    if unsafe { libc::close(fd) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Standard input, read through a descriptor of its own: no buffer
@@ -178,6 +191,16 @@ mod tests {
 
     fn c(path: &Path) -> CString {
         CString::new(path.as_os_str().as_bytes()).unwrap()
+    }
+
+    /// A file closed says so, and what was written to it stays.
+    #[test]
+    fn closes_a_file() {
+        let s = Scratch::new("close-file");
+        let mut f = open_write(&s.c("f"), Keep::Nothing, 0o600).unwrap();
+        f.write_all(b"kept").unwrap();
+        close(f).unwrap();
+        assert_eq!(std::fs::read(s.0.join("f")).unwrap(), b"kept");
     }
 
     /// Standard error writes to the file it is pointed at, until pointed

@@ -2278,6 +2278,32 @@ fn lists_set_while_their_entries_are_traced_stand() {
     assert_eq!(lines(&ran.easy.options().connect_to), [b"::127.0.0.1:1"]);
 }
 
+/// A resolve list set while the one before it is read is done with too:
+/// the next transfer does not read it, as C clears `state.resolve` once
+/// it has read the old list (`Curl_loadhostpairs`). The C build fails
+/// the next transfer to a name only the new list gives.
+#[test]
+fn a_resolve_list_set_while_one_is_read_is_dropped() {
+    let entry = format!("127.0.0.1:{PORT}:127.0.0.1");
+    let later = format!("set.test:{PORT}:127.0.0.1");
+    let (mut m, talk, _) = server(&[OK, OK], false);
+    let first = get(&mut m, "/", talk.clone(), |o| {
+        o.resolve.set([entry.as_bytes()]).unwrap();
+        let later = later.clone();
+        let change = ChangesOn {
+            at: b"[DNS] added 127.0.0.1",
+            change: Box::new(move |o| o.resolve.set([later.as_bytes()]).unwrap()),
+        };
+        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+    });
+    assert_eq!(first.result, Ok(()));
+    let ran = get_with(&mut m, first.easy, "/", talk, |o| {
+        let url = format!("http://set.test:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Err(ErrorKind::CouldntResolveHost));
+}
+
 /// A body read from a handler, `data`, started over by its rewind
 /// handler if it has one; counts its rewinds.
 #[derive(Clone)]

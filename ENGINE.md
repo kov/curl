@@ -1168,7 +1168,8 @@ asked, is kept too, as an answer with no addresses ("Negative DNS entry"), which
 fast; that the resolver could not answer is not. A failure gives
 the reference build's reason, c-ares's ("Domain name not found"), then fails again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
-stamp it last read), as its source has them then; they are permanent unless given with `+`, and `*` answers for any name on
+stamp it last read), as its source has them then; a list set while one is read, from the
+debug handler, is taken as read too, as C clears `state.resolve` after reading. They are permanent unless given with `+`, and `*` answers for any name on
 its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ---

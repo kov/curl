@@ -58,19 +58,19 @@ witness: curl-core multi::tests::stale_answers_are_dropped
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-    if list == cx.easy().resolve_read {
+    if cx.easy().options().resolve.stamp() == cx.easy().resolve_read {
 --- new
-    if list == u64::MAX {
+    if cx.easy().options().resolve.stamp() == u64::MAX {
 
 === a resolve list that failed is not read again
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
 --- old
     if read.is_ok() {
-        cx.easy_mut().resolve_read = list;
+        cx.easy_mut().resolve_read = cx.easy().options().resolve.stamp();
 --- new
     if read.is_ok() || read.is_err() {
-        cx.easy_mut().resolve_read = list;
+        cx.easy_mut().resolve_read = cx.easy().options().resolve.stamp();
 
 === a name found not to exist is not kept
 file: crates/curl-core/src/conn/connect.rs
@@ -134,3 +134,11 @@ witness: curl-core multi::tests::answers_may_be_kept_for_ever
 --- new
             let max_age = Some(std::time::Duration::from_secs(60));
             let now = cx.rest.now;
+
+=== a resolve list set while one is read is read by the next transfer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_resolve_list_set_while_one_is_read_is_dropped
+--- old
+        cx.easy_mut().resolve_read = cx.easy().options().resolve.stamp();
+--- new
+        cx.easy_mut().resolve_read = entries.stamp();

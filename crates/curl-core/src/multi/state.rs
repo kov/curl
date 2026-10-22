@@ -1377,8 +1377,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
 /// each time it is set (`Curl_loadhostpairs`): a list the cache cannot
 /// take is read again by the next transfer.
 fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-    let list = cx.easy().options().resolve.stamp();
-    if list == cx.easy().resolve_read {
+    if cx.easy().options().resolve.stamp() == cx.easy().resolve_read {
         return Ok(());
     }
     // As the application's source has it now.
@@ -1388,8 +1387,9 @@ fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         .refill()
         .map_err(|_| ErrorKind::OutOfMemory)?;
     // A copy is read, as the cache and the trace are reached while it is:
-    // the debug handler may set the list, which the next transfer then
-    // reads.
+    // the debug handler may set the list. Read whole, the list is done
+    // with, and so is one set meanwhile, as C clears `state.resolve`
+    // once it has read the old one; one that failed is read again.
     let entries = cx
         .easy()
         .options()
@@ -1398,7 +1398,7 @@ fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     let read = read_entries(cx, &entries);
     if read.is_ok() {
-        cx.easy_mut().resolve_read = list;
+        cx.easy_mut().resolve_read = cx.easy().options().resolve.stamp();
     }
     read
 }

@@ -422,9 +422,9 @@ witness: curl-tool posts_json
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool takes_one_method
 --- old
-    if op.post.is_some() && method.choose(tool::Method::Post, &msgs).is_err() {
+        (Some(_), _) => Some(tool::Method::Post),
 --- new
-    if false {
+        (Some(_), _) => None,
 
 === data is resumed
 file: crates/curl-tool/src/operate.rs
@@ -791,3 +791,33 @@ witness: curl-tool stdio::tests::a_close_fails_with_the_sink_s
 --- new
     drop(sink);
     let closed: Result<(), Failed> = Ok(());
+
+=== --get posts its data
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool gets_the_data_in_the_query
+--- old
+        Some(fields) if op.get => (None, Some(fields)),
+--- new
+        Some(fields) if op.get => (Some(fields), None),
+
+=== --get's query shows a scheme that was only guessed
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::adds_the_query_as_c_does
+--- old
+        no_guess_scheme: true,
+        ..GetOptions::NONE
+    };
+    url.set(Part::Query
+--- new
+        no_guess_scheme: false,
+        ..GetOptions::NONE
+    };
+    url.set(Part::Query
+
+=== --get's unparsable URL is reported twice
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool gets_the_data_in_the_query
+--- old
+        && !said
+--- new
+        && (!said || true)

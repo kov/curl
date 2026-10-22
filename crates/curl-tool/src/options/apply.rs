@@ -261,6 +261,9 @@ pub(crate) struct Operation<'a> {
     pub(crate) post: Option<Vec<u8>>,
     /// `--json` was given: the request is typed and accepts JSON.
     pub(crate) json: bool,
+    /// `--get`: what `--data` gives goes in the URL's query, asked for
+    /// with a GET (C's `use_httpget`).
+    pub(crate) get: bool,
 }
 
 /// The addresses `--ipv4` and `--ipv6` limit a name to.
@@ -956,6 +959,7 @@ pub(crate) fn apply<'a>(
             line.current().max_redirs = Some(n);
         }
         Opt::Globoff => line.current().globoff = value.toggle(),
+        Opt::Get => line.current().get = value.toggle(),
         Opt::Fail | Opt::FailWithBody => {
             let (this, other, deselects) = if spec.opt == Opt::Fail {
                 (
@@ -1138,7 +1142,6 @@ pub(crate) fn apply<'a>(
         | Opt::FtpSslCccMode
         | Opt::FtpSslControl
         | Opt::FtpSslReqd
-        | Opt::Get
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
         | Opt::Hsts

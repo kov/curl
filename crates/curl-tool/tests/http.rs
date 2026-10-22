@@ -291,6 +291,42 @@ fn posts_the_data_given() {
     );
 }
 
+/// `-G` puts the data in the URL's query, after a `&` if it has one, and
+/// asks with a GET, or a HEAD after `-I`; no body is sent.
+#[test]
+fn gets_the_data_in_the_query() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let url = format!("{}?x=1", s.url());
+    let run = curl(&["-sS", "-G", "-d", "a=b", "--data-urlencode", "c=d e", &url]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(
+        request.starts_with("GET /?x=1&a=b&c=d+e HTTP/1.1\r\n"),
+        "{request}"
+    );
+    assert!(request.ends_with("Accept: */*\r\n\r\n"), "{request}");
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&["-sS", "-I", "-G", "-d", "a", &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(request.starts_with("HEAD /?a HTTP/1.1\r\n"), "{request}");
+    let run = curl(&["-G", "-d", "x", "-T", "/dev/null", "http://127.0.0.1:1/"]);
+    assert_eq!(run.code, 2);
+    assert_eq!(
+        run.stderr,
+        "Warning: You can only select one HTTP request method! You asked for both PUT \n\
+         Warning: (-T, --upload-file) and GET (-G, --get).\n"
+    );
+    // A URL the query cannot be added to is said once, in the tool's
+    // words.
+    let run = curl(&["-sS", "-G", "-d", "a", "nosuch://host/"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(
+        run.stderr,
+        "curl: (1) Could not parse the URL, failed to set query\n"
+    );
+}
+
 /// `-T -` sends standard input, chunked as its size is not known.
 #[test]
 fn uploads_standard_input() {

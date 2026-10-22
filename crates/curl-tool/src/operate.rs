@@ -418,8 +418,20 @@ fn transfer(
     // The data of `--data` makes a POST, an upload a PUT, and no other
     // method may be chosen with either (`single_transfer`,
     // `create_single`).
+    // With `--get` the data goes in the URL's query instead, asked for
+    // with a GET, or a HEAD after `--head`.
     let mut method = op.method;
-    if op.post.is_some() && method.choose(tool::Method::Post, &msgs).is_err() {
+    let (post, query) = match op.post.as_deref() {
+        Some(fields) if op.get => (None, Some(fields)),
+        post => (post, None),
+    };
+    let wanted = match (post, query) {
+        (Some(_), _) => Some(tool::Method::Post),
+        (None, Some(_)) if op.no_body => Some(tool::Method::Head),
+        (None, Some(_)) => Some(tool::Method::Get),
+        (None, None) => None,
+    };
+    if wanted.is_some_and(|wanted| method.choose(wanted, &msgs).is_err()) {
         return Step::Failed(ErrorKind::FailedInit);
     }
     if upload.is_some() && method.choose(tool::Method::Put, &msgs).is_err() {
@@ -507,6 +519,11 @@ fn transfer(
         let result = finish(op, run, given, easy, &out, None, Ended::Ran(Err(e)));
         Step::Failed(result.expect_err("a failure stays one"))
     };
+    // A failure the tool has said already (C's `synthetic_error`).
+    let said = |easy: &Easy, e| {
+        let result = finish(op, run, given, easy, &out, None, Ended::Said(e));
+        Step::Failed(result.expect_err("a failure stays one"))
+    };
     // `setup_headerfile`.
     if let Some(name) = op.dump_header {
         if op.create_dirs
@@ -575,6 +592,30 @@ fn transfer(
     };
     // Output to a terminal: no progress meter, and no binary output.
     let terminal = to_stdout && output_expected(url, upload.is_some()) && stdout_is_terminal();
+    // The query `--get` makes is added once the output and the upload are
+    // named (`append2query`).
+    let queried;
+    let given = match query.map(|query| with_query(url, query)) {
+        Some(Ok(url)) => {
+            queried = url;
+            Given {
+                text: &queried,
+                ..given
+            }
+        }
+        Some(Err(QueryFailed::Parse(e))) => {
+            if let Ok(line) = try_format(format_args!(
+                "({}) Could not parse the URL, failed to set query",
+                exit_code(e)
+            )) {
+                msgs.error(&[line.as_bytes()]);
+            }
+            return said(&easy, e);
+        }
+        Some(Err(QueryFailed::Set(e))) => return failed(&easy, e),
+        None => given,
+    };
+    let url = given.text;
     {
         let mut stream = out.stream();
         stream.show_headers = op.show_headers;
@@ -612,6 +653,7 @@ fn transfer(
         url,
         resume,
         upload: upload.is_some(),
+        post,
         method,
         terminal,
         bar: bar.as_ref(),
@@ -676,7 +718,7 @@ fn transfer(
             #[cfg(not(feature = "debug-hooks"))]
             let result = easy.perform();
             let result = result.map_err(|e| e.kind());
-            let result = settle(op, msgs, &easy, &out, result);
+            let result = settle(op, msgs, &easy, &out, result, false);
             let attempt = Attempt {
                 result,
                 upload: upload.is_some(),
@@ -973,6 +1015,9 @@ enum Ended {
     /// Never started: its output file exists (`--skip-existing`). It
     /// succeeds, and only its `--write-out` is written.
     Skipped,
+    /// Not set up, for a reason the tool has said itself: it is not said
+    /// again (C's `synthetic_error`).
+    Said(ErrorKind),
 }
 
 /// What one transfer is set up with, beyond its operation's options.
@@ -980,6 +1025,8 @@ struct Config<'a> {
     url: &'a [u8],
     resume: Option<options::Resume>,
     upload: bool,
+    /// What `--data` gives, unless `--get` put it in the query.
+    post: Option<&'a [u8]>,
     /// The HTTP method the options chose for it.
     method: tool::Method,
     /// Standard output is a terminal, and the output goes there.
@@ -1027,7 +1074,7 @@ fn configure(
     }
     if config.upload {
         o.method = Method::Upload;
-    } else if let Some(post) = &op.post {
+    } else if let Some(post) = config.post {
         // `setopt_post`'s POSTFIELDS.
         let mut body = Vec::new();
         body.try_extend_from_slice(post)?;
@@ -1235,7 +1282,8 @@ fn finish(
 ) -> Result<(), ErrorKind> {
     let msgs = run.msgs;
     let (result, retries) = match ended {
-        Ended::Ran(result) => (Some(settle(op, msgs, easy, out, result)), 0),
+        Ended::Ran(result) => (Some(settle(op, msgs, easy, out, result, false)), 0),
+        Ended::Said(e) => (Some(settle(op, msgs, easy, out, Err(e), true)), 0),
         Ended::Settled(result, retries) => (Some(result), retries),
         Ended::Skipped => (None, 0),
     };
@@ -1308,9 +1356,11 @@ fn settle(
     easy: &Easy,
     out: &output::Output,
     mut result: Result<(), ErrorKind>,
+    said: bool,
 ) -> Result<(), ErrorKind> {
-    // The transfer's reason, or the kind's.
+    // The transfer's reason, or the kind's, unless the tool said its own.
     if let Err(e) = result
+        && !said
         && let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e)))
     {
         match easy.report().failure() {
@@ -1485,6 +1535,36 @@ fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
     copy.try_extend_from_slice(name)
         .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     Ok(copy)
+}
+
+/// Why `--get`'s query could not be added to a URL.
+#[derive(Debug, PartialEq, Eq)]
+enum QueryFailed {
+    /// The URL does not parse: the tool says so itself.
+    Parse(ErrorKind),
+    /// The query could not be set, or the URL read back.
+    Set(ErrorKind),
+}
+
+/// `url` with `query` added to its query, after a `&` if it has one, the
+/// scheme left out if it was only guessed (`append2query`).
+fn with_query(url: &[u8], query: &[u8]) -> Result<Vec<u8>, QueryFailed> {
+    let parse = ParseOptions {
+        guess_scheme: true,
+        ..ParseOptions::NONE
+    };
+    let mut url = Url::parse(url, parse).map_err(|e| QueryFailed::Parse(url_error(e)))?;
+    let append = SetOptions {
+        append_query: true,
+        ..SetOptions::NONE
+    };
+    let shown = GetOptions {
+        no_guess_scheme: true,
+        ..GetOptions::NONE
+    };
+    url.set(Part::Query, Some(query), append)
+        .and_then(|()| url.get(Part::Url, shown))
+        .map_err(|e| QueryFailed::Set(url_error(e)))
 }
 
 /// A URL's error as the tool's (`urlerr_cvt`).
@@ -1686,6 +1766,28 @@ mod tests {
         assert_eq!(named("host/dir/", "f"), some("host/dir/f"));
         assert_eq!(named("nosuch://host/f", "a"), Ok(None));
         assert_eq!(named("http://[bad/", "a"), Err(ErrorKind::UrlMalformat));
+    }
+
+    /// `append2query`: the query added after any there, as given, and a
+    /// guessed scheme left out for `--proto-default` to choose (2008).
+    #[test]
+    fn adds_the_query_as_c_does() {
+        let queried = |url: &str, query: &str| {
+            with_query(url.as_bytes(), query.as_bytes()).map(|u| String::from_utf8(u).unwrap())
+        };
+        let ok = |s: &str| Ok(s.to_string());
+        assert_eq!(queried("ftp.test", "hello"), ok("ftp.test/?hello"));
+        assert_eq!(queried("http://h/p", "a=b&c=d"), ok("http://h/p?a=b&c=d"));
+        // Not encoded: the library refuses the space later, as C's does.
+        assert_eq!(queried("http://h/p?x#f", "a b"), ok("http://h/p?x&a b#f"));
+        assert_eq!(
+            queried("http://[bad/", "a"),
+            Err(QueryFailed::Parse(ErrorKind::UrlMalformat))
+        );
+        assert_eq!(
+            queried("nosuch://h/", "a"),
+            Err(QueryFailed::Parse(ErrorKind::UnsupportedProtocol))
+        );
     }
 
     /// `show_dir_errno`'s texts.

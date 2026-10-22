@@ -1907,6 +1907,23 @@ mod tests {
                 SetOptions::NONE,
                 Ok("http://other.example:8080/x?y"),
             ),
+            // The new host's part is kept as it came, and only what
+            // follows it encoded.
+            (
+                "http://h/a/b?c",
+                b"//u ser@o.example/p q",
+                with(ParseOptions {
+                    allow_space: true,
+                    ..ParseOptions::NONE
+                }),
+                Ok("http://u ser@o.example/p%20q"),
+            ),
+            (
+                "http://h/a/b?c",
+                b"//u%2fs@o.example/a%2fb",
+                SetOptions::NONE,
+                Ok("http://u%2fs@o.example/a%2Fb"),
+            ),
             (
                 "http://h/a/b?c",
                 b"//other.example?q=1",

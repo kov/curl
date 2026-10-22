@@ -121,5 +121,28 @@ mod tests {
         assert_eq!(from("http://h/a", b"http://a b/"), "http://a b/");
         // Spaces are encoded, as a relative URL's are.
         assert_eq!(from("http://h/a/b", b"c d"), "http://h/a/c%20d");
+        // A scheme this build does not know still resolves, and loses
+        // its credentials (the C build gives the same).
+        assert_eq!(from("http://h/x", b"foo://u:p@h/a/../b"), "foo://h/b");
+    }
+
+    fn followed(location: &[u8], path_as_is: bool) -> String {
+        let base = Url::parse(b"http://h/x", ParseOptions::NONE).unwrap();
+        let url = resolve(base, location, path_as_is).unwrap();
+        String::from_utf8(url.get(Part::Url, GetOptions::NONE).unwrap()).unwrap()
+    }
+
+    /// A redirect followed has spaces allowed and what needs it encoded,
+    /// and keeps its dot segments if `path_as_is`; the C build requests
+    /// the same paths.
+    #[test]
+    fn a_followed_location_is_encoded_as_c_encodes_it() {
+        assert_eq!(followed(b"/a b/../c?x y", false), "http://h/c?x+y");
+        assert_eq!(
+            followed("/d/café/./e".as_bytes(), false),
+            "http://h/d/caf%C3%A9/e"
+        );
+        assert_eq!(followed(b"http://h/a/../b", false), "http://h/b");
+        assert_eq!(followed(b"http://h/a/../b", true), "http://h/a/../b");
     }
 }

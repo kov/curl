@@ -837,11 +837,11 @@ fn file_name_in(value: &[u8], stop: Option<u8>) -> Option<Vec<u8>> {
 /// emptied, or to standard output for `-` (`tool_set_stderr_file`). A file
 /// that cannot be opened is warned of, and standard error stays.
 pub(crate) fn redirect_stderr(name: &[u8], msgs: &Messages) {
-    use std::os::unix::ffi::OsStrExt as _;
     let moved = if name == b"-" {
         fs::stderr_to(&std::io::stdout())
     } else {
-        File::create(std::ffi::OsStr::from_bytes(name)).and_then(|file| fs::stderr_to(&file))
+        fs::with_c_name(name, |c| fs::open_write(c, Keep::Nothing, NEW_FILE_MODE))
+            .and_then(|file| fs::stderr_to(&file))
     };
     if moved.is_err() {
         // C's text, with its prefix twice.

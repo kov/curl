@@ -27,8 +27,7 @@ pub(crate) fn read(name: &[u8], how: As) -> Result<Vec<u8>, ReadFailed> {
     let mut file = if name == b"-" {
         curl_os::fs::stdin().map_err(|_| ReadFailed::Open)?
     } else {
-        let path = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name);
-        std::fs::File::open(path).map_err(|_| ReadFailed::Open)?
+        curl_os::fs::with_c_name(name, curl_os::fs::open_read).map_err(|_| ReadFailed::Open)?
     };
     let mut bytes = Vec::new();
     // A file's size is known: one allocation holds it, as it was then.

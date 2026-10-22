@@ -18,10 +18,14 @@ debug-hooks = ["curl-alloc/debug-hooks", "curl-core/debug-hooks"]
 name = "memdebug"
 required-features = ["debug-hooks"]
 
+[[test]]
+name = "long_names"
+required-features = ["debug-hooks"]
+
 [dependencies]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
-curl-os = { path = "../curl-os", features = ["args"] }
+curl-os = { path = "../curl-os", features = ["args", "fs"] }
 curl-psl = { path = "../curl-psl" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }

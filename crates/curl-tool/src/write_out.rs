@@ -3,17 +3,16 @@
 //!
 //! Every variable and function C knows is written here.
 
-use std::ffi::OsStr;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::net::IpAddr;
-use std::os::unix::ffi::OsStrExt as _;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec, try_format};
 use curl_core::error::ErrorKind;
 use curl_core::report::{HeaderStore, Origins, Request, ResponseVersion, TransferReport};
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
+use curl_os::fs::{self, Keep};
 
 use crate::options::exit_code;
 use crate::slurp::{self, ReadFailed};
@@ -428,17 +427,14 @@ fn write_to(format: &[u8], facts: &Facts<'_>, stdout: &mut dyn Write, stderr: &m
                 let _ = stderr.write_all(&line);
             }
             Piece::Output { name, append } => {
-                let mut open = OpenOptions::new();
-                open.create(true);
-                if append {
-                    open.append(true);
+                // `fopen(.., "ab")` or `fopen(.., "wb")`; only a file that
+                // opens is written to.
+                let keep = if append {
+                    Keep::Everything
                 } else {
-                    open.write(true).truncate(true);
-                }
-                // C's name ends at a zero byte; only a file that opens is
-                // written to.
-                let name = name.split(|&b| b == 0).next().unwrap_or_default();
-                if let Ok(file) = open.open(OsStr::from_bytes(name)) {
+                    Keep::Nothing
+                };
+                if let Ok(file) = fs::with_c_name(name, |c| fs::open_write(c, keep, 0o666)) {
                     to = To::File(file);
                 }
             }

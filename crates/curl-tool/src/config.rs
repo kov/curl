@@ -75,7 +75,7 @@ fn join(parts: &[&[u8]]) -> Result<PathBuf, OutOfMemory> {
 
 /// Whether `path` can be opened for reading, as `checkhome` checks it.
 pub(crate) fn readable(path: &Path) -> bool {
-    std::fs::File::open(path).is_ok()
+    curl_os::fs::with_c_name(path.as_os_str().as_bytes(), curl_os::fs::open_read).is_ok()
 }
 
 /// The longest line a configuration file may have

@@ -2,13 +2,11 @@
 //! another (`src/tool_operate.c`, its serial path).
 
 use std::borrow::Cow;
-use std::ffi::OsStr;
-use std::fs::{File, FileTimes};
+use std::fs::File;
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
-use std::os::unix::ffi::OsStrExt as _;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::cookie::Suffixes;
@@ -22,6 +20,7 @@ use curl_core::share::{Kind, Share};
 use curl_core::time::TimeLimit;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 use curl_core::version::Protocol;
+use curl_os::fs;
 
 use crate::bar::Bar;
 use crate::glob::{self, Glob};
@@ -313,9 +312,6 @@ fn node_transfers(
 /// exists, or that may not be looked at, is gone through.
 fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
     use std::io::ErrorKind as Io;
-    use std::os::unix::fs::DirBuilderExt as _;
-    let mut maker = std::fs::DirBuilder::new();
-    maker.mode(0o750);
     let mut at = 0;
     loop {
         let seps = path[at..].iter().take_while(|&&b| b == b'/').count();
@@ -326,7 +322,7 @@ fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
             return Ok(());
         }
         let dir = &path[..at];
-        let Err(e) = maker.create(OsStr::from_bytes(dir)) else {
+        let Err(e) = fs::with_c_name(dir, |c| fs::make_dir(c, 0o750)) else {
             continue;
         };
         if e.kind() == Io::AlreadyExists || curl_os::fs::denied(&e) {
@@ -558,7 +554,7 @@ fn transfer(
         {
             return failed(&easy, e);
         }
-        let exists = std::fs::metadata(OsStr::from_bytes(name));
+        let exists = fs::with_c_name(name, fs::stat);
         if op.skip_existing && exists.is_ok() {
             msgs.note(&[b"skips transfer, \"", name, b"\" exists locally"]);
             skip = true;
@@ -1548,10 +1544,9 @@ fn settle(
 /// (`--remove-on-error`), if it is a regular file: said in a note, or
 /// warned of if it is not removed.
 fn remove_partial(name: &[u8], msgs: Messages) {
-    let path = OsStr::from_bytes(name);
-    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+    if !fs::with_c_name(name, fs::stat).is_ok_and(|m| m.is_file()) {
         msgs.warn(&[b"Skipping removal; not a regular file: ", name]);
-    } else if std::fs::remove_file(path).is_ok() {
+    } else if fs::with_c_name(name, fs::remove).is_ok() {
         msgs.note(&[b"Removed output file: ", name]);
     } else {
         msgs.warn(&[b"Failed removing: ", name]);
@@ -1561,18 +1556,7 @@ fn remove_partial(name: &[u8], msgs: Messages) {
 /// Give `name` the modification and access time `t`, seconds after the
 /// epoch (`setfiletime`). A failure is only warned about.
 fn set_file_time(name: &[u8], t: i64, msgs: Messages) {
-    let at = if t >= 0 {
-        UNIX_EPOCH.checked_add(Duration::from_secs(t.unsigned_abs()))
-    } else {
-        UNIX_EPOCH.checked_sub(Duration::from_secs(t.unsigned_abs()))
-    };
-    let set = at
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))
-        .and_then(|at| {
-            let times = FileTimes::new().set_accessed(at).set_modified(at);
-            File::open(OsStr::from_bytes(name))?.set_times(times)
-        });
-    if let Err(e) = set {
+    if let Err(e) = fs::with_c_name(name, |c| fs::set_times(c, t)) {
         let reason = os_message(&e);
         if let Ok(number) = try_format(format_args!("{t}")) {
             msgs.warn(&[
@@ -1796,7 +1780,7 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
     let (file, size) = if name == b"-" {
         (curl_os::fs::stdin().map_err(|_| Unopened::Io)?, None)
     } else {
-        let file = File::open(OsStr::from_bytes(name)).map_err(|_| Unopened::Io)?;
+        let file = fs::with_c_name(name, fs::open_read).map_err(|_| Unopened::Io)?;
         let meta = file.metadata().map_err(|_| Unopened::Io)?;
         #[cfg_attr(not(feature = "debug-hooks"), expect(unused_mut))]
         let mut size = meta.is_file().then_some(meta.len());
@@ -1804,7 +1788,7 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
         // as if the file had grown since (`pre_transfer`).
         #[cfg(feature = "debug-hooks")]
         if let Some(n) = curl_os::env::var_into(b"CURL_UPLOAD_SIZE", &mut [0u8; 32])
-            .map(std::ffi::OsStr::from_bytes)
+            .map(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes)
             .and_then(crate::memlimit)
         {
             size = Some(n);
@@ -2017,6 +2001,32 @@ mod tests {
             queried("nosuch://h/", "a"),
             Err(QueryFailed::Parse(ErrorKind::UnsupportedProtocol))
         );
+    }
+
+    /// `--remove-on-error` removes a file named long without allocating,
+    /// as C does: std copied a name of 384 bytes or more with an
+    /// allocation that cannot fail, which aborted a torture run.
+    /// (tests/long_names.rs runs the others; no `file:` transfer fails
+    /// after its output is opened.)
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn removes_a_partial_file_named_long_without_allocating() {
+        let dir = std::env::temp_dir().join(format!("curl-tool-remove-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f"), b"partial").unwrap();
+        let mut name = dir.as_os_str().as_encoded_bytes().to_vec();
+        name.push(b'/');
+        while name.len() < 400 {
+            name.extend_from_slice(b"./");
+        }
+        name.push(b'f');
+        let mut msgs = Messages::new();
+        msgs.silent = true;
+        let ((), n) = curl_alloc::track::count_allocations(|| remove_partial(&name, msgs));
+        let removed = !dir.join("f").exists();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(removed);
+        assert_eq!(n, 0, "removing the file allocated");
     }
 
     /// `show_dir_errno`'s texts.

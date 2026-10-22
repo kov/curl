@@ -50,12 +50,12 @@ witness: curl-tool keeps_the_remote_time
 --- new
 
 === `--remote-time` sets the modification time only
-file: crates/curl-tool/src/operate.rs
+file: crates/curl-os/src/fs.rs
 witness: curl-tool keeps_the_remote_time
 --- old
-            let times = FileTimes::new().set_accessed(at).set_modified(at);
+    let times = [at, at];
 --- new
-            let times = FileTimes::new().set_modified(at);
+    let times = [libc::timeval { tv_sec: 0, tv_usec: 0 }, at];
 
 === `--include` shows no header lines of a file
 file: crates/curl-tool/src/output.rs
@@ -388,11 +388,11 @@ witness: curl-tool bar::tests::counts_what_a_resumed_transfer_had
 file: crates/curl-tool/src/write_out.rs
 witness: curl-tool write_out::tests::writes_to_the_file_output_names
 --- old
-                if append {
-                    open.append(true);
+                let keep = if append {
+                    Keep::Everything
 --- new
-                if append {
-                    open.write(true).truncate(true);
+                let keep = if append {
+                    Keep::Nothing
 
 === data joins without separators
 file: crates/curl-tool/src/options/apply.rs
@@ -510,9 +510,9 @@ witness: curl-tool operate::tests::adds_a_file_name_to_a_bare_path
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool creates_the_output_directories
 --- old
-        let Err(e) = maker.create(OsStr::from_bytes(dir)) else {
+        let Err(e) = fs::with_c_name(dir, |c| fs::make_dir(c, 0o750)) else {
 --- new
-        let Err(e) = std::fs::metadata(OsStr::from_bytes(dir)).map(drop) else {
+        let Err(e) = fs::with_c_name(dir, fs::stat).map(drop) else {
 
 === a name from the response replaces a file
 file: crates/curl-tool/src/output.rs
@@ -771,7 +771,7 @@ witness: curl-tool removes_the_file_a_failed_transfer_wrote
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool removes_the_file_a_failed_transfer_wrote
 --- old
-    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+    if !fs::with_c_name(name, fs::stat).is_ok_and(|m| m.is_file()) {
 --- new
     if false {
 
@@ -988,3 +988,110 @@ witness: curl-tool write_out::tests::writes_the_time_as_c
             Some(b'Z') => try_format(format_args!("UTC")),
 --- new
             Some(b'Z') => try_format(format_args!("%Z")),
+
+=== -z takes its file's time by a name std copies
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool downloads_with_long_names_under_torture
+features: debug-hooks
+--- old
+        Err(_) => match curl_os::fs::with_c_name(rest, curl_os::fs::stat) {
+--- new
+        Err(_) => match std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(rest))
+            .and_then(|_| curl_os::fs::with_c_name(rest, curl_os::fs::stat))
+        {
+
+=== --netrc-file checks its file by a name std copies
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool downloads_with_long_names_under_torture
+features: debug-hooks
+--- old
+            if curl_os::fs::with_c_name(file, curl_os::fs::stat).is_err() {
+--- new
+            if std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(file)).is_err() {
+
+=== --create-dirs makes a directory by a name std copies
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool downloads_with_long_names_under_torture
+features: debug-hooks
+--- old
+        let Err(e) = fs::with_c_name(dir, |c| fs::make_dir(c, 0o750)) else {
+--- new
+        let _ = std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(dir));
+        let Err(e) = fs::with_c_name(dir, |c| fs::make_dir(c, 0o750)) else {
+
+=== the output file is looked for by a name std copies
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool downloads_with_long_names_under_torture
+features: debug-hooks
+--- old
+        let exists = fs::with_c_name(name, fs::stat);
+--- new
+        let _ = std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+        let exists = fs::with_c_name(name, fs::stat);
+
+=== --remove-on-error removes by a name std copies
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::removes_a_partial_file_named_long_without_allocating
+features: debug-hooks
+--- old
+    } else if fs::with_c_name(name, fs::remove).is_ok() {
+--- new
+    } else if std::fs::remove_file(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name)).is_ok() {
+
+=== -R sets the time by a name std copies
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool downloads_with_long_names_under_torture
+features: debug-hooks
+--- old
+    if let Err(e) = fs::with_c_name(name, |c| fs::set_times(c, t)) {
+--- new
+    if let Err(e) = std::fs::File::open(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name))
+        .and_then(|f| f.set_modified(std::time::UNIX_EPOCH))
+        .and_then(|()| fs::with_c_name(name, |c| fs::set_times(c, t)))
+    {
+
+=== -T opens the upload by a name std copies
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool uploads_from_a_long_name_under_torture
+features: debug-hooks
+--- old
+        let file = fs::with_c_name(name, fs::open_read).map_err(|_| Unopened::Io)?;
+--- new
+        let file = std::fs::File::open(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name)).map_err(|_| Unopened::Io)?;
+
+=== a file an option names is opened by a name std copies
+file: crates/curl-tool/src/slurp.rs
+witness: curl-tool finds_the_configuration_by_a_long_name_under_torture
+features: debug-hooks
+--- old
+        curl_os::fs::with_c_name(name, curl_os::fs::open_read).map_err(|_| ReadFailed::Open)?
+--- new
+        std::fs::File::open(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name)).map_err(|_| ReadFailed::Open)?
+
+=== the default configuration file is looked for by a name std copies
+file: crates/curl-tool/src/config.rs
+witness: curl-tool finds_the_configuration_by_a_long_name_under_torture
+features: debug-hooks
+--- old
+    curl_os::fs::with_c_name(path.as_os_str().as_bytes(), curl_os::fs::open_read).is_ok()
+--- new
+    std::fs::File::open(path).is_ok()
+
+=== --stderr opens its file by a name std copies
+file: crates/curl-tool/src/output.rs
+witness: curl-tool downloads_with_long_names_under_torture
+features: debug-hooks
+--- old
+        fs::with_c_name(name, |c| fs::open_write(c, Keep::Nothing, NEW_FILE_MODE))
+--- new
+        File::create(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name))
+
+=== %output{} opens its file by a name std copies
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool downloads_with_long_names_under_torture
+features: debug-hooks
+--- old
+                if let Ok(file) = fs::with_c_name(name, |c| fs::open_write(c, keep, 0o666)) {
+--- new
+                let _ = std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
+                if let Ok(file) = fs::with_c_name(name, |c| fs::open_write(c, keep, 0o666)) {

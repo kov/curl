@@ -9,7 +9,6 @@
 //! rather than run without it.
 
 use std::borrow::Cow;
-use std::os::unix::ffi::OsStrExt as _;
 
 use curl_alloc::TryVec;
 use curl_core::options::{AuthMethods, Condition, Follow, PostRedir, ProxyType, TimeCondition};
@@ -687,17 +686,14 @@ fn time_cond(arg: &[u8], msgs: &Messages) -> Option<TimeCondition> {
     let time = match curl_core::date::parse(rest) {
         Ok(-1) => Some(0),
         Ok(t) => Some(t),
-        Err(_) => {
-            let name = rest.split(|&b| b == 0).next().unwrap_or_default();
-            match std::fs::metadata(std::ffi::OsStr::from_bytes(name)) {
-                Ok(meta) => Some(std::os::unix::fs::MetadataExt::mtime(&meta)),
-                Err(e) => {
-                    let why = crate::os_message(&e);
-                    msgs.warn(&[b"Failed to get filetime: ", why.as_bytes()]);
-                    None
-                }
+        Err(_) => match curl_os::fs::with_c_name(rest, curl_os::fs::stat) {
+            Ok(status) => Some(status.modified()),
+            Err(e) => {
+                let why = crate::os_message(&e);
+                msgs.warn(&[b"Failed to get filetime: ", why.as_bytes()]);
+                None
             }
-        }
+        },
     };
     let Some(time) = time else {
         msgs.warn(&[
@@ -930,7 +926,7 @@ pub(crate) fn apply<'a>(
         Opt::NetrcFile => {
             let file = value.text();
             // `existingfile`.
-            if std::fs::metadata(std::ffi::OsStr::from_bytes(file)).is_err() {
+            if curl_os::fs::with_c_name(file, curl_os::fs::stat).is_err() {
                 msgs.error(&[
                     b"The file '",
                     file,

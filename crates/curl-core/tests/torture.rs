@@ -27,7 +27,7 @@ use curl_core::multi::{
     NotifyKind, PauseRequest, SocketEvent, TimerChange, TransferCx, WaitMode,
 };
 use curl_core::options::script::{Piece, Script};
-use curl_core::options::{Progress, UploadSource};
+use curl_core::options::{Options, Progress, UploadSource};
 use curl_core::time::{Clock, ManualClock, TimeLimit};
 
 #[global_allocator]
@@ -54,6 +54,10 @@ fn main() {
         (
             "a_get_with_credentials_takes_no_refusal_for_success",
             a_get_with_credentials_takes_no_refusal_for_success,
+        ),
+        (
+            "a_tunneled_get_takes_no_refusal_for_success",
+            a_tunneled_get_takes_no_refusal_for_success,
         ),
         (
             "a_get_stays_within_its_allocation_budget",
@@ -446,6 +450,18 @@ fn get_of(
     url: &[u8],
     request: &[u8],
 ) -> Result<Got, OutOfMemory> {
+    get_through(clock, net, talk, url, request, |_| Ok(()))
+}
+
+/// As `get_of`, with the options `set` makes.
+fn get_through(
+    clock: ManualClock,
+    net: FakeNet,
+    talk: &Conversation,
+    url: &[u8],
+    request: &[u8],
+    set: fn(&mut Options) -> Result<(), OutOfMemory>,
+) -> Result<Got, OutOfMemory> {
     let env = Env {
         clock: try_box(clock)?,
         net: try_box(net)?,
@@ -460,6 +476,7 @@ fn get_of(
     let took = TryArc::try_new(Took::default())?;
     o.callbacks.write = Some(Handler::write(Taker(took.clone()))?);
     o.callbacks.header = Some(Handler::header(Taker(took.clone()))?);
+    set(o)?;
     let id = match m.add(easy, (), &mut NoEvents) {
         Ok(id) => id,
         Err(AddError {
@@ -531,6 +548,48 @@ fn a_get_with_credentials_takes_no_refusal_for_success() {
     fn scenario() -> Result<Got, OutOfMemory> {
         let (clock, net, talk) = test_1_server();
         get_of(clock, net, &talk, AUTHED_URL, AUTHED_REQUEST)
+    }
+    refused_alone(scenario, |got| {
+        matches!(
+            got,
+            Err(OutOfMemory)
+                | Ok(Got {
+                    result: Err(ErrorKind::OutOfMemory),
+                    ..
+                })
+        )
+    });
+}
+
+/// A refusal while setting up a tunnel, or reading the proxy's answer,
+/// fails the transfer for memory: never as a bad answer, never unnoticed.
+fn a_tunneled_get_takes_no_refusal_for_success() {
+    fn scenario() -> Result<Got, OutOfMemory> {
+        let (clock, net, talk) = track::untracked(|| {
+            let clock = ManualClock::new().expect("a clock");
+            let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
+            let talk = Conversation::replies(&[b"HTTP/1.1 200 Fine\r\n\r\n", REPLY], false);
+            let net = FakeNet::new(clock.clone())
+                .with_peer(at, Peer::Accepts)
+                .with_conversation(at, talk.clone());
+            (clock, net, talk)
+        });
+        let request = b"CONNECT origin.example:80 HTTP/1.1\r\nHost: origin.example:80\r\n\
+            User-Agent: curl/test\r\nProxy-Connection: Keep-Alive\r\n\r\n\
+            GET /1?q HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\n\
+            Accept: */*\r\n\r\n";
+        get_through(
+            clock,
+            net,
+            &talk,
+            b"http://origin.example/1?q",
+            request,
+            |o| {
+                o.proxy.url = Some(b"127.0.0.1:80".to_vec_fallible()?);
+                o.proxy.tunnel = true;
+                Ok(())
+            },
+        )
     }
     refused_alone(scenario, |got| {
         matches!(

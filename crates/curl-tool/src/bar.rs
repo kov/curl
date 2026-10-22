@@ -383,4 +383,32 @@ mod tests {
         frame(20, true);
         frame(20, true);
     }
+
+    /// Without a start, a size the peer gives is the whole; with none
+    /// known, the bar is full from the first.
+    #[test]
+    fn takes_the_size_the_peer_gives() {
+        let mut s = State::new(None);
+        let drawn = s.draw(now(50, Some(100)), Instant::now(), 27);
+        let mut want = b"\r".to_vec();
+        want.extend_from_slice(&[b'#'; 10]);
+        want.extend_from_slice(&[b' '; 10]);
+        want.extend_from_slice(b"  50.0%");
+        assert_eq!(drawn.bytes(), want);
+        let mut s = State::new(None);
+        let up = ProgressNow {
+            upload_total: Some(100),
+            uploaded: 25,
+            ..now(0, None)
+        };
+        let drawn = s.draw(up, Instant::now(), 27);
+        assert_eq!(&drawn.bytes()[..7], b"\r##### ");
+        assert!(drawn.bytes().ends_with(b"  25.0%"));
+        let mut s = State::new(None);
+        let drawn = s.draw(now(50, None), Instant::now(), 27);
+        let mut want = b"\r".to_vec();
+        want.extend_from_slice(&[b'#'; 20]);
+        want.extend_from_slice(b" 100.0%");
+        assert_eq!(drawn.bytes(), want);
+    }
 }

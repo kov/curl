@@ -634,3 +634,24 @@ fn reports_a_bad_pattern() {
     let r = curl(&s, &[&format!("h/{}", "{a,b}".repeat(64))]);
     assert_eq!((r.code, &r.stderr[..]), (3, "curl: (3) range overflow\n"));
 }
+
+/// `--progress-bar` fills the terminal's width but for the percentage,
+/// from 20 columns to 400, and ends its line after the transfer; a
+/// transfer that never started draws no bar and ends no line.
+#[test]
+fn draws_a_progress_bar() {
+    let s = Scratch::new("bar");
+    s.write("f", &[b'x'; 1000]);
+    let bar = |columns: &str| {
+        let env = [("COLUMNS", columns)];
+        let r = curl_env(&s, &["-#", &s.url("f"), "-o", &s.path("out")], &env);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        r.stderr
+    };
+    let line = |hashes: usize| format!("\r{} 100.0%\n", "#".repeat(hashes));
+    assert_eq!(bar("30"), line(23));
+    assert_eq!(bar("500"), line(393));
+    let r = curl_env(&s, &["-#", &s.url("missing")], &[("COLUMNS", "30")]);
+    assert_eq!(r.code, 37);
+    assert!(r.stderr.starts_with("curl: (37) "), "{:?}", r.stderr);
+}

@@ -121,9 +121,6 @@ exclude_re = [
     # The waker holds both ends of its nonblocking pair, so no error but
     # would-block can be made to happen.
     'curl-os/src/wake\.rs:.*: replace match guard e\.kind\(\) == io::ErrorKind::WouldBlock with true in Waker::(wake|drain)$',
-    # Nothing starts an upload to file:// over, and milestone 1's HTTP
-    # transfers are downloads: no transfer asks the tool to rewind yet.
-    'curl-tool/src/operate\.rs:.*: replace <impl Rewind for UploadFile>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\)$',
     # Sequence numbers are unique: two entries never compare equal.
     'multi/timers\.rs:.*: replace < with <= in Entry<T>::before$',
     # Past the depth limit every call is refused whether the callback is
@@ -249,4 +246,27 @@ exclude_re = [
     'curl-tool/src/write_out\.rs:.*: delete match arm 0 in separator$',
     # The ball's tick is only ever read modulo 200.
     'curl-tool/src/bar\.rs:.*: replace % with \+ in State::fly$',
+    # A reservation size: `--output-dir` refuses a blank argument, so the
+    # directory is never empty, and a short reservation only makes a push
+    # grow the buffer.
+    'curl-tool/src/operate\.rs:.*: replace \+ with (\*|-) in joined$',
+    # Standard output's only name is `-`: globbed, or put in the output
+    # directory, the output still goes to standard output, and the name
+    # made is never read.
+    'curl-tool/src/operate\.rs:.*: replace match guard !to_stdout with true in transfer$',
+    # Asked only of an attempt `resumable` passed, a GET without `-X`:
+    # only HTTP has a response code to match, and its method is GET.
+    'curl-tool/src/operate\.rs:.*: replace \|\| with && in answered_resumably$',
+    # A URL read with its scheme guessed always has one: the default is
+    # never reached. Kept as C passes it.
+    'curl-tool/src/operate\.rs:.*: delete field default_scheme from struct GetOptions expression in with_file_name$',
+    # The tool installs no signal handler, so no read is interrupted.
+    'curl-tool/src/operate\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in <impl ReadHandler for UploadFile>::read$',
+    'curl-tool/src/slurp\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in read$',
+    # A header line ends with its line end: it is never just the name
+    # looked for, and an empty rest after `Location:` names nothing.
+    'curl-tool/src/output\.rs:.*: replace (> with >=|< with <=) in Stream::name_from$',
+    # A header line ends with its line end, so the 9 bytes left at its
+    # very end are never `filename=`, nor can one follow them.
+    'curl-tool/src/output\.rs:.*: replace > with >= in Stream::disposition$',
 ]

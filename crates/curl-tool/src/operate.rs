@@ -239,24 +239,29 @@ fn create_dirs(path: &[u8], msgs: &Messages) -> Result<(), ErrorKind> {
         if e.kind() == Io::AlreadyExists || curl_os::fs::denied(&e) {
             continue;
         }
-        // `show_dir_errno`.
-        let message: [&[u8]; 3] = match e.kind() {
-            Io::InvalidFilename => [b"The directory name ", dir, b" is too long"],
-            Io::ReadOnlyFilesystem => [dir, b" resides on a read-only file system", b""],
-            Io::StorageFull => [
-                b"No space left on the file system that would contain the directory ",
-                dir,
-                b"",
-            ],
-            Io::QuotaExceeded => [
-                b"Cannot create directory ",
-                dir,
-                b" because you exceeded your quota",
-            ],
-            _ => [b"Error creating directory ", dir, b""],
-        };
-        msgs.error(&message);
+        msgs.error(&dir_error(e.kind(), dir));
         return Err(ErrorKind::WriteError);
+    }
+}
+
+/// What is said of `dir` that could not be made, for the reason `kind`
+/// (`show_dir_errno`).
+fn dir_error(kind: std::io::ErrorKind, dir: &[u8]) -> [&[u8]; 3] {
+    use std::io::ErrorKind as Io;
+    match kind {
+        Io::InvalidFilename => [b"The directory name ", dir, b" is too long"],
+        Io::ReadOnlyFilesystem => [dir, b" resides on a read-only file system", b""],
+        Io::StorageFull => [
+            b"No space left on the file system that would contain the directory ",
+            dir,
+            b"",
+        ],
+        Io::QuotaExceeded => [
+            b"Cannot create directory ",
+            dir,
+            b" because you exceeded your quota",
+        ],
+        _ => [b"Error creating directory ", dir, b""],
     }
 }
 
@@ -1306,14 +1311,10 @@ fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
     let path = &path[..path.len() - trailing];
     // A backslash counts only after the last slash.
     let slash = path.iter().rposition(|&b| b == b'/');
-    let after = slash.map_or(0, |i| i + 1);
-    let cut = path[after..]
-        .iter()
-        .rposition(|&b| b == b'\\')
-        .map(|i| after + i)
-        .or(slash);
-    let name = match cut {
-        Some(at) => &path[at + 1..],
+    let tail = slash.map_or(path, |at| &path[at + 1..]);
+    let name = match tail.iter().rposition(|&b| b == b'\\') {
+        Some(at) => &tail[at + 1..],
+        None if slash.is_some() => tail,
         None => {
             msgs.warn(&[b"No remote filename, uses \"curl_response\""]);
             b"curl_response"
@@ -1524,6 +1525,149 @@ mod tests {
         assert_eq!(named("host/dir/", "f"), some("host/dir/f"));
         assert_eq!(named("nosuch://host/f", "a"), Ok(None));
         assert_eq!(named("http://[bad/", "a"), Err(ErrorKind::UrlMalformat));
+    }
+
+    /// `show_dir_errno`'s texts.
+    #[test]
+    fn says_why_a_directory_was_not_made_as_c_does() {
+        use std::io::ErrorKind as Io;
+        let said = |kind| dir_error(kind, b"d/e").concat();
+        for (kind, text) in [
+            (
+                Io::InvalidFilename,
+                &b"The directory name d/e is too long"[..],
+            ),
+            (
+                Io::ReadOnlyFilesystem,
+                b"d/e resides on a read-only file system",
+            ),
+            (
+                Io::StorageFull,
+                b"No space left on the file system that would contain the directory d/e",
+            ),
+            (
+                Io::QuotaExceeded,
+                b"Cannot create directory d/e because you exceeded your quota",
+            ),
+            (Io::NotADirectory, b"Error creating directory d/e"),
+        ] {
+            assert_eq!(said(kind), text, "{kind:?}");
+        }
+    }
+
+    /// `is_outfile_auto_resumable`: a GET resuming its output file, open,
+    /// from where the attempt started, that wrote something, all of it.
+    #[test]
+    fn resumes_only_what_c_resumes() {
+        let path = std::env::temp_dir().join(format!("curl-tool-resumable-{}", std::process::id()));
+        std::fs::write(&path, b"held").unwrap();
+        let out =
+            output::Output::file(path.as_os_str().as_encoded_bytes(), Messages::new()).unwrap();
+        assert!(out.stream().open_to_append());
+        let mut op = Operation {
+            resume: Some(Resume::FromOutput),
+            ..Operation::default()
+        };
+        let retrying = Retrying {
+            start: Instant::now(),
+            retries: 0,
+            wait_ms: 0,
+            resumed_at: 4,
+        };
+        let get = || Attempt {
+            result: Err(ErrorKind::PartialFile),
+            upload: false,
+            method: tool::Method::Unset,
+        };
+        let resumable =
+            |op: &Operation<'_>, r: &Retrying, a: &Attempt| r.resumable(op, &out.stream(), a);
+        // Nothing written yet.
+        assert!(!resumable(&op, &retrying, &get()));
+        assert_eq!(
+            out.stream().body(b"more"),
+            curl_core::handler::Write::Accepted
+        );
+        assert!(resumable(&op, &retrying, &get()));
+        assert!(resumable(
+            &op,
+            &retrying,
+            &Attempt {
+                method: tool::Method::Get,
+                ..get()
+            }
+        ));
+        for (why, attempt) in [
+            (
+                "an upload",
+                Attempt {
+                    upload: true,
+                    ..get()
+                },
+            ),
+            (
+                "a HEAD",
+                Attempt {
+                    method: tool::Method::Head,
+                    ..get()
+                },
+            ),
+            (
+                "a write error",
+                Attempt {
+                    result: Err(ErrorKind::WriteError),
+                    ..get()
+                },
+            ),
+            (
+                "a range error",
+                Attempt {
+                    result: Err(ErrorKind::RangeError),
+                    ..get()
+                },
+            ),
+        ] {
+            assert!(!resumable(&op, &retrying, &attempt), "{why}");
+        }
+        let elsewhere = Retrying {
+            resumed_at: 0,
+            ..retrying
+        };
+        assert!(!resumable(&op, &elsewhere, &get()), "from elsewhere");
+        op.custom_request = Some(b"GET");
+        assert!(!resumable(&op, &retrying, &get()), "-X");
+        op.custom_request = None;
+        op.resume = Some(Resume::At(4));
+        assert!(!resumable(&op, &retrying, &get()), "-C 4");
+        op.resume = Some(Resume::FromOutput);
+        // Standard output is no file to resume.
+        let stdout = Stdout::new().unwrap();
+        let to_stdout = output::Output::stdout(&stdout, Messages::new()).unwrap();
+        assert_eq!(
+            to_stdout.stream().body(b"x"),
+            curl_core::handler::Write::Accepted
+        );
+        let from_0 = Retrying {
+            resumed_at: 0,
+            ..retrying
+        };
+        assert!(
+            !from_0.resumable(&op, &to_stdout.stream(), &get()),
+            "stdout"
+        );
+        drop(out);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// `inlist`: the name, then a colon or a semicolon.
+    #[test]
+    fn finds_a_header_as_c_does() {
+        let headers: [&[u8]; 3] = [b"Abcdef:x", b"content-type;", b"Accept"];
+        assert!(in_list(&headers, b"Content-Type"));
+        assert!(!in_list(&headers, b"Accept"));
+        assert!(!in_list(&headers, b"Abcdef:"));
+        assert!(!in_list(&[b"Accepts: x"], b"Accept"));
+        assert!(!in_list(&[b"Abcdef:x"], b"Accept"));
+        assert!(in_list(&[b"accept:"], b"Accept"));
     }
 
     /// `urlerr_cvt`.

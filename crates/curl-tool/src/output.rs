@@ -487,7 +487,7 @@ impl Stream {
     }
 
     /// `tool_write_cb`.
-    fn body(&mut self, body: &[u8]) -> Write {
+    pub(crate) fn body(&mut self, body: &[u8]) -> Write {
         if !self.create() || self.write_held().is_err() {
             return Write::Fail;
         }
@@ -985,6 +985,29 @@ mod tests {
         assert!(s.throw_away());
         assert_eq!(s.body(b"all"), Write::Accepted);
         assert_eq!(std::fs::read(&path).unwrap(), b"all");
+    }
+
+    /// What is kept may end only before C's largest offset.
+    #[test]
+    fn keeps_up_to_the_largest_offset() {
+        let out = Output::null(quiet()).unwrap();
+        let mut s = out.stream();
+        let max = i64::MAX as u64;
+        (s.init, s.bytes) = (max - 5, 4);
+        assert_eq!(s.keep(), Some(max - 1));
+        (s.init, s.bytes) = (max - 5, 5);
+        assert_eq!(s.keep(), None);
+    }
+
+    /// Only a regular file has what an attempt wrote thrown away: a
+    /// device keeps it.
+    #[test]
+    fn throws_away_only_from_a_regular_file() {
+        let out = Output::file(b"/dev/null", quiet()).unwrap();
+        let mut s = out.stream();
+        assert_eq!(s.body(b"abc"), Write::Accepted);
+        assert!(s.throw_away());
+        assert_eq!(s.written(), 3);
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

@@ -76,6 +76,9 @@ mod tests {
         assert_eq!(read(name, As::Text).unwrap(), b"abcd");
         assert_eq!(read(name, As::Binary).unwrap(), b"a\r\nb\nc\0d\n");
         assert_eq!(read(b"/nonexistent/x", As::Text), Err(ReadFailed::Open));
+        // A directory opens, and fails to be read.
+        let name = std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str());
+        assert_eq!(read(name, As::Binary), Err(ReadFailed::Read));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

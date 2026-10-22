@@ -249,7 +249,9 @@ that. Allocation is therefore always explicit and always fallible:
   `Arc` cannot be built fallibly on stable.
 - **The infallible APIs are banned at build time.** Clippy's `disallowed_methods` and
   `disallowed_macros` reject `Box::new`, `Arc::new`, `format!`, `vec!`, `to_string`,
-  `to_owned`, `collect` and the growing methods of the collections in these crates.
+  `to_owned`, `collect` and the growing methods of the collections in these crates, and std's
+  calls that take a file's name (`File::open`, `fs::metadata`, `fs::rename` and the rest), which
+  copy a name of 384 bytes or more to the heap infallibly: `curl_os::fs` takes it as a C string.
 - **Third-party Rust crates are vetted for this before use.** A crate that allocates
   infallibly on a path we call cannot be used there. The C libraries we bind report allocation
   failure as an error themselves.

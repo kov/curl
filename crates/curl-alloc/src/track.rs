@@ -87,7 +87,10 @@ pub fn start_log(path: &Path) -> io::Result<()> {
         return Ok(());
     }
     // Opening allocates; the lock is not held, so that allocation can be
-    // tracked or not without waiting on it.
+    // tracked or not without waiting on it. It is not tracked, so it is
+    // never refused: std's open is the one this crate, below `curl-os`,
+    // can reach.
+    #[allow(clippy::disallowed_methods)]
     let file = untracked(|| File::create(path))?;
     let mut state = state();
     if state.log.is_none() {

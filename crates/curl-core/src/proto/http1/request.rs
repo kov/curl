@@ -448,7 +448,7 @@ pub(crate) struct RequestHead<'o> {
     /// The range the request asks for, or for an upload sends.
     pub(crate) range: Option<RangeLine<'o>>,
     /// The body the request sends, if it has one.
-    pub(crate) content: Option<Content>,
+    pub(crate) content: Option<Content<'o>>,
     /// The library says the body is chunked (`http_req_set_TE`); one the
     /// application asks chunked, its own header says.
     pub(crate) chunked: bool,
@@ -498,14 +498,26 @@ pub(crate) enum Accepted<'o> {
 
 /// What the head says of a body (`http_add_content_hds`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Content {
+pub(crate) struct Content<'o> {
     /// Its size, unless it goes chunked or its end is the connection's.
     pub(crate) length: Option<u64>,
     /// The library asks for a 100 before it (`addexpect`); one the
     /// application asks for, its own header says.
     pub(crate) expect: bool,
-    /// A POST's, typed as a form unless the application types it.
-    pub(crate) form: bool,
+    pub(crate) typed: Typed<'o>,
+}
+
+/// How the head types a body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Typed<'o> {
+    /// Not at all: a PUT's.
+    No,
+    /// A POST's, as a form unless the application types it.
+    Form,
+    /// A multipart body's, by its top part's header lines: they take the
+    /// application's `Content-Type` in, which its headers then leave out
+    /// (`Curl_add_custom_headers`).
+    Mime(&'o [Vec<u8>]),
 }
 
 /// The request head as it goes on the wire, or only its length.
@@ -655,8 +667,18 @@ fn write_h1(
                         let mut digits = [0u8; 20];
                         out.line(&[b"Content-Length: ", decimal(length, &mut digits)])?;
                     }
-                    if content.form && head.headers.replacing(b"Content-Type").is_none() {
-                        out.line(&[b"Content-Type: application/x-www-form-urlencoded"])?;
+                    match content.typed {
+                        Typed::No => {}
+                        Typed::Form => {
+                            if head.headers.replacing(b"Content-Type").is_none() {
+                                out.line(&[b"Content-Type: application/x-www-form-urlencoded"])?;
+                            }
+                        }
+                        Typed::Mime(lines) => {
+                            for l in lines {
+                                out.line(&[l])?;
+                            }
+                        }
                     }
                     if content.expect {
                         out.line(&[b"Expect: 100-continue"])?;
@@ -782,6 +804,13 @@ fn custom(
             continue;
         }
         if head.probe && h.is(b"Content-Length") {
+            continue;
+        }
+        if h.is(b"Content-Type")
+            && head
+                .content
+                .is_some_and(|c| matches!(c.typed, Typed::Mime(_)))
+        {
             continue;
         }
         match h.asks {

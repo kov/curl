@@ -235,7 +235,7 @@ fn the_read_that_completes_the_size_ends_the_body() {
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
-        let mut upload = Upload::new(&source);
+        let mut upload = Upload::plain(&source);
         let mut buf = [0; 20];
         assert_eq!(
             upload.read(cx, &mut buf, true),
@@ -274,7 +274,7 @@ fn bytes_need_a_rewind_once_read() {
     m.perform(&mut NoEvents).unwrap();
     let source = UploadSource::Bytes(TryArc::try_new(b"abcde".to_vec()).unwrap());
     m.with_step_cx(id, |cx| {
-        let mut upload = Upload::new(&source);
+        let mut upload = Upload::plain(&source);
         assert!(!upload.needs_rewind());
         let mut buf = [0; 3];
         assert_eq!(
@@ -297,7 +297,7 @@ fn lent_bytes_are_read_in_place_and_rewound() {
     m.perform(&mut NoEvents).unwrap();
     let source = UploadSource::Lent(Handler::lent(Lends(b"abcde".to_vec())).unwrap());
     m.with_step_cx(id, |cx| {
-        let mut upload = Upload::new(&source);
+        let mut upload = Upload::plain(&source);
         assert_eq!(upload.size(), Some(5));
         assert!(!upload.needs_rewind());
         let mut buf = [0; 3];
@@ -343,7 +343,7 @@ fn the_handler_s_end_and_failures_stick() {
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         m.with_step_cx(id, |cx| {
-            let mut upload = Upload::new(&source);
+            let mut upload = Upload::plain(&source);
             let mut buf = [0; 8];
             assert_eq!(upload.read(cx, &mut buf, true), want, "{answer:?}");
             assert_eq!(upload.read(cx, &mut buf, true), want, "{answer:?} again");
@@ -411,7 +411,7 @@ fn a_pausing_handler_pauses_the_sending() {
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
-        let mut upload = Upload::new(&source);
+        let mut upload = Upload::plain(&source);
         assert_eq!(
             upload.read(cx, &mut [0; 4], false),
             Err(ErrorKind::ReadError)

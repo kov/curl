@@ -5031,7 +5031,7 @@ fn a_body_all_sent_has_nothing_left() {
         rewind: None,
         size: None,
     };
-    let body = crate::upload::chain::Body::new(crate::upload::Upload::new(&source));
+    let body = crate::upload::chain::Body::new(crate::upload::Upload::plain(&source));
     let left = |sent_all| super::Request::left_to_send(Some(&body), sent_all, 1).left;
     assert_eq!(left(true), Left::Nothing);
     assert_eq!(left(false), Left::Unknown);
@@ -5045,7 +5045,7 @@ fn a_chunked_body_has_an_unknown_amount_left() {
     use crate::proto::http1::framing::Left;
     let stream = Stream::new(b"0123456789");
     let mut body =
-        crate::upload::chain::Body::new(crate::upload::Upload::new(&stream.source(false)));
+        crate::upload::chain::Body::new(crate::upload::Upload::plain(&stream.source(false)));
     assert_eq!(
         super::Request::left_to_send(Some(&body), false, 4).left,
         Left::Bytes(6)
@@ -5456,4 +5456,97 @@ fn a_send_limit_lets_its_rate_out_each_second() {
             "second {second}"
         );
     }
+}
+
+/// A tree of one part, its boundary all `A`s, and the part.
+fn mime_tree(content: crate::mime::Content) -> crate::mime::Mime {
+    use crate::mime::{Boundary, Mime, Part};
+    let mut m = Mime::new(Boundary::draw(|| Ok::<_, std::convert::Infallible>(0)).unwrap());
+    m.add(Part {
+        name: Some(b"f".to_vec()),
+        content,
+        ..Part::default()
+    })
+    .unwrap();
+    m
+}
+
+fn mime_source(m: crate::mime::Mime) -> UploadSource {
+    let tree = curl_alloc::TryArc::try_new(m).unwrap();
+    UploadSource::Mime(Handler::mime(crate::mime::Fixed(tree)).unwrap())
+}
+
+/// A multipart POST types its head with the tree's boundary after its
+/// length, the application's `Content-Type` taken in its place and not
+/// sent as given (`http_add_content_hds`, `Curl_add_custom_headers`).
+#[test]
+fn a_mime_post_types_its_head_with_the_boundary() {
+    let tree = mime_tree(crate::mime::Content::Bytes(
+        curl_alloc::TryArc::try_new(b"v".to_vec()).unwrap(),
+    ));
+    let ran = run("/p", OK_EMPTY, false, |o| {
+        o.method = Method::Post;
+        o.upload = mime_source(tree);
+        o.http.headers =
+            UserHeaders::new([&b"Content-Type: multipart/related"[..], b"X: 1"]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let line = format!("--------------------------{}", "A".repeat(22));
+    let body =
+        format!("{line}\r\nContent-Disposition: attachment; name=\"f\"\r\n\r\nv\r\n{line}--\r\n");
+    let want = format!(
+        "POST /p HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\nUser-Agent: curl/test\r\nAccept: */*\r\nX: 1\r\n\
+         Content-Length: {}\r\n\
+         Content-Type: multipart/related; boundary={}\r\n\r\n{body}",
+        body.len(),
+        &line[2..],
+    );
+    assert_eq!(String::from_utf8_lossy(&ran.request), want);
+}
+
+/// A tree of unknown size goes chunked, in C's pieces.
+#[test]
+fn a_mime_post_of_unknown_size_goes_chunked() {
+    let stream = Stream::new(b"ab");
+    let tree = mime_tree(crate::mime::Content::Read {
+        handler: Handler::read(stream.clone()).unwrap(),
+        rewind: None,
+        size: None,
+    });
+    let ran = run("/p", OK_EMPTY, false, |o| {
+        o.method = Method::Post;
+        o.upload = mime_source(tree);
+        o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request);
+    assert!(
+        text.contains("Transfer-Encoding: chunked\r\nContent-Type: multipart/form-data; boundary=")
+    );
+    assert!(text.contains("\r\n\r\nab\r\n"), "{text}");
+    assert!(text.ends_with("--\r\n\r\n0\r\n\r\n"), "{text}");
+}
+
+/// A source with no tree posts an empty body, untyped (test 584).
+#[test]
+fn a_mime_post_without_a_tree_is_empty() {
+    struct Gone;
+    impl crate::mime::MimeSource for Gone {
+        fn mime(
+            &self,
+        ) -> Result<Option<curl_alloc::TryArc<crate::mime::Mime>>, crate::mime::MimeError> {
+            Ok(None)
+        }
+    }
+    let ran = run("/p", OK_EMPTY, false, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Mime(Handler::mime(Gone).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.request
+            .ends_with(b"Accept: */*\r\nContent-Length: 0\r\n\r\n"),
+        "{}",
+        ran.request.escape_ascii()
+    );
 }

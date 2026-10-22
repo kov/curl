@@ -715,6 +715,7 @@ fn the_post_options_combine_as_in_c() {
         Bytes(Vec<u8>),
         Lent(u64),
         Read(Option<u64>),
+        Mime,
     }
     let c = curl_easy_init();
     let body = |c| {
@@ -723,6 +724,7 @@ fn the_post_options_combine_as_in_c() {
             UploadSource::Bytes(b) => Body::Bytes(b.to_vec()),
             UploadSource::Lent(b) => Body::Lent(curl_core::handler::LentBytes::size(&**b)),
             UploadSource::Read { size, .. } => Body::Read(*size),
+            UploadSource::Mime(_) => Body::Mime,
         })
     };
     let method = |c| options(c, |o| o.method);

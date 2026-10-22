@@ -12,6 +12,7 @@ use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
+use crate::mime::read::MakeError;
 use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
@@ -28,6 +29,7 @@ use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing, Left, Unsent};
 use super::http1::request::{
     self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
+    Typed,
 };
 use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
@@ -63,6 +65,8 @@ const EXPECT_100_THRESHOLD: u64 = 1024 * 1024;
 enum BodyKind {
     /// A POST's, a form by default (`HTTPREQ_POST`).
     Form,
+    /// A POST's multipart body (`HTTPREQ_POST_MIME`).
+    Mime,
     /// A PUT's.
     Put,
 }
@@ -594,7 +598,9 @@ impl Request {
             post_fields: match &options.upload {
                 UploadSource::Bytes(bytes) => sigv4::PostFields::Bytes(bytes),
                 UploadSource::Lent(lent) => sigv4::PostFields::Lent(&**lent),
-                UploadSource::None | UploadSource::Read { .. } => sigv4::PostFields::None,
+                UploadSource::None | UploadSource::Read { .. } | UploadSource::Mime(_) => {
+                    sigv4::PostFields::None
+                }
             },
             empty_upload: matches!(options.upload, UploadSource::Read { size: Some(0), .. }),
             user: credentials.user(),
@@ -813,6 +819,7 @@ impl Request {
         let method = self.method_line(http);
         let body = match self.method {
             Method::Get | Method::Head => None,
+            Method::Post if matches!(options.upload, UploadSource::Mime(_)) => Some(BodyKind::Mime),
             Method::Post => Some(BodyKind::Form),
             Method::Upload => Some(BodyKind::Put),
         };
@@ -830,13 +837,17 @@ impl Request {
         // A probe goes without its body, saying it has none
         // (`Curl_creader_set_null`). A POST asked chunked is read to its
         // end (`set_reader`).
-        let mut upload = body.filter(|_| !probe).map(|_| {
-            let mut upload = Upload::new(&options.upload);
-            if asked == Some(true) && self.method == Method::Post {
-                upload.read_to_end();
+        let mut upload = match body.filter(|_| !probe) {
+            None => None,
+            Some(_) => {
+                let mut upload = Upload::new(&options.upload, &http.headers, options.mime_escape())
+                    .map_err(MakeError::kind)?;
+                if asked == Some(true) && self.method == Method::Post {
+                    upload.read_to_end();
+                }
+                Some(upload)
             }
-            upload
-        });
+        };
         let size = if probe {
             Some(0)
         } else {
@@ -853,11 +864,17 @@ impl Request {
         let chunked = asked.unwrap_or(size_unknown);
         // Even a request without a body sends a last chunk if chunked.
         if chunked && upload.is_none() {
-            upload = Some(Upload::new(&UploadSource::None));
+            upload = Some(Upload::empty());
         }
         let mut content = body.map(|kind| request::Content {
             length: size.filter(|_| !chunked),
-            form: kind == BodyKind::Form,
+            typed: match kind {
+                BodyKind::Form => Typed::Form,
+                BodyKind::Put => Typed::No,
+                BodyKind::Mime => {
+                    Typed::Mime(upload.as_ref().and_then(Upload::head).unwrap_or(&[]))
+                }
+            },
             expect: false,
         });
         // `Expect: 100-continue`, asked for, or added on HTTP/1.1 for a
@@ -996,6 +1013,12 @@ impl Request {
                 &[b"Server auth using ", name, b" with user '", user, b"'"],
             );
         }
+        let length = content.and_then(|c| c.length);
+        // A tree's handlers are rewound before it is read
+        // (`Curl_creader_set_mime`).
+        if let Some(upload) = &mut upload {
+            upload.start(cx)?;
+        }
         let head_len = out.len();
         if upload.is_some() {
             // The body goes behind the head, in what is left of one
@@ -1005,7 +1028,7 @@ impl Request {
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             out.try_extend_from_slice(&[0; UPLOAD_BUFFER][..room])
                 .map_err(|_| ErrorKind::OutOfMemory)?;
-            upload::announce_size(cx, content.and_then(|c| c.length));
+            upload::announce_size(cx, length);
         }
         // Without a body to read, all of it is in the buffer, whatever
         // was announced; with one announced, none of it is read until a

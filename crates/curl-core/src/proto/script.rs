@@ -142,7 +142,7 @@ impl Player {
     /// The body, from its start the first time.
     fn upload<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<&mut Upload, ErrorKind> {
         if self.upload.is_none() {
-            let upload = Upload::new(&cx.easy().options().upload);
+            let upload = Upload::open(cx)?;
             upload::announce_size(cx, upload.size());
             self.upload = Some(upload);
         }

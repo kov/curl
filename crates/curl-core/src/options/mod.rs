@@ -16,6 +16,8 @@ use crate::handler::{
     DebugHandler, Handler, HeaderHandler, LentBytes, LineSource, ProgressHandler, ReadHandler,
     Rewind, TextSink, TrailerHandler, WriteHandler,
 };
+use crate::mime::MimeSource;
+use crate::mime::read::Escape;
 use crate::time::TimeLimit;
 use crate::url::SharedUrl;
 
@@ -68,6 +70,8 @@ pub struct Options {
     pub progress: Progress,
     /// What a transfer sends, if its request has a body.
     pub upload: UploadSource,
+    /// How a multipart body is made.
+    pub mime: Cold<MimeOptions>,
     /// Who the transfer authenticates as.
     pub login: Cold<Login>,
     pub netrc: Cold<Netrc>,
@@ -316,6 +320,15 @@ impl Options {
         }
     }
 
+    /// How a multipart body's names are quoted.
+    pub(crate) fn mime_escape(&self) -> Escape {
+        if self.mime.form_escape {
+            Escape::Backslash
+        } else {
+            Escape::Form
+        }
+    }
+
     /// The URL to transfer (`CURLOPT_URL`), as given: it is parsed when
     /// the transfer starts.
     pub fn url(&self) -> Option<&[u8]> {
@@ -383,6 +396,7 @@ impl Options {
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
             upload: self.upload.clone(),
+            mime: self.mime.try_clone(|m| Ok(*m))?,
             login: self.login.try_clone(Login::try_clone)?,
             netrc: self.netrc.try_clone(|netrc| {
                 Ok(Netrc {
@@ -530,6 +544,20 @@ impl Default for Proxy {
     fn default() -> Self {
         Proxy::NONE
     }
+}
+
+/// How a multipart body is made (`CURLOPT_MIME_OPTIONS`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MimeOptions {
+    /// Form field names and file names are quoted with backslashes, as
+    /// curl before 7.81 did, not percent-encoded
+    /// (`CURLMIMEOPT_FORMESCAPE`).
+    pub form_escape: bool,
+}
+
+impl ColdGroup for MimeOptions {
+    const UNSET: &'static MimeOptions = &MimeOptions::NONE;
+    const NONE: MimeOptions = MimeOptions { form_escape: false };
 }
 
 impl ColdGroup for Netrc {
@@ -1454,6 +1482,9 @@ pub enum UploadSource {
     Bytes(TryArc<Vec<u8>>),
     /// Bytes the application lends, read where they are as they are sent.
     Lent(Handler<dyn LentBytes>),
+    /// A multipart body, the tree the source gives as each request is
+    /// built (`CURLOPT_MIMEPOST`).
+    Mime(Handler<dyn MimeSource>),
     /// What a handler reads, `size` bytes if known (`CURLOPT_READFUNCTION`,
     /// `CURLOPT_INFILESIZE_LARGE`). Without a rewind, a request that must be
     /// sent again after reading fails with SendFailRewind.

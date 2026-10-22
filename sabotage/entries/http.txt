@@ -410,9 +410,9 @@ witness: curl-core proto::http::tests::a_body_larger_than_the_buffer_goes_in_buf
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http::tests::the_application_s_content_headers_replace_the_library_s
 --- old
-                    if content.form && head.headers.replacing(b"Content-Type").is_none() {
+                            if head.headers.replacing(b"Content-Type").is_none() {
 --- new
-                    if content.form {
+                            if true {
 
 === a large body is sent without waiting for 100-continue
 file: crates/curl-core/src/proto/http.rs
@@ -1146,9 +1146,9 @@ witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 --- old
-        let mut upload = body.filter(|_| !probe).map(|_| {
+        let mut upload = match body.filter(|_| !probe) {
 --- new
-        let mut upload = body.filter(|_| true).map(|_| {
+        let mut upload = match body.filter(|_| true) {
 
 === Digest gives way to the application's Authorization
 file: crates/curl-core/src/proto/http.rs

@@ -323,7 +323,7 @@ impl Request {
             return Err(trace::fail_with(cx, ErrorKind::WriteError, &detail));
         };
         let resume = options.resume;
-        let mut upload = Upload::new(&options.upload);
+        let mut upload = Upload::open(cx)?;
         if let Some(size) = upload.size() {
             upload::announce_size(cx, Some(size));
         }

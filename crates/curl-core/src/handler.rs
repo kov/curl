@@ -269,6 +269,12 @@ impl Handler<dyn DebugHandler> {
     }
 }
 
+impl Handler<dyn crate::mime::MimeSource> {
+    pub fn mime(source: impl crate::mime::MimeSource + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(source)?)
+    }
+}
+
 impl Handler<dyn LineSource> {
     pub fn lines(source: impl LineSource + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(source)?)

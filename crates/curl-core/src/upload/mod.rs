@@ -1,19 +1,23 @@
 //! What a transfer sends: C's client readers (`lib/sendf.c`'s `cr_in`,
-//! `cr_buf` and `cr_null`) as one struct, read by the protocol.
+//! `cr_buf` and `cr_null`, `lib/mime.c`'s `cr_mime`) as one struct, read
+//! by the protocol.
 
 pub(crate) mod chain;
 #[cfg(test)]
 mod tests;
 
-use curl_alloc::TryArc;
+use curl_alloc::{TryArc, try_box};
 
 use crate::deliver::SendPause;
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind};
+use crate::mime::MimeError;
+use crate::mime::read::{Escape, MakeError, MimeReader};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::options::UploadSource;
 use crate::progress::rate::Way;
+use crate::proto::http1::request::UserHeaders;
 use crate::trace;
 
 /// One request's body to send, read from its source.
@@ -38,6 +42,7 @@ enum Source {
         rewind: Option<Handler<dyn Rewind>>,
         size: Option<u64>,
     },
+    Mime(Box<MimeReader>),
 }
 
 /// Whether a read handler is called again.
@@ -61,9 +66,22 @@ pub(crate) struct Readout {
 }
 
 impl Upload {
-    /// The body `source` gives, from its start.
-    pub(crate) fn new(source: &UploadSource) -> Upload {
+    /// The body `source` gives, from its start; a tree's headers made for
+    /// a request whose own lines are `request`, its names quoted as
+    /// `escaping` says. A tree's handlers are rewound by `start`.
+    pub(crate) fn new(
+        source: &UploadSource,
+        request: &UserHeaders,
+        escaping: Escape,
+    ) -> Result<Upload, MakeError> {
         let source = match source {
+            UploadSource::Mime(tree) => match tree.mime() {
+                Ok(Some(mime)) => Source::Mime(try_box(MimeReader::new(mime, request, escaping)?)?),
+                // Nothing to send: an empty body (C's unbound part).
+                Ok(None) => Source::None,
+                Err(MimeError::OutOfMemory) => return Err(MakeError::OutOfMemory),
+                Err(MimeError::TooDeep) => return Err(MakeError::TooLarge),
+            },
             UploadSource::None => Source::None,
             UploadSource::Bytes(bytes) => Source::Bytes(bytes.clone()),
             UploadSource::Lent(bytes) => Source::Lent(bytes.clone()),
@@ -77,22 +95,68 @@ impl Upload {
                 size: *size,
             },
         };
-        Upload {
+        Ok(Upload {
             source,
+            read: 0,
+            latch: Latch::Open,
+            called: false,
+        })
+    }
+
+    /// The body of a source that is no tree.
+    #[cfg(test)]
+    pub(crate) fn plain(source: &UploadSource) -> Upload {
+        assert!(!matches!(source, UploadSource::Mime(_)), "no tree");
+        Upload::new(source, &UserHeaders::NONE, Escape::Form).expect("no tree to make")
+    }
+
+    /// Nothing to send.
+    pub(crate) fn empty() -> Upload {
+        Upload {
+            source: Source::None,
             read: 0,
             latch: Latch::Open,
             called: false,
         }
     }
 
+    /// Ready to be read: a tree's handlers rewound, as it may have been
+    /// read before (`Curl_creader_set_mime`); failing, SendFailRewind.
+    pub(crate) fn start<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        match &mut self.source {
+            Source::Mime(reader) => reader.start(cx),
+            _ => Ok(()),
+        }
+    }
+
+    /// The body of the transfer's options, ready to be read: a tree with
+    /// no request headers of its own to type it.
+    pub(crate) fn open<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Upload, ErrorKind> {
+        let source = cx.easy().options().upload.clone();
+        let escaping = cx.easy().options().mime_escape();
+        let mut upload =
+            Upload::new(&source, &UserHeaders::NONE, escaping).map_err(MakeError::kind)?;
+        upload.start(cx)?;
+        Ok(upload)
+    }
+
+    /// The header lines the request sends to type the body: a tree's.
+    pub(crate) fn head(&self) -> Option<&[Vec<u8>]> {
+        match &self.source {
+            Source::Mime(reader) => Some(reader.head()),
+            _ => None,
+        }
+    }
+
     /// The handler was called, and must be rewound for the body to be
     /// sent again (`Curl_creader_needs_rewind`).
     pub(crate) fn needs_rewind(&self) -> bool {
-        match self.source {
+        match &self.source {
             Source::Read { .. } => self.called,
             // Read from at all, as C's `cr_buf` says of its buffer,
             // copied or not.
             Source::Bytes(_) | Source::Lent(_) => self.read > 0,
+            Source::Mime(reader) => reader.needs_rewind(),
             Source::None => false,
         }
     }
@@ -113,6 +177,7 @@ impl Upload {
             Source::Bytes(bytes) => Some(bytes.len() as u64),
             Source::Lent(bytes) => Some(bytes.size()),
             Source::Read { size, .. } => *size,
+            Source::Mime(reader) => reader.size(),
         }
     }
 
@@ -126,8 +191,9 @@ impl Upload {
         pausable: bool,
     ) -> Result<Readout, ErrorKind> {
         assert!(!buf.is_empty(), "a read has room");
-        let (handler, size) = match &self.source {
+        let (handler, size) = match &mut self.source {
             Source::None => return Ok(Readout { n: 0, eos: true }),
+            Source::Mime(reader) => return reader.read(cx, buf, pausable),
             Source::Bytes(bytes) => {
                 let at = usize::try_from(self.read).expect("an index into the bytes");
                 let n = (bytes.len() - at).min(buf.len());
@@ -232,6 +298,9 @@ impl Upload {
     /// possible", unless the handler gave its own reason), followed by
     /// the reader's failure (`Curl_client_start`).
     pub(crate) fn rewind<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        if let Source::Mime(reader) = &mut self.source {
+            return reader.rewind(cx);
+        }
         if let Source::Read { rewind, .. } = &self.source {
             if !self.called {
                 return Ok(());

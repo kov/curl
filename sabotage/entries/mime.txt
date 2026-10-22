@@ -1,0 +1,74 @@
+# A multipart body (crates/curl-core/src/mime), against mime.c's reader.
+
+=== a fill calls out more than once
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_fill_calls_out_once
+--- old
+            ContentRef::File(_) | ContentRef::Read { .. } if *hasread => Got::Stop,
+--- new
+            ContentRef::File(_) | ContentRef::Read { .. } if false => Got::Stop,
+
+=== a part of known size is read past its size
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_part_of_known_size_ends_without_a_read
+--- old
+    let got = if src.size.is_some_and(|size| src.offset >= size) {
+--- new
+    let got = if false {
+
+=== the first boundary keeps its CRLF
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_form_is_read_whole_and_sized
+--- old
+                mc.offset = 2;
+--- new
+                mc.offset = 0;
+
+=== base64 lines run past 76
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::encoders_encode_as_c_s
+--- old
+        if st.pos > MAX_LINE - 4 {
+--- new
+        if st.pos > MAX_LINE {
+
+=== quoted-printable makes no soft line break
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::encoders_encode_as_c_s
+--- old
+            let mut soft = st.pos + len > MAX_LINE;
+--- new
+            let mut soft = false;
+
+=== a part's own Content-Type is sent as well as the library's
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_part_s_headers_are_c_s
+--- old
+                Some(h) if is_header(h, b"Content-Type") => {
+--- new
+                Some(h) if h.is_empty() => {
+
+=== a part's own Content-Type is counted in its size
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_part_s_headers_are_c_s
+--- old
+        .filter(|h| !is_header(h, b"Content-Type"))
+--- new
+        .filter(|h| !h.is_empty())
+
+=== a new reader leaves the handlers unrewound
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_rewind_starts_over
+--- old
+            } => ok &= calls.rewind(r).is_ok(),
+--- new
+            } => ok &= Handler::ptr_eq(r, r),
+
+=== the application's Content-Type is sent beside the tree's
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::a_mime_post_types_its_head_with_the_boundary
+--- old
+        if h.is(b"Content-Type")
+--- new
+        if h.is(b"Content-Type-")
+

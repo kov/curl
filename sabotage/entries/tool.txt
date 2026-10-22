@@ -181,21 +181,59 @@ witness: curl-tool reports_an_output_it_cannot_open
 --- new
             return Step::Failed(ErrorKind::WriteError);
 
-=== standard output is written as it comes
-file: crates/curl-tool/src/stdout.rs
-witness: curl-tool reports_standard_output_it_cannot_write
+=== a line buffer is written only when full
+file: crates/curl-tool/src/stdio.rs
+witness: curl-tool stdio::tests::a_line_buffer_writes_each_line
 --- old
-        if b.line && bytes.contains(&b'\n') {
+            if buf.layout.line
+                && count >= n
 --- new
-        if true {
+            if false
+                && count >= n
+
+=== a write that fails partway reads as taken whole
+file: crates/curl-tool/src/stdio.rs
+witness: curl-tool stdio::tests::counts_what_was_taken_as_glibc_does
+--- old
+                if wrote < direct {
+                    return n - to_do;
+                }
+--- new
+                if wrote < direct {
+                    return n;
+                }
+
+=== the buffer is BUFSIZ whatever the file's block size
+file: crates/curl-tool/src/stdio.rs
+witness: curl-tool stdio::tests::sizes_the_buffer_by_the_block
+--- old
+            if block > 0 && block < BUFSIZ as u64 {
+--- new
+            if false {
+
+=== an output file that cannot be closed succeeds
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool reports_output_it_cannot_write_when_stdio_would
+--- old
+            if stream.close().is_err() && result.is_ok() {
+--- new
+            if stream.close().is_err() && false {
+
+=== output is written out as each piece comes, without --no-buffer
+file: crates/curl-tool/src/output.rs
+witness: curl-tool reports_output_it_cannot_write_when_stdio_would
+--- old
+        if self.no_buffer && self.flush().is_err() {
+--- new
+        if self.flush().is_err() {
 
 === a header line is shown in bold without its name
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::shows_header_names_in_bold_on_a_terminal
 --- old
-            Some(at) => [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]]
+                for part in [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]] {
 --- new
-            Some(at) => [BOLD, BOLD_OFF, &line[..at], b":", &line[at + 1..]]
+                for part in [BOLD, BOLD_OFF, &line[..at], b":", &line[at + 1..]] {
 
 === a size's fraction keeps digits its unit cannot tell apart
 file: crates/curl-tool/src/options/number.rs
@@ -568,9 +606,9 @@ witness: curl-tool retries_a_failure
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
 --- old
-        if fail || file.set_len(self.init).is_err() {
+        if fail || file.get_ref().set_len(self.init).is_err() {
 --- new
-        if fail || file.set_len(0).is_err() {
+        if fail || file.get_ref().set_len(0).is_err() {
 
 === what an attempt kept is written over by the next
 file: crates/curl-tool/src/output.rs
@@ -585,7 +623,7 @@ witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::throws_away_or_keeps_what_an_attempt_wrote
 --- old
-        if std::io::Seek::seek(file, std::io::SeekFrom::End(0)).is_err() {
+        if std::io::Seek::seek(file.get_mut(), std::io::SeekFrom::End(0)).is_err() {
 --- new
         if false {
 
@@ -701,16 +739,12 @@ witness: curl-tool config::tests::a_zero_byte_ends_its_line_alone
             .iter()
             .position(|&b| b == 0xff)
 
-=== a failed write of an included header line is ignored
+=== an included header line is not written
 file: crates/curl-tool/src/output.rs
 witness: curl-tool an_included_header_that_cannot_be_written_fails
 --- old
-        match written {
-            Ok(()) => Write::Accepted,
-            Err(_) => Write::Fail,
-        }
+            None => {
+                self.fwrite(line);
+            }
 --- new
-        match written {
-            Ok(()) => Write::Accepted,
-            Err(_) => Write::Accepted,
-        }
+            None => {}

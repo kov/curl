@@ -410,26 +410,88 @@ fn reports_an_output_it_cannot_open() {
     );
 }
 
-/// Standard output is buffered, as stdio buffers it: a write that fails
-/// fails when the transfer's output is flushed at its end.
-#[test]
-fn reports_standard_output_it_cannot_write() {
-    let s = Scratch::new("full");
-    s.write("f", b"x\n");
+/// Run the tool with `args`, in `dir`, its standard output going to
+/// `stdout`; `None` is a pipe whose reader is gone before the tool starts
+/// writing.
+fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
-    let out = Command::new(tool)
-        .args(["-q", "-sS", &s.url("f")])
-        .stdout(
-            std::fs::File::options()
+    let mut cmd = Command::new(tool);
+    cmd.arg("-q")
+        .args(args)
+        .current_dir(&dir.0)
+        .stderr(std::process::Stdio::piped());
+    match stdout {
+        Some(path) => {
+            let file = std::fs::File::options()
                 .write(true)
-                .open("/dev/full")
-                .unwrap(),
-        )
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(23));
-    assert_eq!(out.stderr, b"curl: Failed writing body\n");
+                .create(true)
+                .truncate(true)
+                .open(path)
+                .unwrap();
+            cmd.stdout(file);
+        }
+        None => {
+            cmd.stdout(std::process::Stdio::piped());
+        }
+    }
+    let mut child = cmd.spawn().unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    Run {
+        code: out.status.code().unwrap(),
+        stdout: out.stdout,
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    }
+}
+
+/// Output goes through stdio's buffer, as C's `fwrite` sends it: a write
+/// that does not fit the buffer is tried at once, and fails with the count
+/// it got, while one that fits fails only when the buffer is written, at
+/// the end of the transfer or at once with `--no-buffer`. As the C tool
+/// does on a full device and a closed pipe.
+#[test]
+fn reports_output_it_cannot_write_when_stdio_would() {
+    let s = Scratch::new("stdio");
+    // Over two of the device's 4096-byte blocks, under one piece of a
+    // `file://` read; and less than a block.
+    s.write("big", &[b'x'; 10000]);
+    s.write("small", &[b'x'; 3000]);
+    let (big, small) = (s.url("big"), s.url("small"));
+    let full = Some("/dev/full");
+    let short = "curl: (23) Failure writing output to destination, passed 10000 returned 0\n";
+    let at_close = "curl: curl: (23) Failed writing body\n";
+    let at_flush = "curl: Failed writing body\n";
+    let flushed = "curl: (23) client returned ERROR on write of 3000 bytes\n";
+    let headed = "curl: (23) Failure writing output to destination, passed 10000 returned 4003\n";
+    let cases: [(&[&str], Option<&str>, &str); 10] = [
+        (&["-o", "/dev/full", &big], None, short),
+        (&[&big], full, short),
+        (&["-N", "-o", "/dev/full", &big], None, short),
+        (&["-o", "/dev/full", &small], None, at_close),
+        (&[&small], full, at_flush),
+        (&[&small], None, at_flush),
+        (&["-N", "-o", "/dev/full", &small], None, flushed),
+        (&["-N", &small], full, flushed),
+        // Header lines shown are written unchecked, into the buffer: the
+        // body fills the rest of it, 4096 less their 93 bytes, and fails
+        // as it is written.
+        (&["-i", "-o", "/dev/full", &small], None, at_close),
+        (&["-i", &big], full, headed),
+    ];
+    for (args, stdout, want) in cases {
+        let r = curl_to(&s, &[&["-sS"], args].concat(), stdout);
+        assert_eq!((r.code, &r.stderr[..]), (23, want), "{args:?}");
+    }
+    // The failure at close is the transfer's result.
+    let w = s.path("w");
+    let r = curl_to(
+        &s,
+        &["-sS", "-o", "/dev/full", "-w", "%{exitcode}", &small],
+        Some(&w),
+    );
+    assert_eq!((r.code, &r.stderr[..]), (23, at_close));
+    assert_eq!(s.read("w"), b"23");
 }
 
 /// `--skip-existing` leaves an output file there alone, and says so when
@@ -526,9 +588,9 @@ fn an_upload_that_cannot_be_read_fails() {
     assert_eq!((r.code, &r.stdout[..]), (26, &b"26"[..]));
 }
 
-/// A header line `-i` fails to write fails the transfer, though no body
-/// write follows to fail. C does not check that write, and fails when it
-/// closes the output it could not flush.
+/// Header lines `-i` cannot write fail the transfer though no body write
+/// follows to fail: those writes are not checked, and the output they
+/// are held in fails to be written when it is closed.
 #[test]
 fn an_included_header_that_cannot_be_written_fails() {
     let s = Scratch::new("headerfull");

@@ -16,6 +16,7 @@ use curl_os::fs::{self, Keep};
 use crate::msgs::Messages;
 use crate::options::Clobber;
 use crate::os_message;
+use crate::stdio::{self, Stdio};
 use crate::stdout::Stdout;
 
 /// What `fopen` creates a file with, before the umask.
@@ -113,7 +114,7 @@ struct Dump {
 enum DumpTarget {
     Stdout(Stdout),
     Stderr,
-    File(File),
+    File(Stdio<File>),
 }
 
 /// Why `--dump-header`'s file could not be set up.
@@ -127,10 +128,11 @@ enum Target {
     Stdout(Stdout),
     /// `--out-null`.
     Null,
-    /// A file, by name with a zero byte after it; opened when needed.
+    /// A file, by name with a zero byte after it; opened when needed, and
+    /// written through stdio's buffer as C's `fopen`ed one is.
     File {
         name: Vec<u8>,
-        file: Option<File>,
+        file: Option<Stdio<File>>,
     },
 }
 
@@ -213,7 +215,7 @@ impl Output {
                     Keep::Everything
                 };
                 match fs::open_write(c_name, keep, NEW_FILE_MODE) {
-                    Ok(file) => DumpTarget::File(file),
+                    Ok(file) => DumpTarget::File(Stdio::new(file)),
                     Err(_) => {
                         stream.msgs.error(&[b"Failed to open ", name]);
                         return Err(DumpFailed::Open);
@@ -353,7 +355,7 @@ impl Stream {
                 // C takes the size it was told to resume from; it is the
                 // file's, read just before.
                 self.init = f.metadata().map_or(0, |m| m.len());
-                *file = Some(f);
+                *file = Some(Stdio::new(f));
                 true
             }
             Err(_) => {
@@ -386,7 +388,7 @@ impl Stream {
         };
         match opened {
             Ok(f) => {
-                *file = Some(f);
+                *file = Some(Stdio::new(f));
                 self.bytes = 0;
                 self.init = 0;
                 true
@@ -444,9 +446,11 @@ impl Stream {
         else {
             return true;
         };
-        if self.bytes == 0 || !file.metadata().is_ok_and(|m| m.is_file()) {
+        if self.bytes == 0 || !file.get_ref().metadata().is_ok_and(|m| m.is_file()) {
             return true;
         }
+        // Unchecked, as in C: a failure shows in the truncation.
+        let _ = file.flush();
         if let Ok(n) = curl_alloc::try_format(format_args!("{}", self.bytes)) {
             self.msgs
                 .note(&[b"Throwing away ", n.as_bytes(), b" bytes"]);
@@ -454,12 +458,12 @@ impl Stream {
         // The debug test build fails it on request.
         let fail =
             cfg!(feature = "debug-hooks") && std::env::var_os("CURL_DBG_TRUNCATE_FAIL").is_some();
-        if fail || file.set_len(self.init).is_err() {
+        if fail || file.get_ref().set_len(self.init).is_err() {
             self.msgs.error(&[b"Failed to truncate file"]);
             return false;
         }
         // Written on from where it now ends.
-        if std::io::Seek::seek(file, std::io::SeekFrom::End(0)).is_err() {
+        if std::io::Seek::seek(file.get_mut(), std::io::SeekFrom::End(0)).is_err() {
             self.msgs.error(&[b"Failed seeking to end of file"]);
             return false;
         }
@@ -467,28 +471,62 @@ impl Stream {
         true
     }
 
-    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+    /// Write `bytes` through the stream's buffer: how many were taken
+    /// (`fwrite`).
+    fn fwrite(&mut self, bytes: &[u8]) -> usize {
         match &mut self.target {
-            Target::Stdout(out) => out.write_all(bytes),
-            Target::Null => Ok(()),
-            Target::File { file, .. } => file
-                .as_mut()
-                .expect("created before writing")
-                .write_all(bytes),
+            Target::Stdout(out) => out.fwrite(bytes),
+            Target::Null => bytes.len(),
+            Target::File { file, .. } => {
+                file.as_mut().expect("created before writing").fwrite(bytes)
+            }
         }
     }
 
-    /// Flush standard output; a file is written straight through.
-    pub(crate) fn flush(&mut self) -> std::io::Result<()> {
-        match &self.target {
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if self.fwrite(bytes) == bytes.len() {
+            Ok(())
+        } else {
+            Err(std::io::Error::from(std::io::ErrorKind::WriteZero))
+        }
+    }
+
+    /// Write what the stream holds, if it is open (`fflush`).
+    pub(crate) fn flush(&mut self) -> Result<(), stdio::Failed> {
+        match &mut self.target {
             Target::Stdout(out) => out.flush(),
-            Target::Null | Target::File { .. } => Ok(()),
+            Target::File {
+                file: Some(file), ..
+            } => file.flush(),
+            Target::Null | Target::File { file: None, .. } => Ok(()),
+        }
+    }
+
+    /// The output is standard output (`!outs->regular_file`).
+    pub(crate) fn to_stdout(&self) -> bool {
+        matches!(self.target, Target::Stdout(_))
+    }
+
+    /// A write to the open stream failed (`ferror`).
+    pub(crate) fn failed(&self) -> bool {
+        matches!(&self.target, Target::File { file: Some(file), .. } if file.failed())
+    }
+
+    /// Close the output file, if one is open (`fclose`): whether what it
+    /// held could be written.
+    pub(crate) fn close(&mut self) -> Result<(), stdio::Failed> {
+        match &mut self.target {
+            Target::File { file, .. } => file.take().map_or(Ok(()), stdio::close),
+            Target::Stdout(_) | Target::Null => Ok(()),
         }
     }
 
     /// `tool_write_cb`.
     pub(crate) fn body(&mut self, body: &[u8]) -> Write {
-        if !self.create() || self.write_held().is_err() {
+        if matches!(self.target, Target::Null) {
+            return Write::Accepted;
+        }
+        if !self.create() {
             return Write::Fail;
         }
         if self.terminal && self.bytes < BINARY_CHECK && !self.binary_ok && body.contains(&0) {
@@ -499,15 +537,21 @@ impl Stream {
             ]);
             return Write::Fail;
         }
-        match self.write_all(body) {
-            Ok(()) => {
-                self.bytes += body.len() as u64;
-                if self.no_buffer && self.flush().is_err() {
-                    return Write::Fail;
-                }
-                Write::Accepted
-            }
-            Err(_) => Write::Fail,
+        if self.write_held().is_err() {
+            return Write::Fail;
+        }
+        let took = self.fwrite(body);
+        if took == body.len() {
+            self.bytes += body.len() as u64;
+        }
+        // `--no-buffer` writes it out now.
+        if self.no_buffer && self.flush().is_err() {
+            return Write::Fail;
+        }
+        if took == body.len() {
+            Write::Accepted
+        } else {
+            Write::Took(took)
         }
     }
 
@@ -516,17 +560,25 @@ impl Stream {
         let Some(dump) = &mut self.dump else {
             return Write::Accepted;
         };
-        let written = match &mut dump.target {
-            DumpTarget::Stdout(out) => out.write_all(line).and_then(|()| out.flush()),
-            DumpTarget::Stderr => {
-                let mut err = std::io::stderr();
-                err.write_all(line).and_then(|()| err.flush())
-            }
-            DumpTarget::File(file) => file.write_all(line),
+        // A line not all taken is a count for the library to report.
+        let flushed = match &mut dump.target {
+            DumpTarget::Stdout(out) => match out.fwrite(line) {
+                took if took < line.len() => return Write::Took(took),
+                _ => out.flush(),
+            },
+            // Standard error is unbuffered.
+            DumpTarget::Stderr => match unbuffered(&mut std::io::stderr(), line) {
+                took if took < line.len() => return Write::Took(took),
+                _ => Ok(()),
+            },
+            DumpTarget::File(file) => match file.fwrite(line) {
+                took if took < line.len() => return Write::Took(took),
+                _ => file.flush(),
+            },
         };
-        match written {
+        match flushed {
             Ok(()) => Write::Accepted,
-            Err(_) => {
+            Err(stdio::Failed) => {
                 self.msgs
                     .error(&[b"Failed writing headers to ", &dump.name]);
                 Write::Fail
@@ -544,8 +596,9 @@ impl Stream {
         if line.contains(&b':') {
             self.num_headers += 1;
         }
-        if self.dump(line) == Write::Fail {
-            return Write::Fail;
+        let dumped = self.dump(line);
+        if dumped != Write::Accepted {
+            return dumped;
         }
         // A name is taken from a 2xx or 3xx response only.
         let http = protocol == Some(Protocol::Http);
@@ -576,19 +629,19 @@ impl Stream {
             .iter()
             .position(|&b| b == b':')
             .filter(|_| self.terminal);
-        let written = match colon {
-            Some(at) => [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]]
-                .into_iter()
-                .try_for_each(|part| self.write_all(part)),
-            None => self.write_all(line),
-        };
-        // C does not check these writes, and fails when the output is
-        // flushed or closed after the transfer; here a failed one fails
-        // the transfer, as a failed body write does.
-        match written {
-            Ok(()) => Write::Accepted,
-            Err(_) => Write::Fail,
+        // C does not check these writes: a failure shows when the output
+        // is next written, flushed or closed.
+        match colon {
+            Some(at) => {
+                for part in [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]] {
+                    self.fwrite(part);
+                }
+            }
+            None => {
+                self.fwrite(line);
+            }
         }
+        Write::Accepted
     }
 }
 
@@ -723,6 +776,19 @@ impl Stream {
     }
 }
 
+/// Write `bytes` to `to` straight through until done or a write fails:
+/// how many were written, as `fwrite` counts on an unbuffered stream.
+fn unbuffered(to: &mut impl std::io::Write, bytes: &[u8]) -> usize {
+    let mut at = 0;
+    while at < bytes.len() {
+        match to.write(&bytes[at..]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => at += n,
+        }
+    }
+    at
+}
+
 /// `s` up to the first `at` in it.
 fn cut(s: &[u8], at: u8) -> &[u8] {
     match s.iter().position(|&b| b == at) {
@@ -827,7 +893,7 @@ mod tests {
     }
 
     fn to_terminal() -> Output {
-        let out = Output::null(quiet()).unwrap();
+        let out = Output::file(b"/dev/null", quiet()).unwrap();
         out.stream().terminal = true;
         out
     }
@@ -975,6 +1041,9 @@ mod tests {
         assert_eq!(s.keep(), Some(9));
         assert_eq!((s.start(), s.written()), (9, 0));
         assert_eq!(s.body(b"+more"), Write::Accepted);
+        // Written once flushed, as stdio holds it until then.
+        assert_eq!(std::fs::read(&path).unwrap(), b"held");
+        assert_eq!(s.flush(), Ok(()));
         assert_eq!(std::fs::read(&path).unwrap(), b"heldagain+more");
         // A file created empty starts at 0, and is written from where it
         // was cut, not where the last write left off.
@@ -985,6 +1054,7 @@ mod tests {
         assert_eq!(s.body(b"partial"), Write::Accepted);
         assert!(s.throw_away());
         assert_eq!(s.body(b"all"), Write::Accepted);
+        assert_eq!(s.flush(), Ok(()));
         assert_eq!(std::fs::read(&path).unwrap(), b"all");
     }
 

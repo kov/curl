@@ -19,6 +19,7 @@ mod operate;
 mod options;
 mod output;
 mod slurp;
+mod stdio;
 mod stdout;
 mod trace;
 #[cfg(test)]

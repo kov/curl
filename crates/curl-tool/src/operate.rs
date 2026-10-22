@@ -890,6 +890,10 @@ impl Retrying {
             if let Ok(n) = try_format(format_args!("{}", stream.written())) {
                 msgs.note(&[b"Keeping ", n.as_bytes(), b" bytes"]);
             }
+            if stream.flush().is_err() {
+                msgs.error(&[b"Failed to flush output file stream"]);
+                return Again::No(Err(ErrorKind::WriteError));
+            }
             let Some(at) = stream.keep() else {
                 if let Ok(why) = try_format(format_args!(
                     "Exceeded maximum supported file size ({} + {})",
@@ -917,6 +921,7 @@ impl Retrying {
             && stream.start() == self.resumed_at
             && stream.written() > 0
             && stream.is_open_file()
+            && !stream.failed()
             && op.custom_request.is_none()
             && !attempt.upload
             && matches!(attempt.method, tool::Method::Unset | tool::Method::Get)
@@ -1211,7 +1216,19 @@ fn finish(
                 // Nowhere to report a failed write, as in C.
                 let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\n");
             }
-            let stream = out.stream();
+            let mut stream = out.stream();
+            let mut result = result;
+            if stream.close().is_err() && result.is_ok() {
+                let kind = ErrorKind::WriteError;
+                // C's text, with its prefix twice.
+                if let Ok(why) = try_format(format_args!(
+                    "curl: ({}) Failed writing body",
+                    exit_code(kind)
+                )) {
+                    msgs.error(&[why.as_bytes()]);
+                }
+                result = Err(kind);
+            }
             if result.is_ok()
                 && op.remote_time
                 && let Some(name) = stream.file_name()
@@ -1288,7 +1305,8 @@ fn settle(
     if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
         result = Err(ErrorKind::WriteError);
     }
-    if stream.flush().is_err() && result.is_ok() {
+    // Standard output is flushed here; a file, when it is closed.
+    if stream.to_stdout() && stream.flush().is_err() && result.is_ok() {
         msgs.error(&[b"Failed writing body"]);
         result = Err(ErrorKind::WriteError);
     }

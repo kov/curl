@@ -84,6 +84,11 @@ says so. Review every signature against one question: **would this still make se
 shim were deleted?** If the answer needs a C header to explain it, the translation belongs in the
 shim.
 
+**Do what the C does.** Observable behaviour — the bytes on the wire and their order, what is
+traced, returned, reported and called back — follows the C unless the C's is a clear bug. Where
+compatibility and performance or efficiency pull apart, compatibility wins, and the faster way
+comes later as an addition or an opt-in. That choice is not a question for the user: take C's.
+
 **Two values that must agree are one value.** A count and its pointer, an offset and its base, a
 capacity and its buffer. Passed onward as a pair, every layer in between has to be trusted to keep
 them in step — and the layer that quietly repairs a mismatch is worse than the one that crashes,

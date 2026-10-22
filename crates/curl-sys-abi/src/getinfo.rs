@@ -112,16 +112,21 @@ fn proto_bit(p: Protocol) -> c_long {
     }
 }
 
+/// `text` with a zero byte after it, as C reads it.
+fn c_string(text: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(text.len() + 1)
+        .map_err(|_| OutOfMemory)?;
+    copy.try_extend_from_slice(text)?;
+    copy.try_push(0)?;
+    Ok(copy)
+}
+
 /// `text` as C reads it, kept in `kept` with a zero byte after it.
 fn kept(kept: &RefCell<Vec<u8>>, text: &[u8]) -> Result<*const c_char, OutOfMemory> {
     let mut kept = kept.borrow_mut();
     if kept.strip_suffix(b"\0") != Some(text) {
-        let mut copy = Vec::new();
-        copy.try_reserve_exact(text.len() + 1)
-            .map_err(|_| OutOfMemory)?;
-        copy.try_extend_from_slice(text)?;
-        copy.try_push(0)?;
-        *kept = copy;
+        *kept = c_string(text)?;
     }
     Ok(kept.as_ptr().cast())
 }
@@ -167,10 +172,11 @@ fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
     })?;
     let mut list = core::ptr::null_mut();
     for line in lines.iter().flatten() {
-        let mut text = Vec::new();
-        let made = text.try_extend_from_slice(line).is_ok() && text.try_push(0).is_ok();
-        // SAFETY: `list` is one this function made, and `text` a C string.
-        let longer = made.then(|| unsafe { curl_slist_append(list, text.as_ptr().cast()) });
+        let longer = c_string(line).ok().map(|text| {
+            // SAFETY: `list` is one this function made, and `text` a C
+            // string.
+            unsafe { curl_slist_append(list, text.as_ptr().cast()) }
+        });
         match longer.filter(|l| !l.is_null()) {
             Some(longer) => list = longer,
             None => {

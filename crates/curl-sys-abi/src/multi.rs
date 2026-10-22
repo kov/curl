@@ -965,22 +965,41 @@ unsafe fn wait(
         // SAFETY: the application gave `n` entries.
         unsafe { core::slice::from_raw_parts_mut(extra, n as usize) }
     };
-    let mut fds = Vec::new();
-    if fds.try_reserve_exact(extra.len()).is_err() {
-        return CURLM_OUT_OF_MEMORY;
-    }
-    for e in extra.iter() {
+    let polled = extra.iter().map(|e| {
         // SAFETY: the application keeps its descriptors open for the
         // call.
         let fd = unsafe { BorrowedFd::borrow_raw(e.fd) };
-        fds.try_push(PollFd::new(fd, wait_events(e.events)))
-            .expect("reserved");
-    }
+        PollFd::new(fd, wait_events(e.events))
+    });
+    // A few on the stack, as C's `a_few_on_stack`, so a loop of waits
+    // allocates nothing.
+    const ON_STACK: usize = 10;
+    let mut few;
+    let mut more = Vec::new();
+    let fds: &mut [PollFd<'_>] = match polled.clone().next() {
+        None => &mut [],
+        Some(any) if extra.len() <= ON_STACK => {
+            few = [any; ON_STACK];
+            for (slot, fd) in few.iter_mut().zip(polled) {
+                *slot = fd;
+            }
+            &mut few[..extra.len()]
+        }
+        Some(_) => {
+            if more.try_reserve_exact(extra.len()).is_err() {
+                return CURLM_OUT_OF_MEMORY;
+            }
+            for fd in polled {
+                more.try_push(fd).expect("reserved");
+            }
+            &mut more
+        }
+    };
     // SAFETY: admitted on `m`, which nothing else runs on.
     let multi = unsafe { multi(m) };
     // SAFETY: as above.
-    let ready = unsafe { multi.core_mut() }.wait(&mut fds, Duration::from_millis(timeout), mode);
-    for (e, fd) in extra.iter_mut().zip(&fds) {
+    let ready = unsafe { multi.core_mut() }.wait(fds, Duration::from_millis(timeout), mode);
+    for (e, fd) in extra.iter_mut().zip(fds.iter()) {
         e.revents = wait_revents(fd.revents());
     }
     match ready {

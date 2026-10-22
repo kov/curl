@@ -1992,7 +1992,9 @@ adapters are its own, installed in place of the ones it was cloned with.
   there is no admin row in the counts), DONE is unread messages (2453).
 - `curl_multi_wait`: negative timeout → BAD_FUNCTION_ARGUMENT; capped at `timeout()`; no fds →
   returns at once (`wait`) or sleeps (`poll`); the waker is polled only when waiting and is not
-  counted; extra revents use the CURL_WAIT_POLL* bits. `waitfds` too small → OUT_OF_MEMORY with
+  counted; extra revents use the CURL_WAIT_POLL* bits. Up to ten sockets and ten descriptors
+  are kept on the stack, as C's `a_few_on_stack`, so a loop of waits allocates nothing (671,
+  whose easy loop polls with no timeout while a response drains). `waitfds` too small → OUT_OF_MEMORY with
   the needed count. `fdset` skips sockets above FD_SETSIZE; both include closing connections.
 
 ### 7.6 Callback adapters (C shapes stay here)

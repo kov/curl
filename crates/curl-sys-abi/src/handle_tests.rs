@@ -2567,6 +2567,76 @@ fn a_wait_reports_the_application_s_descriptors() {
     }
 }
 
+/// A wait on a few sockets and descriptors allocates nothing, as C's
+/// keeps them on its stack (`a_few_on_stack`): a loop of waits, as an
+/// easy perform's while a transfer has nothing to read, costs no memory
+/// (test 671).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_wait_allocates_nothing() {
+    use crate::multi::curl_multi_poll;
+    use curl_alloc::track::measure;
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let url = format!("http://{}/", listener.local_addr().unwrap());
+    let url = std::ffi::CString::new(url).unwrap();
+    let (r, w) = std::os::unix::net::UnixStream::pair().unwrap();
+    let m = curl_multi_init();
+    let c = curl_easy_init();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let mut fds = [ffi::curl_waitfd {
+        fd: r.as_raw_fd(),
+        events: ffi::CURL_WAIT_POLLIN as i16,
+        revents: 0,
+    }];
+    let (mut ret, mut running, mut sockets) = (0, 0, 0);
+    // SAFETY: a live multi and handle, and one entry.
+    unsafe {
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        // Connected and the request sent, the transfer waits to read.
+        let mut peer = None;
+        for _ in 0..100 {
+            assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+            assert_eq!(
+                crate::multi::curl_multi_waitfds(m, ptr::null_mut(), 0, &raw mut sockets),
+                CURLM_OK
+            );
+            if peer.is_none() {
+                peer = listener.accept().ok();
+            }
+            if sockets == 1 && peer.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!((running, sockets), (1, 1), "waiting on its socket");
+        assert!(peer.is_some());
+        (&w).write_all(b"x").unwrap();
+        let ((), cost) = measure(|| {
+            for _ in 0..10 {
+                assert_eq!(
+                    curl_multi_poll(m, fds.as_mut_ptr(), 1, 0, &raw mut ret),
+                    CURLM_OK
+                );
+                assert_eq!(
+                    curl_multi_wait(m, fds.as_mut_ptr(), 1, 0, &raw mut ret),
+                    CURLM_OK
+                );
+            }
+        });
+        assert_eq!(ret, 1, "the descriptor is ready");
+        assert_eq!(cost.allocations, 0);
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+    }
+}
+
 #[test]
 fn c_numbers_translate_both_ways() {
     use ffi::{CURL_WAIT_POLLIN as IN, CURL_WAIT_POLLOUT as OUT, CURL_WAIT_POLLPRI as PRI};

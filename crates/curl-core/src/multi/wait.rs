@@ -12,7 +12,7 @@ use super::{
     Abort, EventCx, Host, Multi, MultiEvents, SocketEvent, SocketWhat, TimerChange, TransferId,
     pollsets,
 };
-use crate::conn::io::{Events, PollFd, Socket, SocketKey, SocketPoll, Waker};
+use crate::conn::io::{Events, ON_STACK, PollFd, Socket, SocketKey, SocketPoll, Waker};
 use crate::error::{ErrorKind, MultiErrorKind};
 
 /// How `wait` treats a multi with nothing to wait for.
@@ -37,38 +37,76 @@ impl<H: Host> Multi<H> {
         mode: WaitMode,
     ) -> Result<u32, MultiErrorKind> {
         let timeout = self.timeout().map_or(max, |t| t.min(max));
+        let oom = |_| MultiErrorKind::OutOfMemory;
+        // A few entries are kept on the stack, more in memory of their
+        // own, as C's `a_few_on_stack`: a loop of waits allocates nothing.
         let mut wanted = 0;
-        pollsets(&self.slots, |_, _| wanted += 1);
-        let mut sockets = Vec::new();
-        sockets
-            .try_reserve_exact(wanted)
-            .map_err(|_| MultiErrorKind::OutOfMemory)?;
+        let mut first = None;
         pollsets(&self.slots, |s, events| {
-            sockets
-                .try_push(SocketPoll::new(s, events))
-                .expect("reserved");
+            wanted += 1;
+            first.get_or_insert((s, events));
         });
+        let mut few_sockets;
+        let mut more_sockets = Vec::new();
+        let sockets: &mut [SocketPoll<'_>] = match first {
+            None => &mut [],
+            Some((s, events)) if wanted <= ON_STACK => {
+                few_sockets = [(); ON_STACK].map(|()| SocketPoll::new(s, events));
+                let mut at = 0;
+                pollsets(&self.slots, |s, events| {
+                    few_sockets[at] = SocketPoll::new(s, events);
+                    at += 1;
+                });
+                &mut few_sockets[..wanted]
+            }
+            Some(_) => {
+                more_sockets.try_reserve_exact(wanted).map_err(oom)?;
+                pollsets(&self.slots, |s, events| {
+                    more_sockets
+                        .try_push(SocketPoll::new(s, events))
+                        .expect("reserved");
+                });
+                &mut more_sockets
+            }
+        };
         // The waker is watched when the wait will be one (multi.c:1574).
         let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
-        let waker = self.waker.as_deref().filter(|_| watch_waker);
-        let mut fds = Vec::new();
-        fds.try_reserve_exact(extra.len() + usize::from(waker.is_some()))
-            .map_err(|_| MultiErrorKind::OutOfMemory)?;
-        for fd in extra.iter() {
-            fds.try_push(*fd).expect("reserved");
-        }
-        if let Some(w) = waker {
-            fds.try_push(PollFd::new(w.fd(), Events::IN))
-                .expect("reserved");
-        }
+        let waker = self
+            .waker
+            .as_deref()
+            .filter(|_| watch_waker)
+            .map(|w| (w, PollFd::new(w.fd(), Events::IN)));
+        let n_fds = extra.len() + usize::from(waker.is_some());
+        let mut few_fds;
+        let mut more_fds = Vec::new();
+        let fds: &mut [PollFd<'_>] = match extra.first().copied().or(waker.map(|(_, fd)| fd)) {
+            None => &mut [],
+            Some(any) if n_fds <= ON_STACK => {
+                few_fds = [any; ON_STACK];
+                few_fds[..extra.len()].copy_from_slice(extra);
+                if let Some((_, fd)) = waker {
+                    few_fds[extra.len()] = fd;
+                }
+                &mut few_fds[..n_fds]
+            }
+            Some(_) => {
+                more_fds.try_reserve_exact(n_fds).map_err(oom)?;
+                more_fds.try_extend_from_slice(extra).expect("reserved");
+                if let Some((_, fd)) = waker {
+                    more_fds.try_push(fd).expect("reserved");
+                }
+                &mut more_fds
+            }
+        };
+        let waker = waker.map(|(w, _)| w);
         if sockets.is_empty() && fds.is_empty() && mode == WaitMode::Wait {
             return Ok(0);
         }
         let mut ready = self
             .net
-            .poll(&mut sockets, &mut fds, timeout)
+            .poll(sockets, fds, timeout)
             .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
-        for (mine, polled) in extra.iter_mut().zip(&fds) {
+        for (mine, polled) in extra.iter_mut().zip(fds.iter()) {
             mine.copy_revents(polled);
         }
         if let Some(w) = waker

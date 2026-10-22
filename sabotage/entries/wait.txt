@@ -49,7 +49,7 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_cons
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_entries
 --- old
-        for (mine, polled) in extra.iter_mut().zip(&fds) {
+        for (mine, polled) in extra.iter_mut().zip(fds.iter()) {
             mine.copy_revents(polled);
         }
 --- new
@@ -58,10 +58,10 @@ witness: curl-core multi::tests::ready_extra_descriptors_are_reported_in_their_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_failed_poll_is_unrecoverable
 --- old
-            .poll(&mut sockets, &mut fds, timeout)
+            .poll(sockets, fds, timeout)
             .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
 --- new
-            .poll(&mut sockets, &mut fds, timeout)
+            .poll(sockets, fds, timeout)
             .map_err(|_| MultiErrorKind::InternalError)?;
 
 === the fake network sleeps even when something is ready
@@ -116,9 +116,8 @@ file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
 --- old
         pollsets(&self.slots, |s, events| {
-            sockets
-                .try_push(SocketPoll::new(s, events))
-                .expect("reserved");
+            wanted += 1;
+            first.get_or_insert((s, events));
         });
 --- new
 
@@ -185,3 +184,39 @@ witness: curl-sys-abi multi::tests::a_socket_listed_twice_is_folded
         if let Some(entry) = wfds[..self.n].iter_mut().rev().find(|e| e.fd == fd) {
 --- new
         if let Some(entry) = wfds[..0].iter_mut().rev().find(|e| e.fd == fd) {
+
+=== a wait allocates its sockets
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-sys-abi handle_tests::a_wait_allocates_nothing
+features: debug-hooks
+--- old
+            Some((s, events)) if wanted <= ON_STACK => {
+--- new
+            Some((s, events)) if wanted == usize::MAX => {
+
+=== a wait allocates its descriptors
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-sys-abi handle_tests::a_wait_allocates_nothing
+features: debug-hooks
+--- old
+            Some(any) if n_fds <= ON_STACK => {
+--- new
+            Some(any) if n_fds == usize::MAX => {
+
+=== a poll of sockets and descriptors together allocates
+file: crates/curl-core/src/conn/io.rs
+witness: curl-sys-abi handle_tests::a_wait_allocates_nothing
+features: debug-hooks
+--- old
+        Some(any) if n <= ON_STACK => {
+--- new
+        Some(any) if n == usize::MAX => {
+
+=== the shim's wait allocates the application's descriptors
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_wait_allocates_nothing
+features: debug-hooks
+--- old
+        Some(any) if extra.len() <= ON_STACK => {
+--- new
+        Some(any) if extra.len() == usize::MAX => {

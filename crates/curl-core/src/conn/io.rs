@@ -176,6 +176,9 @@ impl Net for SystemNet {
     }
 }
 
+/// The entries a wait keeps on the stack (`NUM_POLLS_ON_STACK`).
+pub(crate) const ON_STACK: usize = 10;
+
 /// Poll `fds` and the sockets with descriptors in one call; sockets that
 /// know their readiness count without one, and end the wait at once.
 fn poll_together(
@@ -212,19 +215,34 @@ fn poll_together(
         }
         _ => {}
     }
-    let mut all = Vec::new();
-    all.try_reserve_exact(sockets.len() + fds.len())
-        .map_err(|_| io::ErrorKind::OutOfMemory)?;
-    for s in sockets.iter() {
-        if let Readiness::Poll(fd) = s.socket.readiness() {
-            all.try_push(PollFd::new(fd, s.events)).expect("reserved");
+    // As many as a wait keeps on the stack are polled from it, more from
+    // memory of their own (`a_few_on_stack`).
+    let polled = sockets.iter().filter_map(|s| match s.socket.readiness() {
+        Readiness::Poll(fd) => Some(PollFd::new(fd, s.events)),
+        Readiness::Known { .. } => None,
+    });
+    let polled_sockets = polled.clone().count();
+    let n = polled_sockets + fds.len();
+    let mut few;
+    let mut more = Vec::new();
+    let all: &mut [PollFd<'_>] = match polled.clone().next().or(fds.first().copied()) {
+        Some(any) if n <= ON_STACK => {
+            few = [any; ON_STACK];
+            for (slot, fd) in few.iter_mut().zip(polled.chain(fds.iter().copied())) {
+                *slot = fd;
+            }
+            &mut few[..n]
         }
-    }
-    let polled_sockets = all.len();
-    for fd in fds.iter() {
-        all.try_push(*fd).expect("reserved");
-    }
-    let ready = curl_os::poll::poll(&mut all, timeout)?;
+        _ => {
+            more.try_reserve_exact(n)
+                .map_err(|_| io::ErrorKind::OutOfMemory)?;
+            for fd in polled.chain(fds.iter().copied()) {
+                more.try_push(fd).expect("reserved");
+            }
+            &mut more
+        }
+    };
+    let ready = curl_os::poll::poll(all, timeout)?;
     let mut polled = all.iter();
     for s in sockets.iter_mut() {
         if let Readiness::Poll(_) = s.socket.readiness() {

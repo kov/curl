@@ -537,8 +537,8 @@ impl Jar {
             }
             Replace::Nothing => false,
         };
-        if co.expires != 0 && co.expires < self.next_expiry {
-            self.next_expiry = co.expires;
+        if co.expires != 0 {
+            self.next_expiry = self.next_expiry.min(co.expires);
         }
         self.buckets[bucket].try_push(co)?;
         if !replaced {
@@ -559,11 +559,7 @@ impl Jar {
             if old.name != co.name {
                 continue;
             }
-            let overlapping = match (&old.domain, &co.domain) {
-                (Some(a), Some(b)) => tailmatch(a, b) || tailmatch(b, a),
-                (None, None) => true,
-                _ => false,
-            };
+            let overlapping = domains_overlap(old.domain.as_deref(), co.domain.as_deref());
             // A cookie from a connection that is not secure may not
             // overlay a secure one: for an existing cookie with path
             // `/login/en`, no new one whose path starts `/login`.
@@ -613,8 +609,8 @@ impl Jar {
             bucket.retain(|co| co.expires == 0 || co.expires >= now);
             self.count -= before - bucket.len();
             for co in bucket.iter() {
-                if co.expires != 0 && co.expires < self.next_expiry {
-                    self.next_expiry = co.expires;
+                if co.expires != 0 {
+                    self.next_expiry = self.next_expiry.min(co.expires);
                 }
             }
         }
@@ -739,7 +735,7 @@ impl Jar {
                 3 => {
                     co.secure = false;
                     if is_prefix_of_ignore_case(field, b"TRUE") {
-                        if !secure && !self.running {
+                        if !(secure || self.running) {
                             return Ok(Parsed::Dropped(None));
                         }
                         co.secure = true;
@@ -1000,12 +996,9 @@ fn on_public_suffix(
         match host {
             Some(host) => {
                 acceptable = suffixes.accepts(&host_low[..hlen], cookie_low);
-                // Allowed on a public suffix, it is for that host alone.
-                if acceptable
-                    && co.tailmatch
-                    && domain.eq_ignore_ascii_case(host)
-                    && suffixes.is_public_suffix(cookie_low)
-                {
+                // Allowed on a public suffix, it is for that host alone;
+                // one not allowed is dropped, whatever it goes to.
+                if domain.eq_ignore_ascii_case(host) && suffixes.is_public_suffix(cookie_low) {
                     co.tailmatch = false;
                 }
             }
@@ -1028,8 +1021,8 @@ fn max_age(val: &[u8], now: i64) -> i64 {
         Number::Overflow => i64::MAX,
         Number::None => 1,
         Number::Ok(0) => 1,
-        Number::Ok(n) if i64::MAX - now < n => i64::MAX,
-        Number::Ok(n) => n + now,
+        // Past the latest time, the latest.
+        Number::Ok(n) => n.saturating_add(now),
     }
 }
 
@@ -1084,6 +1077,16 @@ fn sanitized_path(path: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
         path = path.strip_suffix(b"/").unwrap_or(path);
     }
     copy(path)
+}
+
+/// Whether a cookie for domain `a` and one for `b` are for the same hosts
+/// in part, one domain the tail of the other, or both without one.
+fn domains_overlap(a: Option<&[u8]>, b: Option<&[u8]>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => tailmatch(a, b) || tailmatch(b, a),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// Whether a cookie for `domain` goes to `host` (`cookie_tailmatch`):

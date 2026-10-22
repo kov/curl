@@ -584,3 +584,340 @@ fn without_the_list_every_domain_is_refused() {
     .unwrap();
     assert_eq!(jar.len(), 1);
 }
+
+/// Store `value` as `host` sets it at `now`, over a connection that is not
+/// secure; what the jar said.
+fn set_at(jar: &mut Jar, host: &[u8], value: &[u8], now: i64) -> Option<String> {
+    let mut n = 0;
+    let said = jar
+        .set_by(value, server(host, b"/"), None, now, &mut n)
+        .unwrap();
+    said.map(|s| said_text(&s))
+}
+
+fn names(jar: &Jar) -> Vec<String> {
+    let mut names: Vec<_> = jar
+        .listed()
+        .map(|co| String::from_utf8(co.name().to_vec()).unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn sweeps_from_the_earliest_expiry() {
+    // A cookie that expires before those stored earlier is swept when it
+    // does; one that expires later does not delay that.
+    let mut jar = running();
+    for value in [
+        &b"a=1; max-age=10"[..],
+        b"b=1; max-age=5",
+        b"c=1; max-age=20",
+    ] {
+        set(&mut jar, b"example.com", b"/", value);
+    }
+    jar.sweep(NOW + 6);
+    assert_eq!(names(&jar), ["a", "c"]);
+    assert_eq!(jar.len(), 2);
+
+    // A sweep finds the earliest of those left, not the last it looked
+    // at.
+    let mut jar = running();
+    for value in [
+        &b"x=1; max-age=1"[..],
+        b"b=1; max-age=5",
+        b"a=1; max-age=10",
+    ] {
+        set(&mut jar, b"example.com", b"/", value);
+    }
+    jar.sweep(NOW + 2);
+    assert_eq!(names(&jar), ["a", "b"]);
+    jar.sweep(NOW + 6);
+    assert_eq!(names(&jar), ["a"]);
+}
+
+#[test]
+fn a_server_s_cookie_sweeps_and_a_file_s_line_does_not() {
+    // Storing what a server sets sweeps first.
+    let mut jar = running();
+    set_at(&mut jar, b"example.com", b"a=1; max-age=10", NOW);
+    set_at(&mut jar, b"example.com", b"b=1", NOW + 20);
+    assert_eq!(jar.len(), 1);
+    assert_eq!(names(&jar), ["b"]);
+
+    // A file is swept once it is read: an expired cookie a later line
+    // replaces gives it its creation time, older than the line between.
+    let mut jar = Jar::default();
+    jar.load(
+        b"example.com\tFALSE\t/\tFALSE\t5\ta\told\n\
+          example.com\tFALSE\t/\tFALSE\t0\tb\t1\n\
+          example.com\tFALSE\t/\tFALSE\t0\ta\tnew\n",
+        false,
+        false,
+        None,
+        NOW,
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    jar.file(NOW, &mut out).unwrap();
+    assert!(
+        out.ends_with(
+            b"\n\nexample.com\tFALSE\t/\tFALSE\t0\tb\t1\n\
+              example.com\tFALSE\t/\tFALSE\t0\ta\tnew\n"
+        ),
+        "{}",
+        out.escape_ascii()
+    );
+}
+
+#[test]
+fn files_and_the_application_are_not_checked_against_suffixes() {
+    // Without the list a server's cookie is refused; the application's
+    // lines and a reload's are taken all the same.
+    let mut jar = Jar::default();
+    let mut n = 0;
+    jar.add_line(
+        b"example.com\tFALSE\t/\tFALSE\t0\tapp\t1",
+        Some(&Missing),
+        NOW,
+        &mut n,
+    )
+    .unwrap();
+    jar.load(
+        b"example.com\tFALSE\t/\tFALSE\t0\treload\t1\n",
+        false,
+        true,
+        Some(&Missing),
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(names(&jar), ["app", "reload"]);
+    // A file read untrusted is checked.
+    jar.load(
+        b"example.com\tFALSE\t/\tFALSE\t0\tfile\t1\n",
+        false,
+        false,
+        Some(&Missing),
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(names(&jar), ["app", "reload"]);
+}
+
+#[test]
+fn replaces_only_the_same_domain_and_path() {
+    let mut jar = running();
+    set(&mut jar, b"example.com", b"/", b"a=1");
+    // A server replaces its own.
+    assert!(set(&mut jar, b"example.com", b"/", b"a=2").is_some_and(|s| s.starts_with("Replaced")));
+    // The same domain for the hosts below it is another cookie.
+    assert!(
+        set(&mut jar, b"example.com", b"/", b"a=3; domain=example.com")
+            .is_some_and(|s| s.starts_with("Added"))
+    );
+    assert_eq!(jar.len(), 2);
+
+    // Lines without a domain replace one another.
+    let mut jar = Jar::default();
+    jar.load(
+        b"Set-Cookie: a=1\nSet-Cookie: a=2\n",
+        false,
+        false,
+        None,
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(jar.len(), 1);
+}
+
+#[test]
+fn a_secure_cookie_is_not_overlaid_from_a_domain_it_covers() {
+    let mut jar = running();
+    let mut n = 0;
+    let secure = Source::Server {
+        host: b"www.example.com",
+        path: b"/",
+        secure: true,
+    };
+    jar.set_by(
+        b"a=s; secure; domain=example.com; path=/login/en",
+        secure,
+        None,
+        NOW,
+        &mut n,
+    )
+    .unwrap();
+    // The host's own domain is below the secure cookie's.
+    assert!(
+        set(
+            &mut jar,
+            b"www.example.com",
+            b"/",
+            b"a=plain; path=/login/fr"
+        )
+        .is_some_and(|s| s.contains("overlay"))
+    );
+    // Only the old path's first segment is compared.
+    assert!(
+        set(&mut jar, b"www.example.com", b"/", b"a=plain; path=/logi")
+            .is_some_and(|s| s.starts_with("Added"))
+    );
+}
+
+#[test]
+fn a_cookie_for_its_host_alone_goes_to_no_other() {
+    let mut jar = running();
+    set(&mut jar, b"example.com", b"/", b"h=1");
+    assert_eq!(sent(&jar, b"example.com", b"/", false), ["h=1"]);
+    assert!(sent(&jar, b"www.example.com", b"/", false).is_empty());
+}
+
+#[test]
+fn clearing_the_session_counts_what_is_left() {
+    let mut jar = running();
+    set(&mut jar, b"example.com", b"/", b"a=1; max-age=100");
+    set(&mut jar, b"example.com", b"/", b"b=1");
+    set(&mut jar, b"example.com", b"/", b"c=1");
+    jar.clear_session();
+    assert_eq!(jar.len(), 1);
+}
+
+#[test]
+fn reads_lines_and_dates_up_to_their_limits() {
+    // A line of 5000 bytes is read.
+    let mut jar = running();
+    let mut long = b"n=v; path=/".to_vec();
+    long.resize(5000, b'x');
+    assert!(set(&mut jar, b"example.com", b"/", &long).is_some_and(|s| s.starts_with("Added")));
+
+    // An `Expires` of 80 bytes is not read as a date; one of 79 is.
+    let date = |len: usize| {
+        let mut v = b"Mon,".to_vec();
+        v.resize(len - 25, b' ');
+        v.extend_from_slice(b"01 Jan 2024 00:00:00 GMT");
+        v.insert(4, b' ');
+        assert_eq!(v.len(), len);
+        v
+    };
+    let mut jar = running();
+    for (name, len) in [("long", 80), ("short", 79)] {
+        let mut value = format!("{name}=1; expires=").into_bytes();
+        value.extend_from_slice(&date(len));
+        set(&mut jar, b"example.com", b"/", &value);
+    }
+    let mut got = lines(&jar);
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            "example.com\tFALSE\t/\tFALSE\t0\tlong\t1",
+            "example.com\tFALSE\t/\tFALSE\t1704067200\tshort\t1",
+        ]
+    );
+}
+
+#[test]
+fn an_address_sets_a_domain_only_for_itself() {
+    let mut jar = running();
+    assert!(
+        set(&mut jar, b"127.0.0.1", b"/", b"a=1; domain=127.0.0.1")
+            .is_some_and(|s| s.starts_with("Added"))
+    );
+    assert_eq!(
+        set(&mut jar, b"127.0.0.1", b"/", b"b=1; domain=127.0.0.2").as_deref(),
+        Some("skipped cookie with bad tailmatch domain: 127.0.0.2")
+    );
+    assert_eq!(lines(&jar), ["127.0.0.1\tFALSE\t/\tFALSE\t0\ta\t1"]);
+}
+
+#[test]
+fn without_a_list_a_domain_s_dot_is_not_its_last_byte() {
+    let mut jar = running();
+    assert_eq!(
+        set(&mut jar, b"example.", b"/", b"a=1; domain=example.").as_deref(),
+        Some("skipped cookie with bad tailmatch domain: example.")
+    );
+    assert!(set(&mut jar, b"localhost", b"/", b"a=1; domain=localhost").is_some());
+    assert_eq!(jar.len(), 1);
+}
+
+/// A list where `foo.ck` is a public suffix only by a wildcard rule, which
+/// libpsl does not hold against a cookie's domain: `www.foo.ck` may set
+/// one for `foo.ck`.
+struct Wildcard;
+
+impl PublicSuffixes for Wildcard {
+    fn is_public_suffix(&self, domain: &[u8]) -> bool {
+        domain == b"foo.ck"
+    }
+
+    fn accepts(&self, _: &[u8], _: &[u8]) -> bool {
+        true
+    }
+}
+
+#[test]
+fn only_a_suffix_s_own_cookie_is_for_it_alone() {
+    let mut jar = running();
+    let mut n = 0;
+    for (host, value) in [
+        // A suffix allowed from a host below it goes to the hosts below.
+        (&b"www.foo.ck"[..], &b"a=1; domain=foo.ck"[..]),
+        // A domain that is no suffix set by its own host goes below it.
+        (b"example.com", b"b=1; domain=example.com"),
+        // A suffix set by itself is for it alone.
+        (b"foo.ck", b"c=1; domain=foo.ck"),
+    ] {
+        jar.set_by(value, server(host, b"/"), Some(&Wildcard), NOW, &mut n)
+            .unwrap();
+    }
+    let mut got = lines(&jar);
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            ".example.com\tTRUE\t/\tFALSE\t0\tb\t1",
+            ".foo.ck\tTRUE\t/\tFALSE\t0\ta\t1",
+            "foo.ck\tFALSE\t/\tFALSE\t0\tc\t1",
+        ]
+    );
+}
+
+#[test]
+fn expiry_is_capped_without_overflowing() {
+    const MAX: i64 = i64::MAX;
+    let rounded = |now: i64| (now + MAX_AGE + 30) / 60 * 60;
+    let far = "max-age=99999999999999999999";
+    for (value, now, want) in [
+        // Exactly 400 days is not rounded.
+        ("max-age=34560000", NOW, NOW + MAX_AGE),
+        // Past the largest time from now: capped.
+        ("max-age=9223372036854775000", NOW, rounded(NOW)),
+        // Far in the future, still capped where 400 days fit.
+        ("max-age=10000000", 1_000_000_000_000, 1_000_010_000_000),
+        (
+            far,
+            (MAX - MAX_AGE) / 30 + 1,
+            rounded((MAX - MAX_AGE) / 30 + 1),
+        ),
+        // Where they do not, not capped.
+        (far, MAX - MAX_AGE - 30, MAX),
+        ("max-age=5", MAX - 10, MAX - 5),
+    ] {
+        let mut jar = running();
+        set_at(
+            &mut jar,
+            b"example.com",
+            format!("a=1; {value}").as_bytes(),
+            now,
+        );
+        let co = jar.listed().next().unwrap();
+        assert_eq!(co.expires, want, "{value} at {now}");
+    }
+}
+
+#[test]
+fn suffixes_debug_as_a_name() {
+    let list = Suffixes::new(Box::new(Two)).unwrap();
+    assert_eq!(format!("{list:?}"), "Suffixes");
+}

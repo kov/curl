@@ -178,4 +178,13 @@ exclude_re = [
     # `SocketKey::BAD` is a constant, so the mutant names no function; it
     # fills the slots of a pollset past its length, which nothing reads.
     'conn/io\.rs:.*: delete -$',
+    # The earliest expiry only lets a sweep return before it looks: one
+    # that returns at that very second, or never, or a recount that leaves
+    # it at 0 or unknown, sweeps in full, which finds no cookie expired
+    # before the earliest does.
+    'cookie\.rs:.*: replace (< with (==|<=)|!= with ==) in Jar::sweep$',
+    # Cookies without a domain come only from files and the application,
+    # whose lines are taken as secure: the overlay check they would feed
+    # is for cookies from a connection that is not.
+    'cookie\.rs:.*: delete match arm \(None, None\) in domains_overlap$',
 ]

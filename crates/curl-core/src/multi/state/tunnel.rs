@@ -84,7 +84,11 @@ pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tra
 
 /// The proxy and what it is given, as the route has them.
 fn proxy(c: &Connecting) -> (&Peer, Option<Secret<'_>>, bool) {
-    let proxy = c.proxy.as_ref().expect("a tunnel goes through a proxy");
+    let proxy = c
+        .route
+        .proxy
+        .as_ref()
+        .expect("a tunnel goes through a proxy");
     let secret = proxy
         .creds
         .as_deref()
@@ -97,7 +101,7 @@ fn proxy(c: &Connecting) -> (&Peer, Option<Secret<'_>>, bool) {
 fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshake>, ErrorKind> {
     // Each `CONNECT` reads the application's lists as they are now.
     super::refill_lists(cx)?;
-    let target = c.target();
+    let target = c.route.target();
     let mut digits = [0; 20];
     let port = decimal(u64::from(target.port()), &mut digits);
     let mut authority = Vec::new();
@@ -369,14 +373,15 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     if let Some(picked) = act.proxy_picked.filter(|p| !p.is_empty()) {
         report.set_proxy_auth_used(picked);
     }
-    let proxy = &c
+    let route = &c.route;
+    let proxy = &route
         .proxy
         .as_ref()
         .expect("a tunnel goes through a proxy")
         .peer;
     cx.easy_mut()
         .auth
-        .apply(&act, offered, &c.origin, proxy)
+        .apply(&act, offered, &route.origin, proxy)
         .map_err(oom)?;
     if !act.reload {
         return Err(trace::fail(

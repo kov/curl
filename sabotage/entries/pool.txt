@@ -157,39 +157,35 @@ witness: curl-core conn::buf::tests::received_bytes_wait_until_used
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::pool::tests::a_host_in_capitals_reuses_the_connection
 --- old
-        self.scheme == other.scheme
-            && self.port == other.port
-            && self.ipv6() == other.ipv6()
             && self.name().eq_ignore_ascii_case(other.name())
+            && *scope == other.scope
 --- new
-        self.scheme == other.scheme
-            && self.port == other.port
-            && self.ipv6() == other.ipv6()
             && self.name() == other.name()
+            && *scope == other.scope
 
 === a peer's zone is ignored
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::peers_compare_as_c_compares_them
 --- old
-            && (self.scope != 0 || self.zone == other.zone)
+            && (*scope != 0 || *zone == other.zone)
 --- new
-            && self.scope == self.scope
+            && *scope == *scope
 
 === a connection for one family is reused for another
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-                    && (want.ip == IpVersion::Any || want.ip == have.ip)
+                    && (*want_ip == IpVersion::Any || want_ip == ip)
 --- new
-                    && (want.ip == want.ip)
+                    && (want_ip == want_ip)
 
 === a connection for one family serves only that family
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::an_ip_version_limits_the_addresses_tried
 --- old
-                    && (want.ip == IpVersion::Any || want.ip == have.ip)
+                    && (*want_ip == IpVersion::Any || want_ip == ip)
 --- new
-                    && (want.ip == have.ip)
+                    && (want_ip == ip)
 
 === the next attempt waits for the last to fail
 file: crates/curl-core/src/conn/connect.rs
@@ -230,7 +226,7 @@ witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_d
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core multi::tests::a_connection_serves_only_the_peer_it_goes_through
 --- old
-                    && have.via.as_deref() == want.via.as_deref()
+                    && via.as_deref() == want_via.as_deref()
 --- new
                     && true
 
@@ -375,3 +371,11 @@ witness: curl-core conn::pool::tests::room_is_made_by_the_connection_idle_longes
             if oldest.is_none_or(|(_, ms)| idle_ms > ms) {
 --- new
             if oldest.is_none_or(|(_, ms)| idle_ms < ms) {
+
+=== a connection to one origin serves a transfer for another
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::routes_compare_every_field
+--- old
+                **origin == **want_origin
+--- new
+                **origin == **origin

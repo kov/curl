@@ -128,11 +128,9 @@ pub(crate) enum TransferState {
 #[derive(Debug)]
 pub(crate) struct Plan {
     proto: ProtoState,
-    /// The connection's origin: the proxy, for one the request goes to
-    /// whole.
-    origin: Origin,
-    via: Option<TryArc<Peer>>,
-    proxy: Option<ProxyRoute>,
+    /// What the connection must be, decided once for the leg. Its origin
+    /// is the proxy, for one the request goes to whole.
+    route: Tcp,
 }
 
 /// A request whose connection is being set up.
@@ -140,13 +138,12 @@ pub(crate) struct Plan {
 pub(crate) struct Connecting {
     lease: ConnLease,
     proto: ProtoState,
-    /// The host and port the request is for, and the peer connected to
-    /// in their place, as the failure names them.
-    origin: Origin,
-    via: Option<TryArc<Peer>>,
-    /// The proxy the route goes through.
-    proxy: Option<ProxyRoute>,
-    /// The handshake made over the connection to it, once connected.
+    /// The plan's route: the host and port the request is for, the peer
+    /// connected to in their place and the proxy on the way, as the
+    /// failure names them.
+    route: Tcp,
+    /// The handshake made over the connection to the proxy, once
+    /// connected.
     handshake: Option<Box<Handshake>>,
 }
 
@@ -168,21 +165,6 @@ impl Handshake {
             Handshake::Connect(t) => t.interest(),
             Handshake::Haproxy(p) => p.interest(),
         }
-    }
-}
-
-impl Connecting {
-    /// The peer connected to (`Curl_conn_get_destination`).
-    fn destination(&self) -> &Peer {
-        match &self.proxy {
-            Some(proxy) => proxy.first_peer(),
-            None => self.target(),
-        }
-    }
-
-    /// The peer the request reaches, through a proxy's tunnel or not.
-    fn target(&self) -> &Peer {
-        self.via.as_deref().unwrap_or(&self.origin)
     }
 }
 
@@ -330,7 +312,7 @@ impl TransferState {
                 result: Err(err),
                 premature: true,
                 reached: Reached::Unmade,
-                origin: Some(c.origin),
+                origin: Some(c.route.origin),
                 next: AfterRequest::Complete,
             }),
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
@@ -351,7 +333,7 @@ impl TransferState {
             | TransferState::Pending(_)
             | TransferState::Setup(_)
             | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => (c.lease, Some(c.origin)),
+            TransferState::Connecting(c) => (c.lease, Some(c.route.origin)),
             TransferState::ProtoConnect(x)
             | TransferState::Do(x)
             | TransferState::Did(x)
@@ -449,15 +431,13 @@ impl Connecting {
         let Connecting {
             lease,
             proto,
-            origin,
-            via: _,
-            proxy: _,
+            route,
             handshake: _,
         } = self;
         TransferState::ProtoConnect(Attached {
             lease,
             proto,
-            origin: Some(origin),
+            origin: Some(route.origin),
         })
     }
 }
@@ -960,7 +940,7 @@ fn connecting<H: Host>(
                 Found::Cached => {
                     // The name looked up: the proxy's, or what a
                     // connect-to names in the origin's place.
-                    let name = Bytes(c.destination().name());
+                    let name = Bytes(c.route.destination().name());
                     trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
                 }
                 Found::Stale => {
@@ -1007,8 +987,9 @@ fn connecting<H: Host>(
             (c.attached(), Wake::Again)
         }
         Err(e) => {
-            let proxy = c.proxy.as_ref().map(|p| &*p.peer);
-            let kind = connect_failed(cx, &c.origin, c.via.as_deref(), proxy, e);
+            let route = &c.route;
+            let proxy = route.proxy.as_ref().map(|p| &*p.peer);
+            let kind = connect_failed(cx, &route.origin, route.via.as_deref(), proxy, e);
             (TransferState::Connecting(c).fail(kind), Wake::Again)
         }
     }
@@ -1018,8 +999,7 @@ fn connecting<H: Host>(
 /// proxy's tunnel's. Each connection to the proxy counts as it is made.
 fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     cx.report_mut().count_connect();
-    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
-    match proxy.socks(c.target()).map(|leg| leg.version) {
+    match c.route.socks().map(|leg| leg.version) {
         Some(version) => socks::dialed(c, cx, version),
         None => tunnel::dialed(c, cx),
     }
@@ -1066,7 +1046,7 @@ fn up<H: Host>(
     cx.report_mut().timings_mut().mark(Timer::Connect, at);
     cx.report_mut().set_primary(Ends { remote, local });
     // `CURL_CONN_HOST_DISPNAME`.
-    let host = Bytes(c.destination().shown());
+    let host = Bytes(c.route.destination().shown());
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
     let lip = Ip(lip);
     trace::info(
@@ -1201,7 +1181,7 @@ fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
     let Some(answer) = c.lease.answer() else {
         return;
     };
-    report_resolved(cx, &answer, c.destination().port());
+    report_resolved(cx, &answer, c.route.destination().port());
 }
 
 /// As `report_answer`, for `answer`, found for port `port`.
@@ -1954,15 +1934,13 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     if let Err(OutOfMemory) = cx.report_mut().set_url(url) {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     }
-    setup(
-        cx,
-        Plan {
-            proto,
-            origin,
-            via,
-            proxy,
-        },
-    )
+    let route = Tcp {
+        origin,
+        via,
+        ip: cx.easy().options().ip_version,
+        proxy,
+    };
+    setup(cx, Plan { proto, route })
 }
 
 /// The proxy the transfer to `origin` goes through, if any
@@ -2157,13 +2135,7 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// idle one to reuse, or none while the multi's limits allow none, the
 /// request waiting for one (`multistate_connect`).
 fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
-    let route = Tcp {
-        origin: plan.origin.clone(),
-        via: plan.via.clone(),
-        ip: cx.easy().options().ip_version,
-        proxy: plan.proxy.clone(),
-    };
-    let acquired = acquire(cx, Route::Tcp(route));
+    let acquired = acquire(cx, Route::Tcp(plan.route.clone()));
     if !matches!(acquired, Ok(Acquired::Wait(_))) {
         // One waiting may now find room too.
         schedule_pending(&mut cx.rest);
@@ -2171,10 +2143,11 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
     let lease = match acquired {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
-            let name = plan.origin.scheme().name;
-            let (to, host) = match &plan.proxy {
+            let route = &plan.route;
+            let name = route.origin.scheme().name;
+            let (to, host) = match &route.proxy {
                 Some(proxy) => ("proxy", Bytes(proxy.peer.shown())),
-                None => ("host", Bytes(plan.origin.name())),
+                None => ("host", Bytes(route.origin.name())),
             };
             trace::info(
                 cx,
@@ -2196,19 +2169,12 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         }
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
-    cx.report_mut().set_used_proxy(plan.proxy.is_some());
-    let Plan {
-        proto,
-        origin,
-        via,
-        proxy,
-    } = plan;
+    cx.report_mut().set_used_proxy(plan.route.proxy.is_some());
+    let Plan { proto, route } = plan;
     TransferState::Connecting(Connecting {
         lease,
         proto,
-        origin,
-        via,
-        proxy,
+        route,
         handshake: None,
     })
 }

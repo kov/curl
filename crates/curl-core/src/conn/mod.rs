@@ -121,13 +121,29 @@ impl Route {
     pub(crate) fn serves(&self, wanted: &Route) -> bool {
         match (self, wanted) {
             (Route::Tcp(have), Route::Tcp(want)) => {
-                // C compares the detours without their schemes
-                // (`Curl_peer_same_destination`); each has its origin's.
-                *have.origin == *want.origin
-                    && have.via.as_deref() == want.via.as_deref()
-                    && (want.ip == IpVersion::Any || want.ip == have.ip)
-                    && have.proxy.as_ref().map(ProxyRoute::key)
-                        == want.proxy.as_ref().map(ProxyRoute::key)
+                // Every field by name, so that one added does not compile
+                // until it is compared here or said why not.
+                let Tcp {
+                    origin,
+                    via,
+                    ip,
+                    proxy,
+                } = have;
+                let Tcp {
+                    origin: want_origin,
+                    via: want_via,
+                    ip: want_ip,
+                    proxy: want_proxy,
+                } = want;
+                **origin == **want_origin
+                    // C compares the detours without their schemes
+                    // (`Curl_peer_same_destination`); each has its
+                    // origin's.
+                    && via.as_deref() == want_via.as_deref()
+                    // A transfer that takes any family takes either.
+                    && (*want_ip == IpVersion::Any || want_ip == ip)
+                    && proxy.as_ref().map(ProxyRoute::key)
+                        == want_proxy.as_ref().map(ProxyRoute::key)
             }
             (Route::Local | Route::Tcp(..), Route::Local | Route::Tcp(..)) => false,
         }
@@ -297,15 +313,27 @@ impl ProxyRoute {
     }
 
     fn key(&self) -> ProxyKey<'_> {
+        // Every field by name, as in `Route::serves`.
+        let ProxyRoute {
+            kind,
+            peer,
+            creds,
+            forward,
+            // What the transfer asks of a connection, which
+            // `Conn::serves` checks against what the connection did; not
+            // something the two routes share.
+            auth_only: _,
+            pre,
+        } = self;
         ProxyKey {
-            kind: self.kind,
-            peer: Destination(&self.peer),
-            creds: self.creds.as_deref(),
-            forward: self.forward,
-            pre: self
-                .pre
-                .as_ref()
-                .map(|p| (p.kind, Destination(&p.peer), p.creds.as_deref())),
+            kind: *kind,
+            peer: Destination(peer),
+            creds: creds.as_deref(),
+            forward: *forward,
+            pre: pre.as_ref().map(|pre| {
+                let PreProxy { kind, peer, creds } = pre;
+                (*kind, Destination(peer), creds.as_deref())
+            }),
         }
     }
 }
@@ -316,11 +344,21 @@ struct Destination<'a>(&'a Peer);
 impl PartialEq for Destination<'_> {
     fn eq(&self, other: &Self) -> bool {
         let (a, b) = (self.0, other.0);
-        a.port == b.port
+        // Every field by name, as in `Peer`'s `eq`.
+        let Peer {
+            // The difference from `Peer`'s `eq`.
+            scheme: _,
+            // Compared as its name, below.
+            host: _,
+            port,
+            zone,
+            scope,
+        } = a;
+        *port == b.port
             && a.ipv6() == b.ipv6()
             && a.name().eq_ignore_ascii_case(b.name())
-            && a.scope == b.scope
-            && (a.scope != 0 || a.zone == b.zone)
+            && *scope == b.scope
+            && (*scope != 0 || *zone == b.zone)
     }
 }
 
@@ -416,12 +454,22 @@ impl Peer {
 /// zone, and the same host in any case.
 impl PartialEq for Peer {
     fn eq(&self, other: &Peer) -> bool {
-        self.scheme == other.scheme
-            && self.port == other.port
+        // Every field by name, so that one added does not compile until it
+        // is compared here or said why not.
+        let Peer {
+            scheme,
+            // Compared as its name, below.
+            host: _,
+            port,
+            zone,
+            scope,
+        } = self;
+        *scheme == other.scheme
+            && *port == other.port
             && self.ipv6() == other.ipv6()
             && self.name().eq_ignore_ascii_case(other.name())
-            && self.scope == other.scope
-            && (self.scope != 0 || self.zone == other.zone)
+            && *scope == other.scope
+            && (*scope != 0 || *zone == other.zone)
     }
 }
 
@@ -648,6 +696,91 @@ mod tests {
             &peer(b"p.example", 80, None),
             &peer(b"p.example", 81, None)
         ));
+    }
+
+    /// A connection serves only a transfer whose route agrees on each
+    /// field: the origin, the connect-to peer, the family unless the
+    /// transfer takes any, and the proxy.
+    #[test]
+    fn routes_compare_every_field() {
+        let arc = |host: &[u8]| TryArc::try_new(peer(host, 80, None)).unwrap();
+        let tcp = |origin: &[u8], via: Option<&[u8]>, ip, proxy: Option<&[u8]>| {
+            Route::Tcp(Tcp {
+                origin: arc(origin),
+                via: via.map(arc),
+                ip,
+                proxy: proxy
+                    .map(|host| ProxyRoute::new(ProxyType::Socks5, arc(host), None, false, false)),
+            })
+        };
+        let have = tcp(
+            b"o.example",
+            Some(b"v.example"),
+            IpVersion::V4,
+            Some(b"p.example"),
+        );
+        let same = tcp(
+            b"o.example",
+            Some(b"v.example"),
+            IpVersion::V4,
+            Some(b"p.example"),
+        );
+        assert!(have.serves(&same));
+        let any = tcp(
+            b"o.example",
+            Some(b"v.example"),
+            IpVersion::Any,
+            Some(b"p.example"),
+        );
+        assert!(have.serves(&any), "a transfer taking any family");
+        for (field, other) in [
+            (
+                "origin",
+                tcp(
+                    b"x.example",
+                    Some(b"v.example"),
+                    IpVersion::V4,
+                    Some(b"p.example"),
+                ),
+            ),
+            (
+                "via",
+                tcp(
+                    b"o.example",
+                    Some(b"x.example"),
+                    IpVersion::V4,
+                    Some(b"p.example"),
+                ),
+            ),
+            (
+                "no via",
+                tcp(b"o.example", None, IpVersion::V4, Some(b"p.example")),
+            ),
+            (
+                "ip",
+                tcp(
+                    b"o.example",
+                    Some(b"v.example"),
+                    IpVersion::V6,
+                    Some(b"p.example"),
+                ),
+            ),
+            (
+                "proxy",
+                tcp(
+                    b"o.example",
+                    Some(b"v.example"),
+                    IpVersion::V4,
+                    Some(b"x.example"),
+                ),
+            ),
+            (
+                "no proxy",
+                tcp(b"o.example", Some(b"v.example"), IpVersion::V4, None),
+            ),
+        ] {
+            assert!(!have.serves(&other), "{field}");
+        }
     }
 
     fn via_proxy(host: &[u8], user: Option<&[u8]>, forward: bool) -> Route {

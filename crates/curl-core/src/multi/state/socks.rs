@@ -68,8 +68,7 @@ fn start<H: Host>(
         Some(Ok((answer, found))) => Some(Ok((answer.clone(), *found))),
         Some(Err(_)) => Some(Err(())),
     };
-    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
-    let leg = proxy.socks(c.target()).expect("through a SOCKS proxy");
+    let leg = c.route.socks().expect("through a SOCKS proxy");
     let target = leg.to;
     let resolved = match found {
         None => Resolved::Remote,
@@ -177,8 +176,11 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
     }
     let (remote, local) = dialed.ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
-    let to = proxy.socks(c.target()).expect("through a SOCKS proxy").to;
+    let proxy = c.route.proxy.as_ref().expect("dialed through a proxy");
+    let to = proxy
+        .socks(c.route.target())
+        .expect("through a SOCKS proxy")
+        .to;
     let (name, port) = (Bytes(to.name()), to.port());
     trace::info(
         cx,

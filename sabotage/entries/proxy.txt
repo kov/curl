@@ -5,10 +5,10 @@
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::proxied_routes_match_as_c
 --- old
-                    && have.proxy.as_ref().map(ProxyRoute::key)
-                        == want.proxy.as_ref().map(ProxyRoute::key)
+                    && proxy.as_ref().map(ProxyRoute::key)
+                        == want_proxy.as_ref().map(ProxyRoute::key)
 --- new
-                    && have.proxy.is_some() == want.proxy.is_some()
+                    && proxy.is_some() == want_proxy.is_some()
 
 === HTTP_PROXY in upper case names a proxy
 file: crates/curl-core/src/conn/proxy.rs
@@ -186,9 +186,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
     cx.report_mut().count_connect();
-    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
+    match c.route.socks().map(|leg| leg.version) {
 --- new
-    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
+    match c.route.socks().map(|leg| leg.version) {
 
 === the answer to CONNECT is delivered though suppressed
 file: crates/curl-core/src/deliver/mod.rs
@@ -369,9 +369,11 @@ witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_t
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core conn::tests::proxied_routes_match_as_c
 --- old
-                .map(|p| (p.kind, Destination(&p.peer), p.creds.as_deref())),
+                (*kind, Destination(peer), creds.as_deref())
+            }),
 --- new
-                .map(|_| (ProxyType::Socks5, Destination(&self.peer), None)),
+                (ProxyType::Socks5, Destination(&self.peer), None)
+            }),
 
 === an HTTP proxy behind a pre-proxy does not tunnel
 file: crates/curl-core/src/multi/state/socks.rs
@@ -459,6 +461,6 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_proxy_s_name_is_the_one_found_in_the_cache
 --- old
-                    let name = Bytes(c.destination().name());
+                    let name = Bytes(c.route.destination().name());
 --- new
-                    let name = Bytes(c.origin.name());
+                    let name = Bytes(c.route.origin.name());

@@ -31,8 +31,9 @@ numbers are those of `SCOPE.md`.
 4. **`Deadlines` is the only owner of time limits.** The wake-up and the "is it late" check are
    both derived from the same stored instants, the report's `Starts`, which the getinfo times
    are taken from too. The timer queue is an index over it.
-5. **Connection identity is an immutable `Route`; reuse matching follows its `Eq`.** A new
-   field joins the comparison automatically. Nothing on a pooled connection is rewritten on
+5. **Connection identity is an immutable `Route`; reuse matching names every field.** The
+   comparison destructures each struct it compares without `..`, so a new field does not
+   compile until it is compared or excused with a reason. Nothing on a pooled connection is rewritten on
    reuse.
 6. **A connection is `ConnSlot::{Connecting, Open, Closing}` under a stable `ConnId`.**
    `Connecting` holds a typed `ConnectMachine` (resolve, eyeballs, SOCKS, tunnel, TLS), each
@@ -409,9 +410,9 @@ pub(crate) enum TransferState {
     Completed(Completed),              // terminal until remove
 }
 type Origin = TryRc<Peer>;           // the request's peer, shared with its connection's route
-pub(crate) struct Plan { proto: ProtoState, origin: Origin, via: Option<TryRc<Peer>> }
-pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, origin: Origin,
-                               via: Option<TryRc<Peer>> }
+pub(crate) struct Plan { proto: ProtoState, route: Tcp }  // the leg's route, built in start_leg
+pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: Tcp,
+                               handshake: Option<Box<Handshake>> }
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
                          premature: bool, reached: Reached, origin: Option<Origin>,
@@ -423,7 +424,8 @@ pub(crate) enum Message { Unread, Read }
 ```
 
 `Pending` and `Setup` hold what the setup made before it looked for a connection, so that only
-the search is made again. Planned for milestone 2, with the leg loop: the `Plan` grown into
+the search is made again: the route, built once per leg, which `Connecting` keeps and reads its
+destination and target from. Planned for milestone 2, with the leg loop: the `Plan` grown into
 `Plan { target, leg }`, carried by every state from `Connecting` to `Exchanging`, a throttle
 instant in `Exchanging` (C's
 RATELIMITING), and `AfterRequest::Follow(FollowKind, Target)`, which the protocol's `done`
@@ -987,7 +989,11 @@ none when it names the origin itself; the setup resolves and connects to `via` i
 one, and the traces name it where C's do. Matching is `Route::serves`: the same origin by
 `Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its number
 when it is one), the same `via` or none on both, and the same `IpVersion` unless the
-transfer takes any (`url_match_conn`, `url_match_destination`).
+transfer takes any (`url_match_conn`, `url_match_destination`). It, `ProxyRoute`'s key and
+`Peer`'s `Eq` destructure every field without `..`, so a field added later does not compile until
+it is compared; the exceptions are named where they are made (the transfer's `IpVersion::Any`;
+`auth_only`, which `Conn::serves` checks against what the connection did; a peer's host,
+compared as its name).
 
 The proxy is chosen at setup, after the connect-to entries (`Curl_proxy_init_conn`): the
 options' (`Options::proxy`), or else the one the environment names for the scheme

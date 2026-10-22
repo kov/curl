@@ -141,6 +141,65 @@ fn codings_that_cannot_be_undone_fail() {
     assert!(ran.seen.body().is_empty());
 }
 
+/// `identity` blows nothing up: the body goes on as it is read, in up to
+/// 16 KiB, the first read holding the head, not in the 4 KiB pieces of
+/// what is held in front of a decoder that may (C's identity writer has
+/// no `CURL_CW_FLAG_BLOWUP`).
+#[test]
+fn identity_holds_no_gate_in_front_of_the_body() {
+    let mut reply =
+        b"HTTP/1.1 200 OK\r\nContent-Length: 40000\r\nContent-Encoding: identity\r\n\r\n".to_vec();
+    reply.extend_from_slice(&[b'i'; 40000]);
+    let ran = fetch(decoding(), &reply, all);
+    assert_eq!(ran.result, Ok(()));
+    let writes: Vec<usize> = ran.seen.of("body").iter().map(Vec::len).collect();
+    assert_eq!(writes, [16314, 16384, 7302]);
+}
+
+/// Pauses at the end of the head, and takes all after.
+#[derive(Clone, Default)]
+struct PausesAtHeadEnd(Seen);
+
+impl HeaderHandler for PausesAtHeadEnd {
+    fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write {
+        if line == b"\r\n" && !self.0.0.lock().unwrap().iter().any(|(w, _)| *w == "end") {
+            self.0.0.lock().unwrap().push(("end", Vec::new()));
+            return Write::Pause;
+        }
+        self.0.header(cx, line, origin)
+    }
+}
+
+/// A coding nothing undoes fails the body at its first byte though a
+/// handler paused before it: nothing holds the body in front of it, as
+/// C's error writer is not one that blows up.
+#[test]
+fn an_unrecognized_coding_fails_while_paused() {
+    let unknown = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nContent-Encoding: compress\r\n\r\nabc";
+    let (mut m, _talk, _) = server(&[unknown], false);
+    let mut e = decoding();
+    let handler = PausesAtHeadEnd::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    all(o);
+    o.callbacks.header = Some(Handler::header(handler.clone()).unwrap());
+    m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let msg = m.info_read().expect("over, though paused");
+    assert_eq!(msg.result, Err(ErrorKind::BadContentEncoding));
+}
+
+/// The decoders a handle has are shown by the codings they undo.
+#[test]
+fn decoders_show_their_codings() {
+    let d = Decoders::none()
+        .with(Coding::Zstd, twice)
+        .with(Coding::Gzip, twice);
+    assert_eq!(format!("{d:?}"), "[Gzip, Zstd]");
+    assert_eq!(format!("{:?}", Decoders::none()), "[]");
+}
+
 /// Records what it takes, after pausing at its first piece.
 #[derive(Clone, Default)]
 struct PausesFirst {

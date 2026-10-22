@@ -984,6 +984,84 @@ fn held_output_keeps_the_transfer_going_until_its_time_is_up() {
     );
 }
 
+/// Says, as all it makes, whether the transfer's time was up.
+#[derive(Debug)]
+struct Clocked;
+
+impl crate::coding::Decoder for Clocked {
+    fn decode(&mut self, _: &[u8], out: &mut dyn crate::coding::Sink) -> Result<(), ErrorKind> {
+        let said: &[u8] = if out.timed_out() { b"late;" } else { b"early;" };
+        out.write(said)
+    }
+}
+
+/// A decoder learns whether the transfer's time is up, behind the
+/// transfer codings or the content ones, however they are stacked, as
+/// C's decoders ask `Curl_timeleft_ms` every 1 MiB they make.
+#[test]
+fn a_decoder_learns_whether_the_transfer_s_time_is_up() {
+    for (advance, said) in [(10, "early;"), (2000, "late;")] {
+        let clock = ManualClock::new().unwrap();
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(FakeNet::new(clock.clone())),
+            arena: ArenaPolicy::new(16, 0).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let mut e = easy("stall://a");
+        e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
+        let calls = planned(&mut e, pausing_on(&[]));
+        let id = m.add(e, (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        clock.advance(Duration::from_millis(advance));
+        m.with_step_cx(id, |cx| {
+            for (transfer, content) in [(1, 0), (0, 1), (0, 2), (1, 1)] {
+                let mut p = Pipeline::new(Reach::Network);
+                for _ in 0..transfer {
+                    p.add_transfer_decoder(Box::new(Clocked)).unwrap();
+                }
+                for _ in 0..content {
+                    p.add_decoder(Box::new(Clocked)).unwrap();
+                }
+                p.body(cx, b"x").unwrap();
+            }
+        });
+        let written: Vec<u8> = taken(&calls)
+            .into_iter()
+            .filter(|(n, _)| *n == "write")
+            .flat_map(|(_, b)| b)
+            .collect();
+        assert_eq!(String::from_utf8(written).unwrap(), said.repeat(4));
+    }
+}
+
+/// Fails whatever it is given.
+#[derive(Debug)]
+struct Refuses;
+
+impl crate::coding::Decoder for Refuses {
+    fn decode(&mut self, _: &[u8], _: &mut dyn crate::coding::Sink) -> Result<(), ErrorKind> {
+        Err(ErrorKind::BadContentEncoding)
+    }
+}
+
+/// No bytes are passed on without reaching a decoder (`!nbytes`): one
+/// that refuses all it is given never sees them.
+#[test]
+fn no_bytes_reach_no_decoder() {
+    let mut m = multi();
+    let e = easy("stall://a");
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.with_step_cx(id, |cx| {
+        let mut p = Pipeline::new(Reach::Network);
+        p.add_decoder(Box::new(Refuses)).unwrap();
+        assert_eq!(p.body(cx, b""), Ok(()));
+        assert_eq!(p.body(cx, b"x"), Err(ErrorKind::BadContentEncoding));
+    });
+}
+
 /// A pipeline whose protocol cannot pause fails a pausing write
 /// ("Write callback asked for PAUSE when not supported").
 #[test]

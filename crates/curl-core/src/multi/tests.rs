@@ -1304,6 +1304,18 @@ fn events_wait_for_the_timer_the_multi_sets() {
         Ok(Err(ErrorKind::OperationTimedout))
     );
     assert_eq!(clock.now().since(start), Duration::from_millis(700));
+    // A socket ready part way through a wait leaves the rest of it to
+    // count down, the timer not set again.
+    let (mut m, clock) = networked();
+    let mut e = easy("http://127.0.0.1:4/");
+    e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let start = clock.now();
+    assert_eq!(
+        drive_by_events(&mut m, id),
+        Ok(Err(ErrorKind::OperationTimedout))
+    );
+    assert_eq!(clock.now().since(start), Duration::from_millis(1000));
 }
 
 /// A verbose transfer of `url`, and its trace.

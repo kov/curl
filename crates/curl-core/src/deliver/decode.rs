@@ -79,9 +79,7 @@ impl Gate {
         mut bytes: &[u8],
         onward: &mut dyn Onward,
     ) -> Result<(), ErrorKind> {
-        if !self.held.is_empty() && !onward.paused() {
-            self.flush(onward)?;
-        }
+        self.flush(onward)?;
         while self.held.is_empty() && !onward.paused() {
             let n = piece(kind, bytes.len());
             onward.take(kind, &bytes[..n])?;

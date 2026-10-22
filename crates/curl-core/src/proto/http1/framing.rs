@@ -45,6 +45,10 @@ pub(crate) struct Asked {
     /// The connection goes through an HTTP proxy, whose
     /// `Proxy-Connection` then says whether it stays open.
     pub(crate) http_proxy: bool,
+    /// The request went to an HTTP proxy that sends it on, whose 407
+    /// alone is the proxy's to read (`origin_is_proxy`): through a
+    /// tunnel, or to a host reached without one, it is the origin's.
+    pub(crate) forwarded: bool,
 }
 
 /// How the body after a final head ends.
@@ -348,7 +352,7 @@ impl Meta {
             401 if value_of(line, b"WWW-Authenticate:").is_some() => {
                 Some((&mut self.challenges.host, &asked.auth.host))
             }
-            407 if value_of(line, b"Proxy-Authenticate:").is_some() => {
+            407 if asked.forwarded && value_of(line, b"Proxy-Authenticate:").is_some() => {
                 Some((&mut self.challenges.proxy, &asked.auth.proxy))
             }
             _ => None,

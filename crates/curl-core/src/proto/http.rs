@@ -662,6 +662,7 @@ impl Request {
                 follow: http.follow != Follow::No,
                 auth: auth_asked,
                 http_proxy,
+                forwarded,
             },
         };
         if let Some(method) = proxy_auth.header.as_ref().map(|(m, _)| m) {

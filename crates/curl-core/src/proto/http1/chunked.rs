@@ -480,6 +480,7 @@ mod tests {
                 follow: false,
                 auth: Default::default(),
                 http_proxy: false,
+                forwarded: false,
             },
         };
         let mut head = HeadParser::new(exchange);

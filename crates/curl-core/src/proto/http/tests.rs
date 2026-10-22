@@ -2753,6 +2753,33 @@ fn a_custom_proxy_authorization_goes_beside_the_proxy_s() {
     assert!(text.contains("\r\nProxy-Authorization: Mine\r\n"), "{text}");
 }
 
+/// A 407 from a host the request reached without a proxy's sending it
+/// on is not the proxy's: its challenge is not read, and the proxy is
+/// not answered with it later (test 1616).
+#[test]
+fn a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s() {
+    let attacker = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Digest realm=\"attacker\", nonce=\"1\"\r\nContent-Length: 0\r\n\r\n";
+    let creds = |o: &mut Options| {
+        o.proxy.user = Some(b"silly".to_vec());
+        o.proxy.password = Some(b"person".to_vec());
+        o.proxy.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    };
+    let (mut m, talk, _) = server(&[attacker], false);
+    let direct = get(&mut m, "/", talk, creds);
+    assert_eq!(direct.result, Ok(()));
+    assert_eq!(direct.easy.report().proxy_auth_offered(), AuthMethods::NONE);
+    let (mut m, talk, _) = server(&[OK], false);
+    let proxied = get_with(&mut m, direct.easy, "/", talk, |o| {
+        creds(o);
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(proxied.result, Ok(()));
+    let text = String::from_utf8_lossy(&proxied.request).into_owned();
+    assert!(!text.contains("Proxy-Authorization"), "{text}");
+}
+
 /// A tunnel's `CONNECT`, as test 1287's proxy sees it: the origin's
 /// authority, and only what the proxy is given.
 fn connect_of(proxy_authorization: &str) -> String {

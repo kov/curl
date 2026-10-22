@@ -1472,7 +1472,7 @@ fn a_request_target_replaces_only_the_request_line_s() {
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
     let ran = get(&mut m, "/a?q", talk, |o| {
         o.http.request_target = Some(b"*".to_vec());
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
     assert_eq!(ran.result, Ok(()));

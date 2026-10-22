@@ -2293,11 +2293,11 @@ fn a_connection_closed_as_it_comes_back_is_no_one_s() {
     let (mut m, _clock) = networked();
     m.conn_limits_mut().max_connects = NonZeroU32::new(1);
     let a = m
-        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     let (b, lines) = traced("tcp://127.0.0.1:1/");
-    let b = m.add(b, (), &mut NoEvents).unwrap();
+    let b = m.add(Box::new(b), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(b.index(), Ok(()), 0)]);
     assert_eq!(

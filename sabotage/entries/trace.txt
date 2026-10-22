@@ -109,3 +109,11 @@ witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_
     let failed = trace::fail_for(cx, kind, reason);
     cx.easy_mut().options_mut().connect_to = entries;
     Err(failed)
+
+=== a connect failure is traced through std's display, which allocates
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core a_refused_connect_survives_every_allocation_failing
+--- old
+        Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
+--- new
+        std::fmt::Display::fmt(self.0, f)

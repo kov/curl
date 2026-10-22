@@ -17,8 +17,8 @@ use curl_core::conn::io::{Conversation, FakeNet, Net, Peer, Waker};
 use curl_core::easy::Easy;
 use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::handler::{
-    Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow, ProgressVerdict, Write,
-    WriteHandler,
+    DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow,
+    ProgressVerdict, Write, WriteHandler,
 };
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::Multi;
@@ -50,6 +50,10 @@ fn main() {
         (
             "a_get_survives_every_allocation_failing",
             a_get_survives_every_allocation_failing,
+        ),
+        (
+            "a_refused_connect_survives_every_allocation_failing",
+            a_refused_connect_survives_every_allocation_failing,
         ),
         (
             "a_get_takes_no_refusal_for_success",
@@ -532,6 +536,54 @@ fn a_get_survives_every_allocation_failing() {
         headers: REPLY.len() as u64 - 6,
     };
     torture(get_scenario, Ok(full));
+}
+
+/// Takes the trace and keeps none of it.
+struct Discard;
+
+impl DebugHandler for Discard {
+    fn debug(&self, _: &mut TransferCx<'_>, _: DebugKind, _: &[u8]) {}
+}
+
+/// A traced GET to a port nothing listens on: the connect is refused at
+/// once, and the trace says why in the system's words (test 504). The
+/// transfer fails to connect, or for memory, and nothing else.
+fn refused_scenario() -> Result<Result<(), ErrorKind>, OutOfMemory> {
+    let clock = track::untracked(|| ManualClock::new().expect("a clock"));
+    let env = Env {
+        net: try_box(fake_net(&clock))?,
+        clock: try_box(clock)?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env)?;
+    let mut easy = Easy::new();
+    let o = easy.options_mut();
+    o.set_url(Some(URL))?;
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(Discard)?);
+    let id = match m.add(try_box(easy)?, (), &mut NoEvents) {
+        Ok(id) => id,
+        Err(AddError {
+            kind: MultiErrorKind::OutOfMemory,
+            ..
+        }) => return Err(OutOfMemory),
+        Err(e) => panic!("add refused with {:?}, not for memory", e.kind),
+    };
+    let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+        .expect("the transfer is in the multi");
+    if !matches!(
+        result,
+        Err(ErrorKind::CouldntConnect | ErrorKind::OutOfMemory)
+    ) {
+        track::untracked(|| panic!("the GET ended with {result:?}"));
+    }
+    m.remove(id, &mut NoEvents).expect("in the multi");
+    Ok(result)
+}
+
+fn a_refused_connect_survives_every_allocation_failing() {
+    torture(refused_scenario, Ok(Err(ErrorKind::CouldntConnect)));
 }
 
 /// Run `scenario` once for each allocation it makes, that one alone

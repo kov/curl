@@ -32,7 +32,6 @@ mod tunnel;
 use crate::proto::http1::follow;
 use crate::proto::{Inherited, ProtoState, ProtoStep};
 use crate::report::{Ends, Starts, Timer, TransferReport};
-use crate::text::Text;
 use crate::time::{Instant, TimeLimit};
 use crate::trace;
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
@@ -1290,19 +1289,14 @@ impl std::fmt::Display for Ip {
     }
 }
 
-/// An operating system error as `strerror` words it, without std's
-/// "(os error N)".
+/// An operating system error as `strerror` words it, made without
+/// allocating, as C's `curlx_strerror` writes it into a buffer on the
+/// stack.
 pub(crate) struct OsError<'a>(pub(crate) &'a std::io::Error);
 
 impl std::fmt::Display for OsError<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (text, _) = Text::<256>::clipped(format_args!("{}", self.0));
-        let mut bytes = text.bytes();
-        if let Some(code) = self.0.raw_os_error() {
-            let (suffix, _) = Text::<32>::clipped(format_args!(" (os error {code})"));
-            bytes = bytes.strip_suffix(suffix.bytes()).unwrap_or(bytes);
-        }
-        Bytes(bytes).fmt(f)
+        Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
     }
 }
 

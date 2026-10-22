@@ -730,8 +730,9 @@ pub mod debug_info {
     /// The variable `name`'s leading digits, if it is set: 0 if it has
     /// none or they overflow (`curlx_str_number`).
     fn number(name: &str) -> Option<u64> {
-        // Read without allocating, as C's `getenv`: past 19 digits a
-        // number overflows, so a value cut at 32 reads the same.
+        // Read without allocating, as C's `getenv`, cut at 32 bytes: a
+        // number of more than 19 digits overflows anyway, so only one led
+        // by zeros whose digits run past the cut reads otherwise than in C.
         let mut buf = [0u8; 32];
         let value = curl_os::env::var_into(name.as_bytes(), &mut buf)?;
         Some(leading_number(value))

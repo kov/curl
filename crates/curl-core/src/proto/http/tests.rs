@@ -2249,6 +2249,191 @@ impl crate::handler::Rewind for Stream {
     }
 }
 
+/// A body of `n` bytes, kept for the test's run.
+fn big_body(n: usize) -> &'static [u8] {
+    Box::leak(vec![b'a'; n].into_boxed_slice())
+}
+
+/// The bytes after the first head in `bytes`.
+fn after_head(bytes: &[u8]) -> usize {
+    let at = bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("a head");
+    bytes.len() - at - 4
+}
+
+/// A redirect read while the body goes, much of it left: the connection
+/// closes rather than carry the rest, after the one buffer sent with the
+/// head, and the body goes whole on a new one (`http_perhapsrewind`).
+#[test]
+fn a_redirect_mid_body_closes_rather_than_send_the_rest() {
+    const SIZE: usize = 300_000;
+    let first = Conversation::replies(&[&redirect(307, "/b")], false);
+    let second = Conversation::replies(&[OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let stream = Stream::new(big_body(SIZE));
+    let ran = get(&mut m, "/a", first.clone(), |o| {
+        o.method = Method::Upload;
+        o.upload = stream.source(true);
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()));
+    // The head and the body read behind it fill one buffer; the redirect
+    // is heard before another goes.
+    let sent = first.received();
+    assert_eq!(sent.len(), 65536);
+    let left = SIZE - after_head(&sent);
+    let text = ran.seen.text();
+    let close = format!("close instead of sending {left} more bytes\n");
+    let need = text
+        .iter()
+        .position(|l| l == "Need to rewind upload for next request\n");
+    let at = text.iter().position(|l| *l == close);
+    let keep = text
+        .iter()
+        .position(|l| l == "Keep sending data to get tossed away\n");
+    assert!(need < at && at < keep && need.is_some(), "{text:?}");
+    assert!(
+        !text.iter().any(|l| l.starts_with("abort upload")),
+        "{text:?}"
+    );
+    assert_eq!(after_head(&second.received()), SIZE);
+    assert_eq!(stream.rewinds.get(), 1);
+    assert_eq!(ran.easy.report().connects(), 2);
+}
+
+/// Each pass reads at most one more buffer of the body, so the response
+/// is heard between buffers (`Curl_req_send_more`): a server that never
+/// answers is sent a buffer a perform.
+#[test]
+fn a_pass_sends_one_buffer_of_the_body() {
+    const SIZE: usize = 300_000;
+    let (mut m, talk, _) = server(&[], false);
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{PORT}/a");
+    let stream = Stream::new(big_body(SIZE));
+    let o = e.options_mut();
+    o.set_url(Some(url.as_bytes())).unwrap();
+    o.method = Method::Upload;
+    o.upload = stream.source(true);
+    let _id = m.add(e, (), &mut NoEvents).unwrap();
+    let body = |r: &[u8]| {
+        r.windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .map_or(0, |at| r.len() - at - 4)
+    };
+    let mut performs = 0;
+    while body(&talk.received()) < SIZE {
+        assert!(performs < 100, "the body does not go");
+        m.perform(&mut NoEvents).unwrap();
+        performs += 1;
+        // The first perform sends the head's buffer, and a pass's.
+        let now = talk.received().len();
+        assert!(
+            now <= 65536 * (performs + 1),
+            "{now} bytes after {performs} performs"
+        );
+    }
+    assert!(performs >= SIZE / 65536, "{performs} performs");
+}
+
+/// With little of the body left, it goes to be dropped, the response's
+/// body is ignored, and the connection serves the next request.
+#[test]
+fn a_redirect_with_little_of_the_body_left_keeps_the_connection() {
+    // One buffer and 500 bytes more: what the head takes of the buffer
+    // is left too, still under 2000.
+    let size = 65536 + 500;
+    let talk = Conversation::replies(&[&redirect(307, "/b"), OK], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let stream = Stream::new(big_body(size));
+    let ran = get(&mut m, "/a", talk.clone(), |o| {
+        o.method = Method::Upload;
+        o.upload = stream.source(true);
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    assert!(
+        text.contains(&"Keep sending data to get tossed away\n".to_string()),
+        "{text:?}"
+    );
+    assert!(
+        !text.iter().any(|l| l.starts_with("close instead")),
+        "{text:?}"
+    );
+    assert!(
+        !text.iter().any(|l| l.contains("before end of send")),
+        "{text:?}"
+    );
+    assert_eq!(ran.easy.report().connects(), 1);
+    let head = ran
+        .request
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let left = size - (65536 - head);
+    assert!(left < 2000, "{left} left after the first buffer");
+    assert!(second_request(&ran).ends_with(&"a".repeat(size)));
+}
+
+/// A 401 read while the body goes is answered on a new connection: the
+/// first closes rather than carry the rest of the body.
+#[test]
+fn a_challenge_mid_body_closes_rather_than_send_the_rest() {
+    let first = Conversation::replies(&[DIGEST_CHALLENGE], false);
+    let second = Conversation::replies(&[OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let stream = Stream::new(big_body(300_000));
+    let ran = get(&mut m, "/a", first.clone(), |o| {
+        o.method = Method::Upload;
+        o.upload = stream.source(true);
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(first.received().len(), 65536);
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l.starts_with("close instead of sending ")),
+        "{text:?}"
+    );
+    assert!(fixture::find(&second.received(), b"Authorization: Digest").is_some());
+    assert_eq!(after_head(&second.received()), 300_000);
+    assert_eq!(ran.easy.report().connects(), 2);
+}
+
+/// A body of unknown size is never little enough to keep the connection.
+#[test]
+fn a_redirect_mid_body_of_unknown_size_closes() {
+    let first = Conversation::replies(&[&redirect(307, "/b")], false);
+    let second = Conversation::replies(&[OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let stream = Stream::new(big_body(300_000));
+    let ran = get(&mut m, "/a", first.clone(), |o| {
+        o.method = Method::Upload;
+        o.upload = match stream.source(true) {
+            UploadSource::Read {
+                handler, rewind, ..
+            } => UploadSource::Read {
+                handler,
+                rewind,
+                size: None,
+            },
+            _ => unreachable!(),
+        };
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    let close = "close instead of sending unknown amount of more bytes\n".to_string();
+    assert!(text.contains(&close), "{text:?}");
+    assert_eq!(ran.easy.report().connects(), 2);
+}
+
 /// A body read from a handler is started over for the next request, or
 /// the transfer fails if it cannot be: unless that request sends none.
 #[test]

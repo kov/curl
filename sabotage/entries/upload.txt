@@ -221,3 +221,78 @@ witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
                 Err(self.fail(trace::fail(cx, ErrorKind::AbortedByCallback, why)))
             }
             Read::Pause if !pausable => {
+
+=== a pass reads more of the body than one buffer
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_pass_sends_one_buffer_of_the_body
+--- old
+                read = false;
+--- new
+                read = true;
+
+=== a pass sends before it reads
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_redirect_mid_body_closes_rather_than_send_the_rest
+--- old
+        self.receive(cx, lease)?;
+        // The request is over once its response is and nothing more of it
+        // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
+        if self.sending() && self.send(cx, lease, true)? {
+            // Sent after DID: the request is complete from here.
+            cx.mark(Timer::PostTransfer);
+        }
+--- new
+        if self.sending() && self.send(cx, lease, true)? {
+            cx.mark(Timer::PostTransfer);
+        }
+        self.receive(cx, lease)?;
+
+=== an abandoned head lets the body go on
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_redirect_mid_body_closes_rather_than_send_the_rest
+--- old
+                self.sent_all = true;
+                return Ok(&[]);
+--- new
+                return Ok(&[]);
+
+=== a body read again stops at an error code
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_redirect_with_little_of_the_body_left_keeps_the_connection
+--- old
+        if !self.sending() || meta.close() || meta.rewinds() {
+--- new
+        if !self.sending() || meta.close() {
+
+=== the rest of a body read again is not said to go
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_redirect_with_little_of_the_body_left_keeps_the_connection
+--- old
+            if !interim && self.head().meta().rewinds() && self.sending() {
+--- new
+            if false {
+
+=== much of a body left keeps the connection
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_redirect_mid_body_closes_rather_than_send_the_rest
+--- old
+            Left::Bytes(n) => n >= LITTLE_LEFT,
+--- new
+            Left::Bytes(_) => false,
+
+=== a body of unknown size left keeps the connection
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_redirect_mid_body_of_unknown_size_closes
+--- old
+            Left::Unknown => true,
+--- new
+            Left::Unknown => false,
+
+=== a challenge mid-body does not weigh the body left
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_challenge_mid_body_closes_rather_than_send_the_rest
+--- old
+        if self.auth.reload {
+            self.perhaps_rewind(sending, &mut note);
+        }
+--- new

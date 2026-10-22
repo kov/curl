@@ -21,7 +21,7 @@ use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
 
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
-use super::http1::framing::{self, Asked, Framing};
+use super::http1::framing::{self, Asked, Framing, Left, Sending};
 use super::http1::request::{self, Authorization, CredentialGate, Forwarding, RequestHead};
 use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
@@ -730,8 +730,9 @@ impl Request {
         {
             self.fill(cx)?;
         }
-        // The engine takes the request as sent at DID if it went now.
-        self.send(cx, lease).map(drop)
+        // The engine takes the request as sent at DID if it went now;
+        // the buffer read behind the head is this pass's.
+        self.send(cx, lease, false).map(drop)
     }
 
     /// Read body into the buffer behind what is there: whether anything
@@ -763,14 +764,15 @@ impl Request {
         Ok(got.n > 0 || got.eos)
     }
 
-    /// Send what is left of the request, reading more of its body as
-    /// what was read goes, as much as the connection takes: whether it all
-    /// went, the request sent (`Curl_req_send_more`,
+    /// Send what is left of the request as far as the connection takes
+    /// it, reading at most one more buffer of its body if `read` and it
+    /// all went: whether the request is sent (`Curl_req_send_more`,
     /// `req_set_upload_done`).
     fn send<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &ConnLease,
+        mut read: bool,
     ) -> Result<bool, ErrorKind> {
         while self.sending() {
             if self.sent == self.filled {
@@ -796,9 +798,10 @@ impl Request {
                     }
                     ExpectState::None | ExpectState::Open => {}
                 }
-                if cx.pause().send_paused() || !self.fill(cx)? {
+                if !read || cx.pause().send_paused() || !self.fill(cx)? {
                     return Ok(false);
                 }
+                read = false;
                 continue;
             }
             let sent = cx.conn(lease).send(&self.out[self.sent..self.filled]);
@@ -863,30 +866,40 @@ impl Request {
         }
     }
 
-    /// Send what is left, then read until the connection has nothing more
-    /// now, the response is over or receiving pauses (`Curl_sendrecv`).
+    /// Read until the connection has nothing more now, the response is
+    /// over or receiving pauses, then send what is left with at most one
+    /// more buffer of the body (`Curl_sendrecv`): a response that comes
+    /// while the body goes is heard before more of it is sent.
     pub(crate) fn step<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
-        if self.sending() && self.send(cx, lease)? {
+        self.receive(cx, lease)?;
+        // The request is over once its response is and nothing more of it
+        // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
+        if self.sending() && self.send(cx, lease, true)? {
             // Sent after DID: the request is complete from here.
             cx.mark(Timer::PostTransfer);
         }
+        Ok(if matches!(self.stage, Stage::Done) && !self.sending() {
+            ProtoStep::Done
+        } else {
+            ProtoStep::Blocked
+        })
+    }
+
+    /// Read what the connection has now, until the response is over or
+    /// receiving pauses (`sendrecv_dl`).
+    fn receive<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &ConnLease,
+    ) -> Result<(), ErrorKind> {
         loop {
-            // The request is over once its response is and nothing more of
-            // it is to send (`KEEP_RECV` and `KEEP_SEND` both off).
-            if matches!(self.stage, Stage::Done) {
-                return Ok(if self.sending() {
-                    ProtoStep::Blocked
-                } else {
-                    ProtoStep::Done
-                });
-            }
-            if cx.pause().recv_paused() {
-                return Ok(ProtoStep::Blocked);
+            if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
+                return Ok(());
             }
             let max = self.read_size();
             if max == 0 {
@@ -895,7 +908,7 @@ impl Request {
                 continue;
             }
             match cx.conn(lease).recv(max) {
-                Ok(Recv::WouldBlock) => return Ok(ProtoStep::Blocked),
+                Ok(Recv::WouldBlock) => return Ok(()),
                 Ok(Recv::Eof) => {
                     self.end(cx)?;
                     self.stage = Stage::Done;
@@ -936,6 +949,21 @@ impl Request {
             }
             _ => READ_SIZE,
         }
+    }
+
+    /// What of the body is still to go, as the response's head weighs it
+    /// (`http_perhapsrewind`): its size less what went, unless all went.
+    fn left_to_send(upload: Option<&Upload>, sent_all: bool, body_sent: u64) -> Sending {
+        let rereads = upload.is_some_and(Upload::needs_rewind);
+        let left = match upload {
+            None => Left::Nothing,
+            Some(_) if sent_all => Left::Nothing,
+            Some(upload) => match upload.size() {
+                Some(size) => Left::Bytes(size.saturating_sub(body_sent)),
+                None => Left::Unknown,
+            },
+        };
+        Sending { rereads, left }
     }
 
     fn head(&self) -> &HeadParser {
@@ -979,14 +1007,17 @@ impl Request {
             head,
             interim,
             upload,
+            sent_all,
+            body_sent,
             ..
         } = self;
         let head = head.as_mut().expect("made at DO");
         // Only a status line changes it, so for a header line it is what
         // it was before.
         let bodyless = head.meta().bodyless();
+        let sending = Self::left_to_send(upload.as_ref(), *sent_all, *body_sent);
         let (used, event) = head
-            .feed(input, &mut cx.report_mut().sizes_mut().header)
+            .feed(input, &mut cx.report_mut().sizes_mut().header, sending)
             .map_err(|e| head_failed(cx, &e))?;
         let rest = &input[used..];
         let line = match event {
@@ -1010,10 +1041,6 @@ impl Request {
         };
         for note in line.notes.iter() {
             trace::info(cx, format_args!("{note}"));
-        }
-        // The body goes again with the next request (`http_perhapsrewind`).
-        if line.redirects && upload.as_ref().is_some_and(Upload::needs_rewind) {
-            trace::info(cx, format_args!("Need to rewind upload for next request"));
         }
         // The document's time, if asked for; one that cannot be read is
         // the epoch (`http_header_l`).
@@ -1092,10 +1119,18 @@ impl Request {
             } else if !interim && code >= 300 {
                 self.send_error(cx, code)?;
             }
+            // What is left of a body read again for the next request
+            // goes, to be dropped (`http_on_response`).
+            if !interim && self.head().meta().rewinds() && self.sending() {
+                trace::info(cx, format_args!("Keep sending data to get tossed away"));
+            }
         }
         if kind == (LineKind::End { interim: false }) {
             let abandoned = self.head().framing() == Some(Framing::Abandoned);
             if abandoned {
+                // The request is over with its head: nothing more of it
+                // goes (`http_firstwrite`'s `done`).
+                self.sent_all = true;
                 return Ok(&[]);
             }
             if matches!(self.stage, Stage::Done) && !rest.is_empty() {
@@ -1118,7 +1153,8 @@ impl Request {
     /// the application says so, and stops otherwise, the connection not
     /// used again (`http_handle_send_error`).
     fn send_error<H: Host>(&mut self, cx: &mut StepCx<'_, H>, code: u16) -> Result<(), ErrorKind> {
-        if !self.sending() || self.head().meta().close() {
+        let meta = self.head().meta();
+        if !self.sending() || meta.close() || meta.rewinds() {
             return Ok(());
         }
         if code == 417 && self.expect != ExpectState::None {

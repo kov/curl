@@ -85,20 +85,25 @@ pub(crate) enum Note {
     /// What a challenge line has C say, given out one by one by
     /// `Notes::iter`.
     Heard(Heard),
+    /// The body is to be read again from the application.
+    NeedRewind,
+    /// The connection closes rather than carry the rest of the body,
+    /// this much or an unknown amount, for a request answered already.
+    CloseInstead(Left),
 }
 
-/// What C says of a line before it delivers it: at most two notes.
+/// What C says of a line before it delivers it: at most four notes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Notes([Option<Note>; 2]);
+pub(crate) struct Notes([Option<Note>; 4]);
 
 impl Notes {
     pub(crate) fn one(note: Option<Note>) -> Notes {
-        Notes([note, None])
+        Notes([note, None, None, None])
     }
 
-    fn push(&mut self, note: Note) {
+    pub(crate) fn push(&mut self, note: Note) {
         let free = self.0.iter_mut().find(|n| n.is_none());
-        *free.expect("at most two notes to a line") = Some(note);
+        *free.expect("at most four notes to a line") = Some(note);
     }
 
     /// The notes, a challenge line's one by one.
@@ -133,6 +138,13 @@ impl fmt::Display for Note {
                 return write!(f, "{} authentication problem, ignoring.", method.name());
             }
             Note::DuplicateDigest => "Ignoring duplicate digest auth header.",
+            Note::NeedRewind => "Need to rewind upload for next request",
+            Note::CloseInstead(Left::Bytes(n)) => {
+                return write!(f, "close instead of sending {n} more bytes");
+            }
+            Note::CloseInstead(Left::Unknown | Left::Nothing) => {
+                "close instead of sending unknown amount of more bytes"
+            }
             Note::Heard(_) => unreachable!("given out one by one by `Notes::iter`"),
         })
     }
@@ -254,9 +266,67 @@ pub(crate) struct Meta {
     challenges: Offered,
     /// What the final head led to in authenticating.
     auth: AuthAct,
+    /// The body is read again for the next request, and what is left of
+    /// it now is sent to be dropped (`Curl_creader_will_rewind`).
+    rewinds: bool,
 }
 
+/// What of the request's body is still to go as its response is read:
+/// what `http_perhapsrewind` weighs when the response asks for another
+/// request.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Sending {
+    /// The body comes from the application, which reads it again to send
+    /// it again (`Curl_creader_needs_rewind`).
+    pub(crate) rereads: bool,
+    pub(crate) left: Left,
+}
+
+/// What is left of a body to send.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Left {
+    /// All of it went, or there is none.
+    #[default]
+    Nothing,
+    Bytes(u64),
+    /// Its size is not known.
+    Unknown,
+}
+
+/// Less than this left to send goes, to keep the connection
+/// (`little_upload_remains`).
+const LITTLE_LEFT: u64 = 2000;
+
 impl Meta {
+    /// The response asks for another request (`http_perhapsrewind`), by
+    /// a location to follow or at its end for credentials: a body the
+    /// application gives is to be read again, and the connection closes
+    /// rather than carry the rest of it for nothing, unless it closes
+    /// anyway or little is left.
+    pub(crate) fn perhaps_rewind(&mut self, sending: Sending, note: &mut Notes) {
+        if sending.rereads {
+            note.push(Note::NeedRewind);
+            self.rewinds = true;
+        }
+        if self.close {
+            return;
+        }
+        let abort = match sending.left {
+            Left::Nothing => false,
+            Left::Bytes(n) => n >= LITTLE_LEFT,
+            Left::Unknown => true,
+        };
+        if abort {
+            note.push(Note::CloseInstead(sending.left));
+            self.close = true;
+        }
+    }
+
+    /// The body is read again for the next request.
+    pub(crate) fn rewinds(&self) -> bool {
+        self.rewinds
+    }
+
     /// A status line was read.
     pub(crate) fn on_status(&mut self, status: Status) -> Option<Note> {
         self.bodyless = (100..200).contains(&status.code);
@@ -460,6 +530,7 @@ impl Meta {
         &mut self,
         status: Status,
         asked: &Asked,
+        sending: Sending,
     ) -> (Notes, Result<Framing, FramingError>) {
         let mut note = Notes::default();
         if self.size.is_none()
@@ -475,6 +546,10 @@ impl Meta {
         self.auth = AuthAct::of(status.code, &self.challenges, &asked.auth);
         if should_fail(status.code, asked, &self.auth) {
             return (note, Err(FramingError::Returned(status.code)));
+        }
+        // `Curl_http_auth_act`.
+        if self.auth.reload {
+            self.perhaps_rewind(sending, &mut note);
         }
         if self.length_void || self.chunked {
             self.size = None;

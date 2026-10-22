@@ -8,7 +8,7 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields::{self, BadLine, MAX_HEADERS};
-use super::framing::{Asked, Framing, FramingError, Meta, Notes};
+use super::framing::{Asked, Framing, FramingError, Meta, Notes, Sending};
 use crate::error::ErrorKind;
 
 /// The most one assembled line may be, the byte C's buffer keeps for
@@ -46,8 +46,6 @@ pub(crate) struct Line<'a> {
     pub(crate) kind: LineKind,
     /// What C says of the line before it delivers it.
     pub(crate) notes: Notes,
-    /// The line is the `Location:` the request is to follow.
-    pub(crate) redirects: bool,
     /// A failure C reports before it delivers the line, and raises after
     /// (`http_on_response`, which writes the head's last line on its way
     /// out).
@@ -306,6 +304,7 @@ impl HeadParser {
         &'s mut self,
         mut input: &[u8],
         transfer_bytes: &mut u64,
+        sending: Sending,
     ) -> Result<(usize, Option<HeadEvent<'s>>), HeadError> {
         if self.given {
             self.given = false;
@@ -321,7 +320,7 @@ impl HeadParser {
                 self.unfold();
             } else {
                 // The waiting line was whole.
-                return self.line_out(transfer_bytes).map(|e| (0, Some(e)));
+                return self.line_out(transfer_bytes, sending).map(|e| (0, Some(e)));
             }
         }
         while !input.is_empty() {
@@ -363,7 +362,9 @@ impl HeadParser {
                     }
                 }
             }
-            return self.line_out(transfer_bytes).map(|e| (used, Some(e)));
+            return self
+                .line_out(transfer_bytes, sending)
+                .map(|e| (used, Some(e)));
         }
         Ok((used, None))
     }
@@ -417,10 +418,13 @@ impl HeadParser {
     }
 
     /// Give out the complete line in `line` (`http_rw_hd`).
-    fn line_out(&mut self, transfer_bytes: &mut u64) -> Result<HeadEvent<'_>, HeadError> {
+    fn line_out(
+        &mut self,
+        transfer_bytes: &mut u64,
+        sending: Sending,
+    ) -> Result<HeadEvent<'_>, HeadError> {
         self.given = true;
         let mut note = Notes::default();
-        let mut redirects = false;
         // An error said before the line is delivered, and raised after.
         let mut first = Ok(());
         let mut bad_code = false;
@@ -435,7 +439,7 @@ impl HeadParser {
             } else {
                 self.phase = Phase::Done;
                 if !bad_code {
-                    let (said, framing) = self.meta.decide(status, &self.exchange.asked);
+                    let (said, framing) = self.meta.decide(status, &self.exchange.asked, sending);
                     note = said;
                     match framing {
                         Ok(framing) => self.framing = Some(framing),
@@ -472,7 +476,10 @@ impl HeadParser {
                         .on_header(&self.line, status, &self.exchange.asked)
                         .map_err(HeadError::Framing)?,
                 );
-                redirects = !following && self.meta.follow().is_some();
+                // A location to follow (`http_header_l`).
+                if !following && self.meta.follow().is_some() {
+                    self.meta.perhaps_rewind(sending, &mut note);
+                }
             }
             kind
         };
@@ -486,7 +493,6 @@ impl HeadParser {
             bytes: &self.line,
             kind,
             notes: note,
-            redirects,
             early: first,
             then,
         }))

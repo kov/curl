@@ -452,17 +452,18 @@ cargo-mutants run on the milestone's diff.
     for `curl_easy_header` and `curl_easy_nextheader`, by origin and request across step 26's
     redirects; the tool's `%header{}` and `%{header_json}` read from them (T1 tests 421, 764,
     765, 1670, 1671). Then `-z` and `CURLOPT_TIMECONDITION` (T1 test 1239).
-34. **core: read the response while the body goes.** **To do**, next after step 31 and
-    before step 32, so the decoders join the new loop. `Request::step` sends until the socket
-    blocks, then reads; C's `Curl_sendrecv` reads first and sends one buffer a pass. Measured 2026-10-21,
-    a 30 MB PUT to a server that answers 401 before reading the body: C reads the 401 after
-    about 320 KB, says "close instead of sending 29672430 more bytes" and reloads on a new
-    connection; the Rust leg sends all 30 MB, then reloads on the same one. With `Expect:
-    100-continue` both close before any body goes, and only the info line differs. No suite
-    test sees it. The change: each pass reads what the response has first, then sends at most
-    one buffer, as C does; a final status mid-body goes to the reload logic. With it, step
-    29's early close (`http_perhapsrewind`); a test of a server answering 401 after a few KB,
-    and `perf.py` before and after.
+34. **core: read the response while the body goes.** **Done.** A step reads first, then sends
+    what is left with at most one more buffer of the body, as C's `Curl_sendrecv` does
+    (ENGINE.md 3.2), and a response asking for another request weighs what of the body is left
+    (`http_perhapsrewind`): 2000 bytes or more, or an unknown amount, and the connection closes
+    rather than carry it ("close instead of sending N more bytes"); less, and it goes to be
+    dropped on a connection kept. Against a server answering a 30 MB PUT's head with a 307,
+    or a 401 to `--anyauth`, before reading the body, the trace matches C's line for line, and
+    both reload on a new connection after under a few MB. No suite test sees it; Rust tests do,
+    from a redirect, a challenge, a body of unknown size and one with little left. `perf.py`
+    cannot measure the Rust leg (its scorecard runs over TLS); measured 2026-10-21 instead,
+    release builds, a 256 MiB PUT and GET over plain HTTP to a local server, medians of 9:
+    upload client CPU 0.065 s before, 0.072 s after, C 0.078 s; downloads unchanged at 0.025 s.
 
 35. **share: safe across threads.** **To do**, before this milestone closes; approved. C's
     `CURLSH` may be used from several threads, guarded by the application's lock functions;

@@ -551,11 +551,9 @@ witness: curl-core proto::http::tests::an_error_response_stops_the_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-                return Ok(if self.sending() {
-                    ProtoStep::Blocked
+        Ok(if matches!(self.stage, Stage::Done) && !self.sending() {
 --- new
-                return Ok(if self.sending() {
-                    ProtoStep::Done
+        Ok(if matches!(self.stage, Stage::Done) {
 
 === the protocol's wait arms no timer
 file: crates/curl-core/src/multi/mod.rs
@@ -768,9 +766,9 @@ witness: curl-core proto::http::tests::a_retried_request_rewinds_its_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
 --- old
-        if line.redirects && upload.as_ref().is_some_and(Upload::needs_rewind) {
+        let rereads = upload.is_some_and(Upload::needs_rewind);
 --- new
-        if false && upload.as_ref().is_some_and(Upload::needs_rewind) {
+        let rereads = false;
 
 === an HTTP/1.0 response is forgotten
 file: crates/curl-core/src/multi/state.rs

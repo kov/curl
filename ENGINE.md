@@ -465,6 +465,14 @@ is the send buffer with what of it has gone, `eos_read`, `sent_all` (`upload_don
 (`upload_aborted`) and `ExpectState { None, Head, Awaiting(Instant), Open }` (`expect100`).
 The request is over when its response is and nothing more of it is to send.
 
+A step reads first, until the socket has nothing or the response is over, then sends what is
+left with at most one more buffer of the body (`Curl_sendrecv`), so a response that comes while
+the body goes is heard within a buffer. One that asks for another request, by a location to
+follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
+parser, fed a `Sending` with each piece): 2000 bytes or more, or an unknown amount, and the
+connection closes rather than carry it, the response ending at its head; less, and it goes to be
+dropped on a connection kept.
+
 The pipeline and the done gate belong to the engine. Each protocol owns a `Pipeline`
 (accounting, the write handlers, held output) and drives it; the engine moves `Exchanging` to
 `Done` only when the protocol says `Done` and `holds_output()` is false, so a protocol cannot

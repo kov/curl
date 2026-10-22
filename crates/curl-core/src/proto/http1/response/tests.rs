@@ -59,7 +59,7 @@ fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outc
                 out.body.extend_from_slice(input);
                 break;
             }
-            let (used, event) = match p.feed(input, transfer_bytes) {
+            let (used, event) = match p.feed(input, transfer_bytes, Sending::default()) {
                 Ok(fed) => fed,
                 Err(e) => {
                     out.error = Some(e);
@@ -237,7 +237,7 @@ fn a_reply_without_a_status_line_is_http_0_9() {
     assert_eq!(got.error, Some(HeadError::InvalidStatusLine), "after a 1xx");
     // `HTT` could still become a status line; nothing is decided.
     let mut p = HeadParser::new(allowed);
-    assert_eq!(p.feed(b"HTT", &mut 0), Ok((3, None)));
+    assert_eq!(p.feed(b"HTT", &mut 0, Sending::default()), Ok((3, None)));
 }
 
 /// An interim response's head is followed by the next response's.
@@ -356,7 +356,7 @@ fn a_request_s_head_bytes_are_counted() {
     let mut transfer = 0;
     let mut input = &b"HTTP/1.1 200 OK\r\nA: b\r\n\r\nrest"[..];
     while !p.is_done() {
-        let (used, _) = p.feed(input, &mut transfer).unwrap();
+        let (used, _) = p.feed(input, &mut transfer, Sending::default()).unwrap();
         input = &input[used..];
     }
     assert_eq!((p.request_bytes(), transfer, input), (25, 25, &b"rest"[..]));
@@ -372,7 +372,7 @@ fn interim_heads_alone_are_nothing() {
         let mut transfer = 0;
         let mut input = reply;
         while !input.is_empty() {
-            let (used, _) = p.feed(input, &mut transfer).unwrap();
+            let (used, _) = p.feed(input, &mut transfer, Sending::default()).unwrap();
             input = &input[used..];
         }
         p
@@ -763,14 +763,14 @@ fn trailers_are_noted() {
     let mut p = HeadParser::new(PLAIN);
     let mut input = &b"HTTP/1.1 200 OK\r\nContent-Type: a\r\nTrailer: x\r\n\r\n"[..];
     while !p.is_done() {
-        let (used, _) = p.feed(input, &mut 0).unwrap();
+        let (used, _) = p.feed(input, &mut 0, Sending::default()).unwrap();
         input = &input[used..];
     }
     assert!(p.meta().trailer());
     let mut p = HeadParser::new(PLAIN);
     let mut input = &b"HTTP/1.1 200 OK\r\nX-Trailer: x\r\n\r\n"[..];
     while !p.is_done() {
-        let (used, _) = p.feed(input, &mut 0).unwrap();
+        let (used, _) = p.feed(input, &mut 0, Sending::default()).unwrap();
         input = &input[used..];
     }
     assert!(!p.meta().trailer(), "no Trailer header");

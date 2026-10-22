@@ -14,6 +14,7 @@ mod bar;
 mod config;
 mod glob;
 mod help;
+mod ipfs;
 mod msgs;
 mod operate;
 mod options;

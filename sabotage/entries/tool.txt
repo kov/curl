@@ -888,3 +888,43 @@ witness: curl-tool gives_http_s_options_only_to_http
     let cookies = match http.then(|| joined_cookies(&op.cookies, &run.msgs)) {
 --- new
     let cookies = match Some(joined_cookies(&op.cookies, &run.msgs)) {
+
+=== an IPFS path is decoded, so an encoded slash climbs out
+file: crates/curl-tool/src/ipfs.rs
+witness: curl-tool ipfs::tests::rewrites_as_c_does
+--- old
+    let path = url.get(Part::Path, GetOptions::NONE).map_err(malformed)?;
+--- new
+    let path = url.get(Part::Path, decode).map_err(malformed)?;
+
+=== an IPFS URL keeps its own port at the gateway
+file: crates/curl-tool/src/ipfs.rs
+witness: curl-tool ipfs::tests::rewrites_as_c_does
+--- old
+        .and_then(|()| url.set(Part::Port, port.as_deref(), encode))
+--- new
+        .and_then(|()| port.as_deref().map_or(Ok(()), |p| url.set(Part::Port, Some(p), encode)))
+
+=== an IPFS gateway with a query is taken
+file: crates/curl-tool/src/ipfs.rs
+witness: curl-tool ipfs::tests::rewrites_as_c_does
+--- old
+        Err(UrlErrorKind::NoQuery) => {}
+--- new
+        Err(UrlErrorKind::NoQuery) | Ok(_) => {}
+
+=== a gateway file's line past C's buffer is taken
+file: crates/curl-tool/src/ipfs.rs
+witness: curl-tool ipfs::tests::reads_the_first_line_of_the_gateway_file
+--- old
+        if line.len() + 1 >= MAX_GATEWAY_LEN {
+--- new
+        if line.len() + 1 > MAX_GATEWAY_LEN {
+
+=== an IPFS URL is given HTTP's options
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool goes_to_the_ipfs_gateway
+--- old
+    let http = proto == UrlProto::Http;
+--- new
+    let http = proto != UrlProto::Other;

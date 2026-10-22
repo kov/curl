@@ -618,11 +618,34 @@ fn transfer(
         None => given,
     };
     let url = given.text;
-    // Only a URL taken for HTTP's is given HTTP's options.
-    let http = match url_proto(url, op.default_protocol) {
-        Ok(proto) => proto == UrlProto::Http,
+    // Only a URL taken for HTTP's is given HTTP's options; one for IPFS
+    // goes to its gateway, or nowhere, said once (`synthetic_error`).
+    let (proto, parsed) = match url_proto(url, op.default_protocol) {
+        Ok(found) => found,
         Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
     };
+    let rewritten;
+    let given = match (proto, parsed) {
+        (UrlProto::Ipfs(kind), Some(mut parsed)) => {
+            match crate::ipfs::rewrite(&mut parsed, kind, op.ipfs_gateway) {
+                Ok(url) => {
+                    rewritten = url;
+                    Given {
+                        text: &rewritten,
+                        ..given
+                    }
+                }
+                Err(e) => {
+                    let e = e.said(&msgs);
+                    let result = finish(op, run, given, &easy, &out, None, Ended::Said(e));
+                    return Step::Failed(result.expect_err("a failure stays one"));
+                }
+            }
+        }
+        _ => given,
+    };
+    let url = given.text;
+    let http = proto == UrlProto::Http;
     {
         let mut stream = out.stream();
         stream.show_headers = op.show_headers;
@@ -1567,14 +1590,20 @@ fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
 enum UrlProto {
     /// HTTP or HTTPS.
     Http,
+    /// IPFS or IPNS, which go to a gateway.
+    Ipfs(crate::ipfs::Kind),
     /// Another, or none it knows.
     Other,
 }
 
 /// The protocol of `url`'s scheme, guessed from its host if it names
 /// none, or `default`'s (`--proto-default`) then; a URL that does not
-/// parse has none (`url_proto_and_rewrite`).
-fn url_proto(url: &[u8], default: Option<Protocol>) -> Result<UrlProto, OutOfMemory> {
+/// parse has none (`url_proto_and_rewrite`). An IPFS one comes with the
+/// URL parsed, to be rewritten.
+fn url_proto(
+    url: &[u8],
+    default: Option<Protocol>,
+) -> Result<(UrlProto, Option<Url>), OutOfMemory> {
     let parse = ParseOptions {
         guess_scheme: true,
         non_support_scheme: true,
@@ -1582,7 +1611,7 @@ fn url_proto(url: &[u8], default: Option<Protocol>) -> Result<UrlProto, OutOfMem
     };
     let oom = |e| match e {
         UrlErrorKind::OutOfMemory => Err(OutOfMemory),
-        _ => Ok(UrlProto::Other),
+        _ => Ok((UrlProto::Other, None)),
     };
     let url = match Url::parse(url, parse) {
         Ok(url) => url,
@@ -1603,14 +1632,20 @@ fn url_proto(url: &[u8], default: Option<Protocol>) -> Result<UrlProto, OutOfMem
         }
         (Err(e), _) => return oom(e),
     };
+    if let Some(kind) = crate::ipfs::Kind::of_scheme(&scheme) {
+        return Ok((UrlProto::Ipfs(kind), Some(url)));
+    }
     let http = [&b"http"[..], b"https"]
         .iter()
         .any(|name| scheme.eq_ignore_ascii_case(name));
-    Ok(if http {
-        UrlProto::Http
-    } else {
-        UrlProto::Other
-    })
+    Ok((
+        if http {
+            UrlProto::Http
+        } else {
+            UrlProto::Other
+        },
+        None,
+    ))
 }
 
 /// Why the query of `--get` or `--url-query` could not be added to a
@@ -1849,8 +1884,8 @@ mod tests {
     /// names none, `--proto-default`'s then, none if it does not parse.
     #[test]
     fn takes_a_url_s_protocol_as_c_does() {
-        let http =
-            |url: &str, default| url_proto(url.as_bytes(), default).unwrap() == UrlProto::Http;
+        let proto = |url: &str, default| url_proto(url.as_bytes(), default).unwrap().0;
+        let http = |url: &str, default| proto(url, default) == UrlProto::Http;
         assert!(http("http://h/", None));
         assert!(http("HTTPS://h/", None));
         assert!(http("h/p", None), "guessed");
@@ -1860,6 +1895,11 @@ mod tests {
         assert!(http("http://h/", Some(Protocol::File)), "given");
         assert!(!http("file:///f", None));
         assert!(!http("ipfs://cid", None));
+        let ipfs =
+            |url: &str, default| proto(url, default) == UrlProto::Ipfs(crate::ipfs::Kind::Ipfs);
+        assert!(ipfs("IPFS://cid", None));
+        assert!(ipfs("ipfs://cid", Some(Protocol::Http)), "given");
+        assert!(!ipfs("cid", None));
         assert!(!http("http://[bad/", None), "does not parse");
     }
 

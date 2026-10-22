@@ -272,6 +272,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) url_query: Option<Vec<u8>>,
     /// `--request-target`.
     pub(crate) request_target: Option<&'a [u8]>,
+    /// `--ipfs-gateway`.
+    pub(crate) ipfs_gateway: Option<&'a [u8]>,
 }
 
 /// The addresses `--ipv4` and `--ipv6` limit a name to.
@@ -968,6 +970,13 @@ pub(crate) fn apply<'a>(
         }
         Opt::Globoff => line.current().globoff = value.toggle(),
         Opt::Get => line.current().get = value.toggle(),
+        Opt::IpfsGateway => {
+            let gateway = value.text();
+            if gateway.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().ipfs_gateway = Some(gateway);
+        }
         Opt::RequestTarget => {
             let target = value.text();
             if target.is_empty() {
@@ -1196,7 +1205,6 @@ pub(crate) fn apply<'a>(
         | Opt::Insecure
         | Opt::Interface
         | Opt::IpTos
-        | Opt::IpfsGateway
         | Opt::Keepalive
         | Opt::KeepaliveCnt
         | Opt::KeepaliveTime

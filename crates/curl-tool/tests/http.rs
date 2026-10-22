@@ -647,6 +647,39 @@ fn gives_http_s_options_only_to_http() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// An `ipfs://` URL goes to the gateway, under its path, as `/ipfs/` and
+/// the URL's host and path, without HTTP's options; a gateway that does
+/// not parse fails it, said once.
+#[test]
+fn goes_to_the_ipfs_gateway() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let gateway = format!("{}g", s.url());
+    let run = curl(&[
+        "-sS",
+        "-b",
+        "a=b",
+        "--ipfs-gateway",
+        &gateway,
+        "ipfs://cid/p?q#f",
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(
+        request.starts_with("GET /g/ipfs/cid/p?q HTTP/1.1\r\n"),
+        "{request}"
+    );
+    assert!(!request.contains("Cookie"), "{request}");
+    let run = curl(&["--ipfs-gateway", "http://a,b:1", "ipfs://cid"]);
+    assert_eq!(run.code, 43);
+    assert!(
+        run.stderr
+            .starts_with("curl: --ipfs-gateway was given a malformed URL\ncurl: try "),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.stderr.lines().count(), 2, "{}", run.stderr);
+}
+
 /// `-b` strings are joined by `;`, and a blank unless the next starts
 /// with one; together they may be 8199 bytes at most.
 #[test]

@@ -279,6 +279,13 @@ fn http_options_reach_the_request() {
     assert_eq!(netrc(c).0, NetrcMode::Ignored);
     pointer(c, ffi::CURLOPT_XOAUTH2_BEARER, c"tok".as_ptr().cast_mut());
     assert_eq!(options(c, |o| o.login.bearer.clone()), some(b"tok"));
+    // The login's user and password go, the token stays (setopt.c sets
+    // `STRING_USERNAME` and `STRING_PASSWORD` alone).
+    pointer(c, ffi::CURLOPT_USERPWD, c"v:w".as_ptr().cast_mut());
+    assert_eq!(login(c), (some(b"v"), some(b"w")));
+    pointer(c, ffi::CURLOPT_USERPWD, ptr::null_mut::<c_char>());
+    assert_eq!(login(c), (None, None));
+    assert_eq!(options(c, |o| o.login.bearer.clone()), some(b"tok"));
     use curl_core::options::AuthMethods as M;
     let auth = |c| options(c, |o| o.http.auth.0);
     assert_eq!(auth(c), M::BASIC, "Basic unless set");

@@ -112,3 +112,12 @@ features: debug-hooks
         | ffi::CURLINFO_SPEED_UPLOAD => time.map(|n| Value::Double(n as f64)),
 --- new
         | ffi::CURLINFO_SPEED_UPLOAD => time.map(|n| Value::Double(n as f64 / 1e6)),
+
+=== CURLOPT_USERPWD drops the Bearer token
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::http_options_reach_the_request
+--- old
+            login.user = pair.user;
+            login.password = pair.password;
+--- new
+            *login = pair;

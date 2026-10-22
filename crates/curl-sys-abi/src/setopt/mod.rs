@@ -596,13 +596,16 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.http.referer = unsafe { owned(p) }?;
         }
+        // The user and the password; the Bearer token stays, as in C.
         (ffi::CURLOPT_USERPWD, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            let login = match unsafe { string(p) }? {
+            let pair = match unsafe { string(p) }? {
                 Some(pair) => curl_core::options::Login::from_pair(pair)?,
                 None => curl_core::options::Login::default(),
             };
-            *options.login.make_mut()? = login;
+            let login = options.login.make_mut()?;
+            login.user = pair.user;
+            login.password = pair.password;
         }
         (ffi::CURLOPT_USERNAME, Ptr(p)) => {
             // SAFETY: as above.

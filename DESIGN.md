@@ -15,6 +15,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-os` | Operating-system interfaces: the command line, the terminal, the user database, sockets and polling. | in named modules |
 | `curl-psl` | libpsl's public suffix list, behind `curl_core::cookie::PublicSuffixes`. | yes: it is a binding |
 | `curl-zlib` | zlib's inflate, behind `curl_core::coding::Decoder`. | yes: it is a binding |
+| `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);

@@ -78,6 +78,7 @@ const MAX_FEATURES: usize = 64;
 /// A feature's name and bit in `curl_version_info_data`.
 fn c_feature(f: Feature) -> (&'static CStr, c_int) {
     match f {
+        Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
@@ -101,6 +102,7 @@ static COMPONENTS: OnceLock<CBuf<300>> = OnceLock::new();
 static VERSION: OnceLock<CBuf<32>> = OnceLock::new();
 static HOST: OnceLock<CBuf<32>> = OnceLock::new();
 static LIBZ: OnceLock<CBuf<32>> = OnceLock::new();
+static BROTLI: OnceLock<CBuf<32>> = OnceLock::new();
 static INFO: OnceLock<Data> = OnceLock::new();
 
 fn info() -> &'static curl_version_info_data {
@@ -129,6 +131,8 @@ fn info() -> &'static curl_version_info_data {
     let version = VERSION.get_or_init(|| cbuf(format_args!("{}", v.version)));
     let host = HOST.get_or_init(|| cbuf(format_args!("{}", v.host)));
     let libz = LIBZ.get_or_init(|| cbuf(format_args!("{}", curl_zlib::version())));
+    // Named, as C's `brotli_version` names it.
+    let brotli = BROTLI.get_or_init(|| cbuf(format_args!("brotli/{}", curl_brotli::version())));
     &INFO
         .get_or_init(|| {
             Data(curl_version_info_data {
@@ -148,8 +152,8 @@ fn info() -> &'static curl_version_info_data {
                 libidn: ptr::null(),
                 iconv_ver_num: 0,
                 libssh_version: ptr::null(),
-                brotli_ver_num: 0,
-                brotli_version: ptr::null(),
+                brotli_ver_num: curl_brotli::version_number(),
+                brotli_version: brotli.as_ptr(),
                 nghttp2_ver_num: 0,
                 nghttp2_version: ptr::null(),
                 quic_version: ptr::null(),
@@ -228,8 +232,9 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["Debug", "IPv6", "libz", "PSL"][..],
-                ffi::CURL_VERSION_DEBUG
+                &["brotli", "Debug", "IPv6", "libz", "PSL"][..],
+                ffi::CURL_VERSION_BROTLI
+                    | ffi::CURL_VERSION_DEBUG
                     | ffi::CURL_VERSION_IPV6
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
@@ -239,8 +244,11 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["IPv6", "libz", "PSL"][..],
-                ffi::CURL_VERSION_IPV6 | ffi::CURL_VERSION_LIBZ | ffi::CURL_VERSION_PSL
+                &["brotli", "IPv6", "libz", "PSL"][..],
+                ffi::CURL_VERSION_BROTLI
+                    | ffi::CURL_VERSION_IPV6
+                    | ffi::CURL_VERSION_LIBZ
+                    | ffi::CURL_VERSION_PSL
             )
         );
     }

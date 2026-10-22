@@ -1441,6 +1441,7 @@ fn decoders() -> curl_core::coding::Decoders {
     Decoders::none()
         .with(Coding::Deflate, curl_zlib::deflate)
         .with(Coding::Gzip, curl_zlib::gzip)
+        .with(Coding::Brotli, curl_brotli::decoder)
 }
 
 #[cfg(test)]

@@ -20,6 +20,9 @@ pub struct Release {
 /// only what it can do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Feature {
+    /// The `br` content coding is undone by brotli, which the tool and the
+    /// C ABI give every handle.
+    Brotli,
     /// A debug build, for the test suite: never for production.
     #[cfg(feature = "debug-hooks")]
     Debug,
@@ -37,6 +40,7 @@ impl Feature {
     /// The name `curl -V` lists it under.
     pub fn name(self) -> &'static str {
         match self {
+            Feature::Brotli => "brotli",
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
             Feature::Ipv6 => "IPv6",
@@ -47,9 +51,15 @@ impl Feature {
 }
 
 #[cfg(feature = "debug-hooks")]
-const FEATURES: &[Feature] = &[Feature::Debug, Feature::Ipv6, Feature::Libz, Feature::Psl];
+const FEATURES: &[Feature] = &[
+    Feature::Brotli,
+    Feature::Debug,
+    Feature::Ipv6,
+    Feature::Libz,
+    Feature::Psl,
+];
 #[cfg(not(feature = "debug-hooks"))]
-const FEATURES: &[Feature] = &[Feature::Ipv6, Feature::Libz, Feature::Psl];
+const FEATURES: &[Feature] = &[Feature::Brotli, Feature::Ipv6, Feature::Libz, Feature::Psl];
 
 /// A URL scheme the build can transfer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

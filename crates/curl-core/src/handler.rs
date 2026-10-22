@@ -111,6 +111,18 @@ pub enum HeaderOrigin {
     Interim,
 }
 
+/// A list of lines the application keeps, and may change after giving
+/// it: read again each time a transfer would read the option it is given
+/// for, so that a line added since is seen (`CURLOPT_HTTPHEADER` and the
+/// other `curl_slist` options, which C walks where it uses them).
+pub trait LineSource: Send + Sync {
+    /// Give each line, in order, to `line`; stop at its first error.
+    fn lines(
+        &self,
+        line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+    ) -> Result<(), OutOfMemory>;
+}
+
 /// What a trace entry is (`curl_infotype`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DebugKind {
@@ -233,6 +245,12 @@ impl Handler<dyn TextSink> {
 impl Handler<dyn DebugHandler> {
     pub fn debug(handler: impl DebugHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn LineSource> {
+    pub fn lines(source: impl LineSource + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(source)?)
     }
 }
 

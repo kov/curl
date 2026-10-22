@@ -536,3 +536,47 @@ witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_mov
             if !slot.pause.blocks(run.state.directions(slot.easy.options())) {
 --- new
             if !slot.pause.blocks(crate::deliver::Directions::default()) {
+
+=== the application's lists are read only when they are set
+file: crates/curl-core/src/multi/state.rs
+witness: curl-sys-abi handle_tests::header_lines_appended_after_the_option_are_sent
+--- old
+    if let Err(e) = refill_lists(cx) {
+--- new
+    if let Err(e) = Ok::<(), ErrorKind>(()) {
+
+=== the application's lists are read only for a transfer's first request
+file: crates/curl-core/src/multi/state.rs
+witness: curl-sys-abi handle_tests::header_lines_appended_during_a_redirect_go_with_the_next_request
+--- old
+    if let Err(e) = refill_lists(cx) {
+--- new
+    if let Err(e) = if run.inherited.first.is_none() { refill_lists(cx) } else { Ok(()) } {
+
+=== a CONNECT sent again for credentials reads the lists as the first did
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-sys-abi handle_tests::proxy_header_lines_appended_after_the_option_are_sent
+--- old
+    super::refill_lists(cx)?;
+--- new
+    // The lists as they were.
+
+=== the resolve list is read as it was set, not as the transfer starts
+file: crates/curl-core/src/multi/state.rs
+witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used
+--- old
+    cx.easy_mut()
+        .options_mut()
+        .resolve
+        .refill()
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+--- new
+    // As it was set.
+
+=== a copy of the handle reads the lines it was copied with, not the list
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-sys-abi handle_tests::header_lines_appended_after_the_option_are_sent
+--- old
+        copy.source.clone_from(&self.source);
+--- new
+        let _ = &self.source;

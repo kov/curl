@@ -176,9 +176,10 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   re-entrant C call through the live context, by a table generated from `lib/api.c`.
 - **Options are read when C reads them.** C reads options live, so a setopt during a transfer
   takes effect per piece, per request or per transfer depending on the option. The core reads
-  each option where C does (handlers at each call, limits at the transfer's start); an option
-  whose C storage the application may change after setopt is copied at setopt instead
-  (`CURLOPT_HTTPHEADER`'s list).
+  each option where C does (handlers at each call, limits at the transfer's start). A list the
+  application keeps and may append to after setopt (`CURLOPT_HTTPHEADER`, `PROXYHEADER`,
+  `CONNECT_TO`, `RESOLVE`) is a `LineSource` handler the core reads again where C walks the
+  list; the shim's walks the application's `curl_slist`, which it keeps as C does.
 - **Strings handed to C belong to the shim.** It keeps NUL-terminated copies with the lifetime
   the C API promises (`CURLINFO_EFFECTIVE_URL` lives until the next transfer or cleanup), so
   the core never stores C-shaped strings.

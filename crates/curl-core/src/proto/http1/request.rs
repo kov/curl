@@ -7,6 +7,7 @@ use crate::coding::{Coding, Decoders};
 use crate::conn::Peer;
 use crate::date::HttpDate;
 use crate::error::ErrorKind;
+use crate::handler::{Handler, LineSource};
 use crate::text::Text;
 use std::fmt::Write as _;
 
@@ -15,6 +16,13 @@ use super::fields;
 /// The most a request head may be, the terminating byte C's buffer keeps
 /// for itself taken off (`DYN_HTTP_REQUEST`).
 const MAX_HEAD: usize = 1024 * 1024 - 1;
+
+/// A copy of `bytes`.
+fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(bytes)?;
+    Ok(copy)
+}
 
 /// The version an HTTP request is made in (`CURLOPT_HTTP_VERSION`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,10 +174,12 @@ impl UserHeader {
 }
 
 /// The headers the application adds (`CURLOPT_HTTPHEADER`), in the order
-/// given.
+/// given: fixed, or read from a source again as each request starts.
 #[derive(Debug, Default)]
 pub struct UserHeaders {
+    /// As last read from the source, if there is one.
     lines: Vec<UserHeader>,
+    source: Option<Handler<dyn LineSource>>,
 }
 
 impl UserHeaders {
@@ -177,11 +187,30 @@ impl UserHeaders {
     pub fn new<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Result<UserHeaders, OutOfMemory> {
         let mut headers = UserHeaders::default();
         for line in lines {
-            let mut copy = Vec::new();
-            copy.try_extend_from_slice(line)?;
-            headers.lines.try_push(classify(copy))?;
+            headers.lines.try_push(classify(copy(line)?))?;
         }
         Ok(headers)
+    }
+
+    /// The headers `source` gives, read now and as each request starts.
+    pub fn from_source(source: Handler<dyn LineSource>) -> Result<UserHeaders, OutOfMemory> {
+        let mut headers = UserHeaders {
+            lines: Vec::new(),
+            source: Some(source),
+        };
+        headers.refill()?;
+        Ok(headers)
+    }
+
+    /// The source's lines read again, in place of those read before.
+    pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
+        let Some(source) = &self.source else {
+            return Ok(());
+        };
+        let mut lines = Vec::new();
+        source.lines(&mut |line| lines.try_push(classify(copy(line)?)))?;
+        self.lines = lines;
+        Ok(())
     }
 
     /// The lines, as the application gave them.
@@ -189,9 +218,11 @@ impl UserHeaders {
         self.lines.iter().map(|h| &h.line[..])
     }
 
-    /// A copy (`curl_easy_duphandle`).
+    /// A copy (`curl_easy_duphandle`), reading the same source.
     pub fn try_clone(&self) -> Result<UserHeaders, OutOfMemory> {
-        UserHeaders::new(self.lines())
+        let mut copy = UserHeaders::new(self.lines())?;
+        copy.source.clone_from(&self.source);
+        Ok(copy)
     }
 
     /// Whether a line replaces the library's header `name`

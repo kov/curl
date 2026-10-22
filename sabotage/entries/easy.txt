@@ -34,9 +34,9 @@ witness: curl-sys-abi handle_tests::infos_answer_from_the_report
 file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::http_options_reach_the_request
 --- old
-            options.http.headers = UserHeaders::new(unsafe { list_lines(p) })?;
+        for text in unsafe { list_lines(self.0.as_ptr().cast()) } {
 --- new
-            options.http.headers = UserHeaders::new(unsafe { list_lines(p) }.take(1))?;
+        for text in unsafe { list_lines(self.0.as_ptr().cast()) }.take(1) {
 
 === HTTP/2 is taken as if it were built in
 file: crates/curl-sys-abi/src/setopt/mod.rs

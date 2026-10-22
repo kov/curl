@@ -17,6 +17,7 @@ use core::ptr::NonNull;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
+use curl_core::handler::{Handler, LineSource};
 use curl_core::options::{
     ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines, LowSpeed,
     MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits, TimeCondition,
@@ -154,6 +155,43 @@ unsafe fn list_lines<'a>(p: *mut c_void) -> impl Iterator<Item = &'a [u8]> {
             }
         }
     })
+}
+
+/// The application's `curl_slist`, walked each time the core reads the
+/// option it was given for: the application may append to it while the
+/// handle keeps it, and keeps it alive until it sets another, clears the
+/// option or cleans the handle up, as C's documentation of each list
+/// option asks.
+struct Slist(NonNull<ffi::curl_slist>);
+
+// SAFETY: the list is the application's, walked only by the transfers of
+// the handle it was given to and of its copies (`curl_easy_duphandle`
+// copies the pointer, as C's does); C lets one thread use a handle at a
+// time, and makes the application keep its list from changing while
+// another handle reads it, as C reads it too.
+unsafe impl Send for Slist {}
+// SAFETY: as above; walking the list changes nothing.
+unsafe impl Sync for Slist {}
+
+impl LineSource for Slist {
+    fn lines(
+        &self,
+        line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+    ) -> Result<(), OutOfMemory> {
+        // SAFETY: the application keeps the list and its strings alive
+        // while the handle has it, as the option's contract says.
+        for text in unsafe { list_lines(self.0.as_ptr().cast()) } {
+            line(text)?;
+        }
+        Ok(())
+    }
+}
+
+/// A source of the list at `p`, or none for NULL.
+fn slist(p: *mut c_void) -> Result<Option<Handler<dyn LineSource>>, OutOfMemory> {
+    NonNull::new(p.cast::<ffi::curl_slist>())
+        .map(|list| Handler::lines(Slist(list)))
+        .transpose()
 }
 
 /// The HTTP version a request asks for (`setopt_HTTP_VERSION`): HTTP/2
@@ -675,29 +713,35 @@ fn apply(
             // SAFETY: as above.
             options.http.user_agent = unsafe { owned(p) }?;
         }
+        // Each list is the application's, read as C walks it: the
+        // headers as each request starts, CONNECT_TO as each connection
+        // is looked for, RESOLVE as the next transfer starts.
         (ffi::CURLOPT_HTTPHEADER, Ptr(p)) => {
-            // Copied: the core reads no list of the application's.
-            // SAFETY: the application passes a list or NULL.
-            options.http.headers = UserHeaders::new(unsafe { list_lines(p) })?;
+            options.http.headers = match slist(p)? {
+                Some(source) => UserHeaders::from_source(source)?,
+                None => UserHeaders::default(),
+            };
             // A POST's body depends on its `Transfer-Encoding`.
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_PROXYHEADER, Ptr(p)) => {
-            // SAFETY: the application passes a list or NULL.
-            options.proxy.headers = UserHeaders::new(unsafe { list_lines(p) })?;
+            options.proxy.headers = match slist(p)? {
+                Some(source) => UserHeaders::from_source(source)?,
+                None => UserHeaders::default(),
+            };
         }
         // Any bit but `CURLHEADER_SEPARATE`'s is ignored, as in C.
         (ffi::CURLOPT_HEADEROPT, Long(n)) => {
             options.proxy.unified_headers = n & ffi::CURLHEADER_SEPARATE == 0;
         }
-        (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => {
-            // SAFETY: the application passes a list or NULL.
-            options.connect_to.set(unsafe { list_lines(p) })?;
-        }
-        (ffi::CURLOPT_RESOLVE, Ptr(p)) => {
-            // SAFETY: the application passes a list or NULL.
-            options.resolve.set(unsafe { list_lines(p) })?;
-        }
+        (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => match slist(p)? {
+            Some(source) => options.connect_to.set_source(source)?,
+            None => options.connect_to.set([])?,
+        },
+        (ffi::CURLOPT_RESOLVE, Ptr(p)) => match slist(p)? {
+            Some(source) => options.resolve.set_source(source)?,
+            None => options.resolve.set([])?,
+        },
         (ffi::CURLOPT_DEFAULT_PROTOCOL, Ptr(p)) => {
             // SAFETY: as above.
             options.set_default_protocol(unsafe { string(p) }?)?;

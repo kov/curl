@@ -95,6 +95,8 @@ fn proxy(c: &Connecting) -> (&Peer, Option<Secret<'_>>, bool) {
 /// A `CONNECT` made (`start_CONNECT`), with the proxy's credentials as
 /// far as they go.
 fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshake>, ErrorKind> {
+    // Each `CONNECT` reads the application's lists as they are now.
+    super::refill_lists(cx)?;
     let target = c.target();
     let mut digits = [0; 20];
     let port = decimal(u64::from(target.port()), &mut digits);

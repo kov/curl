@@ -204,8 +204,8 @@ fn http_options_reach_the_request() {
         list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
     }
     pointer(c, ffi::CURLOPT_HTTPHEADER, list);
-    // SAFETY: the list made above, which the handle does not keep.
-    unsafe { crate::strings::curl_slist_free_all(list) };
+    // Kept by the handle until the option is cleared, as C keeps it.
+    let headers = list;
     let mut list = ptr::null_mut();
     for line in [c"a:1:127.0.0.1", c"-b:2"] {
         // SAFETY: a list made here, and a C string.
@@ -217,13 +217,13 @@ fn http_options_reach_the_request() {
         })
     };
     assert_eq!(pointer(c, ffi::CURLOPT_RESOLVE, list), CURLE_OK);
-    // SAFETY: the list made above, which the handle does not keep.
-    unsafe { crate::strings::curl_slist_free_all(list) };
     assert_eq!(resolve(c), [b"a:1:127.0.0.1".to_vec(), b"-b:2".to_vec()]);
     assert_eq!(
         pointer(c, ffi::CURLOPT_RESOLVE, ptr::null_mut::<c_char>()),
         CURLE_OK
     );
+    // SAFETY: the list made above, which the handle no longer keeps.
+    unsafe { crate::strings::curl_slist_free_all(list) };
     assert!(resolve(c).is_empty());
     let login = |c| options(c, |o| (o.login.user.clone(), o.login.password.clone()));
     let some = |s: &[u8]| Some(s.to_vec());
@@ -375,13 +375,13 @@ fn http_options_reach_the_request() {
         })
     };
     assert_eq!(pointer(c, ffi::CURLOPT_CONNECT_TO, list), CURLE_OK);
-    // SAFETY: the list made above, which the handle does not keep.
-    unsafe { crate::strings::curl_slist_free_all(list) };
     assert_eq!(connect_to(c), [b"::a:1".to_vec(), b"b:2:c:3".to_vec()]);
     assert_eq!(
         pointer(c, ffi::CURLOPT_CONNECT_TO, ptr::null_mut::<c_char>()),
         CURLE_OK
     );
+    // SAFETY: the list made above, which the handle no longer keeps.
+    unsafe { crate::strings::curl_slist_free_all(list) };
     assert!(connect_to(c).is_empty());
     assert_eq!(
         strings(c),
@@ -400,6 +400,8 @@ fn http_options_reach_the_request() {
         assert_eq!(pointer(c, o, null), CURLE_OK);
     }
     assert_eq!(strings(c), (None, None, vec![]));
+    // SAFETY: the list made above, which the handle no longer keeps.
+    unsafe { crate::strings::curl_slist_free_all(headers) };
     // Nothing raises a signal: the option is taken and changes nothing.
     assert_eq!(long(c, ffi::CURLOPT_NOSIGNAL, 1), CURLE_OK);
     let version = |c| options(c, |o| o.http.version);
@@ -572,7 +574,8 @@ fn the_post_options_combine_as_in_c() {
         CURLE_OK
     );
     assert_eq!(body(c), Body::Read(Some(5)));
-    // SAFETY: made above, copied by the option, not used again.
+    pointer(c, ffi::CURLOPT_HTTPHEADER, ptr::null_mut::<c_char>());
+    // SAFETY: made above, no longer kept by the handle, not used again.
     unsafe { crate::strings::curl_slist_free_all(list) };
     assert_eq!(long(c, ffi::CURLOPT_POST, 0), CURLE_OK);
     assert_eq!(method(c), Method::Get);
@@ -3027,7 +3030,7 @@ fn proxy_options_are_checked_as_in_c() {
         );
     }
     assert_eq!(socks5(c), [true, false, false], "unchanged");
-    // The strings and the header list, copied; NULL takes them away.
+    // The strings copied, the header list kept; NULL takes them away.
     pointer(c, ffi::CURLOPT_PRE_PROXY, c"socks4://q".as_ptr().cast_mut());
     pointer(c, ffi::CURLOPT_PROXYPASSWORD, c"pw".as_ptr().cast_mut());
     let mut list = ptr::null_mut();
@@ -3036,8 +3039,6 @@ fn proxy_options_are_checked_as_in_c() {
         list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
     }
     assert_eq!(pointer(c, ffi::CURLOPT_PROXYHEADER, list), CURLE_OK);
-    // SAFETY: the list made above, which the handle does not keep.
-    unsafe { crate::strings::curl_slist_free_all(list) };
     let kept = |c| {
         options(c, |o| {
             (
@@ -3066,6 +3067,8 @@ fn proxy_options_are_checked_as_in_c() {
     ] {
         assert_eq!(pointer(c, o, ptr::null_mut::<c_char>()), CURLE_OK);
     }
+    // SAFETY: the list made above, which the handle no longer keeps.
+    unsafe { crate::strings::curl_slist_free_all(list) };
     assert_eq!(kept(c), (None, None, vec![]));
     // Only `CURLHEADER_SEPARATE`'s bit counts.
     let unified = |c| options(c, |o| o.proxy.unified_headers);
@@ -3348,6 +3351,249 @@ fn unknown_auth_bits_hold_basic_back() {
         assert_eq!(got, sent, "{bits:#x}");
         // SAFETY: a live handle, not used again.
         unsafe { curl_easy_cleanup(c) };
+    }
+}
+
+/// `lines` appended to `list`, which is returned: the same head once it
+/// has one, as `curl_slist_append` keeps it.
+fn append(mut list: *mut ffi::curl_slist, lines: &[&CStr]) -> *mut ffi::curl_slist {
+    for line in lines {
+        // SAFETY: a list made by the caller, or NULL, and a C string.
+        list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
+    }
+    list
+}
+
+/// The lines of `request` that start with `X-`.
+fn x_lines(request: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(request)
+        .split("\r\n")
+        .filter(|l| l.starts_with("X-"))
+        .map(str::to_owned)
+        .collect()
+}
+
+const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// The application's header list is read as each transfer starts, not
+/// copied when it is set: lines appended after `CURLOPT_HTTPHEADER`, as
+/// WebKit appends them, go out, and so do those appended between two
+/// transfers, and a copy of the handle reads the same list.
+#[test]
+fn header_lines_appended_after_the_option_are_sent() {
+    let (port, server) = serve(vec![OK, OK, OK]);
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    let list = append(ptr::null_mut(), &[c"X-A: 1"]);
+    assert_eq!(pointer(c, ffi::CURLOPT_HTTPHEADER, list), CURLE_OK);
+    assert_eq!(append(list, &[c"X-B: 2", c"X-C: 3", c"X-D: 4"]), list);
+    // SAFETY: a live handle, whose list lives through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    append(list, &[c"X-E: 5"]);
+    // SAFETY: as above.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    // SAFETY: a live handle.
+    let copy = unsafe { easy::curl_easy_duphandle(c) };
+    assert!(!copy.is_null());
+    append(list, &[c"X-F: 6"]);
+    // SAFETY: the copy, live, with the same list.
+    assert_eq!(unsafe { curl_easy_perform(copy) }, CURLE_OK);
+    let requests = server.join().unwrap();
+    let four = ["X-A: 1", "X-B: 2", "X-C: 3", "X-D: 4"];
+    assert_eq!(x_lines(&requests[0]), four);
+    assert_eq!(x_lines(&requests[1])[4..], ["X-E: 5"]);
+    assert_eq!(x_lines(&requests[2])[4..], ["X-E: 5", "X-F: 6"]);
+    // SAFETY: live handles, not used again; then the list they kept.
+    unsafe {
+        curl_easy_cleanup(copy);
+        curl_easy_cleanup(c);
+        crate::strings::curl_slist_free_all(list);
+    }
+}
+
+/// Appends a line to the list at `data` when a redirect's or a proxy's
+/// demand for credentials comes, between the two requests it leads to.
+unsafe extern "C" fn append_on_redirect(
+    b: *mut c_char,
+    size: usize,
+    n: usize,
+    data: *mut c_void,
+) -> usize {
+    // SAFETY: the header line, `size * n` bytes.
+    let line = unsafe { core::slice::from_raw_parts(b.cast::<u8>(), size * n) };
+    if line.starts_with(b"HTTP/1.1 302") || line.starts_with(b"HTTP/1.1 407") {
+        // SAFETY: `data` is the list's head, which an append keeps.
+        append(
+            unsafe { *data.cast::<*mut ffi::curl_slist>() },
+            &[c"X-Late: yes"],
+        );
+    }
+    size * n
+}
+
+/// The header list is read again for each request of a transfer: a line
+/// appended between a redirect's requests goes with the second, as C
+/// sends it.
+#[test]
+fn header_lines_appended_during_a_redirect_go_with_the_next_request() {
+    let (port, server) = serve(vec![
+        b"HTTP/1.1 302 Moved\r\nLocation: /b\r\nContent-Length: 0\r\n\
+          Connection: close\r\n\r\n",
+        OK,
+    ]);
+    let c = curl_easy_init();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/a")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    long(c, ffi::CURLOPT_FOLLOWLOCATION, 1);
+    let mut list = append(ptr::null_mut(), &[c"X-Early: yes"]);
+    pointer(c, ffi::CURLOPT_HTTPHEADER, list);
+    function(
+        c,
+        ffi::CURLOPT_HEADERFUNCTION,
+        append_on_redirect as WriteFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_HEADERDATA, &raw mut list);
+    // SAFETY: a live handle, whose list lives through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let requests = server.join().unwrap();
+    assert_eq!(x_lines(&requests[0]), ["X-Early: yes"]);
+    assert_eq!(x_lines(&requests[1]), ["X-Early: yes", "X-Late: yes"]);
+    // SAFETY: a live handle, not used again; then the list it kept.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::strings::curl_slist_free_all(list);
+    }
+}
+
+/// `CURLOPT_PROXYHEADER`'s list is read as each `CONNECT` is made: a line
+/// appended after the option goes to the proxy, and one appended as the
+/// proxy asks for credentials goes with the `CONNECT` that gives them.
+#[test]
+fn proxy_header_lines_appended_after_the_option_are_sent() {
+    use std::io::Write as _;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let first = read_request(&mut peer);
+        peer.write_all(
+            b"HTTP/1.1 407 Auth\r\nProxy-Authenticate: Basic realm=\"p\"\r\n\
+              Content-Length: 0\r\n\r\n",
+        )
+        .unwrap();
+        let connect = read_request(&mut peer);
+        peer.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            .unwrap();
+        let get = read_request(&mut peer);
+        peer.write_all(OK).unwrap();
+        (first, connect, get)
+    });
+    let c = curl_easy_init();
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"http://origin.invalid/".as_ptr().cast_mut(),
+    );
+    let proxy = std::ffi::CString::new(format!("http://127.0.0.1:{port}")).unwrap();
+    pointer(c, ffi::CURLOPT_PROXY, proxy.as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_HTTPPROXYTUNNEL, 1);
+    long(c, ffi::CURLOPT_HEADEROPT, ffi::CURLHEADER_SEPARATE);
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    pointer(c, ffi::CURLOPT_PROXYUSERPWD, c"u:p".as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_PROXYAUTH, ffi::CURLAUTH_ANY as c_long);
+    let mut list = append(ptr::null_mut(), &[c"X-P: 1"]);
+    pointer(c, ffi::CURLOPT_PROXYHEADER, list);
+    append(list, &[c"X-Q: 2"]);
+    function(
+        c,
+        ffi::CURLOPT_HEADERFUNCTION,
+        append_on_redirect as WriteFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_HEADERDATA, &raw mut list);
+    // SAFETY: a live handle, whose list lives through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let (first, connect, get) = server.join().unwrap();
+    assert!(first.starts_with(b"CONNECT origin.invalid:80 "));
+    assert_eq!(x_lines(&first), ["X-P: 1", "X-Q: 2"]);
+    let connect = String::from_utf8(connect).unwrap();
+    assert!(
+        connect.contains("\r\nProxy-Authorization: Basic dTpw\r\n"),
+        "{connect}"
+    );
+    assert_eq!(
+        x_lines(connect.as_bytes()),
+        ["X-P: 1", "X-Q: 2", "X-Late: yes"]
+    );
+    assert!(x_lines(&get).is_empty(), "the proxy's alone");
+    // SAFETY: a live handle, not used again; then the list it kept.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::strings::curl_slist_free_all(list);
+    }
+}
+
+/// `CURLOPT_CONNECT_TO` and `CURLOPT_RESOLVE` read the application's
+/// list when it is used, not when it is set: an entry appended after the
+/// option is taken. RESOLVE's is read once for each time it is set, as
+/// the next transfer starts, so an entry appended after that transfer is
+/// not, as in C.
+#[test]
+fn connect_to_and_resolve_entries_appended_after_the_option_are_used() {
+    let (port, server) = serve(vec![OK, OK]);
+    let c = curl_easy_init();
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    pointer(
+        c,
+        ffi::CURLOPT_URL,
+        c"http://unreach.invalid:1/ct".as_ptr().cast_mut(),
+    );
+    let to = std::ffi::CString::new(format!("unreach.invalid:1:127.0.0.1:{port}")).unwrap();
+    let list = append(ptr::null_mut(), &[c"nothere:9::"]);
+    pointer(c, ffi::CURLOPT_CONNECT_TO, list);
+    append(list, &[&to]);
+    // SAFETY: a live handle, whose list lives through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    pointer(c, ffi::CURLOPT_CONNECT_TO, ptr::null_mut::<c_char>());
+    // SAFETY: the list made above, which the handle no longer keeps.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+
+    let url = std::ffi::CString::new(format!("http://fake.invalid:{port}/rs")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    let entry = std::ffi::CString::new(format!("fake.invalid:{port}:127.0.0.1")).unwrap();
+    let list = append(ptr::null_mut(), &[c"nothere:9:127.0.0.1"]);
+    pointer(c, ffi::CURLOPT_RESOLVE, list);
+    append(list, &[&entry]);
+    // SAFETY: as above.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let url = std::ffi::CString::new(format!("http://fake2.invalid:{port}/rs2")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    let entry = std::ffi::CString::new(format!("fake2.invalid:{port}:127.0.0.1")).unwrap();
+    append(list, &[&entry]);
+    let code = {
+        // SAFETY: as above.
+        unsafe { curl_easy_perform(c) }
+    };
+    assert_eq!(
+        code,
+        ffi::CURLE_COULDNT_RESOLVE_HOST,
+        "read once per setting"
+    );
+    let requests = server.join().unwrap();
+    assert!(requests[0].starts_with(b"GET /ct HTTP/1.1\r\nHost: unreach.invalid:1\r\n"));
+    assert!(requests[1].starts_with(b"GET /rs HTTP/1.1\r\n"));
+    // SAFETY: a live handle, not used again; then the list it kept.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::strings::curl_slist_free_all(list);
     }
 }
 

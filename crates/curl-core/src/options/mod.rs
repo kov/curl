@@ -13,8 +13,8 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
 use crate::handler::{
-    DebugHandler, Handler, HeaderHandler, ProgressHandler, ReadHandler, Rewind, TextSink,
-    TrailerHandler, WriteHandler,
+    DebugHandler, Handler, HeaderHandler, LineSource, ProgressHandler, ReadHandler, Rewind,
+    TextSink, TrailerHandler, WriteHandler,
 };
 use crate::time::TimeLimit;
 use crate::url::SharedUrl;
@@ -532,6 +532,20 @@ impl ResolveList {
         Ok(())
     }
 
+    /// The list `source` gives, as `set` sets one: what it gives when the
+    /// next transfer starts is read, and only then (`Curl_loadhostpairs`).
+    pub fn set_source(&mut self, source: Handler<dyn LineSource>) -> Result<(), OutOfMemory> {
+        self.entries.set_source(source)?;
+        self.stamp += 1;
+        Ok(())
+    }
+
+    /// The source's entries read again, as they are to be read into the
+    /// cache: the same setting of the list still.
+    pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
+        self.entries.refill()
+    }
+
     pub(crate) fn stamp(&self) -> u64 {
         self.stamp
     }
@@ -544,13 +558,18 @@ impl ResolveList {
     }
 }
 
-/// A list of lines, each as the application gave it.
+/// A list of lines, each as the application gave it: fixed, or read
+/// from a source again each time it is used.
 #[derive(Debug, Default)]
-pub struct Lines(Vec<Vec<u8>>);
+pub struct Lines {
+    /// As last read from the source, if there is one.
+    lines: Vec<Vec<u8>>,
+    source: Option<Handler<dyn LineSource>>,
+}
 
 impl Lines {
     pub fn iter(&self) -> impl Iterator<Item = &[u8]> {
-        self.0.iter().map(|e| &e[..])
+        self.lines.iter().map(|e| &e[..])
     }
 
     /// The lines given, in place of those before.
@@ -562,13 +581,34 @@ impl Lines {
         for line in lines {
             owned.try_push(copy(line)?)?;
         }
-        self.0 = owned;
+        *self = Lines {
+            lines: owned,
+            source: None,
+        };
+        Ok(())
+    }
+
+    /// The lines `source` gives, in place of those before: read now, and
+    /// again each time they are used.
+    pub fn set_source(&mut self, source: Handler<dyn LineSource>) -> Result<(), OutOfMemory> {
+        self.source = Some(source);
+        self.refill()
+    }
+
+    /// The source's lines read again, in place of those read before.
+    pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
+        let Some(source) = &self.source else {
+            return Ok(());
+        };
+        let mut lines = Vec::new();
+        source.lines(&mut |line| lines.try_push(copy(line)?))?;
+        self.lines = lines;
         Ok(())
     }
 
     /// `line` after those given before.
     pub fn push(&mut self, line: &[u8]) -> Result<(), OutOfMemory> {
-        self.0.try_push(copy(line)?)
+        self.lines.try_push(copy(line)?)
     }
 
     fn try_clone(&self) -> Result<Lines, OutOfMemory> {
@@ -576,7 +616,10 @@ impl Lines {
         for line in self.iter() {
             owned.try_push(copy(line)?)?;
         }
-        Ok(Lines(owned))
+        Ok(Lines {
+            lines: owned,
+            source: self.source.clone(),
+        })
     }
 }
 

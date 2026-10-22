@@ -431,7 +431,8 @@ decides from a `Location:`, with redirects (step 26).
 
 **A transfer runs as legs.** Init runs C's pretransfer once (the report restarted, `Starts::op`,
 the option's URL parsed) and `start_leg` for the first request: `Starts::single`, the limits
-armed, POSTQUEUE, the URL read back into `Run::url`, the protocol and a connection.
+armed, the application's lists read again from their sources (the headers, the proxy's headers
+and CONNECT_TO, as C walks them for each request; each `CONNECT` reads them too), POSTQUEUE, the URL read back into `Run::url`, the protocol and a connection.
 `Curl_retry_request` is the engine's: a request that got nothing back over a reused connection
 (`ProtoState::retryable`: HTTP with no head line and no body byte), at the end of the exchange,
 on a receive error, or on a send error at DO, closes the connection and goes to
@@ -1151,7 +1152,7 @@ asked, is kept too, as an answer with no addresses ("Negative DNS entry"), which
 fast; that the resolver could not answer is not. A failure gives
 the reference build's reason, c-ares's ("Domain name not found"), then fails again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
-stamp it last read); they are permanent unless given with `+`, and `*` answers for any name on
+stamp it last read), as its source has them then; they are permanent unless given with `+`, and `*` answers for any name on
 its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ---

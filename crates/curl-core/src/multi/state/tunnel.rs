@@ -125,6 +125,8 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshak
         method: b"CONNECT",
         uri: &authority,
         get_or_head: true,
+        // Nothing the application set for an origin goes to a proxy.
+        trusted: None,
     };
     let random = |bytes: &mut [u8; 12]| curl_os::random::fill(bytes).map_err(|_| ());
     let options = cx.easy().options();

@@ -81,6 +81,8 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
+        // A name alone, without a bit, as in C.
+        Feature::Httpsig => (c"HTTPSIG", 0),
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
         Feature::Libz => (c"libz", crate::ffi::CURL_VERSION_LIBZ),
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
@@ -265,7 +267,7 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["brotli", "Debug", "IPv6", "libz", "PSL", "zstd"][..],
+                &["brotli", "Debug", "HTTPSIG", "IPv6", "libz", "PSL", "zstd"][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_DEBUG
                     | ffi::CURL_VERSION_IPV6
@@ -278,7 +280,7 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["brotli", "IPv6", "libz", "PSL", "zstd"][..],
+                &["brotli", "HTTPSIG", "IPv6", "libz", "PSL", "zstd"][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_IPV6
                     | ffi::CURL_VERSION_LIBZ

@@ -111,9 +111,9 @@ witness: curl-core proto::http::tests::sigv4::a_request_is_signed_where_authoriz
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::aws_sigv4_is_used_at_once_and_never_by_a_proxy
 --- old
-        let proxy = if proxy.contains(AuthMethods::AWS_SIGV4) {
+        let signatures = AuthMethods::AWS_SIGV4 | AuthMethods::HTTPSIG;
 --- new
-        let proxy = if false {
+        let signatures = AuthMethods::HTTPSIG;
 
 === CURLOPT_AWS_SIGV4 makes AWS SigV4 the one method
 file: crates/curl-sys-abi/src/setopt/mod.rs
@@ -127,6 +127,6 @@ witness: curl-sys-abi handle_tests::aws_sigv4_is_the_one_method
 file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::http_options_reach_the_request
 --- old
-    if rest & !ffi::CURLAUTH_HTTPSIG == 0 {
+    if rest == 0 {
 --- new
-    if rest & !(ffi::CURLAUTH_HTTPSIG | ffi::CURLAUTH_AWS_SIGV4) == 0 {
+    if rest & !ffi::CURLAUTH_AWS_SIGV4 == 0 {

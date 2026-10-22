@@ -1,0 +1,111 @@
+=== a message signature goes to an origin the settings may not go to
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
+--- old
+                (request.trusted.is_some(), None)
+--- new
+                (true, None)
+
+=== a proxy is asked for a message signature
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
+--- old
+        let signatures = AuthMethods::AWS_SIGV4 | AuthMethods::HTTPSIG;
+--- new
+        let signatures = AuthMethods::AWS_SIGV4;
+
+=== a message signature needs credentials it does not use
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
+--- old
+        if credentials.is_none() && !self.want.contains(AuthMethods::HTTPSIG) {
+--- new
+        if credentials.is_none() {
+
+=== the application's own Signature-Input is signed over
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::needs_its_options_and_steps_aside_for_the_application_s
+--- old
+    if request.headers.replaces(b"Signature") || request.headers.replaces(b"Signature-Input") {
+--- new
+    if request.headers.replaces(b"Signature") {
+
+=== a header's values are joined without the space after the comma
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::signs_the_components_named
+--- old
+            value.put(&[b", "])?;
+--- new
+            value.put(&[b","])?;
+
+=== the components are taken in the case given
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::signs_the_components_named
+--- old
+    lowered.make_ascii_lowercase();
+--- new
+    lowered.make_ascii_uppercase();
+
+=== the key's line ends are read as hex
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::reads_the_key_as_c_does
+--- old
+        .rposition(|&b| b != b'\r' && b != b'\n')
+--- new
+        .rposition(|&b| b != b'\r')
+
+=== a seventeenth component is taken
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::refuses_components_as_c_does
+--- old
+        if out.len() == MAX_COMPONENTS {
+--- new
+        if out.len() == MAX_COMPONENTS + 1 {
+
+=== a component is covered twice
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::refuses_components_as_c_does
+--- old
+            .any(|b| a.name(lowered) == b.name(lowered))
+--- new
+            .any(|_| false)
+
+=== a quote in what goes quoted is not escaped
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::quotes_and_bounds_what_it_signs
+--- old
+            if b == b'\\' || b == b'"' {
+--- new
+            if b == b'\\' {
+
+=== a line fills C's buffer without room for its zero byte
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::quotes_and_bounds_what_it_signs
+--- old
+        if self.0.len() + len + 1 > MAX_PART {
+--- new
+        if self.0.len() + len > MAX_PART {
+
+=== the query is not signed unless named
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::signs_the_query_the_url_has
+--- old
+        if has_query {
+--- new
+        if false {
+
+=== setting the algorithm leaves the other methods asked for
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_message_signature_is_the_one_method
+--- old
+                Some(_) => curl_core::options::AuthMethods::HTTPSIG,
+--- new
+                Some(_) => *auth | curl_core::options::AuthMethods::HTTPSIG,
+
+=== taking a method out takes the message signature out too
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::a_message_signature_is_the_one_method
+--- old
+        AuthMethods(!self.0 & Self::ALL.0)
+--- new
+        AuthMethods(!self.0 & Self::ANY.0)

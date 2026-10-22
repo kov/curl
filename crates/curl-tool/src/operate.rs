@@ -27,8 +27,8 @@ use crate::bar::Bar;
 use crate::glob::{self, Glob};
 use crate::msgs::Messages;
 use crate::options::{
-    self as tool, CommandLine, Fail, Global, HttpVersion, IpVersion, Node, Operation, Output,
-    Resume, Upload, exit_code,
+    self as tool, CommandLine, Fail, Global, HttpVersion, Httpsig, IpVersion, Node, Operation,
+    Output, Resume, Upload, exit_code,
 };
 use crate::os_message;
 use crate::output;
@@ -700,6 +700,9 @@ fn transfer(
     if configure(&mut easy, op, run, &out, &config).is_err() {
         return failed(&easy, ErrorKind::OutOfMemory);
     }
+    if http && let Err(e) = message_signature(easy.options_mut(), op.httpsig, &msgs) {
+        return failed(&easy, e);
+    }
     if let Some(pair) = op.proxy_user.as_deref() {
         let set = match easy.options_mut().proxy.make_mut() {
             Ok(proxy) => proxy.set_user_password(Some(pair)),
@@ -1280,7 +1283,8 @@ fn http_options(o: &mut options::Options, op: &Operation<'_>) -> Result<(), OutO
     let http = &mut o.http;
     // As `CURLOPT_AWS_SIGV4` takes it, after the methods: given, it is
     // the one method; not, it is none of them.
-    http.aws_sigv4 = op.aws_sigv4.map(copy).transpose()?;
+    http.signing
+        .set(|g| &mut g.aws_sigv4, op.aws_sigv4.map(copy).transpose()?)?;
     http.auth.0 = match op.aws_sigv4 {
         Some(_) => options::AuthMethods::AWS_SIGV4,
         None => http.auth.0 & !options::AuthMethods::AWS_SIGV4,
@@ -1328,6 +1332,77 @@ fn http_options(o: &mut options::Options, op: &Operation<'_>) -> Result<(), OutO
 }
 
 /// `bytes`, owned.
+/// What an HTTP message signature signs with, if any of it is given, as
+/// `httpsig_setopts` sets it after the other HTTP options: the key and
+/// its name required, the algorithm Ed25519 unless given, and the key
+/// read from a file for `@` and its name. What is wrong is said here.
+fn message_signature(
+    o: &mut options::Options,
+    given: Httpsig<'_>,
+    msgs: &Messages,
+) -> Result<(), ErrorKind> {
+    use options::SignatureAlgorithm as A;
+    if given == Httpsig::default() {
+        return Ok(());
+    }
+    let oom = |_| ErrorKind::OutOfMemory;
+    let Some(key) = given.key else {
+        msgs.error(&[b"--httpsig-key is required"]);
+        return Err(ErrorKind::FailedInit);
+    };
+    let Some(key_id) = given.key_id else {
+        msgs.error(&[b"--httpsig-keyid is required"]);
+        return Err(ErrorKind::FailedInit);
+    };
+    let algorithm = match given.algorithm {
+        None => A::Ed25519,
+        Some(name) if name.eq_ignore_ascii_case(b"ed25519") => A::Ed25519,
+        Some(name) if name.eq_ignore_ascii_case(b"hmac-sha256") => A::HmacSha256,
+        Some(name) => {
+            msgs.error(&[b"--httpsig-algo: unsupported algorithm '", name, b"'"]);
+            return Err(ErrorKind::FailedInit);
+        }
+    };
+    o.http.auth.0 = options::AuthMethods::HTTPSIG;
+    let components = given.components.map(copy).transpose().map_err(oom)?;
+    let key_id = copy(key_id).map_err(oom)?;
+    let key = match key.split_first() {
+        Some((b'@', file)) => {
+            // C opens `-` as a file of that name.
+            let path: &[u8] = if file == b"-" { b"./-" } else { file };
+            match crate::slurp::read(path, crate::slurp::As::Text) {
+                Ok(hex) if hex.is_empty() => {
+                    msgs.error(&[b"httpsig: key file '", file, b"' is empty"]);
+                    return Err(ErrorKind::BadFunctionArgument);
+                }
+                Ok(hex) => hex,
+                Err(crate::slurp::ReadFailed::Open) => {
+                    msgs.error(&[b"httpsig: cannot open key file '", file, b"'"]);
+                    return Err(ErrorKind::ReadError);
+                }
+                Err(crate::slurp::ReadFailed::Read) => {
+                    msgs.error(&[b"httpsig: cannot read key file '", file, b"'"]);
+                    return Err(ErrorKind::ReadError);
+                }
+                Err(crate::slurp::ReadFailed::OutOfMemory) => {
+                    return Err(ErrorKind::OutOfMemory);
+                }
+            }
+        }
+        Some(_) => copy(key).map_err(oom)?,
+        None => {
+            msgs.error(&[b"httpsig: key is empty"]);
+            return Err(ErrorKind::BadFunctionArgument);
+        }
+    };
+    let signature = &mut o.http.signing.make_mut().map_err(oom)?.message;
+    signature.algorithm = Some(algorithm);
+    signature.components = components;
+    signature.key_id = Some(key_id);
+    signature.key = Some(key);
+    Ok(())
+}
+
 fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut owned = Vec::new();
     owned.try_extend_from_slice(bytes)?;

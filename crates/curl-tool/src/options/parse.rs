@@ -1029,6 +1029,37 @@ mod tests {
             sigv4(&["x", "--basic", "--aws-sigv4", "a:b", "--aws-sigv4", ""]),
             (basic | AuthMethods::AWS_SIGV4, Some(&b""[..]))
         );
+        // `--httpsig-algo` asks for the method; each is refused blank,
+        // and so forgotten.
+        let op = &line(&[
+            "x",
+            "--basic",
+            "--httpsig-algo",
+            "a",
+            "--httpsig-key",
+            "k",
+            "--httpsig-keyid",
+            "i",
+            "--httpsig-headers",
+            "h",
+        ])
+        .operations[0];
+        let given = crate::options::Httpsig {
+            algorithm: Some(b"a"),
+            key: Some(b"k"),
+            key_id: Some(b"i"),
+            components: Some(b"h"),
+        };
+        assert_eq!((op.auth, op.httpsig), (basic | AuthMethods::HTTPSIG, given));
+        for option in [
+            "--httpsig-algo",
+            "--httpsig-key",
+            "--httpsig-keyid",
+            "--httpsig-headers",
+        ] {
+            let parsed = parsed(&["x", option, "a", option, ""]);
+            assert_eq!(parsed.err(), Some(ParamError::BlankString), "{option}");
+        }
     }
 
     /// `--location-trusted` alone sends credentials on; `--max-redirs`

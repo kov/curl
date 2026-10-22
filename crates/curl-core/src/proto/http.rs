@@ -3,7 +3,7 @@
 //! `Curl_http`, `Curl_http_write_resp` and `Curl_http_done`, and
 //! `lib/transfer.c`'s receive loop).
 
-use curl_alloc::{TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use crate::coding::{AcceptEncoding, Coding, Decoder, Identity, Named, Unrecognized};
 use crate::conn::io::{Events, Recv, Sent};
@@ -42,6 +42,7 @@ use std::num::NonZeroUsize;
 pub(crate) mod auth;
 pub(crate) mod cookies;
 pub(crate) mod digest;
+pub(crate) mod httpsig;
 pub(crate) mod sigv4;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
@@ -105,6 +106,17 @@ fn auth_trace<H: Host>(
             ],
         );
     }
+}
+
+/// `host`, and `:port` if there is one.
+fn with_port(out: &mut Vec<u8>, host: &[u8], port: Option<u16>) -> Result<(), OutOfMemory> {
+    out.try_extend_from_slice(host)?;
+    if let Some(port) = port {
+        let mut digits = [0u8; 20];
+        out.try_push(b':')?;
+        out.try_extend_from_slice(request::decimal(u64::from(port), &mut digits))?;
+    }
+    Ok(())
 }
 
 fn made(output: Result<Output, OutputError>) -> Result<Output, ErrorKind> {
@@ -567,7 +579,7 @@ impl Request {
         };
         let port = self.peer.port();
         let request = sigv4::Request {
-            params: options.http.aws_sigv4.as_deref(),
+            params: options.http.signing.aws_sigv4.as_deref(),
             method,
             kind: match self.method {
                 Method::Get | Method::Head => sigv4::Kind::GetOrHead,
@@ -591,6 +603,58 @@ impl Request {
             now,
         };
         Some(sigv4::sign(&request))
+    }
+
+    /// The request signed with an HTTP message signature, unless the
+    /// application signs it itself (`Curl_output_httpsig`).
+    fn sign_httpsig(
+        &self,
+        options: &crate::options::Options,
+        method: &[u8],
+        now: i64,
+    ) -> httpsig::Signing {
+        let (path, query) = match self.target.iter().position(|&b| b == b'?') {
+            Some(q) => (&self.target[..q], Some(&self.target[q + 1..])),
+            None => (&self.target[..], None),
+        };
+        // `@authority` is what `Host` says: the application's, if it
+        // gives one that says anything, else the library's
+        // (`httpsig_authority`).
+        let port = self.peer.port();
+        let port = (port != DEFAULT_PORT).then_some(port);
+        let mut authority = Vec::new();
+        let custom = self
+            .gate
+            .same_origin()
+            .and_then(|same| options.http.headers.host_value(same));
+        let made = match custom {
+            Some(value) if !value.is_empty() => authority.try_extend_from_slice(value),
+            given => {
+                // An empty one leaves the host as the URL names it,
+                // without an IPv6 address's brackets.
+                let host = if given.is_some() {
+                    self.peer.name()
+                } else {
+                    self.peer.shown()
+                };
+                with_port(&mut authority, host, port)
+            }
+        };
+        if made.is_err() {
+            return httpsig::Signing {
+                notes: Vec::new(),
+                result: Err(httpsig::SignError::OutOfMemory),
+            };
+        }
+        httpsig::sign(&httpsig::Request {
+            signature: &options.http.signing.message,
+            method,
+            authority: &authority,
+            path: if path.is_empty() { b"/" } else { path },
+            query,
+            headers: &options.http.headers,
+            now,
+        })
     }
 
     /// The method the request line names: the application's own, unless
@@ -654,6 +718,8 @@ impl Request {
             method,
             uri: &self.target,
             get_or_head,
+            // Nothing the application set for an origin goes to a proxy.
+            trusted: None,
         };
         // The proxy's own headers may replace it (`Curl_checkProxyheaders`).
         let proxy_custom = options
@@ -668,6 +734,7 @@ impl Request {
         ))?;
         let request = AuthRequest {
             origin: &self.peer,
+            trusted: self.gate.trusted(),
             ..request
         };
         let custom = http.headers.replaces(b"Authorization");
@@ -692,23 +759,38 @@ impl Request {
         } else {
             None
         };
-        let signed = match signing {
-            None => None,
-            Some(sigv4::Signing { notes, result }) => match result {
-                Ok(lines) => Some((notes, lines)),
+        let signed = if auth.used == AuthMethods::HTTPSIG {
+            let signing = self.sign_httpsig(options, method, now);
+            match signing.result {
+                Ok(lines) => Some((signing.notes, lines.unwrap_or_default())),
                 Err(e) => {
-                    // What C traces before it fails: the proxy's
-                    // authenticating, and the signing's notes.
+                    // What C traces before it fails, as for SigV4.
                     auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
-                    for note in &notes {
+                    for note in &signing.notes {
                         trace::info_with(cx, &[note]);
                     }
-                    return Err(match e.message() {
-                        Some(said) => trace::fail(cx, e.kind(), format_args!("{said}")),
-                        None => e.kind(),
-                    });
+                    return Err(e.fail(cx));
                 }
-            },
+            }
+        } else {
+            match signing {
+                None => None,
+                Some(sigv4::Signing { notes, result }) => match result {
+                    Ok(lines) => Some((notes, lines)),
+                    Err(e) => {
+                        // What C traces before it fails: the proxy's
+                        // authenticating, and the signing's notes.
+                        auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+                        for note in &notes {
+                            trace::info_with(cx, &[note]);
+                        }
+                        return Err(match e.message() {
+                            Some(said) => trace::fail(cx, e.kind(), format_args!("{said}")),
+                            None => e.kind(),
+                        });
+                    }
+                },
+            }
         };
         let probe = auth.probe || proxy_auth.probe;
         let auth_asked = cx.easy().auth.asked(

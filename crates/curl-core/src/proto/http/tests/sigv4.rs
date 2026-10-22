@@ -11,7 +11,7 @@ const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
 fn signing(params: &'static [u8]) -> impl FnOnce(&mut Options) {
     move |o: &mut Options| {
         *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
-        o.http.aws_sigv4 = Some(params.to_vec());
+        o.http.signing.make_mut().unwrap().aws_sigv4 = Some(params.to_vec());
         o.http.auth = crate::options::HttpAuth(AuthMethods::AWS_SIGV4);
     }
 }

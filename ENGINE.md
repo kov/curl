@@ -1722,8 +1722,14 @@ wanted is sent at once, more wait for a peer to choose. Basic and Bearer are don
 AWS SigV4, never a proxy's and never offered by a peer, is in use at once when it is the one
 method wanted and sends nothing itself: the request signs itself where it renders
 (`proto::http::sigv4`, with what the request will be: method, path, query, the application's
-headers, the POST data), and the lines it makes go where `Authorization` goes. Digest is in use from the start and done only once it answers a challenge, so a request with
-a body sent before that is a probe: `Content-Length: 0` in place of the application's, no
+headers, the POST data), and the lines it makes go where `Authorization` goes. An HTTP
+message signature (RFC 9421, `proto::http::httpsig`) is the same, but signs with its own key
+(`Options::http.signing.message`, in the `Cold` group that holds SigV4's parameters too), so it
+is used without credentials as well, and only for an origin the request's gate trusts; its
+`Signature-Input` and `Signature` go where `Authorization` goes, unless the application sends
+either. HMAC-SHA256 only: Ed25519 is not built in, as in a C build without a TLS library that
+has it. Digest is in use from the start and done only once it answers a challenge, so a request
+with a body sent before that is a probe: `Content-Length: 0` in place of the application's, no
 body read (`authneg`). The request hands its response's head parser an `AuthAsked`, and the
 parser reads a 401's `WWW-Authenticate:` and a 407's `Proxy-Authenticate:` lines into each
 side's `Challenges` as they come, as it reads
@@ -1975,7 +1981,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | `HeaderStore` growth | per line, after the budget check | 300 KiB/response, 20× per transfer, 5000 |
 | `HeldOutput` | only while held | 64 MiB → TooLarge |
 | `UserHeaders`, `Url`, option strings | setopt | per handle; shared strings are `TryRc` |
-| a cold option group (`Cold<T>`: proxy, login, `.netrc`, cookies) | the first setopt of one of its options | one per group per handle |
+| a cold option group (`Cold<T>`: proxy, login, `.netrc`, cookies, signing) | the first setopt of one of its options | one per group per handle |
 | a Digest challenge's state | a response's Digest challenge | one per peer per handle |
 | socket table entries beyond the reserved two | connect-machine stage entry, before the socket opens | 6 attempts + ALPN racers |
 | error detail | on error | dropped if boxing it fails |

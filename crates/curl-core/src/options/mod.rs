@@ -1075,10 +1075,6 @@ pub struct Http {
     /// or of the whole URL to a proxy; nothing else reads it
     /// (`CURLOPT_REQUEST_TARGET`).
     pub request_target: Option<Vec<u8>>,
-    /// What AWS Signature Version 4 signs with,
-    /// `provider0[:provider1[:region[:service]]]`, if set
-    /// (`CURLOPT_AWS_SIGV4`).
-    pub aws_sigv4: Option<Vec<u8>>,
     /// A response code of 400 or more fails the transfer at the end of
     /// its head (`CURLOPT_FAILONERROR`).
     pub fail_on_error: bool,
@@ -1101,6 +1097,75 @@ pub struct Http {
     pub unrestricted_auth: bool,
     pub auth: HttpAuth,
     pub cookies: Cold<Cookies>,
+    /// What a request is signed with.
+    pub signing: Cold<Signing>,
+}
+
+/// What a request is signed with, by the methods that sign it in place
+/// of credentials.
+#[derive(Debug)]
+pub struct Signing {
+    /// What AWS Signature Version 4 signs with,
+    /// `provider0[:provider1[:region[:service]]]`, if set
+    /// (`CURLOPT_AWS_SIGV4`).
+    pub aws_sigv4: Option<Vec<u8>>,
+    pub message: MessageSignature,
+}
+
+/// What an HTTP message signature (RFC 9421) signs with: set, the
+/// algorithm makes it the one method (`CURLOPT_HTTPSIG_ALGORITHM`).
+#[derive(Debug)]
+pub struct MessageSignature {
+    pub algorithm: Option<SignatureAlgorithm>,
+    /// The key, in hex (`CURLOPT_HTTPSIG_KEY`).
+    pub key: Option<Vec<u8>>,
+    /// What the key is known as to the server (`CURLOPT_HTTPSIG_KEYID`).
+    pub key_id: Option<Vec<u8>>,
+    /// The components signed, separated by blanks: `method`,
+    /// `authority`, `path`, `query`, or a header's name with a colon;
+    /// unless set, the first three and the query if there is one
+    /// (`CURLOPT_HTTPSIG_HEADERS`).
+    pub components: Option<Vec<u8>>,
+}
+
+/// An HTTP message signature's algorithm (`CURLHTTPSIG_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignatureAlgorithm {
+    Ed25519,
+    HmacSha256,
+}
+
+impl ColdGroup for Signing {
+    const UNSET: &'static Signing = &Signing::NONE;
+    const NONE: Signing = Signing {
+        aws_sigv4: None,
+        message: MessageSignature {
+            algorithm: None,
+            key: None,
+            key_id: None,
+            components: None,
+        },
+    };
+}
+
+impl Signing {
+    fn try_clone(&self) -> Result<Signing, OutOfMemory> {
+        Ok(Signing {
+            aws_sigv4: self.aws_sigv4.as_deref().map(copy).transpose()?,
+            message: self.message.try_clone()?,
+        })
+    }
+}
+
+impl MessageSignature {
+    fn try_clone(&self) -> Result<MessageSignature, OutOfMemory> {
+        Ok(MessageSignature {
+            algorithm: self.algorithm,
+            key: self.key.as_deref().map(copy).transpose()?,
+            key_id: self.key_id.as_deref().map(copy).transpose()?,
+            components: self.components.as_deref().map(copy).transpose()?,
+        })
+    }
 }
 
 /// Where a transfer's cookies come from and go.
@@ -1167,6 +1232,10 @@ impl AuthMethods {
     /// AWS Signature Version 4, which no server asks for: used at once
     /// when it is the one method wanted (`CURLOPT_AWS_SIGV4`).
     pub const AWS_SIGV4: AuthMethods = AuthMethods(8);
+    /// HTTP message signatures (RFC 9421), which no server asks for:
+    /// used at once when it is the one method wanted, never with a proxy
+    /// (`CURLOPT_HTTPSIG_ALGORITHM`).
+    pub const HTTPSIG: AuthMethods = AuthMethods(0x10);
     /// Methods this library does not implement, asked for all the same:
     /// never used, but with one of the others, that one is used only once
     /// a server asks for it, as with `ONLY`.
@@ -1177,6 +1246,9 @@ impl AuthMethods {
     /// Every method there is, chosen from as a server asks
     /// (`CURLAUTH_ANY`).
     pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 8 | 0x40 | 0x80);
+    /// Every method, and the bits beside them: `ANY` and the message
+    /// signature, which `CURLAUTH_ANY` leaves out.
+    const ALL: AuthMethods = AuthMethods(Self::ANY.0 | Self::HTTPSIG.0);
 
     pub fn contains(self, other: AuthMethods) -> bool {
         self.0 & other.0 == other.0
@@ -1189,7 +1261,8 @@ impl AuthMethods {
     /// The one method this is, if it is exactly one this library
     /// implements; with `ONLY` or `OTHER`, none.
     pub(crate) fn single(self) -> Option<AuthMethods> {
-        let known = Self::BASIC.0 | Self::DIGEST.0 | Self::BEARER.0 | Self::AWS_SIGV4.0;
+        let known =
+            Self::BASIC.0 | Self::DIGEST.0 | Self::BEARER.0 | Self::AWS_SIGV4.0 | Self::HTTPSIG.0;
         (self.0.count_ones() == 1 && self.0 & !known == 0).then_some(self)
     }
 
@@ -1200,6 +1273,7 @@ impl AuthMethods {
             Self::DIGEST => "Digest",
             Self::BEARER => "Bearer",
             Self::AWS_SIGV4 => "AWS_SIGV4",
+            Self::HTTPSIG => "HTTPSIG",
             _ => unreachable!("one method: {self:?}"),
         }
     }
@@ -1222,7 +1296,7 @@ impl std::ops::BitAnd for AuthMethods {
 impl std::ops::Not for AuthMethods {
     type Output = AuthMethods;
     fn not(self) -> AuthMethods {
-        AuthMethods(!self.0 & Self::ANY.0)
+        AuthMethods(!self.0 & Self::ALL.0)
     }
 }
 
@@ -1233,6 +1307,7 @@ impl fmt::Debug for AuthMethods {
             (Self::DIGEST, "DIGEST"),
             (Self::BEARER, "BEARER"),
             (Self::AWS_SIGV4, "AWS_SIGV4"),
+            (Self::HTTPSIG, "HTTPSIG"),
             (Self::OTHER, "OTHER"),
             (Self::ONLY, "ONLY"),
         ];
@@ -1305,7 +1380,6 @@ impl Http {
             referer: self.referer.as_deref().map(copy).transpose()?,
             custom_method: self.custom_method.as_deref().map(copy).transpose()?,
             request_target: self.request_target.as_deref().map(copy).transpose()?,
-            aws_sigv4: self.aws_sigv4.as_deref().map(copy).transpose()?,
             fail_on_error: self.fail_on_error,
             continue_wait: self.continue_wait,
             keep_sending_on_error: self.keep_sending_on_error,
@@ -1316,6 +1390,7 @@ impl Http {
             unrestricted_auth: self.unrestricted_auth,
             auth: self.auth,
             cookies: self.cookies.try_clone(Cookies::try_clone)?,
+            signing: self.signing.try_clone(Signing::try_clone)?,
         })
     }
 }

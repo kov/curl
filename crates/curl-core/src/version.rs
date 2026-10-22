@@ -26,6 +26,8 @@ pub enum Feature {
     /// A debug build, for the test suite: never for production.
     #[cfg(feature = "debug-hooks")]
     Debug,
+    /// HTTP message signatures (RFC 9421), though only with HMAC-SHA256.
+    Httpsig,
     /// Connections over IPv6, and its addresses in URLs.
     Ipv6,
     /// The `deflate` and `gzip` content codings are undone by zlib, which
@@ -46,6 +48,7 @@ impl Feature {
             Feature::Brotli => "brotli",
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
+            Feature::Httpsig => "HTTPSIG",
             Feature::Ipv6 => "IPv6",
             Feature::Libz => "libz",
             Feature::Psl => "PSL",
@@ -58,6 +61,7 @@ impl Feature {
 const FEATURES: &[Feature] = &[
     Feature::Brotli,
     Feature::Debug,
+    Feature::Httpsig,
     Feature::Ipv6,
     Feature::Libz,
     Feature::Psl,
@@ -66,6 +70,7 @@ const FEATURES: &[Feature] = &[
 #[cfg(not(feature = "debug-hooks"))]
 const FEATURES: &[Feature] = &[
     Feature::Brotli,
+    Feature::Httpsig,
     Feature::Ipv6,
     Feature::Libz,
     Feature::Psl,

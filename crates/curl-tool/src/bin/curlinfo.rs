@@ -14,7 +14,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("digest", true),
     ("negotiate-auth", false),
     ("aws", true),
-    ("httpsig", false),
+    ("httpsig", true),
     ("DoH", false),
     ("HTTP-auth", true),
     ("Mime", false),

@@ -947,9 +947,9 @@ witness: curl-core proto::http::auth::tests::reads_challenges_as_c
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
 --- old
-        let (active, value) = match self.picked.methods().single() {
+        let (active, value) = match (self.picked.methods().single(), credentials) {
 --- new
-        let (active, value) = match Some(self.picked.methods() & AuthMethods::BASIC).filter(|m| !m.is_empty()) {
+        let (active, value) = match (Some(self.picked.methods() & AuthMethods::BASIC).filter(|m| !m.is_empty()), credentials) {
 
 === the method chosen outlives the methods wanted
 file: crates/curl-core/src/proto/http/auth.rs
@@ -996,9 +996,9 @@ witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::tests::a_token_goes_as_bearer
 --- old
-                let value = if custom || !credentials.has_bearer() {
+                let value = match credentials.filter(|c| !custom && c.has_bearer()) {
 --- new
-                let value = if true {
+                let value = match credentials.filter(|_| false) {
 
 === a netrc file overrides the application's login
 file: crates/curl-core/src/proto/http/auth.rs

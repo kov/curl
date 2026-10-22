@@ -98,6 +98,17 @@ pub(crate) enum Request<'a> {
     CaEmbed,
 }
 
+/// What an HTTP message signature signs with, as the command line gives
+/// it; none of it given, nothing is signed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Httpsig<'a> {
+    pub(crate) algorithm: Option<&'a [u8]>,
+    /// The key in hex, or `@` and the file it is in.
+    pub(crate) key: Option<&'a [u8]>,
+    pub(crate) key_id: Option<&'a [u8]>,
+    pub(crate) components: Option<&'a [u8]>,
+}
+
 /// The transfers one part of the command line asks for: the whole of it,
 /// or the part between two `--next`.
 #[derive(Debug, Default)]
@@ -166,6 +177,10 @@ pub(crate) struct Operation<'a> {
     pub(crate) auth: AuthMethods,
     /// `--aws-sigv4`: what AWS SigV4 signs with, as given.
     pub(crate) aws_sigv4: Option<&'a [u8]>,
+    /// `--httpsig-algo`, `--httpsig-key`, `--httpsig-keyid` and
+    /// `--httpsig-headers`: what an HTTP message signature signs with,
+    /// as given.
+    pub(crate) httpsig: Httpsig<'a>,
     /// `--request`.
     pub(crate) custom_request: Option<&'a [u8]>,
     /// `--referer`, without its `;auto`.
@@ -939,6 +954,26 @@ pub(crate) fn apply<'a>(
             op.auth = op.auth | AuthMethods::AWS_SIGV4;
             op.aws_sigv4 = Some(value.text());
         }
+        Opt::HttpsigAlgorithm | Opt::HttpsigKey | Opt::HttpsigKeyid | Opt::HttpsigHeaders => {
+            let op = line.current();
+            let given = &mut op.httpsig;
+            let field = match spec.opt {
+                Opt::HttpsigAlgorithm => {
+                    // As C's tool, whatever the transfer's protocol.
+                    op.auth = op.auth | AuthMethods::HTTPSIG;
+                    &mut given.algorithm
+                }
+                Opt::HttpsigKey => &mut given.key,
+                Opt::HttpsigKeyid => &mut given.key_id,
+                _ => &mut given.components,
+            };
+            *field = None;
+            let text = value.text();
+            if text.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            *field = Some(text);
+        }
         Opt::Basic => {
             let op = line.current();
             op.auth = if value.toggle() {
@@ -1274,10 +1309,6 @@ pub(crate) fn apply<'a>(
         | Opt::Http2PriorKnowledge
         | Opt::Http3
         | Opt::Http3Only
-        | Opt::HttpsigAlgorithm
-        | Opt::HttpsigHeaders
-        | Opt::HttpsigKey
-        | Opt::HttpsigKeyid
         | Opt::Insecure
         | Opt::Interface
         | Opt::IpTos

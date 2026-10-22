@@ -280,7 +280,7 @@ fn the_buffer_size_is_held_to_its_range() {
 fn aws_sigv4_is_the_one_method() {
     use curl_core::options::AuthMethods as M;
     let c = curl_easy_init();
-    let state = |c| options(c, |o| (o.http.aws_sigv4.clone(), o.http.auth.0));
+    let state = |c| options(c, |o| (o.http.signing.aws_sigv4.clone(), o.http.auth.0));
     let mut given = *b"aws:amz:r:s\0";
     assert_eq!(
         pointer(c, ffi::CURLOPT_AWS_SIGV4, given.as_mut_ptr()),
@@ -310,6 +310,83 @@ fn aws_sigv4_is_the_one_method() {
     assert_eq!(state(c), (Some(Vec::new()), M::AWS_SIGV4));
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
+}
+
+/// `CURLOPT_HTTPSIG_ALGORITHM` takes the algorithms C knows and makes
+/// a message signature the one method; none takes it out of the methods
+/// asked for. Its strings are copied, and copied with the handle.
+#[test]
+fn a_message_signature_is_the_one_method() {
+    use curl_core::options::{AuthMethods as M, SignatureAlgorithm as A};
+    let c = curl_easy_init();
+    let auth = |c| options(c, |o| o.http.auth.0);
+    let algorithm = |c| options(c, |o| o.http.signing.message.algorithm);
+    let strings = |c| {
+        options(c, |o| {
+            let s = &o.http.signing.message;
+            (s.key.clone(), s.key_id.clone(), s.components.clone())
+        })
+    };
+    assert_eq!(algorithm(c), None);
+    assert_eq!(
+        long(
+            c,
+            ffi::CURLOPT_HTTPSIG_ALGORITHM,
+            ffi::CURLHTTPSIG_HMAC_SHA256
+        ),
+        CURLE_OK
+    );
+    assert_eq!((algorithm(c), auth(c)), (Some(A::HmacSha256), M::HTTPSIG));
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTPSIG_ALGORITHM, 3),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTPSIG_ALGORITHM, ffi::CURLHTTPSIG_ED25519),
+        CURLE_OK
+    );
+    assert_eq!(algorithm(c), Some(A::Ed25519));
+    let mut key = *b"00ff\0";
+    let mut id = *b"k1\0";
+    let mut components = *b"method path\0";
+    for (option, value) in [
+        (ffi::CURLOPT_HTTPSIG_KEY, key.as_mut_ptr()),
+        (ffi::CURLOPT_HTTPSIG_KEYID, id.as_mut_ptr()),
+        (ffi::CURLOPT_HTTPSIG_HEADERS, components.as_mut_ptr()),
+    ] {
+        assert_eq!(pointer(c, option, value), CURLE_OK);
+    }
+    key[0] = b'X';
+    std::hint::black_box(&key);
+    let set = (
+        Some(b"00ff".to_vec()),
+        Some(b"k1".to_vec()),
+        Some(b"method path".to_vec()),
+    );
+    assert_eq!(strings(c), set);
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert_eq!(strings(d), set);
+    assert_eq!((algorithm(d), auth(d)), (Some(A::Ed25519), M::HTTPSIG));
+    let any = ffi::CURLAUTH_BASIC | ffi::CURLAUTH_HTTPSIG;
+    assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, any as c_long), CURLE_OK);
+    assert_eq!(
+        long(c, ffi::CURLOPT_HTTPSIG_ALGORITHM, ffi::CURLHTTPSIG_NONE),
+        CURLE_OK
+    );
+    assert_eq!((algorithm(c), auth(c)), (None, M::BASIC));
+    // Taking SigV4 out leaves it, as C's mask keeps it.
+    assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, any as c_long), CURLE_OK);
+    let null = ptr::null_mut::<c_char>();
+    assert_eq!(pointer(c, ffi::CURLOPT_AWS_SIGV4, null), CURLE_OK);
+    assert_eq!(auth(c), M::BASIC | M::HTTPSIG);
+    assert_eq!(pointer(c, ffi::CURLOPT_HTTPSIG_KEY, null), CURLE_OK);
+    assert_eq!(strings(c).0, None);
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(d);
+    }
 }
 
 /// The HTTP options' strings and list are copied; NULL takes them away.
@@ -441,7 +518,7 @@ fn http_options_reach_the_request() {
             M::BASIC | M::AWS_SIGV4,
         ),
         (sigv4, CURLE_OK, M::AWS_SIGV4),
-        (ffi::CURLAUTH_HTTPSIG, CURLE_NOT_BUILT_IN, M::AWS_SIGV4),
+        (ffi::CURLAUTH_HTTPSIG, CURLE_OK, M::HTTPSIG),
         (
             ffi::CURLAUTH_BEARER | (1 << 30),
             CURLE_OK,

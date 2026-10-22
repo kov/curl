@@ -54,6 +54,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   starts with a zero ends the file there, every later line unread. Pinned by
   `a_zero_byte_ends_its_line_alone` (`crates/curl-tool/src/config.rs`).
 
+- **Blanks after the last signed component are blanks.** `--httpsig-headers "method  "`
+  (`CURLOPT_HTTPSIG_HEADERS`), with more than one blank after its last component, fails in C
+  with `httpsig: too many signature components (max 16)`: `parse_components`
+  (`lib/http_httpsig.c`) leaves its cursor on the second blank when it stops at the end, and
+  reads anything under the cursor as a seventeenth component. Here the components are signed;
+  a seventeenth is refused as in C. Measured against the C build: `"method "` signs, `"method  "`
+  fails with 43. Pinned by `signs_the_components_named`
+  (`crates/curl-core/src/proto/http/httpsig/tests.rs`).
+
 ## Undefined behaviour in C, defined here
 
 - **A header pointer libcurl did not hand out leads nowhere.** `curl_easy_nextheader` given a

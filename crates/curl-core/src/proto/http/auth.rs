@@ -38,12 +38,13 @@ impl Auth {
     pub(crate) fn start(&mut self, host: AuthMethods, proxy: AuthMethods) {
         self.problem = false;
         self.host.start(host);
-        // AWS SigV4 is never a proxy's: asked of one, it is as a method
+        // A signature is never a proxy's: asked of one, it is as a method
         // not implemented (`output_auth_headers`).
-        let proxy = if proxy.contains(AuthMethods::AWS_SIGV4) {
-            (proxy & !AuthMethods::AWS_SIGV4) | AuthMethods::OTHER
-        } else {
+        let signatures = AuthMethods::AWS_SIGV4 | AuthMethods::HTTPSIG;
+        let proxy = if (proxy & signatures).is_empty() {
             proxy
+        } else {
+            (proxy & !signatures) | AuthMethods::OTHER
         };
         self.proxy.start(proxy);
     }
@@ -173,6 +174,9 @@ pub(crate) struct AuthRequest<'r> {
     /// The path and query, as the URL holds them.
     pub(crate) uri: &'r [u8],
     pub(crate) get_or_head: bool,
+    /// What the application set for the first origin may go to this
+    /// one (`Curl_auth_allowed_to_host`).
+    pub(crate) trusted: Option<Trusted>,
 }
 
 /// What a request sends to authenticate.
@@ -232,41 +236,51 @@ impl PeerAuth {
         request: &AuthRequest<'_>,
         random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
     ) -> Result<Output, OutputError> {
-        let Some(credentials) = credentials else {
+        // A message signature signs with its own key, credentials or
+        // not (`Curl_http_output_auth`).
+        if credentials.is_none() && !self.want.contains(AuthMethods::HTTPSIG) {
             self.done = true;
             return Ok(Output {
                 header: None,
                 used: AuthMethods::NONE,
                 probe: false,
             });
-        };
+        }
         if !self.want.is_empty() && self.picked == Picked::NotYet {
             // Before a server asks: one method wanted is used at once.
             self.picked = Picked::Methods(self.want);
         }
         // Whether the method is in use, and what it sends.
-        let (active, value) = match self.picked.methods().single() {
-            Some(AuthMethods::BASIC) => {
+        let (active, value) = match (self.picked.methods().single(), credentials) {
+            (Some(AuthMethods::BASIC), credentials) => {
                 self.done = true;
-                let value = if custom { None } else { credentials.basic()? };
-                (value.is_some(), value)
-            }
-            Some(AuthMethods::BEARER) => {
-                self.done = true;
-                let value = if custom || !credentials.has_bearer() {
-                    None
-                } else {
-                    Some(copy(credentials.bearer)?)
+                let value = match credentials.filter(|_| !custom) {
+                    Some(credentials) => credentials.basic()?,
+                    None => None,
                 };
                 (value.is_some(), value)
             }
+            (Some(AuthMethods::BEARER), credentials) => {
+                self.done = true;
+                let value = match credentials.filter(|c| !custom && c.has_bearer()) {
+                    Some(credentials) => Some(copy(credentials.bearer)?),
+                    None => None,
+                };
+                (value.is_some(), value)
+            }
+            // Signed where the request is made, and only for an origin
+            // the application's settings may go to; never more than once.
+            (Some(AuthMethods::HTTPSIG), _) => {
+                self.done = true;
+                (request.trusted.is_some(), None)
+            }
             // Signed where the request is made, unless the application
             // sends its own Authorization; never more than once.
-            Some(AuthMethods::AWS_SIGV4) => {
+            (Some(AuthMethods::AWS_SIGV4), _) => {
                 self.done = true;
                 (true, None)
             }
-            Some(AuthMethods::DIGEST) => {
+            (Some(AuthMethods::DIGEST), Some(credentials)) => {
                 // In use from the start; done once a challenge is answered.
                 let value = self.answer_digest(credentials, request, random)?;
                 self.done = value.is_some();
@@ -1524,6 +1538,7 @@ mod tests {
                 method: b"GET",
                 uri: b"/",
                 get_or_head: true,
+                trusted: Some(Trusted::own_url()),
             };
             let out = auth
                 .output(Some(c.secret()), false, &request, |_| Ok(()))
@@ -1652,6 +1667,7 @@ mod tests {
             method: b"GET",
             uri: b"/",
             get_or_head: true,
+            trusted: Some(Trusted::own_url()),
         };
         let send = |c: &Credentials, custom| {
             let mut side = PeerAuth::default();
@@ -1675,6 +1691,7 @@ mod tests {
             method: b"GET",
             uri: b"/",
             get_or_head: true,
+            trusted: Some(Trusted::own_url()),
         };
         let sigv4 = AuthMethods::AWS_SIGV4;
         let mut auth = Auth::default();
@@ -1689,6 +1706,41 @@ mod tests {
         };
         assert_eq!(output(Side::Host), (sigv4, None, false));
         assert_eq!(output(Side::Proxy), (AuthMethods::NONE, None, false));
+    }
+
+    /// A message signature wanted alone is in use at once, with
+    /// credentials or without, sending nothing itself: the request is
+    /// signed where it is made. Not to an origin the application's
+    /// settings may not go to, and never to a proxy.
+    #[test]
+    fn a_message_signature_is_used_at_once_and_never_by_a_proxy() {
+        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let sig = AuthMethods::HTTPSIG;
+        for (secret, trusted, used) in [
+            (None, true, sig),
+            (Some(Secret::new(b"u", b"p")), true, sig),
+            (None, false, AuthMethods::NONE),
+        ] {
+            let request = AuthRequest {
+                origin: &peer,
+                method: b"GET",
+                uri: b"/",
+                get_or_head: true,
+                trusted: trusted.then(Trusted::own_url),
+            };
+            let mut auth = Auth::default();
+            auth.start(sig, sig);
+            let mut output = |side| {
+                let out = auth
+                    .side(side)
+                    .output(secret, false, &request, |_| Ok(()))
+                    .unwrap();
+                (out.used, out.header, out.probe)
+            };
+            assert_eq!(output(Side::Host), (used, None, false), "{trusted}");
+            assert_eq!(output(Side::Proxy), (AuthMethods::NONE, None, false));
+            assert!(auth.side(Side::Host).done);
+        }
     }
 
     /// The values the C tool sends, and RFC 4648's vectors.

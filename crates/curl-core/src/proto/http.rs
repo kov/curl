@@ -970,7 +970,11 @@ impl Request {
             }
             let max = self.read_size();
             if max == 0 {
-                // The body is whole: nothing more is read for it.
+                // The body is whole: nothing more is read for it. Like a
+                // body made whole by what `input` gives it, it ends
+                // without `end`, which is the connection's end of the
+                // response: C stops reading at `download_done` and writes
+                // no `CLIENTWRITE_EOS` for it.
                 self.stage = Stage::Done;
                 continue;
             }

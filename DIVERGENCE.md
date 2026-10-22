@@ -1,16 +1,17 @@
 # Where the rewrite differs from C
 
 The rewrite does what the C does, except where the C's behaviour is a clear bug (see
-`CLAUDE.md`). Each such difference is deliberate and permanent, and is listed here with the test
-that pins it: the test asserts the rewrite's behaviour and its comment says what C does. Behaviour
-not built yet is not a difference: it is tracked in `MILESTONES.md`.
+`CLAUDE.md`), is undefined by its API, or hands out something the rewrite does not have. Each
+such difference is deliberate and permanent, and is listed here with the test that pins it: the
+test asserts the rewrite's behaviour and its comment says what C does. Behaviour not built yet is
+not a difference: it is tracked in `MILESTONES.md`.
 
 ## Failures C reports as success
 
 - **An upload that cannot be read fails.** `curl -T dir URL`, or any upload whose file fails a
   read, exits 26 (`CURLE_READ_ERROR`). C's tool takes the failed read for the end of the file,
-  sends what it has (nothing, for a directory) and exits 0. A sample of 161 shell scripts using
-  `-T` (measured 2026-10-21) had no argument that could name a directory. Pinned by
+  sends what it has (nothing, for a directory) and exits 0. A sample of 161 shell scripts on
+  GitHub using `-T` (measured 2026-10-21) had no argument that could name a directory. Pinned by
   `an_upload_that_cannot_be_read_fails` (`crates/curl-tool/tests/transfers.rs`).
 
 - **A `file://` download whose read fails is a read error.** A `read()` failing anywhere in the

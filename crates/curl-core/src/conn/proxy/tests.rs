@@ -284,3 +284,16 @@ fn proxy_urls_read_as_c() {
     let p = parse(b"example.com", ProxyType::Http, None).unwrap();
     assert_eq!((p.user, p.password), (None, None));
 }
+
+/// A user or password that decodes to a control byte fails with the
+/// URL's error, not as the proxy's syntax (`parse_proxy`).
+#[test]
+fn undecodable_credentials_are_the_url_s_error() {
+    for url in ["http://u%01@example.com", "http://u:p%01@example.com"] {
+        assert_eq!(
+            parse(url.as_bytes(), ProxyType::Http, None).unwrap_err(),
+            Refused::Credentials(UrlErrorKind::Urldecode),
+            "{url}"
+        );
+    }
+}

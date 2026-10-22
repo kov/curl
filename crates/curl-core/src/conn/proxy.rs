@@ -251,6 +251,9 @@ pub(crate) enum Refused {
     /// It is an HTTPS proxy, which needs TLS: "Unsupported proxy '…',
     /// libcurl is built without the HTTPS-proxy support."
     Https,
+    /// Its user or password does not decode, which C fails with the
+    /// URL's error and says nothing of.
+    Credentials(UrlErrorKind),
 }
 
 impl From<OutOfMemory> for Refused {
@@ -326,7 +329,7 @@ pub(crate) fn parse(
         Ok(v) => Ok(Some(v)),
         Err(e) if e == missing => Ok(None),
         Err(UrlErrorKind::OutOfMemory) => Err(Refused::OutOfMemory),
-        Err(e) => Err(Refused::Syntax(e)),
+        Err(e) => Err(Refused::Credentials(e)),
     };
     let user = part(Part::User, UrlErrorKind::NoUser)?;
     let password = part(Part::Password, UrlErrorKind::NoPassword)?;

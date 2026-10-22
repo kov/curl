@@ -2046,6 +2046,7 @@ fn parse_proxy<H: Host>(
                 &[b"Unsupported proxy scheme for '", text, b"'"],
             ));
         }
+        Err(Refused::Credentials(e)) => return Err(url_error(e)),
         Err(Refused::Https) => {
             return Err(trace::fail_with(
                 cx,

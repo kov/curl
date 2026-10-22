@@ -3412,6 +3412,23 @@ fn a_pre_proxy_alone_is_the_socks_proxy_and_only_socks() {
     }
 }
 
+/// A proxy whose user does not decode fails the transfer as a bad URL,
+/// with nothing said, as C's `parse_proxy` does.
+#[test]
+fn a_proxy_user_that_does_not_decode_is_a_bad_url() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.proxy.url = Some(format!("http://u%01@127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UrlMalformat));
+    let said = ran.seen.text();
+    assert!(
+        !said.iter().any(|l| l.starts_with("Unsupported proxy")),
+        "{said:?}"
+    );
+    assert_eq!(talk.received(), b"");
+}
+
 /// A tunnel's `CONNECT`, as test 1287's proxy sees it: the origin's
 /// authority, and only what the proxy is given.
 fn connect_of(proxy_authorization: &str) -> String {

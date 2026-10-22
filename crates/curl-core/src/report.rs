@@ -14,7 +14,7 @@ use curl_alloc::TryVec;
 use crate::time::Instant;
 use curl_alloc::OutOfMemory;
 
-use crate::conn::ProxyError;
+use crate::conn::{ConnNumber, ProxyError};
 use crate::error::UrlErrorKind;
 use crate::options::{AuthMethods, Method};
 use crate::url::Url;
@@ -75,6 +75,12 @@ pub struct TransferReport {
     content_type: Option<Vec<u8>>,
     /// The ends of the connection last used (`info.primary`).
     primary: Option<Ends>,
+    /// The connection the transfer last used, unless the pool closed it
+    /// as it came back (`state.last_conn_id`).
+    conn: Option<ConnNumber>,
+    /// The number the pool of the multi the handle was last added to
+    /// gave it (`data->id`): kept as transfers start over.
+    transfer: Option<u64>,
     /// How many connections the transfer made (`info.numconnects`).
     connects: u32,
     /// How many redirects the transfer followed (`state.followlocation`).
@@ -119,6 +125,7 @@ impl TransferReport {
     pub(crate) fn cleared(&self) -> TransferReport {
         TransferReport {
             headers: HeaderStore::after(&self.headers),
+            transfer: self.transfer,
             ..TransferReport::default()
         }
     }
@@ -210,6 +217,27 @@ impl TransferReport {
 
     pub(crate) fn set_primary(&mut self, ends: Ends) {
         self.primary = Some(ends);
+    }
+
+    /// The number of the connection the transfer last used, the `N` of
+    /// its "Connection #N", unless the pool closed it as it came back
+    /// (`CURLINFO_CONN_ID`).
+    pub fn conn_number(&self) -> Option<u64> {
+        self.conn.map(ConnNumber::get)
+    }
+
+    pub(crate) fn set_conn(&mut self, conn: Option<ConnNumber>) {
+        self.conn = conn;
+    }
+
+    /// The number the pool of the multi the handle was last added to
+    /// gave it, counting from 0 (`CURLINFO_XFER_ID`).
+    pub fn transfer_number(&self) -> Option<u64> {
+        self.transfer
+    }
+
+    pub(crate) fn set_transfer(&mut self, number: u64) {
+        self.transfer = Some(number);
     }
 
     /// How many new connections the transfer made
@@ -682,9 +710,62 @@ impl Speeds {
     }
 }
 
+/// What the debug test build answers for some infos in place of the
+/// transfer's own, read from the environment at each question, as C's
+/// `curl_easy_getinfo` does in its debug build: the tool's `--write-out`
+/// and the C ABI's getinfo each apply them to the infos C's does.
+#[cfg(feature = "debug-hooks")]
+pub mod debug_info {
+    /// `CURL_TIME`: every time, in microseconds, both speeds and the
+    /// local port.
+    pub fn time() -> Option<u64> {
+        number("CURL_TIME")
+    }
+
+    /// `CURL_DEBUG_SIZE`: the sizes of the headers and of the request.
+    pub fn size() -> Option<u64> {
+        number("CURL_DEBUG_SIZE")
+    }
+
+    /// The variable `name`'s leading digits, if it is set: 0 if it has
+    /// none or they overflow (`curlx_str_number`).
+    fn number(name: &str) -> Option<u64> {
+        let value = std::env::var_os(name)?;
+        Some(leading_number(value.as_encoded_bytes()))
+    }
+
+    pub(super) fn leading_number(text: &[u8]) -> u64 {
+        let mut n: u64 = 0;
+        for &b in text.iter().take_while(|b| b.is_ascii_digit()) {
+            match n
+                .checked_mul(10)
+                .and_then(|n| n.checked_add(u64::from(b - b'0')))
+                .filter(|&n| n <= i64::MAX as u64)
+            {
+                Some(next) => n = next,
+                None => return 0,
+            }
+        }
+        n
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The debug build's numbers as `curlx_str_number` reads them.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn reads_the_debug_numbers_as_c() {
+        use debug_info::leading_number;
+        assert_eq!(leading_number(b"13"), 13);
+        assert_eq!(leading_number(b"4019 bytes"), 4019);
+        assert_eq!(leading_number(b"x1"), 0);
+        assert_eq!(leading_number(b""), 0);
+        assert_eq!(leading_number(b"9223372036854775807"), i64::MAX as u64);
+        assert_eq!(leading_number(b"9223372036854775808"), 0);
+    }
 
     /// The first reason given is kept; a new transfer starts without one.
     #[test]

@@ -384,7 +384,8 @@ fn release<H: Host>(
         );
     }
     match released {
-        Released::Evicted(_) => {}
+        // Gone as it came back: not the transfer's any more.
+        Released::Evicted(_) => cx.report_mut().set_conn(None),
         Released::Idle { number: n, .. } => {
             let origin = origin.expect("a connection kept has a host");
             let (host, port) = (Bytes(origin.shown()), origin.port());
@@ -2324,6 +2325,10 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     };
     if let (Some(share), Acquired::Reused(lease) | Acquired::New(lease)) = (home, &mut acquired) {
         lease.set_home(share);
+    }
+    // The transfer's connection from now on (`Curl_attach_connection`).
+    if let Acquired::Reused(lease) | Acquired::New(lease) = &acquired {
+        cx.report_mut().set_conn(Some(lease.number()));
     }
     for note in notes {
         match note {

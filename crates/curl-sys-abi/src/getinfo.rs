@@ -201,10 +201,20 @@ fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
 
 /// What `info` asks of the transfer, or none for one not known.
 fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
+    #[cfg(feature = "debug-hooks")]
+    {
+        use curl_core::report::debug_info;
+        if let Some(v) = debug_value(info, debug_info::time(), debug_info::size()) {
+            return Some(v);
+        }
+    }
     let t = r.timings();
     let (sizes, speeds) = (r.sizes(), r.speeds());
     let length = |n: Option<u64>| n.map_or(-1, off);
     Some(match info {
+        // -1 before any.
+        ffi::CURLINFO_CONN_ID => Value::Off(r.conn_number().map_or(-1, off)),
+        ffi::CURLINFO_XFER_ID => Value::Off(r.transfer_number().map_or(-1, off)),
         ffi::CURLINFO_PRIVATE => Value::Ptr(easy.set.get().private),
         // Empty before any transfer.
         ffi::CURLINFO_EFFECTIVE_URL => string(kept(
@@ -314,6 +324,40 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
     })
 }
 
+/// What the debug test build answers for `info`, given `CURL_TIME` and
+/// `CURL_DEBUG_SIZE`, as C's `getinfo_long`, `getinfo_offt` and
+/// `getinfo_double` do: a time as microseconds, or as seconds in a
+/// double.
+#[cfg(feature = "debug-hooks")]
+fn debug_value(info: CURLINFO, time: Option<u64>, size: Option<u64>) -> Option<Value> {
+    let long = |n: u64| Value::Long(c_long::try_from(n).unwrap_or(c_long::MAX));
+    match info {
+        ffi::CURLINFO_LOCAL_PORT => time.map(long),
+        ffi::CURLINFO_HEADER_SIZE | ffi::CURLINFO_REQUEST_SIZE => size.map(long),
+        ffi::CURLINFO_TOTAL_TIME_T
+        | ffi::CURLINFO_NAMELOOKUP_TIME_T
+        | ffi::CURLINFO_CONNECT_TIME_T
+        | ffi::CURLINFO_APPCONNECT_TIME_T
+        | ffi::CURLINFO_PRETRANSFER_TIME_T
+        | ffi::CURLINFO_POSTTRANSFER_TIME_T
+        | ffi::CURLINFO_QUEUE_TIME_T
+        | ffi::CURLINFO_STARTTRANSFER_TIME_T
+        | ffi::CURLINFO_REDIRECT_TIME_T
+        | ffi::CURLINFO_SPEED_DOWNLOAD_T
+        | ffi::CURLINFO_SPEED_UPLOAD_T => time.map(|n| Value::Off(off(n))),
+        ffi::CURLINFO_TOTAL_TIME
+        | ffi::CURLINFO_NAMELOOKUP_TIME
+        | ffi::CURLINFO_CONNECT_TIME
+        | ffi::CURLINFO_APPCONNECT_TIME
+        | ffi::CURLINFO_PRETRANSFER_TIME
+        | ffi::CURLINFO_STARTTRANSFER_TIME
+        | ffi::CURLINFO_REDIRECT_TIME
+        | ffi::CURLINFO_SPEED_DOWNLOAD
+        | ffi::CURLINFO_SPEED_UPLOAD => time.map(|n| Value::Double(n as f64)),
+        _ => None,
+    }
+}
+
 /// # Safety
 ///
 /// `curl` is NULL or a live handle; the argument points where a value of
@@ -421,5 +465,32 @@ mod tests {
         assert_eq!(secs(d), 1.50025);
         assert_eq!(micros(Duration::MAX), curl_off_t::MAX);
         assert_eq!(proto_bit(Protocol::File), 1 << 10);
+    }
+
+    /// The debug build's stand-ins, for the infos C's takes them for.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn debug_values_stand_in_as_c_s() {
+        let answer = |info, time, size| match debug_value(info, time, size) {
+            None => "none".to_string(),
+            Some(Value::Long(n)) => format!("long {n}"),
+            Some(Value::Off(n)) => format!("off {n}"),
+            Some(Value::Double(n)) => format!("double {n}"),
+            Some(_) => "other".to_string(),
+        };
+        let t = Some(13);
+        assert_eq!(answer(ffi::CURLINFO_TOTAL_TIME_T, t, None), "off 13");
+        assert_eq!(answer(ffi::CURLINFO_QUEUE_TIME_T, t, None), "off 13");
+        assert_eq!(answer(ffi::CURLINFO_SPEED_UPLOAD_T, t, None), "off 13");
+        assert_eq!(answer(ffi::CURLINFO_CONNECT_TIME, t, None), "double 13");
+        assert_eq!(answer(ffi::CURLINFO_LOCAL_PORT, t, None), "long 13");
+        assert_eq!(answer(ffi::CURLINFO_PRIMARY_PORT, t, None), "none");
+        assert_eq!(
+            answer(ffi::CURLINFO_HEADER_SIZE, t, Some(4019)),
+            "long 4019"
+        );
+        assert_eq!(answer(ffi::CURLINFO_REQUEST_SIZE, None, Some(1)), "long 1");
+        assert_eq!(answer(ffi::CURLINFO_HEADER_SIZE, t, None), "none");
+        assert_eq!(answer(ffi::CURLINFO_TOTAL_TIME_T, None, Some(1)), "none");
     }
 }

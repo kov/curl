@@ -103,3 +103,12 @@ witness: curl-sys-abi handle_tests::a_request_target_is_kept
             options.http.request_target = unsafe { owned(p) }?;
 --- new
             let _ = unsafe { owned(p) }?;
+
+=== the debug build's time is made seconds for a double
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi getinfo::tests::debug_values_stand_in_as_c_s
+features: debug-hooks
+--- old
+        | ffi::CURLINFO_SPEED_UPLOAD => time.map(|n| Value::Double(n as f64)),
+--- new
+        | ffi::CURLINFO_SPEED_UPLOAD => time.map(|n| Value::Double(n as f64 / 1e6)),

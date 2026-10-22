@@ -355,14 +355,19 @@ impl<H: Host> Multi<H> {
         };
         let id = vacancy.fill(slot);
         self.counts.added();
-        // A transfer joins the pool (`Curl_cpool_xfer_init`): C hands it
-        // an id under the lock; here its id is the multi's, and only the
-        // application sees the use.
+        // A transfer joins the pool, the share's if the share keeps
+        // connections, under its lock, and is numbered by it
+        // (`Curl_cpool_xfer_init`).
         let easy = &self.slots.get(id).expect("just added").easy;
-        if let Some(share) = easy.share() {
-            let watch = easy.share_watch();
-            watched(watch, share, Kind::Connections, || ());
-        }
+        let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+            Some(share) => {
+                let watch = easy.share_watch();
+                watched(watch, share, Kind::Connections, || share.pool().join())
+            }
+            None => self.caches.pool.join(),
+        };
+        let easy = &mut self.slots.get_mut(id).expect("just added").easy;
+        easy.report_mut().set_transfer(number);
         self.dirty.insert(id.index());
         ev.added(id, &self.slots.get(id).expect("just added").owner);
         // Inside the add, as C, so the application hears of the 0 ms run.

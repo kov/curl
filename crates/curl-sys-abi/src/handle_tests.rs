@@ -1198,6 +1198,9 @@ fn infos_answer_from_the_report() {
     // SAFETY: getinfo gives a string that lives while the handle does.
     assert_eq!(unsafe { CStr::from_ptr(before) }, c"");
     assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_FILETIME_T), -1);
+    // Never added to a multi, nor connected.
+    assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_XFER_ID), -1);
+    assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_CONN_ID), -1);
     pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
     function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
     // SAFETY: a live handle.
@@ -1311,6 +1314,9 @@ fn infos_answer_from_the_report() {
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_LOCAL_PORT), -1);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_NUM_CONNECTS), 0);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_REQUEST_SIZE), 0);
+    // The first transfer of its pool, on the pool's first connection.
+    assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_XFER_ID), 0);
+    assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_CONN_ID), 0);
     // The URL the transfer used, the same string each time it is asked.
     let effective = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_URL);
     // SAFETY: getinfo gives a string that lives while the handle does.

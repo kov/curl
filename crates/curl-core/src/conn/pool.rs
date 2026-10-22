@@ -158,7 +158,7 @@ impl ConnLease {
             .chain(open)
     }
 
-    fn number(&self) -> ConnNumber {
+    pub(crate) fn number(&self) -> ConnNumber {
         match self.slot() {
             ConnSlot::Connecting(m) => m.number(),
             ConnSlot::Open(conn) => conn.number,
@@ -365,6 +365,9 @@ pub(crate) struct Pool {
     next_number: u64,
     /// When the search last pruned dead connections (`last_cleanup`).
     last_prune: Option<Instant>,
+    /// The number the next transfer to join the pool is given
+    /// (`next_easy_id`).
+    next_transfer: u64,
 }
 
 impl Pool {
@@ -373,7 +376,20 @@ impl Pool {
             conns: Arena::new(ArenaPolicy::DOUBLING)?,
             next_number: 0,
             last_prune: None,
+            next_transfer: 0,
         })
+    }
+
+    /// A number for a transfer joining the pool: one more than the last
+    /// one's, from 0, back to 0 short of the largest `curl_off_t`
+    /// (`Curl_cpool_xfer_init`).
+    pub(crate) fn join(&mut self) -> u64 {
+        let number = self.next_transfer;
+        self.next_transfer += 1;
+        if self.next_transfer == i64::MAX as u64 {
+            self.next_transfer = 0;
+        }
+        number
     }
 
     /// A connection for `route`, leased to the caller: an idle one whose

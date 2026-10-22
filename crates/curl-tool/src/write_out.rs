@@ -1,17 +1,18 @@
 //! `--write-out`: text after each transfer, with `%{variable}`s replaced
 //! by what the transfer reports (`src/tool_writeout.c`).
 //!
-//! Every variable C knows is named here, so an unknown one is told apart
-//! from one not implemented yet; a format using the latter is refused
-//! when the option is read, never written without it.
+//! Every variable C knows is written here. A function not implemented
+//! yet (`%time{}`) is refused when the option is read, never written
+//! without it.
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::net::IpAddr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::time::Duration;
 
-use curl_alloc::TryVec;
+use curl_alloc::{OutOfMemory, TryVec, try_format};
 use curl_core::error::ErrorKind;
 use curl_core::report::{HeaderStore, Origins, Request, ResponseVersion, TransferReport};
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
@@ -24,13 +25,13 @@ use crate::stdout::Stdout;
 /// one ends the output there.
 const MAX_NAME: usize = 24;
 
-/// A variable C knows, and whether its value can be written yet.
+/// A variable C knows, and what it writes.
 struct Variable {
     name: &'static str,
-    var: Option<Var>,
+    var: Var,
 }
 
-/// The variables written so far.
+/// The variables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Var {
     /// The rest is written only after a failed transfer.
@@ -87,6 +88,25 @@ enum Var {
     Time(Time),
     /// The last response's headers, as a JSON object of lists.
     HeaderJson,
+    /// Every variable but these five, as a JSON object.
+    Json,
+    /// The servers' certificates, which no transfer without TLS has.
+    Certs,
+    NumCerts,
+    /// The number of the connection last used, -1 if none.
+    ConnId,
+    /// The number the transfer was given as it joined the pool.
+    XferId,
+    /// The path an FTP server started in: never, without FTP.
+    FtpEntryPath,
+    /// What checking the certificates of a TLS proxy and of the server
+    /// gave: nothing to check, without TLS.
+    ProxySslVerifyResult,
+    SslVerifyResult,
+    /// The transfer's last connection went through a proxy, as 1.
+    ProxyUsed,
+    /// Bytes sent as TLS early data: none, without TLS.
+    TlsEarlydata,
 }
 
 /// A moment of the transfer, as seconds since its start.
@@ -103,15 +123,8 @@ enum Time {
     Total,
 }
 
-const fn known(name: &'static str) -> Variable {
-    Variable { name, var: None }
-}
-
 const fn written(name: &'static str, var: Var) -> Variable {
-    Variable {
-        name,
-        var: Some(var),
-    }
+    Variable { name, var }
 }
 
 const fn part(part: Part, effective: bool) -> Var {
@@ -120,29 +133,29 @@ const fn part(part: Part, effective: bool) -> Var {
 
 /// C's `variables`, in its order.
 const VARIABLES: &[Variable] = &[
-    known("certs"),
-    known("conn_id"),
+    written("certs", Var::Certs),
+    written("conn_id", Var::ConnId),
     written("content_type", Var::ContentType),
     written("errormsg", Var::ErrorMsg),
     written("exitcode", Var::ExitCode),
     written("filename_effective", Var::FilenameEffective),
-    known("ftp_entry_path"),
+    written("ftp_entry_path", Var::FtpEntryPath),
     written("header_json", Var::HeaderJson),
     written("http_code", Var::HttpCode),
     written("http_connect", Var::HttpConnect),
     written("http_version", Var::HttpVersion),
-    known("json"),
+    written("json", Var::Json),
     written("local_ip", Var::LocalIp),
     written("local_port", Var::LocalPort),
     written("method", Var::Method),
-    known("num_certs"),
+    written("num_certs", Var::NumCerts),
     written("num_connects", Var::NumConnects),
     written("num_headers", Var::NumHeaders),
     written("num_redirects", Var::NumRedirects),
     written("num_retries", Var::NumRetries),
     written("onerror", Var::OnError),
-    known("proxy_ssl_verify_result"),
-    known("proxy_used"),
+    written("proxy_ssl_verify_result", Var::ProxySslVerifyResult),
+    written("proxy_used", Var::ProxyUsed),
     written("redirect_url", Var::RedirectUrl),
     written("referer", Var::Referer),
     written("remote_ip", Var::RemoteIp),
@@ -156,7 +169,7 @@ const VARIABLES: &[Variable] = &[
     written("size_upload", Var::SizeUpload),
     written("speed_download", Var::SpeedDownload),
     written("speed_upload", Var::SpeedUpload),
-    known("ssl_verify_result"),
+    written("ssl_verify_result", Var::SslVerifyResult),
     written("stderr", Var::Stderr),
     written("stdout", Var::Stdout),
     written("time_appconnect", Var::Time(Time::Appconnect)),
@@ -168,7 +181,7 @@ const VARIABLES: &[Variable] = &[
     written("time_redirect", Var::Time(Time::Redirect)),
     written("time_starttransfer", Var::Time(Time::Starttransfer)),
     written("time_total", Var::Time(Time::Total)),
-    known("tls_earlydata"),
+    written("tls_earlydata", Var::TlsEarlydata),
     written("url", Var::Url),
     written("url.fragment", part(Part::Fragment, false)),
     written("url.host", part(Part::Host, false)),
@@ -192,7 +205,7 @@ const VARIABLES: &[Variable] = &[
     written("urle.user", part(Part::User, true)),
     written("urle.zoneid", part(Part::ZoneId, true)),
     written("urlnum", Var::UrlNum),
-    known("xfer_id"),
+    written("xfer_id", Var::XferId),
 ];
 
 fn lookup(name: &[u8]) -> Option<&'static Variable> {
@@ -364,7 +377,6 @@ pub(crate) fn unimplemented(format: &[u8]) -> Option<&'static str> {
     let mut missing = None;
     pieces(format, |piece| {
         match piece {
-            Piece::Variable(v) if v.var.is_none() => missing = Some(v.name),
             Piece::Function(f) => missing = Some(f),
             Piece::End => return false,
             _ => {}
@@ -404,13 +416,19 @@ fn write_to(format: &[u8], facts: &Facts<'_>, stdout: &mut dyn Write, stderr: &m
             Piece::Byte(b) => {
                 let _ = out.write_all(&[b]);
             }
-            Piece::Variable(v) => match v.var.expect("refused when the option was read") {
+            Piece::Variable(v) => match v.var {
                 Var::OnError if facts.result.is_ok() => return false,
                 Var::OnError => {}
                 Var::Stdout => to = To::Stdout,
                 Var::Stderr => to = To::Stderr,
+                Var::HeaderJson => {
+                    let _ = header_json(facts.report.headers(), out);
+                }
+                Var::Json => {
+                    let _ = json(facts, out);
+                }
                 var => {
-                    let _ = value(var, facts, out);
+                    let _ = value(var, facts).write(out, Shape::Text);
                 }
             },
             Piece::Unknown(name) => {
@@ -579,92 +597,156 @@ fn json_string(out: &mut dyn Write, s: &[u8], lowercase: bool) -> std::io::Resul
     out.write_all(b"\"")
 }
 
-/// Write `var`'s value for `facts`; nothing for one the transfer has
-/// none of (`writeString`, `writeLong`, `writeOffset`, `writeTime`).
-fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()> {
-    let r = facts.report;
-    match var {
-        Var::OnError | Var::Stdout | Var::Stderr => unreachable!("not a value"),
-        Var::HeaderJson => header_json(r.headers(), out),
-        Var::ExitCode => write!(out, "{}", facts.result.err().map_or(0, exit_code)),
-        Var::ErrorMsg => match facts.result {
-            Ok(()) => Ok(()),
-            Err(e) => match r.failure() {
-                Some(why) => out.write_all(why),
-                None => write!(out, "{e}"),
+/// A variable's value, as C's write functions find it.
+#[derive(Debug, PartialEq)]
+enum Value<'a> {
+    /// None to be had: nothing is written, or `null` in JSON (C's
+    /// `valid` left false).
+    Missing,
+    Bytes(&'a [u8]),
+    Owned(Vec<u8>),
+    Ip(IpAddr),
+    /// The text of a failure the transfer gave no reason for.
+    Failure(ErrorKind),
+    Number(i64),
+    /// A status code: three digits as text (`%03ld`).
+    Status(u16),
+    /// Seconds, and six digits of microseconds.
+    Time(Duration),
+}
+
+/// How a value is written: as text, or in JSON.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    Text,
+    Json,
+}
+
+impl Value<'_> {
+    fn write(&self, out: &mut dyn Write, shape: Shape) -> std::io::Result<()> {
+        let json = shape == Shape::Json;
+        match self {
+            Value::Missing if json => out.write_all(b"null"),
+            Value::Missing => Ok(()),
+            Value::Bytes(text) if json => json_string(out, text, false),
+            Value::Bytes(text) => out.write_all(text),
+            Value::Owned(text) if json => json_string(out, text, false),
+            Value::Owned(text) => out.write_all(text),
+            // Made into text to be quoted; with no memory for it, the
+            // string is not written, as one too long for C's buffer.
+            Value::Ip(ip) if json => match try_format(format_args!("{ip}")) {
+                Ok(text) => json_string(out, text.as_bytes(), false),
+                Err(OutOfMemory) => Ok(()),
             },
+            Value::Ip(ip) => write!(out, "{ip}"),
+            Value::Failure(e) if json => match try_format(format_args!("{e}")) {
+                Ok(text) => json_string(out, text.as_bytes(), false),
+                Err(OutOfMemory) => Ok(()),
+            },
+            Value::Failure(e) => write!(out, "{e}"),
+            Value::Number(n) => write!(out, "{n}"),
+            Value::Status(code) if json => write!(out, "{code}"),
+            Value::Status(code) => write!(out, "{code:03}"),
+            Value::Time(d) => write_seconds(out, *d),
+        }
+    }
+}
+
+/// `n` as C's `long` or `curl_off_t` holds it.
+fn number(n: u64) -> Value<'static> {
+    Value::Number(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
+/// What the debug test build gives for every time, both speeds and the
+/// local port, if anything, as C's library does (`CURL_TIME`).
+fn debug_time() -> Option<u64> {
+    #[cfg(feature = "debug-hooks")]
+    return curl_core::report::debug_info::time();
+    #[cfg(not(feature = "debug-hooks"))]
+    None
+}
+
+/// What the debug test build gives for the sizes of the headers and the
+/// request, if anything (`CURL_DEBUG_SIZE`).
+fn debug_size() -> Option<u64> {
+    #[cfg(feature = "debug-hooks")]
+    return curl_core::report::debug_info::size();
+    #[cfg(not(feature = "debug-hooks"))]
+    None
+}
+
+/// `var`'s value for `facts` (`writeString`, `writeLong`, `writeOffset`,
+/// `writeTime`).
+fn value<'a>(var: Var, facts: &Facts<'a>) -> Value<'a> {
+    let r = facts.report;
+    let bytes = |text: Option<&'a [u8]>| text.map_or(Value::Missing, Value::Bytes);
+    match var {
+        Var::OnError | Var::Stdout | Var::Stderr | Var::HeaderJson | Var::Json => {
+            unreachable!("not a value")
+        }
+        Var::ExitCode => Value::Number(facts.result.err().map_or(0, |e| exit_code(e).into())),
+        Var::ErrorMsg => match facts.result {
+            Ok(()) => Value::Missing,
+            Err(e) => r.failure().map_or(Value::Failure(e), Value::Bytes),
         },
-        Var::Url => out.write_all(facts.url),
+        Var::Url => Value::Bytes(facts.url),
         Var::UrlPart { part, effective } => {
             let url = if effective {
                 r.url().unwrap_or_default()
             } else {
                 facts.url
             };
-            match url_part(url, part) {
-                Some(text) => out.write_all(&text),
-                None => Ok(()),
-            }
+            url_part(url, part).map_or(Value::Missing, Value::Owned)
         }
-        Var::UrlEffective => out.write_all(r.url().unwrap_or_default()),
-        Var::UrlNum => write!(out, "{}", facts.urlnum),
-        Var::FilenameEffective => match facts.filename {
-            Some(name) => out.write_all(name),
-            None => Ok(()),
-        },
-        Var::HttpCode => write!(out, "{:03}", r.response_code().unwrap_or(0)),
-        Var::HttpConnect => write!(out, "{:03}", r.connect_code().unwrap_or(0)),
-        Var::HttpVersion => out.write_all(match r.response_version() {
+        Var::UrlEffective => Value::Bytes(r.url().unwrap_or_default()),
+        Var::UrlNum => number(facts.urlnum),
+        Var::FilenameEffective => bytes(facts.filename),
+        Var::HttpCode => Value::Status(r.response_code().unwrap_or(0)),
+        Var::HttpConnect => Value::Status(r.connect_code().unwrap_or(0)),
+        Var::HttpVersion => Value::Bytes(match r.response_version() {
             None => b"0",
             Some(ResponseVersion::Http10) => b"1",
             Some(ResponseVersion::Http11) => b"1.1",
             Some(ResponseVersion::Http2) => b"2",
             Some(ResponseVersion::Http3) => b"3",
         }),
-        Var::Scheme => match r.protocol() {
-            Some(p) => out.write_all(p.name().as_bytes()),
-            None => Ok(()),
-        },
-        Var::ContentType => match r.content_type() {
-            Some(media) => out.write_all(media),
-            None => Ok(()),
-        },
-        Var::RedirectUrl => match r.redirect_url() {
-            Some(url) => out.write_all(url),
-            None => Ok(()),
-        },
+        Var::Scheme => bytes(r.protocol().map(|p| p.name().as_bytes())),
+        Var::ContentType => bytes(r.content_type()),
+        Var::RedirectUrl => bytes(r.redirect_url()),
+        // An address is empty, a port -1, before any connection.
         Var::LocalIp => match r.primary().and_then(|ends| ends.local) {
-            Some(local) => write!(out, "{}", local.ip()),
-            None => Ok(()),
+            Some(local) => Value::Ip(local.ip()),
+            None => Value::Bytes(b""),
         },
-        Var::LocalPort => match r.primary() {
-            Some(ends) => write!(out, "{}", ends.local.map_or(0, |local| local.port())),
-            None => out.write_all(b"-1"),
+        Var::LocalPort => match (debug_time(), r.primary()) {
+            (Some(n), _) => number(n),
+            (None, Some(ends)) => Value::Number(ends.local.map_or(0, |l| l.port().into())),
+            (None, None) => Value::Number(-1),
         },
         Var::RemoteIp => match r.primary() {
-            Some(ends) => write!(out, "{}", ends.remote.ip()),
-            None => Ok(()),
+            Some(ends) => Value::Ip(ends.remote.ip()),
+            None => Value::Bytes(b""),
         },
-        Var::RemotePort => match r.primary() {
-            Some(ends) => write!(out, "{}", ends.remote.port()),
-            None => out.write_all(b"-1"),
-        },
-        Var::NumConnects => write!(out, "{}", r.connects()),
-        Var::NumRedirects => write!(out, "{}", r.redirects()),
-        Var::Method => out.write_all(facts.method),
-        Var::Referer => out.write_all(r.referer().unwrap_or_default()),
-        Var::NumHeaders => write!(out, "{}", facts.num_headers),
-        Var::NumRetries => write!(out, "{}", facts.num_retries),
-        Var::SizeRequest => write!(out, "{}", r.sizes().request()),
-        Var::SizeDelivered => write!(out, "{}", r.sizes().delivered()),
-        Var::SizeDownload => write!(out, "{}", r.sizes().download()),
-        Var::SizeHeader => write!(out, "{}", r.sizes().header()),
-        Var::SizeUpload => write!(out, "{}", r.sizes().upload()),
-        Var::SpeedDownload => write!(out, "{}", r.speeds().download()),
-        Var::SpeedUpload => write!(out, "{}", r.speeds().upload()),
+        Var::RemotePort => Value::Number(r.primary().map_or(-1, |ends| ends.remote.port().into())),
+        Var::NumConnects => Value::Number(r.connects().into()),
+        Var::NumRedirects => Value::Number(r.redirects().into()),
+        Var::Method => Value::Bytes(facts.method),
+        Var::Referer => bytes(r.referer()),
+        Var::NumHeaders => number(facts.num_headers),
+        Var::NumRetries => number(facts.num_retries),
+        Var::SizeRequest => number(debug_size().unwrap_or(r.sizes().request())),
+        Var::SizeDelivered => number(r.sizes().delivered()),
+        Var::SizeDownload => number(r.sizes().download()),
+        Var::SizeHeader => number(debug_size().unwrap_or(r.sizes().header())),
+        Var::SizeUpload => number(r.sizes().upload()),
+        Var::SpeedDownload => number(debug_time().unwrap_or(r.speeds().download())),
+        Var::SpeedUpload => number(debug_time().unwrap_or(r.speeds().upload())),
         Var::Time(time) => {
+            if let Some(us) = debug_time() {
+                return Value::Time(Duration::from_micros(us));
+            }
             let t = r.timings();
-            let d = match time {
+            Value::Time(match time {
                 Time::Appconnect => t.appconnect(),
                 Time::Connect => t.connect(),
                 Time::Namelookup => t.namelookup(),
@@ -674,10 +756,42 @@ fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()
                 Time::Redirect => t.redirect(),
                 Time::Starttransfer => t.starttransfer(),
                 Time::Total => t.total(),
-            };
-            write_seconds(out, d)
+            })
         }
+        // The library answers for the certificates even without TLS:
+        // none (`CURLINFO_CERTINFO`).
+        Var::Certs => Value::Bytes(b""),
+        Var::NumCerts => Value::Number(0),
+        Var::ConnId => r.conn_number().map_or(Value::Number(-1), number),
+        Var::XferId => r.transfer_number().map_or(Value::Number(-1), number),
+        Var::FtpEntryPath => Value::Missing,
+        Var::ProxySslVerifyResult | Var::SslVerifyResult | Var::TlsEarlydata => Value::Number(0),
+        Var::ProxyUsed => Value::Number(r.used_proxy().into()),
     }
+}
+
+/// `%{json}`: every variable C has a write function for, in its order,
+/// as `"name":value`, and the library's version last
+/// (`ourWriteOutJSON`).
+fn json(facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()> {
+    out.write_all(b"{")?;
+    for v in VARIABLES {
+        if matches!(
+            v.var,
+            Var::OnError | Var::Stdout | Var::Stderr | Var::HeaderJson | Var::Json
+        ) {
+            continue;
+        }
+        write!(out, "\"{}\":", v.name)?;
+        value(v.var, facts).write(out, Shape::Json)?;
+        out.write_all(b",")?;
+    }
+    out.write_all(b"\"curl_version\":")?;
+    let version = curl_core::version::version().components();
+    if let Ok(version) = try_format(format_args!("{version}")) {
+        json_string(out, version.as_bytes(), false)?;
+    }
+    out.write_all(b"}")
 }
 
 /// `d` as C writes a time: seconds, and six digits of microseconds.
@@ -796,13 +910,78 @@ mod tests {
             report: &report,
         };
         let mut out = Vec::new();
-        value(
-            lookup(name.as_bytes()).unwrap().var.unwrap(),
-            &facts,
-            &mut out,
-        )
-        .unwrap();
+        value(lookup(name.as_bytes()).unwrap().var, &facts)
+            .write(&mut out, Shape::Text)
+            .unwrap();
         out
+    }
+
+    /// `%{json}` for a transfer of `url` that never ran and ended with
+    /// `result`.
+    fn json_for(url: &[u8], result: Result<(), ErrorKind>) -> String {
+        let report = TransferReport::default();
+        let facts = Facts {
+            result,
+            url,
+            urlnum: 7,
+            num_headers: 3,
+            num_retries: 0,
+            filename: None,
+            method: b"GET",
+            report: &report,
+        };
+        let mut out = Vec::new();
+        json(&facts, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// `%{json}`: every variable with a write function, in C's order;
+    /// numbers bare, codes without their leading zeroes, strings quoted,
+    /// and `null` for what has no value (tests 970, 972).
+    #[test]
+    fn writes_json_as_c() {
+        let json = json_for(b"http://u:p@example.com/a?q#f", Ok(()));
+        let version = curl_core::version::version().components().to_string();
+        let times: String = [
+            "appconnect",
+            "connect",
+            "namelookup",
+            "posttransfer",
+            "pretransfer",
+            "queue",
+            "redirect",
+            "starttransfer",
+            "total",
+        ]
+        .map(|t| format!("\"time_{t}\":0.000000,"))
+        .concat();
+        let expected = format!(
+            "{{\"certs\":\"\",\"conn_id\":-1,\"content_type\":null,\"errormsg\":null,\
+             \"exitcode\":0,\"filename_effective\":null,\"ftp_entry_path\":null,\
+             \"http_code\":0,\"http_connect\":0,\"http_version\":\"0\",\"local_ip\":\"\",\
+             \"local_port\":-1,\"method\":\"GET\",\"num_certs\":0,\"num_connects\":0,\
+             \"num_headers\":3,\"num_redirects\":0,\"num_retries\":0,\
+             \"proxy_ssl_verify_result\":0,\"proxy_used\":0,\"redirect_url\":null,\
+             \"referer\":null,\"remote_ip\":\"\",\"remote_port\":-1,\"response_code\":0,\
+             \"scheme\":null,\"size_delivered\":0,\"size_download\":0,\"size_header\":0,\
+             \"size_request\":0,\"size_upload\":0,\"speed_download\":0,\"speed_upload\":0,\
+             \"ssl_verify_result\":0,{times}\"tls_earlydata\":0,\
+             \"url\":\"http://u:p@example.com/a?q#f\",\"url.fragment\":\"f\",\
+             \"url.host\":\"example.com\",\"url.options\":null,\"url.password\":\"p\",\
+             \"url.path\":\"/a\",\"url.port\":\"80\",\"url.query\":\"q\",\
+             \"url.scheme\":\"http\",\"url.user\":\"u\",\"url.zoneid\":null,\
+             \"url_effective\":\"\",\"urle.fragment\":null,\"urle.host\":null,\
+             \"urle.options\":null,\"urle.password\":null,\"urle.path\":null,\
+             \"urle.port\":null,\"urle.query\":null,\"urle.scheme\":null,\"urle.user\":null,\
+             \"urle.zoneid\":null,\"urlnum\":7,\"xfer_id\":-1,\"curl_version\":\"{version}\"}}"
+        );
+        assert_eq!(json, expected);
+        let failed = json_for(b"x", Err(ErrorKind::CouldntResolveHost));
+        let why = ErrorKind::CouldntResolveHost.to_string();
+        assert!(
+            failed.contains(&format!("\"errormsg\":\"{why}\",\"exitcode\":6,")),
+            "{failed}"
+        );
     }
 
     /// Values are written as C writes them, nothing for what is unknown.
@@ -1001,7 +1180,7 @@ mod tests {
     fn refuses_what_is_not_implemented() {
         assert_eq!(unimplemented(b"%{url} %{exitcode}\\n"), None);
         assert_eq!(unimplemented(b"%{nosuch}"), None);
-        assert_eq!(unimplemented(b"x %{json}"), Some("json"));
+        assert_eq!(unimplemented(b"x %{json} %{certs} %{xfer_id}"), None);
         assert_eq!(unimplemented(b"%header{a} %{header_json}"), None);
         assert_eq!(unimplemented(b"%time{%H}"), Some("--write-out %time{}"));
         assert_eq!(unimplemented(b"%output{f}"), None);
@@ -1027,6 +1206,7 @@ mod tests {
         b"urle.query",
         b"time_total",
         b"num_headers",
+        b"json",
         b"%header{",
         b"name",
         b":all:",
@@ -1082,8 +1262,10 @@ mod tests {
             pieces(&format, |piece| {
                 match piece {
                     Piece::Variable(v) => match v.var {
-                        Some(Var::OnError | Var::Stdout | Var::Stderr) | None => {}
-                        Some(var) => value(var, &facts, &mut out).unwrap(),
+                        Var::OnError | Var::Stdout | Var::Stderr => {}
+                        Var::HeaderJson => header_json(&store, &mut out).unwrap(),
+                        Var::Json => json(&facts, &mut out).unwrap(),
+                        var => value(var, &facts).write(&mut out, Shape::Text).unwrap(),
                     },
                     Piece::Header { name, all } => {
                         header_value(&store, name, all, &mut out).unwrap();

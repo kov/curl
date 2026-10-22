@@ -313,9 +313,9 @@ witness: curl-tool globs_unless_told_not_to
 file: crates/curl-tool/src/write_out.rs
 witness: curl-tool write_out::tests::writes_values_as_c
 --- old
-        Var::HttpCode => write!(out, "{:03}", r.response_code().unwrap_or(0)),
+            Value::Status(code) => write!(out, "{code:03}"),
 --- new
-        Var::HttpCode => write!(out, "{}", r.response_code().unwrap_or(0)),
+            Value::Status(code) => write!(out, "{code}"),
 
 === a URL's part is read without the scheme's port
 file: crates/curl-tool/src/write_out.rs
@@ -854,3 +854,19 @@ witness: curl-tool sends_the_request_target
 --- new
                 Some(target) if !forwarded => target,
                 Some(_) => self.forward_target.as_deref().unwrap_or(&self.target),
+
+=== %{json} writes a status code in three digits
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_json_as_c
+--- old
+            Value::Status(code) if json => write!(out, "{code}"),
+--- new
+            Value::Status(code) if json => write!(out, "{code:03}"),
+
+=== %{json} writes a missing value as an empty string
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_json_as_c
+--- old
+            Value::Missing if json => out.write_all(b"null"),
+--- new
+            Value::Missing if json => out.write_all(b"\"\""),

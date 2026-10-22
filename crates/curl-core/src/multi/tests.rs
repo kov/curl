@@ -1716,6 +1716,16 @@ fn the_next_transfer_reuses_the_connection_left() {
         trace_of(&lines)[2],
         "Connection #1 to host 127.0.0.1:1 left intact\n"
     );
+    // Each transfer numbered as it joined the pool, and the connection
+    // it used by the pool's number for it.
+    let numbers = |id| {
+        let r = m.easy(id).unwrap().report();
+        (r.transfer_number(), r.conn_number())
+    };
+    assert_eq!(
+        [first, second, third].map(numbers),
+        [(Some(0), Some(0)), (Some(1), Some(0)), (Some(2), Some(1))]
+    );
 }
 
 /// A network that counts the sockets it closes.
@@ -1821,6 +1831,7 @@ fn a_share_keeps_connections_across_handles() {
     let told = Told::new(&share);
     let mut connects = Vec::new();
     let mut uses = Vec::new();
+    let mut numbers = Vec::new();
     for _ in 0..2 {
         let mut m: Multi = Multi::new(env()).unwrap();
         let mut e = easy("tcp://127.0.0.1:1/");
@@ -1828,9 +1839,12 @@ fn a_share_keeps_connections_across_handles() {
         e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
         connects.push(e.report().connects());
         uses.push(told.uses());
+        numbers.push((e.report().transfer_number(), e.report().conn_number()));
         drop(m);
     }
     assert_eq!(connects, [1, 0], "the second reused the first's");
+    // Numbered by the share's pool, whatever their multis.
+    assert_eq!(numbers, [(Some(0), Some(0)), (Some(1), Some(0))]);
     // Joined, searched, added and given back; then the same but added.
     let c = Kind::Connections;
     assert_eq!(uses, [vec![c; 4], vec![c; 3]], "the second added none");
@@ -1842,6 +1856,8 @@ fn a_share_keeps_connections_across_handles() {
     e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits)
         .unwrap();
     assert_eq!(e.report().connects(), 1);
+    let numbers = (e.report().transfer_number(), e.report().conn_number());
+    assert_eq!(numbers, (Some(0), Some(0)), "numbered by its multi's");
     assert_eq!(told.uses(), [], "none told of");
     assert_eq!(closed.load(Ordering::Relaxed), 1, "closed with its multi");
     // The watch held a clone of it.
@@ -2267,6 +2283,30 @@ fn a_full_pool_is_traced_by_the_transfer_filling_it() {
         ]
     );
     assert_eq!(m.caches.pool.len(), 1);
+}
+
+/// A transfer whose connection the full pool closes as it comes back has
+/// no connection left to name (`Curl_cpool_return`'s `last_conn_id` of
+/// -1); one still setting up names its own.
+#[test]
+fn a_connection_closed_as_it_comes_back_is_no_one_s() {
+    let (mut m, _clock) = networked();
+    m.conn_limits_mut().max_connects = NonZeroU32::new(1);
+    let a = m
+        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let (b, lines) = traced("tcp://127.0.0.1:1/");
+    let b = m.add(b, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), [(b.index(), Ok(()), 0)]);
+    assert_eq!(
+        trace_of(&lines).last().unwrap(),
+        "Connection pool is full, closing the oldest of 2/1\n"
+    );
+    assert_eq!(m.easy(b).unwrap().report().conn_number(), None);
+    assert_eq!(m.easy(a).unwrap().report().conn_number(), Some(0));
+    m.remove(a, &mut NoEvents).unwrap();
 }
 
 /// A transfer that forbids reuse closes its connection when done with it,

@@ -224,3 +224,12 @@ witness: curl-core report::tests::a_phase_reached_at_its_start_counts_a_microsec
         self.total = phases.into_iter().fold(self.since_start(now), u64::max);
 --- new
         self.total = phases.into_iter().fold(self.since_start(now), u64::min);
+
+=== a debug number past curl_off_t is taken
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::reads_the_debug_numbers_as_c
+features: debug-hooks
+--- old
+                .filter(|&n| n <= i64::MAX as u64)
+--- new
+                .filter(|_| true)

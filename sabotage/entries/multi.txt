@@ -608,3 +608,27 @@ witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_afte
     if let Err(OutOfMemory) = cx.easy_mut().options_mut().connect_to.refill() {
 --- new
     if let Err(OutOfMemory) = Ok::<(), OutOfMemory>(()) {
+
+=== a transfer is numbered by its multi's pool though its share keeps connections
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_share_keeps_connections_across_handles
+--- old
+        let number = match easy.share().filter(|s| s.keeps(Kind::Connections)) {
+--- new
+        let number = match easy.share().filter(|_| false) {
+
+=== a transfer's number is forgotten as it starts
+file: crates/curl-core/src/report.rs
+witness: curl-core multi::tests::the_next_transfer_reuses_the_connection_left
+--- old
+            transfer: self.transfer,
+--- new
+            transfer: None,
+
+=== a connection the full pool closes as it comes back is still the transfer's
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_connection_closed_as_it_comes_back_is_no_one_s
+--- old
+        Released::Evicted(_) => cx.report_mut().set_conn(None),
+--- new
+        Released::Evicted(_) => {}

@@ -219,7 +219,10 @@ The policy is a value, not constants in the core:
 
 `ConnId` folds C's `(last_cpid, last_conn_id)` pair into one value. CONNECT_ONLY's "last
 connection" (`ACTIVESOCKET`, `curl_easy_send`/`recv`) is an ordinary lookup that fails on its
-own when the connection is gone.
+own when the connection is gone. What `CURLINFO_CONN_ID` reports is only the connection's
+number, kept in the transfer's report as it attaches and dropped when the pool closes the
+connection as it comes back; `CURLINFO_XFER_ID` is a number the pool (the share's if it keeps
+connections) hands each transfer that joins it, kept in the report across its restarts.
 
 ### 2.4 Time
 

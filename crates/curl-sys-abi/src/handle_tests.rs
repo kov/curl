@@ -153,6 +153,17 @@ fn boolean_options_take_any_nonzero_value() {
         (ffi::CURLOPT_TRANSFER_ENCODING, |o| o.http.transfer_encoding),
         (ffi::CURLOPT_SSL_VERIFYPEER, |o| o.tls.verify_peer),
         (ffi::CURLOPT_SSL_VERIFYHOST, |o| o.tls.verify_host),
+        (ffi::CURLOPT_KEEP_SENDING_ON_ERROR, |o| {
+            o.http.keep_sending_on_error
+        }),
+        (ffi::CURLOPT_AUTOREFERER, |o| o.http.auto_referer),
+        (ffi::CURLOPT_UNRESTRICTED_AUTH, |o| o.http.unrestricted_auth),
+        (ffi::CURLOPT_FILETIME, |o| o.filetime),
+        (ffi::CURLOPT_HAPROXYPROTOCOL, |o| o.proxy.haproxy),
+        (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, |o| {
+            o.proxy.suppress_connect_headers
+        }),
+        (ffi::CURLOPT_COOKIESESSION, |o| o.http.cookies.new_session),
     ] {
         for (v, on) in [(1, true), (0, false), (2, true), (-1, true), (0, false)] {
             assert_eq!(long(c, o, v), CURLE_OK);
@@ -659,6 +670,127 @@ fn limits_are_checked_as_in_c() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The redirect, wait and condition options, checked as setopt.c checks
+/// them: refused out of range, clamped where C clamps.
+#[test]
+fn http_ranges_are_checked_as_in_c() {
+    use curl_core::options::{Condition, Follow, MaxRedirects, PostRedir, TimeCondition};
+    let c = curl_easy_init();
+    let bad = CURLE_BAD_FUNCTION_ARGUMENT;
+    let follow = |c| options(c, |o| o.http.follow);
+    for (v, want) in [
+        (0, Follow::No),
+        (ffi::CURLFOLLOW_ALL, Follow::All),
+        (ffi::CURLFOLLOW_OBEYCODE, Follow::ObeyCode),
+        (ffi::CURLFOLLOW_FIRSTONLY, Follow::FirstOnly),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_FOLLOWLOCATION, v), CURLE_OK);
+        assert_eq!(follow(c), want, "{v}");
+    }
+    for v in [4, -1] {
+        assert_eq!(long(c, ffi::CURLOPT_FOLLOWLOCATION, v), bad, "{v}");
+    }
+    assert_eq!(follow(c), Follow::FirstOnly, "unchanged");
+    let redirects = |c| options(c, |o| o.http.max_redirects);
+    assert_eq!(redirects(c), MaxRedirects(Some(30)), "C's default");
+    for (v, want) in [
+        (-1, None),
+        (0, Some(0)),
+        (5, Some(5)),
+        (0x8000, Some(0x7fff)),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_MAXREDIRS, v), CURLE_OK);
+        assert_eq!(redirects(c), MaxRedirects(want), "{v}");
+    }
+    assert_eq!(long(c, ffi::CURLOPT_MAXREDIRS, -2), bad);
+    assert_eq!(redirects(c), MaxRedirects(Some(0x7fff)), "unchanged");
+    let post = |c| {
+        options(c, |o| {
+            let p = o.http.post_redirect;
+            [p.post301, p.post302, p.post303]
+        })
+    };
+    for (v, want) in [
+        (ffi::CURL_REDIR_POST_ALL, [true; 3]),
+        (ffi::CURL_REDIR_GET_ALL, [false; 3]),
+        (ffi::CURL_REDIR_POST_301, [true, false, false]),
+        (ffi::CURL_REDIR_POST_302, [false, true, false]),
+        (ffi::CURL_REDIR_POST_303, [false, false, true]),
+        // Bits past 303's are ignored.
+        (8, [false; 3]),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_POSTREDIR, v), CURLE_OK);
+        assert_eq!(post(c), want, "{v}");
+    }
+    long(c, ffi::CURLOPT_POSTREDIR, ffi::CURL_REDIR_POST_301);
+    assert_eq!(long(c, ffi::CURLOPT_POSTREDIR, -1), bad);
+    assert_eq!(
+        options(c, |o| o.http.post_redirect),
+        PostRedir {
+            post301: true,
+            post302: false,
+            post303: false
+        },
+        "unchanged"
+    );
+    let wait = |c| options(c, |o| o.http.continue_wait.0);
+    assert_eq!(wait(c), Duration::from_secs(1), "C's default");
+    for (v, ms) in [(0, 0), (500, 500), (70000, 65535)] {
+        assert_eq!(long(c, ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, v), CURLE_OK);
+        assert_eq!(wait(c), Duration::from_millis(ms), "{v}");
+    }
+    assert_eq!(long(c, ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, -1), bad);
+    assert_eq!(wait(c), Duration::from_millis(65535), "unchanged");
+    let port = |c| options(c, |o| o.port.map(|p| p.get()));
+    for (v, want) in [(80, Some(80)), (65535, Some(65535)), (0, None)] {
+        assert_eq!(long(c, ffi::CURLOPT_PORT, v), CURLE_OK);
+        assert_eq!(port(c), want, "{v}");
+    }
+    long(c, ffi::CURLOPT_PORT, 8080);
+    for v in [65536, -1] {
+        assert_eq!(long(c, ffi::CURLOPT_PORT, v), bad, "{v}");
+    }
+    assert_eq!(port(c), Some(8080), "unchanged");
+    // The condition and its time, whichever is set first.
+    let condition = |c| options(c, |o| o.time_condition);
+    let at = |when, time| Some(TimeCondition { when, time });
+    assert_eq!(long(c, ffi::CURLOPT_TIMEVALUE, 1000), CURLE_OK);
+    assert_eq!(condition(c), None, "no condition yet");
+    for (v, want) in [
+        (
+            ffi::CURL_TIMECOND_IFMODSINCE,
+            at(Condition::ModifiedSince, 1000),
+        ),
+        (
+            ffi::CURL_TIMECOND_IFUNMODSINCE,
+            at(Condition::UnmodifiedSince, 1000),
+        ),
+        (
+            ffi::CURL_TIMECOND_LASTMOD,
+            at(Condition::LastModified, 1000),
+        ),
+        (ffi::CURL_TIMECOND_NONE, None),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_TIMECONDITION, v), CURLE_OK);
+        assert_eq!(condition(c), want, "{v}");
+    }
+    long(c, ffi::CURLOPT_TIMECONDITION, ffi::CURL_TIMECOND_IFMODSINCE);
+    for v in [4, -1] {
+        assert_eq!(long(c, ffi::CURLOPT_TIMECONDITION, v), bad, "{v}");
+    }
+    assert_eq!(
+        condition(c),
+        at(Condition::ModifiedSince, 1000),
+        "unchanged"
+    );
+    assert_eq!(off(c, ffi::CURLOPT_TIMEVALUE_LARGE, 1 << 40), CURLE_OK);
+    assert_eq!(condition(c), at(Condition::ModifiedSince, 1 << 40));
+    assert_eq!(long(c, ffi::CURLOPT_TIMEVALUE, -5), CURLE_OK);
+    assert_eq!(condition(c), at(Condition::ModifiedSince, -5));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 #[test]
 fn strings_are_copied_and_bounded() {
     let c = curl_easy_init();
@@ -710,6 +842,103 @@ fn strings_are_copied_and_bounded() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The request's strings are copied and NULL takes them away; an empty
+/// `CURLOPT_ACCEPT_ENCODING` asks for every coding; a `CURLU` handle
+/// takes the URL's place.
+#[test]
+fn request_strings_reach_the_transfer() {
+    use curl_core::coding::AcceptEncoding;
+    let c = curl_easy_init();
+    let null = ptr::null_mut::<c_char>();
+    let encoding = |c| {
+        options(c, |o| match &o.http.accept_encoding {
+            None => None,
+            Some(AcceptEncoding::All) => Some(None),
+            Some(AcceptEncoding::Given(v)) => Some(Some(v.clone())),
+        })
+    };
+    assert_eq!(encoding(c), None);
+    pointer(c, ffi::CURLOPT_ACCEPT_ENCODING, c"".as_ptr().cast_mut());
+    assert_eq!(encoding(c), Some(None));
+    pointer(c, ffi::CURLOPT_ACCEPT_ENCODING, c"gzip".as_ptr().cast_mut());
+    assert_eq!(encoding(c), Some(Some(b"gzip".to_vec())));
+    pointer(c, ffi::CURLOPT_ACCEPT_ENCODING, null);
+    assert_eq!(encoding(c), None);
+    let jar_path = std::env::temp_dir().join(format!("curl-shim-{}-jar", std::process::id()));
+    let jar = std::ffi::CString::new(jar_path.to_str().unwrap()).unwrap();
+    pointer(c, ffi::CURLOPT_CUSTOMREQUEST, c"FOO".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_COOKIE, c"a=1".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_COOKIEFILE, c"/f1".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_COOKIEFILE, c"/f2".as_ptr().cast_mut());
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_COOKIEJAR, jar.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let strings = |c| {
+        options(c, |o| {
+            let k = &o.http.cookies;
+            (
+                o.http.custom_method.clone(),
+                k.send.clone(),
+                k.files.iter().map(<[u8]>::to_vec).collect::<Vec<_>>(),
+                k.save_to.clone(),
+            )
+        })
+    };
+    assert_eq!(
+        strings(c),
+        (
+            Some(b"FOO".to_vec()),
+            Some(b"a=1".to_vec()),
+            vec![b"/f1".to_vec(), b"/f2".to_vec()],
+            Some(jar.as_bytes().to_vec())
+        )
+    );
+    for o in [
+        ffi::CURLOPT_CUSTOMREQUEST,
+        ffi::CURLOPT_COOKIE,
+        ffi::CURLOPT_COOKIEFILE,
+        ffi::CURLOPT_COOKIEJAR,
+    ] {
+        assert_eq!(pointer(c, o, null), CURLE_OK);
+    }
+    assert_eq!(strings(c), (None, None, vec![], None));
+    pointer(c, ffi::CURLOPT_URL, c"file:///x".as_ptr().cast_mut());
+    let u = crate::url::curl_url();
+    assert_eq!(pointer(c, ffi::CURLOPT_CURLU, u), CURLE_OK);
+    // SAFETY: made above; the handle keeps its own reference.
+    unsafe { crate::url::curl_url_cleanup(u) };
+    let urls = |c| options(c, |o| (o.url().is_some(), o.shared_url().is_some()));
+    assert_eq!(urls(c), (false, true), "in the URL's place");
+    assert_eq!(pointer(c, ffi::CURLOPT_CURLU, null), CURLE_OK);
+    assert_eq!(urls(c), (false, false));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    assert!(
+        !jar_path.exists(),
+        "no jar is written once its name is gone"
+    );
+}
+
+type TrailerFn = unsafe extern "C" fn(*mut *mut ffi::curl_slist, *mut c_void) -> c_int;
+
+/// What a trailer function adds, and answers.
+struct Trailing {
+    lines: Vec<&'static CStr>,
+    answer: c_int,
+}
+
+unsafe extern "C" fn trailers(list: *mut *mut ffi::curl_slist, data: *mut c_void) -> c_int {
+    // SAFETY: the test passes a `Trailing`, and the shim a list to add to.
+    unsafe {
+        let t = &*data.cast::<Trailing>();
+        for line in &t.lines {
+            *list = crate::strings::curl_slist_append(*list, line.as_ptr());
+        }
+        t.answer
+    }
+}
+
 #[test]
 fn callback_options_install_their_adapters() {
     let c = curl_easy_init();
@@ -721,12 +950,13 @@ fn callback_options_install_their_adapters() {
                 cb.debug.is_some(),
                 cb.stderr.is_some(),
                 cb.failure.is_some(),
+                cb.trailer.is_some(),
             )
         })
     };
     assert_eq!(
         installed(c),
-        (false, false, false, false),
+        (false, false, false, false, false),
         "a new handle needs none"
     );
     let f = sink as WriteFn as *const ();
@@ -776,6 +1006,16 @@ fn callback_options_install_their_adapters() {
         CURLE_OK
     );
     assert!(!installed(c).3);
+    let t = trailers as TrailerFn as *const ();
+    for _ in 0..2 {
+        assert_eq!(function(c, ffi::CURLOPT_TRAILERFUNCTION, t), CURLE_OK);
+        assert!(installed(c).4);
+    }
+    assert_eq!(
+        function(c, ffi::CURLOPT_TRAILERFUNCTION, ptr::null()),
+        CURLE_OK
+    );
+    assert!(!installed(c).4);
     let progress = |c| {
         options(c, |o| match o.progress {
             Progress::Off => 0,
@@ -810,6 +1050,7 @@ fn callback_options_install_their_adapters() {
         ffi::CURLOPT_IOCTLDATA,
         ffi::CURLOPT_XFERINFODATA,
         ffi::CURLOPT_DEBUGDATA,
+        ffi::CURLOPT_TRAILERDATA,
         ffi::CURLOPT_PRIVATE,
     ] {
         assert_eq!(pointer(c, o, at), CURLE_OK);
@@ -822,9 +1063,10 @@ fn callback_options_install_their_adapters() {
             k.seek_data,
             k.ioctl_data,
             k.progress_data,
-            k.debug_data
+            k.debug_data,
+            k.trailer_data
         ],
-        [at; 6]
+        [at; 7]
     );
     assert_eq!(info::<*mut c_char>(c, ffi::CURLINFO_PRIVATE).cast(), at);
     for o in [
@@ -995,6 +1237,36 @@ fn infos_answer_from_the_report() {
     );
     // No response pointed elsewhere.
     assert!(info::<*const c_char>(c, ffi::CURLINFO_REDIRECT_URL).is_null());
+    // No request sent a referer, followed, authenticated, met a proxy or
+    // a condition.
+    assert!(info::<*const c_char>(c, ffi::CURLINFO_REFERER).is_null());
+    for i in [
+        ffi::CURLINFO_REDIRECT_COUNT,
+        ffi::CURLINFO_HTTPAUTH_AVAIL,
+        ffi::CURLINFO_HTTPAUTH_USED,
+        ffi::CURLINFO_PROXY_ERROR,
+        ffi::CURLINFO_HTTP_CONNECTCODE,
+        ffi::CURLINFO_CONDITION_UNMET,
+    ] {
+        assert_eq!(info::<c_long>(c, i), 0, "{}", i.0);
+    }
+    // The method sent, else the application's own.
+    let method = |c| {
+        let p = info::<*const c_char>(c, ffi::CURLINFO_EFFECTIVE_METHOD);
+        // SAFETY: getinfo gives a string that lives while the handle does.
+        unsafe { CStr::from_ptr(p) }.to_owned()
+    };
+    assert_eq!(method(c).as_c_str(), c"GET");
+    pointer(c, ffi::CURLOPT_CUSTOMREQUEST, c"FOO".as_ptr().cast_mut());
+    assert_eq!(method(c).as_c_str(), c"FOO");
+    // A file older than the condition's time is not read, and the
+    // condition is reported unmet (`file_do`).
+    long(c, ffi::CURLOPT_TIMECONDITION, ffi::CURL_TIMECOND_IFMODSINCE);
+    long(c, ffi::CURLOPT_TIMEVALUE, c_long::MAX);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_CONDITION_UNMET), 1);
+    assert_eq!(info::<curl_off_t>(c, ffi::CURLINFO_SIZE_DOWNLOAD_T), 0);
     // An info not answered yet, and one of no type.
     let mut v: c_long = 0;
     // SAFETY: a live handle and a `long` to write.
@@ -2657,6 +2929,131 @@ fn proxy_options_are_checked_as_in_c() {
         assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Socks5Hostname);
     });
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_USED_PROXY), 0);
+    use curl_core::options::ProxyType;
+    for (v, want) in [
+        (ffi::CURLPROXY_HTTP, ProxyType::Http),
+        (ffi::CURLPROXY_HTTP_1_0, ProxyType::Http10),
+        (ffi::CURLPROXY_HTTPS, ProxyType::Https),
+        (ffi::CURLPROXY_HTTPS2, ProxyType::Https2),
+        (ffi::CURLPROXY_SOCKS4, ProxyType::Socks4),
+        (ffi::CURLPROXY_SOCKS5, ProxyType::Socks5),
+        (ffi::CURLPROXY_SOCKS4A, ProxyType::Socks4a),
+        (ffi::CURLPROXY_SOCKS5_HOSTNAME, ProxyType::Socks5Hostname),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_PROXYTYPE, v), CURLE_OK);
+        assert_eq!(options(c, |o| o.proxy.kind), want, "{v}");
+    }
+    // The SOCKS5 methods: only those built in, and not none of them
+    // with `CURLAUTH_ONLY`.
+    let socks5 = |c| {
+        options(c, |o| {
+            let a = o.proxy.socks5_auth;
+            [a.basic, a.gssapi, a.only]
+        })
+    };
+    assert_eq!(socks5(c), [true, true, false], "C's default");
+    let (basic, gssapi, only) = (
+        ffi::CURLAUTH_BASIC,
+        ffi::CURLAUTH_GSSAPI,
+        ffi::CURLAUTH_ONLY,
+    );
+    for (mask, want) in [
+        (0, [false; 3]),
+        (basic, [true, false, false]),
+        (gssapi, [false, true, false]),
+        (basic | gssapi, [true, true, false]),
+        (basic | only, [true, false, true]),
+        (gssapi | only, [false, true, true]),
+        (basic | gssapi | only, [true; 3]),
+    ] {
+        assert_eq!(
+            long(c, ffi::CURLOPT_SOCKS5_AUTH, mask as c_long),
+            CURLE_OK,
+            "{mask:#x}"
+        );
+        assert_eq!(socks5(c), want, "{mask:#x}");
+    }
+    long(c, ffi::CURLOPT_SOCKS5_AUTH, basic as c_long);
+    for (mask, code) in [
+        (only, CURLE_BAD_FUNCTION_ARGUMENT),
+        (ffi::CURLAUTH_DIGEST, CURLE_NOT_BUILT_IN),
+        (basic | ffi::CURLAUTH_DIGEST, CURLE_NOT_BUILT_IN),
+    ] {
+        assert_eq!(
+            long(c, ffi::CURLOPT_SOCKS5_AUTH, mask as c_long),
+            code,
+            "{mask:#x}"
+        );
+    }
+    assert_eq!(socks5(c), [true, false, false], "unchanged");
+    // The strings and the header list, copied; NULL takes them away.
+    pointer(c, ffi::CURLOPT_PRE_PROXY, c"socks4://q".as_ptr().cast_mut());
+    pointer(c, ffi::CURLOPT_PROXYPASSWORD, c"pw".as_ptr().cast_mut());
+    let mut list = ptr::null_mut();
+    for line in [c"X-P: 1", c"X-Q: 2"] {
+        // SAFETY: a list made here, and a C string.
+        list = unsafe { crate::strings::curl_slist_append(list, line.as_ptr()) };
+    }
+    assert_eq!(pointer(c, ffi::CURLOPT_PROXYHEADER, list), CURLE_OK);
+    // SAFETY: the list made above, which the handle does not keep.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    let kept = |c| {
+        options(c, |o| {
+            (
+                o.proxy.pre_proxy.clone(),
+                o.proxy.password.clone(),
+                o.proxy
+                    .headers
+                    .lines()
+                    .map(<[u8]>::to_vec)
+                    .collect::<Vec<_>>(),
+            )
+        })
+    };
+    assert_eq!(
+        kept(c),
+        (
+            Some(b"socks4://q".to_vec()),
+            Some(b"pw".to_vec()),
+            vec![b"X-P: 1".to_vec(), b"X-Q: 2".to_vec()]
+        )
+    );
+    for o in [
+        ffi::CURLOPT_PRE_PROXY,
+        ffi::CURLOPT_PROXYPASSWORD,
+        ffi::CURLOPT_PROXYHEADER,
+    ] {
+        assert_eq!(pointer(c, o, ptr::null_mut::<c_char>()), CURLE_OK);
+    }
+    assert_eq!(kept(c), (None, None, vec![]));
+    // Only `CURLHEADER_SEPARATE`'s bit counts.
+    let unified = |c| options(c, |o| o.proxy.unified_headers);
+    for (v, want) in [
+        (ffi::CURLHEADER_SEPARATE, false),
+        (ffi::CURLHEADER_UNIFIED, true),
+        (ffi::CURLHEADER_SEPARATE | 2, false),
+        (2, true),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_HEADEROPT, v), CURLE_OK);
+        assert_eq!(unified(c), want, "{v}");
+    }
+    // A client address turns the PROXY protocol on, and clearing it off.
+    let haproxy = |c| options(c, |o| (o.proxy.haproxy, o.proxy.haproxy_client_ip.clone()));
+    assert_eq!(
+        pointer(
+            c,
+            ffi::CURLOPT_HAPROXY_CLIENT_IP,
+            c"1.2.3.4".as_ptr().cast_mut()
+        ),
+        CURLE_OK
+    );
+    assert_eq!(haproxy(c), (true, Some(b"1.2.3.4".to_vec())));
+    long(c, ffi::CURLOPT_HAPROXYPROTOCOL, 1);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_HAPROXY_CLIENT_IP, ptr::null_mut::<c_char>()),
+        CURLE_OK
+    );
+    assert_eq!(haproxy(c), (false, None));
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

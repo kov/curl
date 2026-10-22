@@ -1913,6 +1913,8 @@ Each is either unobservable through the ABI or a fixed bug:
 | `HeaderStore` growth | per line, after the budget check | 300 KiB/response, 20× per transfer, 5000 |
 | `HeldOutput` | only while held | 64 MiB → TooLarge |
 | `UserHeaders`, `Url`, option strings | setopt | per handle; shared strings are `TryRc` |
+| a cold option group (`Cold<T>`: proxy, login, `.netrc`, cookies) | the first setopt of one of its options | one per group per handle |
+| a Digest challenge's state | a response's Digest challenge | one per peer per handle |
 | socket table entries beyond the reserved two | connect-machine stage entry, before the socket opens | 6 attempts + ALPN racers |
 | error detail | on error | dropped if boxing it fails |
 | request head | once, measured before it is written | 1 MiB → TooLarge |

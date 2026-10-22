@@ -232,7 +232,9 @@ impl Easy {
     /// (`CURLOPT_COOKIEFILE` NULL). A share's jar is not the handle's to
     /// forget.
     pub fn forget_cookies(&mut self) {
-        self.options.http.cookies.files = Lines::default();
+        if let Some(cookies) = self.options.http.cookies.made_mut() {
+            cookies.files = Lines::default();
+        }
         self.cookies = None;
     }
 
@@ -848,6 +850,8 @@ mod tests {
         e.options_mut()
             .http
             .cookies
+            .make_mut()
+            .unwrap()
             .files
             .push(b"some.jar")
             .unwrap();
@@ -888,6 +892,8 @@ mod tests {
             e.options_mut()
                 .http
                 .cookies
+                .make_mut()
+                .unwrap()
                 .files
                 .push(file.as_bytes())
                 .unwrap();

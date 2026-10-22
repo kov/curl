@@ -1,0 +1,19 @@
+# The groups of options a handle makes only when one of them is set.
+
+=== a cold option group is made infallibly
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core a_cold_group_is_made_or_refused_at_its_first_set
+--- old
+            self.0 = Some(try_box(T::NONE)?);
+--- new
+            self.0 = Some(Box::new(T::NONE));
+
+=== a cold option group is made again at every set
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core a_cold_group_is_made_or_refused_at_its_first_set
+--- old
+        if self.0.is_none() {
+            self.0 = Some(try_box(T::NONE)?);
+--- new
+        if true {
+            self.0 = Some(try_box(T::NONE)?);

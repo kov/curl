@@ -1841,7 +1841,8 @@ fn the_login_stays_with_the_first_origin() {
         let url = format!("http://x:y@127.0.0.1:{PORT}/a");
         let ran = get(&mut m, "/a", first.clone(), |o| {
             o.set_url(Some(url.as_bytes())).unwrap();
-            o.login = crate::options::Login::from_pair(b"smith:doggie").unwrap();
+            *o.login.make_mut().unwrap() =
+                crate::options::Login::from_pair(b"smith:doggie").unwrap();
             o.http.follow = Follow::All;
             o.http.unrestricted_auth = unrestricted;
             o.resolve.set([entry.as_bytes()]).unwrap();
@@ -1871,7 +1872,7 @@ fn a_401_is_answered_with_a_method_it_offers() {
     for fail_on_error in [false, true] {
         let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
         let ran = get(&mut m, "/a", talk.clone(), |o| {
-            o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+            *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
             o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
             o.http.fail_on_error = fail_on_error;
         });
@@ -1902,7 +1903,7 @@ fn a_401_is_answered_with_a_method_it_offers() {
 fn the_method_chosen_is_kept_for_the_next_transfer() {
     let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
     });
     assert_eq!(ran.result, Ok(()));
@@ -1936,7 +1937,7 @@ fn a_digest_post_probes_without_its_body() {
         o.method = Method::Post;
         o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
         o.http.headers = UserHeaders::new([&b"Content-Length: 3"[..]]).unwrap();
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
     assert_eq!(ran.result, Ok(()));
@@ -1971,7 +1972,7 @@ fn a_probe_let_through_is_made_again_with_its_body() {
     let ran = get(&mut m, "/a", talk, |o| {
         o.method = Method::Post;
         o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
     assert_eq!(ran.result, Ok(()));
@@ -1993,7 +1994,7 @@ fn a_digest_answer_refused_ends_the_transfer() {
         Content-Length: 3\r\n\r\nno\n";
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, again, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
     assert_eq!(ran.result, Ok(()));
@@ -2013,7 +2014,7 @@ fn a_digest_answer_refused_ends_the_transfer() {
         stale=true\r\nContent-Length: 0\r\n\r\n";
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, stale, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
     assert_eq!(ran.result, Ok(()));
@@ -2030,7 +2031,7 @@ fn digest_goes_beside_the_application_s_authorization() {
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
         o.http.headers = UserHeaders::new([&b"Authorization: mine"[..]]).unwrap();
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
     assert_eq!(ran.result, Ok(()));
@@ -2060,7 +2061,7 @@ fn a_token_goes_as_bearer() {
     for (reply, result) in [(OK, Ok(())), (&refused[..], Ok(()))] {
         let (mut m, talk, _) = server(&[reply], false);
         let ran = get(&mut m, "/a", talk.clone(), |o| {
-            o.login.bearer = Some(b"mF_9.B5f".to_vec());
+            o.login.make_mut().unwrap().bearer = Some(b"mF_9.B5f".to_vec());
             o.http.auth = crate::options::HttpAuth(AuthMethods::BEARER);
         });
         assert_eq!(ran.result, result);
@@ -2128,10 +2129,10 @@ fn a_netrc_file_gives_the_host_s_credentials() {
         let url = format!("http://{url_user}127.0.0.1:{PORT}/a");
         let ran = get(&mut m, "/a", talk.clone(), |o| {
             o.set_url(Some(url.as_bytes())).unwrap();
-            o.netrc.mode = mode;
-            o.netrc.file = Some(file.clone());
+            o.netrc.make_mut().unwrap().mode = mode;
+            o.netrc.make_mut().unwrap().file = Some(file.clone());
             if let Some(pair) = login {
-                o.login = crate::options::Login::from_pair(pair).unwrap();
+                *o.login.make_mut().unwrap() = crate::options::Login::from_pair(pair).unwrap();
             }
         });
         assert_eq!(&ran.result, result, "{mode:?} {login:?} {url_user}");
@@ -2175,7 +2176,7 @@ fn a_401_to_credentials_sent_is_the_answer() {
         let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
         let ran = get(&mut m, "/a", talk.clone(), |o| {
             if login {
-                o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+                *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
             }
             o.http.fail_on_error = fail_on_error;
         });
@@ -2639,7 +2640,7 @@ fn a_challenge_mid_body_closes_rather_than_send_the_rest() {
     let ran = get(&mut m, "/a", first.clone(), |o| {
         o.method = Method::Upload;
         o.upload = stream.source(true);
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
     });
     assert_eq!(ran.result, Ok(()));
@@ -2952,7 +2953,7 @@ fn a_401_retry_names_the_url_without_the_application_s_port() {
     let ran = get(&mut m, "/a", talk, |o| {
         o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
         o.port = std::num::NonZeroU16::new(PORT);
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
         o.http.auto_referer = true;
     });
@@ -3019,8 +3020,8 @@ fn a_cookie_set_goes_with_the_next_request() {
     let ran = get(&mut m, "/a", talk, |o| {
         o.http.follow = Follow::All;
         // An empty name reads nothing, but turns the jar on.
-        o.http.cookies.files.push(b"").unwrap();
-        o.http.cookies.send = Some(b"app=2".to_vec());
+        o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
+        o.http.cookies.make_mut().unwrap().send = Some(b"app=2".to_vec());
     });
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -3056,7 +3057,7 @@ fn a_custom_host_names_the_cookies_host() {
     let (mut m, talk, _) = server(&[reply], false);
     let mut ran = get(&mut m, "/d/e", talk, |o| {
         o.http.headers = UserHeaders::new([&b"Host: other.example:99"[..]]).unwrap();
-        o.http.cookies.files.push(b"").unwrap();
+        o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(
@@ -3077,7 +3078,7 @@ fn a_custom_host_in_brackets_names_the_cookies_host() {
         let (mut m, talk, _) = server(&[reply], false);
         let mut ran = get(&mut m, "/d/e", talk, |o| {
             o.http.headers = UserHeaders::new([host]).unwrap();
-            o.http.cookies.files.push(b"").unwrap();
+            o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
         });
         assert_eq!(ran.result, Ok(()));
         assert_eq!(
@@ -3100,7 +3101,13 @@ fn cookie_files_are_read_as_a_transfer_starts() {
     let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
     let ran = run("/", OK, false, |o| {
         for p in [&missing, &dir, &file] {
-            o.http.cookies.files.push(&name(p)).unwrap();
+            o.http
+                .cookies
+                .make_mut()
+                .unwrap()
+                .files
+                .push(&name(p))
+                .unwrap();
         }
     });
     std::fs::remove_dir_all(&dir).unwrap();
@@ -3141,7 +3148,13 @@ fn cookie_files_are_read_in_turn_with_their_lines_traced() {
     let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
     let ran = run("/", OK, false, |o| {
         for p in [&first, &missing, &second] {
-            o.http.cookies.files.push(&name(p)).unwrap();
+            o.http
+                .cookies
+                .make_mut()
+                .unwrap()
+                .files
+                .push(&name(p))
+                .unwrap();
         }
     });
     std::fs::remove_dir_all(&dir).unwrap();
@@ -3172,10 +3185,24 @@ fn a_cookie_file_named_while_one_is_warned_of_is_read() {
     std::fs::write(&file, b"127.0.0.1\tFALSE\t/\tFALSE\t0\ta\t1\n").unwrap();
     let name = file.as_os_str().as_encoded_bytes().to_vec();
     let ran = run("/", OK, false, |o| {
-        o.http.cookies.files.push(b"missing").unwrap();
+        o.http
+            .cookies
+            .make_mut()
+            .unwrap()
+            .files
+            .push(b"missing")
+            .unwrap();
         let change = ChangesOn {
             at: b"WARNING: failed to open cookie file \"missing\"",
-            change: Box::new(move |o| o.http.cookies.files.push(&name).unwrap()),
+            change: Box::new(move |o| {
+                o.http
+                    .cookies
+                    .make_mut()
+                    .unwrap()
+                    .files
+                    .push(&name)
+                    .unwrap()
+            }),
         };
         o.callbacks.debug = Some(Handler::debug(change).unwrap());
     });
@@ -3204,7 +3231,7 @@ fn a_request_stores_50_cookies_at_most() {
     let (mut m, talk, _) = server(&[&many, &more], false);
     let mut ran = get(&mut m, "/a", talk, |o| {
         o.http.follow = Follow::All;
-        o.http.cookies.files.push(b"").unwrap();
+        o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let list = ran.easy.cookie_list().unwrap();
@@ -3262,7 +3289,13 @@ fn cookies_are_counted_with_the_request_s_as_c_counts_them() {
     add(&mut e, 50, "a");
     let three = name(&three);
     let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
-        o.http.cookies.files.push(&three).unwrap();
+        o.http
+            .cookies
+            .make_mut()
+            .unwrap()
+            .files
+            .push(&three)
+            .unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let mut e = ran.easy;
@@ -3272,7 +3305,7 @@ fn cookies_are_counted_with_the_request_s_as_c_counts_them() {
     assert_eq!(e.cookie_list().unwrap().len(), 66);
 
     let ran = get_with(&mut m, Easy::new(), "/", talk.clone(), |o| {
-        o.http.cookies.files.push(b"").unwrap();
+        o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
     });
     let mut e = ran.easy;
     add(&mut e, 10, "b");
@@ -3285,7 +3318,13 @@ fn cookies_are_counted_with_the_request_s_as_c_counts_them() {
 
     let sixty = name(&sixty);
     let ran = get_with(&mut m, Easy::new(), "/", talk, |o| {
-        o.http.cookies.files.push(&sixty).unwrap();
+        o.http
+            .cookies
+            .make_mut()
+            .unwrap()
+            .files
+            .push(&sixty)
+            .unwrap();
     });
     let mut e = ran.easy;
     assert_eq!(e.cookie_list().unwrap().len(), 60);
@@ -3317,10 +3356,18 @@ fn a_share_keeps_cookies_for_its_handles() {
     let dir = std::env::temp_dir().join(format!("curl-share-jar-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let jar = dir.join("jar");
-    two.options_mut().http.cookies.save_to = Some(jar.as_os_str().as_encoded_bytes().to_vec());
+    two.options_mut().http.cookies.make_mut().unwrap().save_to =
+        Some(jar.as_os_str().as_encoded_bytes().to_vec());
     two.save_cookies().unwrap();
     assert!(!jar.exists(), "no transfer started it");
-    two.options_mut().http.cookies.files.push(b"").unwrap();
+    two.options_mut()
+        .http
+        .cookies
+        .make_mut()
+        .unwrap()
+        .files
+        .push(b"")
+        .unwrap();
     two.reload_cookies(|_| {}).unwrap();
     two.save_cookies().unwrap();
     let saved = std::fs::read(&jar).unwrap();
@@ -3397,7 +3444,7 @@ fn a_share_s_uses_are_told_where_c_locks_them() {
     let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
     let mut e = Easy::new();
     e.set_share_watched(share.clone(), told.handler());
-    let jar_on = |o: &mut Options| o.http.cookies.files.push(b"").unwrap();
+    let jar_on = |o: &mut Options| o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
     let mut ran = get_with(&mut m, e, "/a", talk, jar_on);
     assert_eq!(ran.result, Ok(()));
     let (c, n) = (Kind::Cookies, Kind::Names);
@@ -3412,7 +3459,7 @@ fn a_share_s_uses_are_told_where_c_locks_them() {
 fn a_share_s_jar_serves_the_transfers_of_a_multi() {
     let share = crate::share::Share::new().unwrap();
     share.keep(crate::share::Kind::Cookies).unwrap();
-    let jar_on = |o: &mut Options| o.http.cookies.files.push(b"").unwrap();
+    let jar_on = |o: &mut Options| o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
     let (mut m, talk, _) = server(&[SETS_A_COOKIE], false);
     let mut one = Easy::new();
     one.set_share(Some(share.clone()));
@@ -3436,7 +3483,7 @@ fn a_forwarding_proxy_gets_the_whole_url() {
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://user:pw@origin.example:80/a?b#c"))
             .unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
     });
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -3467,11 +3514,11 @@ fn a_proxy_is_answered_with_its_own_credentials() {
     let (mut m, talk, _) = server(&[PROXY_CHALLENGE, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
-        o.proxy.auth = crate::options::HttpAuth(AuthMethods::ANY);
-        o.login = crate::options::Login::from_pair(b"u2:p2").unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::ANY);
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u2:p2").unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -3511,10 +3558,10 @@ fn a_custom_proxy_authorization_goes_beside_the_proxy_s() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
-        o.proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::BASIC);
         o.http.headers = UserHeaders::new([&b"Proxy-Authorization: Mine"[..]]).unwrap();
     });
     assert_eq!(ran.result, Ok(()));
@@ -3536,16 +3583,16 @@ fn the_proxy_s_own_proxy_authorization_replaces_the_library_s() {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get(&mut m, "/", talk, |o| {
             o.set_url(Some(b"http://origin.example/a")).unwrap();
-            o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-            o.proxy.user = Some(b"u".to_vec());
-            o.proxy.password = Some(b"p".to_vec());
-            o.proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+            o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+            o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::BASIC);
             let mine = UserHeaders::new([&b"Proxy-Authorization: Mine"[..]]).unwrap();
             if unified {
                 o.http.headers = mine;
-                o.proxy.unified_headers = true;
+                o.proxy.make_mut().unwrap().unified_headers = true;
             } else {
-                o.proxy.headers = mine;
+                o.proxy.make_mut().unwrap().headers = mine;
             }
         });
         assert_eq!(ran.result, Ok(()));
@@ -3564,9 +3611,9 @@ fn a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s() {
     let attacker = b"HTTP/1.1 407 Who\r\n\
         Proxy-Authenticate: Digest realm=\"attacker\", nonce=\"1\"\r\nContent-Length: 0\r\n\r\n";
     let creds = |o: &mut Options| {
-        o.proxy.user = Some(b"silly".to_vec());
-        o.proxy.password = Some(b"person".to_vec());
-        o.proxy.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+        o.proxy.make_mut().unwrap().user = Some(b"silly".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"person".to_vec());
+        o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     };
     let (mut m, talk, _) = server(&[attacker], false);
     let direct = get(&mut m, "/", talk, creds);
@@ -3576,7 +3623,7 @@ fn a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s() {
     let proxied = get_with(&mut m, direct.easy, "/", talk, |o| {
         creds(o);
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
     });
     assert_eq!(proxied.result, Ok(()));
     let text = String::from_utf8_lossy(&proxied.request).into_owned();
@@ -3587,7 +3634,7 @@ fn a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s() {
 /// `url`.
 fn through_socks(o: &mut Options, kind: &str, url: &[u8]) {
     o.set_url(Some(url)).unwrap();
-    o.proxy.url = Some(format!("{kind}://127.0.0.1:{PORT}").into_bytes());
+    o.proxy.make_mut().unwrap().url = Some(format!("{kind}://127.0.0.1:{PORT}").into_bytes());
 }
 
 const SOCKS5_GRANTED: &[u8] = b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50";
@@ -3602,8 +3649,8 @@ fn a_socks5_proxy_logs_the_user_in_and_connects() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         through_socks(o, "socks5h", b"http://origin.example/a");
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
     });
     assert_eq!(ran.result, Ok(()));
     let mut want =
@@ -3679,14 +3726,14 @@ fn an_unauthenticated_socks5_connection_serves_no_transfer_insisting() {
     let mut m = serving(Peer::Accepts, &[&first, &second]);
     let creds = |o: &mut Options| {
         through_socks(o, "socks5h", b"http://origin.example/a");
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
     };
     let ran = get(&mut m, "/", first.clone(), creds);
     assert_eq!(ran.result, Ok(()));
     let ran = get_with(&mut m, ran.easy, "/", second.clone(), |o| {
         creds(o);
-        o.proxy.socks5_auth.only = true;
+        o.proxy.make_mut().unwrap().socks5_auth.only = true;
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.easy.report().connects(), 1, "a new connection");
@@ -3694,7 +3741,7 @@ fn an_unauthenticated_socks5_connection_serves_no_transfer_insisting() {
     // The one that authenticated is reused, insisting or not.
     let ran = get_with(&mut m, ran.easy, "/", second.clone(), |o| {
         creds(o);
-        o.proxy.socks5_auth.only = true;
+        o.proxy.make_mut().unwrap().socks5_auth.only = true;
     });
     assert_eq!(ran.easy.report().connects(), 0, "reused");
 }
@@ -3714,7 +3761,7 @@ fn first_line(bytes: &[u8]) -> (String, &[u8]) {
 #[test]
 fn a_new_connection_sends_the_proxy_protocol_s_line_first() {
     let (mut m, talk, _) = server(&[OK, OK], false);
-    let haproxy = |o: &mut Options| o.proxy.haproxy = true;
+    let haproxy = |o: &mut Options| o.proxy.make_mut().unwrap().haproxy = true;
     let ran = get(&mut m, "/a", talk.clone(), haproxy);
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.easy.report().connects(), 1);
@@ -3747,8 +3794,8 @@ fn the_proxy_protocol_s_line_says_the_address_given() {
     for (ip, family) in [("2a04:4e42::347", "TCP6"), ("192.168.1.1", "TCP4")] {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get(&mut m, "/", talk, |o| {
-            o.proxy.haproxy = true;
-            o.proxy.haproxy_client_ip = Some(ip.as_bytes().to_vec());
+            o.proxy.make_mut().unwrap().haproxy = true;
+            o.proxy.make_mut().unwrap().haproxy_client_ip = Some(ip.as_bytes().to_vec());
         });
         let (line, _) = first_line(&ran.request);
         let want = format!("PROXY {family} {ip} {ip} ");
@@ -3764,9 +3811,9 @@ fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
     let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        o.proxy.tunnel = true;
-        o.proxy.haproxy = true;
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().tunnel = true;
+        o.proxy.make_mut().unwrap().haproxy = true;
     });
     assert_eq!(ran.result, Ok(()));
     let connect = connect_of("");
@@ -3789,10 +3836,11 @@ fn a_pre_proxy_reaches_the_http_proxy_that_forwards() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(b"http://proxy.example:3128".to_vec());
-        o.proxy.pre_proxy = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.proxy.make_mut().unwrap().pre_proxy =
+            Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
     });
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -3824,9 +3872,10 @@ fn a_pre_proxy_reaches_the_http_proxy_that_tunnels() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(b"http://proxy.example:3128".to_vec());
-        o.proxy.tunnel = true;
-        o.proxy.pre_proxy = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.proxy.make_mut().unwrap().tunnel = true;
+        o.proxy.make_mut().unwrap().pre_proxy =
+            Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
     });
     assert_eq!(ran.result, Ok(()));
     let socks = b"\x05\x01\x00\x05\x01\x00\x03\x0dproxy.example\x0c\x38";
@@ -3851,7 +3900,7 @@ fn a_pre_proxy_alone_is_the_socks_proxy_and_only_socks() {
     let mut m = serving(Peer::Accepts, &[&talk]);
     let ran = get(&mut m, "/", talk.clone(), |o| {
         o.set_url(Some(b"http://localhost:8990/a")).unwrap();
-        o.proxy.pre_proxy = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().pre_proxy = Some(format!("127.0.0.1:{PORT}").into_bytes());
     });
     assert_eq!(ran.result, Ok(()));
     assert!(
@@ -3872,8 +3921,8 @@ fn a_pre_proxy_alone_is_the_socks_proxy_and_only_socks() {
     ] {
         let (mut m, talk, _) = server(&[OK], false);
         let ran = get(&mut m, "/", talk, |o| {
-            o.proxy.url = proxy.map(|p| p.as_bytes().to_vec());
-            o.proxy.pre_proxy = Some(pre.as_bytes().to_vec());
+            o.proxy.make_mut().unwrap().url = proxy.map(|p| p.as_bytes().to_vec());
+            o.proxy.make_mut().unwrap().pre_proxy = Some(pre.as_bytes().to_vec());
         });
         assert_eq!(ran.result, Err(ErrorKind::CouldntResolveProxy));
         assert!(
@@ -3890,7 +3939,8 @@ fn a_pre_proxy_alone_is_the_socks_proxy_and_only_socks() {
 fn a_proxy_user_that_does_not_decode_is_a_bad_url() {
     let (mut m, talk, _) = server(&[OK], false);
     let ran = get(&mut m, "/", talk.clone(), |o| {
-        o.proxy.url = Some(format!("http://u%01@127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().url =
+            Some(format!("http://u%01@127.0.0.1:{PORT}").into_bytes());
     });
     assert_eq!(ran.result, Err(ErrorKind::UrlMalformat));
     let said = ran.seen.text();
@@ -3923,11 +3973,11 @@ fn a_tunnel_answers_a_407_over_the_same_connection() {
     let (mut m, talk, _) = server(&[challenge, TUNNEL_UP, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        o.proxy.tunnel = true;
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
-        o.proxy.auth = crate::options::HttpAuth(AuthMethods::ANY);
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().tunnel = true;
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::ANY);
     });
     assert_eq!(ran.result, Ok(()));
     let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -3961,11 +4011,11 @@ fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
     let mut m = serving(Peer::Accepts, &[&first, &second]);
     let ran = get(&mut m, "/", second.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        o.proxy.tunnel = true;
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
-        o.proxy.auth = crate::options::HttpAuth(AuthMethods::ANY);
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().tunnel = true;
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::ANY);
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(String::from_utf8_lossy(&first.received()), connect_of(""));
@@ -3993,9 +4043,9 @@ fn suppressed_connect_headers_are_kept_and_not_delivered() {
         let (mut m, talk, _) = server(&[up, OK], false);
         let ran = get(&mut m, "/", talk, |o| {
             o.set_url(Some(b"http://origin.example/a")).unwrap();
-            o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-            o.proxy.tunnel = true;
-            o.proxy.suppress_connect_headers = suppress;
+            o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.proxy.make_mut().unwrap().tunnel = true;
+            o.proxy.make_mut().unwrap().suppress_connect_headers = suppress;
             o.output.include_header = true;
         });
         assert_eq!(ran.result, Ok(()));
@@ -4024,8 +4074,8 @@ fn suppressed_connect_headers_are_kept_and_not_delivered() {
 /// Through a tunnel at `PORT` to `http://origin.example/a`.
 fn tunneled(o: &mut Options) {
     o.set_url(Some(b"http://origin.example/a")).unwrap();
-    o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-    o.proxy.tunnel = true;
+    o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    o.proxy.make_mut().unwrap().tunnel = true;
 }
 
 /// A transfer of `m` over `talk` started with the options `set` makes,
@@ -4070,7 +4120,10 @@ fn a_proxy_handshake_waits_to_send_then_to_read() {
     assert_eq!(seen, [Events::IN], "the offer sent, the pick awaited");
     let talk = stalled(&[OK]);
     let mut m = serving(Peer::Accepts, &[&talk]);
-    assert_eq!(waiting(&mut m, |o| o.proxy.haproxy = true), [Events::OUT]);
+    assert_eq!(
+        waiting(&mut m, |o| o.proxy.make_mut().unwrap().haproxy = true),
+        [Events::OUT]
+    );
 }
 
 /// A tunnel's `CONNECT` is traced as sent, and its answer's head counts
@@ -4153,9 +4206,9 @@ const DIGEST_STALE_CUT: &[u8] = b"HTTP/1.1 407 Who\r\n\
 /// Through a tunnel to a Digest proxy, as user `u`.
 fn tunneled_digest(o: &mut Options) {
     tunneled(o);
-    o.proxy.user = Some(b"u".to_vec());
-    o.proxy.password = Some(b"p".to_vec());
-    o.proxy.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+    o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+    o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::DIGEST);
 }
 
 /// A proxy closing mid-answer to the `CONNECT` that carried credentials,
@@ -4223,7 +4276,7 @@ fn a_proxy_s_name_is_the_one_found_in_the_cache() {
     let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         tunneled(o);
-        o.proxy.url = Some(format!("proxy.test:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().url = Some(format!("proxy.test:{PORT}").into_bytes());
         let entry = format!("proxy.test:{PORT}:127.0.0.1");
         o.resolve.set([entry.as_bytes()]).unwrap();
     });
@@ -4246,7 +4299,7 @@ fn a_proxy_s_digest_is_traced_before_its_first_challenge() {
         let (mut m, talk, _) = server(&[if tunnel { TUNNEL_UP } else { OK }, OK], false);
         let ran = get(&mut m, "/", talk, |o| {
             tunneled_digest(o);
-            o.proxy.tunnel = tunnel;
+            o.proxy.make_mut().unwrap().tunnel = tunnel;
         });
         assert_eq!(ran.result, Ok(()), "tunnel {tunnel}");
         let first = if tunnel { "CONNECT " } else { "GET " };
@@ -4421,9 +4474,9 @@ fn a_407_refusing_the_credentials_sent_ends_the_tunnel() {
         let (mut m, talk, _) = server(&[answer], false);
         let ran = get(&mut m, "/", talk, |o| {
             tunneled(o);
-            o.proxy.user = Some(b"u".to_vec());
-            o.proxy.password = Some(b"p".to_vec());
-            o.proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+            o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+            o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+            o.proxy.make_mut().unwrap().auth = crate::options::HttpAuth(AuthMethods::BASIC);
         });
         assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
         let said = ran.seen.text();
@@ -4467,7 +4520,7 @@ fn a_tunnel_after_a_redirect_elsewhere_sends_no_cookie() {
     let ran = get(&mut m, "/", second.clone(), |o| {
         tunneled(o);
         o.http.follow = Follow::All;
-        o.proxy.headers = UserHeaders::new([&b"Cookie: a=b"[..]]).unwrap();
+        o.proxy.make_mut().unwrap().headers = UserHeaders::new([&b"Cookie: a=b"[..]]).unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     let has_cookie = |talk: &Conversation| {
@@ -4503,8 +4556,8 @@ fn an_origin_s_digest_is_answered_through_a_proxy() {
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
     assert_eq!(ran.result, Ok(()));
@@ -4532,7 +4585,7 @@ fn proxy_connection_counts_only_through_a_proxy() {
         let ran = get(&mut m, "/", talk, |o| {
             if proxied {
                 o.set_url(Some(b"http://origin.example/")).unwrap();
-                o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+                o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
             }
         });
         assert_eq!(ran.result, Ok(()));
@@ -4551,7 +4604,7 @@ fn a_401_reads_no_proxy_challenge() {
         b"HTTP/1.1 401 Who\r\nProxy-Authenticate: Basic realm=\"p\"\r\nContent-Length: 0\r\n\r\n";
     let (mut m, talk, _) = server(&[reply, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
     });
     assert_eq!(ran.result, Ok(()));
@@ -4569,7 +4622,7 @@ fn a_challenge_with_nothing_to_pick_keeps_the_method_used() {
         b"HTTP/1.1 401 Who\r\nWWW-Authenticate: X-Other realm=\"a\"\r\nContent-Length: 0\r\n\r\n";
     let (mut m, talk, _) = server(&[host], false);
     let ran = get(&mut m, "/a", talk, |o| {
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.easy.report().auth_used(), AuthMethods::BASIC);
@@ -4578,9 +4631,9 @@ fn a_challenge_with_nothing_to_pick_keeps_the_method_used() {
     let (mut m, talk, _) = server(&[proxy], false);
     let ran = get(&mut m, "/", talk, |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
-        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
-        o.proxy.user = Some(b"u".to_vec());
-        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.easy.report().proxy_auth_used(), AuthMethods::BASIC);
@@ -4651,7 +4704,7 @@ fn a_handle_s_public_suffixes_refuse_cookies_for_a_suffix() {
         let (mut m, talk, _) = server(&[reply], false);
         let mut ran = get_with(&mut m, e, "/", talk, |o| {
             o.http.headers = UserHeaders::new([&b"Host: www.example.com"[..]]).unwrap();
-            o.http.cookies.files.push(b"").unwrap();
+            o.http.cookies.make_mut().unwrap().files.push(b"").unwrap();
         });
         assert_eq!(ran.result, Ok(()));
         let kept = ran.easy.cookie_list().unwrap();
@@ -4777,8 +4830,8 @@ fn proxy_from_the_environment() {
         let uses = format!("Uses proxy env variable http_proxy == 'http://127.0.0.1:{PORT}'\n");
         assert!(said.contains(&uses), "{said:?}");
         let off: [fn(&mut Options); 2] = [
-            |o| o.proxy.url = Some(Vec::new()),
-            |o| o.proxy.pre_proxy = Some(Vec::new()),
+            |o| o.proxy.make_mut().unwrap().url = Some(Vec::new()),
+            |o| o.proxy.make_mut().unwrap().pre_proxy = Some(Vec::new()),
         ];
         for set in off {
             let (line, said) = fetch(direct.as_bytes(), set);
@@ -4826,7 +4879,7 @@ fn a_digest_client_nonce_is_random() {
     let cnonce = || {
         let (mut m, talk, _) = server(&[challenge, OK], false);
         let ran = get(&mut m, "/", talk, |o| {
-            o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+            *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
             o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
         });
         assert_eq!(ran.result, Ok(()));

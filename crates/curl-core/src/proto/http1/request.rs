@@ -182,6 +182,11 @@ pub struct UserHeaders {
 }
 
 impl UserHeaders {
+    /// None at all.
+    pub const NONE: UserHeaders = UserHeaders {
+        lines: Listed::NONE,
+    };
+
     /// The headers of `lines`, each as the application gave it.
     pub fn new<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Result<UserHeaders, OutOfMemory> {
         let mut headers = Vec::new();

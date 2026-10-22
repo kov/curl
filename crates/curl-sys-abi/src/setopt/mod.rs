@@ -598,21 +598,22 @@ fn apply(
         }
         (ffi::CURLOPT_USERPWD, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            options.login = match unsafe { string(p) }? {
+            let login = match unsafe { string(p) }? {
                 Some(pair) => curl_core::options::Login::from_pair(pair)?,
                 None => curl_core::options::Login::default(),
             };
+            *options.login.make_mut()? = login;
         }
         (ffi::CURLOPT_USERNAME, Ptr(p)) => {
             // SAFETY: as above.
-            options.login.user = unsafe { owned(p) }?;
+            options.login.make_mut()?.user = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_PASSWORD, Ptr(p)) => {
             // SAFETY: as above.
-            options.login.password = unsafe { owned(p) }?;
+            options.login.make_mut()?.password = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_NETRC, Long(n)) => {
-            options.netrc.mode = match n {
+            options.netrc.make_mut()?.mode = match n {
                 ffi::CURL_NETRC_IGNORED => curl_core::options::NetrcMode::Ignored,
                 ffi::CURL_NETRC_OPTIONAL => curl_core::options::NetrcMode::Optional,
                 ffi::CURL_NETRC_REQUIRED => curl_core::options::NetrcMode::Required,
@@ -621,47 +622,51 @@ fn apply(
         }
         (ffi::CURLOPT_PROXY, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            options.proxy.url = unsafe { owned(p) }?;
+            options.proxy.make_mut()?.url = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_PROXYUSERPWD, Ptr(p)) => {
             use curl_core::options::ProxyUserError;
             // SAFETY: as above.
             let pair = unsafe { string(p) }?;
-            options.proxy.set_user_password(pair).map_err(|e| match e {
-                ProxyUserError::OutOfMemory => Refused::OutOfMemory,
-                ProxyUserError::Malformed => Refused::Malformed,
-            })?;
+            options
+                .proxy
+                .make_mut()?
+                .set_user_password(pair)
+                .map_err(|e| match e {
+                    ProxyUserError::OutOfMemory => Refused::OutOfMemory,
+                    ProxyUserError::Malformed => Refused::Malformed,
+                })?;
         }
         (ffi::CURLOPT_PROXYUSERNAME, Ptr(p)) => {
             // SAFETY: as above.
-            options.proxy.user = unsafe { owned(p) }?;
+            options.proxy.make_mut()?.user = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_PROXYPASSWORD, Ptr(p)) => {
             // SAFETY: as above.
-            options.proxy.password = unsafe { owned(p) }?;
+            options.proxy.make_mut()?.password = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_PROXYAUTH, Long(n)) => {
             // As `CURLOPT_HTTPAUTH`.
-            options.proxy.auth =
+            options.proxy.make_mut()?.auth =
                 curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong)?);
         }
         (ffi::CURLOPT_SOCKS5_AUTH, Long(n)) => {
-            options.proxy.socks5_auth = socks5_auth(n as core::ffi::c_ulong)?;
+            options.proxy.make_mut()?.socks5_auth = socks5_auth(n as core::ffi::c_ulong)?;
         }
         (ffi::CURLOPT_PRE_PROXY, Ptr(p)) => {
             // SAFETY: as above.
-            options.proxy.pre_proxy = unsafe { owned(p) }?;
+            options.proxy.make_mut()?.pre_proxy = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_NOPROXY, Ptr(p)) => {
             // SAFETY: as above.
-            options.proxy.no_proxy = unsafe { owned(p) }?;
+            options.proxy.make_mut()?.no_proxy = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_PROXYPORT, Long(n)) => {
             let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
-            options.proxy.port = NonZeroU16::new(port);
+            options.proxy.make_mut()?.port = NonZeroU16::new(port);
         }
         (ffi::CURLOPT_PROXYTYPE, Long(n)) => {
-            options.proxy.kind = match n {
+            options.proxy.make_mut()?.kind = match n {
                 ffi::CURLPROXY_HTTP => ProxyType::Http,
                 ffi::CURLPROXY_HTTP_1_0 => ProxyType::Http10,
                 ffi::CURLPROXY_HTTPS => ProxyType::Https,
@@ -675,24 +680,24 @@ fn apply(
                 _ => return Err(Refused::Bad),
             };
         }
-        (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => options.proxy.tunnel = n != 0,
-        (ffi::CURLOPT_HAPROXYPROTOCOL, Long(n)) => options.proxy.haproxy = n != 0,
+        (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => options.proxy.make_mut()?.tunnel = n != 0,
+        (ffi::CURLOPT_HAPROXYPROTOCOL, Long(n)) => options.proxy.make_mut()?.haproxy = n != 0,
         (ffi::CURLOPT_HAPROXY_CLIENT_IP, Ptr(p)) => {
             // SAFETY: as above.
-            options.proxy.haproxy_client_ip = unsafe { owned(p) }?;
+            options.proxy.make_mut()?.haproxy_client_ip = unsafe { owned(p) }?;
             // Setting one turns the protocol on, clearing it off.
-            options.proxy.haproxy = options.proxy.haproxy_client_ip.is_some();
+            options.proxy.make_mut()?.haproxy = options.proxy.haproxy_client_ip.is_some();
         }
         (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, Long(n)) => {
-            options.proxy.suppress_connect_headers = n != 0;
+            options.proxy.make_mut()?.suppress_connect_headers = n != 0;
         }
         (ffi::CURLOPT_NETRC_FILE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            options.netrc.file = unsafe { owned(p) }?;
+            options.netrc.make_mut()?.file = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_XOAUTH2_BEARER, Ptr(p)) => {
             // SAFETY: as above.
-            options.login.bearer = unsafe { owned(p) }?;
+            options.login.make_mut()?.bearer = unsafe { owned(p) }?;
         }
         (ffi::CURLOPT_CUSTOMREQUEST, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
@@ -700,19 +705,25 @@ fn apply(
         }
         (ffi::CURLOPT_COOKIE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            options.http.cookies.send = unsafe { owned(p) }?;
+            options.http.cookies.make_mut()?.send = unsafe { owned(p) }?;
         }
         // NULL also forgets the jar, which `jar_option` does.
         // SAFETY: as above.
         (ffi::CURLOPT_COOKIEFILE, Ptr(p)) => match unsafe { string(p) }? {
-            Some(name) => options.http.cookies.files.push(name)?,
-            None => options.http.cookies.files = Lines::default(),
+            Some(name) => options.http.cookies.make_mut()?.files.push(name)?,
+            None => {
+                if let Some(cookies) = options.http.cookies.made_mut() {
+                    cookies.files = Lines::default();
+                }
+            }
         },
         (ffi::CURLOPT_COOKIEJAR, Ptr(p)) => {
             // SAFETY: as above.
-            options.http.cookies.save_to = unsafe { owned(p) }?;
+            options.http.cookies.make_mut()?.save_to = unsafe { owned(p) }?;
         }
-        (ffi::CURLOPT_COOKIESESSION, Long(n)) => options.http.cookies.new_session = n != 0,
+        (ffi::CURLOPT_COOKIESESSION, Long(n)) => {
+            options.http.cookies.make_mut()?.new_session = n != 0
+        }
         // On the jar alone, which `jar_option` reaches.
         (ffi::CURLOPT_COOKIELIST, Ptr(_)) => {}
         (ffi::CURLOPT_USERAGENT, Ptr(p)) => {
@@ -731,14 +742,14 @@ fn apply(
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_PROXYHEADER, Ptr(p)) => {
-            options.proxy.headers = match slist(p)? {
+            options.proxy.make_mut()?.headers = match slist(p)? {
                 Some(source) => UserHeaders::from_source(source)?,
                 None => UserHeaders::default(),
             };
         }
         // Any bit but `CURLHEADER_SEPARATE`'s is ignored, as in C.
         (ffi::CURLOPT_HEADEROPT, Long(n)) => {
-            options.proxy.unified_headers = n & ffi::CURLHEADER_SEPARATE == 0;
+            options.proxy.make_mut()?.unified_headers = n & ffi::CURLHEADER_SEPARATE == 0;
         }
         (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => match slist(p)? {
             Some(source) => options.connect_to.set_source(source)?,

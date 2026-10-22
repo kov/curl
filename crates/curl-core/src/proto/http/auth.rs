@@ -4,7 +4,7 @@
 //! (`url_set_data_creds`), sent at once or once a server's challenge asks
 //! for it; to the origin, and to an HTTP proxy a request goes through.
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::digest::{Digest, DigestError};
 use super::request::Trusted;
@@ -106,8 +106,9 @@ pub(crate) struct PeerAuth {
     picked: Picked,
     /// Authenticating is as far as it goes.
     done: bool,
-    /// The last Digest challenge read (C's `state.digest`).
-    digest: Option<DigestState>,
+    /// The last Digest challenge read (C's `state.digest`), in memory of
+    /// its own: made only where a server asks for Digest.
+    digest: Option<Box<DigestState>>,
     /// The methods offered and not yet picked from (`avail`): a response
     /// whose challenges are not acted on leaves them for the next, of
     /// this transfer or a later one.
@@ -350,11 +351,11 @@ impl PeerAuth {
             None => challenges.open.unwrap_or(self.avail),
         };
         if let Some(digest) = challenges.digest {
-            self.digest = Some(DigestState {
+            self.digest = Some(try_box(DigestState {
                 origin: origin.try_clone()?,
                 answered: None,
                 digest,
-            });
+            })?);
         }
         Ok(())
     }

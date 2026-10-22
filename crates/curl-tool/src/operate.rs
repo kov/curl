@@ -624,7 +624,10 @@ fn transfer(
         return failed(&easy, ErrorKind::OutOfMemory);
     }
     if let Some(pair) = op.proxy_user.as_deref() {
-        let set = easy.options_mut().proxy.set_user_password(Some(pair));
+        let set = match easy.options_mut().proxy.make_mut() {
+            Ok(proxy) => proxy.set_user_password(Some(pair)),
+            Err(OutOfMemory) => Err(options::ProxyUserError::OutOfMemory),
+        };
         if let Err(e) = set {
             let kind = match e {
                 options::ProxyUserError::OutOfMemory => ErrorKind::OutOfMemory,
@@ -633,7 +636,12 @@ fn transfer(
             return failed(&easy, kind);
         }
     }
-    easy.options_mut().http.cookies.send = cookies;
+    if cookies.is_some() || easy.options().http.cookies.send.is_some() {
+        match easy.options_mut().http.cookies.make_mut() {
+            Ok(made) => made.send = cookies,
+            Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+        }
+    }
     let ended = if skip {
         Ended::Skipped
     } else {
@@ -1054,11 +1062,16 @@ fn configure(
     http.headers =
         options::UserHeaders::new(op.headers.iter().copied().chain(json.into_iter().flatten()))?;
     http.referer = op.referer.map(copy).transpose()?;
-    for file in &op.cookie_files {
-        http.cookies.files.push(file)?;
+    // The cookie options are made only where one is given, as C's
+    // library keeps none it is not given.
+    if !op.cookie_files.is_empty() || op.cookie_jar.is_some() || op.cookie_session {
+        let cookies = http.cookies.make_mut()?;
+        for file in &op.cookie_files {
+            cookies.files.push(file)?;
+        }
+        cookies.save_to = op.cookie_jar.map(copy).transpose()?;
+        cookies.new_session = op.cookie_session;
     }
-    http.cookies.save_to = op.cookie_jar.map(copy).transpose()?;
-    http.cookies.new_session = op.cookie_session;
     http.custom_method = op.custom_request.map(copy).transpose()?;
     http.follow = op.follow;
     http.unrestricted_auth = op.unrestricted_auth;
@@ -1108,18 +1121,22 @@ fn configure(
     }
     // A user given without a password has had one asked for.
     if let Some(pair) = op.user.as_deref() {
-        o.login = options::Login::from_pair(pair)?;
+        *o.login.make_mut()? = options::Login::from_pair(pair)?;
     }
-    o.netrc.mode = if op.netrc_optional {
+    let netrc = if op.netrc_optional {
         options::NetrcMode::Optional
     } else if op.netrc || op.netrc_file.is_some() {
         options::NetrcMode::Required
     } else {
         options::NetrcMode::Ignored
     };
-    o.netrc.file = op.netrc_file.map(copy).transpose()?;
+    if netrc != options::NetrcMode::Ignored {
+        let o = o.netrc.make_mut()?;
+        o.mode = netrc;
+        o.file = op.netrc_file.map(copy).transpose()?;
+    }
     if let Some(token) = op.bearer {
-        o.login.bearer = Some(copy(token)?);
+        o.login.make_mut()?.bearer = Some(copy(token)?);
     }
     if !op.auth.is_empty() {
         http.auth = options::HttpAuth(op.auth);
@@ -1134,23 +1151,6 @@ fn configure(
     http.ignore_content_length = op.ignore_content_length;
     o.filetime = op.remote_time;
     o.time_condition = op.time_cond;
-    if let Some(proxy) = op.proxy {
-        o.proxy.url = Some(copy(proxy)?);
-        o.proxy.kind = op.proxy_kind;
-    }
-    o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
-    o.proxy.pre_proxy = op.preproxy.map(copy).transpose()?;
-    o.proxy.tunnel = op.proxytunnel;
-    o.proxy.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
-    // As C's library takes them: an address turns the protocol on.
-    o.proxy.haproxy = op.haproxy_protocol || op.haproxy_clientip.is_some();
-    o.proxy.haproxy_client_ip = op.haproxy_clientip.map(copy).transpose()?;
-    // The debug test build suppresses them on request as well, as C's
-    // library does.
-    o.proxy.suppress_connect_headers = op.suppress_connect_headers
-        || (cfg!(feature = "debug-hooks")
-            && std::env::var_os("CURL_DBG_SUPPRESS_CONNECT_HDS").is_some());
-    o.url_rules.path_as_is = op.path_as_is;
     // One method, in C's order (`proxy_setopts`).
     let proxy_auth = if op.proxy_anyauth {
         Some(options::AuthMethods::ANY)
@@ -1161,9 +1161,40 @@ fn configure(
     } else {
         None
     };
-    if let Some(methods) = proxy_auth {
-        o.proxy.auth = options::HttpAuth(methods);
+    // The debug test build suppresses them on request as well, as C's
+    // library does.
+    let suppress_connect_headers = op.suppress_connect_headers
+        || (cfg!(feature = "debug-hooks")
+            && std::env::var_os("CURL_DBG_SUPPRESS_CONNECT_HDS").is_some());
+    // The proxy options are made only where one is given.
+    if op.proxy.is_some()
+        || op.noproxy.is_some()
+        || op.preproxy.is_some()
+        || op.proxytunnel
+        || !op.proxy_headers.is_empty()
+        || op.haproxy_protocol
+        || op.haproxy_clientip.is_some()
+        || suppress_connect_headers
+        || proxy_auth.is_some()
+    {
+        let p = o.proxy.make_mut()?;
+        if let Some(proxy) = op.proxy {
+            p.url = Some(copy(proxy)?);
+            p.kind = op.proxy_kind;
+        }
+        p.no_proxy = op.noproxy.map(copy).transpose()?;
+        p.pre_proxy = op.preproxy.map(copy).transpose()?;
+        p.tunnel = op.proxytunnel;
+        p.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
+        // As C's library takes them: an address turns the protocol on.
+        p.haproxy = op.haproxy_protocol || op.haproxy_clientip.is_some();
+        p.haproxy_client_ip = op.haproxy_clientip.map(copy).transpose()?;
+        p.suppress_connect_headers = suppress_connect_headers;
+        if let Some(methods) = proxy_auth {
+            p.auth = options::HttpAuth(methods);
+        }
     }
+    o.url_rules.path_as_is = op.path_as_is;
     http.fail_on_error = op.fail == Fail::WithoutBody;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);

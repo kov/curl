@@ -67,6 +67,10 @@ fn main() {
             "a_lost_trailer_line_fails_the_request",
             a_lost_trailer_line_fails_the_request,
         ),
+        (
+            "a_cold_group_is_made_or_refused_at_its_first_set",
+            a_cold_group_is_made_or_refused_at_its_first_set,
+        ),
     ] {
         // Reported as libtest does, the name before the run, so that a run
         // that aborts still shows which test it was in.
@@ -592,8 +596,8 @@ fn a_tunneled_get_takes_no_refusal_for_success() {
             b"http://origin.example/1?q",
             request,
             |o| {
-                o.proxy.url = Some(b"127.0.0.1:80".to_vec_fallible()?);
-                o.proxy.tunnel = true;
+                o.proxy.make_mut()?.url = Some(b"127.0.0.1:80".to_vec_fallible()?);
+                o.proxy.make_mut()?.tunnel = true;
                 Ok(())
             },
         )
@@ -699,4 +703,25 @@ fn a_lost_trailer_line_fails_the_request() {
     let sent = talk.received();
     assert!(!sent.ends_with(b"Y: 2\r\n\r\n"), "no trailers went");
     m.remove(id, &mut NoEvents).expect("in the multi");
+}
+
+/// A group of options few transfers set is made by the first set of one
+/// of them, which is where memory can run out: refused, the options still
+/// read the group's defaults, and a later set makes it. Options with no
+/// such group made allocate nothing, copied or not.
+fn a_cold_group_is_made_or_refused_at_its_first_set() {
+    let (mut o, n) = track::count_allocations(Options::default);
+    assert_eq!(n, 0, "nothing set, nothing made");
+    let (set, refused) = track::fail_after(0, || o.proxy.make_mut().map(|p| p.tunnel = true));
+    assert!(refused);
+    assert_eq!(set, Err(OutOfMemory));
+    assert!(!o.proxy.tunnel, "the defaults, still");
+    let ((), n) = track::count_allocations(|| o.proxy.make_mut().expect("memory").tunnel = true);
+    assert_eq!(n, 1, "the group, made");
+    assert!(o.proxy.tunnel);
+    let ((), n) = track::count_allocations(|| o.proxy.make_mut().expect("made").tunnel = false);
+    assert_eq!(n, 0, "made once");
+    let (copy, n) = track::count_allocations(|| o.try_clone().expect("memory"));
+    assert_eq!(n, 1, "the copy makes the proxy group alone");
+    assert!(copy.login.user.is_none() && !copy.proxy.tunnel);
 }

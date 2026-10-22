@@ -65,9 +65,9 @@ pub struct Options {
     /// What a transfer sends, if its request has a body.
     pub upload: UploadSource,
     /// Who the transfer authenticates as.
-    pub login: Login,
-    pub netrc: Netrc,
-    pub proxy: Proxy,
+    pub login: Cold<Login>,
+    pub netrc: Cold<Netrc>,
+    pub proxy: Cold<Proxy>,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -84,7 +84,7 @@ pub struct Options {
 /// `CURLOPT_XOAUTH2_BEARER`), each as given; none is not the same as
 /// empty. They go only to the origin the transfer starts at,
 /// unless `Http::unrestricted_auth` says otherwise.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Login {
     pub user: Option<Vec<u8>>,
     pub password: Option<Vec<u8>>,
@@ -93,7 +93,7 @@ pub struct Login {
 }
 
 /// The proxy transfers go through, and which go direct.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Proxy {
     /// The proxy, as a URL whose scheme may name its type
     /// (`CURLOPT_PROXY`): none to look for one in the environment, an
@@ -153,13 +153,17 @@ pub struct Socks5Auth {
     pub only: bool,
 }
 
+impl Socks5Auth {
+    pub const DEFAULT: Socks5Auth = Socks5Auth {
+        basic: true,
+        gssapi: true,
+        only: false,
+    };
+}
+
 impl Default for Socks5Auth {
     fn default() -> Self {
-        Socks5Auth {
-            basic: true,
-            gssapi: true,
-            only: false,
-        }
+        Socks5Auth::DEFAULT
     }
 }
 
@@ -252,7 +256,7 @@ pub enum ProxyType {
 
 /// Whether a `.netrc` file gives credentials, and which
 /// (`CURLOPT_NETRC`, `CURLOPT_NETRC_FILE`).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Netrc {
     pub mode: NetrcMode,
     /// The file; none for `$NETRC`, or `.netrc` in the home directory.
@@ -302,7 +306,10 @@ impl Options {
     /// C walks them each time it builds a request or a `CONNECT`.
     pub(crate) fn reread_headers(&mut self) -> Result<(), OutOfMemory> {
         self.http.headers.refill()?;
-        self.proxy.headers.refill()
+        match self.proxy.made_mut() {
+            Some(proxy) => proxy.headers.refill(),
+            None => Ok(()),
+        }
     }
 
     /// The URL to transfer (`CURLOPT_URL`), as given: it is parsed when
@@ -361,12 +368,14 @@ impl Options {
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
             upload: self.upload.clone(),
-            login: self.login.try_clone()?,
-            netrc: Netrc {
-                mode: self.netrc.mode,
-                file: self.netrc.file.as_deref().map(copy).transpose()?,
-            },
-            proxy: self.proxy.try_clone()?,
+            login: self.login.try_clone(Login::try_clone)?,
+            netrc: self.netrc.try_clone(|netrc| {
+                Ok(Netrc {
+                    mode: netrc.mode,
+                    file: netrc.file.as_deref().map(copy).transpose()?,
+                })
+            })?,
+            proxy: self.proxy.try_clone(Proxy::try_clone)?,
             http: self.http.try_clone()?,
             tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]
@@ -374,6 +383,146 @@ impl Options {
             #[cfg(test)]
             file_faults: self.file_faults,
         })
+    }
+}
+
+/// A group of options few transfers set, in memory of its own made the
+/// first time one of them is set, as C allocates such options only when
+/// they are set: a handle that sets none carries a pointer for the
+/// group, not the group, and reads its defaults. A new option of such a
+/// kind goes in its group, so the memory every handle pays does not grow
+/// with it.
+pub struct Cold<T: ColdGroup>(Option<Box<T>>);
+
+/// A group `Cold` holds, with the defaults read while none is set.
+pub trait ColdGroup: Sized + 'static {
+    /// Nothing set, as the group starts out.
+    const NONE: Self;
+    /// The same, for reading where the group was never made.
+    const UNSET: &'static Self;
+}
+
+impl<T: ColdGroup> Cold<T> {
+    pub const fn new() -> Self {
+        Cold(None)
+    }
+
+    /// The group, to change: made with nothing set the first time, which
+    /// is what can run out of memory.
+    pub fn make_mut(&mut self) -> Result<&mut T, OutOfMemory> {
+        if self.0.is_none() {
+            self.0 = Some(try_box(T::NONE)?);
+        }
+        Ok(self.0.as_deref_mut().expect("made above"))
+    }
+
+    /// The group, to change, if it was made: one never made holds only
+    /// defaults, which need no change to clear.
+    pub fn made_mut(&mut self) -> Option<&mut T> {
+        self.0.as_deref_mut()
+    }
+
+    /// A copy, made only if this one was, copied by `copy`.
+    fn try_clone(
+        &self,
+        copy: impl FnOnce(&T) -> Result<T, OutOfMemory>,
+    ) -> Result<Cold<T>, OutOfMemory> {
+        Ok(Cold(match self.0.as_deref() {
+            Some(group) => Some(try_box(copy(group)?)?),
+            None => None,
+        }))
+    }
+}
+
+impl<T: ColdGroup> Default for Cold<T> {
+    fn default() -> Self {
+        Cold::new()
+    }
+}
+
+impl<T: ColdGroup> std::ops::Deref for Cold<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.0.as_deref().unwrap_or(T::UNSET)
+    }
+}
+
+impl<T: ColdGroup + fmt::Debug> fmt::Debug for Cold<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&**self, f)
+    }
+}
+
+impl ColdGroup for Login {
+    const UNSET: &'static Login = &Login::NONE;
+    const NONE: Login = Login {
+        user: None,
+        password: None,
+        bearer: None,
+    };
+}
+
+impl Default for Login {
+    fn default() -> Self {
+        Login::NONE
+    }
+}
+
+impl ColdGroup for Proxy {
+    const UNSET: &'static Proxy = &Proxy::NONE;
+    const NONE: Proxy = Proxy {
+        url: None,
+        kind: ProxyType::Http,
+        pre_proxy: None,
+        port: None,
+        no_proxy: None,
+        tunnel: false,
+        user: None,
+        password: None,
+        auth: HttpAuth::DEFAULT,
+        suppress_connect_headers: false,
+        socks5_auth: Socks5Auth::DEFAULT,
+        headers: UserHeaders::NONE,
+        unified_headers: false,
+        haproxy: false,
+        haproxy_client_ip: None,
+    };
+}
+
+impl Default for Proxy {
+    fn default() -> Self {
+        Proxy::NONE
+    }
+}
+
+impl ColdGroup for Netrc {
+    const UNSET: &'static Netrc = &Netrc::NONE;
+    const NONE: Netrc = Netrc {
+        mode: NetrcMode::Ignored,
+        file: None,
+    };
+}
+
+impl Default for Netrc {
+    fn default() -> Self {
+        Netrc::NONE
+    }
+}
+
+impl ColdGroup for Cookies {
+    const UNSET: &'static Cookies = &Cookies::NONE;
+    const NONE: Cookies = Cookies {
+        send: None,
+        files: Lines::NONE,
+        save_to: None,
+        new_session: false,
+    };
+}
+
+impl Default for Cookies {
+    fn default() -> Self {
+        Cookies::NONE
     }
 }
 
@@ -592,11 +741,13 @@ pub(crate) struct FromSource<T> {
 
 impl<T> Default for Listed<T> {
     fn default() -> Self {
-        Listed::Given(Vec::new())
+        Listed::NONE
     }
 }
 
 impl<T> Listed<T> {
+    pub(crate) const NONE: Listed<T> = Listed::Given(Vec::new());
+
     pub(crate) fn items(&self) -> &[T] {
         match self {
             Listed::Given(items) => items,
@@ -671,6 +822,8 @@ impl<T> Listed<T> {
 pub struct Lines(Listed<Vec<u8>>);
 
 impl Lines {
+    pub const NONE: Lines = Lines(Listed::NONE);
+
     pub fn iter(&self) -> impl Iterator<Item = &[u8]> {
         self.0.items().iter().map(|e| &e[..])
     }
@@ -856,11 +1009,11 @@ pub struct Http {
     /// redirect leads to (`CURLOPT_UNRESTRICTED_AUTH`).
     pub unrestricted_auth: bool,
     pub auth: HttpAuth,
-    pub cookies: Cookies,
+    pub cookies: Cold<Cookies>,
 }
 
 /// Where a transfer's cookies come from and go.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Cookies {
     /// Sent as given, after the jar's, to the first origin only unless
     /// `Http::unrestricted_auth` says otherwise, and not beside the
@@ -900,9 +1053,13 @@ impl Cookies {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HttpAuth(pub AuthMethods);
 
+impl HttpAuth {
+    pub const DEFAULT: HttpAuth = HttpAuth(AuthMethods::BASIC);
+}
+
 impl Default for HttpAuth {
     fn default() -> Self {
-        HttpAuth(AuthMethods::BASIC)
+        HttpAuth::DEFAULT
     }
 }
 
@@ -1060,7 +1217,7 @@ impl Http {
             auto_referer: self.auto_referer,
             unrestricted_auth: self.unrestricted_auth,
             auth: self.auth,
-            cookies: self.cookies.try_clone()?,
+            cookies: self.cookies.try_clone(Cookies::try_clone)?,
         })
     }
 }
@@ -1166,12 +1323,12 @@ mod tests {
     #[test]
     fn a_copy_keeps_the_proxy_login_and_cookies() {
         let mut o = Options::default();
-        o.proxy.url = Some(b"http://proxy.example:3128".to_vec());
-        o.proxy.user = Some(b"pu".to_vec());
-        o.login.user = Some(b"lu".to_vec());
-        o.login.bearer = Some(b"t".to_vec());
-        o.http.cookies.send = Some(b"a=1".to_vec());
-        o.http.cookies.new_session = true;
+        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.proxy.make_mut().unwrap().user = Some(b"pu".to_vec());
+        o.login.make_mut().unwrap().user = Some(b"lu".to_vec());
+        o.login.make_mut().unwrap().bearer = Some(b"t".to_vec());
+        o.http.cookies.make_mut().unwrap().send = Some(b"a=1".to_vec());
+        o.http.cookies.make_mut().unwrap().new_session = true;
         let copy = o.try_clone().unwrap();
         assert_eq!(
             copy.proxy.url.as_deref(),

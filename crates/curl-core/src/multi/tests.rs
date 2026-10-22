@@ -1525,9 +1525,9 @@ fn through_proxies(
     let (mut m, _clock) = networked();
     let (mut e, lines) = traced(url);
     let o = e.options_mut();
-    o.proxy.url = Some(proxy.as_bytes().to_vec());
-    o.proxy.pre_proxy = pre.map(|p| p.as_bytes().to_vec());
-    o.proxy.tunnel = tunnel;
+    o.proxy.make_mut().unwrap().url = Some(proxy.as_bytes().to_vec());
+    o.proxy.make_mut().unwrap().pre_proxy = pre.map(|p| p.as_bytes().to_vec());
+    o.proxy.make_mut().unwrap().tunnel = tunnel;
     if let Some(to) = connect_to {
         o.connect_to.set([to.as_bytes()]).unwrap();
     }

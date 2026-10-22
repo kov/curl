@@ -1059,6 +1059,7 @@ fn configure(
     }
     o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
     o.proxy.tunnel = op.proxytunnel;
+    o.url_rules.path_as_is = op.path_as_is;
     // One method, in C's order (`proxy_setopts`).
     let proxy_auth = if op.proxy_anyauth {
         Some(options::AuthMethods::ANY)

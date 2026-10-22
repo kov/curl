@@ -176,6 +176,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) noproxy: Option<&'a [u8]>,
     /// `--proxytunnel`.
     pub(crate) proxytunnel: bool,
+    /// `--path-as-is`.
+    pub(crate) path_as_is: bool,
     /// `--proxy-user`.
     pub(crate) proxy_user: Option<&'a [u8]>,
     /// `--proxy-anyauth`.
@@ -725,6 +727,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::Noproxy => line.current().noproxy = Some(value.text()),
         Opt::Proxytunnel => line.current().proxytunnel = value.toggle(),
+        Opt::PathAsIs => line.current().path_as_is = value.toggle(),
         Opt::ProxyUser => line.current().proxy_user = Some(value.text()),
         Opt::ProxyAnyauth => line.current().proxy_anyauth = value.toggle(),
         Opt::ProxyBasic => line.current().proxy_basic = value.toggle(),
@@ -1096,7 +1099,6 @@ pub(crate) fn apply<'a>(
         | Opt::ParallelMax
         | Opt::ParallelHost
         | Opt::Pass
-        | Opt::PathAsIs
         | Opt::Pinnedpubkey
         | Opt::Preproxy
         | Opt::ProxyCaNative

@@ -786,12 +786,16 @@ impl AuthMethods {
     pub const BASIC: AuthMethods = AuthMethods(1);
     pub const DIGEST: AuthMethods = AuthMethods(2);
     pub const BEARER: AuthMethods = AuthMethods(4);
+    /// Methods this library does not implement, asked for all the same:
+    /// never used, but with one of the others, that one is used only once
+    /// a server asks for it, as with `ONLY`.
+    pub const OTHER: AuthMethods = AuthMethods(0x40);
     /// Not a method: with one, that one is used only once a server asks
     /// for it (`CURLAUTH_ONLY`).
     pub const ONLY: AuthMethods = AuthMethods(0x80);
     /// Every method there is, chosen from as a server asks
     /// (`CURLAUTH_ANY`).
-    pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 0x80);
+    pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 0x40 | 0x80);
 
     pub fn contains(self, other: AuthMethods) -> bool {
         self.0 & other.0 == other.0
@@ -801,9 +805,11 @@ impl AuthMethods {
         self.0 == 0
     }
 
-    /// The one method this is, if it is exactly one; with `ONLY`, none.
+    /// The one method this is, if it is exactly one this library
+    /// implements; with `ONLY` or `OTHER`, none.
     pub(crate) fn single(self) -> Option<AuthMethods> {
-        (self.0.count_ones() == 1 && self.0 & Self::ONLY.0 == 0).then_some(self)
+        let known = Self::BASIC.0 | Self::DIGEST.0 | Self::BEARER.0;
+        (self.0.count_ones() == 1 && self.0 & !known == 0).then_some(self)
     }
 
     /// The method's name, as an `Authorization` line starts.
@@ -844,6 +850,7 @@ impl fmt::Debug for AuthMethods {
             (Self::BASIC, "BASIC"),
             (Self::DIGEST, "DIGEST"),
             (Self::BEARER, "BEARER"),
+            (Self::OTHER, "OTHER"),
             (Self::ONLY, "ONLY"),
         ];
         let mut set = f.debug_set();
@@ -1065,7 +1072,7 @@ mod tests {
     }
 
     /// Methods combine as sets; a set of one method is that method, of
-    /// more, or with `ONLY`, none.
+    /// more, or with `ONLY` or `OTHER`, none.
     #[test]
     fn auth_methods_are_sets() {
         use AuthMethods as A;
@@ -1075,6 +1082,10 @@ mod tests {
         assert_eq!((A::BASIC | A::DIGEST).single(), None);
         assert_eq!(A::ONLY.single(), None);
         assert_eq!((A::DIGEST | A::ONLY).single(), None);
+        assert_eq!(A::OTHER.single(), None, "never used");
+        assert_eq!((A::BASIC | A::OTHER).single(), None);
+        assert!(A::ANY.contains(A::OTHER));
+        assert_eq!(format!("{:?}", A::BASIC | A::OTHER), "{BASIC, OTHER}");
         assert_eq!(format!("{:?}", A::DIGEST | A::ONLY), "{DIGEST, ONLY}");
         assert_eq!(format!("{:?}", A::NONE), "{}");
     }

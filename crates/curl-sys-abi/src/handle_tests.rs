@@ -282,6 +282,47 @@ fn http_options_reach_the_request() {
         ffi::CURLE_NOT_BUILT_IN
     );
     assert_eq!(auth(c), M::DIGEST, "unchanged");
+    // Bits this build does not implement are kept, but for NTLM's; past
+    // 32 bits, dropped; with none below `CURLAUTH_ONLY` left, refused.
+    let unknown: core::ffi::c_ulong = 1 << 20;
+    let sigv4 = ffi::CURLAUTH_AWS_SIGV4;
+    for (bits, code, want) in [
+        (unknown, CURLE_OK, M::OTHER),
+        (unknown | ffi::CURLAUTH_NTLM, CURLE_OK, M::OTHER),
+        (unknown | ffi::CURLAUTH_ONLY, CURLE_OK, M::OTHER | M::ONLY),
+        (ffi::CURLAUTH_BASIC | sigv4, CURLE_OK, M::BASIC | M::OTHER),
+        (
+            ffi::CURLAUTH_BEARER | (1 << 30),
+            CURLE_OK,
+            M::BEARER | M::OTHER,
+        ),
+        (ffi::CURLAUTH_NTLM, CURLE_NOT_BUILT_IN, M::BEARER | M::OTHER),
+        (ffi::CURLAUTH_ONLY, CURLE_NOT_BUILT_IN, M::BEARER | M::OTHER),
+    ] {
+        assert_eq!(
+            long(c, ffi::CURLOPT_HTTPAUTH, mask(bits)),
+            code,
+            "{bits:#x}"
+        );
+        assert_eq!(auth(c), want, "{bits:#x}");
+        assert_eq!(
+            long(c, ffi::CURLOPT_PROXYAUTH, mask(bits)),
+            code,
+            "{bits:#x}"
+        );
+        assert_eq!(options(c, |o| o.proxy.auth.0), want, "{bits:#x}");
+    }
+    #[cfg(target_pointer_width = "64")]
+    {
+        let high: core::ffi::c_ulong = 1 << 40;
+        assert_eq!(
+            long(c, ffi::CURLOPT_HTTPAUTH, mask(high)),
+            CURLE_NOT_BUILT_IN
+        );
+        let basic = ffi::CURLAUTH_BASIC | high;
+        assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, mask(basic)), CURLE_OK);
+        assert_eq!(auth(c), M::BASIC, "past 32 bits, dropped");
+    }
     assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, 0), CURLE_OK);
     assert_eq!(auth(c), M::NONE);
     let reuse = |c| options(c, |o| o.limits.reuse);
@@ -3146,15 +3187,30 @@ fn read_request(peer: &mut std::net::TcpStream) -> Vec<u8> {
 }
 
 /// A server on a local port that answers one request per connection
-/// with each of `replies` in turn, and gives back the requests.
+/// with each of `replies` in turn, and gives back the requests: fewer,
+/// if no client comes for ten seconds.
 fn serve(replies: Vec<&'static [u8]>) -> (u16, std::thread::JoinHandle<Vec<Vec<u8>>>) {
     use std::io::Write as _;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
         let mut requests = Vec::new();
         for reply in replies {
-            let (mut peer, _) = listener.accept().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let mut peer = loop {
+                match listener.accept() {
+                    Ok((peer, _)) => break peer,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() > deadline {
+                            return requests;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            };
+            peer.set_nonblocking(false).unwrap();
             peer.set_read_timeout(Some(Duration::from_secs(10)))
                 .unwrap();
             requests.push(read_request(&mut peer));
@@ -3254,6 +3310,45 @@ fn infos_answer_from_an_http_transfer() {
     assert_eq!(text_of(info(c, ffi::CURLINFO_EFFECTIVE_METHOD)), "POST");
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
+}
+
+/// A method this build does not implement, asked with Basic, keeps
+/// Basic from going at once: it waits for the server to ask, as in C;
+/// asked alone, nothing is sent.
+#[test]
+fn unknown_auth_bits_hold_basic_back() {
+    let challenge: &'static [u8] = b"HTTP/1.1 401 No\r\nWWW-Authenticate: Basic realm=\"x\"\r\n\
+          Content-Length: 0\r\nConnection: close\r\n\r\n";
+    let ok: &'static [u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    let unknown: core::ffi::c_ulong = 1 << 20;
+    for (bits, replies, sent) in [
+        (ffi::CURLAUTH_BASIC, vec![ok], vec![true]),
+        (
+            ffi::CURLAUTH_BASIC | unknown,
+            vec![challenge, ok],
+            vec![false, true],
+        ),
+        (unknown, vec![challenge], vec![false]),
+    ] {
+        let (port, server) = serve(replies);
+        let c = curl_easy_init();
+        let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+        function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+        long(c, ffi::CURLOPT_TIMEOUT, 10);
+        pointer(c, ffi::CURLOPT_USERPWD, c"u:p".as_ptr().cast_mut());
+        assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, bits as c_long), CURLE_OK);
+        // SAFETY: a live handle.
+        assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+        let requests = server.join().unwrap();
+        let got: Vec<bool> = requests
+            .iter()
+            .map(|r| String::from_utf8_lossy(r).contains("\r\nAuthorization: Basic dTpw\r\n"))
+            .collect();
+        assert_eq!(got, sent, "{bits:#x}");
+        // SAFETY: a live handle, not used again.
+        unsafe { curl_easy_cleanup(c) };
+    }
 }
 
 /// The trailer function's lines end a chunked body, and its abort ends

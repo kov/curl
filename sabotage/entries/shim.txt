@@ -79,3 +79,19 @@ witness: curl-sys-abi handle_tests::the_multi_s_callbacks_run_with_their_frames
 --- old
         ev.added(id, &self.slots.get(id).expect("just added").owner);
 --- new
+
+=== an auth bit this build does not implement is dropped, and Basic goes at once
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::unknown_auth_bits_hold_basic_back
+--- old
+        methods = methods | AuthMethods::OTHER;
+--- new
+        methods = methods | AuthMethods::NONE;
+
+=== a method this build does not implement is used at once
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::auth_methods_are_sets
+--- old
+        (self.0.count_ones() == 1 && self.0 & !known == 0).then_some(self)
+--- new
+        (self.0.count_ones() == 1 && self.0 & Self::ONLY.0 == 0).then_some(self)

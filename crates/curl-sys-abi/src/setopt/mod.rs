@@ -95,28 +95,41 @@ unsafe fn string<'a>(p: *mut c_void) -> Result<Option<&'a [u8]>, Refused> {
 }
 
 /// A `CURLAUTH_*` mask as methods (`httpauth`): the legacy Digest bit
-/// read as Digest; NTLM, Negotiate, AWS SigV4 and HTTP signatures, which
-/// this build lacks, left out; none left of a mask that had some, not
-/// built in.
+/// read as Digest; NTLM and Negotiate, which this build lacks, left out
+/// as a C build without them leaves them out; any other bit below
+/// `CURLAUTH_ONLY` this build does not implement kept as `OTHER`, and
+/// bits past 32 dropped, as C stores the mask in 32 bits. A mask with no
+/// bit below `CURLAUTH_ONLY` left, but for one of none, is not built in.
 fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMethods, Refused> {
     use curl_core::options::AuthMethods;
     if mask == ffi::CURLAUTH_NONE {
         return Ok(AuthMethods::NONE);
     }
     let digest = ffi::CURLAUTH_DIGEST | ffi::CURLAUTH_DIGEST_IE;
+    let lacking = ffi::CURLAUTH_NTLM | ffi::CURLAUTH_NEGOTIATE;
+    let mut rest = mask & 0x7fff_ffff & !lacking;
+    // Not built yet, though C has them: refused when they are all that
+    // is asked, until AWS SigV4 comes with step 36 and HTTP signatures
+    // with theirs.
+    if rest & !(ffi::CURLAUTH_AWS_SIGV4 | ffi::CURLAUTH_HTTPSIG) == 0 {
+        return Err(Refused::NotBuiltIn);
+    }
     let mut methods = AuthMethods::NONE;
     for (bits, method) in [
         (ffi::CURLAUTH_BASIC, AuthMethods::BASIC),
         (digest, AuthMethods::DIGEST),
         (ffi::CURLAUTH_BEARER, AuthMethods::BEARER),
-        (ffi::CURLAUTH_ONLY, AuthMethods::ONLY),
     ] {
-        if mask & bits != 0 {
+        if rest & bits != 0 {
             methods = methods | method;
+            rest &= !bits;
         }
     }
-    if (methods & !AuthMethods::ONLY).is_empty() {
-        return Err(Refused::NotBuiltIn);
+    if rest != 0 {
+        methods = methods | AuthMethods::OTHER;
+    }
+    if mask & ffi::CURLAUTH_ONLY != 0 {
+        methods = methods | AuthMethods::ONLY;
     }
     Ok(methods)
 }

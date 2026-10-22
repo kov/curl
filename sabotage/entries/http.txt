@@ -388,17 +388,23 @@ witness: curl-core proto::http::tests::the_report_s_url_and_the_request_keep_an_
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_post_sends_its_body_after_its_head
 --- old
-            let head = n.min(self.head_left);
+                    &self.out[self.sent..self.sent + head],
+                );
+            }
+            upload::sent(cx, &self.out[self.sent + head..self.sent + n]);
 --- new
-            let head = n;
+                    &self.out[self.sent..self.sent + n],
+                );
+            }
+            upload::sent(cx, &self.out[self.sent + n..self.sent + n]);
 
 === the body stops at its first buffer
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_larger_than_the_buffer_goes_in_buffers
 --- old
-                if self.eos_read {
+                if let Sending::Body(Reading { eos_read: true, .. }) = self.outgoing {
 --- new
-                if self.eos_read || self.body_sent > 0 {
+                if let Sending::Body(Reading { eos_read: true, .. }) | Sending::Body(_) = self.outgoing {
 
 === a form is typed whatever the application says
 file: crates/curl-core/src/proto/http1/request.rs
@@ -486,17 +492,17 @@ witness: curl-core proto::http::tests::a_body_waits_for_a_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-                        self.expect = ExpectState::Awaiting(cx.now().after(wait));
+                        self.outgoing = Sending::AwaitingContinue(cx.now().after(wait));
 --- new
-                        self.expect = ExpectState::Open;
+                        self.outgoing = Sending::Body(Reading { eos_read: false, announced: true });
 
 === the wait for a 100 never runs out
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-                    ExpectState::Awaiting(until) if cx.now() < until => return Ok(false),
+                    Sending::AwaitingContinue(until) if cx.now() < until => return Ok(false),
 --- new
-                    ExpectState::Awaiting(until) if false && cx.now() < until => return Ok(false),
+                    Sending::AwaitingContinue(until) if false && cx.now() < until => return Ok(false),
 
 === a 100 does not release the body
 file: crates/curl-core/src/proto/http.rs
@@ -542,9 +548,9 @@ witness: curl-core proto::http::tests::a_body_waits_for_a_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::an_error_response_stops_the_body
 --- old
-        if expect_state == ExpectState::None
+        let then = if upload.is_none() || !announced {
 --- new
-        if true
+        let then = if upload.is_none() || true {
 
 === a request ends with its body unsent
 file: crates/curl-core/src/proto/http.rs
@@ -838,11 +844,11 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_expect
 --- old
             self.expect_refused = true;
-            self.aborted = true;
+            self.upload_done(cx, true);
 --- new
             self.expect_refused = true;
             self.closing = true;
-            self.aborted = true;
+            self.upload_done(cx, true);
 
 === the shared URL is ignored
 file: crates/curl-core/src/multi/state.rs

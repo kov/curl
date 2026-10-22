@@ -293,7 +293,7 @@ pub(crate) struct Meta {
 /// what `http_perhapsrewind` weighs when the response asks for another
 /// request.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Sending {
+pub(crate) struct Unsent {
     /// The body comes from the application, which reads it again to send
     /// it again (`Curl_creader_needs_rewind`).
     pub(crate) rereads: bool,
@@ -321,7 +321,7 @@ impl Meta {
     /// application gives is to be read again, and the connection closes
     /// rather than carry the rest of it for nothing, unless it closes
     /// anyway or little is left.
-    pub(crate) fn perhaps_rewind(&mut self, sending: Sending, note: &mut Notes) {
+    pub(crate) fn perhaps_rewind(&mut self, sending: Unsent, note: &mut Notes) {
         if sending.rereads {
             note.push(Note::NeedRewind);
             self.rewinds = true;
@@ -559,7 +559,7 @@ impl Meta {
         &mut self,
         status: Status,
         asked: &Asked,
-        sending: Sending,
+        sending: Unsent,
     ) -> (Notes, Result<Framing, FramingError>) {
         let mut note = Notes::default();
         if self.size.is_none()

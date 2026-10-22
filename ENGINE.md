@@ -471,8 +471,26 @@ Body(Body), Done }`, with `Body` the framing decided once at the end of the head
 chunked, until close), and whether the response is interim. Each C flag is a variant there:
 `k->header` is `Stage::Head`, `download_done` is `Stage::Done`, and `chunk`, `ignore_cl`,
 `http_bodyless`, `size`/`maxdownload` are the `Body` and the pipeline's `Expect`. The send side
-is the send buffer with what of it has gone, `eos_read`, `sent_all` (`upload_done`), `aborted`
-(`upload_aborted`) and `ExpectState { None, Head, Awaiting(Instant), Open }` (`expect100`).
+is the send buffer with what of it has gone, and beside it one enum for where sending stands:
+
+```rust
+enum Sending { Idle /* before DO */, Head { left: NonZeroUsize, then: AfterHead },
+               AwaitingContinue(Instant), Body(Reading), Done, Aborted }
+enum AfterHead { Continue /* held for a 100 */, Body(Reading) }
+struct Reading { eos_read: bool, announced: bool /* the head said Expect: 100-continue */ }
+```
+
+C's `sendbuf_hds_len` is `Head`'s `left`, `eos_read` is `Reading`'s, `upload_done` is `Done` or
+`Aborted`, `upload_aborted` is `Aborted`, and `cr_exp100`'s states are `AfterHead::Continue`
+(`EXP100_SENDING_REQUEST`), `AwaitingContinue` and a `Reading` that is `announced`
+(`EXP100_SEND_DATA`; `http_exp100_is_selected` is any of the three). A body held for a 100 is
+never read behind the head, so it cannot be held and read at once; a 100 or an error response
+that lets the body go on turns either holding state into a `Reading`. Nothing in it is
+HTTP/1's framing: HTTP/2 keeps one per stream. Whether the connection is used again is not
+part of it: the request's own decision (`streamclose`, `closing`), what the response's head
+says (`Connection: close`, a body read until the connection closes) and what its body showed
+(more than expected, or any where none was) stay separate sources, read together at the
+request's end.
 The request is over when its response is and nothing more of it is to send.
 
 A step reads first, until the socket has nothing, the response is over or receiving pauses, and
@@ -486,7 +504,7 @@ the progress handler and the other transfers get their turn as in C. C's other e
 loop have nothing to act on yet: no receive rate limit is implemented, and no layer holds
 received bytes a poll cannot see (`data_pending`; TLS will). One that asks for another request, by a location to
 follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
-parser, fed a `Sending` with each piece): 2000 bytes or more, or an unknown amount, and the
+parser, fed an `Unsent` with each piece): 2000 bytes or more, or an unknown amount, and the
 connection closes rather than carry it, the response ending at its head; less, and it goes to be
 dropped on a connection kept.
 
@@ -1449,7 +1467,7 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   C's render-to-HTTP/1-then-reparse (`Curl_h1_req_parse_read`) has no counterpart, and the H1
   request parser survives only as test support (unit 2603).
 - `Expect: 100-continue`, asked for or added (`addexpect`), holds the body back: it is not
-  read behind the head, and once the head has drained the request is `ExpectState::Awaiting`
+  read behind the head, and once the head has drained the request is `Sending::AwaitingContinue`
   until a deadline (`continue_wait`), not asking to write, the deadline its `wake_at`. A 100,
   the deadline ("Done waiting for 100-continue") or keep-sending-on-error opens it. A final
   response of 300 or more before the body has gone, the connection not closing anyway, stops

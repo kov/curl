@@ -23,7 +23,7 @@ use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
 
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
-use super::http1::framing::{self, Asked, Framing, Left, Sending};
+use super::http1::framing::{self, Asked, Framing, Left, Unsent};
 use super::http1::request::{
     self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RequestHead,
 };
@@ -36,6 +36,7 @@ use auth::{
     Secret, Side,
 };
 use std::ffi::CStr;
+use std::num::NonZeroUsize;
 
 pub(crate) mod auth;
 pub(crate) mod cookies;
@@ -123,25 +124,18 @@ pub(crate) struct Request {
     /// What the request sends and has not yet (`req.sendbuf`): the head,
     /// then the body as read, behind it in one buffer of
     /// `UPLOAD_BUFFER` bytes. `out[sent..filled]` is still to go, the
-    /// first `head_left` of it the head's.
+    /// first of it the head's while `outgoing` is `Sending::Head`.
     out: Vec<u8>,
     filled: usize,
     sent: usize,
-    head_left: usize,
     /// The body, read at DO and as what is read goes.
     upload: Option<Upload>,
     /// The body is sent chunked, framed here as it is read.
     chunks: Option<ChunkEncoder>,
-    /// The body is read to its end (`eos_read`).
-    eos_read: bool,
     /// Body bytes sent (`writebytecount`).
     body_sent: u64,
-    /// Everything is sent (`upload_done`); nothing is, before DO.
-    sent_all: bool,
-    /// Where the body stands behind `Expect: 100-continue`.
-    expect: ExpectState,
-    /// Sending stopped short of the body's end (`upload_aborted`).
-    aborted: bool,
+    /// Where sending the request stands.
+    outgoing: Sending,
     /// Made at DO, once the connection says whether it is reused.
     head: Option<HeadParser>,
     stage: Stage,
@@ -161,18 +155,81 @@ enum Stage {
     Done,
 }
 
-/// A body announced with `Expect: 100-continue` (C's `cr_exp100`).
+/// Where sending a request stands: C's `req.sendbuf_hds_len`,
+/// `eos_read`, `upload_done` and `upload_aborted`, and its `cr_exp100`
+/// reader's state, as one. The buffer the head and the body go from is
+/// the request's, beside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExpectState {
-    /// None was announced.
-    None,
-    /// The head is still going; the wait starts once it has gone.
-    Head,
-    /// The body waits for a 100 until this instant.
-    Awaiting(Instant),
-    /// The 100 came, the wait ran out or an error response lets the body
-    /// go on.
-    Open,
+enum Sending {
+    /// Nothing yet: the request is not made (before DO).
+    Idle,
+    /// The head goes, `left` bytes of it still to, ahead of anything
+    /// else in the buffer; `then` is what follows it.
+    Head { left: NonZeroUsize, then: AfterHead },
+    /// The head has gone; the body, announced with `Expect:
+    /// 100-continue` and not read yet, waits for a 100 until this
+    /// instant (`EXP100_AWAITING_CONTINUE`).
+    AwaitingContinue(Instant),
+    /// The body goes, read as what is read of it goes.
+    Body(Reading),
+    /// All of it went (`upload_done`), or the response ended the request
+    /// with its head.
+    Done,
+    /// Sending stopped short of the body's end (`upload_aborted`).
+    Aborted,
+}
+
+/// What follows the head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AfterHead {
+    /// The body, announced with `Expect: 100-continue`, waits for a 100
+    /// once the head has gone (`EXP100_SENDING_REQUEST`); none of it is
+    /// read behind the head.
+    Continue,
+    /// The body, as far as it is read behind the head.
+    Body(Reading),
+}
+
+/// A body being read and sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Reading {
+    /// All of it is in the buffer (`eos_read`): nothing more is read.
+    eos_read: bool,
+    /// The head said `Expect: 100-continue`, and the 100 came, the wait
+    /// ran out or an error response let the body go on
+    /// (`http_exp100_is_selected`).
+    announced: bool,
+}
+
+impl Sending {
+    /// The body as read so far, if it is read now.
+    fn reading_mut(&mut self) -> Option<&mut Reading> {
+        match self {
+            Sending::Head {
+                then: AfterHead::Body(reading),
+                ..
+            }
+            | Sending::Body(reading) => Some(reading),
+            _ => None,
+        }
+    }
+
+    /// The head said `Expect: 100-continue`.
+    fn announced(&self) -> bool {
+        match self {
+            Sending::Head {
+                then: AfterHead::Continue,
+                ..
+            }
+            | Sending::AwaitingContinue(_) => true,
+            Sending::Head {
+                then: AfterHead::Body(reading),
+                ..
+            }
+            | Sending::Body(reading) => reading.announced,
+            Sending::Idle | Sending::Done | Sending::Aborted => false,
+        }
+    }
 }
 
 /// How a step's reading ended.
@@ -339,14 +396,10 @@ impl Request {
             out: Vec::new(),
             filled: 0,
             sent: 0,
-            head_left: 0,
             upload: None,
             chunks: None,
-            eos_read: false,
             body_sent: 0,
-            sent_all: true,
-            expect: ExpectState::None,
-            aborted: false,
+            outgoing: Sending::Idle,
             head: None,
             stage: Stage::Head,
             interim: false,
@@ -442,13 +495,16 @@ impl Request {
     /// Whether some of the request is still to send, a body waiting for
     /// a 100 included (`Curl_req_want_send`).
     pub(crate) fn sending(&self) -> bool {
-        !self.sent_all
+        !matches!(
+            self.outgoing,
+            Sending::Idle | Sending::Done | Sending::Aborted
+        )
     }
 
     /// When a body waiting for a 100 is sent anyway.
     pub(crate) fn wake_at(&self) -> Option<Instant> {
-        match self.expect {
-            ExpectState::Awaiting(until) if self.sending() => Some(until),
+        match self.outgoing {
+            Sending::AwaitingContinue(until) => Some(until),
             _ => None,
         }
     }
@@ -460,7 +516,7 @@ impl Request {
             events = events | Events::IN;
         }
         // A body waiting for a 100 waits on the clock, not the socket.
-        let waiting = matches!(self.expect, ExpectState::Awaiting(_));
+        let waiting = matches!(self.outgoing, Sending::AwaitingContinue(_));
         if self.sending() && !pause.send_paused() && !waiting {
             events = events | Events::OUT;
         }
@@ -627,12 +683,7 @@ impl Request {
             && !self.no_expect
             && self.version == HttpVersion::Http11
             && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
-        let expect_state =
-            if content.is_some() && !auth.probe && (expects == Some(true) || added_expect) {
-                ExpectState::Head
-            } else {
-                ExpectState::None
-            };
+        let announced = content.is_some() && !auth.probe && (expects == Some(true) || added_expect);
         if let Some(content) = &mut content {
             content.expect = added_expect;
         }
@@ -764,11 +815,20 @@ impl Request {
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             upload::announce_size(cx, content.and_then(|c| c.length));
         }
+        // Without a body to read, all of it is in the buffer, whatever
+        // was announced; with one announced, none of it is read until a
+        // 100 comes or the wait runs out.
+        let then = if upload.is_none() || !announced {
+            AfterHead::Body(Reading {
+                eos_read: upload.is_none(),
+                announced,
+            })
+        } else {
+            AfterHead::Continue
+        };
         self.out = out;
         self.filled = head_len;
         self.sent = 0;
-        self.head_left = head_len;
-        self.eos_read = upload.is_none();
         self.upload = upload;
         self.chunks = if chunked {
             Some(ChunkEncoder::new().map_err(|_| ErrorKind::OutOfMemory)?)
@@ -776,14 +836,19 @@ impl Request {
             None
         };
         self.body_sent = 0;
-        self.sent_all = false;
-        self.expect = expect_state;
-        self.aborted = false;
+        self.outgoing = Sending::Head {
+            left: NonZeroUsize::new(head_len).expect("a head is never empty"),
+            then,
+        };
         self.head = Some(HeadParser::new(exchange));
         // A body held for a 100 is not read behind the head.
-        if expect_state == ExpectState::None
-            && !self.eos_read
-            && self.filled < self.out.len()
+        if matches!(
+            then,
+            AfterHead::Body(Reading {
+                eos_read: false,
+                ..
+            })
+        ) && self.filled < self.out.len()
             && !cx.pause().send_paused()
         {
             self.fill(cx)?;
@@ -818,7 +883,10 @@ impl Request {
             }
         };
         self.filled += got.n;
-        self.eos_read = got.eos;
+        self.outgoing
+            .reading_mut()
+            .expect("a body being read")
+            .eos_read = got.eos;
         Ok(got.n > 0 || got.eos)
     }
 
@@ -834,27 +902,27 @@ impl Request {
     ) -> Result<bool, ErrorKind> {
         while self.sending() {
             if self.sent == self.filled {
-                if self.eos_read {
-                    self.sent_all = true;
+                if let Sending::Body(Reading { eos_read: true, .. }) = self.outgoing {
                     break;
                 }
                 self.sent = 0;
                 self.filled = 0;
-                // The head has gone: a body announced with `Expect:
-                // 100-continue` waits for the 100, or until the wait runs
-                // out (`cr_exp100_read`).
-                match self.expect {
-                    ExpectState::Head => {
-                        let wait = cx.easy().options().http.continue_wait.0;
-                        self.expect = ExpectState::Awaiting(cx.now().after(wait));
-                        return Ok(false);
-                    }
-                    ExpectState::Awaiting(until) if cx.now() < until => return Ok(false),
-                    ExpectState::Awaiting(_) => {
-                        self.expect = ExpectState::Open;
+                // A body announced with `Expect: 100-continue` waits for
+                // the 100, or until the wait runs out (`cr_exp100_read`).
+                match self.outgoing {
+                    Sending::AwaitingContinue(until) if cx.now() < until => return Ok(false),
+                    Sending::AwaitingContinue(_) => {
+                        self.outgoing = Sending::Body(Reading {
+                            eos_read: false,
+                            announced: true,
+                        });
                         trace::info(cx, format_args!("Done waiting for 100-continue"));
                     }
-                    ExpectState::None | ExpectState::Open => {}
+                    Sending::Body(_) => {}
+                    Sending::Head { .. } => unreachable!("the head is in the buffer"),
+                    Sending::Idle | Sending::Done | Sending::Aborted => {
+                        unreachable!("sending")
+                    }
                 }
                 if !read || cx.pause().send_paused() || !self.fill(cx)? {
                     return Ok(false);
@@ -877,7 +945,10 @@ impl Request {
             };
             // The head's part and the body's are traced apart
             // (`xfer_send`); both count as the request's.
-            let head = n.min(self.head_left);
+            let head = match self.outgoing {
+                Sending::Head { left, .. } => n.min(left.get()),
+                _ => 0,
+            };
             if head > 0 {
                 trace::bytes(
                     cx,
@@ -887,21 +958,38 @@ impl Request {
             }
             upload::sent(cx, &self.out[self.sent + head..self.sent + n]);
             cx.report_mut().sizes_mut().request += n as u64;
-            self.head_left -= head;
             self.body_sent += (n - head) as u64;
             self.sent += n;
+            if let Sending::Head { left, then } = self.outgoing {
+                self.outgoing = match (NonZeroUsize::new(left.get() - head), then) {
+                    (Some(left), then) => Sending::Head { left, then },
+                    (None, AfterHead::Body(reading)) => Sending::Body(reading),
+                    // The head has gone: the wait for a 100 starts.
+                    (None, AfterHead::Continue) => {
+                        self.sent = 0;
+                        self.filled = 0;
+                        let wait = cx.easy().options().http.continue_wait.0;
+                        self.outgoing = Sending::AwaitingContinue(cx.now().after(wait));
+                        return Ok(false);
+                    }
+                };
+            }
         }
-        self.upload_done(cx);
+        self.upload_done(cx, false);
         Ok(true)
     }
 
-    /// Nothing more of the request goes, all of it sent or not
-    /// (`req_set_upload_done`).
-    fn upload_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
-        self.sent_all = true;
+    /// Nothing more of the request goes, all of it sent or, `aborted`,
+    /// not (`req_set_upload_done`).
+    fn upload_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, aborted: bool) {
+        self.outgoing = if aborted {
+            Sending::Aborted
+        } else {
+            Sending::Done
+        };
         self.sent = self.filled;
         let n = self.body_sent;
-        if self.aborted {
+        if aborted {
             if n > 0 {
                 trace::info(cx, format_args!("abort upload after having sent {n} bytes"));
             } else {
@@ -1032,7 +1120,7 @@ impl Request {
         chunked: bool,
         sent_all: bool,
         body_sent: u64,
-    ) -> Sending {
+    ) -> Unsent {
         let rereads = upload.is_some_and(Upload::needs_rewind);
         let left = match upload {
             None => Left::Nothing,
@@ -1043,7 +1131,7 @@ impl Request {
                 None => Left::Unknown,
             },
         };
-        Sending { rereads, left }
+        Unsent { rereads, left }
     }
 
     fn head(&self) -> &HeadParser {
@@ -1088,7 +1176,7 @@ impl Request {
             interim,
             upload,
             chunks,
-            sent_all,
+            outgoing,
             body_sent,
             ..
         } = self;
@@ -1096,9 +1184,10 @@ impl Request {
         // Only a status line changes it, so for a header line it is what
         // it was before.
         let bodyless = head.meta().bodyless();
-        let sending = Self::left_to_send(upload.as_ref(), chunks.is_some(), *sent_all, *body_sent);
+        let sent_all = matches!(outgoing, Sending::Done | Sending::Aborted);
+        let unsent = Self::left_to_send(upload.as_ref(), chunks.is_some(), sent_all, *body_sent);
         let (used, event) = head
-            .feed(input, &mut cx.report_mut().sizes_mut().header, sending)
+            .feed(input, &mut cx.report_mut().sizes_mut().header, unsent)
             .map_err(|e| head_failed(cx, &e))?;
         let rest = &input[used..];
         let line = match event {
@@ -1230,7 +1319,9 @@ impl Request {
             if abandoned {
                 // The request is over with its head: nothing more of it
                 // goes (`http_firstwrite`'s `done`).
-                self.sent_all = true;
+                if self.sending() {
+                    self.outgoing = Sending::Done;
+                }
                 return Ok(&[]);
             }
             if matches!(self.stage, Stage::Done) && !rest.is_empty() {
@@ -1244,8 +1335,16 @@ impl Request {
 
     /// A body held for a 100 goes now (`http_exp100_continue`).
     fn release(&mut self) {
-        if matches!(self.expect, ExpectState::Head | ExpectState::Awaiting(_)) {
-            self.expect = ExpectState::Open;
+        let open = Reading {
+            eos_read: false,
+            announced: true,
+        };
+        match &mut self.outgoing {
+            Sending::Head { then, .. } if *then == AfterHead::Continue => {
+                *then = AfterHead::Body(open);
+            }
+            Sending::AwaitingContinue(_) => self.outgoing = Sending::Body(open),
+            _ => {}
         }
     }
 
@@ -1257,10 +1356,10 @@ impl Request {
         if !self.sending() || meta.close() || meta.rewinds() {
             return Ok(());
         }
-        if code == 417 && self.expect != ExpectState::None {
+        if code == 417 && self.outgoing.announced() {
             // Made again without `Expect`, its body started over if any
             // went.
-            if self.body_sent == 0 && matches!(self.expect, ExpectState::Awaiting(_)) {
+            if self.body_sent == 0 && matches!(self.outgoing, Sending::AwaitingContinue(_)) {
                 trace::info(
                     cx,
                     format_args!("Got HTTP failure 417 while waiting for a 100"),
@@ -1273,8 +1372,7 @@ impl Request {
                 }
             }
             self.expect_refused = true;
-            self.aborted = true;
-            self.upload_done(cx);
+            self.upload_done(cx, true);
             cx.mark(Timer::PostTransfer);
             return Ok(());
         }
@@ -1289,9 +1387,8 @@ impl Request {
                 cx,
                 format_args!("HTTP error before end of send, stop sending"),
             );
-            self.aborted = true;
             self.closing = true;
-            self.upload_done(cx);
+            self.upload_done(cx, true);
             cx.mark(Timer::PostTransfer);
         }
         Ok(())

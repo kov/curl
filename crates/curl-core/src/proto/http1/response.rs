@@ -8,7 +8,7 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields::{self, BadLine, MAX_HEADERS};
-use super::framing::{Asked, Framing, FramingError, Meta, Notes, Sending};
+use super::framing::{Asked, Framing, FramingError, Meta, Notes, Unsent};
 use crate::error::ErrorKind;
 
 /// The most one assembled line may be, the byte C's buffer keeps for
@@ -304,7 +304,7 @@ impl HeadParser {
         &'s mut self,
         mut input: &[u8],
         transfer_bytes: &mut u64,
-        sending: Sending,
+        sending: Unsent,
     ) -> Result<(usize, Option<HeadEvent<'s>>), HeadError> {
         if self.given {
             self.given = false;
@@ -421,7 +421,7 @@ impl HeadParser {
     fn line_out(
         &mut self,
         transfer_bytes: &mut u64,
-        sending: Sending,
+        sending: Unsent,
     ) -> Result<HeadEvent<'_>, HeadError> {
         self.given = true;
         let mut note = Notes::default();

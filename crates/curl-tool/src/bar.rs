@@ -189,15 +189,18 @@ impl State {
     /// The ball and its trail, moved along if the transfer `moved`.
     fn fly(&mut self, moved: bool, drawn: &mut Drawn) {
         let width = self.width;
-        // A terminal narrowed since: the ball stays on the line.
-        self.ball = self.ball.min(width - 6);
         let start = drawn.len;
         drawn.push(b"\r");
         for _ in 0..width {
             drawn.push(b" ");
         }
         let line = &mut drawn.buf[start + 1..start + 1 + width];
-        line[self.ball..self.ball + 5].copy_from_slice(b"-=O=-");
+        // A terminal narrowed since cuts the ball at the line's end, where
+        // C's string ends; the ball is back on the line after.
+        if let Some(room) = width.checked_sub(self.ball) {
+            let ball = &b"-=O=-"[..room.min(5)];
+            line[self.ball..self.ball + ball.len()].copy_from_slice(ball);
+        }
         let step = 1_000_000 / (width as i32 - 2);
         for lag in [0, 5, 10, 15] {
             let at = (SINUS[(self.tick + lag) % 200] / step) as usize;
@@ -291,5 +294,93 @@ mod tests {
         assert_eq!(line, want);
         assert_eq!(s.ball, 1, "it moved");
         assert_eq!(s.draw(now(15, None), t1, 20).bytes(), b"", "too soon");
+    }
+
+    /// C's `fly`, as its arithmetic has it: the line it draws `width`
+    /// wide, then where the ball goes.
+    struct Fly {
+        tick: usize,
+        ball: i64,
+        step: i64,
+    }
+
+    impl Fly {
+        fn frame(&mut self, width: usize, moved: bool) -> Vec<u8> {
+            let mut buf = vec![b' '; width + 1];
+            buf[0] = b'\r';
+            // Copied past the string's end, the ball is not shown there.
+            for (i, &b) in b"-=O=-".iter().enumerate() {
+                let at = self.ball as usize + 1 + i;
+                if at <= width {
+                    buf[at] = b;
+                }
+            }
+            let check = width as i32 - 2;
+            for lag in [0, 5, 10, 15] {
+                buf[(SINUS[(self.tick + lag) % 200] / (1_000_000 / check) + 1) as usize] = b'#';
+            }
+            self.tick += 2;
+            if self.tick >= 200 {
+                self.tick -= 200;
+            }
+            if moved {
+                self.ball += self.step;
+            }
+            let last = width as i64 - 6;
+            if self.ball >= last {
+                self.step = -1;
+                self.ball = last;
+            } else if self.ball < 0 {
+                self.step = 1;
+                self.ball = 0;
+            }
+            buf
+        }
+    }
+
+    /// The ball runs to the right end and back, still while nothing comes,
+    /// its trail on C's sine; a narrowed terminal cuts it at the line's
+    /// end, then has it back on the line.
+    #[test]
+    fn bounces_the_ball_as_c_does() {
+        let mut s = State::new(Some(0));
+        let mut c = Fly {
+            tick: 150,
+            ball: 0,
+            step: 1,
+        };
+        let mut t = Instant::now();
+        assert_eq!(s.draw(now(0, None), t, 20).bytes(), b"");
+        let mut got = 0;
+        let mut frame = |width: usize, moved: bool| {
+            t += REDRAW;
+            got += u64::from(moved);
+            let drawn = s.draw(now(got, None), t, width).bytes().to_vec();
+            assert_eq!(
+                String::from_utf8(drawn).unwrap(),
+                String::from_utf8(c.frame(width, moved)).unwrap(),
+                "at {got}, {width} wide"
+            );
+        };
+        // Past the tick's wrap, to the right end, back and right again.
+        for _ in 0..34 {
+            frame(20, true);
+        }
+        frame(20, false);
+        frame(20, false);
+        for _ in 0..30 {
+            frame(40, true);
+        }
+        // The ball at 30 of 40, then 20 wide: hidden, then back on.
+        frame(20, true);
+        frame(20, true);
+        frame(23, true);
+        frame(20, false);
+        // Back to 17 of 40, then 20 wide: the ball's head only.
+        for _ in 0..29 {
+            frame(40, true);
+        }
+        frame(20, true);
+        frame(20, true);
     }
 }

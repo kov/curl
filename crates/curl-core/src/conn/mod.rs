@@ -629,6 +629,27 @@ mod tests {
         assert!(v6(None).ipv6() && !peer(b"fe80", 80, None).ipv6());
     }
 
+    /// A proxy is the same destination as another by its name in any
+    /// case, its port, and its zone by number however spelt, or by name
+    /// when it has none (`Curl_peer_same_destination`).
+    #[test]
+    fn proxies_compare_as_destinations() {
+        let same = |a: &Peer, b: &Peer| Destination(a) == Destination(b);
+        let v6 = |zone| peer(b"[fe80::1]", 80, zone);
+        assert!(same(&v6(Some(b"2")), &v6(Some(b"02"))));
+        assert!(!same(&v6(Some(b"2")), &v6(Some(b"3"))));
+        assert!(same(&v6(Some(b"eth0")), &v6(Some(b"eth0"))));
+        assert!(!same(&v6(Some(b"eth0")), &v6(Some(b"eth1"))));
+        assert!(same(
+            &peer(b"P.example", 80, None),
+            &peer(b"p.example", 80, None)
+        ));
+        assert!(!same(
+            &peer(b"p.example", 80, None),
+            &peer(b"p.example", 81, None)
+        ));
+    }
+
     fn via_proxy(host: &[u8], user: Option<&[u8]>, forward: bool) -> Route {
         let proxy = TryArc::try_new(peer(host, 3128, None)).unwrap();
         let creds = user.map(|u| {

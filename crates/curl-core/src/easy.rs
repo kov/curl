@@ -766,6 +766,48 @@ mod tests {
         assert!(e.private.is_none());
     }
 
+    /// The cookies the application gives are kept beside each other, and
+    /// cleared all, those of the session alone, or forgotten with the
+    /// files they came from (`CURLOPT_COOKIELIST`, `CURLOPT_COOKIEFILE`).
+    #[test]
+    fn cookies_are_added_cleared_and_forgotten() {
+        let session = b"example.com\tFALSE\t/\tFALSE\t0\ts\t1";
+        let lasting = b"example.com\tFALSE\t/\tFALSE\t4102444800\tp\t2";
+        let mut e = Easy::new();
+        e.add_cookie(session).unwrap();
+        e.add_cookie(lasting).unwrap();
+        let mut list = e.cookie_list().unwrap();
+        list.sort();
+        assert_eq!(list, [session.to_vec(), lasting.to_vec()]);
+        e.clear_session_cookies().unwrap();
+        assert_eq!(e.cookie_list().unwrap(), [lasting.to_vec()]);
+        e.clear_cookies().unwrap();
+        assert!(e.cookie_list().unwrap().is_empty());
+        e.add_cookie(lasting).unwrap();
+        e.options_mut()
+            .http
+            .cookies
+            .files
+            .push(b"some.jar")
+            .unwrap();
+        e.forget_cookies();
+        assert!(e.cookie_list().unwrap().is_empty());
+        assert!(e.options().http.cookies.files.iter().next().is_none());
+    }
+
+    /// Driven by events, a transfer runs to its end as when waited on.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn performs_driven_by_events() {
+        let s = Scratch::new("events");
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let (mut e, body) = easy(&s.url("f"));
+        assert_eq!(e.perform_ev(), Ok(()));
+        assert_eq!(*body.0.lock().unwrap(), b"hello");
+        let (mut e, _) = easy(&s.url("missing"));
+        assert!(e.perform_ev().is_err());
+    }
+
     #[test]
     fn clones_options_and_resets_them() {
         let mut easy = Easy::new();

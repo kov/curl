@@ -165,12 +165,18 @@ fn a_full_pool_closes_its_oldest_idle_connection() {
         Released::Evicted(Full { conns: 3, max: 2 })
     );
     clock.advance(ms);
+    let b_id = b.id();
     assert_eq!(
         pool.release(b, Finish::default(), two, &mut net, clock.now()),
         Released::Idle {
             number: ConnNumber(1),
             full: None
         }
+    );
+    assert_eq!(
+        pool.get_conn(b_id).map(|c| c.number),
+        Some(ConnNumber(1)),
+        "idle, the pool's to show"
     );
     let d = open(&mut pool, &mut net, 1);
     clock.advance(ms);

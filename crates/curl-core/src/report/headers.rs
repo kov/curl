@@ -464,4 +464,16 @@ mod tests {
         new.push(b"B: 2\r\n", H).unwrap();
         assert_eq!(new.next(Origins::ALL, Request::Last, Some(cursor)), None);
     }
+
+    /// The tests' store of several requests' lines keeps each request's
+    /// apart, in turn.
+    #[test]
+    fn a_store_of_requests_keeps_each_apart() {
+        let s = HeaderStore::of_requests(&[&[b"A: 1\r\n"], &[b"A: 2\r\n", b"B: 3\r\n"]]);
+        let value = |name: &[u8], request| s.get(name, 0, Origins::ALL, request).map(|h| h.value);
+        assert_eq!(value(b"A", Request::Nth(0)), Ok(&b"1"[..]));
+        assert_eq!(value(b"A", Request::Nth(1)), Ok(&b"2"[..]));
+        assert_eq!(value(b"B", Request::Last), Ok(&b"3"[..]));
+        assert_eq!(value(b"A", Request::Nth(2)), Err(HeaderError::NoRequest));
+    }
 }

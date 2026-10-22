@@ -171,6 +171,19 @@ mod tests {
         assert_eq!(given.now().since(Instant::EPOCH), Duration::from_secs(3));
     }
 
+    /// The system clock's calendar time is the system's, in seconds since
+    /// 1970 (`time(NULL)`).
+    #[test]
+    fn the_system_clock_tells_the_calendar_time() {
+        let told = SystemClock::new().unix_time();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let now = i64::try_from(now).unwrap();
+        assert!((now - 1..=now).contains(&told), "{told} for {now}");
+    }
+
     #[test]
     fn the_system_clock_starts_at_its_epoch_and_does_not_go_back() {
         let clock = SystemClock::new();

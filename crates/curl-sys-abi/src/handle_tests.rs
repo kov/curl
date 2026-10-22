@@ -3582,12 +3582,11 @@ fn connect_to_and_resolve_entries_appended_after_the_option_are_used() {
         // SAFETY: as above.
         unsafe { curl_easy_perform(c) }
     };
-    assert_eq!(
-        code,
-        ffi::CURLE_COULDNT_RESOLVE_HOST,
-        "read once per setting"
-    );
+    // The name is left to the system's resolver, which may answer it;
+    // what counts is that the entry was not read.
+    assert_ne!(code, CURLE_OK, "read once per setting");
     let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with(b"GET /ct HTTP/1.1\r\nHost: unreach.invalid:1\r\n"));
     assert!(requests[1].starts_with(b"GET /rs HTTP/1.1\r\n"));
     // SAFETY: a live handle, not used again; then the list it kept.

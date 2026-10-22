@@ -428,3 +428,19 @@ witness: curl-core proto::http::tests::a_proxy_closing_after_a_wait_aborts_the_t
             tunnel(&mut c.handshake).authorized = false;
 --- new
             let _ = &c;
+
+=== a tunnel's Digest is traced only once a header goes
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_first_challenge
+--- old
+    if !output.used.is_empty() {
+--- new
+    if output.header.is_some() {
+
+=== a forwarding proxy's Digest is traced only once a header goes
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_first_challenge
+--- old
+        if !proxy_auth.used.is_empty() {
+--- new
+        if proxy_auth.header.is_some() {

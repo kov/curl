@@ -128,9 +128,11 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshak
         OutputError::Random => ErrorKind::FailedInit,
     })?;
     cx.report_mut().set_proxy_auth_used(output.used);
-    if let Some((method, _)) = &output.header {
+    // Named once in use, though Digest sends nothing before its first
+    // challenge (`output_auth_headers`).
+    if !output.used.is_empty() {
         let user = secret.map_or(&b""[..], |s| s.user());
-        let name = method.name().as_bytes();
+        let name = output.used.name().as_bytes();
         trace::info_with(
             cx,
             &[b"Proxy auth using ", name, b" with user '", user, b"'"],

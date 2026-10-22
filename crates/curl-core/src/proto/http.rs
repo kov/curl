@@ -710,9 +710,11 @@ impl Request {
                 forwarded,
             },
         };
-        if let Some(method) = proxy_auth.header.as_ref().map(|(m, _)| m) {
+        // Named once in use, though Digest sends nothing before its
+        // first challenge (`output_auth_headers`).
+        if !proxy_auth.used.is_empty() {
             let user = proxy_secret.map_or(&b""[..], |s| s.user());
-            let name = method.name().as_bytes();
+            let name = proxy_auth.used.name().as_bytes();
             trace::info_with(
                 cx,
                 &[b"Proxy auth using ", name, b" with user '", user, b"'"],

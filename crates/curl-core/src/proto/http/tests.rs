@@ -3713,6 +3713,38 @@ fn a_proxy_closing_on_the_credentials_is_connected_to_again() {
     assert!(closed.is_some() && closed < again, "{said:?}");
 }
 
+/// Digest is the proxy's method from the first request, before it has a
+/// challenge to answer: the trace names it though no header goes yet,
+/// through a tunnel and to a proxy forwarding the request alike
+/// (`output_auth_headers`), as the C build traces it.
+#[test]
+fn a_proxy_s_digest_is_traced_before_its_first_challenge() {
+    for tunnel in [true, false] {
+        let (mut m, talk, _) = server(&[if tunnel { TUNNEL_UP } else { OK }, OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            tunneled_digest(o);
+            o.proxy.tunnel = tunnel;
+        });
+        assert_eq!(ran.result, Ok(()), "tunnel {tunnel}");
+        let first = if tunnel { "CONNECT " } else { "GET " };
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        assert!(text.starts_with(first), "{text}");
+        assert!(!text.contains("Proxy-Authorization"), "{text}");
+        let line = b"Proxy auth using Digest with user 'u'\n";
+        let (traced, sent) = {
+            let seen = ran.seen.0.lock().unwrap();
+            let traced = seen.iter().position(|(w, l)| *w == "text" && l == line);
+            (traced, seen.iter().position(|(w, _)| *w == "out"))
+        };
+        assert!(
+            traced.is_some_and(|t| sent.is_some_and(|s| t < s)),
+            "tunnel {tunnel}: {:?}",
+            ran.seen.text()
+        );
+        assert_eq!(ran.easy.report().proxy_auth_used(), AuthMethods::DIGEST);
+    }
+}
+
 /// The same close, read only after the tunnel waited on its socket for
 /// the answer, aborts it: the credentials are no longer held
 /// (`hd_proxy_auth`, freed as `cf_h1_proxy_connect` returns).

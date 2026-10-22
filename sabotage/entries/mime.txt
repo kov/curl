@@ -113,3 +113,12 @@ witness: curl-sys-abi mime::tests::the_post_options_say_which_post
             shim.post_mime.set(false);
 --- new
             shim.post.borrow_mut().fields = fields;
+
+=== a file part's status is read by std, which copies a long name to the heap
+file: crates/curl-core/src/mime/mod.rs
+witness: curl-core a_file_part_s_long_name_is_read_without_a_copy
+--- old
+            curl_os::fs::with_c_name(path, curl_os::fs::stat).map_err(|_| FileError::Unreadable)?;
+--- new
+            std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path))
+                .map_err(|_| FileError::Unreadable)?;

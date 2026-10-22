@@ -8,9 +8,7 @@ pub(crate) mod read;
 #[cfg(test)]
 mod tests;
 
-use std::ffi::OsStr;
 use std::io;
-use std::os::unix::ffi::OsStrExt as _;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
@@ -185,7 +183,8 @@ impl FileData {
         if path.contains(&0) {
             return Err(FileError::Unreadable);
         }
-        let meta = std::fs::metadata(OsStr::from_bytes(path)).map_err(|_| FileError::Unreadable)?;
+        let meta =
+            curl_os::fs::with_c_name(path, curl_os::fs::stat).map_err(|_| FileError::Unreadable)?;
         let mut copy = Vec::new();
         copy.try_reserve_exact(path.len() + 1)
             .map_err(|_| FileError::OutOfMemory)?;

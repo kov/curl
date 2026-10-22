@@ -79,6 +79,10 @@ fn main() {
             "a_cold_group_is_made_or_refused_at_its_first_set",
             a_cold_group_is_made_or_refused_at_its_first_set,
         ),
+        (
+            "a_file_part_s_long_name_is_read_without_a_copy",
+            a_file_part_s_long_name_is_read_without_a_copy,
+        ),
     ] {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -784,4 +788,14 @@ fn a_cold_group_is_made_or_refused_at_its_first_set() {
     let (copy, n) = track::count_allocations(|| o.try_clone().expect("memory"));
     assert_eq!(n, 1, "the copy makes the proxy group alone");
     assert!(copy.login.user.is_none() && !copy.proxy.tunnel);
+}
+
+/// A file part's status is read by its name copied to the stack, as C's
+/// `stat` takes it: a name longer than std's 384-byte stack buffer would
+/// otherwise be copied to the heap by an allocation that cannot fail.
+fn a_file_part_s_long_name_is_read_without_a_copy() {
+    let name = [b'n'; 400];
+    let (made, n) = track::count_allocations(|| curl_core::mime::FileData::new(&name));
+    assert_eq!(made.err(), Some(curl_core::mime::FileError::Unreadable));
+    assert_eq!(n, 0, "the name's status read with nothing allocated");
 }

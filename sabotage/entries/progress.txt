@@ -188,17 +188,17 @@ witness: curl-core progress::tests::an_unpause_measures_the_speed_afresh
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core progress::tests::an_unpause_measures_the_speed_afresh
 --- old
-        || (was.send_paused() && !slot.pause.send_paused())
+    if resumed.iter().any(|&(_, r)| r) {
 --- new
+    if resumed[0].1 {
 
 === any unpause starts the speed records over
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core progress::tests::an_unpause_measures_the_speed_afresh
 --- old
-    if (was.recv_paused() && !slot.pause.recv_paused())
+    if resumed.iter().any(|&(_, r)| r) {
 --- new
-    if true
-        || (was.recv_paused() && !slot.pause.recv_paused())
+    if true || resumed.iter().any(|&(_, r)| r) {
 
 === a send-paused transfer is judged on its speed
 file: crates/curl-core/src/progress/mod.rs

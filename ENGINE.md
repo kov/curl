@@ -454,6 +454,7 @@ pub(crate) enum TransferState {
     Do(Attached),                      // DO..DOING_MORE
     Did(Attached),                     // DID: one step, to Exchanging or, with nothing to exchange, Done
     Exchanging(Attached),              // PERFORMING
+    RateLimiting(Attached),            // RATELIMITING: over a speed limit, waits on its timer
     Done(Done),                        // multi_done pending; always holds the lease
     Completed(Completed),              // terminal until remove
 }
@@ -477,8 +478,15 @@ the search is made again: the route, built once per leg, which `Connecting` keep
 destination and target from. Its IP version alone is read again as a waiting transfer looks
 again, as C, which makes its connection anew then, reads `set.ipver`. A redirect is
 `AfterRequest::Follow`, which the protocol's `done` decides from a `Location:` (§6.4); the next
-leg's `Plan` is built from where it leads. Planned with the rate limits: a throttle instant in
-`Exchanging` (C's RATELIMITING).
+leg's `Plan` is built from where it leads.
+
+**A speed limit is a state of its own** (`RateLimiting`, C's RATELIMITING), not a flag on
+`Exchanging`. `Exchanging` asks the limits (`mspeed_check`) before its step and after one that
+leaves the request going: over either, it moves to `RateLimiting`, its `TooFast` timer armed for
+the wait and its run in the next pass called off; under them, the timer is armed for the next
+tokens. `RateLimiting` waits on nothing but that timer (no pollset), and at each wake fails at
+the time limit, takes the progress and low-speed check, and goes back to `Exchanging` at once
+once the limits allow.
 
 **A transfer runs as legs.** Init runs C's pretransfer once (the report restarted, `Starts::op`,
 the option's URL parsed) and `start_leg` for the first request: `Starts::single`, the limits
@@ -552,7 +560,8 @@ past the step's timeout and progress checks, marks the transfer dirty (`Curl_mul
 it runs in the next pass without waiting on its socket, and the multi's timeout is 0 until then.
 A peer that sends faster than it is read thus cannot keep a pass from ending, so the time limits,
 the progress handler and the other transfers get their turn as in C. C's other exits from that
-loop have nothing to act on yet: no receive rate limit is implemented, and no layer holds
+loop: a receive limit spent ends the step without a dirty mark, the engine then waiting for
+the limit's timer (§5.3), and no layer holds
 received bytes a poll cannot see (`data_pending`; TLS will). One that asks for another request, by a location to
 follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
 parser, fed an `Unsent` with each piece): 2000 bytes or more, or an unknown amount, and the
@@ -1380,8 +1389,16 @@ pub enum SendPause { Running, Paused }
 4. if anything changed: `timer_update`, then `assess(id)`; an `Abort` from either is
    AbortedByCallback.
 
-The rate limiter is `RateLimits` on the `Run`, a separate fact consulted only while `Running`;
-limiting is the `throttle: Option<Instant>` deadline on `Exchanging`, armed as TOOFAST.
+The speed limits are `RateLimits` in the slot beside the pause (`progress/rate.rs`, C's
+`Curl_rlimit`): a token bucket per direction, its rate read from the options at each use (so a
+rate set mid-transfer applies, as C's setopt changes the bucket). C's `blocked` is the pause
+itself: a paused direction has no tokens, spends none and waits for none, and its unpause
+starts the bucket over, the time paused earning nothing. The receive bucket starts over at the
+body's first write, tuned for its size if known, and takes the body's bytes as counted (before
+content decoding); the send bucket starts over at the body's first read and takes the body's
+bytes as sent, framing included. A read is cut to the receive tokens and stops when they are
+spent; a read of the upload likewise, and one send carries at most a second's worth of body
+(`xfer_send`). file:// is not limited (DIVERGENCE.md).
 
 ### 5.4 Send side
 
@@ -1458,7 +1475,7 @@ over the last five one-second records. The handler is called, or the meter drawn
   loop), with held output a handler unpaused replayed at once. Every C state from CONNECT on
   that holds a connection is a step of its own, so the counts are C's: file:// pins them,
   two before DO and three after it;
-- in throttled states (with rate limits);
+- at each wake of `RateLimiting`, with the low-speed check;
 - a last call from the `Done` step, shown whatever the time but only if the request is done or a
   second has passed, unless the outcome is AbortedByCallback. An `Abort` there fails a transfer
   that had succeeded. "Done" is C's `req.done`: the exchange ran to its end (`Reached::Exchanged`).

@@ -632,6 +632,21 @@ fn an_upload_writes_the_file() {
     assert_eq!(e.report().sizes().upload_expected(), Some(5));
 }
 
+/// A send limit does not cut an upload to a file short: the file gets the
+/// whole body. C's `file_upload` reads through the limit, takes the read
+/// it refuses once the limit is spent for the end, and succeeds with the
+/// file truncated to a step's worth (`curl --limit-rate 1000 -T 5k
+/// file://` writes 1000 bytes and exits 0).
+#[test]
+fn a_send_limit_does_not_cut_an_upload_short() {
+    let s = Scratch::new("uplimit");
+    let (mut e, _) = upload(&s.url("f"), fed(70000));
+    e.options_mut().limits.max_send_speed = std::num::NonZeroU64::new(1000);
+    let (r, _) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(s.read("f"), [b'u'; 70000]);
+}
+
 /// A resumed upload appends what of the body is past the resume point; at
 /// the end, past what the file holds already.
 #[test]

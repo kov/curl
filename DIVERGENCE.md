@@ -21,6 +21,13 @@ not a difference: it is tracked in `MILESTONES.md`.
   Pinned by `a_file_that_cannot_be_read_fails`, `a_read_failing_partway_fails` and
   `a_listing_failing_partway_fails` (`crates/curl-core/src/proto/file/tests.rs`).
 
+- **A send limit does not cut a `file://` upload short.** The whole body is written to the file
+  whatever `CURLOPT_MAX_SEND_SPEED_LARGE` or `--limit-rate` says. C's `file_upload`
+  (`lib/file.c`) reads through the limit, takes the read it refuses once a second's worth is
+  spent for the end of the body, and succeeds with the file truncated: `curl --limit-rate 1000
+  -T` a 5000-byte file to `file://` writes 1000 bytes and exits 0. Pinned by
+  `a_send_limit_does_not_cut_an_upload_short` (`crates/curl-core/src/proto/file/tests.rs`).
+
 - **An environment variable whose copy cannot be allocated is out of memory.** The proxy
   variables (`http_proxy`, `NO_PROXY` and the rest), `NETRC` and `HOME` for the `.netrc` file,
   and the tool's `CURL_HOME`, `XDG_CONFIG_HOME` and `IPFS_PATH` are copied as they are read; a
@@ -28,6 +35,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   environment names is passed over and the transfer goes direct. Pinned by
   `a_refused_copy_is_out_of_memory` (`crates/curl-os/tests/env_oom.rs`) and
   `finds_the_file_as_c` (`crates/curl-core/src/netrc.rs`).
+
+## Options C loses
+
+- **A duplicated handle keeps its speed limits.** `curl_easy_duphandle` copies
+  `CURLOPT_MAX_RECV_SPEED_LARGE` and `CURLOPT_MAX_SEND_SPEED_LARGE`, and its transfers are
+  limited by them. C copies the rates but not the limiters they were set into, so its copy's
+  transfers run unlimited but for the cut of each send to the send rate: a 60000-byte
+  download at 20000 bytes a second takes 3 s on a handle and none on its copy. Pinned by
+  `speed_limits_are_kept_and_copied` (`crates/curl-sys-abi/src/handle_tests.rs`).
 
 ## Input C misreads
 

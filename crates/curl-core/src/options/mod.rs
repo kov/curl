@@ -931,6 +931,13 @@ pub struct Limits {
     /// Fail a transfer slower than this for this long
     /// (`CURLOPT_LOW_SPEED_LIMIT`, `CURLOPT_LOW_SPEED_TIME`).
     pub low_speed: Option<LowSpeed>,
+    /// The most bytes a second a transfer receives, counting its body
+    /// as it comes, before any content coding is undone
+    /// (`CURLOPT_MAX_RECV_SPEED_LARGE`).
+    pub max_recv_speed: Option<NonZeroU64>,
+    /// The most bytes a second a transfer sends of its body, with any
+    /// framing (`CURLOPT_MAX_SEND_SPEED_LARGE`).
+    pub max_send_speed: Option<NonZeroU64>,
     /// Which idle connections the transfer may reuse.
     pub reuse: ReuseLimits,
     pub eyeballs: EyeballsDelay,

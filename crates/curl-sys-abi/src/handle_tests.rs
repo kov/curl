@@ -217,6 +217,36 @@ fn a_range_is_kept() {
     }
 }
 
+/// The speed limits refuse a negative rate, take 0 for none, and are
+/// copied with the handle. C's `curl_easy_duphandle` copies the rates
+/// but not the limiter they were set into, so its copy is not limited
+/// (it reads only `set.max_send_speed`, to cut a send): a 60000-byte
+/// download at 20000 a second takes 3 s on the handle and none on its
+/// copy.
+#[test]
+fn speed_limits_are_kept_and_copied() {
+    let c = curl_easy_init();
+    let speeds = |c| options(c, |o| (o.limits.max_recv_speed, o.limits.max_send_speed));
+    let n = std::num::NonZeroU64::new;
+    assert_eq!(off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 20000), CURLE_OK);
+    assert_eq!(off(c, ffi::CURLOPT_MAX_SEND_SPEED_LARGE, 30000), CURLE_OK);
+    assert_eq!(
+        off(c, ffi::CURLOPT_MAX_SEND_SPEED_LARGE, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(speeds(c), (n(20000), n(30000)));
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert_eq!(speeds(d), (n(20000), n(30000)));
+    assert_eq!(off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 0), CURLE_OK);
+    assert_eq!(speeds(c), (None, n(30000)));
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(d);
+    }
+}
+
 /// `CURLOPT_AWS_SIGV4` makes AWS SigV4 the one method; NULL takes it out
 /// of the methods asked for and leaves the others. A string refused for
 /// its length leaves the one before it, and the method as it says.

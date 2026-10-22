@@ -2,6 +2,7 @@
 //! check, the progress handler and the meter.
 
 mod meter;
+pub(crate) mod rate;
 
 #[cfg(test)]
 #[rustfmt::skip]

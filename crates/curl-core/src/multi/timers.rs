@@ -39,10 +39,12 @@ pub(crate) enum TimerKind {
     /// The protocol's own wait, which its state says
     /// (`ProtoState::wake_at`): HTTP's for a 100 (`EXPIRE_100_TIMEOUT`).
     Proto,
+    /// A speed limit's wait, or its next tokens (`EXPIRE_TOOFAST`).
+    TooFast,
 }
 
 impl TimerKind {
-    const COUNT: usize = 5;
+    const COUNT: usize = 6;
 
     fn slot(self) -> usize {
         self as usize

@@ -29,6 +29,7 @@ use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
 use crate::progress::Speedometer;
+use crate::progress::rate::{RateLimits, Way};
 use crate::share::{Kind, watched};
 use crate::time::{Clock, Instant};
 
@@ -167,6 +168,8 @@ struct Slot<H: Host> {
     judge_pause: bool,
     /// Beside the pause, which starts it over.
     speedometer: Speedometer,
+    /// The speed limits' buckets, which the pause stops and starts over.
+    rate: RateLimits,
     /// Out only while the transfer is being stepped.
     run: Option<Run>,
 }
@@ -347,6 +350,7 @@ impl<H: Host> Multi<H> {
             pause: Pause::default(),
             judge_pause: false,
             speedometer: Speedometer::default(),
+            rate: RateLimits::default(),
             run: Some(run),
         });
         let slot = match slot {
@@ -967,11 +971,18 @@ fn pause_transfer<H: Host>(
     let was = slot.pause;
     let was_held = was.recv == RecvPause::Held;
     slot.pause.apply(req);
-    // A direction that goes on measures its speed afresh.
-    if (was.recv_paused() && !slot.pause.recv_paused())
-        || (was.send_paused() && !slot.pause.send_paused())
-    {
+    // A direction that goes on measures its speed afresh, and its limit
+    // starts over, the time paused earning nothing (`Curl_rlimit_block`).
+    let resumed = [
+        (Way::Recv, was.recv_paused() && !slot.pause.recv_paused()),
+        (Way::Send, was.send_paused() && !slot.pause.send_paused()),
+    ];
+    if resumed.iter().any(|&(_, r)| r) {
         slot.speedometer.start_over();
+    }
+    for (way, _) in resumed.into_iter().filter(|&(_, r)| r) {
+        let limits = &slot.easy.options().limits;
+        slot.rate.start(way, limits, rest.now, None);
     }
     // Unless paused every way it moves bytes, the transfer runs again, and
     // is not slow for the time it was not (easy.c:1222). The ways are its

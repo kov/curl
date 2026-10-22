@@ -1,0 +1,103 @@
+# The speed limits (crates/curl-core/src/progress/rate.rs and the engine's
+# RateLimiting state), against lib/ratelimit.c and multi.c's mspeed_check.
+
+=== an update earns a step more than the time gives
+file: crates/curl-core/src/progress/rate.rs
+witness: curl-core progress::rate::tests::unit3216
+--- old
+            elapsed_us / self.step_us()
+        };
+--- new
+            elapsed_us / self.step_us() + 1
+        };
+
+=== a debt waits no longer than an empty bucket
+file: crates/curl-core/src/progress/rate.rs
+witness: curl-core progress::rate::tests::unit3216
+--- old
+            if debt_pct != 0 {
+--- new
+            if debt_pct == 0 {
+
+=== the burst does not cap the tokens
+file: crates/curl-core/src/progress/rate.rs
+witness: curl-core progress::rate::tests::unit3216
+--- old
+        if burst != 0 && self.tokens > burst {
+--- new
+        if burst != 0 && self.tokens > burst * 2 {
+
+=== a known size is not spread over longer steps
+file: crates/curl-core/src/progress/rate.rs
+witness: curl-core proto::http::tests::a_receive_limit_spreads_a_known_size
+--- old
+            self.tune_steps(i64::try_from(total).unwrap_or(i64::MAX));
+--- new
+
+=== the receive limit does not cut a read short
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_each_second
+--- old
+                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
+--- new
+                Some(_) => max,
+
+=== the body's bytes are not taken from the receive limit
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_each_second
+--- old
+            cx.rate_drain(Way::Recv, n);
+--- new
+
+=== an unpause does not start the receive limit over
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::an_unpause_starts_the_receive_limit_over
+--- old
+        slot.rate.start(way, limits, rest.now, None);
+--- new
+        let _ = (way, limits);
+
+=== a transfer over its limit does not wait for its timer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_each_second
+--- old
+            run.deadlines.arm_in(TimerKind::TooFast, cx.now(), wait);
+            cx.rest.dirty.remove(cx.me.index());
+            true
+--- new
+            run.deadlines.arm_in(TimerKind::TooFast, cx.now(), wait);
+            cx.rest.dirty.remove(cx.me.index());
+            false
+
+=== a transfer waiting out its limit runs past its time limit
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_rate_limited_transfer_times_out
+--- old
+                (TransferState::RateLimiting(x).fail(kind), Wake::Again)
+--- new
+                let _ = kind;
+                (TransferState::RateLimiting(x), Wake::Idle)
+
+=== the upload is read past the send limit
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_send_limit_lets_its_rate_out_each_second
+--- old
+            Some(..=0) => return Ok(false),
+            Some(allowed) => {
+                let room = dest
+                    .len()
+                    .min(usize::try_from(allowed).unwrap_or(usize::MAX));
+--- new
+            Some(..=0) => dest,
+            Some(allowed) => {
+                let room = dest
+                    .len()
+                    .max(usize::try_from(allowed).unwrap_or(0))
+                    .min(dest.len());
+
+=== the sent body is not taken from the send limit
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core proto::http::tests::a_send_limit_lets_its_rate_out_each_second
+--- old
+    cx.rate_drain(Way::Send, body.len());
+--- new

@@ -16,6 +16,7 @@ use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
 use crate::options::{Follow, Http, HttpVersion, Method, Ranged, UploadSource};
+use crate::progress::rate::Way;
 use crate::report::{ResponseVersion, Timer};
 use crate::time::Instant;
 use crate::trace;
@@ -160,6 +161,9 @@ pub(crate) struct Request {
     chunks: Option<ChunkEncoder>,
     /// Body bytes sent (`writebytecount`).
     body_sent: u64,
+    /// The body has been read from, or would have been but for a wait:
+    /// the send limit started over then (`reader_started`).
+    read_started: bool,
     /// Where sending the request stands.
     outgoing: Sending,
     /// Made at DO, once the connection says whether it is reused.
@@ -259,7 +263,9 @@ impl Sending {
 /// How a step's reading ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Read {
-    /// A read would block, the response is over or receiving paused.
+    /// A read would block, the response is over, receiving paused or
+    /// the receive limit spent: the step is not run again before its
+    /// socket or its timer says.
     Waits,
     /// The step read its most: more may be there already.
     Stopped,
@@ -424,6 +430,7 @@ impl Request {
             upload: None,
             chunks: None,
             body_sent: 0,
+            read_started: false,
             outgoing: Sending::Idle,
             head: None,
             stage: Stage::Head,
@@ -948,17 +955,18 @@ impl Request {
             then,
         };
         self.head = Some(HeadParser::new(exchange));
-        // A body held for a 100 is not read behind the head.
-        if matches!(
-            then,
+        // A body held for a 100 is not read behind the head, but C asks
+        // its readers for it, the 100's wait among them, so its send limit
+        // starts now.
+        let paused = cx.pause().send_paused();
+        match then {
             AfterHead::Body(Reading {
-                eos_read: false,
-                ..
-            })
-        ) && self.filled < self.out.len()
-            && !cx.pause().send_paused()
-        {
-            self.fill(cx)?;
+                eos_read: false, ..
+            }) if self.filled < self.out.len() && !paused => {
+                self.fill(cx)?;
+            }
+            AfterHead::Continue if !paused => self.start_reading(cx),
+            AfterHead::Body(_) | AfterHead::Continue => {}
         }
         // The engine takes the request as sent at DID if it went now;
         // the buffer read behind the head is this pass's.
@@ -968,9 +976,22 @@ impl Request {
     /// Read body into the buffer behind what is there: whether anything
     /// came or the body ended (`add_from_client`).
     fn fill<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
+        self.start_reading(cx);
         let pausable = self.pipeline.pausable();
         let upload = self.upload.as_mut().expect("a body to read");
         let dest = &mut self.out[self.filled..];
+        // Under a send limit, no more than it allows, and nothing once it
+        // is spent (`Curl_client_read`).
+        let dest = match cx.rate_allowance(Way::Send) {
+            Some(..=0) => return Ok(false),
+            Some(allowed) => {
+                let room = dest
+                    .len()
+                    .min(usize::try_from(allowed).unwrap_or(usize::MAX));
+                &mut dest[..room]
+            }
+            None => dest,
+        };
         let got = match &mut self.chunks {
             None => upload.read(cx, dest, pausable)?,
             Some(chunks) => {
@@ -995,6 +1016,15 @@ impl Request {
             .expect("a body being read")
             .eos_read = got.eos;
         Ok(got.n > 0 || got.eos)
+    }
+
+    /// The body is first read, or asked for: the send limit starts over
+    /// (`Curl_client_read`'s `reader_started`).
+    fn start_reading<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
+        if !self.read_started {
+            self.read_started = true;
+            cx.rate_start(Way::Send, None);
+        }
     }
 
     /// Send what is left of the request as far as the connection takes
@@ -1037,7 +1067,21 @@ impl Request {
                 read = false;
                 continue;
             }
-            let sent = lease.get().send(&self.out[self.sent..self.filled]);
+            // No more of the body in one send than a second's worth of the
+            // send limit, the head not counted (`xfer_send`). Cut short,
+            // it ends the pass's sending as a short send does.
+            let head = match self.outgoing {
+                Sending::Head { left, .. } => left.get(),
+                _ => 0,
+            };
+            let body = self.filled - self.sent - head;
+            let end = match cx.easy().options().limits.max_send_speed {
+                Some(max) if body as u64 > max.get() => {
+                    self.sent + head + usize::try_from(max.get()).expect("under a length")
+                }
+                _ => self.filled,
+            };
+            let sent = lease.get().send(&self.out[self.sent..end]);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(false),
@@ -1080,6 +1124,9 @@ impl Request {
                         return Ok(false);
                     }
                 };
+            }
+            if self.sent == end && end < self.filled {
+                return Ok(false);
             }
         }
         self.upload_done(cx, false);
@@ -1195,6 +1242,13 @@ impl Request {
                 self.stage = Stage::Done;
                 continue;
             }
+            // Under a receive limit, no more than it allows; once spent,
+            // the engine waits for it (`sendrecv_dl`'s `rate_limited`).
+            let max = match cx.rate_allowance(Way::Recv) {
+                Some(..=0) => return Ok(Read::Waits),
+                Some(allowed) => max.min(usize::try_from(allowed).unwrap_or(usize::MAX)),
+                None => max,
+            };
             reads += 1;
             match lease.get().recv(max) {
                 Ok(Recv::WouldBlock) => return Ok(Read::Waits),

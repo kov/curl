@@ -16,6 +16,7 @@ use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
+use crate::progress::rate::Way;
 use crate::report::Timer;
 use crate::trace;
 use decode::{Gate, Onward};
@@ -241,6 +242,7 @@ impl Pipeline {
     fn counted<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Result<(), ErrorKind> {
         let expect = self.accountant.expect;
         self.accountant.response_started(cx);
+        self.accountant.body_started(cx);
         if expect.no_body && !bytes.is_empty() {
             // The body goes; the response is fine if a head came.
             self.accountant.close = true;
@@ -253,8 +255,7 @@ impl Pipeline {
         }
         let (wanted, excess) = self.accountant.cut(bytes.len());
         if expect.ignore {
-            self.accountant.bytecount += wanted as u64;
-            cx.report_mut().sizes_mut().download += wanted as u64;
+            self.accountant.counted(cx, wanted);
             return Ok(());
         }
         let max_filesize = cx.easy().options().limits.max_filesize;
@@ -262,8 +263,7 @@ impl Pipeline {
         self.onward(cx, OutKind::Body, &bytes[..allowed])?;
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
-        self.accountant.bytecount += allowed as u64;
-        cx.report_mut().sizes_mut().download += allowed as u64;
+        self.accountant.counted(cx, allowed);
         if excess > 0 {
             let bytecount = self.accountant.bytecount;
             trace::info(
@@ -292,6 +292,7 @@ impl Pipeline {
     /// The response ended (`CLIENTWRITE_EOS`): a body of a known size must
     /// be whole.
     pub(crate) fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        self.accountant.body_started(cx);
         let expect = self.accountant.expect;
         let bytecount = self.accountant.bytecount;
         match expect.size {
@@ -481,6 +482,9 @@ struct BodyAccountant {
     bytecount: u64,
     /// Something of the response, not of a proxy's CONNECT, has come.
     started: bool,
+    /// The body has: the receive limit started over with it
+    /// (`started_body`).
+    body_started: bool,
     expect: Expect,
     /// The body is complete.
     done: bool,
@@ -494,6 +498,25 @@ impl BodyAccountant {
         if !self.started {
             self.started = true;
             cx.mark(Timer::StartTransfer);
+        }
+    }
+
+    /// The body's first write, of bytes or of its end: the receive limit
+    /// starts over, tuned for the size expected (`cw_download_write`).
+    fn body_started<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
+        if !self.body_started {
+            self.body_started = true;
+            cx.rate_start(Way::Recv, self.expect.size);
+        }
+    }
+
+    /// `n` body bytes counted: the receive limit takes them
+    /// (`Curl_pgrs_download_inc`).
+    fn counted<H: Host>(&mut self, cx: &mut StepCx<'_, H>, n: usize) {
+        if n > 0 {
+            self.bytecount += n as u64;
+            cx.report_mut().sizes_mut().download += n as u64;
+            cx.rate_drain(Way::Recv, n);
         }
     }
 

@@ -21,7 +21,8 @@ use crate::conn::{
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::options::{Follow, Method, Options, ProxyType, ResolveList};
+use crate::options::{Follow, Limits, Method, Options, ProxyType, ResolveList};
+use crate::progress::rate::{RateLimits, Verdict, Way};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
 use crate::share::Kind;
@@ -118,6 +119,10 @@ pub(crate) enum TransferState {
     Did(Attached),
     /// The request and response under way (PERFORMING).
     Exchanging(Attached),
+    /// Exchanging, but over a speed limit: nothing moves, and nothing is
+    /// waited for on the sockets, until the limit's timer says
+    /// (RATELIMITING).
+    RateLimiting(Attached),
     /// The request is over; the connection goes back at the next step.
     Done(Done),
     /// Over; its message is read or not. Terminal until removed.
@@ -248,7 +253,8 @@ impl TransferState {
             TransferState::ProtoConnect(x)
             | TransferState::Do(x)
             | TransferState::Did(x)
-            | TransferState::Exchanging(x) => Some(x),
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => Some(x),
             _ => None,
         }
     }
@@ -258,7 +264,8 @@ impl TransferState {
             TransferState::ProtoConnect(x)
             | TransferState::Do(x)
             | TransferState::Did(x)
-            | TransferState::Exchanging(x) => Some(x),
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => Some(x),
             _ => None,
         }
     }
@@ -283,7 +290,9 @@ impl TransferState {
     /// over (`xfer_setup`, `Curl_req_stop_send_recv`).
     pub(crate) fn directions(&self, options: &Options) -> Directions {
         match self {
-            TransferState::Did(x) | TransferState::Exchanging(x) => x.proto.directions(options),
+            TransferState::Did(x)
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => x.proto.directions(options),
             _ => Directions::default(),
         }
     }
@@ -291,7 +300,9 @@ impl TransferState {
     /// When the protocol wants to look again whatever its socket says.
     pub(crate) fn wake_at(&self) -> Option<Instant> {
         match self {
-            TransferState::Did(x) | TransferState::Exchanging(x) => x.proto.wake_at(),
+            TransferState::Did(x)
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => x.proto.wake_at(),
             _ => None,
         }
     }
@@ -319,7 +330,9 @@ impl TransferState {
             TransferState::ProtoConnect(x) | TransferState::Do(x) => {
                 TransferState::Done(x.done(Err(err), true, Reached::Unmade))
             }
-            TransferState::Did(x) | TransferState::Exchanging(x) => {
+            TransferState::Did(x)
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => {
                 TransferState::Done(x.done(Err(err), true, Reached::Made))
             }
             s @ (TransferState::Done(_) | TransferState::Completed(_)) => s,
@@ -338,7 +351,8 @@ impl TransferState {
             TransferState::ProtoConnect(x)
             | TransferState::Do(x)
             | TransferState::Did(x)
-            | TransferState::Exchanging(x) => (x.lease, x.origin),
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => (x.lease, x.origin),
             TransferState::Done(d) => (d.lease, d.origin),
         };
         release(cx, lease, true, origin.as_ref());
@@ -404,7 +418,11 @@ impl TransferState {
     /// The sockets the transfer waits on, and for what
     /// (`Curl_multi_pollset`): a setup waits to write on each, unless
     /// receiving is paused (`mstate_connecting_pollset`); an exchange
-    /// waits for what its protocol says (`Curl_http_perform_pollset`).
+    /// waits for what its protocol says (`Curl_http_perform_pollset`);
+    /// one over its speed limit waits on nothing but its timer (C's
+    /// RATELIMITING has no pollset). An exchange is never over a limit,
+    /// so C's taking a limited direction out (`multi_adjust_pollset`)
+    /// leaves only the pause's, which the protocol applies.
     pub(crate) fn pollset(&self, pause: Pause) -> Pollset<'_> {
         let mut set = Pollset::new();
         match self {
@@ -567,6 +585,45 @@ impl<H: Host> StepCx<'_, H> {
         (&mut slot.speedometer, slot.easy.report_mut())
     }
 
+    /// The speed limits' buckets, with the limits and the pause they are
+    /// read with.
+    fn rate_parts(&mut self) -> (&mut RateLimits, &Limits, Pause, Instant) {
+        let now = self.rest.now;
+        let slot = self
+            .rest
+            .tell
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer");
+        (&mut slot.rate, &slot.easy.options().limits, slot.pause, now)
+    }
+
+    /// How many bytes `way` may move now, if it is limited
+    /// (`Curl_rlimit_avail`); none while it is paused.
+    pub(crate) fn rate_allowance(&mut self, way: Way) -> Option<i64> {
+        let (rate, limits, pause, now) = self.rate_parts();
+        rate.allowance(way, limits, pause, now)
+    }
+
+    /// `n` bytes moved `way`: the limit takes them (`Curl_rlimit_drain`).
+    pub(crate) fn rate_drain(&mut self, way: Way, n: usize) {
+        let (rate, limits, pause, now) = self.rate_parts();
+        rate.drain(way, limits, pause, n, now);
+    }
+
+    /// The limit on `way` starts afresh, tuned for `total` bytes if known
+    /// (`Curl_rlimit_start`).
+    pub(crate) fn rate_start(&mut self, way: Way, total: Option<u64>) {
+        let (rate, limits, _, now) = self.rate_parts();
+        rate.start(way, limits, now, total);
+    }
+
+    /// Whether the limits make the transfer wait (`mspeed_check`).
+    fn rate_verdict(&mut self) -> Verdict {
+        let (rate, limits, pause, now) = self.rate_parts();
+        rate.verdict(limits, pause, now)
+    }
+
     pub(crate) fn mark(&mut self, timer: Timer) {
         let now = self.rest.now;
         self.report_mut().timings_mut().mark(timer, now);
@@ -691,13 +748,42 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             Wake::Again,
         ),
         TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
+        TransferState::Exchanging(x) if over_limit(run, cx) => {
+            // Over a speed limit: nothing moves until it says
+            // (`multistate_performing`'s first `mspeed_check`), but the
+            // time limit holds (`multi_handle_timeout`).
+            if expired(run, cx) {
+                let kind = timed_out(cx);
+                (TransferState::Exchanging(x).fail(kind), Wake::Again)
+            } else {
+                (TransferState::RateLimiting(x), Wake::Idle)
+            }
+        }
+        TransferState::RateLimiting(x) => {
+            if expired(run, cx) {
+                let kind = timed_out(cx);
+                (TransferState::RateLimiting(x).fail(kind), Wake::Again)
+            } else {
+                // The progress and the low-speed check, then the limits
+                // again (`multistate_ratelimiting`).
+                match progress::check(cx, false) {
+                    Err(e) => (TransferState::RateLimiting(x).fail(e), Wake::Again),
+                    Ok(look_again) => {
+                        if let Some(wait) = look_again {
+                            run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
+                        }
+                        if over_limit(run, cx) {
+                            (TransferState::RateLimiting(x), Wake::Idle)
+                        } else {
+                            (TransferState::Exchanging(x), Wake::Again)
+                        }
+                    }
+                }
+            }
+        }
         TransferState::Exchanging(mut x) => {
             let stepped = x.proto.step(cx, &mut x.lease);
-            let expired = matches!(
-                run.deadlines
-                    .time_left(starts(cx), cx.rest.now, Phase::Transferring),
-                TimeLeft::Expired(_)
-            );
+            let expired = expired(run, cx);
             match stepped {
                 // Received nothing, perhaps over a reused connection that
                 // closed as it was reused (`multistate_performing`).
@@ -761,7 +847,13 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                     // (`Curl_multi_mark_dirty`).
                                     cx.rest.dirty.insert(cx.me.index());
                                 }
-                                (TransferState::Exchanging(x), Wake::Idle)
+                                // Over a speed limit now, it waits, its
+                                // run in the next pass called off.
+                                if over_limit(run, cx) {
+                                    (TransferState::RateLimiting(x), Wake::Idle)
+                                } else {
+                                    (TransferState::Exchanging(x), Wake::Idle)
+                                }
                             }
                         }
                     }
@@ -795,6 +887,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let pause = cx.pause_mut();
             if pause.recv == RecvPause::Held {
                 pause.recv = RecvPause::Running;
+                // Unpaused, the limit starts over (`Curl_req_reset`).
+                cx.rate_start(Way::Recv, None);
             }
             let now = cx.rest.now;
             if d.proto.as_ref().is_some_and(ProtoState::saw_http10) {
@@ -831,6 +925,35 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     wake
 }
 
+/// Whether the transfer's time is up, as of the pass's start.
+fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
+    matches!(
+        run.deadlines
+            .time_left(starts(cx), cx.rest.now, Phase::Transferring),
+        TimeLeft::Expired(_)
+    )
+}
+
+/// Whether the speed limits make the transfer wait now, its timer armed
+/// for the wait and its run in the next pass called off; if not, the
+/// timer is armed for when a limit next earns tokens, as the transfer
+/// may need them to go on (`mspeed_check`, `EXPIRE_TOOFAST`).
+fn over_limit<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> bool {
+    match cx.rate_verdict() {
+        Verdict::Wait(wait) => {
+            run.deadlines.arm_in(TimerKind::TooFast, cx.now(), wait);
+            cx.rest.dirty.remove(cx.me.index());
+            true
+        }
+        Verdict::Go(next) => {
+            if let Some(next) = next {
+                run.deadlines.arm_in(TimerKind::TooFast, cx.now(), next);
+            }
+            false
+        }
+    }
+}
+
 /// A step that went well, with a connection, ends with a progress pass
 /// (the tail of `multi_runsingle`'s loop, after `is_finished`). The
 /// handler may have unpaused held output: it is replayed at once.
@@ -843,7 +966,8 @@ fn progress_after_step<H: Host>(
         mut s @ (TransferState::ProtoConnect(_)
         | TransferState::Do(_)
         | TransferState::Did(_)
-        | TransferState::Exchanging(_)) => {
+        | TransferState::Exchanging(_)
+        | TransferState::RateLimiting(_)) => {
             let passed = progress::update(cx, false).and_then(|()| match s.pipeline_mut() {
                 Some(p) => p.flush(cx),
                 None => Ok(()),

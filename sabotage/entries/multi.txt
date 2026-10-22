@@ -57,11 +57,11 @@ witness: curl-core multi::tests::a_dead_multi_fails_its_transfers_and_takes_no_m
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- old
-            let expired = matches!(
-                run.deadlines
+fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
+    matches!(
 --- new
-            let expired = false && matches!(
-                run.deadlines
+fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
+    false && matches!(
 
 === a fired timer stays armed
 file: crates/curl-core/src/multi/mod.rs
@@ -285,6 +285,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
             pause: Pause::default(),
             judge_pause: false,
             speedometer: Speedometer::default(),
+            rate: RateLimits::default(),
             run: Some(run),
         });
 --- new
@@ -294,6 +295,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
             pause: Pause::default(),
             judge_pause: false,
             speedometer: Speedometer::default(),
+            rate: RateLimits::default(),
             run: Some(run),
         }));
 

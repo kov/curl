@@ -63,8 +63,7 @@ witness: curl-core deliver::tests::a_handler_reads_its_report_as_it_stands
         self.onward(cx, OutKind::Body, &bytes[..allowed])?;
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
-        self.accountant.bytecount += allowed as u64;
-        cx.report_mut().sizes_mut().download += allowed as u64;
+        self.accountant.counted(cx, allowed);
 --- new
         cx.report_mut().sizes_mut().download += allowed as u64;
         self.onward(cx, OutKind::Body, &bytes[..allowed])?;

@@ -242,6 +242,11 @@ fn max_filesize(n: i64) -> Result<Option<NonZeroU64>, Refused> {
         .map_err(|_| Refused::Bad)
 }
 
+/// A speed limit in bytes a second: negative refused, 0 none.
+fn speed(n: i64) -> Result<Option<NonZeroU64>, Refused> {
+    max_filesize(n)
+}
+
 /// The low-speed rule, from its two halves.
 fn low_speed(set: &CSettings) -> Option<LowSpeed> {
     Some(LowSpeed {
@@ -557,6 +562,8 @@ fn apply(
             options.limits.max_filesize = max_filesize(wide(n))?;
         }
         (ffi::CURLOPT_MAXFILESIZE_LARGE, Off(n)) => options.limits.max_filesize = max_filesize(n)?,
+        (ffi::CURLOPT_MAX_RECV_SPEED_LARGE, Off(n)) => options.limits.max_recv_speed = speed(n)?,
+        (ffi::CURLOPT_MAX_SEND_SPEED_LARGE, Off(n)) => options.limits.max_send_speed = speed(n)?,
         (ffi::CURLOPT_RESUME_FROM, Long(n)) => options.resume = resume(wide(n))?,
         (ffi::CURLOPT_RESUME_FROM_LARGE, Off(n)) => options.resume = resume(n)?,
         (ffi::CURLOPT_RANGE, Ptr(p)) => {

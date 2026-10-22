@@ -230,6 +230,9 @@ pub(crate) struct Operation<'a> {
     pub(crate) ignore_content_length: bool,
     /// `--max-filesize`, in bytes; 0 is no limit.
     pub(crate) max_filesize: u64,
+    /// `--limit-rate`, in bytes a second, for receiving and sending
+    /// alike; 0 is no limit.
+    pub(crate) limit_rate: u64,
     /// `--max-time`, in milliseconds; 0 is no limit.
     pub(crate) timeout_ms: u64,
     /// `--connect-timeout`, in milliseconds; 0 is the library's default.
@@ -1010,6 +1013,7 @@ pub(crate) fn apply<'a>(
         Opt::Ipv6 => line.current().ip_version = Some(IpVersion::V6),
         Opt::IgnoreContentLength => line.current().ignore_content_length = value.toggle(),
         Opt::MaxFilesize => line.current().max_filesize = number::size(value.text())?,
+        Opt::LimitRate => line.current().limit_rate = number::size(value.text())?,
         Opt::MaxTime => line.current().timeout_ms = value.millis(),
         Opt::ConnectTimeout => line.current().connect_timeout_ms = value.millis(),
         Opt::Expect100Timeout => line.current().expect100_timeout_ms = value.millis(),
@@ -1286,7 +1290,6 @@ pub(crate) fn apply<'a>(
         | Opt::Krb
         | Opt::Krb4
         | Opt::Libcurl
-        | Opt::LimitRate
         | Opt::ListOnly
         | Opt::LocalPort
         | Opt::LoginOptions

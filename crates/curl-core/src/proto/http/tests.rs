@@ -5109,6 +5109,12 @@ impl WriteHandler for Drops {
 /// and then a body without end, each read of it taking a millisecond;
 /// one conversation for each of `connections`.
 fn endless(connections: usize) -> (Multi, Vec<Conversation>) {
+    let (m, talks, _) = endless_clocked(connections);
+    (m, talks)
+}
+
+/// `endless`, with the multi's clock.
+fn endless_clocked(connections: usize) -> (Multi, Vec<Conversation>, ManualClock) {
     let clock = ManualClock::new().unwrap();
     let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
@@ -5119,12 +5125,12 @@ fn endless(connections: usize) -> (Multi, Vec<Conversation>) {
         talks.push(talk);
     }
     let env = Env {
-        clock: Box::new(clock),
+        clock: Box::new(clock.clone()),
         net: Box::new(net),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
     };
-    (Multi::new(env).unwrap(), talks)
+    (Multi::new(env).unwrap(), talks, clock)
 }
 
 /// A GET whose body is dropped, counted in the `Drops`, with the options
@@ -5233,5 +5239,199 @@ fn transfers_with_endless_bodies_take_turns() {
             assert_eq!(talk.endless_reads() - before, 11);
         }
         assert!(one_got.0.get() > got.0 && two_got.0.get() > got.1);
+    }
+}
+
+/// The receive limit's rate, above a read's 16 KiB: each step's tokens
+/// are read in that step's pass, in reads the tokens cut short.
+const RECV_RATE: u64 = 50_000;
+
+/// Perform until the transfer's body has started to come.
+fn until_body(m: &mut Multi, drops: &Drops) {
+    for _ in 0..100 {
+        if drops.0.get() > 0 {
+            return;
+        }
+        m.perform(&mut NoEvents).unwrap();
+    }
+    panic!("no body came");
+}
+
+/// Under a receive limit, a body from a peer faster than its reader comes
+/// at the limit's rate, a step's worth at a time, the transfer waiting out
+/// each step on its timer without reading (`Curl_rlimit_*`,
+/// `mspeed_check`, RATELIMITING). Untuned, as its size is unknown, a step
+/// is a second: its tokens come when it ends, the wait is what is left of
+/// it, rounded up to a millisecond.
+#[test]
+fn a_receive_limit_lets_its_rate_through_each_second() {
+    let (mut m, talks, clock) = endless_clocked(1);
+    let (e, drops) = endless_get(|o| o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE));
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    until_body(&mut m, &drops);
+    // The first step's tokens all came in the pass that started the body:
+    // three reads of 16384 and one of what was left.
+    assert_eq!(drops.0.get(), RECV_RATE);
+    let start = clock.now();
+    for second in 1..=3 {
+        // Waiting out the step, on its timer alone: no socket
+        // (RATELIMITING has no pollset).
+        let mut sockets = 0;
+        m.sockets(|_, _| sockets += 1);
+        assert_eq!(sockets, 0, "second {second}");
+        let wait = m.timeout().expect("a timer for the limit");
+        // The pass's reads moved the clock on 4 ms since the step began.
+        assert_eq!(wait, Duration::from_millis(1000 - 4), "second {second}");
+        let reads = talks[0].endless_reads();
+        // Nothing is read before the timer.
+        clock.advance(wait - Duration::from_millis(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(talks[0].endless_reads(), reads);
+        clock.advance(Duration::from_millis(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(drops.0.get(), RECV_RATE * (second + 1), "second {second}");
+        assert_eq!(talks[0].endless_reads() - reads, 4);
+    }
+    assert_eq!(clock.now().since(start), Duration::from_millis(3 * 1000));
+}
+
+/// A body of a known size is spread so its last step is small: 120000
+/// bytes at 50000 a second go as 59400 in each of two steps of 1188 ms,
+/// then the last 1200 (`rlimit_tune_steps`: a hundredth for the last
+/// step, the rest's 2376 ms spread over two steps).
+#[test]
+fn a_receive_limit_spreads_a_known_size() {
+    let size = 120_000;
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {size}\r\n\r\n");
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::new(head.as_bytes(), false).endless(Duration::from_millis(1));
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let (e, drops) = endless_get(|o| o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE));
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    until_body(&mut m, &drops);
+    assert_eq!(drops.0.get(), 59_400);
+    // Four reads moved the clock 4 ms into the 1188 ms step.
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1188 - 4)));
+    clock.advance(Duration::from_millis(1188 - 4));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(drops.0.get(), 2 * 59_400);
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1188 - 4)));
+    clock.advance(Duration::from_millis(1188 - 4));
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(drops.0.get(), size);
+}
+
+/// A pause stops the limit, and going on starts it over, with a step's
+/// tokens at once and nothing earned while paused (`Curl_rlimit_block`).
+#[test]
+fn an_unpause_starts_the_receive_limit_over() {
+    let (mut m, _talks, clock) = endless_clocked(1);
+    let (e, drops) = endless_get(|o| o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE));
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    until_body(&mut m, &drops);
+    assert_eq!(drops.0.get(), RECV_RATE);
+    clock.advance(Duration::from_millis(300));
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(Duration::from_secs(5));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(drops.0.get(), RECV_RATE);
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    // A step's tokens, not six seconds' worth (nor the burst's).
+    assert_eq!(drops.0.get(), 2 * RECV_RATE);
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1000 - 4)));
+}
+
+/// A transfer waiting out its limit still ends at its time limit.
+#[test]
+fn a_rate_limited_transfer_times_out() {
+    let (mut m, _talks, _clock) = endless_clocked(1);
+    let seen = Seen::default();
+    let (e, drops) = endless_get(|o| {
+        o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE);
+        o.limits.total = crate::time::TimeLimit::from_millis(2500);
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    });
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::OperationTimedout));
+    // Three steps' worth, at 0, 1 and 2 seconds.
+    assert_eq!(drops.0.get(), 3 * RECV_RATE);
+    let text = seen.text();
+    assert!(
+        text.iter().any(|l| l.starts_with(&format!(
+            "Operation timed out after 2500 milliseconds with {} bytes received",
+            3 * RECV_RATE
+        ))),
+        "{text:?}"
+    );
+}
+
+/// Under a send limit, a body goes at the limit's rate: each step's
+/// tokens read and sent at once, then a wait for the next
+/// (`Curl_client_read`, `xfer_send`, `mspeed_check`).
+#[test]
+fn a_send_limit_lets_its_rate_out_each_second() {
+    const RATE: u64 = 50_000;
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    // A peer that never answers.
+    let talk = Conversation::replies(&[], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
+    o.limits.max_send_speed = NonZeroU64::new(RATE);
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let body = |talk: &Conversation| {
+        let got = talk.received();
+        let end = got.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+        end.map_or(0, |end| got.len() - end) as u64
+    };
+    for _ in 0..100 {
+        m.perform(&mut NoEvents).unwrap();
+        if body(&talk) > 0 {
+            break;
+        }
+    }
+    assert_eq!(body(&talk), RATE);
+    for second in 1..=3u64 {
+        let wait = m.timeout().expect("a timer for the limit");
+        assert_eq!(wait, Duration::from_millis(1000), "second {second}");
+        clock.advance(wait - Duration::from_millis(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(body(&talk), RATE * second);
+        clock.advance(Duration::from_millis(1));
+        m.perform(&mut NoEvents).unwrap();
+        assert_eq!(
+            body(&talk),
+            (RATE * (second + 1)).min(200_000),
+            "second {second}"
+        );
     }
 }

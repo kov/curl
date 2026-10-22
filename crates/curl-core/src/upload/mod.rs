@@ -12,6 +12,7 @@ use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::options::UploadSource;
+use crate::progress::rate::Way;
 use crate::trace;
 
 /// One request's body to send, read from its source.
@@ -271,6 +272,8 @@ pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, body: &[u8]) {
     // The request's size counts them where the protocol sends them, with
     // the head and any framing (`Curl_xfer_send`).
     cx.report_mut().sizes_mut().upload += body.len() as u64;
+    // The send limit takes them (`Curl_pgrs_upload_inc`).
+    cx.rate_drain(Way::Send, body.len());
 }
 
 /// The size of the body to send, as the request announces it, or not

@@ -288,8 +288,9 @@ witness: curl-core deliver::tests::held_output_keeps_the_transfer_going_until_it
 --- old
             if pause.recv == RecvPause::Held {
                 pause.recv = RecvPause::Running;
-            }
 --- new
+            if pause.recv == RecvPause::Held && false {
+                pause.recv = RecvPause::Running;
 
 === held output survives a receive pause as stopped
 file: crates/curl-core/src/deliver/pause.rs
@@ -368,10 +369,10 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core proto::http::tests::a_416_to_a_resumed_get_is_read_and_dropped
 --- old
         if expect.ignore {
-            self.accountant.bytecount += wanted as u64;
+            self.accountant.counted(cx, wanted);
 --- new
         if false {
-            self.accountant.bytecount += wanted as u64;
+            self.accountant.counted(cx, wanted);
 
 === a decoder is given the body whole
 file: crates/curl-core/src/deliver/decode.rs

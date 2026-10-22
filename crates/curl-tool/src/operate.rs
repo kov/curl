@@ -1243,6 +1243,8 @@ fn configure(
     o.url_rules.path_as_is = op.path_as_is;
     http.fail_on_error = op.fail == Fail::WithoutBody;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
+    o.limits.max_recv_speed = NonZeroU64::new(op.limit_rate);
+    o.limits.max_send_speed = NonZeroU64::new(op.limit_rate);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);
     o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
     if let Some(ms) = op.happy_eyeballs_ms {

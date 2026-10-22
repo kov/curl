@@ -187,4 +187,7 @@ exclude_re = [
     # whose lines are taken as secure: the overlay check they would feed
     # is for cookies from a connection that is not.
     'cookie\.rs:.*: delete match arm \(None, None\) in domains_overlap$',
+    # A reservation size: one byte short only makes the NUL's push grow
+    # the buffer.
+    'save\.rs:.*: replace \+ with \* in c_path$',
 ]

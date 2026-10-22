@@ -139,4 +139,67 @@ mod tests {
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// A fresh directory for one test.
+    fn scratch(test: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("curl-save-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_regular_file_is_replaced_and_any_other_written_in_place() {
+        let dir = scratch("rename");
+        let path = dir.join("jar");
+        std::fs::write(&path, b"old").unwrap();
+        let before = std::fs::metadata(&path).unwrap().ino();
+        replace(path.as_os_str().as_encoded_bytes(), b"new").unwrap();
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+        // No file could be made beside `/dev/null`.
+        assert_eq!(replace(b"/dev/null", b"new"), Ok(()));
+        assert_eq!(replace(b"", b"new"), Err(SaveError::Write));
+    }
+
+    #[test]
+    fn the_mode_is_kept_only_where_the_group_is_the_same() {
+        // A group of the user's other than the one new files get.
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let field = |name: &str| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix(name))
+                .unwrap()
+                .split_whitespace()
+                .map(|g| g.parse::<u32>().unwrap())
+                .collect::<Vec<_>>()
+        };
+        let egid = field("Gid:")[1];
+        let Some(other) = field("Groups:").into_iter().find(|&g| g != egid) else {
+            eprintln!("not run: the user is in no group but {egid}");
+            return;
+        };
+        let dir = scratch("group");
+        let path = dir.join("jar");
+        std::fs::write(&path, b"old").unwrap();
+        std::os::unix::fs::chown(&path, None, Some(other)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        replace(path.as_os_str().as_encoded_bytes(), b"new").unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!((meta.gid(), meta.mode() & 0o777), (egid, 0o600));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_temporary_name_takes_every_letter_and_digit() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..100 {
+            let mut name = [0u8; TEMP_NAME];
+            alphanumeric(&mut name).unwrap();
+            assert!(name.iter().all(u8::is_ascii_alphanumeric));
+            seen.extend(name);
+        }
+        // 4000 draws miss one of 62 about once in 10^25 runs.
+        assert_eq!(seen.len(), 62);
+    }
 }

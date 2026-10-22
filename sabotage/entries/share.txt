@@ -12,10 +12,12 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/share.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
+        self.pool
+            .get_mut()
+            .expect("no panic holds a share's lock")
             .close_idle(&mut **net);
 --- new
-            .len();
-        let _ = net;
+        let _ = (&mut self.pool, net);
 
 === a share keeps every kind whatever is asked
 file: crates/curl-core/src/share.rs

@@ -741,7 +741,7 @@ mod tests {
                     out.extend_from_slice(b"<h:");
                     out.extend_from_slice(name);
                     if let Some(sep) = all {
-                        out.extend_from_slice(b":all:");
+                        out.extend_from_slice(b"|");
                         out.extend_from_slice(sep);
                     }
                     out.push(b'>');
@@ -837,6 +837,11 @@ mod tests {
             b"http",
             "guessed"
         );
+        assert_eq!(
+            written_for("url.scheme", b"foo://h/", Ok(())),
+            b"foo",
+            "any scheme"
+        );
         let failed = Err(ErrorKind::CouldntResolveHost);
         assert_eq!(written_for("exitcode", url, failed), b"6");
         assert_eq!(
@@ -879,6 +884,13 @@ mod tests {
         let mut stdout = Vec::new();
         write_to(b"%output{>>x", &facts, &mut stdout, &mut stderr);
         assert_eq!(stdout, b"%output{x");
+        // C's buffer holds a name of 511 bytes; a longer one is passed
+        // over.
+        let name = "a".repeat(511);
+        let fits = format!("%output{{{name}}}x");
+        assert_eq!(render(fits.as_bytes()), format!("<>{name}>x").as_bytes());
+        let too_long = format!("%output{{>>{name}a}}x");
+        assert_eq!(render(too_long.as_bytes()), b"x");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -922,12 +934,22 @@ mod tests {
             value(b"this", Some(b"-{\\}-\\n\\q")),
             "one-{}-\n\\qtwo-{}-\n\\qthree"
         );
+        assert_eq!(value(b"this", Some(b"\\r|\\t")), "one\r|\ttwo\r|\tthree");
         assert_eq!(value(b"this", None), "four");
         assert_eq!(value(b"other", None), "");
         let piece = |format: &[u8]| render(format);
-        assert_eq!(piece(b"%header{a:all:-\\}-}!"), b"<h:a:all:-\\}->!");
+        assert_eq!(piece(b"%header{a:all:-\\}-}!"), b"<h:a|-\\}->!");
         assert_eq!(piece(b"%header{a:b}"), b"<h:a:b>");
+        assert_eq!(piece(b"%header{a:b:all:,}"), b"<h:a:b:all:,>");
         assert_eq!(piece(b"%header{a"), b"%header{a");
+        assert_eq!(piece(b"%header{}x"), b"<h:>x");
+        // C's buffer holds a name of 255 bytes; a longer one writes
+        // nothing.
+        let name = "a".repeat(255);
+        let fits = format!("%header{{{name}}}x");
+        assert_eq!(piece(fits.as_bytes()), format!("<h:{name}>x").as_bytes());
+        let too_long = format!("%header{{{name}a}}x");
+        assert_eq!(piece(too_long.as_bytes()), b"x");
     }
 
     /// `%{header_json}`: each name once, lowercase, its values in a list
@@ -950,6 +972,29 @@ mod tests {
             written(|out| header_json(&HeaderStore::default(), out)),
             "{\n}"
         );
+    }
+
+    /// `jsonWriteString`: C's escapes, letters lowercased only when
+    /// asked, and nothing at all for a string longer quoted than C's
+    /// buffer holds.
+    #[test]
+    fn writes_json_strings_as_c() {
+        let json = |s: &[u8], lowercase| written(|out| json_string(out, s, lowercase));
+        assert_eq!(
+            json(b"Ab\x08\x0c\n\r\t\x1f\"\\", false),
+            "\"Ab\\b\\f\\n\\r\\t\\u001f\\\"\\\\\""
+        );
+        assert_eq!(json(b"AbZ-", true), "\"abz-\"");
+        let fits = |s: Vec<u8>| json(&s, false).len() == s.len() + 2;
+        let a = |n| vec![b'a'; n];
+        assert!(fits(a(99_999)));
+        assert_eq!(json(&a(100_000), false), "");
+        // Two bytes for a quote, six for a control byte.
+        let mut quotes = vec![b'"'; 49_999];
+        quotes.push(b'a');
+        assert_eq!(json(&quotes, false).len(), 2 + 99_999);
+        assert_eq!(json(&[b'"'; 50_000], false), "");
+        assert_eq!(json(&[1; 16_667], false), "");
     }
 
     #[test]

@@ -244,4 +244,7 @@ exclude_re = [
     'curl-tool/src/glob\.rs:.*: replace \|\| with && in multiply$',
     # At the text's end the line is empty and holds no entry.
     'curl-tool/src/config\.rs:.*: replace < with <= in entries$',
+    # A format never holds a zero: an argument cannot, and a file's is
+    # read without them.
+    'curl-tool/src/write_out\.rs:.*: delete match arm 0 in separator$',
 ]

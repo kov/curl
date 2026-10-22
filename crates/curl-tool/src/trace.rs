@@ -96,12 +96,6 @@ struct Entry {
 }
 
 impl Tracer {
-    /// Trace a line of text of the tool's own, as the library traces one
-    /// (`infof`): `line` with its newline.
-    pub(crate) fn info(&self, line: &[u8]) {
-        self.entry(DebugKind::Text, line, false);
-    }
-
     fn entry(&self, kind: DebugKind, data: &[u8], terminal: bool) {
         let mut state = self.0.lock().expect("no panic holds it");
         // Opened first: where the entry goes decides what `--verbose` says.

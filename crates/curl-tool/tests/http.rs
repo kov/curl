@@ -22,22 +22,35 @@ struct Server {
 
 impl Server {
     fn new(reply: &'static [u8]) -> Server {
+        Server::script(vec![vec![reply.to_vec()]])
+    }
+
+    /// A server that takes a connection for each of `conns` in turn,
+    /// answers each request on it with the connection's next reply, then
+    /// closes it; joining it gives the requests, one after another.
+    fn script(conns: Vec<Vec<Vec<u8>>>) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let request = std::thread::spawn(move || {
-            let Ok((mut peer, _)) = listener.accept() else {
-                return Vec::new();
-            };
-            let mut got = Vec::new();
-            let mut buf = [0; 4096];
-            while !request_ended(&got) {
-                match peer.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => got.extend_from_slice(&buf[..n]),
+            let mut all = Vec::new();
+            for replies in conns {
+                let Ok((mut peer, _)) = listener.accept() else {
+                    break;
+                };
+                for reply in replies {
+                    let mut got = Vec::new();
+                    let mut buf = [0; 4096];
+                    while !request_ended(&got) {
+                        match peer.read(&mut buf) {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => got.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    all.extend_from_slice(&got);
+                    let _ = peer.write_all(&reply);
                 }
             }
-            let _ = peer.write_all(reply);
-            String::from_utf8_lossy(&got)
+            String::from_utf8_lossy(&all)
                 .replace(&port.to_string(), "PORT")
                 .into_bytes()
         });
@@ -443,5 +456,41 @@ fn dumps_the_headers_of_each_transfer() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     let head = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nA: b\r\n\r\n";
     assert_eq!(std::fs::read(&file).unwrap(), [&head[..], head].concat());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A directory of its own for a test, emptied.
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("curl-tool-http-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// `-c` saves the cookies the server set once the transfer is done; a
+/// jar that cannot be written goes unsaid, as C traces nothing after its
+/// transfer is cleaned up.
+#[test]
+fn saves_the_cookie_jar() {
+    let dir = scratch("jar");
+    let jar = dir.join("jar");
+    let set = b"HTTP/1.1 200 OK\r\nSet-Cookie: n=v\r\nContent-Length: 0\r\n\r\n";
+    let s = Server::new(set);
+    let run = curl(&["-sS", "-c", jar.to_str().unwrap(), &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let saved = String::from_utf8(std::fs::read(&jar).unwrap()).unwrap();
+    assert!(
+        saved.ends_with("\n127.0.0.1\tFALSE\t/\tFALSE\t0\tn\tv\n"),
+        "{saved}"
+    );
+    let s = Server::new(set);
+    let run = curl(&["-sv", "-c", "/nonexistent/dir/jar", &s.url()]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr.contains("* Added cookie n=\"v\""),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("save cookies"), "{}", run.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
 }

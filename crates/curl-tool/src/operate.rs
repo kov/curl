@@ -402,10 +402,7 @@ fn transfer(
     let Ok(out) = made else {
         return Step::Failed(ErrorKind::OutOfMemory);
     };
-    let mut easy = Handle {
-        easy: Easy::new(),
-        tracer: run.tracer,
-    };
+    let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()));
     easy.set_public_suffixes(Some(run.suffixes.clone()));
     easy.set_decoders(decoders());
@@ -593,51 +590,27 @@ fn transfer(
 
 /// A transfer's handle, which saves the cookie jar when it is done with,
 /// as C's `curl_easy_cleanup` does (`Curl_flush_cookies`).
-struct Handle<'t> {
-    easy: Easy,
-    tracer: Option<&'t Tracer>,
-}
+struct Handle(Easy);
 
-impl Deref for Handle<'_> {
+impl Deref for Handle {
     type Target = Easy;
 
     fn deref(&self) -> &Easy {
-        &self.easy
+        &self.0
     }
 }
 
-impl DerefMut for Handle<'_> {
+impl DerefMut for Handle {
     fn deref_mut(&mut self) -> &mut Easy {
-        &mut self.easy
+        &mut self.0
     }
 }
 
-impl Drop for Handle<'_> {
+impl Drop for Handle {
     fn drop(&mut self) {
-        let Err(e) = self.easy.save_cookies() else {
-            return;
-        };
-        // Said only in the trace, as C says it.
-        let Some(tracer) = self.tracer else {
-            return;
-        };
-        let jar = self.easy.options().http.cookies.save_to.as_deref();
-        let Ok(why) = try_format(format_args!("{e}")) else {
-            return;
-        };
-        let mut line = Vec::new();
-        for part in [
-            &b"WARNING: failed to save cookies in "[..],
-            jar.unwrap_or_default(),
-            b": ",
-            why.as_bytes(),
-            b"\n",
-        ] {
-            if line.try_extend_from_slice(part).is_err() {
-                return;
-            }
-        }
-        tracer.info(&line);
+        // A failure goes unsaid: C's cleanup stops tracing before it saves
+        // the jar, so its warning is never seen.
+        let _unsaid = self.0.save_cookies();
     }
 }
 

@@ -199,6 +199,24 @@ fn low_speed(set: &CSettings) -> Option<LowSpeed> {
     })
 }
 
+/// A `CURLAUTH_*` mask as SOCKS5 methods (`CURLOPT_SOCKS5_AUTH`): Basic
+/// and GSS-API alone built in, and `CURLAUTH_ONLY` refused without one.
+fn socks5_auth(mask: core::ffi::c_ulong) -> Result<curl_core::options::Socks5Auth, Refused> {
+    let (basic, gssapi) = (ffi::CURLAUTH_BASIC, ffi::CURLAUTH_GSSAPI);
+    if mask & !(basic | gssapi | ffi::CURLAUTH_ONLY) != 0 {
+        return Err(Refused::NotBuiltIn);
+    }
+    let only = mask & ffi::CURLAUTH_ONLY != 0;
+    if only && mask & (basic | gssapi) == 0 {
+        return Err(Refused::Bad);
+    }
+    Ok(curl_core::options::Socks5Auth {
+        basic: mask & basic != 0,
+        gssapi: mask & gssapi != 0,
+        only,
+    })
+}
+
 /// The time condition the two settings make together.
 fn time_condition(set: &CSettings) -> Option<TimeCondition> {
     use curl_core::options::Condition;
@@ -571,20 +589,7 @@ fn apply(
                 curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong)?);
         }
         (ffi::CURLOPT_SOCKS5_AUTH, Long(n)) => {
-            let mask = n as core::ffi::c_ulong;
-            let (basic, gssapi) = (ffi::CURLAUTH_BASIC, ffi::CURLAUTH_GSSAPI);
-            if mask & !(basic | gssapi | ffi::CURLAUTH_ONLY) != 0 {
-                return Err(Refused::NotBuiltIn);
-            }
-            let only = mask & ffi::CURLAUTH_ONLY != 0;
-            if only && mask & (basic | gssapi) == 0 {
-                return Err(Refused::Bad);
-            }
-            options.proxy.socks5_auth = curl_core::options::Socks5Auth {
-                basic: mask & basic != 0,
-                gssapi: mask & gssapi != 0,
-                only,
-            };
+            options.proxy.socks5_auth = socks5_auth(n as core::ffi::c_ulong)?;
         }
         (ffi::CURLOPT_PRE_PROXY, Ptr(p)) => {
             // SAFETY: as above.

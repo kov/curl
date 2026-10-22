@@ -1270,3 +1270,14 @@ witness: curl-core proto::http::tests::a_post_asked_chunked_as_its_request_is_bu
 --- new
             .try_clone()
             .map_err(|_| ErrorKind::OutOfMemory)?;
+
+=== a 417's retry keeps the application's port
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_417_retry_drops_the_application_s_port
+--- old
+    match url.get(Part::Url, get) {
+        Ok(whole) => run.url = whole,
+--- new
+    apply_port(&mut url, run, cx);
+    match url.get(Part::Url, get) {
+        Ok(whole) => run.url = whole,

@@ -2792,6 +2792,27 @@ fn a_417_has_the_request_made_again_without_expect() {
     assert_eq!((report.redirects(), report.connects()), (1, 1));
 }
 
+/// The request a 417 has made again goes to its URL as given, the
+/// application's port dropped: C follows the request's own URL, which
+/// never carried that port, as a redirect to an absolute URL
+/// (`Curl_http_follow`'s `disallowport`). The C build tries port 1.
+#[test]
+fn a_417_retry_drops_the_application_s_port() {
+    let refused: &[u8] = b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[refused, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
+        o.port = std::num::NonZeroU16::new(PORT);
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"hello".to_vec()).unwrap());
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let said = ran.seen.text();
+    let issue = "Issue another request to this URL: 'http://127.0.0.1:1/a'\n".to_string();
+    assert!(said.contains(&issue), "{said:?}");
+}
+
 /// A URL the application keeps is read as each transfer starts, as it
 /// is then; setting it drops the URL given as text.
 #[test]

@@ -210,8 +210,9 @@ state that outlives a call, since the application drives I/O and every call retu
 - **Response headers live in one store per transfer**, as byte ranges into a buffer, not one
   string per header. It belongs to the `TransferReport` and lives as long as it does.
 - **Requests are formatted straight into the send buffer.** No intermediate strings.
-- **Configuration strings are stored once.** A copy shared between handles (`duphandle`, the
-  share) is reference-counted, not duplicated.
+- **A duplicated handle owns copies of its configuration strings**, as C's `duphandle` copies
+  them, so no two handles share a mutable setting. What is large and never changed once set
+  (copied post fields, the public suffix list) is shared between copies, reference-counted.
 - **Small, bounded collections are inline arrays**, not `Vec`s.
 
 Two sets of budgets check this:

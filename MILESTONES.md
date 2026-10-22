@@ -498,7 +498,7 @@ cargo-mutants run on the milestone's diff.
     and rewind, and the `Content-Type` boundary. The upload source becomes a source plus an
     ordered chain of sans-IO readers, each with its own fixed buffer, as C's client readers
     are chained; SMTP, IMAP and FTP's ASCII mode reuse it later.
-38. **Matching C, and what the milestone's reviews found.**
+38. **Matching C, and what the milestone's reviews found.** **Done.**
     - The application's lists (`HTTPHEADER`, `PROXYHEADER`, `CONNECT_TO`, `RESOLVE`) read at
       each leg, as C reads them per request, not copied at setopt; the WebKit backend's pattern
       (set once, appended to after) tested through the C ABI on both legs.

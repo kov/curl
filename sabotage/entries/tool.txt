@@ -622,3 +622,11 @@ witness: curl-tool config::tests::reads_urls_a_line_each
         if line.len() + 1 > URL_LINE_BUFFER {
 --- new
         if line.len() > URL_LINE_BUFFER {
+
+=== an upload whose read fails succeeds with what was read
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool an_upload_that_cannot_be_read_fails
+--- old
+                Err(_) => return Read::Fail,
+--- new
+                Err(_) => return Read::Eof,

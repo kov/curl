@@ -477,7 +477,8 @@ fn uploads_a_file() {
 }
 
 /// A file that opens but cannot be read fails its upload with a read
-/// error; C sends nothing and succeeds.
+/// error; C sends nothing and succeeds. A deliberate difference from C
+/// (SCOPE.md, "Where it differs from C"), so this test fails on its tool.
 #[test]
 fn an_upload_that_cannot_be_read_fails() {
     let s = Scratch::new("unreadable");

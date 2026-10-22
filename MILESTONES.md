@@ -469,6 +469,14 @@ cargo-mutants run on the milestone's diff.
     connections) comes with it, as C does. Tested by two threads through the C ABI with no
     lock functions, under Miri where it reaches.
 
+After this milestone: **a corpus of real command lines**, as compatibility guidance. Some
+thousands of curl invocations sampled from public shell scripts, Dockerfiles, CI configurations
+and documentation, kept under `inventory/` with their sources and parsed as a shell would (quotes,
+globs, variables). It ranks which options, combinations and spellings are used, to order and
+weigh the work, and each line is run through both tools' option parsing, without a transfer, to
+diff what they accept, warn about and refuse. It is also the evidence for a difference from C
+(SCOPE.md): whether anyone relies on the C behaviour.
+
 Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
 generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting
 connect and DO states and connection-scoped protocol state, with the first stage-6 protocol or

@@ -247,6 +247,32 @@ fn speed_limits_are_kept_and_copied() {
     }
 }
 
+/// `CURLOPT_BUFFERSIZE` refuses a negative size and holds the rest
+/// between 1 KiB and 10 MiB (`value_range`).
+#[test]
+fn the_buffer_size_is_held_to_its_range() {
+    use curl_core::options::BufferSize;
+    let c = curl_easy_init();
+    let size = |c| options(c, |o| o.limits.buffer_size);
+    assert_eq!(size(c), BufferSize::default());
+    assert_eq!(size(c).get(), 16384);
+    assert_eq!(
+        long(c, ffi::CURLOPT_BUFFERSIZE, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    for (asked, held) in [
+        (0, 1024),
+        (1023, 1024),
+        (100_000, 100_000),
+        (1 << 30, 10 << 20),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_BUFFERSIZE, asked), CURLE_OK);
+        assert_eq!(size(c).get(), held, "{asked}");
+    }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_AWS_SIGV4` makes AWS SigV4 the one method; NULL takes it out
 /// of the methods asked for and leaves the others. A string refused for
 /// its length leaves the one before it, and the method as it says.

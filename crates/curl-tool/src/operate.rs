@@ -99,6 +99,9 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
 /// (`MAX_USERPWDLENGTH`, its terminating zero counted).
 const MAX_LOGIN: usize = 100 * 1024;
 
+/// The tool's read buffer (`BUFFER_SIZE`).
+const TOOL_BUFFER: u64 = 102_400;
+
 /// What a typed password is read into, its last byte the line's end
 /// (`checkpasswd`'s buffer).
 const PASSWORD_ROOM: usize = 2048;
@@ -1245,6 +1248,12 @@ fn configure(
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.max_recv_speed = NonZeroU64::new(op.limit_rate);
     o.limits.max_send_speed = NonZeroU64::new(op.limit_rate);
+    // Reads of 100 KiB, or of a receive rate under that, so a limited
+    // transfer reads no more than it may at once (`buffersize`).
+    o.limits.buffer_size = options::BufferSize::clamped(match op.limit_rate {
+        rate @ 1..TOOL_BUFFER => rate,
+        _ => TOOL_BUFFER,
+    });
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);
     o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
     if let Some(ms) = op.happy_eyeballs_ms {

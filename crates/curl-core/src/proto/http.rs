@@ -45,9 +45,6 @@ pub(crate) mod digest;
 pub(crate) mod sigv4;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
-/// The most one read takes (`CURL_MAX_WRITE_SIZE`, BUFFERSIZE's default).
-const READ_SIZE: usize = 16384;
-
 /// The most reads one step makes (`sendrecv_dl`: the first and
 /// `maxloops`' ten more), so a peer that sends faster than it is read
 /// cannot keep the step from returning.
@@ -1232,7 +1229,7 @@ impl Request {
                 // be more to read already.
                 return Ok(Read::Stopped);
             }
-            let max = self.read_size();
+            let max = self.read_size(cx.easy().options().limits.buffer_size.get());
             if max == 0 {
                 // The body is whole: nothing more is read for it. Like a
                 // body made whole by what `input` gives it, it ends
@@ -1283,9 +1280,10 @@ impl Request {
         }
     }
 
-    /// How much the next read may take: a body of a known size is read no
-    /// further than its end (`xfer_recv_resp`).
-    fn read_size(&self) -> usize {
+    /// How much the next read may take: the buffer's size, and a body of
+    /// a known size no further than its end (`xfer_recv_resp`,
+    /// `Curl_xfer_recv`).
+    fn read_size(&self, buffer: usize) -> usize {
         match self.stage {
             Stage::Body(Body::Length) => {
                 let left = self
@@ -1294,9 +1292,9 @@ impl Request {
                     .size()
                     .expect("a body by length has one")
                     .saturating_sub(self.pipeline.bytecount());
-                usize::try_from(left).map_or(READ_SIZE, |left| left.min(READ_SIZE))
+                usize::try_from(left).map_or(buffer, |left| left.min(buffer))
             }
-            _ => READ_SIZE,
+            _ => buffer,
         }
     }
 

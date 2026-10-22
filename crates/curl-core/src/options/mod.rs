@@ -938,9 +938,40 @@ pub struct Limits {
     /// The most bytes a second a transfer sends of its body, with any
     /// framing (`CURLOPT_MAX_SEND_SPEED_LARGE`).
     pub max_send_speed: Option<NonZeroU64>,
+    /// The most one read from the connection takes.
+    pub buffer_size: BufferSize,
     /// Which idle connections the transfer may reuse.
     pub reuse: ReuseLimits,
     pub eyeballs: EyeballsDelay,
+}
+
+/// The most bytes one read from the connection takes, and one read of a
+/// file (`CURLOPT_BUFFERSIZE`): 16 KiB unless set, never under 1 KiB nor
+/// over 10 MiB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferSize(u32);
+
+impl BufferSize {
+    const MIN: u32 = 1024;
+    const MAX: u32 = 10 * 1024 * 1024;
+
+    /// `n` bytes, held between the least and the most, as C's setopt
+    /// holds it.
+    pub fn clamped(n: u64) -> BufferSize {
+        let n = u32::try_from(n).unwrap_or(u32::MAX);
+        BufferSize(n.clamp(Self::MIN, Self::MAX))
+    }
+
+    pub fn get(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Default for BufferSize {
+    /// `CURL_MAX_WRITE_SIZE`.
+    fn default() -> Self {
+        BufferSize(16384)
+    }
 }
 
 /// How long a body announced with `Expect: 100-continue` waits for the

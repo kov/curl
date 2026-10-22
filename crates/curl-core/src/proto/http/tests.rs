@@ -13,8 +13,8 @@ use crate::handler::{
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx, drive_to_completion};
 use crate::options::{
-    AuthMethods, Follow, MaxRedirects, Method, Options, PostRedir, Resume, UploadSource,
-    UserHeaders,
+    AuthMethods, BufferSize, Follow, MaxRedirects, Method, Options, PostRedir, Resume,
+    UploadSource, UserHeaders,
 };
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
@@ -5164,6 +5164,21 @@ fn a_step_reads_eleven_times_at_most_and_runs_again_at_once() {
         assert_eq!(drops.0.get() - got, 11 * 16384);
         assert_eq!(m.timeout(), Some(Duration::ZERO));
     }
+}
+
+/// A read takes no more than the buffer's size (`CURLOPT_BUFFERSIZE`).
+#[test]
+fn a_read_takes_the_buffer_s_size() {
+    let (mut m, talks) = endless(1);
+    let (e, drops) = endless_get(|o| o.limits.buffer_size = BufferSize::clamped(4000));
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    while talks[0].endless_reads() == 0 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let (reads, got) = (talks[0].endless_reads(), drops.0.get());
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(talks[0].endless_reads() - reads, 11);
+    assert_eq!(drops.0.get() - got, 11 * 4000);
 }
 
 /// A body that never ends, from a peer faster than its reader, still

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+--limit-rate
+timeout
+</keywords>
+</info>
+
+# Server-side
+<reply>
+<data nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 5000
+Content-Type: text/plain
+
+%repeat[4999 x a]%
+</data>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+--limit-rate limits a small body from its first read
+</name>
+<command>
+http://%HOSTIP:%HTTPPORT/%TESTNUMBER --limit-rate 1000 -m 2
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+# 5000 bytes at 1000 a second take about five seconds: two steps of
+# 1237 bytes, as the limit is tuned for the size, come in two seconds.
+<verify>
+<errorcode>
+28
+</errorcode>
+<protocol crlf="headers">
+GET /%TESTNUMBER HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+</protocol>
+</verify>
+</testcase>

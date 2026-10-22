@@ -69,9 +69,9 @@ witness: curl-core proto::file::tests::an_empty_file_is_its_headers
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_file_is_read_as_far_as_its_size
 --- old
-            let want = left.map_or(READ_BUFFER, |n| {
+            let want = left.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
 --- new
-            let want = None::<u64>.map_or(READ_BUFFER, |n| {
+            let want = None::<u64>.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
 
 === a resumed download announces the whole size
 file: crates/curl-core/src/proto/file.rs

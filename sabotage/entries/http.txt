@@ -4,9 +4,9 @@
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_is_read_no_further_than_its_size
 --- old
-                usize::try_from(left).map_or(READ_SIZE, |left| left.min(READ_SIZE))
+                usize::try_from(left).map_or(buffer, |left| left.min(buffer))
 --- new
-                usize::try_from(left).map_or(READ_SIZE, |_| READ_SIZE)
+                usize::try_from(left).map_or(buffer, |_| buffer)
 
 === a connection its peer closed is kept
 file: crates/curl-core/src/conn/mod.rs
@@ -1373,3 +1373,11 @@ witness: curl-core proto::http::tests::range::a_get_resumed_at_the_end_asks_from
                         Ranged::Resume(Resume::AtEnd) => [b"-1-", b""],
 --- new
                         Ranged::Resume(Resume::AtEnd) => [b"-1", b""],
+
+=== a read takes its fixed 16 KiB whatever the buffer's size
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_read_takes_the_buffer_s_size
+--- old
+            let max = self.read_size(cx.easy().options().limits.buffer_size.get());
+--- new
+            let max = self.read_size(16384);

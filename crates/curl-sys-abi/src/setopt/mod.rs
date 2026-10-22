@@ -19,9 +19,9 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
 use curl_core::options::{
-    ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines, LowSpeed,
-    MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits, TimeCondition,
-    UserHeaders,
+    BufferSize, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines,
+    LowSpeed, MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits,
+    TimeCondition, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -562,6 +562,10 @@ fn apply(
             options.limits.max_filesize = max_filesize(wide(n))?;
         }
         (ffi::CURLOPT_MAXFILESIZE_LARGE, Off(n)) => options.limits.max_filesize = max_filesize(n)?,
+        (ffi::CURLOPT_BUFFERSIZE, Long(n)) => {
+            let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
+            options.limits.buffer_size = BufferSize::clamped(n);
+        }
         (ffi::CURLOPT_MAX_RECV_SPEED_LARGE, Off(n)) => options.limits.max_recv_speed = speed(n)?,
         (ffi::CURLOPT_MAX_SEND_SPEED_LARGE, Off(n)) => options.limits.max_send_speed = speed(n)?,
         (ffi::CURLOPT_RESUME_FROM, Long(n)) => options.resume = resume(wide(n))?,

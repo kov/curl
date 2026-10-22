@@ -24,10 +24,6 @@ use crate::trace;
 use crate::upload::{self, Upload};
 use crate::url::{self, GetOptions, Part, Url};
 
-/// The most of a file read at once: the transfer buffer, less the byte C
-/// keeps for a terminating zero.
-const READ_BUFFER: usize = 16384 - 1;
-
 /// The most of an upload's body read at once (`UPLOADBUFFER_DEFAULT`).
 const UPLOAD_BUFFER: usize = 65536;
 
@@ -258,14 +254,17 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         mut left: Option<u64>,
     ) -> Result<(), ErrorKind> {
+        // The most of a file read at once: the transfer buffer, less the
+        // byte C keeps for a terminating zero.
+        let most = cx.easy().options().limits.buffer_size.get() - 1;
         let file = self.file.as_mut().expect("opened to read");
         let mut buf = Vec::new();
-        buf.try_extend_from_slice(&[0; READ_BUFFER])
+        buf.try_reserve_exact(most)
             .map_err(|_| ErrorKind::OutOfMemory)?;
+        #[expect(clippy::disallowed_methods, reason = "reserved above")]
+        buf.resize(most, 0);
         loop {
-            let want = left.map_or(READ_BUFFER, |n| {
-                usize::try_from(n).map_or(READ_BUFFER, |n| n.min(READ_BUFFER))
-            });
+            let want = left.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
             // C ends the transfer, successfully, where a read fails; here
             // it fails (DIVERGENCE.md).
             let read = file.read(&mut buf[..want]);

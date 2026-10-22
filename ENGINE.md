@@ -1293,15 +1293,18 @@ are given the lease the transfer's state holds. Inside an `Exchanging` step of `
 While exchanging, the transfer waits on its socket for what the protocol says: IN while the
 response is not over and receiving is not paused, OUT while the head has more to send.
 
-Reads are capped at 16384 bytes, and at `size - bytecount` in a body of known size on
+Reads are capped at the transfer's BUFFERSIZE (`Limits::buffer_size`: 16384 unless set; the
+tool sets 100 KiB, or its `--limit-rate` under that), by the receive limit's tokens, and at
+`size - bytecount` in a body of known size on
 non-multiplexed connections, as transfer.c's `xfer_recv_resp` does. The cap is redundant with a per-connection buffer (leftovers would simply
 wait in `conn.rx`), but it fixes how `DATA_IN` traces are chunked and when unsolicited input is
 seen; it is dropped only after a C-leg comparison on 1701 and 3223.
 
-Each read asks for at most the multi's read size: the largest BUFFERSIZE any of its transfers
-has read with so far, since C's per-multi `xfer_buf` is replaced only when a transfer needs a
-larger one (multi.c:4028). `conn.rx` grows to that size before a read, fallibly. C's `borrowed`
-flag (multi.c:4023) becomes the move-out above, which the compiler checks.
+C reads into the multi's `xfer_buf`, the largest BUFFERSIZE any of its transfers asked for, but
+`Curl_xfer_recv` cuts a network read to the transfer's own; `conn.rx` grows to that size before
+a read, fallibly. A `file:` read takes the transfer's BUFFERSIZE less one, where C's takes the
+multi's buffer whole: a file read beside a transfer with a larger buffer is read in larger
+pieces there.
 
 ### 5.2 Response pipeline
 
@@ -1977,7 +1980,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | socket table entries beyond the reserved two | connect-machine stage entry, before the socket opens | 6 attempts + ALPN racers |
 | error detail | on error | dropped if boxing it fails |
 | request head | once, measured before it is written | 1 MiB → TooLarge |
-| `Conn` receive buffer, head parser line | grows to the largest read and line | READ_SIZE, 100 KiB |
+| `Conn` receive buffer, head parser line | grows to the largest read and line | BUFFERSIZE, 100 KiB |
 | trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
 
 Nothing allocates per chunk. Peer-sized reservations happen after the limit check, so a hostile
@@ -2058,7 +2061,8 @@ peer gets a protocol error, not an out-of-memory one.
 - **getinfo is live** during a transfer, and the header store spans it (sections 5.5, 6.3).
 - **Total timeout**: C's two anchors are kept (section 3.4).
 - **Read cap** at the response's remaining size is kept (section 5.1).
-- **Read size** follows C's per-multi buffer, the largest BUFFERSIZE seen (section 5.1).
+- **Read size** is the transfer's BUFFERSIZE, as `Curl_xfer_recv` cuts C's per-multi buffer to
+  it (section 5.1).
 - **`socket_action` reads the clock a second time** after it ran something, as C does (section
   3.5).
 - **The share lock** is taken at C's four points in the Rust default too (section 4.6).

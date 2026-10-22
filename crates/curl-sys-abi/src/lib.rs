@@ -29,6 +29,7 @@ mod getinfo;
 #[cfg(test)]
 mod handle_tests;
 mod headers;
+mod mime;
 mod multi;
 mod printf;
 mod root;

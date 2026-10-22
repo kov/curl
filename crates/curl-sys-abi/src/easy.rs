@@ -46,6 +46,12 @@ pub(crate) struct ShimEasy {
     pub(crate) set: Cell<CSettings>,
     /// What a POST sends, if not read from the read function.
     pub(crate) post: RefCell<callbacks::Post>,
+    /// The POST sends the tree `CURLOPT_MIMEPOST` gave, or none
+    /// (`HTTPREQ_POST_MIME`), until another option makes it a POST of
+    /// its own.
+    pub(crate) post_mime: Cell<bool>,
+    /// The tree a MIME POST sends (`CURLOPT_MIMEPOST`).
+    pub(crate) mimepost: Cell<Option<NonNull<crate::mime::ShimMime>>>,
     /// `CURLOPT_ERRORBUFFER`.
     pub(crate) errbuf: Cell<*mut c_char>,
     /// The share the application gave (`CURLOPT_SHARE`), whose core the
@@ -96,6 +102,7 @@ impl ShimEasy {
         ccb: CCallbacks,
         set: CSettings,
         post: callbacks::Post,
+        post_mime: bool,
         errbuf: *mut c_char,
     ) -> Result<NonNull<ShimEasy>, OutOfMemory> {
         let mut easy = try_box(easy)?;
@@ -105,6 +112,7 @@ impl ShimEasy {
         let me = unsafe { shim.as_ref() };
         me.errbuf.set(errbuf);
         *me.post.borrow_mut() = post;
+        me.post_mime.set(post_mime);
         if let Err(e) = callbacks::install(easy.options_mut(), shim, &set, &ccb, errbuf) {
             // SAFETY: made above by `Box::leak`, used nowhere else.
             drop(unsafe { Box::from_raw(shim.as_ptr()) });
@@ -128,6 +136,8 @@ impl ShimEasy {
             ccb: Cell::new(ccb),
             set: Cell::new(set),
             post: RefCell::new(callbacks::Post::new()),
+            post_mime: Cell::new(false),
+            mimepost: Cell::new(None),
             errbuf: Cell::new(ptr::null_mut()),
             share: Cell::new(None),
             private: Cell::new(None),
@@ -311,6 +321,7 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
         CCallbacks::new(),
         CSettings::new(),
         callbacks::Post::new(),
+        false,
         ptr::null_mut(),
     ) {
         Ok(easy) => easy.as_ptr().cast(),
@@ -350,6 +361,8 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     assert!(saved.is_ok(), "the handle is its own");
     // Then it leaves its share (`Curl_share_easy_unlink`).
     crate::share::unlink(easy).expect("the handle is its own");
+    // The tree it posts is the application's again, or freed if its own.
+    crate::mime::detach(easy);
     drop(entry);
     let private = easy.private.take();
     easy.magic.set(0);
@@ -388,16 +401,24 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
     };
     // The copy's adapters are its own (`install` replaces the original's).
     let post = easy.post.borrow().clone();
-    match ShimEasy::boxed(
+    let dup = match ShimEasy::boxed(
         copy,
         easy.ccb.get(),
         easy.set.get(),
         post,
+        easy.post_mime.get(),
         easy.errbuf.get(),
     ) {
-        Ok(dup) => dup.as_ptr().cast(),
-        Err(OutOfMemory) => ptr::null_mut(),
+        Ok(dup) => dup,
+        Err(OutOfMemory) => return ptr::null_mut(),
+    };
+    // The copy posts a copy of the tree, its own (`Curl_mime_duppart`).
+    if crate::mime::duplicate(easy, dup).is_err() {
+        // SAFETY: just made, and handed to no one.
+        unsafe { curl_easy_cleanup(dup.as_ptr().cast()) };
+        return ptr::null_mut();
     }
+    dup.as_ptr().cast()
 }
 const _: ffi::proto::curl_easy_duphandle = curl_easy_duphandle;
 
@@ -418,6 +439,8 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     easy.ccb.set(ccb);
     easy.set.set(set);
     *easy.post.borrow_mut() = callbacks::Post::new();
+    easy.post_mime.set(false);
+    crate::mime::detach(easy);
     easy.errbuf.set(ptr::null_mut());
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as

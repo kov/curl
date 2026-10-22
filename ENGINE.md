@@ -1515,8 +1515,10 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   or a part read without one is SendFailRewind "Cannot rewind mime/post data"; bytes start over
   and a file is opened again at its next read. Whether a part was read since its last rewind,
   which C keeps in the part and which decides whether its seek function is called, is the
-  rewind handler's to keep: the shim's keeps it in its part (§7.6), so the seek function is
-  called when C calls it, including at the next perform.
+  rewind handler's to keep: the shim's keeps it in its part (§7.6), set when the part's read
+  function is called, so the seek function is called at the next perform too. C's part counts
+  as read once its headers are, so C also seeks a part whose headers went but whose read
+  function was never called (a transfer that failed between the two).
 - **One tree, the application's.** The application gives `UploadSource::Mime(Handler<dyn
   MimeSource>)`; the core asks it for the tree each time it builds a request with a body, as it
   reads a header list again (`LineSource`, DESIGN.md), so a tree changed between performs
@@ -1539,8 +1541,9 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   debug build draws them (its first four bytes a big-endian seed, one more per draw, kept in
   the shim's root where C keeps a static).
 - **Allocation.** The tree, the cursors and the prepared headers are fallible, made when the
-  reader is; reading allocates nothing. A handle pays nothing for MIME it does not use:
-  `UploadSource::Mime` is a pointer, and `CURLOPT_MIME_OPTIONS` lives in a `Cold` group.
+  reader is; reading allocates nothing. A handle pays little for MIME it does not use: the core's
+  `UploadSource::Mime` is a pointer, `CURLOPT_MIME_OPTIONS` lives in a `Cold` group, and the
+  shim's handle holds a pointer to the tree and a flag for `HTTPREQ_POST_MIME`.
 
 ### 5.5 Progress and timings
 

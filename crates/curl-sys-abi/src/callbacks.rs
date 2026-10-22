@@ -303,6 +303,11 @@ pub(crate) fn sync_upload(
             // SAFETY: the handle is alive while its options are set.
             let post = unsafe { easy.as_ref() }.post.borrow();
             let size = u64::try_from(post.size).ok();
+            // SAFETY: as above.
+            if unsafe { easy.as_ref() }.post_mime.get() {
+                options.upload = UploadSource::Mime(Handler::mime(crate::mime::MimeTree(easy))?);
+                return Ok(());
+            }
             match &post.fields {
                 // Read to its end whatever its size if the request is
                 // asked chunked, which the core decides as it builds it.
@@ -363,7 +368,7 @@ impl LentBytes for AppFields {
 }
 
 /// Calls the application on behalf of the handle at its pointer.
-struct Adapter(NonNull<ShimEasy>);
+pub(crate) struct Adapter(pub(crate) NonNull<ShimEasy>);
 
 // SAFETY: an adapter is its handle's alone (a copy of the options is given
 // its own), and is called only by the transfer of that handle, which C
@@ -382,7 +387,7 @@ impl Adapter {
 
     /// Call `f`, the application's code, with `cx` lent to the handle's
     /// multi.
-    fn call<R>(&self, cx: &mut TransferCx<'_>, f: impl FnOnce() -> R) -> R {
+    pub(crate) fn call<R>(&self, cx: &mut TransferCx<'_>, f: impl FnOnce() -> R) -> R {
         let frame = Frame::Transfer(NonNull::from(cx).cast());
         match self.easy().multi() {
             // `cx` is not used again until `lend` returns.

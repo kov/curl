@@ -63,6 +63,8 @@ enum Arg {
 /// A checked change that failed.
 enum Refused {
     Bad,
+    /// A body read before could not be rewound (`CURLE_SEND_FAIL_REWIND`).
+    Rewind,
     OutOfMemory,
     NotBuiltIn,
     Unknown,
@@ -390,7 +392,30 @@ fn apply(
         }
         (ffi::CURLOPT_POST, Long(n)) => {
             options.method = if n != 0 { Method::Post } else { Method::Get };
+            // SAFETY: the handle is alive while its options are set.
+            unsafe { me.as_ref() }.post_mime.set(false);
             callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_MIMEPOST, Ptr(p)) => {
+            // SAFETY: the application passes a tree from `curl_mime_init`
+            // or NULL.
+            match unsafe { crate::mime::set_post(me, p) } {
+                Ok(()) => {}
+                Err(crate::mime::Refused::Attached) => return Err(Refused::Bad),
+                Err(crate::mime::Refused::Rewind) => return Err(Refused::Rewind),
+            }
+            // SAFETY: as above.
+            unsafe { me.as_ref() }.post_mime.set(true);
+            options.method = Method::Post;
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_MIME_OPTIONS, Long(n)) => {
+            // A group never made already says no.
+            if n & ffi::CURLMIMEOPT_FORMESCAPE != 0 {
+                options.mime.make_mut()?.form_escape = true;
+            } else if let Some(m) = options.mime.made_mut() {
+                m.form_escape = false;
+            }
         }
         (ffi::CURLOPT_HTTPGET, Long(n)) => {
             if n != 0 {
@@ -401,7 +426,9 @@ fn apply(
         (ffi::CURLOPT_POSTFIELDS, Ptr(p)) => {
             let fields = NonNull::new(p.cast::<u8>()).map_or(PostFields::None, PostFields::App);
             // SAFETY: the handle is alive while its options are set.
-            unsafe { me.as_ref() }.post.borrow_mut().fields = fields;
+            let shim = unsafe { me.as_ref() };
+            shim.post.borrow_mut().fields = fields;
+            shim.post_mime.set(false);
             options.method = Method::Post;
             callbacks::sync_upload(options, me, set)?;
         }
@@ -413,6 +440,7 @@ fn apply(
             // a size was set, or NULL.
             let copied = unsafe { copy_post_fields(p, size) }?;
             shim.post.borrow_mut().fields = copied;
+            shim.post_mime.set(false);
             options.method = Method::Post;
             callbacks::sync_upload(options, me, set)?;
         }
@@ -991,6 +1019,7 @@ pub unsafe extern "C" fn curl_easy_setopt(
     let code = match applied {
         Ok(Ok(())) => CURLE_OK,
         Ok(Err(Refused::Bad)) => return CURLE_BAD_FUNCTION_ARGUMENT,
+        Ok(Err(Refused::Rewind)) => return ffi::CURLE_SEND_FAIL_REWIND,
         Ok(Err(Refused::OutOfMemory)) => return CURLE_OUT_OF_MEMORY,
         Ok(Err(Refused::NotBuiltIn)) => return CURLE_NOT_BUILT_IN,
         Ok(Err(Refused::Unknown)) => return CURLE_UNKNOWN_OPTION,

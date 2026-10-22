@@ -72,3 +72,44 @@ witness: curl-core proto::http::tests::a_mime_post_types_its_head_with_the_bound
 --- new
         if h.is(b"Content-Type-")
 
+
+=== a part takes a tree it is under as its subparts
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::a_tree_is_attached_once
+--- old
+    if root == sub {
+--- new
+    if false {
+
+=== a handle's tree is copied one level deeper than C copies
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::a_copied_handle_posts_a_copy_of_the_tree
+--- old
+    if 1 + depth(tree) > MAX_LEVELS {
+--- new
+    if depth(tree) > MAX_LEVELS {
+
+=== a part never read is sought
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::a_tree_read_before_is_rewound_when_posted
+--- old
+    if !p.read.get() {
+        return true;
+    }
+--- new
+
+=== a freed tree's parts keep their content
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::frees_call_each_free_function_once
+--- old
+            clear_content(&mut part);
+--- new
+
+=== a POST of its own still sends the tree
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi mime::tests::the_post_options_say_which_post
+--- old
+            shim.post.borrow_mut().fields = fields;
+            shim.post_mime.set(false);
+--- new
+            shim.post.borrow_mut().fields = fields;

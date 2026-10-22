@@ -50,12 +50,53 @@ struct Root {
     /// `curl_global_init` calls not yet matched by `curl_global_cleanup`.
     initialized: u32,
     allocator: Allocator,
+    /// The last number `CURL_ENTROPY`'s sequence gave, once it has.
+    #[cfg(feature = "debug-hooks")]
+    entropy: Option<u32>,
 }
 
 static ROOT: Mutex<Root> = Mutex::new(Root {
     initialized: 0,
     allocator: SYSTEM,
+    #[cfg(feature = "debug-hooks")]
+    entropy: None,
 });
+
+/// Whether `CURL_ENTROPY` is set, which makes the debug build's random
+/// numbers its own.
+#[cfg(feature = "debug-hooks")]
+pub(crate) fn forced_entropy_set() -> bool {
+    // SAFETY: the name is a C string.
+    !unsafe { libc::getenv(c"CURL_ENTROPY".as_ptr()) }.is_null()
+}
+
+/// The next of the numbers `CURL_ENTROPY` seeds, if it is set, as C's
+/// debug build draws its random numbers (`randit`): the variable's first
+/// four bytes, big-endian, then one more at each draw, for the whole
+/// process as C's static is.
+#[cfg(feature = "debug-hooks")]
+pub(crate) fn forced_entropy() -> Option<u32> {
+    // SAFETY: the name is a C string; the value is read at once, as C's
+    // `getenv` is, before anything could change the environment.
+    let value = unsafe { libc::getenv(c"CURL_ENTROPY".as_ptr()) };
+    if value.is_null() {
+        return None;
+    }
+    // SAFETY: `getenv` gives a C string.
+    let given = unsafe { core::ffi::CStr::from_ptr(value) }.to_bytes();
+    let mut root = root();
+    let next = match root.entropy {
+        Some(last) => last.wrapping_add(1),
+        None => {
+            let mut seed = [0u8; 4];
+            let n = given.len().min(4);
+            seed[..n].copy_from_slice(&given[..n]);
+            u32::from_be_bytes(seed)
+        }
+    };
+    root.entropy = Some(next);
+    Some(next)
+}
 
 fn root() -> std::sync::MutexGuard<'static, Root> {
     // Panics abort, so the lock is never poisoned.

@@ -117,7 +117,7 @@ features: debug-hooks
 file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::http_options_reach_the_request
 --- old
-            login.user = pair.user;
-            login.password = pair.password;
+            options.login.set(|g| &mut g.user, pair.user)?;
+            options.login.set(|g| &mut g.password, pair.password)?;
 --- new
-            *login = pair;
+            *options.login.make_mut()? = pair;

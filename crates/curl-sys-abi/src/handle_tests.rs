@@ -4137,3 +4137,51 @@ fn a_handle_costs_no_more_than_cs() {
     // SAFETY: a live multi, not used again.
     assert_eq!(unsafe { curl_multi_cleanup(m) }, CURLM_OK);
 }
+
+/// Clearing a string or list option of a group never made allocates
+/// nothing, as C's setopt frees nothing and copies nothing for a NULL:
+/// the group is made only by a value. Clearing one in a group made
+/// still clears it.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn clearing_an_option_makes_no_group() {
+    use curl_alloc::track::measure;
+    let cleared = [
+        ffi::CURLOPT_USERPWD,
+        ffi::CURLOPT_USERNAME,
+        ffi::CURLOPT_PASSWORD,
+        ffi::CURLOPT_XOAUTH2_BEARER,
+        ffi::CURLOPT_PROXY,
+        ffi::CURLOPT_PROXYUSERPWD,
+        ffi::CURLOPT_PROXYUSERNAME,
+        ffi::CURLOPT_PROXYPASSWORD,
+        ffi::CURLOPT_PRE_PROXY,
+        ffi::CURLOPT_NOPROXY,
+        ffi::CURLOPT_HAPROXY_CLIENT_IP,
+        ffi::CURLOPT_PROXYHEADER,
+        ffi::CURLOPT_NETRC_FILE,
+        ffi::CURLOPT_COOKIE,
+        ffi::CURLOPT_COOKIEFILE,
+        ffi::CURLOPT_COOKIEJAR,
+    ];
+    let c = curl_easy_init();
+    for option in cleared {
+        let (code, cost) = measure(|| pointer(c, option, ptr::null_mut::<c_char>()));
+        assert_eq!(code, CURLE_OK, "{option:?}");
+        assert_eq!(cost.allocations, 0, "{option:?} made its group");
+    }
+    pointer(c, ffi::CURLOPT_PROXY, c"http://p".as_ptr().cast_mut());
+    pointer(
+        c,
+        ffi::CURLOPT_HAPROXY_CLIENT_IP,
+        c"1.2.3.4".as_ptr().cast_mut(),
+    );
+    assert!(options(c, |o| o.proxy.haproxy));
+    pointer(c, ffi::CURLOPT_PROXY, ptr::null_mut::<c_char>());
+    pointer(c, ffi::CURLOPT_HAPROXY_CLIENT_IP, ptr::null_mut::<c_char>());
+    assert_eq!(options(c, |o| o.proxy.url.clone()), None);
+    assert_eq!(options(c, |o| o.proxy.haproxy_client_ip.clone()), None);
+    assert!(!options(c, |o| o.proxy.haproxy), "the protocol is off");
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}

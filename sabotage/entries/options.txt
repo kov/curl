@@ -17,3 +17,12 @@ witness: curl-core a_cold_group_is_made_or_refused_at_its_first_set
 --- new
         if true {
             self.0 = Some(try_box(T::NONE)?);
+
+=== clearing an option of a cold group never made makes the group
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::clearing_an_option_makes_no_group
+features: debug-hooks
+--- old
+        if value.is_none() && self.0.is_none() {
+--- new
+        if false {

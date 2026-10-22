@@ -422,6 +422,27 @@ impl<T: ColdGroup> Cold<T> {
         self.0.as_deref_mut()
     }
 
+    /// Set the option `field` names to `value`. Clearing one, to `None`,
+    /// in a group never made changes nothing and makes nothing, as C
+    /// allocates nothing to clear an option: the group's defaults hold
+    /// none there already. Setting one makes the group.
+    pub fn set<V>(
+        &mut self,
+        field: impl Fn(&mut T) -> &mut Option<V>,
+        value: Option<V>,
+    ) -> Result<(), OutOfMemory> {
+        if value.is_none() && self.0.is_none() {
+            let mut defaults = T::NONE;
+            assert!(
+                field(&mut defaults).is_none(),
+                "a group's defaults clear it"
+            );
+            return Ok(());
+        }
+        *field(self.make_mut()?) = value;
+        Ok(())
+    }
+
     /// A copy, made only if this one was, copied by `copy`.
     fn try_clone(
         &self,

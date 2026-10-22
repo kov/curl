@@ -463,7 +463,12 @@ fn reports_output_it_cannot_write_when_stdio_would() {
     let at_close = "curl: curl: (23) Failed writing body\n";
     let at_flush = "curl: Failed writing body\n";
     let flushed = "curl: (23) client returned ERROR on write of 3000 bytes\n";
-    let headed = "curl: (23) Failure writing output to destination, passed 10000 returned 4003\n";
+    // stdio's buffer: the device's block size, at most `BUFSIZ`.
+    let block = std::fs::metadata("/dev/full").unwrap().blksize().min(8192);
+    let headed = format!(
+        "curl: (23) Failure writing output to destination, passed 10000 returned {}\n",
+        block - 93
+    );
     let cases: [(&[&str], Option<&str>, &str); 10] = [
         (&["-o", "/dev/full", &big], None, short),
         (&[&big], full, short),
@@ -474,10 +479,10 @@ fn reports_output_it_cannot_write_when_stdio_would() {
         (&["-N", "-o", "/dev/full", &small], None, flushed),
         (&["-N", &small], full, flushed),
         // Header lines shown are written unchecked, into the buffer: the
-        // body fills the rest of it, 4096 less their 93 bytes, and fails
-        // as it is written.
+        // body fills the rest of it, less their 93 bytes, and fails as it
+        // is written.
         (&["-i", "-o", "/dev/full", &small], None, at_close),
-        (&["-i", &big], full, headed),
+        (&["-i", &big], full, &headed),
     ];
     for (args, stdout, want) in cases {
         let r = curl_to(&s, &[&["-sS"], args].concat(), stdout);

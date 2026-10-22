@@ -2061,8 +2061,18 @@ mod tests {
     /// from where the attempt started, that wrote something, all of it.
     #[test]
     fn resumes_only_what_c_resumes() {
-        let path = std::env::temp_dir().join(format!("curl-tool-resumable-{}", std::process::id()));
-        std::fs::write(&path, b"held").unwrap();
+        // Removed however the test ends, so a failing run leaves nothing.
+        struct Removed(std::path::PathBuf);
+        impl Drop for Removed {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let path = Removed(
+            std::env::temp_dir().join(format!("curl-tool-resumable-{}", std::process::id())),
+        );
+        let path = &path.0;
+        std::fs::write(path, b"held").unwrap();
         let out =
             output::Output::file(path.as_os_str().as_encoded_bytes(), Messages::new()).unwrap();
         assert!(out.stream().open_to_append());
@@ -2157,7 +2167,6 @@ mod tests {
             "stdout"
         );
         drop(out);
-        std::fs::remove_file(&path).unwrap();
     }
 
     /// `inlist`: the name, then a colon or a semicolon.

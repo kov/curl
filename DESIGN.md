@@ -186,7 +186,9 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
   each option where C does (handlers at each call, limits at the transfer's start). A list the
   application keeps and may append to after setopt (`CURLOPT_HTTPHEADER`, `PROXYHEADER`,
   `CONNECT_TO`, `RESOLVE`) is a `LineSource` handler the core reads again where C walks the
-  list; the shim's walks the application's `curl_slist`, which it keeps as C does.
+  list; the shim's walks the application's `curl_slist`, which it keeps as C does. A MIME
+  tree (`CURLOPT_MIMEPOST`) is the same: a `MimeSource` the core asks for the tree at each
+  request; the C-shaped `curl_mime` stays in the shim (ENGINE.md §5.4.1).
 - **Strings handed to C belong to the shim.** It keeps NUL-terminated copies with the lifetime
   the C API promises (`CURLINFO_EFFECTIVE_URL` lives until the next transfer or cleanup), so
   the core never stores C-shaped strings.

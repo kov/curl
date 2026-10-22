@@ -177,7 +177,8 @@ curl-core/src/
                              decode.rs: Gate, the decoders' chain;
                              pause.rs: Pause, PauseRequest, Directions
   progress/                  Speedometer, the low-speed check; meter.rs, the meter's text
-  upload/                    Upload, Readout (C's client readers)
+  upload/                    Upload, Readout (C's client readers); chain.rs: Body, Chain
+  mime/                      Mime, Part, Content, Encoder, MimeSource; read.rs: MimeReader
   proto/
     mod.rs                   ProtoState (File, Http; test-util: Null, Stall, Script, Tcp),
                              Inherited
@@ -1406,14 +1407,26 @@ spent; a read of the upload likewise, and one send carries at most a second's wo
 ### 5.4 Send side
 
 ```rust
-pub(crate) struct Upload { source: Source /* None | Bytes(TryRc<Vec<u8>>) | Read { handler, rewind, size } */,
+pub(crate) struct Upload { source: Source /* None | Bytes(TryArc<Vec<u8>>) | Lent | Read { handler, rewind, size }
+                                             | Mime(MimeReader) */,
                            read: u64, latch: Latch /* Open | Eof | Errored */, called: bool }
+pub(crate) struct Body { upload: Upload, chain: Chain }   // upload/chain.rs: what a request reads
+struct Chain { chunks: Option<ChunkEncoder> /* a slot per C phase: line ends join it */ }
 ```
 
-`Upload` is C's client readers (`cr_null`, `cr_buf`, `cr_in`) as one struct, made per request
-from `options.upload` and read by the protocol.
+`Upload` is C's client readers at `CURL_CR_CLIENT` (`cr_null`, `cr_buf`, `cr_in`, `cr_mime`) as
+one struct, made per request from `options.upload`. What it gives goes through `Chain`, the
+readers C stacks above it in phase order (`cr_lc` at `CONTENT_ENCODE`, `cr_chunked` at
+`TRANSFER_ENCODE`): sans-IO stages, each owning its fixed buffer, one slot per phase rather than
+a list of boxes. A read of the `Body` asks the last stage: one with output gives it; one without
+names the room in its buffer it wants filled (`wants`), the stage before it, or the source, fills
+it, and it frames what came (`got`, with the trailers at the end for the chunk stage). The protocol
+reads only the `Body`. `Expect: 100-continue` is not a stage: C's `cr_exp100` only holds reads
+back, which `Sending::AwaitingContinue` does (§6.1). SMTP's dot-stuffing and line ends
+(`CURLOPT_CRLF`, FTP ASCII) become stages when those protocols come.
+
 - The request head is rendered into the request's own send buffer, as C's `req.sendbuf` is per
-  request, measured first so that it takes one allocation; body bytes are pulled from `Upload`
+  request, measured first so that it takes one allocation; body bytes are pulled from the `Body`
   into the remaining space (the first read is reduced by the head length, as C's shared chunk).
   HEADER_OUT and DATA_OUT are traced for the bytes `Net::send` accepted, split at the head
   length; SIZE_UPLOAD counts accepted body bytes only (`upload::sent`), as sent: a chunked
@@ -1430,25 +1443,104 @@ from `options.upload` and read by the protocol.
   app's pointer (§7.6) that copies from an offset the `Upload` keeps; the core never holds a raw
   borrow, and it reads at transfer time as C does. Like `Bytes` (C's `cr_buf`), lent bytes keep
   their size whatever the coding.
-  Line-ending conversion (CURLOPT_CRLF, FTP ASCII) comes with the protocols that use it.
-- HTTP/1's chunked coding is `ChunkEncoder` (`http1/chunked.rs`, C's `cr_chunked`), between
-  `Upload` and the send buffer: once what it framed is taken, it reads the body into its own
-  buffer, at least 1 KiB however little room the send buffer has, otherwise what fits framed
-  (at most 64 KiB); each read is a chunk, and the body's end `0\r\n\r\n`. Whether a body
-  goes chunked is decided as each request is built, from the header lists read again then
-  (`Options::reread_headers`, as C walks them in `Curl_http`): the application's
-  `Transfer-Encoding` line, or else a body of unknown size. A POST read from a handler and asked
-  chunked is read to its end, whatever size it was given (`Upload::read_to_end`, `set_reader`).
+- HTTP/1's chunked coding is the chain's `ChunkEncoder` (`http1/chunked.rs`, C's `cr_chunked`):
+  once what it framed is taken, it reads the body into its own buffer, at least 1 KiB however
+  little room the send buffer has, otherwise what fits framed (at most 64 KiB); each read is a
+  chunk, and the body's end `0\r\n\r\n`. Whether a body goes chunked is decided as each request
+  is built, from the header lists read again then (`Options::reread_headers`, as C walks them in
+  `Curl_http`): the application's `Transfer-Encoding` line, or else a body of unknown size. A
+  POST read from a handler and asked chunked is read to its end, whatever size it was given
+  (`Upload::read_to_end`, `set_reader`).
 - A body needs a rewind (`Upload::needs_rewind`, which the head parser's `Unsent` carries and
   "Need to rewind upload for next request" says) once any of it was read (`Bytes`, `Lent`:
-  C's `cr_buf`, copied or not) or the handler was called (`Read`). `Upload::rewind` is a
-  no-op otherwise; `Bytes` and `Lent` start over and `Read` calls its `Rewind`
-  (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or on its
-  failure SendFailRewind "necessary data rewind was not possible".
+  C's `cr_buf`, copied or not; `Mime`, C's `cr_mime`) or the handler was called (`Read`).
+  `Upload::rewind` is a no-op otherwise; `Bytes` and `Lent` start over and `Read` calls its
+  `Rewind` (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or
+  on its failure SendFailRewind "necessary data rewind was not possible".
 - Resume is the protocols': a file:// upload skips the offset in its read loop (§5.6), FTP seeks
   or reads and discards. C's reader-level `resume_from` is never called and is not ported.
 - The protocol announces the body's size (CONTENT_LENGTH_UPLOAD) and, for a request with a
   body, marks POSTTRANSFER when the body is sent rather than at DID.
+
+#### 5.4.1 MIME
+
+```rust
+pub struct Mime { boundary: Boundary, parts: Vec<Part> }                  // mime/mod.rs
+pub struct Part { name, filename, mime_type: Option<Vec<u8>>, headers: Vec<Vec<u8>>,
+                  encoder: Option<Encoder>, content: Content }
+pub enum Content { None, Bytes(TryArc<Vec<u8>>), File(FileData /* path, size if regular */),
+                   Read { handler, rewind: Option<Handler<dyn Rewind>>, size: Option<u64> },
+                   Parts(Mime) }
+pub enum Encoder { Binary, EightBit, SevenBit, Base64, QuotedPrintable }
+pub trait MimeSource: Send + Sync { fn mime(&self) -> Result<Option<TryArc<Mime>>, MimeError>; }
+pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree beside the parts */,
+                               size: Option<u64>, head: Vec<Vec<u8>> /* the top part's headers */ }
+```
+
+- **The tree is a value; the reading is the reader's.** `Mime` says what to send and nothing of
+  how far it has been read. `MimeReader` (`mime/read.rs`), made per request inside `Upload`,
+  holds a cursor per part, built at once beside the tree: C's `mime_state`, `encstate` and
+  `lastreadstatus`, and the open file. The headers C prepares into `curlheaders`
+  (`Curl_mime_prepare_headers`) are computed when the reader is made: `Content-Disposition`
+  (`form-data` inside a `multipart/form-data`, else `attachment` for a named part), the type
+  given or guessed from the file name's extension, `Content-Transfer-Encoding` for an encoder,
+  names escaped as `CURLOPT_MIME_OPTIONS` asks (C's form or mail table). Strategy is Form; Mail
+  comes with SMTP. More than 40 levels is TooLarge.
+- **The top part is the body, its headers the request's.** As C's `MIME_BODY_ONLY`, the body is
+  the boundaries and parts; the top part's headers (`Content-Type: multipart/form-data;
+  boundary=…`, the application's own `Content-Type` value in place of the type) go in the
+  request head after `Content-Length` (`http_add_content_hds`), and the application's
+  `Content-Type` line is left out of its headers (`Curl_add_custom_headers`).
+- **Size as C's `mime_size`.** Each part: its headers with CRLFs, the blank line and its
+  content, encoded: base64's computed, quoted-printable's unknown unless empty, the others the
+  content's. A boundary line is 52 bytes, the last 54 with its dashes. Unknown if any part's
+  is: a callback part without a size, a file that is not regular, subparts with one. Unknown
+  makes the request chunked on HTTP/1.1, and `Expect: 100-continue` is added as for any body
+  over 1 MiB or of unknown size, from the reader's size (C's `Curl_creader_client_length`).
+- **Reading as C's `Curl_mime_read`.** One fill reads boundaries, headers and in-memory bytes
+  as far as its room goes, but calls at most one handler or file read (C's `hasread`, and only
+  in-memory bytes are `MIME_FAST_READ`), then stops: the pieces a chunked body is cut into are
+  C's (645, 667, 668). A part of known size is not read past it, and a file that came short is
+  at its end without another read (`feof`). Encoders keep a 256-byte input buffer per part and
+  lines of at most 76; a read with no more than 4 bytes of room reads 256 into a side buffer
+  first, as `cr_mime_read`'s `tmpbuf` does, so a base64 group always fits.
+- **Failures** are latched as `Upload`'s: Abort is AbortedByCallback "operation aborted by
+  callback"; a handler's failure, a file that cannot be opened or read, a 7bit byte at or over
+  0x80, "read error getting mime data"; a handler giving more than its room, "read function
+  returned funny value"; the end short of a known size, "client mime read EOF fail, only X/Y of
+  needed bytes read"; all ReadError. A pause is not latched: the transfer reads no more until it
+  is unpaused, when the part's handler is called again (`mime_unpause`).
+- **Rewind.** Making the reader rewinds the tree, as `Curl_creader_set_mime` does, and so does
+  `Upload::rewind`: every `Read` part's `Rewind` is called (C's seek function), and its failure
+  or a part read without one is SendFailRewind "Cannot rewind mime/post data"; bytes start over
+  and a file is opened again at its next read. Whether a part was read since its last rewind,
+  which C keeps in the part and which decides whether its seek function is called, is the
+  rewind handler's to keep: the shim's keeps it in its part (§7.6), so the seek function is
+  called when C calls it, including at the next perform.
+- **One tree, the application's.** The application gives `UploadSource::Mime(Handler<dyn
+  MimeSource>)`; the core asks it for the tree each time it builds a request with a body, as it
+  reads a header list again (`LineSource`, DESIGN.md), so a tree changed between performs
+  (653) or given subparts after setopt (695) is sent as it is then, and one that is gone (`None`)
+  is an empty POST, `Content-Length: 0`, as C's unbound part is (584, 654). The tree a request
+  gets is shared (`TryArc`), not copied, and is dropped with the request.
+- **Its C shape stays in the shim.** `curl_mime` and `curl_mimepart` are the shim's
+  (`curl-sys-abi/src/mime.rs`): boxed nodes with the links C's API needs (a tree attached once,
+  `curl_mime_subparts` taking ownership, `curl_mime_free` freeing its subtree without
+  recursion, the free callback called when a part's content goes). The shim's `MimeSource`
+  builds a core `Mime` from them at each request: bytes shared, strings and header lines copied,
+  a callback part's read and rewind handlers adapters over that part. CURLOPT_MIMEPOST keeps a
+  pointer to the application's `curl_mime` and the `curl_mime` a link back to the handle, so
+  `curl_mime_free` takes it from the handle (C's `mime_subparts_unbind`) and the handle never
+  holds a dangling pointer. `curl_easy_duphandle` copies the tree into one the copy owns and
+  frees (`Curl_mime_duppart`); a tree past 40 levels fails the copy.
+- **The boundary** is 24 dashes and 22 characters of `[A-Za-z0-9]`, each from a 32-bit random
+  number below the largest multiple of 62 (`Curl_rand_alnum`), drawn when the tree is made
+  (`curl_mime_init`): from curl-os's `getrandom`, or under debug-hooks from `CURL_ENTROPY` as C's
+  debug build draws them (its first four bytes a big-endian seed, one more per draw, kept in
+  the shim's root where C keeps a static).
+- **Allocation.** The tree, the cursors and the prepared headers are fallible, made when the
+  reader is; reading allocates nothing. A handle pays nothing for MIME it does not use:
+  `UploadSource::Mime` is a pointer, and `CURLOPT_MIME_OPTIONS` lives in a `Cold` group.
 
 ### 5.5 Progress and timings
 
@@ -1911,6 +2003,11 @@ adapters are its own, installed in place of the ones it was cloned with.
   always HEADERDATA.
 - **Read**: `n > nmemb` passed through as `Read::Data(n)` for the core to reject ("read function
   returned funny value"); READFUNC_ABORT → `Abort`; READFUNC_PAUSE → `Pause`.
+- **MIME parts' callbacks** (`curl_mime_data_cb`): read as Read is, but (size_t)-1, C's
+  `READ_ERROR`, is `Fail`, and so is -2, which C loops on; the rewind adapter keeps whether the
+  part was read since its last rewind and calls the seek function only then, failing without
+  one (`mime_part_rewind`); the free function runs when the part's content is replaced or
+  freed, once for each copy `curl_easy_duphandle` made.
 - **Progress**: XFERINFO if set, else PROGRESS with doubles; CURL_PROGRESSFUNC_CONTINUE →
   `ContinueWithMeter`.
 - **Rewind**: SEEKFUNCTION(0), then IOCTLFUNCTION(RESTARTREAD), then fseek iff READFUNCTION is the

@@ -155,6 +155,11 @@ exclude_re = [
     'proto/http1/response\.rs:.*: replace HeadParser::count_held -> Result<\(\), HeadError> with Ok\(\(\)\)$',
     # The version below none is matched before this arm can see it.
     'curl-sys-abi/src/setopt/mod\.rs:.*: replace < with <= in http_version$',
+    # The methods' `CURLAUTH_*` bits are disjoint: `|` and `^` agree.
+    'curl-sys-abi/src/getinfo\.rs:.*: replace \| with \^ in auth_mask$',
+    # A share with neither lock function gets a watch that calls none, and
+    # the functions cannot change while a handle holds the share.
+    'curl-sys-abi/src/share\.rs:.*: replace match guard sh\.settings\(\)\.lock\.is_some\(\) \|\| sh\.settings\(\)\.unlock\.is_some\(\) with true in set_core$',
     # `SocketKey::BAD` is a constant, so the mutant names no function; it
     # fills the slots of a pollset past its length, which nothing reads.
     'conn/io\.rs:.*: delete -$',

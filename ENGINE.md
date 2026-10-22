@@ -1358,8 +1358,10 @@ from `options.upload` and read by the protocol.
   (`Options::reread_headers`, as C walks them in `Curl_http`): the application's
   `Transfer-Encoding` line, or else a body of unknown size. A POST read from a handler and asked
   chunked is read to its end, whatever size it was given (`Upload::read_to_end`, `set_reader`).
-- `Upload::rewind` is a no-op if nothing was read (`Bytes`) or the handler was never called,
-  whatever it answered (`Read`); otherwise `Bytes` starts over and `Read` calls its `Rewind`
+- A body needs a rewind (`Upload::needs_rewind`, which the head parser's `Unsent` carries and
+  "Need to rewind upload for next request" says) once any of it was read (`Bytes`, `Lent`:
+  C's `cr_buf`, copied or not) or the handler was called (`Read`). `Upload::rewind` is a
+  no-op otherwise; `Bytes` and `Lent` start over and `Read` calls its `Rewind`
   (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or on its
   failure SendFailRewind "necessary data rewind was not possible".
 - Resume is the protocols': a file:// upload skips the offset in its read loop (§5.6), FTP seeks

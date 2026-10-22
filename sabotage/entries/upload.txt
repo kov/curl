@@ -310,6 +310,16 @@ witness: curl-sys-abi handle_tests::post_fields_asked_chunked_keep_their_size
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::lent_bytes_are_read_in_place_and_rewound
 --- old
-            Source::Lent(_) => self.read > 0,
+            Source::Bytes(_) | Source::Lent(_) => self.read > 0,
 --- new
+            Source::Bytes(_) => self.read > 0,
             Source::Lent(_) => false,
+
+=== bytes the handle holds never need a rewind
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core proto::http::tests::a_redirected_body_of_bytes_needs_a_rewind
+--- old
+            Source::Bytes(_) | Source::Lent(_) => self.read > 0,
+--- new
+            Source::Lent(_) => self.read > 0,
+            Source::Bytes(_) => false,

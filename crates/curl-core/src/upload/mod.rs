@@ -88,9 +88,10 @@ impl Upload {
     pub(crate) fn needs_rewind(&self) -> bool {
         match self.source {
             Source::Read { .. } => self.called,
-            // Read where they are, as C's `cr_buf` reads its buffer.
-            Source::Lent(_) => self.read > 0,
-            Source::None | Source::Bytes(_) => false,
+            // Read from at all, as C's `cr_buf` says of its buffer,
+            // copied or not.
+            Source::Bytes(_) | Source::Lent(_) => self.read > 0,
+            Source::None => false,
         }
     }
 

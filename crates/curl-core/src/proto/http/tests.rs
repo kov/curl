@@ -2226,6 +2226,32 @@ fn redirected(code: u16, method: Method, body: &[u8], set: impl FnOnce(&mut Opti
     })
 }
 
+/// A body the handle holds, sent and then redirected, is said to need a
+/// rewind for the next request, before the next request is issued: the
+/// C build says so for `-d` and COPYPOSTFIELDS (`cr_buf`), whatever
+/// method follows.
+#[test]
+fn a_redirected_body_of_bytes_needs_a_rewind() {
+    for code in [302, 307] {
+        let ran = redirected(code, Method::Post, b"a=b", |_| {});
+        assert_eq!(ran.result, Ok(()));
+        let text = ran.seen.text();
+        let need = text
+            .iter()
+            .position(|l| l == "Need to rewind upload for next request\n");
+        let issue = text
+            .iter()
+            .position(|l| l.starts_with("Issue another request"));
+        assert!(need.is_some() && need < issue, "{code}: {text:?}");
+        assert_eq!(
+            text.iter()
+                .filter(|l| l.starts_with("Need to rewind"))
+                .count(),
+            1
+        );
+    }
+}
+
 /// The second request on the wire, its line and its head.
 fn second_request(ran: &Ran) -> String {
     let text = String::from_utf8_lossy(&ran.request).into_owned();

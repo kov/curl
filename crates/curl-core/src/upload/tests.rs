@@ -265,6 +265,28 @@ impl crate::handler::LentBytes for Lends {
     }
 }
 
+/// Bytes the handle holds, read from at all, must be rewound to be sent
+/// again, as C's `cr_buf` must for COPYPOSTFIELDS.
+#[test]
+fn bytes_need_a_rewind_once_read() {
+    let (mut m, _clock) = multi();
+    let id = m.add(script(vec![]), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let source = UploadSource::Bytes(TryArc::try_new(b"abcde".to_vec()).unwrap());
+    m.with_step_cx(id, |cx| {
+        let mut upload = Upload::new(&source);
+        assert!(!upload.needs_rewind());
+        let mut buf = [0; 3];
+        assert_eq!(
+            upload.read(cx, &mut buf, true),
+            Ok(Readout { n: 3, eos: false })
+        );
+        assert!(upload.needs_rewind());
+        assert_eq!(upload.rewind(cx), Ok(()));
+        assert!(!upload.needs_rewind());
+    });
+}
+
 /// Lent bytes are read in pieces from where the last read left them, end
 /// with their last byte, and start over at a rewind; read from at all,
 /// they must be rewound to be sent again, as C's `cr_buf` must.

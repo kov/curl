@@ -3176,6 +3176,82 @@ fn a_request_stores_50_cookies_at_most() {
     assert_eq!((count(b'a'), count(b'b')), (50, 50));
 }
 
+/// A request's count of stored `Set-Cookie:` lines (`req.setcookies`)
+/// takes in the application's and a cookie file's, and starts again with
+/// each request: as on the C build, a cookie file read with 50 counted
+/// stores nothing, the application's lines after a response count with
+/// its fields, and a file's 60 lines store 50 and leave the response its
+/// own count.
+#[test]
+fn cookies_are_counted_with_the_request_s_as_c_counts_them() {
+    let fields = |n: usize| {
+        let mut reply = b"HTTP/1.1 200 OK\r\n".to_vec();
+        for i in 0..n {
+            reply.extend_from_slice(format!("Set-Cookie: s{i}=1\r\n").as_bytes());
+        }
+        reply.extend_from_slice(b"Content-Length: 0\r\n\r\n");
+        reply
+    };
+    let add = |e: &mut Easy, n: usize, prefix: &str| {
+        for i in 0..n {
+            let line = format!("Set-Cookie: {prefix}{i}=1; domain=127.0.0.1");
+            e.add_cookie(line.as_bytes()).unwrap();
+        }
+    };
+    let netscape = |e: &mut Easy, name: &str| {
+        let line = format!("127.0.0.1\tFALSE\t/\tFALSE\t0\t{name}\t1");
+        e.add_cookie(line.as_bytes()).unwrap();
+    };
+    let dir = std::env::temp_dir().join(format!("curl-cookie-count-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let three = dir.join("three");
+    let lines: String = (0..3)
+        .map(|i| format!("127.0.0.1\tFALSE\t/\tFALSE\t0\tm{i}\t1\n"))
+        .collect();
+    std::fs::write(&three, lines).unwrap();
+    let sixty = dir.join("sixty");
+    let lines: String = (0..60)
+        .map(|i| format!("Set-Cookie: f{i}=1; domain=127.0.0.1\n"))
+        .collect();
+    std::fs::write(&sixty, lines).unwrap();
+    let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
+    let (ten, forty_five, none) = (fields(10), fields(45), fields(0));
+    let (mut m, talk, _) = server(&[&ten, &forty_five, &none, &ten], false);
+
+    let mut e = Easy::new();
+    add(&mut e, 50, "a");
+    let three = name(&three);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |o| {
+        o.http.cookies.files.push(&three).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let mut e = ran.easy;
+    assert_eq!(e.cookie_list().unwrap().len(), 60);
+    add(&mut e, 5, "b");
+    netscape(&mut e, "n9");
+    assert_eq!(e.cookie_list().unwrap().len(), 66);
+
+    let ran = get_with(&mut m, Easy::new(), "/", talk.clone(), |o| {
+        o.http.cookies.files.push(b"").unwrap();
+    });
+    let mut e = ran.easy;
+    add(&mut e, 10, "b");
+    netscape(&mut e, "n1");
+    assert_eq!(e.cookie_list().unwrap().len(), 50);
+    let ran = get_with(&mut m, e, "/", talk.clone(), |_| {});
+    let mut e = ran.easy;
+    add(&mut e, 3, "c");
+    assert_eq!(e.cookie_list().unwrap().len(), 53);
+
+    let sixty = name(&sixty);
+    let ran = get_with(&mut m, Easy::new(), "/", talk, |o| {
+        o.http.cookies.files.push(&sixty).unwrap();
+    });
+    let mut e = ran.easy;
+    assert_eq!(e.cookie_list().unwrap().len(), 60);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Handles given a share that keeps cookies use its jar: a cookie one
 /// stores, the other lists and saves; a share that does not keep them
 /// leaves each its own.

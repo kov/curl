@@ -77,10 +77,10 @@ witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
 file: crates/curl-core/src/easy.rs
 witness: curl-sys-abi handle_tests::a_share_is_held_and_locked_as_in_c
 --- old
-            cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            set_cookies: 0,
             share: None,
 --- new
-            cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            set_cookies: 0,
             share: self.share.clone(),
 
 === a share asked through C for cookies keeps none

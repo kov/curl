@@ -191,7 +191,7 @@ fn reads_netscape_lines_as_c() {
         example.com\tFALSE\t/\tFALSE\t0\tctl\t\x01\n\
         example.com\tFALSE\t/\tFALSE\t0\ttoo\tmany\tfields\n\
         \n";
-    jar.load(file, false, false, None, NOW).unwrap();
+    jar.load(file, false, false, None, NOW, &mut 0).unwrap();
     assert!(jar.running());
     let mut got = lines(&jar);
     got.sort();
@@ -215,12 +215,12 @@ fn passes_over_session_cookies_in_a_new_session() {
     let file = b"example.com\tFALSE\t/\tFALSE\t0\tsession\tv\n\
         example.com\tFALSE\t/\tFALSE\t2000000000\tkept\tw\n\
         Set-Cookie: hdr=x; domain=example.com\n";
-    jar.load(file, true, false, None, NOW).unwrap();
+    jar.load(file, true, false, None, NOW, &mut 0).unwrap();
     assert_eq!(
         lines(&jar),
         ["example.com\tFALSE\t/\tFALSE\t2000000000\tkept\tw"]
     );
-    jar.load(file, false, false, None, NOW).unwrap();
+    jar.load(file, false, false, None, NOW, &mut 0).unwrap();
     assert_eq!(jar.len(), 3);
 }
 
@@ -233,6 +233,7 @@ fn replaces_in_place_of_time_and_keeps_live_cookies() {
         false,
         None,
         NOW,
+        &mut 0,
     )
     .unwrap();
     set(&mut jar, b"example.com", b"/", b"b=1");
@@ -252,6 +253,7 @@ fn replaces_in_place_of_time_and_keeps_live_cookies() {
         false,
         None,
         NOW,
+        &mut 0,
     )
     .unwrap();
     assert_eq!(sent(&jar, b"example.com", b"/", false), ["b=1", "a=live"]);
@@ -345,7 +347,7 @@ fn caps_the_cookies_a_request_sends() {
     for i in 0..200 {
         file.extend_from_slice(format!("example.com\tFALSE\t/\tFALSE\t0\tc{i}\tv\n").as_bytes());
     }
-    jar.load(&file, false, false, None, NOW).unwrap();
+    jar.load(&file, false, false, None, NOW, &mut 0).unwrap();
     let m = jar.matching(b"example.com", b"/", false).unwrap();
     assert!(m.capped);
     assert_eq!(m.cookies.len(), 150);
@@ -494,6 +496,7 @@ fn checks_public_suffixes() {
         false,
         Some(&Two),
         NOW,
+        &mut 0,
     )
     .unwrap();
     assert!(lines(&jar).contains(&"com\tFALSE\t/\tFALSE\t0\tf\t1".into()));
@@ -658,6 +661,7 @@ fn a_server_s_cookie_sweeps_and_a_file_s_line_does_not() {
         false,
         None,
         NOW,
+        &mut 0,
     )
     .unwrap();
     let mut out = Vec::new();
@@ -691,6 +695,7 @@ fn files_and_the_application_are_not_checked_against_suffixes() {
         true,
         Some(&Missing),
         NOW,
+        &mut 0,
     )
     .unwrap();
     assert_eq!(names(&jar), ["app", "reload"]);
@@ -701,6 +706,7 @@ fn files_and_the_application_are_not_checked_against_suffixes() {
         false,
         Some(&Missing),
         NOW,
+        &mut 0,
     )
     .unwrap();
     assert_eq!(names(&jar), ["app", "reload"]);
@@ -727,6 +733,7 @@ fn replaces_only_the_same_domain_and_path() {
         false,
         None,
         NOW,
+        &mut 0,
     )
     .unwrap();
     assert_eq!(jar.len(), 1);
@@ -1060,7 +1067,7 @@ proptest! {
         for op in &ops {
             match op {
                 JarOp::Load { text, new_session, trusted } => {
-                    jar.load(text, *new_session, *trusted, suffixes, now).unwrap();
+                    jar.load(text, *new_session, *trusted, suffixes, now, &mut set).unwrap();
                 }
                 JarOp::Set { value, host, path, secure } => {
                     let source = Source::Server { host, path, secure: *secure };

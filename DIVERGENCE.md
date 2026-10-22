@@ -30,14 +30,6 @@ not a difference: it is tracked in `MILESTONES.md`.
   starts with a zero ends the file there, every later line unread. Pinned by
   `a_zero_byte_ends_its_line_alone` (`crates/curl-tool/src/config.rs`).
 
-- **Cookies the application gives are not held to the per-response limit.** C counts
-  `Set-Cookie:` lines given with `CURLOPT_COOKIELIST` against `MAX_SET_COOKIE_AMOUNT` (50), the
-  guard against one response setting too many, in the counter of the last request, until the
-  next request starts; once it is reached, every line given, in either format, is dropped
-  silently with `CURLE_OK`. Given 60 `Set-Cookie:` lines and one Netscape line, C keeps 50. The
-  rewrite holds to it only a response's fields, and a cookie file's lines. Pinned by `the_application_s_cookies_have_no_limit`
-  (`crates/curl-core/src/easy.rs`).
-
 ## Undefined behaviour in C, defined here
 
 - **A header pointer libcurl did not hand out leads nowhere.** `curl_easy_nextheader` given a

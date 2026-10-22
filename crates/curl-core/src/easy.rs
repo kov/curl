@@ -45,6 +45,11 @@ pub struct Easy {
     /// the next, and through `reset`. On a share that keeps cookies, the
     /// share's is used in its place, and this one only says the jar is on.
     pub(crate) cookies: Option<Jar>,
+    /// Cookies stored from `Set-Cookie:` lines since the request started
+    /// (`req.setcookies`), whoever gave them: a response, a cookie file or
+    /// the application. Past `MAX_SET_PER_REQUEST`, no cookie of any kind
+    /// is stored until the next request starts.
+    pub(crate) set_cookies: u8,
     /// Where connections, resolved names and cookies are kept for the
     /// transfers after, if not in the handle's own multi (`CURLOPT_SHARE`,
     /// C's `data->share`): kept through `reset`, not copied with the
@@ -132,6 +137,7 @@ impl Easy {
             private: None,
             // A jar of its own, empty, if this one's is on.
             cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            set_cookies: 0,
             share: None,
             share_watch: None,
             suffixes: match &self.suffixes {
@@ -152,6 +158,7 @@ impl Easy {
         self.resolve_read = 0;
         self.wildcard_resolve = false;
         self.auth = Auth::default();
+        self.set_cookies = 0;
     }
 
     /// The share the handle's transfers use.
@@ -234,15 +241,17 @@ impl Easy {
     /// public suffixes.
     pub fn add_cookie(&mut self, line: &[u8]) -> Result<(), ErrorKind> {
         let now = SystemClock::new().unix_time();
-        // C counts the line against the last request's fields, and drops
-        // it silently past their limit; this counts it alone
-        // (DIVERGENCE.md).
-        let mut set = 0;
+        // Counted with the last request's, and dropped silently past
+        // their limit, as C counts it.
+        let mut set = self.set_cookies;
         let suffixes = self.public_suffixes().map_err(oom)?;
         let list = suffixes.as_ref().map(Suffixes::list);
-        self.with_jar(true, |jar| jar.add_line(line, list, now, &mut set))
+        let added = self
+            .with_jar(true, |jar| jar.add_line(line, list, now, &mut set))
             .expect("made if missing")
-            .map_err(oom)
+            .map_err(oom);
+        self.set_cookies = set;
+        added
     }
 
     /// Forget every cookie (`CURLOPT_COOKIELIST` `ALL`).
@@ -276,13 +285,17 @@ impl Easy {
         let now = SystemClock::new().unix_time();
         let suffixes = self.public_suffixes().map_err(oom)?;
         let list = suffixes.as_ref().map(Suffixes::list);
-        self.with_jar(true, |jar| {
-            texts
-                .iter()
-                .try_for_each(|text| jar.load(text, new_session, true, list, now))
-        })
-        .expect("made if missing")
-        .map_err(oom)
+        let mut set = self.set_cookies;
+        let loaded = self
+            .with_jar(true, |jar| {
+                texts
+                    .iter()
+                    .try_for_each(|text| jar.load(text, new_session, true, list, now, &mut set))
+            })
+            .expect("made if missing")
+            .map_err(oom);
+        self.set_cookies = set;
+        loaded
     }
 
     /// Every cookie the jar holds that has a domain, as a line in the
@@ -796,21 +809,40 @@ mod tests {
         assert!(e.options().http.cookies.files.iter().next().is_none());
     }
 
-    /// Every cookie the application gives is kept, past the limit of 50 a
-    /// response may set. C counts `Set-Cookie:` lines given here against
-    /// that limit until the next request starts, and once it is reached
-    /// drops every line given, silently: it keeps 50 of these 61
-    /// (DIVERGENCE.md).
+    /// The application's `Set-Cookie:` lines count toward the 50 one
+    /// request stores, as C counts them (`req.setcookies`): once they are
+    /// reached, no line it gives is stored, in either format, and it is
+    /// not told. As on the C build: 50 of 60 lines and a Netscape one; 51
+    /// of 49, a Netscape one, 5 more and another.
     #[test]
-    fn the_application_s_cookies_have_no_limit() {
-        let mut e = Easy::new();
-        for i in 0..60 {
-            let line = format!("Set-Cookie: c{i}=v; domain=example.com");
+    fn the_application_s_cookies_count_toward_the_limit() {
+        let add = |e: &mut Easy, n: usize, prefix: &str| {
+            for i in 0..n {
+                let line = format!("Set-Cookie: {prefix}{i}=v; domain=example.com");
+                e.add_cookie(line.as_bytes()).unwrap();
+            }
+        };
+        let netscape = |e: &mut Easy, name: &str| {
+            let line = format!("example.com\tFALSE\t/\tFALSE\t0\t{name}\tv");
             e.add_cookie(line.as_bytes()).unwrap();
-        }
-        e.add_cookie(b"example.com\tFALSE\t/\tFALSE\t0\tnetscape\tv")
-            .unwrap();
-        assert_eq!(e.cookie_list().unwrap().len(), 61);
+        };
+        let mut e = Easy::new();
+        add(&mut e, 60, "a");
+        netscape(&mut e, "n1");
+        assert_eq!(e.cookie_list().unwrap().len(), 50);
+        let mut e = Easy::new();
+        add(&mut e, 49, "a");
+        netscape(&mut e, "n1");
+        add(&mut e, 5, "b");
+        netscape(&mut e, "n2");
+        assert_eq!(e.cookie_list().unwrap().len(), 51);
+        // A reset starts the count again; a copy starts its own.
+        e.reset();
+        add(&mut e, 3, "c");
+        assert_eq!(e.cookie_list().unwrap().len(), 54);
+        let mut copy = e.try_clone().unwrap();
+        add(&mut copy, 3, "d");
+        assert_eq!(copy.cookie_list().unwrap().len(), 3);
     }
 
     /// Driven by events, a transfer runs to its end as when waited on.

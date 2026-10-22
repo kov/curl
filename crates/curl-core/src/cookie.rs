@@ -411,7 +411,8 @@ impl Jar {
     /// that are neither are passed over. `new_session` passes over the
     /// cookies that last the session; `trusted` does not check public
     /// suffixes, as on a reload the application asks for. The jar is
-    /// swept after, and then started.
+    /// swept after, and then started. `set` counts the `Set-Cookie:`
+    /// lines stored since the request started, the file's with them.
     pub(crate) fn load(
         &mut self,
         text: &[u8],
@@ -419,17 +420,16 @@ impl Jar {
         trusted: bool,
         suffixes: Option<&dyn PublicSuffixes>,
         now: i64,
+        set: &mut u8,
     ) -> Result<(), OutOfMemory> {
         self.new_session = new_session;
         self.running = false;
-        // A file's `Set-Cookie:` lines count against one request's.
-        let mut set = 0;
         for line in text.split_inclusive(|&b| b == b'\n') {
             let line = match strip_prefix_ignore_case(line, b"Set-Cookie:") {
                 Some(rest) => Line::Header(trim_start(rest)),
                 None => Line::Netscape(line),
             };
-            self.add(line, Source::File { trusted }, suffixes, now, &mut set)?;
+            self.add(line, Source::File { trusted }, suffixes, now, set)?;
         }
         self.sweep(now);
         self.running = true;

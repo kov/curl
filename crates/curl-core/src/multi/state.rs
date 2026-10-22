@@ -1796,6 +1796,9 @@ fn retry_request<H: Host>(
 /// `url`, then the protocol connects over it.
 fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> TransferState {
     run.deadlines.start_leg(cx.rest.now);
+    // Cookies are counted from nothing for each request
+    // (`Curl_req_hard_reset`).
+    cx.easy_mut().set_cookies = 0;
     // The connect-to entries as the application's source has them now,
     // as C walks them for each connection it sets up; the header lists
     // are read as the request is built.

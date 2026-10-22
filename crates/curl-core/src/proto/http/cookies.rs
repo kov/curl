@@ -94,11 +94,13 @@ pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let easy = cx.easy_mut();
         let suffixes = easy.public_suffixes().map_err(oom)?;
         let list = suffixes.as_ref().map(Suffixes::list);
+        let mut set = easy.set_cookies;
         let loaded = jar_section(easy, |jar| {
             texts
                 .iter()
-                .try_for_each(|text| jar.load(text, new_session, false, list, now))
+                .try_for_each(|text| jar.load(text, new_session, false, list, now, &mut set))
         });
+        easy.set_cookies = set;
         loaded.expect("on, checked above").map_err(oom)?;
     }
     read?;
@@ -257,13 +259,12 @@ fn read_all(file: &mut impl std::io::Read) -> Result<Vec<u8>, ErrorKind> {
 }
 
 /// Give the jar a cookie a server sets in its `Set-Cookie:` field,
-/// `value` being all after the colon. `set` counts those this request has
-/// stored.
+/// `value` being all after the colon, counted with the others stored
+/// since the request started.
 pub(super) fn set_by_server<H: Host>(
     cx: &mut StepCx<'_, H>,
     value: &[u8],
     site: &Site<'_>,
-    set: &mut u8,
 ) -> Result<(), ErrorKind> {
     if cx.easy().cookies.is_none() {
         return Ok(());
@@ -277,13 +278,15 @@ pub(super) fn set_by_server<H: Host>(
     };
     let now = cx.unix_time();
     let mut held = Held::new(cx);
+    let mut set = cx.easy().set_cookies;
     let stored = jar_section(cx.easy_mut(), |jar| {
-        let said = jar.set_by(value, source, list, now, set)?;
+        let said = jar.set_by(value, source, list, now, &mut set)?;
         if let Some(said) = said {
             said.lines(|parts| held.hold(parts));
         }
         Ok(())
     });
+    cx.easy_mut().set_cookies = set;
     held.trace(cx)?;
     stored.expect("on, checked above").map_err(oom)
 }
@@ -398,7 +401,7 @@ mod tests {
     /// whether the line is full, and what was said.
     fn cookie_line(file: &[u8]) -> (String, bool, Vec<String>) {
         let mut jar = Jar::default();
-        jar.load(file, false, false, None, 0).unwrap();
+        jar.load(file, false, false, None, 0, &mut 0).unwrap();
         let site = Site {
             host: b"example.com",
             path: b"/",

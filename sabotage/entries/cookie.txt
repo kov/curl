@@ -10,7 +10,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
             let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
-            cookies::set_by_server(cx, value, &site, &mut self.set_cookies)?;
+            cookies::set_by_server(cx, value, &site)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
@@ -20,7 +20,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
             let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
-            cookies::set_by_server(cx, value, &site, &mut self.set_cookies)?;
+            cookies::set_by_server(cx, value, &site)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
 
@@ -134,10 +134,40 @@ witness: curl-psl tests::answers_as_libpsl
 --- new
         unsafe { psl_is_public_suffix(ctx.as_ptr(), domain.as_ptr().cast()) == 0 }
 
-=== an application's cookie is held to a spent per-response limit
+=== the application's cookies are not counted with the request's
 file: crates/curl-core/src/easy.rs
-witness: curl-core easy::tests::the_application_s_cookies_have_no_limit
+witness: curl-core easy::tests::the_application_s_cookies_count_toward_the_limit
 --- old
-        let mut set = 0;
+        let mut set = self.set_cookies;
+        let suffixes = self.public_suffixes().map_err(oom)?;
+        let list = suffixes.as_ref().map(Suffixes::list);
+        let added = self
 --- new
-        let mut set = crate::cookie::MAX_SET_PER_REQUEST;
+        let mut set = 0;
+        let suffixes = self.public_suffixes().map_err(oom)?;
+        let list = suffixes.as_ref().map(Suffixes::list);
+        let added = self
+
+=== a reset handle keeps its count of cookies stored
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::the_application_s_cookies_count_toward_the_limit
+--- old
+        self.auth = Auth::default();
+        self.set_cookies = 0;
+--- new
+        self.auth = Auth::default();
+
+=== the count of cookies stored runs on from one request to the next
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::cookies_are_counted_with_the_request_s_as_c_counts_them
+--- old
+    cx.easy_mut().set_cookies = 0;
+--- new
+
+=== a cookie file read as a transfer starts is counted alone
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::cookies_are_counted_with_the_request_s_as_c_counts_them
+--- old
+        let mut set = easy.set_cookies;
+--- new
+        let mut set = 0;

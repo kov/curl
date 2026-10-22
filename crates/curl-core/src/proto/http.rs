@@ -144,8 +144,6 @@ pub(crate) struct Request {
     /// The name a custom `Host:` header gives the cookies, in place of
     /// the URL's host.
     cookie_host: Option<Vec<u8>>,
-    /// `Set-Cookie:` fields stored from the responses to this request.
-    set_cookies: u8,
 }
 
 #[derive(Debug)]
@@ -404,7 +402,6 @@ impl Request {
             stage: Stage::Head,
             interim: false,
             cookie_host: None,
-            set_cookies: 0,
         })
     }
 
@@ -1263,7 +1260,7 @@ impl Request {
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
             let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
-            cookies::set_by_server(cx, value, &site, &mut self.set_cookies)?;
+            cookies::set_by_server(cx, value, &site)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);

@@ -95,7 +95,8 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
   holds the connection's shared receive buffer.
 - **No engine borrow is live across a call-out** except values moved out of their homes for its
   duration (the stepping transfer's state, the connection's receive buffer), so a callback's
-  context can reach every other transfer without aliasing.
+  context can reach every other transfer without aliasing. An option is never one of them: a
+  callback may read and set the options, and must find them where they are.
 - **Reads are capped at the response's remaining size** on connections that are not
   multiplexed, as C caps them, keeping traces and reuse decisions identical; the cap goes only
   if both legs agree without it.

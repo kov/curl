@@ -733,7 +733,9 @@ The rules that keep this sound:
   stepping transfer's `Box<Run>` and, while delivering received bytes, the connection's
   `RecvBuf` (taken with `mem::take`, which allocates nothing, and put back after delivery).
   The pool, the other slots and every table stay in `EngineRest`. No iterator over engine state
-  is live across a call-out.
+  is live across a call-out. An option is never moved out: a callback reaches the options and
+  may set them (`TransferCx::options_mut`), so a trace line that names one is formatted while
+  it is borrowed and traced once it is not (`trace::line`, `trace::reason`).
 - **The stepping transfer's pollset during its own callback** is `me_basis` (computed from
   the state and the layers' interest just before the call-out; neither can change while the
   engine is suspended in the callback) masked by `shared.pause`, which the callback may change.

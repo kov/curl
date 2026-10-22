@@ -3544,6 +3544,200 @@ fn suppressed_connect_headers_are_kept_and_not_delivered() {
     }
 }
 
+/// Through a tunnel at `PORT` to `http://origin.example/a`.
+fn tunneled(o: &mut Options) {
+    o.set_url(Some(b"http://origin.example/a")).unwrap();
+    o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    o.proxy.tunnel = true;
+}
+
+/// A transfer of `m` over `talk` started with the options `set` makes,
+/// run as far as it goes without waiting; what its socket waits for.
+fn waiting(m: &mut Multi, set: impl FnOnce(&mut Options)) -> Vec<crate::conn::io::Events> {
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    set(e.options_mut());
+    m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let mut seen = Vec::new();
+    m.sockets(|_, events| seen.push(events));
+    seen
+}
+
+/// A proxy's handshake waits to write what it could not send yet, then
+/// to read the answer: a tunnel's `CONNECT`, a SOCKS proxy's request, and
+/// the PROXY protocol's line, which waits for nothing else.
+#[test]
+fn a_proxy_handshake_waits_to_send_then_to_read() {
+    use crate::conn::io::Events;
+    let stalled = |replies: &[&[u8]]| Conversation::replies(replies, false).stalling_sends(1);
+    let talk = stalled(&[]);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    assert_eq!(waiting(&mut m, tunneled), [Events::OUT]);
+    m.perform(&mut NoEvents).unwrap();
+    let mut seen = Vec::new();
+    m.sockets(|_, events| seen.push(events));
+    assert_eq!(seen, [Events::IN], "the CONNECT sent, its answer awaited");
+    assert!(
+        talk.received()
+            .starts_with(b"CONNECT origin.example:80 HTTP/1.1\r\n")
+    );
+    let talk = stalled(&[]).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let socks = |o: &mut Options| through_socks(o, "socks5h", b"http://origin.example/a");
+    assert_eq!(waiting(&mut m, socks), [Events::OUT]);
+    m.perform(&mut NoEvents).unwrap();
+    let mut seen = Vec::new();
+    m.sockets(|_, events| seen.push(events));
+    assert_eq!(seen, [Events::IN], "the offer sent, the pick awaited");
+    let talk = stalled(&[OK]);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    assert_eq!(waiting(&mut m, |o| o.proxy.haproxy = true), [Events::OUT]);
+}
+
+/// A tunnel's `CONNECT` is traced as sent, and its answer's head counts
+/// in the header size (`Curl_bump_headersize`).
+#[test]
+fn a_tunnel_s_connect_is_traced_and_its_answer_counted() {
+    let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
+    let ran = get(&mut m, "/", talk, tunneled);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.of("out")[0], connect_of("").as_bytes());
+    let head = OK.len() - b"ok\n".len();
+    assert_eq!(
+        ran.easy.report().sizes().header(),
+        (TUNNEL_UP.len() + head) as u64
+    );
+}
+
+/// An answer to `CONNECT` of `total` head bytes, of lines as long as C's
+/// buffer takes.
+fn tunnel_up_of(total: usize) -> Vec<u8> {
+    let mut head = b"HTTP/1.1 200 Fine\r\n".to_vec();
+    while head.len() + 2 < total {
+        let line = (total - 2 - head.len()).clamp(5, 16_000);
+        head.extend_from_slice(b"X: ");
+        head.resize(head.len() + line - 5, b'a');
+        head.extend_from_slice(b"\r\n");
+    }
+    head.extend_from_slice(b"\r\n");
+    assert_eq!(head.len(), total);
+    head
+}
+
+/// An answer to `CONNECT` is held to C's limit on a response's head
+/// bytes, as a response is.
+#[test]
+fn a_tunnel_s_answer_is_held_to_the_head_limit() {
+    use crate::proto::http1::fields::MAX_HEADERS;
+    let at_limit = tunnel_up_of(MAX_HEADERS);
+    let (mut m, talk, _) = server(&[&at_limit, OK], false);
+    assert_eq!(get(&mut m, "/", talk, tunneled).result, Ok(()));
+    let over = tunnel_up_of(MAX_HEADERS + 1);
+    let (mut m, talk, _) = server(&[&over, OK], false);
+    let ran = get(&mut m, "/", talk, tunneled);
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+    let said = ran.seen.text();
+    let want = format!(
+        "Too large response headers: {} > {MAX_HEADERS}\n",
+        MAX_HEADERS + 1
+    );
+    assert!(said.contains(&want), "{said:?}");
+}
+
+/// A proxy that closes mid-answer aborts the tunnel, though it offers a
+/// method, when it was sent no credentials (`recv_CONNECT_resp`); the
+/// line it had sent whole is still traced and delivered.
+#[test]
+fn a_proxy_closing_mid_answer_aborts_the_tunnel() {
+    let challenge = "Proxy-Authenticate: Basic realm=\"p\"\r\n";
+    let cut = format!("HTTP/1.1 407 Who\r\n{challenge}");
+    let talk = Conversation::replies(&[cut.as_bytes()], true);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk, tunneled);
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+    let said = ran.seen.text();
+    assert!(
+        said.iter().any(|l| l == "Proxy CONNECT aborted\n"),
+        "{said:?}"
+    );
+    assert_eq!(ran.seen.of("in").last().unwrap(), challenge.as_bytes());
+    assert_eq!(ran.seen.of("header").last().unwrap(), challenge.as_bytes());
+}
+
+/// A 407 that offers again the method already sent is a refusal: its
+/// body is not read, and the method used stays the one sent; one that
+/// offers no method wanted leaves it so too.
+#[test]
+fn a_407_refusing_the_credentials_sent_ends_the_tunnel() {
+    let basic: &[u8] = b"HTTP/1.1 407 Who\r\nProxy-Authenticate: Basic realm=\"p\"\r\n\
+        Content-Length: 3\r\n\r\nabc";
+    let digest: &[u8] = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\nContent-Length: 0\r\n\r\n";
+    for answer in [basic, digest] {
+        let (mut m, talk, _) = server(&[answer], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            tunneled(o);
+            o.proxy.user = Some(b"u".to_vec());
+            o.proxy.password = Some(b"p".to_vec());
+            o.proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+        });
+        assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+        let said = ran.seen.text();
+        assert!(
+            said.iter()
+                .any(|l| l == "CONNECT tunnel failed, response 407\n"),
+            "{said:?}"
+        );
+        assert!(!said.iter().any(|l| l.starts_with("Ignore ")), "{said:?}");
+        assert_eq!(ran.easy.report().proxy_auth_used(), AuthMethods::BASIC);
+    }
+}
+
+/// An answer the tunnel refuses fails it with the error C gives: a line
+/// too long, and a dropped body's bad chunks.
+#[test]
+fn a_refused_answer_fails_the_tunnel_as_c() {
+    let mut long = b"HTTP/1.1 200 Fine\r\nX: ".to_vec();
+    long.resize(long.len() + 16_384, b'a');
+    let bad_chunks: &[u8] = b"HTTP/1.1 407 Who\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n";
+    for (answer, line) in [
+        (&long[..], "CONNECT response too large\n"),
+        (bad_chunks, "chunk hex-length char not a hex digit: 0x7a\n"),
+    ] {
+        let (mut m, talk, _) = server(&[answer], false);
+        let ran = get(&mut m, "/", talk, tunneled);
+        assert_eq!(ran.result, Err(ErrorKind::RecvError), "{line}");
+        let said = ran.seen.text();
+        assert!(said.iter().any(|l| l == line), "{said:?}");
+    }
+}
+
+/// After a redirect to another host, the proxy's `Cookie` no longer goes
+/// with the `CONNECT`, as an origin's credentials would not
+/// (`Curl_auth_allowed_to_host`).
+#[test]
+fn a_tunnel_after_a_redirect_elsewhere_sends_no_cookie() {
+    let first = Conversation::replies(&[TUNNEL_UP, &moved("http://other.example/b", false)], false);
+    let second = Conversation::replies(&[TUNNEL_UP, OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/", second.clone(), |o| {
+        tunneled(o);
+        o.http.follow = Follow::All;
+        o.proxy.headers = UserHeaders::new([&b"Cookie: a=b"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let has_cookie = |talk: &Conversation| {
+        let text = String::from_utf8_lossy(&talk.received()).into_owned();
+        let (connect, _) = text.split_once("\r\n\r\n").unwrap();
+        connect.contains("\r\nCookie: a=b")
+    };
+    assert!(has_cookie(&first), "to the first host");
+    assert!(!has_cookie(&second), "not to the next");
+    assert!(String::from_utf8_lossy(&second.received()).starts_with("CONNECT other.example:80 "));
+}
+
 /// A connection whose last response said HTTP/1.0 is sent HTTP/1.0 by
 /// the next transfer to use it, as test 1078's second URL is
 /// (`conn->httpversion_seen`).

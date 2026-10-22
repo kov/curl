@@ -276,6 +276,9 @@ struct Wire {
     per_send: bool,
     /// The sends it was given.
     sends: usize,
+    /// Sends still to be refused as would-block, though the socket polls
+    /// writable: a full send buffer that drains by the next poll.
+    stalls: usize,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -341,6 +344,15 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .per_send = true;
+        self
+    }
+
+    /// The same peer, its first `n` sends refused as would-block.
+    pub fn stalling_sends(self, n: usize) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .stalls = n;
         self
     }
 
@@ -673,6 +685,10 @@ impl Socket for FakeSocket {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         if wire.hung_up {
             return Err(io::Error::from_raw_os_error(libc_errno::EPIPE));
+        }
+        if wire.stalls > 0 {
+            wire.stalls -= 1;
+            return Ok(Sent::WouldBlock);
         }
         wire.received
             .try_extend_from_slice(buf)

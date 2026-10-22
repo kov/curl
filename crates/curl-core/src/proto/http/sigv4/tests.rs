@@ -80,7 +80,9 @@ fn canonical_queries_as_unit_1980() {
         ("p3= &p1=+&p2=%20", "p1=%20&p2=%20&p3=%20"),
         ("p3=%2b&p1=+", "p1=%20&p3=%2B"),
         // Not unit 1980's: empty parts left out, `=` in a value encoded,
-        // a key of nothing first.
+        // a key of nothing first, and signed as nothing. C signs it as
+        // `(nil)=x`, its printf's text for the NULL an empty buffer holds
+        // (DIVERGENCE.md).
         ("&&b=1&&=x&a==", "=x&a=%3D&b=1"),
         // Empty keys are as one: their values keep the order given.
         ("=b&z&=a", "=b&=a&z="),

@@ -65,6 +65,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   store. Pinned by `a_cursor_from_an_earlier_transfer_leads_nowhere`
   (`crates/curl-core/src/report/headers.rs`).
 
+- **An empty query key is signed as nothing.** AWS SigV4 (`--aws-sigv4`, `CURLOPT_AWS_SIGV4`)
+  signs a query part with an empty key, `?=x`, as `=x` in its canonical query. C passes the
+  empty key's buffer, NULL, to a `%s` (`canon_query`, `lib/http_aws_sigv4.c`), which its printf
+  writes as `(nil)`: it signs `(nil)=x`, a request no server computes the same signature for.
+  Measured against the C build: its string to sign for `GET /f?=x` hashes the canonical request
+  with `(nil)=x`. Pinned by `canonical_queries_as_unit_1980`
+  (`crates/curl-core/src/proto/http/sigv4/tests.rs`).
+
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

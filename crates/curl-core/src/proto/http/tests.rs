@@ -3738,6 +3738,27 @@ fn a_proxy_closing_every_time_is_redialed_five_times() {
     assert_eq!(asked, [true, true, true, true, true, false]);
 }
 
+/// The name a setup finds in the cache is the one it looked up: through
+/// a tunnel, the proxy's, not the origin's (`hostip_resolv`'s
+/// `peer->hostname`), as the C build traces it.
+#[test]
+fn a_proxy_s_name_is_the_one_found_in_the_cache() {
+    let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        tunneled(o);
+        o.proxy.url = Some(format!("proxy.test:{PORT}").into_bytes());
+        let entry = format!("proxy.test:{PORT}:127.0.0.1");
+        o.resolve.set([entry.as_bytes()]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let said = ran.seen.text();
+    assert!(
+        said.iter()
+            .any(|l| l == "Hostname proxy.test was found in DNS cache\n"),
+        "{said:?}"
+    );
+}
+
 /// Digest is the proxy's method from the first request, before it has a
 /// challenge to answer: the trace names it though no header goes yet,
 /// through a tunnel and to a proxy forwarding the request alike

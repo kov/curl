@@ -454,3 +454,11 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
 --- new
         net.close(d.socket);
         let _ = Stage::Racing(Racing {
+
+=== a tunnel's setup traces the origin's name as found in the cache
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_proxy_s_name_is_the_one_found_in_the_cache
+--- old
+                    let name = Bytes(c.destination().name());
+--- new
+                    let name = Bytes(c.origin.name());

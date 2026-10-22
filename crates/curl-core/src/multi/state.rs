@@ -952,7 +952,9 @@ fn connecting<H: Host>(
         Ok(Connected::Connecting(Progress::Resolved(found))) => {
             match found {
                 Found::Cached => {
-                    let name = Bytes(c.origin.name());
+                    // The name looked up: the proxy's, or what a
+                    // connect-to names in the origin's place.
+                    let name = Bytes(c.destination().name());
                     trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
                 }
                 Found::Stale => {

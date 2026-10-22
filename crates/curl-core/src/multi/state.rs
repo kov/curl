@@ -13,13 +13,13 @@ use crate::conn::io::{Events, ResolveFailure};
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
     Acquired, Answer, BadEntry, BadVia, Conn, ConnLease, ConnectError, Connected, Failure, Finish,
-    Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, Progress, ProxyCreds, ProxyRoute,
-    Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
+    Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, PreProxy, Progress, ProxyCreds,
+    ProxyRoute, Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::options::{Follow, Lines, Method, Options, ResolveList};
+use crate::options::{Follow, Lines, Method, Options, ProxyType, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
 
@@ -173,7 +173,7 @@ impl Connecting {
     /// The peer connected to (`Curl_conn_get_destination`).
     fn destination(&self) -> &Peer {
         match &self.proxy {
-            Some(proxy) => &proxy.peer,
+            Some(proxy) => proxy.first_peer(),
             None => self.target(),
         }
     }
@@ -978,7 +978,7 @@ fn connecting<H: Host>(
 fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     cx.report_mut().count_connect();
     let proxy = c.proxy.as_ref().expect("dialed through a proxy");
-    match crate::conn::socks::Version::of(proxy.kind) {
+    match proxy.socks(c.target()).map(|leg| leg.version) {
         Some(version) => socks::dialed(c, cx, version),
         None => tunnel::dialed(c, cx),
     }
@@ -1899,7 +1899,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
 /// The proxy the transfer to `origin` goes through, if any
 /// (`Curl_proxy_init_conn`): the options', or else the one the
 /// environment names for `scheme`, unless the no-proxy list names the
-/// origin's host. Through a connect-to peer (`via`), it would tunnel.
+/// origin's host; behind the SOCKS pre-proxy if one is set, which alone
+/// is the proxy. Through a connect-to peer (`via`), an HTTP proxy would
+/// tunnel.
 fn choose_proxy<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Peer,
@@ -1915,10 +1917,14 @@ fn choose_proxy<H: Host>(
         return Ok(None);
     }
     let options = &cx.easy().options().proxy;
-    let text = match options.url.as_deref() {
-        // An empty one turns the environment's off too.
-        Some([]) => return Ok(None),
-        Some(text) => copied(text)?,
+    // An empty one is none, and turns the environment's off too.
+    let given = |text: Option<&[u8]>| text.filter(|t| !t.is_empty()).map(copied).transpose();
+    let detect = !matches!(options.url.as_deref(), Some([]))
+        && !matches!(options.pre_proxy.as_deref(), Some([]));
+    let pre = given(options.pre_proxy.as_deref())?;
+    let text = match given(options.url.as_deref())? {
+        Some(text) => Some(text),
+        None if pre.is_some() || !detect => None,
         None => match proxy::detect(scheme, &mut |name| getenv(name)) {
             Some(found) => {
                 let name = found.name();
@@ -1930,17 +1936,65 @@ fn choose_proxy<H: Host>(
                     b"'",
                 ];
                 trace::info_with(cx, &said);
-                found.value
+                Some(found.value)
             }
-            None => return Ok(None),
+            None => None,
         },
     };
+    let pre = match pre {
+        Some(pre) => Some(parse_proxy(cx, &pre, true)?),
+        None => None,
+    };
+    let auth_only = cx.easy().options().proxy.socks5_auth.only;
+    let Some(text) = text else {
+        // The pre-proxy alone is the SOCKS proxy.
+        return Ok(
+            pre.map(|(kind, peer, creds)| ProxyRoute::new(kind, peer, creds, false, auth_only))
+        );
+    };
+    let (kind, peer, creds) = parse_proxy(cx, &text, false)?;
+    // Through a SOCKS proxy, the request goes as to the origin.
+    if crate::conn::socks::Version::of(kind).is_some() {
+        if pre.is_some() {
+            return Err(trace::fail_with(
+                cx,
+                ErrorKind::CouldntResolveProxy,
+                &[
+                    b"Having a SOCKS pre-proxy and proxy is not supported with '",
+                    &text,
+                    b"'",
+                ],
+            ));
+        }
+        return Ok(Some(ProxyRoute::new(kind, peer, creds, false, auth_only)));
+    }
+    // A request goes to an HTTP proxy whole, unless it is asked to
+    // tunnel, or reaches the origin through another peer; HTTP is the
+    // only scheme here, and it is not secured.
+    let tunnel = cx.easy().options().proxy.tunnel || via;
+    let route = ProxyRoute::new(kind, peer, creds, !tunnel, auth_only);
+    Ok(Some(match pre {
+        Some((kind, peer, creds)) => route.behind(PreProxy { kind, peer, creds }),
+        None => route,
+    }))
+}
+
+/// A proxy's URL, `text`, as its type, its peer and its credentials
+/// (`parse_proxy`): a pre-proxy is SOCKS4 unless its scheme says
+/// otherwise, never HTTP, and has only the credentials its URL gives.
+#[expect(clippy::type_complexity, reason = "the route's own parts")]
+fn parse_proxy<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    text: &[u8],
+    pre: bool,
+) -> Result<(ProxyType, TryRc<Peer>, Option<TryRc<ProxyCreds>>), ErrorKind> {
     let options = &cx.easy().options().proxy;
-    let parsed = match proxy::parse(&text, options.kind, options.port) {
+    let kind = if pre { ProxyType::Socks4 } else { options.kind };
+    let parsed = match proxy::parse(text, kind, options.port) {
         Ok(parsed) => parsed,
         Err(Refused::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(Refused::Syntax(e)) => {
-            let text = Bytes(&text);
+            let text = Bytes(text);
             return Err(trace::fail(
                 cx,
                 ErrorKind::CouldntResolveProxy,
@@ -1951,7 +2005,7 @@ fn choose_proxy<H: Host>(
             return Err(trace::fail_with(
                 cx,
                 ErrorKind::CouldntConnect,
-                &[b"Unsupported proxy scheme for '", &text, b"'"],
+                &[b"Unsupported proxy scheme for '", text, b"'"],
             ));
         }
         Err(Refused::Https) => {
@@ -1960,16 +2014,23 @@ fn choose_proxy<H: Host>(
                 ErrorKind::NotBuiltIn,
                 &[
                     b"Unsupported proxy '",
-                    &text,
+                    text,
                     b"', libcurl is built without the HTTPS-proxy support.",
                 ],
             ));
         }
     };
+    if pre && crate::conn::socks::Version::of(parsed.kind).is_none() {
+        return Err(trace::fail_with(
+            cx,
+            ErrorKind::CouldntResolveProxy,
+            &[b"Unsupported pre-proxy type for '", text, b"'"],
+        ));
+    }
     // The URL's user and password, else the options' (`proxy_parse`).
     let options = &cx.easy().options().proxy;
     let (user, password) = match (parsed.user, parsed.password) {
-        (None, None) => (
+        (None, None) if !pre => (
             options.user.as_deref().map(copied).transpose()?,
             options.password.as_deref().map(copied).transpose()?,
         ),
@@ -1985,25 +2046,8 @@ fn choose_proxy<H: Host>(
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         ),
     };
-    let route = ProxyRoute {
-        kind: parsed.kind,
-        peer: TryRc::try_new(parsed.peer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
-        creds,
-        forward: false,
-        auth_only: cx.easy().options().proxy.socks5_auth.only,
-    };
-    // Through a SOCKS proxy, the request goes as to the origin.
-    if !route.http() {
-        return Ok(Some(route));
-    }
-    // A request goes to an HTTP proxy whole, unless it is asked to
-    // tunnel, or reaches the origin through another peer; HTTP is the
-    // only scheme here, and it is not secured.
-    let tunnel = cx.easy().options().proxy.tunnel || via;
-    Ok(Some(ProxyRoute {
-        forward: !tunnel,
-        ..route
-    }))
+    let peer = TryRc::try_new(parsed.peer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    Ok((parsed.kind, peer, creds))
 }
 
 /// The first of the environment variables `names` set, traced as C

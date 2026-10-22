@@ -69,7 +69,9 @@ fn start<H: Host>(
         Some(Ok((answer, found))) => Some(Ok((answer.clone(), *found))),
         Some(Err(_)) => Some(Err(())),
     };
-    let target = c.target();
+    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
+    let leg = proxy.socks(c.target()).expect("through a SOCKS proxy");
+    let target = leg.to;
     let resolved = match found {
         None => Resolved::Remote,
         Some(Ok((answer, found))) => {
@@ -88,8 +90,7 @@ fn start<H: Host>(
         }
         Some(Err(())) => Resolved::Failed,
     };
-    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
-    let creds = proxy.creds.as_deref().map(|c| Creds {
+    let creds = leg.creds.map(|c| Creds {
         user: &c.user,
         password: &c.password,
     });
@@ -106,21 +107,15 @@ fn start<H: Host>(
 /// Move the handshake on as far as its socket lets it.
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     match run(&mut c, cx) {
-        Ok(None) => (TransferState::Connecting(c), Wake::Idle),
-        Ok(Some((remote, local, at))) => established(c, cx, remote, local, at),
+        Ok(false) => (TransferState::Connecting(c), Wake::Idle),
+        Ok(true) => opened(c, cx),
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
     }
 }
 
-type Up = (
-    std::net::SocketAddr,
-    Option<std::net::SocketAddr>,
-    crate::time::Instant,
-);
-
 /// Send and read until the socket blocks, or the proxy connected to the
 /// destination (`socks_flush`, `socks_recv`).
-fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Option<Up>, ErrorKind> {
+fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
     loop {
         let h = socks(&mut c.handshake);
         let (pool, _) = cx.rest.pool_net(cx.me);
@@ -128,7 +123,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Option<Up>
         if !h.to_send().is_empty() {
             match dialed.send(h.to_send()) {
                 Ok(Sent::Bytes(n)) => h.sent(n.get()),
-                Ok(Sent::WouldBlock) => return Ok(None),
+                Ok(Sent::WouldBlock) => return Ok(false),
                 Err(_) => {
                     return Err(failed(
                         cx,
@@ -140,8 +135,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Option<Up>
             continue;
         }
         if h.done() {
-            let authenticated = h.authenticated();
-            return Ok(Some(opened(c, cx, authenticated)));
+            return Ok(true);
         }
         match h.take(dialed.received()) {
             Ok(Took::Read(n)) => {
@@ -153,7 +147,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Option<Up>
         }
         match dialed.recv(READ_SIZE) {
             Ok(Recv::Data(_)) => {}
-            Ok(Recv::WouldBlock) => return Ok(None),
+            Ok(Recv::WouldBlock) => return Ok(false),
             Ok(Recv::Eof) => {
                 return Err(failed(
                     cx,
@@ -173,15 +167,22 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Option<Up>
     }
 }
 
-/// The proxy connected to the destination: the connection is up, and
-/// traced as C traces it (`socks_proxy_cf_connect`), and kept for
-/// transfers that insist on the user being authenticated if it was.
-fn opened<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>, authenticated: bool) -> Up {
+/// The proxy connected where it was asked, traced as C traces it
+/// (`socks_proxy_cf_connect`), and the connection kept for transfers
+/// that insist on the user being authenticated if it was: the HTTP
+/// proxy behind it tunnels next, or the connection is up.
+fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    let authenticated = socks(&mut c.handshake).authenticated();
     let (pool, _) = cx.rest.pool_net(cx.me);
-    let (remote, local) = pool.dialed(&c.lease).ends();
+    let dialed = pool.dialed(&c.lease);
+    if authenticated {
+        dialed.socks5_authenticated();
+    }
+    let (remote, local) = dialed.ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-    let target = c.target();
-    let (name, port) = (Bytes(target.name()), target.port());
+    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
+    let to = proxy.socks(c.target()).expect("through a SOCKS proxy").to;
+    let (name, port) = (Bytes(to.name()), to.port());
     trace::info(
         cx,
         format_args!(
@@ -191,15 +192,14 @@ fn opened<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>, authenticated: bool) 
             remote.port()
         ),
     );
-    let (pool, _) = cx.rest.pool_net(cx.me);
-    let up = match pool.tunneled(&c.lease) {
-        Connected::Established { remote, local, at } => (remote, local, at),
-        _ => unreachable!("the handshake makes the connection"),
-    };
-    if authenticated {
-        pool.get(&c.lease).socks5_authenticated();
+    if proxy.tunnels() {
+        return super::tunnel::dialed(c, cx);
     }
-    up
+    let (pool, _) = cx.rest.pool_net(cx.me);
+    match pool.tunneled(&c.lease) {
+        Connected::Established { remote, local, at } => established(c, cx, remote, local, at),
+        _ => unreachable!("the handshake makes the connection"),
+    }
 }
 
 /// The handshake failed, as the proxy's error (`CURLE_PROXY`).

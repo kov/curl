@@ -1058,6 +1058,7 @@ fn configure(
         o.proxy.kind = op.proxy_kind;
     }
     o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
+    o.proxy.pre_proxy = op.preproxy.map(copy).transpose()?;
     o.proxy.tunnel = op.proxytunnel;
     o.proxy.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
     // As C's library takes them: an address turns the protocol on.

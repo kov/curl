@@ -176,6 +176,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) proxy_kind: ProxyType,
     /// `--noproxy`.
     pub(crate) noproxy: Option<&'a [u8]>,
+    /// `--preproxy`.
+    pub(crate) preproxy: Option<&'a [u8]>,
     /// `--proxytunnel`.
     pub(crate) proxytunnel: bool,
     /// `--haproxy-protocol`.
@@ -749,6 +751,13 @@ pub(crate) fn apply<'a>(
             };
         }
         Opt::Noproxy => line.current().noproxy = Some(value.text()),
+        Opt::Preproxy => {
+            let url = value.text();
+            if url.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().preproxy = Some(url);
+        }
         Opt::Proxytunnel => line.current().proxytunnel = value.toggle(),
         Opt::HaproxyProtocol => line.current().haproxy_protocol = value.toggle(),
         Opt::HaproxyClientip => {
@@ -1130,7 +1139,6 @@ pub(crate) fn apply<'a>(
         | Opt::ParallelHost
         | Opt::Pass
         | Opt::Pinnedpubkey
-        | Opt::Preproxy
         | Opt::ProxyCaNative
         | Opt::ProxyCacert
         | Opt::ProxyCapath

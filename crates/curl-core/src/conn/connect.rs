@@ -18,7 +18,6 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use super::dns::{Answer, DnsCache, Lookup};
 use super::io::{Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketPoll};
-use super::socks::Version;
 use super::{Conn, ConnNumber, Peer, RecvBuf, RecvFailed, Route, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
@@ -61,9 +60,17 @@ pub(crate) struct Dialed {
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name, or why there are none.
     target: Option<Result<(TryRc<Answer>, Found), Unresolved>>,
+    /// A SOCKS5 proxy on the way authenticated the user.
+    socks5_authenticated: bool,
 }
 
 impl Dialed {
+    /// A SOCKS5 proxy on the way authenticated the user, which the
+    /// connection keeps (`bits.socks5_authenticated`).
+    pub(crate) fn socks5_authenticated(&mut self) {
+        self.socks5_authenticated = true;
+    }
+
     pub(crate) fn send(&self, bytes: &[u8]) -> io::Result<Sent> {
         self.socket.send(bytes)
     }
@@ -322,7 +329,7 @@ impl ConnectMachine {
             panic!("no tunnel is set up");
         };
         let at = d.connected_at;
-        Self::conn(
+        let mut conn = Self::conn(
             self.number,
             self.route,
             self.created,
@@ -330,7 +337,9 @@ impl ConnectMachine {
             d.remote,
             at,
             d.rx,
-        )
+        );
+        conn.socks5_authenticated = d.socks5_authenticated;
+        conn
     }
 
     /// The proxy closed the connection as it asked for credentials: the
@@ -402,6 +411,7 @@ impl ConnectMachine {
                                 connected_at: now,
                                 rx: RecvBuf::default(),
                                 target,
+                                socks5_authenticated: false,
                             });
                             return Ok(Drove::Connecting(self, Progress::Dialed));
                         }
@@ -477,19 +487,13 @@ impl ConnectMachine {
         setup: Setup<'_>,
         now: Instant,
     ) -> Result<Option<Result<(TryRc<Answer>, Found), Unresolved>>, ConnectError> {
-        let Some(version) = self.route.proxy.as_ref().and_then(|p| Version::of(p.kind)) else {
+        let Some(leg) = self.route.socks() else {
             return Ok(None);
         };
-        if !version.resolves_locally() {
+        if !leg.version.resolves_locally() {
             return Ok(None);
         }
-        match resolve(
-            self.route.target(),
-            version.ip(self.route.ip),
-            net,
-            setup,
-            now,
-        ) {
+        match resolve(leg.to, leg.version.ip(self.route.ip), net, setup, now) {
             Ok(found) => Ok(Some(Ok(found))),
             Err(ConnectError::Unresolved(why)) => Ok(Some(Err(why))),
             Err(e) => Err(e),

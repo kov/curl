@@ -423,7 +423,7 @@ cargo-mutants run on the milestone's diff.
     for the share itself. The 45 cookie and PSL tests the Rust leg runs pass. Waiting: the proxy tests, with step 31; the lock
     functions at the pool's and the jar's sites (1554), with the share's planned split
     (ENGINE.md 4.6.1); `CONNECT_ONLY` (3234).
-31. **http: proxies.** **In progress.** Done: the proxy chosen at setup from the options or
+31. **http: proxies.** **Done**, but for what waits on later work. The proxy chosen at setup from the options or
     the environment and the no-proxy list, joining the route (ENGINE.md 4.5); a plain HTTP
     request forwarded whole, with `Proxy-Connection`; `CURLOPT_PROXY`, `NOPROXY`,
     `PROXYPORT`, `PROXYTYPE`, `HTTPPROXYTUNNEL` and `CURLINFO_USED_PROXY`; the tool's `-x`,
@@ -439,8 +439,11 @@ cargo-mutants run on the milestone's diff.
     `--socks5-hostname`; the proxy's own headers, with `CURLOPT_PROXYHEADER`,
     `CURLOPT_HEADEROPT` and `--proxy-header`; the PROXY protocol's line, with
     `CURLOPT_HAPROXYPROTOCOL`, `CURLOPT_HAPROXY_CLIENT_IP`, `--haproxy-protocol` and
-    `--haproxy-clientip`. 151 of the 158 proxy tests the Rust leg runs pass. Next:
-    `--preproxy`; gated test 1001 waits on `--range`, 729 on `--limit-rate`.
+    `--haproxy-clientip`; a SOCKS pre-proxy in front of the HTTP proxy, with
+    `CURLOPT_PRE_PROXY` and `--preproxy`. 152 of the 158 proxy tests the Rust leg runs pass.
+    Waiting, on options no step has yet: 729 on `--limit-rate`, 970 and 972 on `%{json}`, 1613
+    on `--request-target`, 1851 on `--ipfs-gateway`, 2008 on `--get`, and gated test 1001 on
+    `--range`. HTTPS proxies wait on TLS.
 32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as
     C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a
     binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and

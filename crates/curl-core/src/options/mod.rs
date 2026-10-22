@@ -92,6 +92,11 @@ pub struct Proxy {
     pub url: Option<Vec<u8>>,
     /// Its type where the URL names none (`CURLOPT_PROXYTYPE`).
     pub kind: ProxyType,
+    /// The SOCKS proxy it is reached through, as a URL whose scheme may
+    /// name its type, SOCKS4 if none (`CURLOPT_PRE_PROXY`): alone, the
+    /// proxy; an empty one for none, which also leaves the environment
+    /// unread.
+    pub pre_proxy: Option<Vec<u8>>,
     /// Its port where the URL names none (`CURLOPT_PROXYPORT`); none for
     /// its scheme's.
     pub port: Option<NonZeroU16>,
@@ -162,6 +167,7 @@ impl Proxy {
         Ok(Proxy {
             url: self.url.as_deref().map(copy).transpose()?,
             kind: self.kind,
+            pre_proxy: self.pre_proxy.as_deref().map(copy).transpose()?,
             port: self.port,
             no_proxy: self.no_proxy.as_deref().map(copy).transpose()?,
             tunnel: self.tunnel,

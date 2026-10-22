@@ -871,6 +871,12 @@ machine through the pool, and NAMELOOKUP is marked when it resolves.
   the same cache, and the `Dialed` stage carries the answer. A failure is `ErrorKind::Proxy` with
   the `ProxyError` kept for `CURLINFO_PROXY_ERROR`; a SOCKS5 proxy that authenticated the user
   marks the `Conn`, which alone serves a transfer insisting on it (`CURLAUTH_ONLY`).
+- A SOCKS pre-proxy (`CURLOPT_PRE_PROXY`) sits in front of an HTTP proxy only, set on its
+  `ProxyRoute` through `ProxyRoute::behind`, which asserts it; alone, it is the route's SOCKS
+  proxy. The route then dials the pre-proxy first (`Tcp::destination`), its SOCKS handshake asks
+  for the HTTP proxy (`Tcp::socks` gives the leg), and a tunnelling HTTP proxy's `CONNECT`
+  follows over the same `Dialed` stage; a SOCKS5 authentication is kept on `Dialed` and carried
+  to the `Conn`. Reuse compares the pre-proxy too.
 - A new connection, once up whichever way, sends the PROXY protocol's line first if the transfer
   asks (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the socket to the first
   hop, before it is traced as established. A reused one sends none, and reuse does not ask, as in

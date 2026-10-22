@@ -148,13 +148,18 @@ pub(crate) struct Tcp {
 }
 
 impl Tcp {
-    /// The peer connected to (`Curl_conn_get_destination`): the proxy,
-    /// if the route has one.
+    /// The peer connected to (`Curl_conn_get_first_peer`): the first
+    /// proxy, if the route has one.
     pub(crate) fn destination(&self) -> &Peer {
         match &self.proxy {
-            Some(proxy) => &proxy.peer,
+            Some(proxy) => proxy.first_peer(),
             None => self.target(),
         }
+    }
+
+    /// The SOCKS proxy on the way, and where it is asked to connect.
+    pub(crate) fn socks(&self) -> Option<SocksLeg<'_>> {
+        self.proxy.as_ref()?.socks(self.target())
     }
 
     /// The peer the requests reach, through a proxy's tunnel or not.
@@ -167,8 +172,26 @@ impl Tcp {
     pub(crate) fn handshakes(&self) -> bool {
         self.proxy
             .as_ref()
-            .is_some_and(|p| (p.http() && !p.forward) || socks::Version::of(p.kind).is_some())
+            .is_some_and(|p| p.tunnels() || p.socks(self.target()).is_some())
     }
+}
+
+/// A SOCKS proxy on a route, and the peer it is asked to connect to: the
+/// HTTP proxy it is in front of, or the request's.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SocksLeg<'a> {
+    pub(crate) version: socks::Version,
+    pub(crate) creds: Option<&'a ProxyCreds>,
+    pub(crate) to: &'a Peer,
+}
+
+/// A SOCKS proxy an HTTP proxy is reached through (`CURLOPT_PRE_PROXY`;
+/// C's `socks_proxy` beside its `http_proxy`).
+#[derive(Clone, Debug)]
+pub(crate) struct PreProxy {
+    pub(crate) kind: ProxyType,
+    pub(crate) peer: TryRc<Peer>,
+    pub(crate) creds: Option<TryRc<ProxyCreds>>,
 }
 
 /// The proxy a route goes through (C's `conn->http_proxy`).
@@ -185,6 +208,8 @@ pub(crate) struct ProxyRoute {
     /// in `CURLOPT_SOCKS5_AUTH`): what the transfer asks of a connection,
     /// not what the connection shares with it.
     pub(crate) auth_only: bool,
+    /// The SOCKS proxy in front of it, which only an HTTP proxy has.
+    pre: Option<PreProxy>,
 }
 
 /// The user and password a proxy is given, each empty for none.
@@ -202,9 +227,67 @@ struct ProxyKey<'a> {
     peer: Destination<'a>,
     creds: Option<&'a ProxyCreds>,
     forward: bool,
+    pre: Option<(ProxyType, Destination<'a>, Option<&'a ProxyCreds>)>,
 }
 
 impl ProxyRoute {
+    pub(crate) fn new(
+        kind: ProxyType,
+        peer: TryRc<Peer>,
+        creds: Option<TryRc<ProxyCreds>>,
+        forward: bool,
+        auth_only: bool,
+    ) -> ProxyRoute {
+        ProxyRoute {
+            kind,
+            peer,
+            creds,
+            forward,
+            auth_only,
+            pre: None,
+        }
+    }
+
+    /// The same HTTP proxy, reached through the SOCKS proxy `pre`.
+    pub(crate) fn behind(self, pre: PreProxy) -> ProxyRoute {
+        assert!(self.http(), "only an HTTP proxy has a SOCKS proxy in front");
+        assert!(
+            socks::Version::of(pre.kind).is_some(),
+            "a pre-proxy is SOCKS"
+        );
+        ProxyRoute {
+            pre: Some(pre),
+            ..self
+        }
+    }
+
+    /// The peer connected to first.
+    pub(crate) fn first_peer(&self) -> &Peer {
+        self.pre.as_ref().map_or(&self.peer, |pre| &pre.peer)
+    }
+
+    /// The SOCKS proxy on the way to `target`: the one in front, asked
+    /// for this proxy, else this one if it is SOCKS.
+    pub(crate) fn socks<'a>(&'a self, target: &'a Peer) -> Option<SocksLeg<'a>> {
+        match &self.pre {
+            Some(pre) => Some(SocksLeg {
+                version: socks::Version::of(pre.kind).expect("a pre-proxy is SOCKS"),
+                creds: pre.creds.as_deref(),
+                to: &self.peer,
+            }),
+            None => socks::Version::of(self.kind).map(|version| SocksLeg {
+                version,
+                creds: self.creds.as_deref(),
+                to: target,
+            }),
+        }
+    }
+
+    /// It is an HTTP proxy the setup opens a tunnel through.
+    pub(crate) fn tunnels(&self) -> bool {
+        self.http() && !self.forward
+    }
+
     /// Whether it is an HTTP proxy, not a SOCKS one.
     pub(crate) fn http(&self) -> bool {
         !matches!(
@@ -219,6 +302,10 @@ impl ProxyRoute {
             peer: Destination(&self.peer),
             creds: self.creds.as_deref(),
             forward: self.forward,
+            pre: self
+                .pre
+                .as_ref()
+                .map(|p| (p.kind, Destination(&p.peer), p.creds.as_deref())),
         }
     }
 }
@@ -409,18 +496,16 @@ impl Conn {
         matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.http())
     }
 
-    /// Its SOCKS5 proxy authenticated the user.
-    pub(crate) fn socks5_authenticated(&mut self) {
-        self.socks5_authenticated = true;
-    }
-
     /// Whether it may serve a transfer whose route is `wanted`: a route
     /// that serves it, and the user authenticated by a SOCKS5 proxy if
     /// the transfer insists (`url_match_proxy_use`).
     pub(crate) fn serves(&self, wanted: &Route) -> bool {
         let insists = match wanted {
-            Route::Tcp(Tcp { proxy: Some(p), .. }) => {
-                p.auth_only && matches!(p.kind, ProxyType::Socks5 | ProxyType::Socks5Hostname)
+            Route::Tcp(tcp @ Tcp { proxy: Some(p), .. }) => {
+                p.auth_only
+                    && tcp.socks().is_some_and(|s| {
+                        matches!(s.version, socks::Version::V5 | socks::Version::V5Hostname)
+                    })
             }
             Route::Tcp(_) | Route::Local => false,
         };
@@ -562,13 +647,13 @@ mod tests {
             origin,
             via: None,
             ip: IpVersion::Any,
-            proxy: Some(ProxyRoute {
-                kind: ProxyType::Http,
-                peer: proxy,
+            proxy: Some(ProxyRoute::new(
+                ProxyType::Http,
+                proxy,
                 creds,
                 forward,
-                auth_only: false,
-            }),
+                false,
+            )),
         })
     }
 
@@ -592,5 +677,24 @@ mod tests {
         let user = via_proxy(b"proxy.example", Some(b"u"), true);
         assert!(user.serves(&via_proxy(b"proxy.example", Some(b"u"), true)));
         assert!(!user.serves(&via_proxy(b"proxy.example", Some(b"v"), true)));
+        // Behind the same SOCKS proxy, or none, as C compares
+        // `socks_proxy` beside `http_proxy`.
+        let behind = |kind, host: &[u8]| match via_proxy(b"proxy.example", None, true) {
+            Route::Tcp(mut tcp) => {
+                let pre = PreProxy {
+                    kind,
+                    peer: TryRc::try_new(peer(host, 1080, None)).unwrap(),
+                    creds: None,
+                };
+                tcp.proxy = tcp.proxy.map(|p| p.behind(pre));
+                Route::Tcp(tcp)
+            }
+            Route::Local => unreachable!(),
+        };
+        let socks = behind(ProxyType::Socks5, b"socks.example");
+        assert!(socks.serves(&behind(ProxyType::Socks5, b"socks.example")));
+        assert!(!socks.serves(&behind(ProxyType::Socks5, b"other.example")));
+        assert!(!socks.serves(&behind(ProxyType::Socks4, b"socks.example")));
+        assert!(!socks.serves(&route) && !route.serves(&socks));
     }
 }

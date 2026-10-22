@@ -98,10 +98,10 @@ witness: curl-core proto::http::tests::an_origin_s_digest_is_answered_through_a_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credentials
 --- old
-        (None, None) => (
+        (None, None) if !pre => (
             options.user.as_deref().map(copied).transpose()?,
 --- new
-        (None, None) => (
+        (None, None) if !pre => (
             None,
 
 === a proxy's 407 challenge is not read
@@ -135,9 +135,9 @@ witness: curl-core proto::http::tests::a_custom_proxy_authorization_goes_beside_
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection
 --- old
-            .is_some_and(|p| (p.http() && !p.forward) || socks::Version::of(p.kind).is_some())
+        self.http() && !self.forward
 --- new
-            .is_some_and(|p| (p.http() && p.forward) || socks::Version::of(p.kind).is_some())
+        self.http() && self.forward
 
 === a 407's body to CONNECT is left on the connection
 file: crates/curl-core/src/proto/http1/tunnel.rs
@@ -210,9 +210,9 @@ witness: curl-core proto::http::tests::a_407_not_from_a_forwarding_proxy_is_not_
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::a_socks5_proxy_logs_the_user_in_and_connects
 --- old
-            .is_some_and(|p| (p.http() && !p.forward) || socks::Version::of(p.kind).is_some())
+            .is_some_and(|p| p.tunnels() || p.socks(self.target()).is_some())
 --- new
-            .is_some_and(|p| p.http() && !p.forward)
+            .is_some_and(|p| p.tunnels())
 
 === a SOCKS5 connection serves a transfer insisting on authentication without it
 file: crates/curl-core/src/conn/mod.rs
@@ -348,3 +348,59 @@ witness: curl-core proto::http::tests::a_new_connection_sends_the_proxy_protocol
         rport,
         b" ",
         lport,
+
+=== a route behind a pre-proxy dials its HTTP proxy first
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_forwards
+--- old
+        self.pre.as_ref().map_or(&self.peer, |pre| &pre.peer)
+--- new
+        &self.peer
+
+=== a pre-proxy is asked for the request's peer, not the HTTP proxy
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_tunnels
+--- old
+                to: &self.peer,
+--- new
+                to: target,
+
+=== a pre-proxy is not compared for reuse
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::proxied_routes_match_as_c
+--- old
+                .map(|p| (p.kind, Destination(&p.peer), p.creds.as_deref())),
+--- new
+                .map(|_| (ProxyType::Socks5, Destination(&self.peer), None)),
+
+=== an HTTP proxy behind a pre-proxy does not tunnel
+file: crates/curl-core/src/multi/state/socks.rs
+witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_tunnels
+--- old
+    if proxy.tunnels() {
+--- new
+    if !proxy.http() {
+
+=== an HTTP pre-proxy is taken
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_only_socks
+--- old
+    if pre && crate::conn::socks::Version::of(parsed.kind).is_none() {
+--- new
+    if false {
+
+=== a pre-proxy in front of a SOCKS proxy is taken
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_only_socks
+--- old
+        if pre.is_some() {
+--- new
+        if pre.is_some() && false {
+
+=== a pre-proxy is given the HTTP proxy's user
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_forwards
+--- old
+        (None, None) if !pre => (
+--- new
+        (None, None) => (

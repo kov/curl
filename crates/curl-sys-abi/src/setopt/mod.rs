@@ -541,6 +541,10 @@ fn apply(
                 only,
             };
         }
+        (ffi::CURLOPT_PRE_PROXY, Ptr(p)) => {
+            // SAFETY: as above.
+            options.proxy.pre_proxy = unsafe { owned(p) }?;
+        }
         (ffi::CURLOPT_NOPROXY, Ptr(p)) => {
             // SAFETY: as above.
             options.proxy.no_proxy = unsafe { owned(p) }?;

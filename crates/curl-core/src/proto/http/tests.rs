@@ -3007,6 +3007,111 @@ fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
     assert!(rest.starts_with(b"GET /a HTTP/1.1\r\n"));
 }
 
+/// Behind a SOCKS5 pre-proxy at `PORT`, the HTTP proxy is asked for by
+/// name, then given the request whole, over the one connection, traced
+/// as C traces it (test 2055). The proxy's user is the HTTP proxy's
+/// alone: the pre-proxy has only what its URL gives.
+#[test]
+fn a_pre_proxy_reaches_the_http_proxy_that_forwards() {
+    let talk = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(b"http://proxy.example:3128".to_vec());
+        o.proxy.pre_proxy = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(
+        text.contains("\r\nProxy-Authorization: Basic dTpw\r\n"),
+        "{text}"
+    );
+    let mut want = b"\x05\x01\x00\x05\x01\x00\x03\x0dproxy.example\x0c\x38".to_vec();
+    want.extend_from_slice(b"GET http://origin.example/a HTTP/1.1\r\n");
+    assert!(
+        ran.request.starts_with(&want),
+        "{:?}",
+        String::from_utf8_lossy(&ran.request)
+    );
+    assert_eq!(ran.easy.report().connects(), 1);
+    let said = ran.seen.text();
+    let via = format!(" to proxy.example port 3128 (via 127.0.0.1 port {PORT})\n");
+    assert!(said.iter().any(|l| l.ends_with(&via)), "{said:?}");
+    let up = format!("Established connection to 127.0.0.1 (127.0.0.1 port {PORT}) from ");
+    assert!(said.iter().any(|l| l.starts_with(&up)), "{said:?}");
+}
+
+/// Behind a pre-proxy, an HTTP proxy asked to tunnel is sent its
+/// `CONNECT` once the SOCKS proxy has connected to it.
+#[test]
+fn a_pre_proxy_reaches_the_http_proxy_that_tunnels() {
+    let replies: [&[u8]; 4] = [b"\x05\x00", SOCKS5_GRANTED, TUNNEL_UP, OK];
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(b"http://proxy.example:3128".to_vec());
+        o.proxy.tunnel = true;
+        o.proxy.pre_proxy = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let socks = b"\x05\x01\x00\x05\x01\x00\x03\x0dproxy.example\x0c\x38";
+    let mut want = socks.to_vec();
+    want.extend_from_slice(connect_of("").as_bytes());
+    want.extend_from_slice(b"GET /a HTTP/1.1\r\n");
+    assert!(
+        ran.request.starts_with(&want),
+        "{:?}",
+        String::from_utf8_lossy(&ran.request)
+    );
+    assert_eq!(ran.easy.report().connect_code(), Some(200));
+    assert_eq!(ran.easy.report().connects(), 1);
+}
+
+/// A pre-proxy alone is the SOCKS proxy, SOCKS4 unless its scheme says
+/// otherwise; one that is HTTP, or in front of a SOCKS proxy, is refused
+/// as C refuses it.
+#[test]
+fn a_pre_proxy_alone_is_the_socks_proxy_and_only_socks() {
+    let talk = Conversation::replies(&[b"\x00\x5a\x00\x00\x00\x00\x00\x00", OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://localhost:8990/a")).unwrap();
+        o.proxy.pre_proxy = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.request
+            .starts_with(b"\x04\x01\x23\x1e\x7f\x00\x00\x01\x00GET /a ")
+    );
+    for (proxy, pre, said) in [
+        (
+            None,
+            "http://127.0.0.1:1",
+            "Unsupported pre-proxy type for 'http://127.0.0.1:1'\n",
+        ),
+        (
+            Some("socks5://127.0.0.1:2"),
+            "socks5://127.0.0.1:1",
+            "Having a SOCKS pre-proxy and proxy is not supported with 'socks5://127.0.0.1:2'\n",
+        ),
+    ] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.proxy.url = proxy.map(|p| p.as_bytes().to_vec());
+            o.proxy.pre_proxy = Some(pre.as_bytes().to_vec());
+        });
+        assert_eq!(ran.result, Err(ErrorKind::CouldntResolveProxy));
+        assert!(
+            ran.seen.text().iter().any(|l| l == said),
+            "{:?}",
+            ran.seen.text()
+        );
+    }
+}
+
 /// A tunnel's `CONNECT`, as test 1287's proxy sees it: the origin's
 /// authority, and only what the proxy is given.
 fn connect_of(proxy_authorization: &str) -> String {

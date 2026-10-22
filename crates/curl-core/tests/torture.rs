@@ -63,6 +63,10 @@ fn main() {
             "a_get_stays_within_its_allocation_budget",
             a_get_stays_within_its_allocation_budget,
         ),
+        (
+            "a_lost_trailer_line_fails_the_request",
+            a_lost_trailer_line_fails_the_request,
+        ),
     ] {
         // Reported as libtest does, the name before the run, so that a run
         // that aborts still shows which test it was in.
@@ -653,4 +657,43 @@ impl<T: Copy> Cell<T> {
     fn set(&self, value: T) {
         *self.0.lock().unwrap() = value;
     }
+}
+
+/// A trailer line the application's handler could not add, for want of
+/// memory, fails the request, though lines after it were added.
+fn a_lost_trailer_line_fails_the_request() {
+    use curl_core::handler::{TrailerHandler, TrailerLines, Trailers};
+    use curl_core::options::{Method, UserHeaders};
+    struct LosesOne;
+    impl TrailerHandler for LosesOne {
+        fn trailers(&self, _: &mut TransferCx<'_>, lines: &mut TrailerLines) -> Trailers {
+            let (added, refused) = track::fail_once_after(0, || lines.add(b"X-A: 1"));
+            assert!(refused && added.is_err(), "the line's copy refused");
+            lines.add(b"Y: 2").expect("refused once only");
+            Trailers::Done
+        }
+    }
+    let (clock, net, talk) = test_1_server();
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).expect("a multi");
+    let mut easy = Easy::new();
+    let o = easy.options_mut();
+    o.set_url(Some(URL)).expect("a URL");
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(TryArc::try_new(b"abc".to_vec()).expect("a body"));
+    o.http.headers =
+        UserHeaders::new([&b"Transfer-Encoding: chunked"[..], b"Expect:"]).expect("headers");
+    o.callbacks.trailer = Some(Handler::trailer(LosesOne).expect("a handler"));
+    let id = m.add(easy, (), &mut NoEvents).expect("added");
+    let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+        .expect("the transfer is in the multi");
+    assert_eq!(result, Err(ErrorKind::OutOfMemory));
+    let sent = talk.received();
+    assert!(!sent.ends_with(b"Y: 2\r\n\r\n"), "no trailers went");
+    m.remove(id, &mut NoEvents).expect("in the multi");
 }

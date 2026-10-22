@@ -1314,6 +1314,12 @@ fn a_body_waits_for_a_100() {
         request.contains("\r\nExpect: 100-continue\r\n\r\n3\r\nabc\r\n0\r\n\r\n"),
         "{request}"
     );
+    // Only a body larger than 1 MiB has it added.
+    let mib = vec![b'x'; 1024 * 1024];
+    let (at_most, _) = expecting(OK_EMPTY, &mib, |_| {});
+    let head =
+        String::from_utf8_lossy(&at_most.request[..at_most.request.len() - mib.len()]).into_owned();
+    assert!(!head.contains("Expect"), "{head}");
     let (not_asked, waited) = expecting(OK_EMPTY, &big, |o| {
         o.http.headers = UserHeaders::new([&b"Expect:"[..]]).unwrap();
     });
@@ -1391,6 +1397,11 @@ fn a_body_larger_than_the_buffer_goes_in_buffers() {
     assert_eq!(pieces[0].len(), 65536 - head_len, "behind the head");
     assert_eq!(pieces[1].len(), 65536);
     assert_eq!(ran.easy.report().sizes().upload(), body.len() as u64);
+    let heads = ran.seen.of("out");
+    assert!(
+        heads.iter().all(|h| !h.is_empty()),
+        "the head traced once, no empty part of it after"
+    );
 }
 
 /// The application's method replaces the word on the request line; the
@@ -2336,6 +2347,10 @@ fn a_pass_sends_one_buffer_of_the_body() {
         assert!(
             now <= 65536 * (performs + 1),
             "{now} bytes after {performs} performs"
+        );
+        assert!(
+            now > 65536 * performs.min(SIZE / 65536),
+            "{now} bytes after {performs} performs: a pass sends what it read"
         );
     }
     assert!(performs >= SIZE / 65536, "{performs} performs");
@@ -3534,6 +3549,11 @@ fn suppressed_connect_headers_are_kept_and_not_delivered() {
             (!suppress, !suppress),
             "suppress {suppress}"
         );
+        let status = ran
+            .seen
+            .of("header")
+            .contains(&b"HTTP/1.1 200 Fine\r\n".to_vec());
+        assert_eq!(status, !suppress, "suppress {suppress}: the status line");
         let kept = ran.easy.report().headers().get(
             b"Via",
             0,
@@ -3926,3 +3946,279 @@ fn an_origin_s_digest_is_answered_through_a_proxy() {
 
 mod coding;
 mod time_condition;
+
+/// `Proxy-Connection:` counts only on a connection through an HTTP
+/// proxy (`http_header_p`'s `http_proxy.peer`): a server's says nothing.
+#[test]
+fn proxy_connection_counts_only_through_a_proxy() {
+    let reply: &[u8] =
+        b"HTTP/1.1 200 OK\r\nProxy-Connection: close\r\nContent-Length: 3\r\n\r\nok\n";
+    let said = "HTTP/1.1 proxy connection set close\n".to_string();
+    for proxied in [false, true] {
+        let (mut m, talk, _) = server(&[reply], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            if proxied {
+                o.set_url(Some(b"http://origin.example/")).unwrap();
+                o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            }
+        });
+        assert_eq!(ran.result, Ok(()));
+        let text = ran.seen.text();
+        assert_eq!(text.contains(&said), proxied, "{text:?}");
+        let left = format!("Connection #0 to host 127.0.0.1:{PORT} left intact\n");
+        assert_eq!(text.contains(&left), !proxied, "{text:?}");
+    }
+}
+
+/// A 401 reads only `WWW-Authenticate:` for the server's methods: a
+/// `Proxy-Authenticate:` beside it offers nothing to answer.
+#[test]
+fn a_401_reads_no_proxy_challenge() {
+    let reply: &[u8] =
+        b"HTTP/1.1 401 Who\r\nProxy-Authenticate: Basic realm=\"p\"\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[reply, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert_eq!(text.matches("GET /a ").count(), 1, "{text}");
+    assert_eq!(ran.easy.report().auth_offered(), AuthMethods::NONE);
+}
+
+/// A challenge offering no method the request can use leaves the method
+/// it used as the one used (`Curl_http_auth_act` sets the picked one only
+/// when it picks), for the server and for a proxy alike.
+#[test]
+fn a_challenge_with_nothing_to_pick_keeps_the_method_used() {
+    let host: &[u8] =
+        b"HTTP/1.1 401 Who\r\nWWW-Authenticate: X-Other realm=\"a\"\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[host], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().auth_used(), AuthMethods::BASIC);
+    let proxy: &[u8] =
+        b"HTTP/1.1 407 Who\r\nProxy-Authenticate: X-Other realm=\"a\"\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[proxy], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().proxy_auth_used(), AuthMethods::BASIC);
+}
+
+/// A proxy that refuses the connection is named in the failure, after
+/// the origin asked for, as the C build says it.
+#[test]
+fn a_refusing_proxy_is_named_in_the_failure() {
+    let mut m = serving(Peer::Refuses, &[]);
+    let ran = get(&mut m, "/", Conversation::replies(&[], false), tunneled);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let said = "Failed to connect to origin.example:80 over proxy 127.0.0.1 after 0 ms: \
+                Could not connect to server\n";
+    assert!(
+        ran.seen.text().iter().any(|l| l == said),
+        "{:?}",
+        ran.seen.text()
+    );
+}
+
+/// The report has the response's media type and the connection's ends,
+/// and says no proxy was used for a transfer that went direct.
+#[test]
+fn the_report_has_the_media_type_and_the_ends() {
+    let reply: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=x\r\nContent-Length: 3\r\n\r\nok\n";
+    let ran = run("/", reply, false, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let report = ran.easy.report();
+    assert_eq!(report.content_type(), Some(&b"text/html; charset=x"[..]));
+    let ends = report.primary().expect("the connection's ends");
+    assert_eq!(ends.remote, SocketAddr::from(([127, 0, 0, 1], PORT)));
+    assert!(ends.local.is_some());
+    assert!(!report.used_proxy());
+}
+
+/// A list naming `example.com` alone as a public suffix.
+struct ExampleIsPublic;
+
+impl crate::cookie::PublicSuffixes for ExampleIsPublic {
+    fn is_public_suffix(&self, domain: &[u8]) -> bool {
+        domain == b"example.com"
+    }
+
+    fn accepts(&self, host: &[u8], domain: &[u8]) -> bool {
+        !self.is_public_suffix(domain) || host == domain
+    }
+}
+
+fn example_is_public() -> Result<crate::cookie::Suffixes, curl_alloc::OutOfMemory> {
+    crate::cookie::Suffixes::new(Box::new(ExampleIsPublic))
+}
+
+/// The handle's public suffixes, given or made when first wanted, keep a
+/// server from setting a cookie for a suffix; without them it may.
+#[test]
+fn a_handle_s_public_suffixes_refuse_cookies_for_a_suffix() {
+    let reply: &[u8] =
+        b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1; domain=example.com\r\nContent-Length: 0\r\n\r\n";
+    for list in ["none", "given", "made"] {
+        let mut e = Easy::new();
+        match list {
+            "given" => e.set_public_suffixes(Some(example_is_public().unwrap())),
+            "made" => e.set_public_suffixes_from(example_is_public),
+            _ => e.set_public_suffixes(None),
+        }
+        let (mut m, talk, _) = server(&[reply], false);
+        let mut ran = get_with(&mut m, e, "/", talk, |o| {
+            o.http.headers = UserHeaders::new([&b"Host: www.example.com"[..]]).unwrap();
+            o.http.cookies.files.push(b"").unwrap();
+        });
+        assert_eq!(ran.result, Ok(()));
+        let kept = ran.easy.cookie_list().unwrap();
+        assert_eq!(kept.is_empty(), list != "none", "{list}: {kept:?}");
+    }
+}
+
+/// An idle connection a share keeps, whose peer has closed, is found dead
+/// by the next transfer looking for one, which connects anew.
+#[test]
+fn a_share_s_dead_connection_is_not_reused() {
+    use crate::share::{Kind, Share};
+    let first = Conversation::replies(&[OK], true);
+    let second = Conversation::replies(&[OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let share = Share::new().unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut e = Easy::new();
+    e.set_share(Some(share.clone()));
+    let ran = get_with(&mut m, e, "/", first, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let mut e = Easy::new();
+    e.set_share(Some(share.clone()));
+    let ran = get_with(&mut m, e, "/", second.clone(), |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let said = "Connection 0 seems to be dead, terminating\n".to_string();
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+    assert_eq!(ran.easy.report().connects(), 1);
+    assert_eq!(second.received(), request_of("/"));
+}
+
+/// A connection whose SOCKS5 proxy did not authenticate the user serves
+/// a transfer that does not insist it must (`url_match_proxy_use`).
+#[test]
+fn an_unauthenticated_socks5_connection_serves_a_transfer_not_insisting() {
+    let talk = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let through = |o: &mut Options| through_socks(o, "socks5h", b"http://origin.example/a");
+    let ran = get(&mut m, "/", talk.clone(), through);
+    assert_eq!(ran.result, Ok(()));
+    let ran = get_with(&mut m, ran.easy, "/", talk.clone(), through);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().connects(), 0, "reused");
+}
+
+/// The proxy variables a child run of this binary is given; nothing else
+/// of the kind reaches it.
+const PROXY_VARIABLES: [&str; 8] = [
+    "http_proxy",
+    "HTTP_PROXY",
+    "https_proxy",
+    "HTTPS_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+    "no_proxy",
+    "NO_PROXY",
+];
+
+/// Run the test `name` of this binary in a child process, with `mode` in
+/// `CURL_CORE_CHILD` and the proxy variables `env` alone set: the
+/// environment is the whole process's, so it is set in a child of its
+/// own, and the child must have run the one test and passed it.
+fn in_child(name: &str, mode: &str, env: &[(&str, &str)]) {
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child
+        .args(["--exact", name, "--test-threads=1"])
+        .env("CURL_CORE_CHILD", mode);
+    for v in PROXY_VARIABLES {
+        child.env_remove(v);
+    }
+    for (k, v) in env {
+        child.env(k, v);
+    }
+    let out = child.output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{mode}: {stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The environment names the proxy where the options name none, traced
+/// as C traces it; an empty proxy or pre-proxy in the options turns it
+/// off; and the environment's no-proxy list, in capitals too, keeps a
+/// host from it (`Curl_proxy_init_conn`, `detect_proxy`).
+#[test]
+fn the_environment_names_a_proxy() {
+    let proxy = format!("http://127.0.0.1:{PORT}");
+    in_child(
+        "proto::http::tests::proxy_from_the_environment",
+        "detect",
+        &[("http_proxy", &proxy)],
+    );
+    in_child(
+        "proto::http::tests::proxy_from_the_environment",
+        "exclude",
+        &[("http_proxy", &proxy), ("NO_PROXY", "127.0.0.1")],
+    );
+}
+
+/// The child half of `the_environment_names_a_proxy`; nothing outside a
+/// child run.
+#[test]
+fn proxy_from_the_environment() {
+    let Some(mode) = std::env::var_os("CURL_CORE_CHILD") else {
+        return;
+    };
+    let fetch = |url: &[u8], set: fn(&mut Options)| {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(url)).unwrap();
+            set(o);
+        });
+        assert_eq!(ran.result, Ok(()));
+        let (line, _) = first_line(&ran.request);
+        (line, ran.seen.text())
+    };
+    let direct = format!("http://127.0.0.1:{PORT}/");
+    if mode == "detect" {
+        let (line, said) = fetch(b"http://origin.example/a", |_| {});
+        assert_eq!(line, "GET http://origin.example/a HTTP/1.1\r\n");
+        let uses = format!("Uses proxy env variable http_proxy == 'http://127.0.0.1:{PORT}'\n");
+        assert!(said.contains(&uses), "{said:?}");
+        let off: [fn(&mut Options); 2] = [
+            |o| o.proxy.url = Some(Vec::new()),
+            |o| o.proxy.pre_proxy = Some(Vec::new()),
+        ];
+        for set in off {
+            let (line, said) = fetch(direct.as_bytes(), set);
+            assert_eq!(line, "GET / HTTP/1.1\r\n");
+            assert!(
+                !said.iter().any(|l| l.starts_with("Uses proxy")),
+                "{said:?}"
+            );
+        }
+    } else {
+        let (line, said) = fetch(direct.as_bytes(), |_| {});
+        assert_eq!(line, "GET / HTTP/1.1\r\n", "not through the proxy");
+        let uses = "Uses proxy env variable NO_PROXY == '127.0.0.1'\n".to_string();
+        assert!(said.contains(&uses), "{said:?}");
+    }
+}

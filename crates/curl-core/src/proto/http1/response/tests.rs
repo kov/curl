@@ -649,6 +649,24 @@ fn a_size_past_the_limit_fails_at_the_head() {
         (got.lines.len(), got.error),
         (1, Some(HeadError::Framing(FramingError::FileTooLarge)))
     );
+    // A redirect read no further than its head, on a connection that
+    // closes, is held to the limit all the same (`http_size`).
+    let following = asked(|a| {
+        a.max_filesize = NonZeroU64::new(5);
+        a.follow = true;
+    });
+    let moved = |size: u32| {
+        let reply = format!(
+            "HTTP/1.1 301 Moved\r\nLocation: /b\r\nConnection: close\r\nContent-Length: {size}\r\n\r\n"
+        );
+        outcome(reply.as_bytes(), following).error
+    };
+    assert_eq!(moved(4), None);
+    assert_eq!(moved(5), None);
+    assert_eq!(
+        moved(6),
+        Some(HeadError::Framing(FramingError::FileTooLarge))
+    );
 }
 
 /// What says the connection closes: HTTP/1.0 unless it keeps alive,
@@ -730,6 +748,16 @@ fn a_proxy_says_whether_the_connection_stays() {
     let got = outcome(closed, proxied);
     assert_eq!((got.close, &got.notes[..]), (true, &[Note::ProxyClose][..]));
     let got = outcome(closed, PLAIN);
+    assert_eq!((got.close, got.notes), (false, vec![]));
+    // Each version reads only its own word.
+    let closing10 = b"HTTP/1.0 200 OK\r\nProxy-Connection: close\r\nContent-Length: 1\r\n\r\n";
+    let got = outcome(closing10, h10);
+    assert_eq!(
+        (got.close, &got.notes[..]),
+        (true, &[Note::Http10Close][..])
+    );
+    let kept11 = b"HTTP/1.1 200 OK\r\nProxy-Connection: keep-alive\r\nContent-Length: 1\r\n\r\n";
+    let got = outcome(kept11, proxied);
     assert_eq!((got.close, got.notes), (false, vec![]));
 }
 

@@ -924,6 +924,7 @@ mod tests {
         let mtime =
             std::os::unix::fs::MetadataExt::mtime(&std::fs::metadata("Cargo.toml").unwrap());
         assert_eq!(cond("-Cargo.toml"), at(Condition::UnmodifiedSince, mtime));
+        assert_eq!(cond("+Cargo.toml"), at(Condition::ModifiedSince, mtime));
         assert_eq!(cond("no such date nor file"), None);
     }
 
@@ -960,5 +961,154 @@ mod tests {
         );
         assert_eq!(g(&["x", "-v", "--no-verbose"]).0, Trace::None);
         assert_eq!(run(&["x", "--trace", ""]), Err(ParamError::BlankString));
+    }
+
+    /// `--proxy` makes the proxy HTTP; `--proxy1.0` and the SOCKS options
+    /// name their own kind.
+    #[test]
+    fn reads_the_proxy_kind() {
+        use curl_core::options::ProxyType;
+        let proxy = |args: &[&str]| {
+            let op = &line(args).operations[0];
+            (op.proxy, op.proxy_kind)
+        };
+        let cases = [
+            ("--proxy1.0", ProxyType::Http10),
+            ("--socks4", ProxyType::Socks4),
+            ("--socks4a", ProxyType::Socks4a),
+            ("--socks5", ProxyType::Socks5),
+            ("--socks5-hostname", ProxyType::Socks5Hostname),
+        ];
+        for (option, kind) in cases {
+            assert_eq!(
+                proxy(&["x", option, "p"]),
+                (Some(&b"p"[..]), kind),
+                "{option}"
+            );
+        }
+        assert_eq!(
+            proxy(&["x", "--socks5", "p", "-x", "q"]),
+            (Some(&b"q"[..]), ProxyType::Http)
+        );
+    }
+
+    /// Each authentication option adds its method, or takes it away.
+    #[test]
+    fn reads_the_auth_methods() {
+        use curl_core::options::AuthMethods;
+        let auth = |args: &[&str]| line(args).operations[0].auth;
+        let (basic, digest) = (AuthMethods::BASIC, AuthMethods::DIGEST);
+        assert_eq!(auth(&["x", "--oauth2-bearer", "t"]), AuthMethods::BEARER);
+        assert_eq!(auth(&["x", "--basic", "--digest"]), basic | digest);
+        assert_eq!(auth(&["x", "--basic", "--digest", "--no-basic"]), digest);
+        assert_eq!(auth(&["x", "--basic", "--digest", "--no-digest"]), basic);
+    }
+
+    /// `--location-trusted` alone sends credentials on; `--max-redirs`
+    /// takes -1 for no limit and nothing below.
+    #[test]
+    fn reads_the_redirect_options() {
+        let op = |args: &[&str]| {
+            let op = &line(args).operations[0];
+            (op.unrestricted_auth, op.max_redirs)
+        };
+        assert_eq!(op(&["x", "-L"]), (false, None));
+        assert_eq!(op(&["x", "--location-trusted"]), (true, None));
+        assert_eq!(op(&["x", "--max-redirs", "-1"]), (false, Some(-1)));
+        assert_eq!(op(&["x", "--max-redirs", "0"]), (false, Some(0)));
+        assert_eq!(op(&["x", "--max-redirs", "12"]), (false, Some(12)));
+        let refused = |n| run(&["x", "--max-redirs", n]).err();
+        assert_eq!(refused("-2"), Some(ParamError::BadNumeric));
+        assert_eq!(refused("1x"), Some(ParamError::BadNumeric));
+        assert_eq!(refused(""), Some(ParamError::BadNumeric));
+    }
+
+    /// `--remote-name` names the first node without an output;
+    /// `--no-remote-name` only undoes `--remote-name-all`, whose nodes
+    /// take their URL's name.
+    #[test]
+    fn reads_remote_names() {
+        let nodes = |args: &[&str]| -> Vec<(Output<'static>, bool)> {
+            line(args).operations[0]
+                .nodes
+                .iter()
+                .map(|n| (n.output, n.remote))
+                .collect()
+        };
+        assert_eq!(nodes(&["x", "-O"]), [(Output::Remote, false)]);
+        assert_eq!(
+            nodes(&["-o", "a", "-O", "x", "y"]),
+            [(Output::File(b"a"), false), (Output::Remote, false)]
+        );
+        assert_eq!(nodes(&["x", "--no-remote-name"]), [(Output::Unset, false)]);
+        assert_eq!(
+            nodes(&["--remote-name-all", "--no-remote-name", "x"]),
+            [(Output::Stdout, true)]
+        );
+        assert_eq!(
+            nodes(&["--remote-name-all", "-o", "a", "x"]),
+            [(Output::File(b"a"), true)]
+        );
+    }
+
+    /// A file of the test's own, removed after it.
+    struct TempFile(std::path::PathBuf);
+
+    impl TempFile {
+        fn new(name: &str, content: &[u8]) -> TempFile {
+            let path =
+                std::env::temp_dir().join(format!("curl-parse-{}-{name}", std::process::id()));
+            std::fs::write(&path, content).unwrap();
+            TempFile(path)
+        }
+
+        fn name(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            std::fs::remove_file(&self.0).unwrap();
+        }
+    }
+
+    /// `@file` reads the data from the file; `--data-urlencode` escapes
+    /// it after its name, `name@file` read and `name=text` as it is.
+    #[test]
+    fn reads_data_from_files() {
+        let file = TempFile::new("data", b"a b&c");
+        let post = |args: &[&str]| {
+            let post = line(args).operations[0].post.clone().unwrap();
+            String::from_utf8(post).unwrap()
+        };
+        let at = format!("@{}", file.name());
+        assert_eq!(post(&["x", "-d", &at]), "a b&c");
+        assert_eq!(post(&["x", "--data-binary", &at]), "a b&c");
+        assert_eq!(post(&["x", "--data-urlencode", &at]), "a+b%26c");
+        let named = format!("n{at}");
+        assert_eq!(post(&["x", "--data-urlencode", &named]), "n=a+b%26c");
+        assert_eq!(post(&["x", "--data-urlencode", "n=a b@c"]), "n=a+b%40c");
+        assert_eq!(post(&["x", "--data-urlencode", "=a@b"]), "a%40b");
+        assert_eq!(
+            run(&["x", "-d", "@/nonexistent/x"]),
+            Err(ParamError::ReadError)
+        );
+    }
+
+    /// `-w @file` takes the file's text; an empty file is no format.
+    #[test]
+    fn reads_a_format_from_a_file() {
+        let format = TempFile::new("format", b"%{url}\n");
+        let empty = TempFile::new("empty", b"");
+        let read = |file: &TempFile| {
+            let at = format!("@{}", file.name());
+            line(&["x", "-w", &at]).operations[0]
+                .write_out
+                .as_ref()
+                .map(|f| f.bytes().to_vec())
+        };
+        assert_eq!(read(&format), Some(b"%{url}".to_vec()));
+        assert_eq!(read(&empty), None);
     }
 }

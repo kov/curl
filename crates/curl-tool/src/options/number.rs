@@ -151,6 +151,17 @@ pub(crate) fn size(s: &[u8]) -> Result<u64, ParamError> {
 mod tests {
     use super::*;
 
+    /// `str2num`: a whole number, negative or not, and nothing after it.
+    #[test]
+    fn signed_like_c() {
+        assert_eq!(signed(b"12"), Ok(12));
+        assert_eq!(signed(b"-12"), Ok(-12));
+        assert_eq!(signed(b"0"), Ok(0));
+        for bad in [&b""[..], b"-", b"12x", b" 1", b"+1"] {
+            assert_eq!(signed(bad), Err(ParamError::BadNumeric), "{bad:?}");
+        }
+    }
+
     /// Unit test 1623's cases, read from its source.
     #[test]
     fn size_like_c() {

@@ -676,3 +676,100 @@ fn warns_of_a_config_argument_likely_wrong() {
         r.stderr
     );
 }
+
+/// `--location` and `--follow` override each other, saying so.
+#[test]
+fn warns_of_redirect_options_overridden() {
+    let s = Scratch::new("follow");
+    s.write("f", b"x");
+    let url = s.url("f");
+    let warned = |args: &[&str]| {
+        let r = curl(&s, args);
+        assert_eq!(r.code, 0, "{}", r.stderr);
+        r.stderr.lines().next().unwrap_or_default().to_owned()
+    };
+    assert_eq!(
+        warned(&["--no-progress-meter", "--follow", "-L", &url]),
+        "Warning: --location overrides --follow"
+    );
+    assert_eq!(
+        warned(&["--no-progress-meter", "-L", "--follow", &url]),
+        "Warning: --follow overrides --location"
+    );
+    assert_eq!(warned(&["--no-progress-meter", "-L", "-L", &url]), "");
+    assert_eq!(
+        warned(&["--no-progress-meter", "--follow", "--follow", &url]),
+        ""
+    );
+}
+
+/// A configuration file that does not open, one giving an argument to
+/// an option that takes none, and one naming itself until the levels run
+/// out, each fail the command line.
+#[test]
+fn refuses_bad_config_files() {
+    let s = Scratch::new("badcfg");
+    s.write("f", b"x");
+    let url = s.url("f");
+    let r = curl(&s, &["-K", "nope", &url]);
+    assert_eq!(r.code, 26);
+    assert!(
+        r.stderr.starts_with(
+            "curl: cannot read config from 'nope'\n\
+             curl: option -K: error encountered when reading a file\n"
+        ),
+        "{}",
+        r.stderr
+    );
+    s.write("extra", b"silent x\n");
+    let r = curl(&s, &["-K", "extra", &url]);
+    assert_eq!(r.code, 2);
+    assert!(
+        r.stderr
+            .starts_with("curl: option -K: had unsupported trailing garbage\n"),
+        "{}",
+        r.stderr
+    );
+    s.write("empty", b"silent \"\"\n");
+    let r = curl(&s, &["-K", "empty", &url]);
+    assert_eq!((r.code, &r.stdout[..]), (0, &b"x"[..]), "{}", r.stderr);
+    s.write("self", b"-K self\n");
+    let r = curl(&s, &["-K", "self", &url]);
+    assert_eq!(r.code, 2);
+    let mut want = String::from("curl: Max config file recursion level reached (5)\n");
+    for _ in 0..5 {
+        want.push_str("curl: self:1 config file option '-K' is badly used here\n");
+    }
+    want.push_str("curl: option -K: is badly used here\n");
+    assert!(r.stderr.starts_with(&want), "{}", r.stderr);
+}
+
+/// The default configuration file read is noted when tracing.
+#[test]
+fn notes_the_default_config_file() {
+    let s = Scratch::new("curlrc");
+    s.write("f", b"x");
+    s.write(".curlrc", b"fail\n");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let out = Command::new(tool)
+        .args(["-v", &s.url("f"), "-o", &s.path("out")])
+        .current_dir(&s.0)
+        .env("CURL_HOME", &s.0)
+        .env("COLUMNS", "500")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    let want = format!("Note: Read config file from '{}'\n", s.path(".curlrc"));
+    assert!(stderr.starts_with(&want), "{stderr}");
+}
+
+/// `-w @-` with nothing on standard input warns, and writes nothing.
+#[test]
+fn warns_of_an_empty_format_file() {
+    let s = Scratch::new("emptyformat");
+    s.write("f", b"x");
+    let r = curl(&s, &["--no-progress-meter", "-w", "@-", &s.url("f")]);
+    assert_eq!((r.code, &r.stdout[..]), (0, &b"x"[..]));
+    assert_eq!(r.stderr, "Warning: Failed to read <stdin>\n");
+}

@@ -15,7 +15,7 @@ use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
-use crate::options::{Follow, Http, HttpVersion, Method, Ranged, Resume, UploadSource};
+use crate::options::{Follow, Http, HttpVersion, Method, Ranged, UploadSource};
 use crate::report::{ResponseVersion, Timer};
 use crate::time::Instant;
 use crate::trace;
@@ -685,12 +685,6 @@ impl Request {
         if let Some(content) = &mut content {
             content.expect = added_expect;
         }
-        let resume_from = match options.resume {
-            None => None,
-            Some(Resume::At(at)) => Some(at.get()),
-            // C's -1, which for a download names no range a server knows.
-            Some(Resume::AtEnd) => return Err(ErrorKind::NotBuiltIn),
-        };
         // A download asks for its range; an upload, which cannot resume,
         // says which range of the resource its body is (`http_range`).
         let range = match (options.ranged(), body) {
@@ -789,7 +783,7 @@ impl Request {
                 decode_codings: http.transfer_encoding,
                 raw_codings: http.raw,
                 fail_on_error: http.fail_on_error,
-                resume_from: resume_from.filter(|_| self.method == Method::Get),
+                resume_from: options.resume.filter(|_| self.method == Method::Get),
                 follow: http.follow != Follow::No,
                 auth: auth_asked,
                 http_proxy,

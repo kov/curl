@@ -260,9 +260,9 @@ witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
 --- old
-                && start as u64 == from
+                && u64::try_from(start) == Ok(from.get())
 --- new
-                && start as u64 != from.wrapping_add(1)
+                && u64::try_from(start) != Ok(from.get().wrapping_add(1))
 
 === `Content-Range: */total` still fails a resume
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -276,7 +276,7 @@ witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
 --- old
-            if self.size != Some(from) {
+            if !whole {
 --- new
             if true {
 
@@ -1351,8 +1351,25 @@ witness: curl-core proto::http::tests::range::an_upload_names_its_range
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::range::a_response_to_a_range_is_taken_as_it_comes
 --- old
-                resume_from: resume_from.filter(|_| self.method == Method::Get),
+                resume_from: options.resume.filter(|_| self.method == Method::Get),
 --- new
-                resume_from: resume_from
-                    .or(options.range.as_ref().map(|_| 3))
+                resume_from: options
+                    .resume
+                    .or(options.range.as_ref().map(|_| crate::options::Resume::AtEnd))
                     .filter(|_| self.method == Method::Get),
+
+=== a GET resumed at the end of a document of unknown size cannot resume
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::range::a_get_resumed_at_the_end_asks_from_minus_one
+--- old
+                Resume::AtEnd => self.size.is_none(),
+--- new
+                Resume::AtEnd => false,
+
+=== a GET resumed at the end asks for the last byte
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::range::a_get_resumed_at_the_end_asks_from_minus_one
+--- old
+                        Ranged::Resume(Resume::AtEnd) => [b"-1-", b""],
+--- new
+                        Ranged::Resume(Resume::AtEnd) => [b"-1", b""],

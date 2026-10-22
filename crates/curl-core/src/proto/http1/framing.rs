@@ -14,7 +14,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::fields;
 use super::response::{HttpVersion, Status};
 use crate::date::{self, BadDate};
-use crate::options::{AuthMethods, TimeCondition, Unmet};
+use crate::options::{AuthMethods, Resume, TimeCondition, Unmet};
 use crate::proto::http::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
@@ -36,9 +36,10 @@ pub(crate) struct Asked {
     pub(crate) raw_codings: bool,
     /// A code of 400 or more fails the response (`CURLOPT_FAILONERROR`).
     pub(crate) fail_on_error: bool,
-    /// The offset a GET resumes at: a 416 does not fail it, and the
-    /// response must start there.
-    pub(crate) resume_from: Option<u64>,
+    /// Where a GET resumes: a 416 does not fail it, and the response
+    /// must start there. C's -1, the end, is where none starts, and a
+    /// document of unknown size is whole at it.
+    pub(crate) resume_from: Option<Resume>,
     /// A redirect's `Location:` is followed (`CURLOPT_FOLLOWLOCATION`).
     pub(crate) follow: bool,
     /// What the request knows of authenticating, for a 401 to act on.
@@ -479,8 +480,8 @@ impl Meta {
             let start = std::str::from_utf8(&v[..digits])
                 .ok()
                 .and_then(|d| d.parse::<i64>().ok());
-            if let (Some(start), Some(from)) = (start, asked.resume_from)
-                && start as u64 == from
+            if let (Some(start), Some(Resume::At(from))) = (start, asked.resume_from)
+                && u64::try_from(start) == Ok(from.get())
             {
                 self.content_range = true;
             }
@@ -610,7 +611,12 @@ impl Meta {
             && !self.content_range
             && !self.ignore_body
         {
-            if self.size != Some(from) {
+            // C compares its size, -1 for one not known, with its offset.
+            let whole = match from {
+                Resume::At(from) => self.size == Some(from.get()),
+                Resume::AtEnd => self.size.is_none(),
+            };
+            if !whole {
                 return (note, Err(FramingError::CannotResume));
             }
             // What is stored is the whole document.
@@ -788,7 +794,7 @@ pub(crate) mod arbitrary {
     use proptest::prelude::*;
 
     use super::{Asked, Left, NonZeroU64, Unsent};
-    use crate::options::{Condition, TimeCondition};
+    use crate::options::{Condition, Resume, TimeCondition};
     use crate::proto::http::auth::arbitrary::auth_asked;
 
     /// A count, small or of any size C's `curl_off_t` holds.
@@ -812,7 +818,12 @@ pub(crate) mod arbitrary {
         (
             any::<[bool; 8]>(),
             proptest::option::of(count().prop_filter_map("not zero", NonZeroU64::new)),
-            proptest::option::of(count()),
+            proptest::option::of(prop_oneof![
+                count()
+                    .prop_filter_map("not zero", NonZeroU64::new)
+                    .prop_map(Resume::At),
+                Just(Resume::AtEnd),
+            ]),
             auth_asked(),
             proptest::option::of(time_condition()),
         )

@@ -161,10 +161,10 @@ witness: curl-os fs::tests::points_standard_error_at_a_file
 file: crates/curl-os/src/random.rs
 witness: curl-os random::tests::fills_with_different_bytes
 --- old
-        let rest = &mut out[filled..];
+        match read(&mut out[filled..]) {
 --- new
-        let end = out.len().min(filled + 32);
-        let rest = &mut out[filled..end];
         if filled >= 32 {
             break;
         }
+        let end = out.len().min(filled + 32);
+        match read(&mut out[filled..end]) {

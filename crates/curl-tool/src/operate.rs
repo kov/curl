@@ -1,9 +1,10 @@
 //! Running what the command line asks for: each URL's transfer, one after
 //! another (`src/tool_operate.c`, its serial path).
 
+use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fs::{File, FileTimes};
-use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom};
+use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::ffi::OsStrExt as _;
@@ -51,8 +52,13 @@ enum Step {
     Unopened(ErrorKind),
 }
 
-/// Run every operation's transfers in turn (`serial_transfers`).
-pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
+/// Ask for the missing passwords, then run every operation's transfers
+/// in turn (`get_args`, `serial_transfers`).
+pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
+    if ask_passwords(&mut line.operations).is_err() {
+        return Err(ErrorKind::OutOfMemory);
+    }
+    let line = &*line;
     let Ok(stdout) = Stdout::new() else {
         return Err(ErrorKind::OutOfMemory);
     };
@@ -87,6 +93,90 @@ pub(crate) fn run(line: &CommandLine<'_>, msgs: Messages) -> Ending {
     // it does in C.
     drop(stdout.flush());
     ending
+}
+
+/// The longest `user:password` a password asked for may make, less one
+/// (`MAX_USERPWDLENGTH`, its terminating zero counted).
+const MAX_LOGIN: usize = 100 * 1024;
+
+/// What a typed password is read into, its last byte the line's end
+/// (`checkpasswd`'s buffer).
+const PASSWORD_ROOM: usize = 2048;
+
+/// The longest prompt, as C's buffer of 256 cuts it.
+const MAX_PROMPT: usize = 255;
+
+/// Ask for the password of each `-u` (unless `--oauth2-bearer`) and `-U`
+/// given without one, every operation's in turn, before anything is
+/// transferred (`get_args`).
+fn ask_passwords(operations: &mut [Operation<'_>]) -> Result<(), OutOfMemory> {
+    // Several operations number theirs in the prompt.
+    let numbered = operations.len() > 1;
+    for (i, op) in operations.iter_mut().enumerate() {
+        let number = numbered.then_some(i + 1);
+        if op.bearer.is_none() {
+            ask_password(&mut op.user, b"host", number)?;
+        }
+        ask_password(&mut op.proxy_user, b"proxy", number)?;
+    }
+    Ok(())
+}
+
+/// Complete `login` with a password read from the terminal, or from
+/// standard input without one, when it has none: no `:`, and not only
+/// `;options` (`checkpasswd`). The prompt names the user without its
+/// options, which stay where they were: `user;options:password`.
+fn ask_password(
+    login: &mut Option<Cow<'_, [u8]>>,
+    kind: &[u8],
+    number: Option<usize>,
+) -> Result<(), OutOfMemory> {
+    let Some(given) = login.as_deref() else {
+        return Ok(());
+    };
+    if given.contains(&b':') || given.first() == Some(&b';') {
+        return Ok(());
+    }
+    let user = given.split(|&b| b == b';').next().unwrap_or_default();
+    let mut prompt = Vec::new();
+    prompt.try_extend_from_slice(b"Enter ")?;
+    prompt.try_extend_from_slice(kind)?;
+    prompt.try_extend_from_slice(b" password for user '")?;
+    prompt.try_extend_from_slice(user)?;
+    prompt.try_extend_from_slice(b"'")?;
+    if let Some(number) = number {
+        prompt.try_extend_from_slice(try_format(format_args!(" on URL #{number}"))?.as_bytes())?;
+    }
+    prompt.try_extend_from_slice(b":")?;
+    prompt.truncate(MAX_PROMPT);
+    let mut typed = curl_os::terminal::Unechoed::open();
+    // Unbuffered, and a failure has nowhere to be reported, as C's
+    // `fputs` to `stderr`.
+    let mut stderr = std::io::stderr();
+    drop(stderr.write_all(&prompt));
+    let mut buf = [0; PASSWORD_ROOM];
+    let n = typed.read(&mut buf);
+    // The last byte read is taken for the line's end, whatever it is, and
+    // a zero byte ends the password as it ends C's string.
+    let password = buf[..n.saturating_sub(1)]
+        .split(|&b| b == 0)
+        .next()
+        .unwrap_or_default();
+    // What was typed was not echoed, so the line is ended here; C ends it
+    // whether or not echo could be turned off.
+    drop(stderr.write_all(b"\n"));
+    drop(typed);
+    let len = given.len() + 1 + password.len();
+    if len >= MAX_LOGIN {
+        return Err(OutOfMemory);
+    }
+    let mut whole = Vec::new();
+    whole.try_reserve_exact(len)?;
+    whole.try_extend_from_slice(given)?;
+    whole.try_push(b':')?;
+    whole.try_extend_from_slice(password)?;
+    *login = Some(Cow::Owned(whole));
+    Ok(())
 }
 
 fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
@@ -533,7 +623,7 @@ fn transfer(
     if configure(&mut easy, op, run, &out, &config).is_err() {
         return failed(&easy, ErrorKind::OutOfMemory);
     }
-    if let Some(pair) = op.proxy_user {
+    if let Some(pair) = op.proxy_user.as_deref() {
         let set = easy.options_mut().proxy.set_user_password(Some(pair));
         if let Err(e) = set {
             let kind = match e {
@@ -1011,9 +1101,8 @@ fn configure(
             HttpVersion::Http11 => options::HttpVersion::Http11,
         };
     }
-    // A user without a password is not prompted for one, as C's
-    // `checkpasswd` does on a terminal.
-    if let Some(pair) = op.user {
+    // A user given without a password has had one asked for.
+    if let Some(pair) = op.user.as_deref() {
         o.login = options::Login::from_pair(pair)?;
     }
     o.netrc.mode = if op.netrc_optional {

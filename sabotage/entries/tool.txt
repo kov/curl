@@ -672,3 +672,19 @@ witness: curl-tool write_out::tests::writes_header_json_as_c
             continue;
         }
 --- new
+
+=== a typed password keeps the line's end
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool asks_for_a_missing_password
+--- old
+    let password = buf[..n.saturating_sub(1)]
+--- new
+    let password = buf[..n]
+
+=== a prompt among several operations does not say whose it is
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool asks_for_each_operation_s_password
+--- old
+    let numbered = operations.len() > 1;
+--- new
+    let numbered = false;

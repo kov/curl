@@ -106,7 +106,7 @@ fn main() -> ExitCode {
         &mut msgs,
         &mut wipe,
         |parsed, msgs| match parsed {
-            Ok(Parsed::Run(line)) => run(&line, argv.len(), curlrc_name, msgs),
+            Ok(Parsed::Run(mut line)) => run(&mut line, argv.len(), curlrc_name, msgs),
             Ok(Parsed::Request(request)) => show(request, msgs),
             Err(e) => ExitCode::from(exit_code(e.kind())),
         },
@@ -116,7 +116,7 @@ fn main() -> ExitCode {
 /// Run what `line` asks for; `argc` words were given, and `curlrc` is the
 /// default configuration file, if one was read.
 fn run(
-    line: &CommandLine<'_>,
+    line: &mut CommandLine<'_>,
     argc: usize,
     curlrc: Option<&[u8]>,
     msgs: &mut Messages,

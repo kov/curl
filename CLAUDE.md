@@ -43,7 +43,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/poll.rs`: `poll(2)`.
 - `crates/curl-os/src/random.rs`: random bytes from the kernel, `getrandom`.
 - `crates/curl-os/src/resolve.rs`: the system's resolver, `getaddrinfo`.
-- `crates/curl-os/src/terminal.rs`: the terminal's width.
+- `crates/curl-os/src/terminal.rs`: the terminal's width, and reading a password from it with
+  echo off.
 - `crates/curl-os/src/time.rs`: the local time of day.
 - `crates/curl-os/src/users.rs`: the user database.
 - `crates/curl-sys-abi/csrc/va_fetch.c`: C, not Rust; reads the printf arguments stable Rust

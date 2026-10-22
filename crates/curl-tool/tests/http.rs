@@ -969,3 +969,232 @@ fn reads_the_name_the_server_gives_as_c_does() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Run the tool with `args` and `typed` on standard input, outside any
+/// terminal: `setsid` leaves it without one, so a password asked for is
+/// read from standard input (`/dev/tty` would wait for a person).
+fn curl_typing(args: &[&str], typed: &[u8]) -> Run {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut child = Command::new("setsid")
+        .arg("-w")
+        .arg(tool)
+        .args(["-q", "-sS"])
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // One write, so one read takes all of it.
+    child.stdin.take().unwrap().write_all(typed).unwrap();
+    let out = child.wait_with_output().unwrap();
+    Run {
+        code: out.status.code().unwrap(),
+        stdout: out.stdout,
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    }
+}
+
+/// The `Authorization` and `Proxy-Authorization` lines of `request`.
+fn logins(request: &str) -> Vec<&str> {
+    request
+        .split("\r\n")
+        .filter(|line| line.contains("Authorization: "))
+        .collect()
+}
+
+const CLOSED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// A `-u` or `-U` without a password asks for one on standard error and
+/// takes one read of standard input, its last byte cut, up to a zero
+/// byte; options after the user stay. `;options` alone, a password,
+/// even empty, and `--oauth2-bearer` ask for none.
+#[test]
+fn asks_for_a_missing_password() {
+    /// The arguments, what is typed, the prompts, the logins sent.
+    type Case = (
+        &'static [&'static str],
+        &'static [u8],
+        &'static str,
+        &'static [&'static str],
+    );
+    let host = "Enter host password for user 'bob':\n";
+    let cases: [Case; 9] = [
+        (
+            &["-u", "bob"],
+            b"secret\n",
+            host,
+            &["Authorization: Basic Ym9iOnNlY3JldA=="],
+        ),
+        // bob;opt:secret
+        (
+            &["-u", "bob;opt"],
+            b"secret\n",
+            host,
+            &["Authorization: Basic Ym9iO29wdDpzZWNyZXQ="],
+        ),
+        // ;x:
+        (
+            &["-u", ";x"],
+            b"secret\n",
+            "",
+            &["Authorization: Basic O3g6"],
+        ),
+        // bob:
+        (
+            &["-u", "bob:"],
+            b"secret\n",
+            "",
+            &["Authorization: Basic Ym9iOg=="],
+        ),
+        (
+            &["-u", "bob"],
+            b"",
+            host,
+            &["Authorization: Basic Ym9iOg=="],
+        ),
+        // bob:secre
+        (
+            &["-u", "bob"],
+            b"secret",
+            host,
+            &["Authorization: Basic Ym9iOnNlY3Jl"],
+        ),
+        // bob:se
+        (
+            &["-u", "bob"],
+            b"se\0cret\n",
+            host,
+            &["Authorization: Basic Ym9iOnNl"],
+        ),
+        (
+            &["-u", "bob", "--oauth2-bearer", "tok"],
+            b"secret\n",
+            "",
+            &["Authorization: Bearer tok"],
+        ),
+        // The first read takes both lines: bob:a\nb, then pete:.
+        (
+            &[
+                "-u",
+                "bob",
+                "-x",
+                "URL",
+                "-U",
+                "pete",
+                "http://example.invalid/",
+            ],
+            b"a\nb\n",
+            "Enter host password for user 'bob':\nEnter proxy password for user 'pete':\n",
+            &[
+                "Proxy-Authorization: Basic cGV0ZTo=",
+                "Authorization: Basic Ym9iOmEKYg==",
+            ],
+        ),
+    ];
+    for (i, (args, typed, prompts, sent)) in cases.into_iter().enumerate() {
+        let s = Server::new(CLOSED);
+        let url = s.url();
+        let mut all: Vec<&str> = args
+            .iter()
+            .map(|&a| if a == "URL" { &url[..] } else { a })
+            .collect();
+        if !args.contains(&"-x") {
+            all.push(&url);
+        }
+        let run = curl_typing(&all, typed);
+        assert_eq!((run.code, &run.stderr[..]), (0, prompts), "{i}");
+        assert_eq!(logins(&s.request()), sent, "{i}");
+    }
+}
+
+/// The prompt is an operation's, not a URL's: one for all the URLs of
+/// one, numbered when `--next` makes several, and all asked before the
+/// first transfer.
+#[test]
+fn asks_for_each_operation_s_password() {
+    let cases: [(&[&str], &str, &[&str]); 3] = [
+        (
+            &["-u", "bob", "URL", "URL"],
+            "Enter host password for user 'bob':\n",
+            &[
+                "Authorization: Basic Ym9iOnNlY3JldA==",
+                "Authorization: Basic Ym9iOnNlY3JldA==",
+            ],
+        ),
+        (
+            &["-u", "bob", "URL", "--next", "URL"],
+            "Enter host password for user 'bob' on URL #1:\n",
+            &["Authorization: Basic Ym9iOnNlY3JldA=="],
+        ),
+        (
+            &[
+                "URL",
+                "--next",
+                "-U",
+                "pete",
+                "-x",
+                "URL",
+                "http://example.invalid/",
+            ],
+            "Enter proxy password for user 'pete' on URL #2:\n",
+            &["Proxy-Authorization: Basic cGV0ZTpzZWNyZXQ="],
+        ),
+    ];
+    for (i, (args, prompts, sent)) in cases.into_iter().enumerate() {
+        let s = Server::script(vec![vec![CLOSED.to_vec()], vec![CLOSED.to_vec()]]);
+        let url = s.url();
+        let all: Vec<&str> = args
+            .iter()
+            .map(|&a| if a == "URL" { &url[..] } else { a })
+            .collect();
+        let run = curl_typing(&all, b"secret\n");
+        assert_eq!((run.code, &run.stderr[..]), (0, prompts), "{i}");
+        assert_eq!(logins(&s.request()), sent, "{i}");
+    }
+    // Asked before the first operation finds it has no URL; the help
+    // line after differs with the manual built in.
+    let run = curl_typing(&["-u", "bob"], b"secret\n");
+    assert_eq!(run.code, 2);
+    assert!(
+        run.stderr
+            .starts_with("Enter host password for user 'bob':\ncurl: (2) no URL specified\n"),
+        "{}",
+        run.stderr
+    );
+}
+
+/// The prompt is cut at 255 bytes; a password typed past 2047 bytes is
+/// cut there; and a login that would reach 100 KiB fails the run, as
+/// out of memory and without a word.
+#[test]
+fn bounds_the_password_asked_for() {
+    let s = Server::new(CLOSED);
+    let url = s.url();
+    let user = "u".repeat(300);
+    let mut typed = vec![b'p'; 3000];
+    typed.push(b'\n');
+    let run = curl_typing(&["-u", &user, &url], &typed);
+    let prompt = format!("Enter host password for user '{user}");
+    assert_eq!(
+        (run.code, &run.stderr[..]),
+        (0, &format!("{}\n", &prompt[..255])[..])
+    );
+    let request = s.request();
+    let sent = logins(&request);
+    assert_eq!(sent.len(), 1);
+    let login = sent[0].strip_prefix("Authorization: Basic ").unwrap();
+    // 4 characters for each 3 bytes of `user:` and 2047 bytes typed.
+    assert_eq!(login.len(), (300 + 1 + 2047usize).div_ceil(3) * 4);
+
+    // 102397 bytes of user, `:` and one of password: 102399 fit.
+    let user = "u".repeat(102_397);
+    let s = Server::new(CLOSED);
+    let run = curl_typing(&["-u", &user, &s.url()], b"x\n");
+    assert_eq!((run.code, run.stderr.len()), (0, 256));
+    assert_eq!(logins(&s.request()).len(), 1);
+    // 102400 do not, and nothing is transferred: no server listens.
+    let run = curl_typing(&["-u", &user, "http://127.0.0.1:1/"], b"xy\n");
+    assert_eq!((run.code, run.stderr.len()), (27, 256));
+}

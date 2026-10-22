@@ -8,6 +8,7 @@
 //! placed, and a command line using an unimplemented option is refused
 //! rather than run without it.
 
+use std::borrow::Cow;
 use std::os::unix::ffi::OsStrExt as _;
 
 use curl_alloc::TryVec;
@@ -144,8 +145,9 @@ pub(crate) struct Operation<'a> {
     pub(crate) connect_to: Vec<&'a [u8]>,
     /// `--user-agent`.
     pub(crate) user_agent: Option<&'a [u8]>,
-    /// `-u`: `user:password`, or a user alone.
-    pub(crate) user: Option<&'a [u8]>,
+    /// `-u`: `user:password`, or a user alone until its password is
+    /// asked for.
+    pub(crate) user: Option<Cow<'a, [u8]>>,
     /// `--oauth2-bearer`.
     pub(crate) bearer: Option<&'a [u8]>,
     /// `--netrc`: the file is required.
@@ -188,8 +190,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) suppress_connect_headers: bool,
     /// `--path-as-is`.
     pub(crate) path_as_is: bool,
-    /// `--proxy-user`.
-    pub(crate) proxy_user: Option<&'a [u8]>,
+    /// `--proxy-user`, as `-u`.
+    pub(crate) proxy_user: Option<Cow<'a, [u8]>>,
     /// `--proxy-anyauth`.
     pub(crate) proxy_anyauth: bool,
     /// `--proxy-basic`.
@@ -812,14 +814,14 @@ pub(crate) fn apply<'a>(
         }
         Opt::SuppressConnectHeaders => line.current().suppress_connect_headers = value.toggle(),
         Opt::PathAsIs => line.current().path_as_is = value.toggle(),
-        Opt::ProxyUser => line.current().proxy_user = Some(value.text()),
+        Opt::ProxyUser => line.current().proxy_user = Some(Cow::Borrowed(value.text())),
         Opt::ProxyAnyauth => line.current().proxy_anyauth = value.toggle(),
         Opt::ProxyBasic => line.current().proxy_basic = value.toggle(),
         Opt::ProxyDigest => line.current().proxy_digest = value.toggle(),
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
-        Opt::User => line.current().user = Some(value.text()),
+        Opt::User => line.current().user = Some(Cow::Borrowed(value.text())),
         Opt::Anyauth => line.current().auth = AuthMethods::ANY,
         Opt::Netrc => line.current().netrc = value.toggle(),
         Opt::NetrcOptional => line.current().netrc_optional = value.toggle(),

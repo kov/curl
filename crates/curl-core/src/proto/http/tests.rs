@@ -4386,9 +4386,22 @@ fn a_body_all_sent_has_nothing_left() {
         size: None,
     };
     let upload = crate::upload::Upload::new(&source);
-    let left = |sent_all| super::Request::left_to_send(Some(&upload), sent_all, 1).left;
+    let left = |sent_all| super::Request::left_to_send(Some(&upload), false, sent_all, 1).left;
     assert_eq!(left(true), Left::Nothing);
     assert_eq!(left(false), Left::Unknown);
+}
+
+/// A body sent chunked has no size left to weigh, though the
+/// application gave one: the C build says "close instead of sending
+/// unknown amount of more bytes" for a 307 in the middle of one.
+#[test]
+fn a_chunked_body_has_an_unknown_amount_left() {
+    use crate::proto::http1::framing::Left;
+    let stream = Stream::new(b"0123456789");
+    let upload = crate::upload::Upload::new(&stream.source(false));
+    let left = |chunked| super::Request::left_to_send(Some(&upload), chunked, false, 4).left;
+    assert_eq!(left(false), Left::Bytes(6));
+    assert_eq!(left(true), Left::Unknown);
 }
 
 /// A redirect's body is weighed once, as its `Location:` is read

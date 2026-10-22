@@ -986,11 +986,19 @@ impl Request {
 
     /// What of the body is still to go, as the response's head weighs it
     /// (`http_perhapsrewind`): its size less what went, unless all went.
-    fn left_to_send(upload: Option<&Upload>, sent_all: bool, body_sent: u64) -> Sending {
+    /// Sent `chunked`, its framing makes its size unknown
+    /// (`cr_chunked_total_length`).
+    fn left_to_send(
+        upload: Option<&Upload>,
+        chunked: bool,
+        sent_all: bool,
+        body_sent: u64,
+    ) -> Sending {
         let rereads = upload.is_some_and(Upload::needs_rewind);
         let left = match upload {
             None => Left::Nothing,
             Some(_) if sent_all => Left::Nothing,
+            Some(_) if chunked => Left::Unknown,
             Some(upload) => match upload.size() {
                 Some(size) => Left::Bytes(size.saturating_sub(body_sent)),
                 None => Left::Unknown,
@@ -1040,6 +1048,7 @@ impl Request {
             head,
             interim,
             upload,
+            chunks,
             sent_all,
             body_sent,
             ..
@@ -1048,7 +1057,7 @@ impl Request {
         // Only a status line changes it, so for a header line it is what
         // it was before.
         let bodyless = head.meta().bodyless();
-        let sending = Self::left_to_send(upload.as_ref(), *sent_all, *body_sent);
+        let sending = Self::left_to_send(upload.as_ref(), chunks.is_some(), *sent_all, *body_sent);
         let (used, event) = head
             .feed(input, &mut cx.report_mut().sizes_mut().header, sending)
             .map_err(|e| head_failed(cx, &e))?;

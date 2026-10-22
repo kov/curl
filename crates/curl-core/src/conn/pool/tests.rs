@@ -65,6 +65,7 @@ fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
         origin: TryRc::try_new(peer).unwrap(),
         via: None,
         ip: IpVersion::Any,
+        proxy: None,
     })
 }
 

@@ -160,6 +160,15 @@ impl ProtoState {
         }
     }
 
+    /// The request goes whole to a proxy that sends it on to `url`.
+    pub(crate) fn forward(&mut self, url: &Url) -> Result<(), ErrorKind> {
+        match *self {
+            ProtoState::Http(ref mut r) => r.forward(url),
+            // Only HTTP's requests are forwarded.
+            _ => Ok(()),
+        }
+    }
+
     /// Make the request (C's `do_it`) over the connection `lease` holds:
     /// `file:`'s is the whole transfer; the test protocols have none to
     /// make.

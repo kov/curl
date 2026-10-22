@@ -509,6 +509,7 @@ mod tests {
             origin: TryRc::try_new(peer).unwrap(),
             via: None,
             ip,
+            proxy: None,
         };
         let mut m = ConnectMachine::new(ConnNumber(0), route, start);
         m.stage = Stage::Racing(Racing {
@@ -575,6 +576,7 @@ mod tests {
             origin: TryRc::try_new(peer).unwrap(),
             via: None,
             ip: IpVersion::Any,
+            proxy: None,
         };
         let mut m = ConnectMachine::new(ConnNumber(0), route, clock.now());
         let he = Duration::from_millis(200);

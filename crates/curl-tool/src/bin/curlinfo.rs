@@ -20,7 +20,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("Mime", false),
     ("netrc", true),
     ("parsedate", true),
-    ("proxy", false),
+    ("proxy", true),
     ("shuffle-dns", false),
     ("resolv-threaded", false),
     // The type-checking macros of the C headers, which ship unchanged.

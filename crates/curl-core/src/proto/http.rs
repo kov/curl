@@ -18,7 +18,7 @@ use crate::report::Timer;
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::{self, Upload};
-use crate::url::{GetOptions, Part, Url};
+use crate::url::{GetOptions, Part, SetOptions, Url};
 
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing};
@@ -62,6 +62,9 @@ pub(crate) struct Request {
     pipeline: Pipeline,
     /// The path and query the request asks for.
     target: Vec<u8>,
+    /// The whole URL, the request's target when a proxy it goes to sends
+    /// it on (`http_target`).
+    forward_target: Option<Vec<u8>>,
     /// What the URL says to authenticate with.
     credentials: Option<Credentials>,
     /// The scheme, the host as the URL names it, and the port the
@@ -275,6 +278,7 @@ impl Request {
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,
+            forward_target: None,
             credentials,
             peer,
             gate,
@@ -305,6 +309,22 @@ impl Request {
             cookie_host,
             set_cookies: 0,
         })
+    }
+
+    /// Send the request whole to a proxy that sends it on: its target is
+    /// `url` without its fragment and credentials, nor its scheme's port
+    /// (`http_target`).
+    pub(crate) fn forward(&mut self, url: &Url) -> Result<(), ErrorKind> {
+        let mut url = url.try_clone().map_err(url_error)?;
+        for part in [Part::Fragment, Part::User, Part::Password] {
+            url.set(part, None, SetOptions::NONE).map_err(url_error)?;
+        }
+        let get = GetOptions {
+            no_default_port: true,
+            ..GetOptions::NONE
+        };
+        self.forward_target = Some(url.get(Part::Url, get).map_err(url_error)?);
+        Ok(())
     }
 
     /// The host and port the request connects to.
@@ -413,6 +433,8 @@ impl Request {
         lease: &ConnLease,
     ) -> Result<(), ErrorKind> {
         let reused = cx.conn(lease).reused();
+        let forwarded = cx.conn(lease).forwarded();
+        let http_proxy = cx.conn(lease).http_proxy();
         let get_or_head = matches!(self.method, Method::Get | Method::Head);
         let credentials = self.credentials.as_ref();
         let (host_auth, options) = cx.easy_mut().auth_with_options();
@@ -530,7 +552,11 @@ impl Request {
         let authenticated = (!auth.used.is_empty()).then_some(auth.used);
         let head = RequestHead {
             method,
-            target: &self.target,
+            target: self
+                .forward_target
+                .as_deref()
+                .filter(|_| forwarded)
+                .unwrap_or(&self.target),
             version: self.version,
             host: self.peer.shown(),
             port: shown_port,
@@ -542,6 +568,7 @@ impl Request {
             chunked: chunked && asked.is_none(),
             probe: auth.probe,
             cookie: cookie.as_deref(),
+            forwarded,
             headers: &http.headers,
         };
         let mut out = Vec::new();
@@ -563,6 +590,7 @@ impl Request {
                 resume_from: resume_from.filter(|_| self.method == Method::Get),
                 follow: http.follow != Follow::No,
                 auth: auth_asked,
+                http_proxy,
             },
         };
         if let Some(method) = authenticated {

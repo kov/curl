@@ -62,6 +62,7 @@ pub struct Options {
     /// Who the transfer authenticates as.
     pub login: Login,
     pub netrc: Netrc,
+    pub proxy: Proxy,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -80,6 +81,59 @@ pub struct Login {
     pub password: Option<Vec<u8>>,
     /// An OAuth 2.0 token, for Bearer (`CURLOPT_XOAUTH2_BEARER`).
     pub bearer: Option<Vec<u8>>,
+}
+
+/// The proxy transfers go through, and which go direct.
+#[derive(Debug, Default)]
+pub struct Proxy {
+    /// The proxy, as a URL whose scheme may name its type
+    /// (`CURLOPT_PROXY`): none to look for one in the environment, an
+    /// empty one for none at all.
+    pub url: Option<Vec<u8>>,
+    /// Its type where the URL names none (`CURLOPT_PROXYTYPE`).
+    pub kind: ProxyType,
+    /// Its port where the URL names none (`CURLOPT_PROXYPORT`); none for
+    /// its scheme's.
+    pub port: Option<NonZeroU16>,
+    /// The hosts reached without it, a comma-separated list
+    /// (`CURLOPT_NOPROXY`): none to look in the environment.
+    pub no_proxy: Option<Vec<u8>>,
+    /// Every transfer tunnels through an HTTP proxy, with `CONNECT`
+    /// (`CURLOPT_HTTPPROXYTUNNEL`).
+    pub tunnel: bool,
+}
+
+impl Proxy {
+    fn try_clone(&self) -> Result<Proxy, OutOfMemory> {
+        Ok(Proxy {
+            url: self.url.as_deref().map(copy).transpose()?,
+            kind: self.kind,
+            port: self.port,
+            no_proxy: self.no_proxy.as_deref().map(copy).transpose()?,
+            tunnel: self.tunnel,
+        })
+    }
+}
+
+/// What a proxy speaks (`curl_proxytype`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProxyType {
+    #[default]
+    Http,
+    /// HTTP/1.0 for `CONNECT`.
+    Http10,
+    /// HTTP over TLS.
+    Https,
+    /// HTTP/2 over TLS.
+    Https2,
+    /// HTTP/3.
+    Https3,
+    Socks4,
+    /// SOCKS4 with the name resolved by the proxy.
+    Socks4a,
+    Socks5,
+    /// SOCKS5 with the name resolved by the proxy.
+    Socks5Hostname,
 }
 
 /// Whether a `.netrc` file gives credentials, and which
@@ -189,6 +243,7 @@ impl Options {
                 mode: self.netrc.mode,
                 file: self.netrc.file.as_deref().map(copy).transpose()?,
             },
+            proxy: self.proxy.try_clone()?,
             http: self.http.try_clone()?,
             tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]

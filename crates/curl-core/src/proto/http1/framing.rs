@@ -42,6 +42,9 @@ pub(crate) struct Asked {
     pub(crate) follow: bool,
     /// What the request knows of authenticating, for a 401 to act on.
     pub(crate) auth: AuthAsked,
+    /// The connection goes through an HTTP proxy, whose
+    /// `Proxy-Connection` then says whether it stays open.
+    pub(crate) http_proxy: bool,
 }
 
 /// How the body after a final head ends.
@@ -63,6 +66,8 @@ pub(crate) enum Framing {
 pub(crate) enum Note {
     Http10Close,
     Http10KeepAlive,
+    ProxyKeepAlive,
+    ProxyClose,
     LengthOverflow,
     AssumeClose,
     AlreadyDownloaded,
@@ -113,6 +118,8 @@ impl fmt::Display for Note {
         f.write_str(match self {
             Note::Http10Close => "HTTP 1.0, assume close after body",
             Note::Http10KeepAlive => "HTTP/1.0 connection set to keep alive",
+            Note::ProxyKeepAlive => "HTTP/1.0 proxy connection set to keep alive",
+            Note::ProxyClose => "HTTP/1.1 proxy connection set close",
             Note::LengthOverflow => "Overflow Content-Length: value",
             Note::AssumeClose => "no chunk, no close, no size. Assume close to signal end",
             Note::AlreadyDownloaded => "The entire document is already downloaded",
@@ -273,6 +280,23 @@ impl Meta {
             && let Some(v) = value_of(line, b"Content-Length:")
         {
             return self.length(v, asked);
+        }
+        if value_of(line, b"Proxy-Connection:").is_some() {
+            // C reads the field for nothing more (`http_header_p`).
+            if !asked.http_proxy {
+                return Ok(None);
+            }
+            return Ok(match status.version {
+                HttpVersion::Http10 if says(line, b"Proxy-Connection:", b"keep-alive") => {
+                    self.close = false;
+                    Some(Note::ProxyKeepAlive)
+                }
+                HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
+                    self.close = true;
+                    Some(Note::ProxyClose)
+                }
+                _ => None,
+            });
         }
         let h1 = matches!(status.version, HttpVersion::Http10 | HttpVersion::Http11);
         if h1 && says(line, b"Connection:", b"close") {

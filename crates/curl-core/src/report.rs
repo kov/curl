@@ -63,6 +63,7 @@ pub struct TransferReport {
     retry_after: Option<Duration>,
     /// The URL the transfer used, without its credentials, as text.
     url: Option<Vec<u8>>,
+    used_proxy: bool,
     /// Where the last response's `Location:` points, resolved, when it
     /// was not followed (`info.wouldredirect`).
     redirect_url: Option<Vec<u8>>,
@@ -252,6 +253,16 @@ impl TransferReport {
     /// wait it gave as nonsense, or a date passed, is zero.
     pub fn retry_after(&self) -> Option<Duration> {
         self.retry_after
+    }
+
+    /// The transfer's last connection went through a proxy
+    /// (`CURLINFO_USED_PROXY`).
+    pub fn used_proxy(&self) -> bool {
+        self.used_proxy
+    }
+
+    pub(crate) fn set_used_proxy(&mut self, used: bool) {
+        self.used_proxy = used;
     }
 
     pub(crate) fn set_retry_after(&mut self, wait: Duration) {

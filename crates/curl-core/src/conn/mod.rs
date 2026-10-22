@@ -12,6 +12,7 @@ mod connect_to;
 mod dns;
 pub mod io;
 mod pool;
+pub(crate) mod proxy;
 
 pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup, Unresolved};
 pub(crate) use connect_to::{BadVia, via};
@@ -27,7 +28,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::TryRc;
 
-use crate::options::IpVersion;
+use crate::options::{IpVersion, ProxyType};
 
 pub(crate) use self::buf::RecvBuf;
 
@@ -122,6 +123,8 @@ impl Route {
                 *have.origin == *want.origin
                     && have.via.as_deref() == want.via.as_deref()
                     && (want.ip == IpVersion::Any || want.ip == have.ip)
+                    && have.proxy.as_ref().map(ProxyRoute::key)
+                        == want.proxy.as_ref().map(ProxyRoute::key)
             }
             (Route::Local | Route::Tcp(..), Route::Local | Route::Tcp(..)) => false,
         }
@@ -130,18 +133,89 @@ impl Route {
 
 /// A route over TCP to `origin`, the peer shared by the transfer and the
 /// connection; through `via` when a connect-to entry names another peer
-/// for it (C's `via_peer`); over the addresses of `ip`.
+/// for it (C's `via_peer`); over the addresses of `ip`; through `proxy`
+/// if there is one, which is the origin itself for a proxy the requests
+/// go to whole.
 #[derive(Clone, Debug)]
 pub(crate) struct Tcp {
     pub(crate) origin: TryRc<Peer>,
     pub(crate) via: Option<TryRc<Peer>>,
     pub(crate) ip: IpVersion,
+    pub(crate) proxy: Option<ProxyRoute>,
 }
 
 impl Tcp {
     /// The peer connected to (`Curl_conn_get_destination`).
     pub(crate) fn destination(&self) -> &Peer {
         self.via.as_deref().unwrap_or(&self.origin)
+    }
+
+    /// The requests go whole to a proxy, which is the origin
+    /// (`origin_is_proxy`).
+    pub(crate) fn forwarded(&self) -> bool {
+        self.proxy.as_ref().is_some_and(|p| p.forward)
+    }
+}
+
+/// The proxy a route goes through (C's `conn->http_proxy`).
+#[derive(Clone, Debug)]
+pub(crate) struct ProxyRoute {
+    pub(crate) kind: ProxyType,
+    pub(crate) peer: TryRc<Peer>,
+    /// The user and password the proxy is given, if any.
+    pub(crate) creds: Option<TryRc<ProxyCreds>>,
+    /// The requests go to the proxy, which sends them on, rather than
+    /// through a tunnel it opens.
+    pub(crate) forward: bool,
+}
+
+/// What a proxy is told it is talking to.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ProxyCreds {
+    pub(crate) user: Option<Vec<u8>>,
+    pub(crate) password: Option<Vec<u8>>,
+}
+
+/// What of a route's proxy a connection must share to serve another
+/// transfer (`proxy_info_matches`, `origin_is_proxy`).
+#[derive(PartialEq)]
+struct ProxyKey<'a> {
+    kind: ProxyType,
+    peer: Destination<'a>,
+    creds: Option<&'a ProxyCreds>,
+    forward: bool,
+}
+
+impl ProxyRoute {
+    /// Whether it is an HTTP proxy, not a SOCKS one.
+    pub(crate) fn http(&self) -> bool {
+        !matches!(
+            self.kind,
+            ProxyType::Socks4 | ProxyType::Socks4a | ProxyType::Socks5 | ProxyType::Socks5Hostname
+        )
+    }
+
+    fn key(&self) -> ProxyKey<'_> {
+        ProxyKey {
+            kind: self.kind,
+            peer: Destination(&self.peer),
+            creds: self.creds.as_deref(),
+            forward: self.forward,
+        }
+    }
+}
+
+/// A peer compared without its scheme (`Curl_peer_same_destination`).
+struct Destination<'a>(&'a Peer);
+
+impl PartialEq for Destination<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (self.0, other.0);
+        a.port == b.port
+            && a.ipv6() == b.ipv6()
+            && a.name().eq_ignore_ascii_case(b.name())
+            && a.scope == b.scope
+            && (a.scope != 0 || a.zone == b.zone)
     }
 }
 
@@ -284,6 +358,16 @@ impl Conn {
         }
     }
 
+    /// Whether requests go whole to a proxy over it (`origin_is_proxy`).
+    pub(crate) fn forwarded(&self) -> bool {
+        matches!(&self.route, Route::Tcp(tcp) if tcp.forwarded())
+    }
+
+    /// Whether it goes through an HTTP proxy (`http_proxy.peer`).
+    pub(crate) fn http_proxy(&self) -> bool {
+        matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.http())
+    }
+
     /// Whether it carried a request before this one.
     pub(crate) fn reused(&self) -> bool {
         self.served
@@ -390,5 +474,54 @@ mod tests {
         assert_eq!(v6(None).name(), b"fe80::1");
         assert_eq!(v6(None).shown(), b"[fe80::1]");
         assert!(v6(None).ipv6() && !peer(b"fe80", 80, None).ipv6());
+    }
+
+    fn via_proxy(host: &[u8], user: Option<&[u8]>, forward: bool) -> Route {
+        let proxy = TryRc::try_new(peer(host, 3128, None)).unwrap();
+        let creds = user.map(|u| {
+            TryRc::try_new(ProxyCreds {
+                user: Some(u.to_vec()),
+                password: None,
+            })
+            .unwrap()
+        });
+        let origin = if forward {
+            proxy.clone()
+        } else {
+            TryRc::try_new(peer(b"origin.example", 80, None)).unwrap()
+        };
+        Route::Tcp(Tcp {
+            origin,
+            via: None,
+            ip: IpVersion::Any,
+            proxy: Some(ProxyRoute {
+                kind: ProxyType::Http,
+                peer: proxy,
+                creds,
+                forward,
+            }),
+        })
+    }
+
+    /// A connection through a proxy serves a transfer through the same
+    /// proxy, the same way, as the same user (`url_match_proxy_use`); a
+    /// forwarding one serves any origin, being the proxy's.
+    #[test]
+    fn proxied_routes_match_as_c() {
+        let direct = Route::Tcp(Tcp {
+            origin: TryRc::try_new(peer(b"proxy.example", 3128, None)).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: None,
+        });
+        let route = via_proxy(b"proxy.example", None, true);
+        assert!(route.serves(&via_proxy(b"PROXY.example", None, true)));
+        assert!(!route.serves(&via_proxy(b"other.example", None, true)));
+        assert!(!route.serves(&via_proxy(b"proxy.example", Some(b"u"), true)));
+        assert!(!route.serves(&via_proxy(b"proxy.example", None, false)));
+        assert!(!route.serves(&direct) && !direct.serves(&route));
+        let user = via_proxy(b"proxy.example", Some(b"u"), true);
+        assert!(user.serves(&via_proxy(b"proxy.example", Some(b"u"), true)));
+        assert!(!user.serves(&via_proxy(b"proxy.example", Some(b"v"), true)));
     }
 }

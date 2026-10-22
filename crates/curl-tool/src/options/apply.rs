@@ -11,7 +11,7 @@
 use std::os::unix::ffi::OsStrExt as _;
 
 use curl_alloc::TryVec;
-use curl_core::options::{AuthMethods, Follow, PostRedir};
+use curl_core::options::{AuthMethods, Follow, PostRedir, ProxyType};
 use curl_core::version::Protocol;
 
 use super::protocols::{self, Protocols};
@@ -168,6 +168,14 @@ pub(crate) struct Operation<'a> {
     pub(crate) cookie_files: Vec<&'a [u8]>,
     /// `--cookie-jar`.
     pub(crate) cookie_jar: Option<&'a [u8]>,
+    /// `--proxy` and `--proxy1.0`; empty for none.
+    pub(crate) proxy: Option<&'a [u8]>,
+    /// What `--proxy1.0` makes the proxy.
+    pub(crate) proxy_kind: ProxyType,
+    /// `--noproxy`.
+    pub(crate) noproxy: Option<&'a [u8]>,
+    /// `--proxytunnel`.
+    pub(crate) proxytunnel: bool,
     /// `--junk-session-cookies`.
     pub(crate) cookie_session: bool,
     /// `--http1.0` and `--http1.1`.
@@ -690,6 +698,25 @@ pub(crate) fn apply<'a>(
             op.cookie_jar = Some(jar);
         }
         Opt::JunkSessionCookies => line.current().cookie_session = value.toggle(),
+        Opt::Proxy => {
+            let op = line.current();
+            op.proxy = Some(value.text());
+            if !matches!(op.proxy_kind, ProxyType::Https2 | ProxyType::Https3) {
+                op.proxy_kind = ProxyType::Http;
+            }
+        }
+        Opt::Proxy10 => {
+            let op = line.current();
+            op.proxy = None;
+            let proxy = value.text();
+            if proxy.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            op.proxy = Some(proxy);
+            op.proxy_kind = ProxyType::Http10;
+        }
+        Opt::Noproxy => line.current().noproxy = Some(value.text()),
+        Opt::Proxytunnel => line.current().proxytunnel = value.toggle(),
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
@@ -1049,7 +1076,6 @@ pub(crate) fn apply<'a>(
         | Opt::Metalink
         | Opt::Mptcp
         | Opt::Negotiate
-        | Opt::Noproxy
         | Opt::Npn
         | Opt::Ntlm
         | Opt::NtlmWb
@@ -1061,7 +1087,6 @@ pub(crate) fn apply<'a>(
         | Opt::PathAsIs
         | Opt::Pinnedpubkey
         | Opt::Preproxy
-        | Opt::Proxy
         | Opt::ProxyAnyauth
         | Opt::ProxyBasic
         | Opt::ProxyCaNative
@@ -1091,8 +1116,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyTlsuser
         | Opt::ProxyTlsv1
         | Opt::ProxyUser
-        | Opt::Proxy10
-        | Opt::Proxytunnel
         | Opt::Pubkey
         | Opt::Quote
         | Opt::RandomFile

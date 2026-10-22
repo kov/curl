@@ -131,7 +131,7 @@ pub(crate) fn is_ip_address(host: &[u8]) -> bool {
 }
 
 /// An IPv4 address of exactly four decimal octets (`inet_pton4`).
-fn pton4(s: &[u8]) -> Option<[u8; 4]> {
+pub(crate) fn pton4(s: &[u8]) -> Option<[u8; 4]> {
     let mut out = [0u8; 4];
     // The octet being read, and how many have started.
     let mut at = 0;
@@ -165,7 +165,7 @@ fn pton4(s: &[u8]) -> Option<[u8; 4]> {
 }
 
 /// An IPv6 address (`inet_pton6`).
-fn pton6(s: &[u8]) -> Option<[u8; 16]> {
+pub(crate) fn pton6(s: &[u8]) -> Option<[u8; 16]> {
     let mut tmp = [0u8; 16];
     let mut tp = 0;
     let mut colon: Option<usize> = None;

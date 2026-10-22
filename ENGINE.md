@@ -931,7 +931,7 @@ pub struct Route {
 }
 ```
 
-Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip }`. `Peer` is C's
+Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip, proxy }`. `Peer` is C's
 `struct Curl_peer`: the `Scheme` (the protocol's name and whether it keeps connections,
 `PROTOPT_CONN_REUSE`), the host as the URL names it, the port and the IPv6 zone, made once per
 leg and shared by the transfer, as its origin, and the connection it sets up. `via` is the
@@ -941,6 +941,20 @@ one, and the traces name it where C's do. Matching is `Route::serves`: the same 
 `Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its number
 when it is one), the same `via` or none on both, and the same `IpVersion` unless the
 transfer takes any (`url_match_conn`, `url_match_destination`).
+
+The proxy is chosen at setup, after the connect-to entries (`Curl_proxy_init_conn`): the
+options' (`Options::proxy`), or else the one the environment names for the scheme
+(`conn/proxy.rs`, `detect`, never `HTTP_PROXY` in upper case), unless the no-proxy list names
+the origin's host (`excluded`, unit 1614's cases); an empty proxy turns the environment's off.
+`ProxyRoute { kind, peer, creds, forward }` joins the route, and two routes match only through
+the same proxy, compared without its scheme, as the same user and the same way
+(`proxy_info_matches`, `origin_is_proxy`). A plain HTTP request goes whole to an HTTP proxy
+(`forward`): the route's origin is then the proxy's peer, so one connection serves any origin
+through it and the traces name the proxy, and the request names the whole URL without its
+fragment or credentials (`Request::forward`, made from the `Url` before it goes to the report)
+with `Proxy-Connection: Keep-Alive`; the response's `Proxy-Connection` keeps or closes the
+connection (`Asked::http_proxy`). A tunnel (`CURLOPT_HTTPPROXYTUNNEL`, or a connect-to peer)
+and SOCKS fail with `NotBuiltIn` until they are built.
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate

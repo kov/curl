@@ -1,0 +1,63 @@
+# Proxies (crates/curl-core/src/conn/proxy.rs, the route in conn/mod.rs,
+# and HTTP's use of them).
+
+=== a connection serves a transfer through another proxy
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::proxied_routes_match_as_c
+--- old
+                    && have.proxy.as_ref().map(ProxyRoute::key)
+                        == want.proxy.as_ref().map(ProxyRoute::key)
+--- new
+                    && have.proxy.is_some() == want.proxy.is_some()
+
+=== HTTP_PROXY in upper case names a proxy
+file: crates/curl-core/src/conn/proxy.rs
+witness: curl-core conn::proxy::tests::the_environment_names_proxies_as_c
+--- old
+        found = looked_up(named(b"http_proxy"), 10, env);
+--- new
+        found = lower_then_upper(named(b"http_proxy"), 10, env);
+
+=== a no-proxy name matches a host it only ends
+file: crates/curl-core/src/conn/proxy.rs
+witness: curl-core conn::proxy::tests::the_no_proxy_list_names_hosts_as_c
+--- old
+        && name[name.len() - token.len() - 1] == b'.'
+--- new
+        && name[name.len() - token.len() - 1] != 0
+
+=== a forwarded request keeps the URL's fragment
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_forwarding_proxy_gets_the_whole_url
+--- old
+        for part in [Part::Fragment, Part::User, Part::Password] {
+--- new
+        for part in [Part::User, Part::Password] {
+
+=== a forwarded request does not ask to keep the proxy's connection
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::a_forwarding_proxy_gets_the_whole_url
+--- old
+                if head.forwarded && !head.headers.replaces(b"Proxy-Connection") {
+--- new
+                if !head.forwarded && !head.headers.replaces(b"Proxy-Connection") {
+
+=== a proxy's Proxy-Connection: close is not heard
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_proxy_says_whether_the_connection_stays
+--- old
+                HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
+                    self.close = true;
+--- new
+                HttpVersion::Http11 if says(line, b"Proxy-Connection:", b"close") => {
+                    self.close = false;
+
+=== the proxy port is not checked
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::proxy_options_are_checked_as_in_c
+--- old
+            let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
+            options.proxy.port = NonZeroU16::new(port);
+--- new
+            let port = n as u16;
+            options.proxy.port = NonZeroU16::new(port);

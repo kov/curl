@@ -370,11 +370,9 @@ witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::an_ipv6_host_is_named_as_c_names_it
 --- old
-            let host = Bytes(plan.origin.name());
-            let name = plan.origin.scheme().name;
+                None => ("host", Bytes(plan.origin.name())),
 --- new
-            let host = Bytes(plan.origin.shown());
-            let name = plan.origin.scheme().name;
+                None => ("host", Bytes(plan.origin.shown())),
 
 === a setup paused for receiving still waits to write
 file: crates/curl-core/src/multi/state.rs

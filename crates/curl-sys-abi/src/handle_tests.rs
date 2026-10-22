@@ -2510,3 +2510,63 @@ fn a_share_is_held_and_locked_as_in_c() {
         [share(null), unshare(null)]
     );
 }
+
+/// The proxy options reach the transfer's, checked as setopt.c checks
+/// them.
+#[test]
+fn proxy_options_are_checked_as_in_c() {
+    let c = curl_easy_init();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_PROXY, c"http://p:1".as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_NOPROXY, c"a,b".as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_PROXYPORT, 3128), CURLE_OK);
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_SOCKS5_HOSTNAME),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_HTTPPROXYTUNNEL, 2), CURLE_OK);
+    options(c, |o| {
+        assert_eq!(o.proxy.url.as_deref(), Some(&b"http://p:1"[..]));
+        assert_eq!(o.proxy.no_proxy.as_deref(), Some(&b"a,b"[..]));
+        assert_eq!(o.proxy.port.map(|p| p.get()), Some(3128));
+        assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Socks5Hostname);
+        assert!(o.proxy.tunnel);
+    });
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYPORT, 65536),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYPORT, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(long(c, ffi::CURLOPT_PROXYPORT, 0), CURLE_OK);
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYTYPE, 9),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYTYPE, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYTYPE, ffi::CURLPROXY_HTTPS3),
+        CURLE_NOT_BUILT_IN
+    );
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_PROXY, ptr::null_mut::<c_void>()),
+        CURLE_OK
+    );
+    options(c, |o| {
+        assert_eq!((o.proxy.url.as_deref(), o.proxy.port), (None, None));
+        assert_eq!(o.proxy.kind, curl_core::options::ProxyType::Socks5Hostname);
+    });
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_USED_PROXY), 0);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}

@@ -227,6 +227,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
             ends.local.map_or(0, |local| c_long::from(local.port()))
         })),
         ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
+        ffi::CURLINFO_USED_PROXY => Value::Long(c_long::from(r.used_proxy())),
         ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),
         ffi::CURLINFO_HTTPAUTH_AVAIL => Value::Long(auth_mask(r.auth_offered())),
         ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used())),

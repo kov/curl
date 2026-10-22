@@ -371,6 +371,9 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) probe: bool,
     /// What the `Cookie:` line says, if the request has one.
     pub(crate) cookie: Option<&'o [u8]>,
+    /// The request goes to a proxy that sends it on: it asks to keep the
+    /// connection to the proxy (`origin_is_proxy`).
+    pub(crate) forwarded: bool,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -530,10 +533,14 @@ fn write_h1(
             Part::Connection => connection(head.headers, out)?,
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
+            Part::ProxyConnection => {
+                if head.forwarded && !head.headers.replaces(b"Proxy-Connection") {
+                    out.line(&[b"Proxy-Connection: Keep-Alive"])?;
+                }
+            }
             Part::ProxyAuthorization
             | Part::Te
             | Part::AcceptEncoding
-            | Part::ProxyConnection
             | Part::AltUsed
             | Part::Upgrade
             | Part::Conditionals => {}
@@ -688,6 +695,7 @@ mod tests {
             chunked: false,
             probe: false,
             cookie: None,
+            forwarded: false,
 
             headers: &headers,
         };
@@ -755,6 +763,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 cookie: None,
+                forwarded: false,
 
                 headers: &headers,
             };
@@ -802,6 +811,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 cookie: None,
+                forwarded: false,
 
                 headers: &headers,
             };
@@ -966,6 +976,7 @@ mod tests {
             chunked: false,
             probe: false,
             cookie: None,
+            forwarded: false,
 
             headers: &headers,
         };
@@ -1012,6 +1023,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 cookie: None,
+                forwarded: false,
 
                 headers: &headers,
             };

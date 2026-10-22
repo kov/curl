@@ -2652,3 +2652,33 @@ fn a_share_s_jar_serves_the_transfers_of_a_multi() {
     let text = String::from_utf8_lossy(&ran.request).into_owned();
     assert!(text.contains("\r\nCookie: "), "{text}");
 }
+
+/// Through a proxy that sends it on, a request names the whole URL,
+/// without its fragment or credentials, asks to keep the connection to
+/// the proxy, and keeps the origin's `Host:` (`http_target`); the
+/// connection is the proxy's.
+#[test]
+fn a_forwarding_proxy_gets_the_whole_url() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://user:pw@origin.example:80/a?b#c"))
+            .unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(
+        text.starts_with(
+            "GET http://origin.example/a?b HTTP/1.1\r\nHost: origin.example\r\n\
+             Authorization: Basic dXNlcjpwdw==\r\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("Proxy-Connection: Keep-Alive\r\n\r\n"),
+        "{text}"
+    );
+    assert!(ran.easy.report().used_proxy());
+    let left = format!("Connection #0 to host 127.0.0.1:{PORT} left intact\n");
+    assert!(ran.seen.text().contains(&left), "{:?}", ran.seen.text());
+}

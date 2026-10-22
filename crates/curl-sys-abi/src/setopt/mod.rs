@@ -19,7 +19,7 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::options::{
     ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines, LowSpeed,
-    MaxRedirects, Method, Options, PostRedir, Resume, ReuseLimits, UserHeaders,
+    MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -497,6 +497,34 @@ fn apply(
                 _ => return Err(Refused::Bad),
             };
         }
+        (ffi::CURLOPT_PROXY, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.proxy.url = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_NOPROXY, Ptr(p)) => {
+            // SAFETY: as above.
+            options.proxy.no_proxy = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_PROXYPORT, Long(n)) => {
+            let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
+            options.proxy.port = NonZeroU16::new(port);
+        }
+        (ffi::CURLOPT_PROXYTYPE, Long(n)) => {
+            options.proxy.kind = match n {
+                ffi::CURLPROXY_HTTP => ProxyType::Http,
+                ffi::CURLPROXY_HTTP_1_0 => ProxyType::Http10,
+                ffi::CURLPROXY_HTTPS => ProxyType::Https,
+                ffi::CURLPROXY_HTTPS2 => ProxyType::Https2,
+                ffi::CURLPROXY_SOCKS4 => ProxyType::Socks4,
+                ffi::CURLPROXY_SOCKS5 => ProxyType::Socks5,
+                ffi::CURLPROXY_SOCKS4A => ProxyType::Socks4a,
+                ffi::CURLPROXY_SOCKS5_HOSTNAME => ProxyType::Socks5Hostname,
+                // Without an HTTP/3 proxy built in.
+                ffi::CURLPROXY_HTTPS3 => return Err(Refused::NotBuiltIn),
+                _ => return Err(Refused::Bad),
+            };
+        }
+        (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => options.proxy.tunnel = n != 0,
         (ffi::CURLOPT_NETRC_FILE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.netrc.file = unsafe { owned(p) }?;

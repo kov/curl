@@ -421,10 +421,14 @@ cargo-mutants run on the milestone's diff.
     for the share itself. The 45 cookie and PSL tests the Rust leg runs pass. Waiting: the proxy tests, with step 31; the lock
     functions at the pool's and the jar's sites (1554), with the share's planned split
     (ENGINE.md 4.6.1); `CONNECT_ONLY` (3234).
-31. **http: proxies.** **To do.** Opening commit: the route built in setup from the target,
-    the proxy options and the scheme table, each trace's host checked on the C leg. Then the
-    absolute request target and Proxy-Authorization; then CONNECT, after the dial result is
-    split from the pooled `Conn` (§4.2's `TunnelEvent` and `&mut ProxyAuth`); then SOCKS.
+31. **http: proxies.** **In progress.** Done: the proxy chosen at setup from the options or
+    the environment and the no-proxy list, joining the route (ENGINE.md 4.5); a plain HTTP
+    request forwarded whole, with `Proxy-Connection`; `CURLOPT_PROXY`, `NOPROXY`,
+    `PROXYPORT`, `PROXYTYPE`, `HTTPPROXYTUNNEL` and `CURLINFO_USED_PROXY`; the tool's `-x`,
+    `--noproxy`, `--proxy1.0` and `-p`. 76 of the 158 proxy tests the Rust leg runs pass.
+    Next: Proxy-Authorization and the proxy's 407 (`-U`, `--proxy-user` and the rest); then
+    CONNECT, after the dial result is split from the pooled `Conn` (§4.2's `TunnelEvent` and
+    `&mut ProxyAuth`); then SOCKS.
 32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as
     C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a
     binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and

@@ -10,10 +10,11 @@ use std::net::{IpAddr, SocketAddr};
 use curl_alloc::{OutOfMemory, TryRc, TryVec};
 
 use crate::conn::io::{Events, ResolveFailure};
+use crate::conn::proxy::{self, Refused};
 use crate::conn::{
     Acquired, Answer, BadEntry, BadVia, Conn, ConnLease, ConnectError, Connected, Failure, Finish,
-    Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, Progress, Released, ReuseRules, Route,
-    Setup, Tcp, Unresolved, WaitReason, parse_entry,
+    Found, Full, Limit, ListEntry, Peer, Pool, PoolNote, Progress, ProxyCreds, ProxyRoute,
+    Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -120,8 +121,11 @@ pub(crate) enum TransferState {
 #[derive(Debug)]
 pub(crate) struct Plan {
     proto: ProtoState,
+    /// The connection's origin: the proxy, for one the request goes to
+    /// whole.
     origin: Origin,
     via: Option<TryRc<Peer>>,
+    proxy: Option<ProxyRoute>,
 }
 
 /// A request whose connection is being set up.
@@ -133,6 +137,8 @@ pub(crate) struct Connecting {
     /// in their place, as the failure names them.
     origin: Origin,
     via: Option<TryRc<Peer>>,
+    /// The proxy, as the failure names it.
+    proxy: Option<TryRc<Peer>>,
 }
 
 impl Connecting {
@@ -390,6 +396,7 @@ impl Connecting {
             proto,
             origin,
             via: _,
+            proxy: _,
         } = self;
         TransferState::ProtoConnect(Attached {
             lease,
@@ -923,7 +930,7 @@ fn connecting<H: Host>(
             (c.attached(), Wake::Again)
         }
         Err(e) => {
-            let kind = connect_failed(cx, &c.origin, c.via.as_deref(), e);
+            let kind = connect_failed(cx, &c.origin, c.via.as_deref(), c.proxy.as_deref(), e);
             (TransferState::Connecting(c).fail(kind), Wake::Again)
         }
     }
@@ -935,6 +942,7 @@ fn connect_failed<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Origin,
     via: Option<&Peer>,
+    proxy: Option<&Peer>,
     e: ConnectError,
 ) -> ErrorKind {
     match e {
@@ -942,7 +950,11 @@ fn connect_failed<H: Host>(
         ConnectError::Unresolved(why) => {
             let to = via.unwrap_or(origin);
             let (host, port) = (Bytes(to.name()), to.port());
-            let kind = ErrorKind::CouldntResolveHost;
+            // With a proxy, the name looked up is the proxy's.
+            let (what, kind) = match proxy {
+                Some(_) => ("proxy", ErrorKind::CouldntResolveProxy),
+                None => ("host", ErrorKind::CouldntResolveHost),
+            };
             // The reference build's resolver, c-ares, gives its reason
             // (`ares_strerror`), then fails again without it.
             let reason = match why {
@@ -957,11 +969,11 @@ fn connect_failed<H: Host>(
             }
             let kind = match reason {
                 Some(reason) => {
-                    let first = format_args!("Could not resolve host: {host} ({reason})");
+                    let first = format_args!("Could not resolve {what}: {host} ({reason})");
                     let kind = trace::fail(cx, kind, first);
-                    trace::fail(cx, kind, format_args!("Could not resolve host: {host}"))
+                    trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}"))
                 }
-                None => trace::fail(cx, kind, format_args!("Could not resolve host: {host}")),
+                None => trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}")),
             };
             trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
             if why == Unresolved::Negative {
@@ -973,14 +985,27 @@ fn connect_failed<H: Host>(
     }
     let (host, port) = (Bytes(origin.name()), origin.port());
     let via = Via(via);
+    let over = OverProxy(proxy);
     let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
     trace::fail(
         cx,
         ErrorKind::CouldntConnect,
         format_args!(
-            "Failed to connect to {host}:{port}{via} after {ms} ms: Could not connect to server"
+            "Failed to connect to {host}:{port}{via} {over}after {ms} ms: Could not connect to server"
         ),
     )
+}
+
+/// The proxy connected through, as a failure names it.
+struct OverProxy<'a>(Option<&'a Peer>);
+
+impl std::fmt::Display for OverProxy<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(peer) => write!(f, "over proxy {} ", Bytes(peer.name())),
+            None => Ok(()),
+        }
+    }
 }
 
 /// The peer connected to in place of the origin, as a failure names it.
@@ -1661,30 +1686,39 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         return TransferState::Init.fail(kind);
     }
     let target = proto.network(&url);
-    // The transfer's URL from here on is the report's.
-    if let Err(OutOfMemory) = cx.report_mut().set_url(url) {
-        return TransferState::Init.fail(ErrorKind::OutOfMemory);
-    }
     let target = match target {
-        Ok(target) => target,
-        Err(e) => return TransferState::Init.fail(e),
+        Ok(Some(target)) => target,
+        Ok(None) => {
+            // The transfer's URL from here on is the report's.
+            if let Err(OutOfMemory) = cx.report_mut().set_url(url) {
+                return TransferState::Init.fail(ErrorKind::OutOfMemory);
+            }
+            let lease = match acquire(cx, Route::Local) {
+                Ok(Acquired::New(lease)) => lease,
+                Ok(Acquired::Reused(_)) => {
+                    unreachable!("a connection without a network is never kept")
+                }
+                Ok(Acquired::Wait(_)) => {
+                    unreachable!("a connection without a network has no limits")
+                }
+                Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
+            };
+            // A connection without a network has its name at once.
+            cx.mark(Timer::NameLookup);
+            return TransferState::ProtoConnect(Attached {
+                lease,
+                proto,
+                origin: None,
+            });
+        }
+        Err(e) => {
+            // As above.
+            let _kept = cx.report_mut().set_url(url);
+            return TransferState::Init.fail(e);
+        }
     };
-    let Some(peer) = target else {
-        let lease = match acquire(cx, Route::Local) {
-            Ok(Acquired::New(lease)) => lease,
-            Ok(Acquired::Reused(_)) => unreachable!("a connection without a network is never kept"),
-            Ok(Acquired::Wait(_)) => unreachable!("a connection without a network has no limits"),
-            Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
-        };
-        // A connection without a network has its name at once.
-        cx.mark(Timer::NameLookup);
-        return TransferState::ProtoConnect(Attached {
-            lease,
-            proto,
-            origin: None,
-        });
-    };
-    let Ok(origin) = TryRc::try_new(peer) else {
+    let Ok(origin) = TryRc::try_new(target) else {
+        let _kept = cx.report_mut().set_url(url);
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
     if run.inherited.first.is_none() {
@@ -1697,9 +1731,182 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     cx.easy_mut().options_mut().connect_to = entries;
     let via = match via {
         Ok(via) => via,
-        Err(e) => return TransferState::Init.fail(e),
+        Err(e) => {
+            let _kept = cx.report_mut().set_url(url);
+            return TransferState::Init.fail(e);
+        }
     };
-    setup(cx, Plan { proto, origin, via })
+    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some()) {
+        Ok(proxy) => proxy,
+        Err(e) => {
+            let _kept = cx.report_mut().set_url(url);
+            return TransferState::Init.fail(e);
+        }
+    };
+    // A request a proxy sends on names the whole URL, and the connection
+    // is the proxy's (`origin_is_proxy`).
+    let mut proto = proto;
+    let origin = match &proxy {
+        Some(p) if p.forward => {
+            if let Err(e) = proto.forward(&url) {
+                let _kept = cx.report_mut().set_url(url);
+                return TransferState::Init.fail(e);
+            }
+            p.peer.clone()
+        }
+        _ => origin,
+    };
+    if let Err(OutOfMemory) = cx.report_mut().set_url(url) {
+        return TransferState::Init.fail(ErrorKind::OutOfMemory);
+    }
+    setup(
+        cx,
+        Plan {
+            proto,
+            origin,
+            via,
+            proxy,
+        },
+    )
+}
+
+/// The proxy the transfer to `origin` goes through, if any
+/// (`Curl_proxy_init_conn`): the options', or else the one the
+/// environment names for `scheme`, unless the no-proxy list names the
+/// origin's host. Through a connect-to peer (`via`), it would tunnel.
+fn choose_proxy<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    origin: &Peer,
+    scheme: &[u8],
+    via: bool,
+) -> Result<Option<ProxyRoute>, ErrorKind> {
+    let options = &cx.easy().options().proxy;
+    let no_proxy = match &options.no_proxy {
+        Some(list) => Some(copied(list)?),
+        None => env_named(cx, &[b"no_proxy", b"NO_PROXY"])?,
+    };
+    if no_proxy.is_some_and(|list| proxy::excluded(origin.name(), &list)) {
+        return Ok(None);
+    }
+    let options = &cx.easy().options().proxy;
+    let text = match options.url.as_deref() {
+        // An empty one turns the environment's off too.
+        Some([]) => return Ok(None),
+        Some(text) => copied(text)?,
+        None => match proxy::detect(scheme, &mut |name| getenv(name)) {
+            Some(found) => {
+                let name = found.name();
+                let said: [&[u8]; 5] = [
+                    b"Uses proxy env variable ",
+                    name,
+                    b" == '",
+                    &found.value,
+                    b"'",
+                ];
+                trace::info_with(cx, &said);
+                found.value
+            }
+            None => return Ok(None),
+        },
+    };
+    let options = &cx.easy().options().proxy;
+    let parsed = match proxy::parse(&text, options.kind, options.port) {
+        Ok(parsed) => parsed,
+        Err(Refused::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+        Err(Refused::Syntax(e)) => {
+            let text = Bytes(&text);
+            return Err(trace::fail(
+                cx,
+                ErrorKind::CouldntResolveProxy,
+                format_args!("Unsupported proxy syntax in '{text}': {e}"),
+            ));
+        }
+        Err(Refused::Scheme) => {
+            return Err(trace::fail_with(
+                cx,
+                ErrorKind::CouldntConnect,
+                &[b"Unsupported proxy scheme for '", &text, b"'"],
+            ));
+        }
+        Err(Refused::Https) => {
+            return Err(trace::fail_with(
+                cx,
+                ErrorKind::NotBuiltIn,
+                &[
+                    b"Unsupported proxy '",
+                    &text,
+                    b"', libcurl is built without the HTTPS-proxy support.",
+                ],
+            ));
+        }
+    };
+    let creds = match (parsed.user, parsed.password) {
+        (None, None) => None,
+        (user, password) => Some(
+            TryRc::try_new(ProxyCreds { user, password })
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
+        ),
+    };
+    let route = ProxyRoute {
+        kind: parsed.kind,
+        peer: TryRc::try_new(parsed.peer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
+        creds,
+        forward: false,
+    };
+    if !route.http() {
+        return Err(trace::fail(
+            cx,
+            ErrorKind::NotBuiltIn,
+            format_args!("SOCKS proxies are not built in yet"),
+        ));
+    }
+    // A request goes to an HTTP proxy whole, unless it is asked to
+    // tunnel, or reaches the origin through another peer; HTTP is the
+    // only scheme here, and it is not secured.
+    if cx.easy().options().proxy.tunnel || via {
+        return Err(trace::fail(
+            cx,
+            ErrorKind::NotBuiltIn,
+            format_args!("Proxy tunnels are not built in yet"),
+        ));
+    }
+    Ok(Some(ProxyRoute {
+        forward: true,
+        ..route
+    }))
+}
+
+/// The first of the environment variables `names` set, traced as C
+/// traces it.
+fn env_named<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    names: &[&[u8]],
+) -> Result<Option<Vec<u8>>, ErrorKind> {
+    for name in names {
+        if let Some(value) = getenv(name) {
+            trace::info_with(
+                cx,
+                &[b"Uses proxy env variable ", name, b" == '", &value, b"'"],
+            );
+            return Ok(Some(value));
+        }
+    }
+    Ok(None)
+}
+
+/// The environment variable `name`, unless unset or empty
+/// (`curl_getenv`).
+fn getenv(name: &[u8]) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    let value = std::env::var_os(std::ffi::OsStr::from_bytes(name))?.into_vec();
+    (!value.is_empty()).then_some(value)
+}
+
+fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(bytes)
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    Ok(copy)
 }
 
 /// A connection for the request (`Curl_connect`): one to set up, or an
@@ -1710,6 +1917,7 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         origin: plan.origin.clone(),
         via: plan.via.clone(),
         ip: cx.easy().options().ip_version,
+        proxy: plan.proxy.clone(),
     };
     let acquired = acquire(cx, Route::Tcp(route));
     if !matches!(acquired, Ok(Acquired::Wait(_))) {
@@ -1719,11 +1927,14 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
     let lease = match acquired {
         Ok(Acquired::New(lease)) => lease,
         Ok(Acquired::Reused(lease)) => {
-            let host = Bytes(plan.origin.name());
             let name = plan.origin.scheme().name;
+            let (to, host) = match &plan.proxy {
+                Some(proxy) => ("proxy", Bytes(proxy.peer.shown())),
+                None => ("host", Bytes(plan.origin.name())),
+            };
             trace::info(
                 cx,
-                format_args!("Reusing existing {name}: connection with host {host}"),
+                format_args!("Reusing existing {name}: connection with {to} {host}"),
             );
             lease
         }
@@ -1741,12 +1952,19 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         }
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
-    let Plan { proto, origin, via } = plan;
+    cx.report_mut().set_used_proxy(plan.proxy.is_some());
+    let Plan {
+        proto,
+        origin,
+        via,
+        proxy,
+    } = plan;
     TransferState::Connecting(Connecting {
         lease,
         proto,
         origin,
         via,
+        proxy: proxy.map(|p| p.peer),
     })
 }
 

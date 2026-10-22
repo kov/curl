@@ -1043,6 +1043,12 @@ fn configure(
     http.raw = op.raw;
     http.ignore_content_length = op.ignore_content_length;
     o.filetime = op.remote_time;
+    if let Some(proxy) = op.proxy {
+        o.proxy.url = Some(copy(proxy)?);
+        o.proxy.kind = op.proxy_kind;
+    }
+    o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
+    o.proxy.tunnel = op.proxytunnel;
     http.fail_on_error = op.fail == Fail::WithoutBody;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);

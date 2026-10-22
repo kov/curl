@@ -14,6 +14,7 @@ const ASKED: Asked = Asked {
     resume_from: None,
     follow: false,
     auth: crate::proto::http::auth::AuthAsked::DEFAULT,
+    http_proxy: false,
 };
 
 const PLAIN: Exchange = Exchange {
@@ -694,6 +695,40 @@ fn what_closes_the_connection() {
         (false, Some(Framing::None)),
         "a HEAD has no body to end"
     );
+}
+
+/// Through an HTTP proxy, `Proxy-Connection: keep-alive` keeps an HTTP/1.0
+/// connection and `close` closes an HTTP/1.1 one (`http_header_p`);
+/// without one, the field says nothing.
+#[test]
+fn a_proxy_says_whether_the_connection_stays() {
+    let proxied = asked(|a| a.http_proxy = true);
+    let h10 = Exchange {
+        sent: HttpVersion::Http10,
+        ..proxied
+    };
+    let kept = b"HTTP/1.0 200 OK\r\nProxy-Connection: Keep-Alive\r\nContent-Length: 1\r\n\r\n";
+    let got = outcome(kept, h10);
+    assert_eq!(
+        (got.close, &got.notes[..]),
+        (false, &[Note::Http10Close, Note::ProxyKeepAlive][..])
+    );
+    let got = outcome(
+        kept,
+        Exchange {
+            sent: HttpVersion::Http10,
+            ..PLAIN
+        },
+    );
+    assert_eq!(
+        (got.close, &got.notes[..]),
+        (true, &[Note::Http10Close][..])
+    );
+    let closed = b"HTTP/1.1 200 OK\r\nProxy-Connection: close\r\nContent-Length: 1\r\n\r\n";
+    let got = outcome(closed, proxied);
+    assert_eq!((got.close, &got.notes[..]), (true, &[Note::ProxyClose][..]));
+    let got = outcome(closed, PLAIN);
+    assert_eq!((got.close, got.notes), (false, vec![]));
 }
 
 /// The bad lines of tests 262, 398, 415 and 2105, and 129's version.

@@ -479,6 +479,7 @@ mod tests {
                 resume_from: None,
                 follow: false,
                 auth: Default::default(),
+                http_proxy: false,
             },
         };
         let mut head = HeadParser::new(exchange);

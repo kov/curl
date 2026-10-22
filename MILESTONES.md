@@ -491,7 +491,8 @@ cargo-mutants run on the milestone's diff.
     a GET sending C's `Range: bytes=-N-` instead of refusing it; `--limit-rate` (729,
     `MAX_RECV_SPEED_LARGE`, `MAX_SEND_SPEED_LARGE`), after step 38's read bound, as both change
     the same read loop; `--request-target` (1613); `%{json}` (970, 972); `--aws-sigv4` (the
-    tests behind the `crypto` gate); `--ipfs-gateway` (1851).
+    tests behind the `crypto` gate) and HTTP message signatures (`CURLAUTH_HTTPSIG`,
+    `lib/http_httpsig.c`), both refused as not built until then; `--ipfs-gateway` (1851).
 37. **http: multipart/MIME.** `curl_mime_*`, `CURLOPT_MIMEPOST`, `CURLOPT_HTTPPOST`
     (`curl_formadd`), the tool's `-F` and `--form-string`; the multipart encoder with its size
     and rewind, and the `Content-Type` boundary. The upload source becomes a source plus an
@@ -515,6 +516,13 @@ cargo-mutants run on the milestone's diff.
     - IPv6 zone ids applied to the socket address, with C's link-local fallback.
     - `DIVERGENCE.md` lists each deliberate, permanent difference from C with its pinning test;
       temporary gaps stay in this file.
+    - Smaller differences from C found while closing the milestone: `-o` output buffered as C's
+      (a failed write reported at close, "Failed writing body"), and its "passed N returned M"
+      on a short write; the application's and a cookie file's cookies counted toward a
+      transfer's limit of 50; `CURLOPT_IPRESOLVE` read again while a transfer waits for a
+      connection; a RESOLVE list set while one is read dropped; cookie files loaded as each is
+      traced; a chunked POST decided when the request is built, not at setopt; the CONNECT
+      and SOCKS handshakes' read loops; the end of a body whose size was known.
 
 ## Milestone 3: connections in layers, then TLS
 
@@ -540,7 +548,7 @@ and documentation, kept under `inventory/` with their sources and parsed as a sh
 globs, variables). It ranks which options, combinations and spellings are used, to order and
 weigh the work, and each line is run through both tools' option parsing, without a transfer, to
 diff what they accept, warn about and refuse. It is also the evidence for a difference from C
-(SCOPE.md): whether anyone relies on the C behaviour.
+(DIVERGENCE.md): whether anyone relies on the C behaviour.
 
 Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
 generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting

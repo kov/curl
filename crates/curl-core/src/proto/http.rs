@@ -728,11 +728,16 @@ impl Request {
         let authenticated = (!auth.used.is_empty()).then_some(auth.used);
         let head = RequestHead {
             method,
-            target: self
-                .forward_target
-                .as_deref()
-                .filter(|_| forwarded)
-                .unwrap_or(&self.target),
+            // The application's target replaces only the request line's
+            // (`http_target`).
+            target: match &http.request_target {
+                Some(target) => target,
+                None => self
+                    .forward_target
+                    .as_deref()
+                    .filter(|_| forwarded)
+                    .unwrap_or(&self.target),
+            },
             version: self.version,
             host: self.peer.shown(),
             port: shown_port,

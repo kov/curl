@@ -270,6 +270,8 @@ pub(crate) struct Operation<'a> {
     /// What `--url-query` gives, joined by `&`: added to each URL's query
     /// unless `--get` adds the data there.
     pub(crate) url_query: Option<Vec<u8>>,
+    /// `--request-target`.
+    pub(crate) request_target: Option<&'a [u8]>,
 }
 
 /// The addresses `--ipv4` and `--ipv6` limit a name to.
@@ -966,6 +968,13 @@ pub(crate) fn apply<'a>(
         }
         Opt::Globoff => line.current().globoff = value.toggle(),
         Opt::Get => line.current().get = value.toggle(),
+        Opt::RequestTarget => {
+            let target = value.text();
+            if target.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().request_target = Some(target);
+        }
         Opt::UrlQuery => {
             // `+` takes the rest as it is; anything else is encoded as
             // `--data-urlencode` encodes (`url_query`).
@@ -1246,7 +1255,6 @@ pub(crate) fn apply<'a>(
         | Opt::RandomFile
         | Opt::Range
         | Opt::Rate
-        | Opt::RequestTarget
         | Opt::RetryConnrefused
         | Opt::SaslAuthzid
         | Opt::SaslIr

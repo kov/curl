@@ -845,3 +845,12 @@ witness: curl-tool adds_the_url_query
                 Some(joined) if joined.len() + 1 + query.len() >= MAX_QUERY_LEN => {
 --- new
                 Some(joined) if joined.len() + 1 + query.len() > MAX_QUERY_LEN => {
+
+=== the request target is not sent to a proxy
+file: crates/curl-core/src/proto/http.rs
+witness: curl-tool sends_the_request_target
+--- old
+                Some(target) => target,
+--- new
+                Some(target) if !forwarded => target,
+                Some(_) => self.forward_target.as_deref().unwrap_or(&self.target),

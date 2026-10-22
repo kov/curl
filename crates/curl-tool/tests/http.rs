@@ -383,6 +383,39 @@ fn adds_the_url_query() {
     );
 }
 
+/// `--request-target` replaces the request line's target, also to a
+/// proxy, and may not be blank.
+#[test]
+fn sends_the_request_target() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let proxy = s.url();
+    let run = curl(&[
+        "-sS",
+        "--request-target",
+        "*",
+        "-X",
+        "OPTIONS",
+        "-x",
+        &proxy,
+        "http://example.invalid/p?q",
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(
+        request.starts_with("OPTIONS * HTTP/1.1\r\nHost: example.invalid\r\n"),
+        "{request}"
+    );
+    let run = curl(&["--request-target", "", "http://127.0.0.1:1/"]);
+    assert_eq!(run.code, 2);
+    assert!(
+        run.stderr.starts_with(
+            "curl: option --request-target: blank argument where content is expected\n"
+        ),
+        "{}",
+        run.stderr
+    );
+}
+
 /// `-T -` sends standard input, chunked as its size is not known.
 #[test]
 fn uploads_standard_input() {

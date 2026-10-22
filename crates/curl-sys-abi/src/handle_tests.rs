@@ -174,6 +174,26 @@ fn boolean_options_take_any_nonzero_value() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// `CURLOPT_REQUEST_TARGET` is copied; NULL takes it away.
+#[test]
+fn a_request_target_is_kept() {
+    let c = curl_easy_init();
+    let target = |c| options(c, |o| o.http.request_target.clone());
+    let mut given = *b"*\0";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_REQUEST_TARGET, given.as_mut_ptr()),
+        CURLE_OK
+    );
+    given[0] = b'X';
+    std::hint::black_box(&given);
+    assert_eq!(target(c), Some(b"*".to_vec()));
+    let null = ptr::null_mut::<c_char>();
+    assert_eq!(pointer(c, ffi::CURLOPT_REQUEST_TARGET, null), CURLE_OK);
+    assert_eq!(target(c), None);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// The HTTP options' strings and list are copied; NULL takes them away.
 /// HTTP/2 and HTTP/3 are not built in, as in a C build without them.
 #[test]

@@ -1465,6 +1465,24 @@ fn a_custom_method_is_sent_with_the_body_kept() {
     assert!(ran.request.ends_with(b"x-www-form-urlencoded\r\n\r\na=b"));
 }
 
+/// The application's target replaces the request line's, and nothing
+/// else: Digest still answers for the URL's path (`http_target`).
+#[test]
+fn a_request_target_replaces_only_the_request_line_s() {
+    let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
+    let ran = get(&mut m, "/a?q", talk, |o| {
+        o.http.request_target = Some(b"*".to_vec());
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(text.starts_with("GET * HTTP/1.1\r\n"), "{text}");
+    let second = text.rfind("GET ").unwrap();
+    assert!(text[second..].starts_with("GET * HTTP/1.1\r\n"), "{text}");
+    assert!(text[second..].contains(", uri=\"/a?q\", "), "{text}");
+}
+
 /// A body read in these pieces, of unknown size.
 fn pieces(pieces: &[&[u8]]) -> crate::options::UploadSource {
     struct Pieces(Mutex<Vec<Vec<u8>>>);

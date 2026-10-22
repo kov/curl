@@ -1122,6 +1122,7 @@ fn configure(
         cookies.new_session = op.cookie_session;
     }
     http.custom_method = op.custom_request.map(copy).transpose()?;
+    http.request_target = op.request_target.map(copy).transpose()?;
     http.follow = op.follow;
     http.unrestricted_auth = op.unrestricted_auth;
     http.post_redirect = op.post_redirect;

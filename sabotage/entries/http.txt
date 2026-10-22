@@ -1305,3 +1305,12 @@ witness: curl-core proto::http::tests::a_response_ending_on_a_closing_connection
 --- new
                     if false && self.sending() {
                         self.upload_done(cx, true);
+
+=== the request target answers Digest for the URL
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_request_target_replaces_only_the_request_line_s
+features: test-util
+--- old
+            uri: &self.target,
+--- new
+            uri: http.request_target.as_deref().unwrap_or(&self.target),

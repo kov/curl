@@ -703,6 +703,10 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.http.custom_method = unsafe { owned(p) }?;
         }
+        (ffi::CURLOPT_REQUEST_TARGET, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.http.request_target = unsafe { owned(p) }?;
+        }
         (ffi::CURLOPT_COOKIE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.http.cookies.make_mut()?.send = unsafe { owned(p) }?;

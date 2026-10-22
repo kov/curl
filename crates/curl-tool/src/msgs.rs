@@ -134,22 +134,25 @@ impl Messages {
 /// The terminal's width: `COLUMNS` when it holds a width over 20, else
 /// the terminal's own, else 79 columns (`get_terminal_columns`).
 pub(crate) fn terminal_columns() -> usize {
-    std::env::var_os("COLUMNS")
-        .and_then(|c| {
-            let c = c.as_encoded_bytes();
-            let digits = c.iter().take_while(|b| b.is_ascii_digit()).count();
-            std::str::from_utf8(&c[..digits])
-                .ok()?
-                .parse::<usize>()
-                .ok()
-        })
-        .filter(|&n| n > 20 && n <= 10000)
-        .or_else(|| {
-            curl_os::terminal::columns()
-                .map(usize::from)
-                .filter(|&n| n > 0 && n < 10000)
-        })
-        .unwrap_or(DEFAULT_COLUMNS)
+    let env = std::env::var_os("COLUMNS");
+    columns(
+        env.as_deref().map(std::ffi::OsStr::as_encoded_bytes),
+        curl_os::terminal::columns,
+    )
+}
+
+/// The width `COLUMNS` holding `env` gives, or else the `terminal`'s.
+fn columns(env: Option<&[u8]>, terminal: impl FnOnce() -> Option<u16>) -> usize {
+    env.and_then(|c| {
+        let digits = c.iter().take_while(|b| b.is_ascii_digit()).count();
+        std::str::from_utf8(&c[..digits])
+            .ok()?
+            .parse::<usize>()
+            .ok()
+    })
+    .filter(|&n| n > 20 && n <= 10000)
+    .or_else(|| terminal().map(usize::from).filter(|&n| n > 0 && n < 10000))
+    .unwrap_or(DEFAULT_COLUMNS)
 }
 
 /// Write to standard error. A failed write has nowhere to be reported,
@@ -185,5 +188,39 @@ impl Text {
 
     fn clear(&mut self) {
         self.len = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `COLUMNS` counts when it starts with a width from 21 to 10000; else
+    /// the terminal's does, from 1 to 9999; else 79.
+    #[test]
+    fn takes_the_width_c_takes() {
+        let env: &[(&[u8], usize)] = &[
+            (b"21", 21),
+            (b"10000", 10000),
+            (b"80abc", 80),
+            (b"20", 50),
+            (b"10001", 50),
+            (b"abc", 50),
+            (b"", 50),
+        ];
+        for &(value, want) in env {
+            assert_eq!(columns(Some(value), || Some(50)), want, "{value:?}");
+        }
+        let terminal = [
+            (Some(1), 1),
+            (Some(9999), 9999),
+            (Some(0), 79),
+            (Some(10000), 79),
+            (None, 79),
+        ];
+        for (width, want) in terminal {
+            assert_eq!(columns(None, || width), want, "{width:?}");
+            assert_eq!(columns(Some(b"20"), || width), want, "{width:?}");
+        }
     }
 }

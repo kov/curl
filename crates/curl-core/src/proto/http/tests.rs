@@ -1453,6 +1453,24 @@ fn a_body_larger_than_the_buffer_goes_in_buffers() {
     );
 }
 
+/// The upload buffer is the size the application set
+/// (`CURLOPT_UPLOAD_BUFFERSIZE`): the head shares the first, and each
+/// after it is that size.
+#[test]
+fn the_upload_buffer_is_the_size_set() {
+    use crate::options::UploadBufferSize;
+    let body: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+    let ran = with_body(Method::Upload, &body, |o| {
+        o.limits.upload_buffer = UploadBufferSize::clamped(16411);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let head_len = ran.request.len() - body.len();
+    let pieces = ran.seen.of("dataout");
+    assert_eq!(pieces.concat(), body);
+    assert_eq!(pieces[0].len(), 16411 - head_len, "behind the head");
+    assert_eq!(pieces[1].len(), 16411);
+}
+
 /// The application's method replaces the word on the request line; the
 /// body is still the one the method implies.
 #[test]

@@ -54,9 +54,6 @@ use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, L
 /// cannot keep the step from returning.
 const MAX_READS: usize = 11;
 
-/// The send buffer the head and the body share (`UPLOADBUFFER_DEFAULT`).
-const UPLOAD_BUFFER: usize = 65536;
-
 /// A body larger than this asks `Expect: 100-continue` on HTTP/1.1.
 const EXPECT_100_THRESHOLD: u64 = 1024 * 1024;
 
@@ -164,7 +161,7 @@ pub(crate) struct Request {
     closing: bool,
     /// What the request sends and has not yet (`req.sendbuf`): the head,
     /// then the body as read, behind it in one buffer of
-    /// `UPLOAD_BUFFER` bytes. `out[sent..filled]` is still to go, the
+    /// `CURLOPT_UPLOAD_BUFFERSIZE` bytes. `out[sent..filled]` is still to go, the
     /// first of it the head's while `outgoing` is `Sending::Head`.
     out: Vec<u8>,
     filled: usize,
@@ -816,6 +813,7 @@ impl Request {
         let cookie = cookies::request_value(cx, &site, application)?;
         let options = cx.easy().options();
         let http = &options.http;
+        let upload_buffer = options.limits.upload_buffer.get();
         let method = self.method_line(http);
         let body = match self.method {
             Method::Get | Method::Head => None,
@@ -1023,11 +1021,10 @@ impl Request {
         if upload.is_some() {
             // The body goes behind the head, in what is left of one
             // buffer (`Curl_req_send`).
-            let room = UPLOAD_BUFFER.saturating_sub(head_len);
+            let room = upload_buffer.saturating_sub(head_len);
             out.try_reserve_exact(room)
                 .map_err(|_| ErrorKind::OutOfMemory)?;
-            out.try_extend_from_slice(&[0; UPLOAD_BUFFER][..room])
-                .map_err(|_| ErrorKind::OutOfMemory)?;
+            zeros(&mut out, room).map_err(|_| ErrorKind::OutOfMemory)?;
             upload::announce_size(cx, length);
         }
         // Without a body to read, all of it is in the buffer, whatever
@@ -1846,6 +1843,17 @@ impl Request {
         }
         Ok(())
     }
+}
+
+/// `n` zero bytes after what `out` holds.
+pub(crate) fn zeros(out: &mut Vec<u8>, mut n: usize) -> Result<(), OutOfMemory> {
+    const ZEROS: [u8; 4096] = [0; 4096];
+    while n > 0 {
+        let k = n.min(ZEROS.len());
+        out.try_extend_from_slice(&ZEROS[..k])?;
+        n -= k;
+    }
+    Ok(())
 }
 
 /// The trailers a chunked body ends with, each line with its CRLF: the

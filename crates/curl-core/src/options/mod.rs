@@ -968,6 +968,9 @@ pub struct Limits {
     pub max_send_speed: Option<NonZeroU64>,
     /// The most one read from the connection takes.
     pub buffer_size: BufferSize,
+    /// The most of a body read at once, and the room a request's head
+    /// and body share.
+    pub upload_buffer: UploadBufferSize,
     /// Which idle connections the transfer may reuse.
     pub reuse: ReuseLimits,
     pub eyeballs: EyeballsDelay,
@@ -992,6 +995,35 @@ impl BufferSize {
 
     pub fn get(self) -> usize {
         self.0 as usize
+    }
+}
+
+/// The most of an upload's body read at once, which an HTTP request's
+/// head shares (`CURLOPT_UPLOAD_BUFFERSIZE`): 64 KiB unless set, never
+/// under 16 KiB nor over 2 MiB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadBufferSize(u32);
+
+impl UploadBufferSize {
+    const MIN: u32 = 16384;
+    const MAX: u32 = 2 * 1024 * 1024;
+
+    /// `n` bytes, held between the least and the most, as C's setopt
+    /// holds it.
+    pub fn clamped(n: u64) -> UploadBufferSize {
+        let n = u32::try_from(n).unwrap_or(u32::MAX);
+        UploadBufferSize(n.clamp(Self::MIN, Self::MAX))
+    }
+
+    pub fn get(self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl Default for UploadBufferSize {
+    /// `UPLOADBUFFER_DEFAULT`.
+    fn default() -> Self {
+        UploadBufferSize(65536)
     }
 }
 

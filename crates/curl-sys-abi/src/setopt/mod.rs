@@ -21,7 +21,7 @@ use curl_core::handler::{Handler, LineSource};
 use curl_core::options::{
     BufferSize, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines,
     LowSpeed, MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits,
-    TimeCondition, UserHeaders,
+    TimeCondition, UploadBufferSize, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -564,6 +564,10 @@ fn apply(
         (ffi::CURLOPT_BUFFERSIZE, Long(n)) => {
             let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
             options.limits.buffer_size = BufferSize::clamped(n);
+        }
+        (ffi::CURLOPT_UPLOAD_BUFFERSIZE, Long(n)) => {
+            let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
+            options.limits.upload_buffer = UploadBufferSize::clamped(n);
         }
         (ffi::CURLOPT_MAX_RECV_SPEED_LARGE, Off(n)) => options.limits.max_recv_speed = speed(n)?,
         (ffi::CURLOPT_MAX_SEND_SPEED_LARGE, Off(n)) => options.limits.max_send_speed = speed(n)?,

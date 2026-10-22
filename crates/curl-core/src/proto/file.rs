@@ -24,9 +24,6 @@ use crate::trace;
 use crate::upload::{self, Upload};
 use crate::url::{self, GetOptions, Part, Url};
 
-/// The most of an upload's body read at once (`UPLOADBUFFER_DEFAULT`).
-const UPLOAD_BUFFER: usize = 65536;
-
 /// The failures a test has a transfer meet, where the file system will
 /// not fail on demand.
 #[cfg(test)]
@@ -340,8 +337,10 @@ impl Request {
             },
         };
         let mut buf = Vec::new();
-        buf.try_extend_from_slice(&[0; UPLOAD_BUFFER])
+        let room = cx.easy().options().limits.upload_buffer.get();
+        buf.try_reserve_exact(room)
             .map_err(|_| ErrorKind::OutOfMemory)?;
+        super::http::zeros(&mut buf, room).map_err(|_| ErrorKind::OutOfMemory)?;
         loop {
             // Not pausable: a pause is a read error.
             let got = upload.read(cx, &mut buf, false)?;

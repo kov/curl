@@ -273,6 +273,32 @@ fn the_buffer_size_is_held_to_its_range() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// `CURLOPT_UPLOAD_BUFFERSIZE` refuses a negative size and holds the
+/// rest between 16 KiB and 2 MiB (`value_range`).
+#[test]
+fn the_upload_buffer_size_is_held_to_its_range() {
+    use curl_core::options::UploadBufferSize;
+    let c = curl_easy_init();
+    let size = |c| options(c, |o| o.limits.upload_buffer);
+    assert_eq!(size(c), UploadBufferSize::default());
+    assert_eq!(size(c).get(), 65536);
+    assert_eq!(
+        long(c, ffi::CURLOPT_UPLOAD_BUFFERSIZE, -1),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    for (asked, held) in [
+        (0, 16384),
+        (16383, 16384),
+        (16411, 16411),
+        (1 << 30, 2 << 20),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_UPLOAD_BUFFERSIZE, asked), CURLE_OK);
+        assert_eq!(size(c).get(), held, "{asked}");
+    }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_AWS_SIGV4` makes AWS SigV4 the one method; NULL takes it out
 /// of the methods asked for and leaves the others. A string refused for
 /// its length leaves the one before it, and the method as it says.

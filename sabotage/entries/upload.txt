@@ -323,3 +323,19 @@ witness: curl-core proto::http::tests::a_redirected_body_of_bytes_needs_a_rewind
 --- new
             Source::Lent(_) => self.read > 0,
             Source::Bytes(_) => false,
+
+=== the upload buffer ignores the size set
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_upload_buffer_is_the_size_set
+--- old
+        let upload_buffer = options.limits.upload_buffer.get();
+--- new
+        let upload_buffer = 65536_usize;
+
+=== the upload buffer size is not held to its range
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::the_upload_buffer_size_is_held_to_its_range
+--- old
+        UploadBufferSize(n.clamp(Self::MIN, Self::MAX))
+--- new
+        UploadBufferSize(n)

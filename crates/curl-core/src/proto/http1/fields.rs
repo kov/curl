@@ -152,6 +152,7 @@ pub(crate) fn verify_line(line: &[u8], number: u32) -> Result<(), BadLine> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::http1::framing;
 
     /// C's limits (`curlx_str_until`, `curlx_str_untilnl` at 300 KiB): a
     /// name of 300 KiB is one, a byte more is none; a value of 300 KiB is
@@ -325,5 +326,76 @@ mod tests {
             BadLine::StrayCr.to_string(),
             "Carriage return found in header"
         );
+    }
+
+    const WORDS: &[&[u8]] = &[
+        b"Connection:",
+        b"Content-Type:",
+        b"Retry-After:",
+        b"Transfer-Encoding:",
+        b"close",
+        b"keep-alive",
+        b"chunked",
+        b"gzip",
+        b",",
+        b" ",
+        b"\t",
+        b":",
+        b"\r",
+        b"\n",
+        b"\0",
+        b"Tue, 09 Nov 2010 14:49:00 GMT",
+        b"120",
+        b"99999999999999999999",
+        b"-1",
+    ];
+    const NAMES: &[&[u8]] = &[
+        b"Connection:",
+        b"Transfer-Encoding:",
+        b"Proxy-Connection:",
+        b"X:",
+    ];
+    const TOKENS: &[&[u8]] = &[b"close", b"chunked", b"x"];
+    const LINES: &[&[u8]] = &[
+        b"Connection: keep-alive, close\r\n",
+        b"Transfer-Encoding: gzip,  , chunked \r\n",
+        b"Retry-After: Tue, 09 Nov 2010 14:49:00 GMT\r\n",
+        b"Content-Type: text/html; charset=utf-8\r\n",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any line is read without a panic: a value is a piece of the
+        /// line, a wait at most six hours, a coding's name not empty.
+        #[test]
+        fn any_line_is_read(
+            line in crate::untrusted::input(WORDS, LINES, 12),
+            name in proptest::sample::select(NAMES),
+            token in proptest::sample::select(TOKENS),
+            number in proptest::prelude::any::<u32>(),
+            now in proptest::prelude::any::<i64>(),
+        ) {
+            let within = |v: &[u8]| {
+                let (start, end) = (line.as_ptr() as usize, line.as_ptr() as usize + line.len());
+                let at = v.as_ptr() as usize;
+                v.is_empty() || (start <= at && at + v.len() <= end)
+            };
+            if let Some(v) = header_value(&line) {
+                proptest::prop_assert!(within(v));
+            }
+            header_says(&line, name, token);
+            let verified = verify_line(&line, number);
+            proptest::prop_assert!(verified.is_err() || !line.contains(&0));
+            if let Some(v) = framing::content_type(&line) {
+                proptest::prop_assert!(within(v));
+            }
+            if let Some(wait) = framing::retry_after(&line, now) {
+                proptest::prop_assert!(wait.as_secs() <= 6 * 3600);
+            }
+            for name in framing::coding_names(&line) {
+                proptest::prop_assert!(!name.is_empty() && within(name));
+            }
+        }
     }
 }

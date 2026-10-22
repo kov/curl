@@ -1,0 +1,44 @@
+# Input from the trust boundary never panics: each parser's property of
+# any input, from crates/curl-core/src/untrusted.rs's strategies.
+
+=== the date parser reads past the end of its input
+file: crates/curl-core/src/date.rs
+witness: curl-core date::tests::any_text_is_a_date_or_not
+--- old
+        let Some(&first) = date.get(at) else {
+            break;
+        };
+--- new
+        let first = date[at];
+
+=== a chunk size too large for C's `curl_off_t` is unwrapped
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::any_body_is_decoded_alike_in_any_pieces
+--- old
+                            .ok_or(ChunkError::BadSize(self.hex, self.hex_len))?
+--- new
+                            .unwrap()
+
+=== a proxy's Content-Length overflows as it is read
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http1::tunnel::tests::any_answer_is_read_alike_in_any_pieces
+--- old
+        n = n.checked_mul(10)?.checked_add(u64::from(b - b'0'))?;
+--- new
+        n = n * 10 + u64::from(b - b'0');
+
+=== a line's notes have three slots, one fewer than a line can need
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http1::response::tests::a_line_never_needs_more_than_four_notes
+--- old
+pub(crate) struct Notes([Option<Note>; 4]);
+
+impl Notes {
+    pub(crate) fn one(note: Option<Note>) -> Notes {
+        Notes([note, None, None, None])
+--- new
+pub(crate) struct Notes([Option<Note>; 3]);
+
+impl Notes {
+    pub(crate) fn one(note: Option<Note>) -> Notes {
+        Notes([note, None, None])

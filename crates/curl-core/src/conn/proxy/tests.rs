@@ -1,3 +1,5 @@
+use proptest::prelude::*;
+
 use super::*;
 
 /// Unit 1614's cases for the address ranges.
@@ -330,5 +332,79 @@ fn undecodable_credentials_are_the_url_s_error() {
             Refused::Credentials(UrlErrorKind::Urldecode),
             "{url}"
         );
+    }
+}
+
+const PROXY_WORDS: &[&[u8]] = &[
+    b"http://",
+    b"https://",
+    b"socks4://",
+    b"socks4a://",
+    b"socks5://",
+    b"socks5h://",
+    b"ftp://",
+    b"user",
+    b":",
+    b"@",
+    b"%00",
+    b"%41",
+    b"%",
+    b"host",
+    b"proxy.example",
+    b"[::1]",
+    b"[fe80::1%25eth0]",
+    b"1.2.3.4",
+    b"8080",
+    b"99999",
+    b"/",
+    b"?",
+    b"#",
+    b" ",
+    b",",
+    b"*",
+    b".",
+    b"/24",
+    b"/129",
+];
+const PROXIES: &[&[u8]] = &[
+    b"http://user:pass@proxy.example:8080/",
+    b"socks5h://[::1]:1080",
+    b"proxy.example",
+    b"localhost, .example.com, 10.0.0.0/8, ::1/128",
+];
+
+fn proxy_type() -> impl Strategy<Value = ProxyType> {
+    proptest::sample::select(vec![
+        ProxyType::Http,
+        ProxyType::Http10,
+        ProxyType::Https,
+        ProxyType::Https2,
+        ProxyType::Https3,
+        ProxyType::Socks4,
+        ProxyType::Socks4a,
+        ProxyType::Socks5,
+        ProxyType::Socks5Hostname,
+    ])
+}
+
+proptest! {
+    #![proptest_config(crate::untrusted::config(256))]
+
+    /// Any proxy URL names a proxy or is refused, and any no-proxy list
+    /// is read for any host, without a panic.
+    #[test]
+    fn any_proxy_and_no_proxy_list_is_read(
+        text in crate::untrusted::input(PROXY_WORDS, PROXIES, 12),
+        kind in proxy_type(),
+        port in proptest::option::of(any::<NonZeroU16>()),
+        name in crate::untrusted::input(PROXY_WORDS, PROXIES, 4),
+    ) {
+        if let Ok(parsed) = parse(&text, kind, port) {
+            prop_assert!(!matches!(
+                parsed.kind,
+                ProxyType::Https | ProxyType::Https2 | ProxyType::Https3
+            ));
+        }
+        excluded(&name, &text);
     }
 }

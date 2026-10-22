@@ -1,4 +1,5 @@
 use super::*;
+use crate::proto::http::auth::{Challenges, PeerAsked};
 use crate::proto::http1::request::CredentialGate;
 
 /// Every line `input` gives out, each applied, until the answer ends or
@@ -394,5 +395,185 @@ fn a_3xx_s_length_and_coding_are_read() {
         let input = format!("{line}\r\n\r\n");
         lines(&mut a, input.as_bytes(), false);
         assert_eq!(a.code(), Some(code), "{line}");
+    }
+}
+
+/// What reading an answer came to, as the tunnel's driver reads it.
+#[derive(Debug, PartialEq, Eq)]
+struct Answered {
+    lines: Vec<(Vec<u8>, Applied)>,
+    notes: Vec<Note>,
+    code: Option<u16>,
+    closes: bool,
+    done: bool,
+    chunks_read: bool,
+    /// Input used when the answer ended, if it did before the input.
+    ended_at: Option<usize>,
+    error: Option<AnswerError>,
+}
+
+/// Read `pieces` as the tunnel does: each line checked, then applied, a
+/// challenge read for the proxy; the connection closed after the last.
+fn drive(pieces: &[&[u8]], asked: &PeerAsked) -> Answered {
+    let mut answer = Answer::new();
+    let mut challenges = Challenges::default();
+    let mut got = Answered {
+        lines: Vec::new(),
+        notes: Vec::new(),
+        code: None,
+        closes: false,
+        done: false,
+        chunks_read: false,
+        ended_at: None,
+        error: None,
+    };
+    let mut at = 0;
+    let mut line = |answer: &mut Answer, got: &mut Answered| -> Result<(), AnswerError> {
+        assert!(
+            answer.line().len() < MAX_LINE,
+            "a line kept past C's buffer"
+        );
+        answer.verify()?;
+        let applied = answer.apply()?;
+        match applied {
+            Applied::Challenge => {
+                let value = fields::header_value(answer.line()).unwrap_or(&[]);
+                challenges.read(value, asked).expect("no allocation fails");
+            }
+            Applied::End => got.notes.extend(answer.end_head(challenges.refused())),
+            Applied::Nothing | Applied::Note(_) => {}
+        }
+        got.lines.push((answer.line().to_vec(), applied));
+        Ok(())
+    };
+    let mut result = Ok(());
+    'pieces: for piece in pieces {
+        let mut piece = *piece;
+        loop {
+            let (used, read) = match answer.read(piece) {
+                Ok(r) => r,
+                Err(e) => {
+                    result = Err(e);
+                    break 'pieces;
+                }
+            };
+            assert!(used <= piece.len(), "used more than given");
+            at += used;
+            piece = &piece[used..];
+            match read {
+                Read::Line => {
+                    if let Err(e) = line(&mut answer, &mut got) {
+                        result = Err(e);
+                        break 'pieces;
+                    }
+                }
+                Read::More => {
+                    assert!(piece.is_empty() || used > 0, "no progress");
+                    if piece.is_empty() {
+                        break;
+                    }
+                }
+                Read::Done => {
+                    got.ended_at = Some(at);
+                    break 'pieces;
+                }
+            }
+        }
+    }
+    if result.is_ok() && got.ended_at.is_none() && answer.closed() == Read::Line {
+        result = line(&mut answer, &mut got);
+    }
+    got.error = result.err();
+    got.code = answer.code();
+    got.closes = answer.closes();
+    got.done = answer.done();
+    got.chunks_read = answer.chunks_read();
+    got
+}
+
+const WORDS: &[&[u8]] = &[
+    b"HTTP/1.1 ",
+    b"HTTP/1.0 ",
+    b"HTTP/1.1 200 OK\r\n",
+    b"HTTP/1.1 407 Auth\r\n",
+    b"200",
+    b"407",
+    b"100",
+    b"301",
+    b"\r\n",
+    b"\n",
+    b"\r",
+    b" ",
+    b"\t",
+    b":",
+    b"\0",
+    b"Content-Length: ",
+    b"Content-Length: 3\r\n",
+    b"Content-Length: 99999999999999999999\r\n",
+    b"Transfer-Encoding: chunked\r\n",
+    b"Connection: close\r\n",
+    b"Proxy-Connection: close\r\n",
+    b"Proxy-authenticate: Basic\r\n",
+    b"Proxy-Authenticate: Digest nonce=\"1\"\r\n",
+    b"0\r\n\r\n",
+    b"5\r\nhello\r\n",
+    b"abc",
+];
+const ANSWERS: &[&[u8]] = &[
+    b"HTTP/1.1 200 Connection established\r\n\r\nafter",
+    b"HTTP/1.1 407 Auth\r\nProxy-Authenticate: Basic\r\nContent-Length: 3\r\n\r\nabcafter",
+    b"HTTP/1.0 407 Auth\r\nProxy-Authenticate: Digest nonce=\"1\"\r\n\
+      Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    b"HTTP/1.1 301 Gone\r\nFolded: a\r\n b\r\n\r\n",
+];
+
+const STATUS_LINES: &[&[u8]] = &[
+    b"HTTP/1.1 200 Connection established\r\n",
+    b"HTTP/1.1 407 Auth\r\n",
+    b"HTTP/1.0 301 Moved\r\n",
+    b"HTTP/1.1 100 Continue\r\n",
+];
+const HEADER_LINES: &[&[u8]] = &[
+    b"Content-Length: 3\r\n",
+    b"Content-Length: 18446744073709551616\r\n",
+    b"Content-Length:  9223372036854775808\r\n",
+    b"Transfer-Encoding: chunked\r\n",
+    b"Connection: close\r\n",
+    b"Proxy-Connection: close\r\n",
+    b"Proxy-authenticate: Basic\r\n",
+    b"Folded: a\r\n b\r\n",
+];
+const BODIES: &[&[u8]] = &[b"", b"abc", b"5\r\nhello\r\n0\r\n\r\n"];
+
+/// An answer of whole lines, each one that says something of what
+/// follows, and a body: what reaches the end of the head most often.
+fn whole_lines() -> impl proptest::strategy::Strategy<Value = Vec<u8>> {
+    use proptest::prelude::*;
+    use proptest::sample::select;
+    (
+        select(STATUS_LINES),
+        proptest::collection::vec(select(HEADER_LINES), 0..5),
+        select(BODIES),
+    )
+        .prop_map(|(status, headers, body)| [status, &headers.concat(), b"\r\n", body].concat())
+}
+
+proptest::proptest! {
+    #![proptest_config(crate::untrusted::config(256))]
+
+    /// Any answer is read or refused as it is whole, whatever pieces it
+    /// comes in, never stalls, and keeps no line past C's buffer.
+    #[test]
+    fn any_answer_is_read_alike_in_any_pieces(
+        answer in proptest::prop_oneof![
+            crate::untrusted::input(WORDS, ANSWERS, 40),
+            whole_lines(),
+        ],
+        cuts in crate::untrusted::cuts(),
+        asked in crate::proto::http::auth::arbitrary::peer_asked(),
+    ) {
+        let whole = drive(&[&answer], &asked);
+        let pieces = crate::untrusted::pieces(&answer, &cuts);
+        proptest::prop_assert_eq!(drive(&pieces, &asked), whole);
     }
 }

@@ -486,4 +486,57 @@ mod tests {
         );
         assert_eq!(parse(b"1 Jan 999999999"), Err(BadDate));
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"Tue",
+        b"Tuesday",
+        b"Nov",
+        b"November",
+        b"GMT",
+        b"UTC",
+        b"PST",
+        b"MEZ",
+        b"Z",
+        b"+0100",
+        b"-1200",
+        b"+99999",
+        b"09",
+        b"9",
+        b"2010",
+        b"1969",
+        b"99999999999999",
+        b"14:49:00",
+        b"14:49",
+        b"25:61:61",
+        b"1:2:3",
+        b",",
+        b" ",
+        b"-",
+        b"+",
+        b"/",
+        b".",
+        b"\0",
+    ];
+    const DATES: &[&[u8]] = &[
+        b"Tue, 09 Nov 2010 14:49:00 GMT",
+        b"Sunday, 06-Nov-94 08:49:37 GMT",
+        b"Sun Nov  6 08:49:37 1994",
+        b"20040912 15:05:58 -0700",
+        b"Thu, 01-Jan-1970 00:00:00 GMT",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any text is a date or not, without a panic; one that is can
+        /// be written as an HTTP date or is out of its range.
+        #[test]
+        fn any_text_is_a_date_or_not(date in crate::untrusted::input(WORDS, DATES, 12)) {
+            if let Ok(t) = parse(&date)
+                && let Ok(http) = HttpDate::of(t)
+            {
+                http.to_string();
+            }
+        }
+    }
 }

@@ -30,6 +30,8 @@ mod test_cell;
 mod text;
 pub mod time;
 mod trace;
+#[cfg(test)]
+mod untrusted;
 mod upload;
 pub mod url;
 pub mod version;

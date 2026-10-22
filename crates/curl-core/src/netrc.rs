@@ -634,4 +634,81 @@ mod tests {
             assert!(path.is_none_or(|p| p.ends_with(b"/.netrc")));
         }
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"machine",
+        b"default",
+        b"login",
+        b"password",
+        b"account",
+        b"macdef",
+        b"example.com",
+        b"curl.example.com",
+        b"admin",
+        b"passwd",
+        b" ",
+        b"\t",
+        b"\n",
+        b"\r\n",
+        b"\n\n",
+        b"#",
+        b"\"",
+        b"\\",
+        b"\\n",
+        b"\0",
+        b"x",
+    ];
+    const FILES: &[&[u8]] = &[
+        FILE,
+        b"# comment\ndefault login anonymous password \"a b\\\"c\"\n",
+        b"macdef init\ncd /\n\nmachine example.com password only\n",
+        b"machine example.com login admin account x password\n",
+    ];
+    const HOSTS: &[&[u8]] = &[b"example.com", b"curl.example.com", b"other"];
+    const USERS: &[&[u8]] = &[b"admin", b"none", b"anonymous", b""];
+
+    /// `pieces`, as a file read gives them.
+    struct Pieces<'a>(std::vec::IntoIter<&'a [u8]>);
+
+    impl std::io::Read for Pieces<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let Some(piece) = self.0.next() else {
+                return Ok(0);
+            };
+            // A piece longer than the buffer comes in turns.
+            let n = piece.len().min(buf.len());
+            buf[..n].copy_from_slice(&piece[..n]);
+            if n < piece.len() {
+                let rest: Vec<&[u8]> = std::iter::once(&piece[n..])
+                    .chain(self.0.by_ref())
+                    .collect();
+                self.0 = rest.into_iter();
+            }
+            Ok(n)
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(256))]
+
+        /// Any file is read alike in any pieces, and scanned for any host
+        /// and user to credentials C's buffers hold, or refused.
+        #[test]
+        fn any_file_is_read_and_scanned(
+            raw in crate::untrusted::input(WORDS, FILES, 40),
+            cuts in crate::untrusted::cuts(),
+            host in proptest::sample::select(HOSTS),
+            user in proptest::option::of(proptest::sample::select(USERS)),
+        ) {
+            let whole = without_comments(&raw);
+            let pieces = crate::untrusted::pieces(&raw, &cuts);
+            proptest::prop_assert_eq!(read_kept(&mut Pieces(pieces.into_iter())), whole.clone());
+            if let Ok(text) = whole
+                && let Ok(found) = scan(&text, host, user)
+            {
+                proptest::prop_assert!(found.user.len() <= MAX_TOKEN);
+                proptest::prop_assert!(found.password.len() <= MAX_TOKEN);
+            }
+        }
+    }
 }

@@ -1,5 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use proptest::prelude::*;
+
 use super::*;
 
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -465,4 +467,140 @@ fn a_socks5_answer_is_read_by_its_address_type() {
         (e.said().is_none(), e.code()),
         (true, Some(ProxyError::BadAddressType))
     );
+}
+
+/// What a handshake came to: what was sent, the reply bytes used, and
+/// how it ended.
+#[derive(Debug, PartialEq, Eq)]
+struct Shook {
+    sent: Vec<u8>,
+    used: usize,
+    done: bool,
+    error: Option<SocksError>,
+}
+
+/// Run a handshake against the proxy's `pieces`, as the connection does:
+/// each request sent, then its reply read once enough of it came.
+fn shake(start: impl Fn() -> Result<Handshake, SocksError>, pieces: &[&[u8]]) -> Shook {
+    let mut got = Shook {
+        sent: Vec::new(),
+        used: 0,
+        done: false,
+        error: None,
+    };
+    let mut h = match start() {
+        Ok(h) => h,
+        Err(e) => {
+            got.error = Some(e);
+            return got;
+        }
+    };
+    let mut received = Vec::new();
+    let mut pieces = pieces.iter();
+    while !h.done() {
+        got.sent.extend_from_slice(&send(&mut h));
+        match h.take(&received) {
+            Ok(Took::Need(n)) => {
+                assert!(n > received.len(), "asked for what it has");
+                let Some(piece) = pieces.next() else { break };
+                received.extend_from_slice(piece);
+            }
+            Ok(Took::Read(n)) => {
+                assert!(
+                    n > 0 && n <= received.len(),
+                    "read {n} of {}",
+                    received.len()
+                );
+                received.drain(..n);
+                got.used += n;
+            }
+            Err(e) => {
+                got.error = Some(e);
+                break;
+            }
+        }
+    }
+    got.done = h.done();
+    got
+}
+
+const REPLY_WORDS: &[&[u8]] = &[
+    b"\x00",
+    b"\x01",
+    b"\x02",
+    b"\x03",
+    b"\x04",
+    b"\x05",
+    b"\x5a",
+    b"\xff",
+    b"\x05\x00",
+    b"\x05\x02",
+    b"\x01\x00",
+    b"\x00\x5a\x00\x00\x00\x00\x00\x00",
+    b"\x05\x00\x00\x01",
+    b"\x05\x00\x00\x03\xff",
+    b"\x05\x00\x00\x04",
+    b"\x7f\x00\x00\x01\x00\x50",
+];
+const REPLIES: &[&[u8]] = &[
+    b"\x00\x5a\x00\x00\x00\x00\x00\x00rest",
+    b"\x05\x00\x05\x00\x00\x03\x03abc\x00\x50more",
+    b"\x05\x02\x01\x00\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50",
+    b"\x05\x00\x05\x00\x00\x04\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x01\x00\x50",
+];
+
+fn version() -> impl Strategy<Value = Version> {
+    prop_oneof![
+        Just(Version::V4),
+        Just(Version::V4a),
+        Just(Version::V5),
+        Just(Version::V5Hostname),
+    ]
+}
+
+fn resolved() -> impl Strategy<Value = Resolved> {
+    prop_oneof![
+        Just(Resolved::Remote),
+        Just(Resolved::NoAddress),
+        Just(Resolved::Failed),
+        any::<[u8; 4]>().prop_map(|a| Resolved::Address(IpAddr::from(a))),
+        any::<[u8; 16]>().prop_map(|a| Resolved::Address(IpAddr::from(a))),
+    ]
+}
+
+/// A field from the options: short, or about as long as SOCKS allows.
+fn field() -> impl Strategy<Value = Vec<u8>> {
+    prop_oneof![
+        proptest::collection::vec(any::<u8>(), 0..8),
+        proptest::collection::vec(any::<u8>(), 250..260),
+    ]
+}
+
+proptest! {
+    #![proptest_config(crate::untrusted::config(256))]
+
+    /// Any proxy's replies, to any handshake the options can ask for, are
+    /// read or refused as they are whole, whatever pieces they come in;
+    /// no reply is read from bytes not there, and none waits for bytes
+    /// already in.
+    #[test]
+    fn any_reply_is_read_alike_in_any_pieces(
+        reply in crate::untrusted::input(REPLY_WORDS, REPLIES, 16),
+        cuts in crate::untrusted::cuts(),
+        version in version(),
+        name in field(),
+        port in any::<u16>(),
+        resolved in resolved(),
+        creds in proptest::option::of((field(), field())),
+        [basic, gssapi, only] in any::<[bool; 3]>(),
+    ) {
+        let start = || {
+            let creds = creds.as_ref().map(|(user, password)| Creds { user, password });
+            let d = Dest { name: &name, port, resolved };
+            Handshake::new(version, d, creds, Socks5Auth { basic, gssapi, only })
+        };
+        let whole = shake(start, &[&reply]);
+        let pieces = crate::untrusted::pieces(&reply, &cuts);
+        prop_assert_eq!(shake(start, &pieces), whole);
+    }
 }

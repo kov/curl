@@ -820,4 +820,100 @@ mod tests {
         assert!(all[..took].ends_with(b"x\r\n0\r\nX: y\r\n\r\n"));
         assert_eq!(took, 6 + n + 2 + 11, "trailers after the last chunk");
     }
+
+    /// What a body fed straight to a decoder came to.
+    #[derive(Debug, PartialEq, Eq)]
+    struct Decoded {
+        body: Vec<u8>,
+        trailers: Vec<(Vec<u8>, Result<(), ChunkError>)>,
+        /// Input used before the body ended, if it did.
+        ended_at: Option<usize>,
+        error: Option<ChunkError>,
+    }
+
+    fn decode(pieces: &[&[u8]], raw: bool, head_lines: u32, request_bytes: u64) -> Decoded {
+        let mut d = ChunkDecoder::new(raw, head_lines, request_bytes);
+        let mut got = Decoded {
+            body: Vec::new(),
+            trailers: Vec::new(),
+            ended_at: None,
+            error: None,
+        };
+        let (mut transfer, mut at) = (request_bytes, 0);
+        for piece in pieces {
+            let mut piece = *piece;
+            while !piece.is_empty() && !d.is_done() {
+                let (used, event) = match d.feed(piece, &mut transfer) {
+                    Ok(fed) => fed,
+                    Err(e) => {
+                        got.error = Some(e);
+                        return got;
+                    }
+                };
+                assert!(used <= piece.len(), "used more than given");
+                match event {
+                    Some(ChunkEvent::Data(data)) => got.body.extend_from_slice(data),
+                    Some(ChunkEvent::Trailer { line, then }) => {
+                        assert!(line.len() <= MAX_TRAILER, "a trailer kept past C's buffer");
+                        got.trailers.push((line.to_vec(), then));
+                    }
+                    Some(ChunkEvent::Done) => got.ended_at = Some(at + used),
+                    None => assert!(used > 0, "no progress"),
+                }
+                at += used;
+                piece = &piece[used..];
+            }
+        }
+        if let Err(e) = d.finish() {
+            got.error = Some(e);
+        }
+        got
+    }
+
+    const WORDS: &[&[u8]] = &[
+        b"0",
+        b"1",
+        b"5",
+        b"a",
+        b"F",
+        b"ffffffffffffffff",
+        b"10000000000000000",
+        b"\r\n",
+        b"\r",
+        b"\n",
+        b";ext=1",
+        b" ",
+        b"\t",
+        b"hello",
+        b"X: y",
+        b"X:",
+        b"\0",
+        b"0\r\n\r\n",
+    ];
+    const BODIES: &[&[u8]] = &[
+        b"5\r\nhello\r\n0\r\n\r\n",
+        b"3;ext\r\nabc\r\n10\r\n0123456789abcdef\r\n0\r\nX: y\r\n z\r\nA: b\n\r\nafter",
+        b"0\r\nTrailer: 1\r\n\r\n",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(256))]
+
+        /// Any body is decoded or refused as it is whole, whatever pieces
+        /// it comes in, never stalls, and keeps no trailer past C's
+        /// buffer.
+        #[test]
+        fn any_body_is_decoded_alike_in_any_pieces(
+            body in crate::untrusted::input(WORDS, BODIES, 40),
+            cuts in crate::untrusted::cuts(),
+            raw in proptest::prelude::any::<bool>(),
+            head_lines in 0..4u32,
+            request_bytes in proptest::prop_oneof![0..100u64, 300 * 1024 - 64..300 * 1024u64],
+        ) {
+            let whole = decode(&[&body], raw, head_lines, request_bytes);
+            let pieces = crate::untrusted::pieces(&body, &cuts);
+            let split = decode(&pieces, raw, head_lines, request_bytes);
+            proptest::prop_assert_eq!(split, whole);
+        }
+    }
 }

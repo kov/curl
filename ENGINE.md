@@ -1955,6 +1955,14 @@ peer gets a protocol error, not an out-of-memory one.
 - **Property tests**: random add/remove/pause/socket events checking the invariants (counts equal
   the recount, every lease released exactly once, the socket aggregate equals the OR of its users'
   announced pollsets, stale ids fail).
+- **Malformed input never panics**: one property per parser at the trust boundary (the response
+  head, chunked bodies, a proxy's answer, header fields, challenges, Digest, SOCKS replies,
+  connect-to and resolve entries, proxy URLs and no-proxy lists, cookies, netrc, dates, URLs,
+  the header store). Inputs are built from each parser's words and from valid samples with
+  bytes spliced in, under any options; the incremental parsers are fed whole and in random
+  pieces and must agree, never stall, and keep within their buffers. The strategies are in
+  `untrusted.rs`; `PROPTEST_CASES` raises the counts for a longer hunt. That a line's notes fit
+  `Notes`' four slots is checked over every mix of what adds one.
 - **`runtests.pl` on both legs** is the floor, read through its skipped line for every flip.
 
 ---

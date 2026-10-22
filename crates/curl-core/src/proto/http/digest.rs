@@ -671,4 +671,64 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains(", nc=1234abcd, "), "{out}");
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"realm",
+        b"nonce",
+        b"qop",
+        b"algorithm",
+        b"opaque",
+        b"stale",
+        b"userhash",
+        b"=",
+        b"\"",
+        b",",
+        b" ",
+        b"\t",
+        b"\\",
+        b"auth",
+        b"auth-int",
+        b"MD5",
+        b"MD5-sess",
+        b"SHA-256",
+        b"SHA-512-256-SESS",
+        b"true",
+        b"\r",
+        b"\n",
+    ];
+    const SAMPLES: &[&[u8]] = &[
+        b" realm=\"testrealm\", nonce=\"1053604145\"",
+        b" realm=\"r\", nonce=\"n\", qop=\"auth,auth-int\", algorithm=MD5-sess, \
+          opaque=\"o\", userhash=true",
+        b" nonce=\"a\\\"b\", stale=true, algorithm=SHA-256, qop=auth",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(256))]
+
+        /// Any challenge is read or refused, its values each kept within
+        /// C's buffer, and whatever nonce it left answers any request
+        /// within the longest response, or fails as out of memory.
+        #[test]
+        fn any_challenge_is_read_and_answered(
+            challenge in crate::untrusted::input(WORDS, SAMPLES, 24),
+            long in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..1500),
+            had_nonce in proptest::prelude::any::<bool>(),
+            which in 0..4usize,
+        ) {
+            let (mut d, _) = Digest::decode(&challenge, had_nonce);
+            for v in [&d.nonce, &d.realm, &d.opaque, &d.algorithm].into_iter().flatten() {
+                proptest::prop_assert!(v.len() < MAX_CONTENT);
+            }
+            // Any one of the request's parts long and odd.
+            let mut parts: [&[u8]; 4] = [b"user", b"password", b"GET", b"/"];
+            parts[which] = &long;
+            // As `answer_digest` asks: only a nonce is answered.
+            if d.has_nonce()
+                && let Ok(out) = d.response(parts[0], parts[1], parts[2], parts[3], |b| b.fill(7))
+            {
+                proptest::prop_assert!(out.len() <= MAX_RESPONSE);
+            }
+        }
+    }
 }

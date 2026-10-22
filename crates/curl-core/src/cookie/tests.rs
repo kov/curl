@@ -1,3 +1,5 @@
+use proptest::prelude::*;
+
 use super::*;
 
 const NOW: i64 = 1_700_000_000;
@@ -927,4 +929,163 @@ fn expiry_is_capped_without_overflowing() {
 fn suffixes_debug_as_a_name() {
     let list = Suffixes::new(Box::new(Two)).unwrap();
     assert_eq!(format!("{list:?}"), "Suffixes");
+}
+
+const COOKIE_WORDS: &[&[u8]] = &[
+    b"a=b",
+    b"name=value",
+    b"; ",
+    b";",
+    b"=",
+    b"Domain=",
+    b"domain=.example.com",
+    b"domain=com",
+    b"Path=/",
+    b"path=/x/",
+    b"Secure",
+    b"HttpOnly",
+    b"SameSite=Lax",
+    b"Expires=Tue, 09 Nov 2010 14:49:00 GMT",
+    b"expires=",
+    b"Max-Age=",
+    b"-1",
+    b"0",
+    b"99999999999999999999",
+    b"__Secure-",
+    b"__Host-",
+    b"\t",
+    b"TRUE",
+    b"FALSE",
+    b"#HttpOnly_",
+    b".example.com",
+    b"example.com",
+    b"www.example.com",
+    b"com",
+    b"co.uk",
+    b"\n",
+    b"\r\n",
+    b"\"",
+    b"\0",
+    b"\x7f",
+    b" ",
+    b"Set-Cookie: ",
+    b"#",
+];
+const COOKIE_LINES: &[&[u8]] = &[
+    b"a=1; Domain=.example.com; Path=/; Secure; Max-Age=60",
+    b"__Host-x=y; Secure; Path=/",
+    b"Set-Cookie: b=2; expires=Tue, 09 Nov 2010 14:49:00 GMT; HttpOnly\n",
+    b".example.com\tTRUE\t/\tFALSE\t0\ta\t1\n",
+    b"#HttpOnly_example.com\tFALSE\t/x\tTRUE\t2000000000\tb\t2\n",
+    b"www.example.com\tFALSE\t/\tFALSE\t0\tempty\t\n",
+];
+const HOSTS: &[&[u8]] = &[
+    b"example.com",
+    b"www.example.com",
+    b"com",
+    b"127.0.0.1",
+    b"[::1]",
+];
+const PATHS: &[&[u8]] = &[b"/", b"/x/y", b"", b"/x"];
+
+#[derive(Clone, Debug)]
+enum JarOp {
+    /// A file's text read in.
+    Load {
+        text: Vec<u8>,
+        new_session: bool,
+        trusted: bool,
+    },
+    /// A server's `Set-Cookie:`.
+    Set {
+        value: Vec<u8>,
+        host: &'static [u8],
+        path: &'static [u8],
+        secure: bool,
+    },
+    /// The application's line.
+    Add(Vec<u8>),
+    Start,
+    /// Time passes.
+    Later(i64),
+    ClearSession,
+    /// Another request: its count of cookies set starts over.
+    NextRequest,
+}
+
+fn jar_op() -> impl Strategy<Value = JarOp> {
+    use proptest::sample::select;
+    let line = || crate::untrusted::input(COOKIE_WORDS, COOKIE_LINES, 16);
+    prop_oneof![
+        1 => (
+            proptest::collection::vec(line(), 0..4),
+            any::<bool>(),
+            any::<bool>()
+        )
+            .prop_map(|(lines, new_session, trusted)| JarOp::Load {
+                text: lines.join(&b'\n'),
+                new_session,
+                trusted
+            }),
+        4 => (line(), select(HOSTS), select(PATHS), any::<bool>()).prop_map(
+            |(value, host, path, secure)| JarOp::Set {
+                value,
+                host,
+                path,
+                secure
+            }
+        ),
+        1 => line().prop_map(JarOp::Add),
+        1 => Just(JarOp::Start),
+        1 => prop_oneof![0..100i64, 0..1_000_000_000i64].prop_map(JarOp::Later),
+        1 => Just(JarOp::ClearSession),
+        1 => Just(JarOp::NextRequest),
+    ]
+}
+
+proptest! {
+    #![proptest_config(crate::untrusted::config(256))]
+
+    /// Any lines, from servers, files and the application, are stored or
+    /// passed over without a panic; a request stores at most C's count
+    /// of them and sends at most C's count, and the jar is written out.
+    #[test]
+    fn any_cookie_lines_are_stored_or_passed_over(
+        ops in proptest::collection::vec(jar_op(), 1..12),
+        listed in any::<bool>(),
+    ) {
+        let suffixes: Option<&dyn PublicSuffixes> = listed.then_some(&Two);
+        let mut jar = Jar::default();
+        let (mut now, mut set) = (NOW, 0u8);
+        for op in &ops {
+            match op {
+                JarOp::Load { text, new_session, trusted } => {
+                    jar.load(text, *new_session, *trusted, suffixes, now).unwrap();
+                }
+                JarOp::Set { value, host, path, secure } => {
+                    let source = Source::Server { host, path, secure: *secure };
+                    if let Some(said) = jar.set_by(value, source, suffixes, now, &mut set).unwrap() {
+                        said_text(&said);
+                    }
+                }
+                JarOp::Add(line) => jar.add_line(line, suffixes, now, &mut set).unwrap(),
+                JarOp::Start => jar.start(),
+                JarOp::Later(by) => now += by,
+                JarOp::ClearSession => jar.clear_session(),
+                JarOp::NextRequest => set = 0,
+            }
+            prop_assert!(set <= MAX_SET_PER_REQUEST);
+            jar.sweep(now);
+            for host in HOSTS {
+                for path in PATHS {
+                    let m = jar.matching(host, path, true).unwrap();
+                    prop_assert!(m.cookies.len() <= MAX_SEND);
+                    m.capped_line(|_| ());
+                }
+            }
+            prop_assert!(jar.listed().count() <= jar.len());
+            let mut out = Vec::new();
+            jar.file(now, &mut out).unwrap();
+        }
+    }
 }

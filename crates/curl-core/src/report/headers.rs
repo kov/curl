@@ -313,6 +313,8 @@ fn span(base: usize, r: Range<usize>) -> Range<u32> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::strategy::Strategy as _;
+
     use super::*;
 
     fn store(lines: &[(&[u8], HeaderOrigin)]) -> HeaderStore {
@@ -475,5 +477,76 @@ mod tests {
         assert_eq!(value(b"A", Request::Nth(1)), Ok(&b"2"[..]));
         assert_eq!(value(b"B", Request::Last), Ok(&b"3"[..]));
         assert_eq!(value(b"A", Request::Nth(2)), Err(HeaderError::NoRequest));
+    }
+
+    const WORDS: &[&[u8]] = &[
+        b"Name",
+        b"name",
+        b"X-Y",
+        b":",
+        b": ",
+        b"value",
+        b" ",
+        b"\t",
+        b"\r\n",
+        b"\n",
+        b"\r",
+        b"\0",
+        b"Set-Cookie: a=b\r\n",
+        b"\xff",
+    ];
+    const LINES: &[&[u8]] = &[b"Name: value\r\n", b"  folded:  x  \n", b"a:\r\n"];
+    const NAMES: &[&[u8]] = &[b"name", b"NAME", b"a", b"", b"x-y", b"set-cookie"];
+
+    fn origin() -> impl proptest::strategy::Strategy<Value = HeaderOrigin> {
+        proptest::sample::select(vec![
+            HeaderOrigin::Header,
+            HeaderOrigin::Trailer,
+            HeaderOrigin::Connect,
+            HeaderOrigin::Interim,
+        ])
+    }
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(256))]
+
+        /// Any lines are stored or refused, and any name, index, origins
+        /// and request the application asks for are answered: every
+        /// header is visited once, and an index found is below its
+        /// amount.
+        #[test]
+        fn any_headers_are_stored_and_looked_up(
+            lines in proptest::collection::vec(
+                (crate::untrusted::input(WORDS, LINES, 6), origin(),
+                 proptest::prelude::any::<bool>()),
+                0..12),
+            name in proptest::sample::select(NAMES),
+            index in proptest::prop_oneof![0..4usize, proptest::prelude::any::<usize>()],
+            bits in 0..16u8,
+            nth in proptest::prop_oneof![
+                proptest::strategy::Just(Request::Last),
+                proptest::prelude::any::<u16>().prop_map(Request::Nth),
+                (0..3u16).prop_map(Request::Nth),
+            ],
+        ) {
+            let mut s = HeaderStore::default();
+            for (line, origin, next) in &lines {
+                if *next {
+                    s.next_request();
+                }
+                s.push(line, *origin).ok();
+            }
+            let origins = Origins(bits);
+            if let Ok(h) = s.get(name, index, origins, nth) {
+                proptest::prop_assert!(h.index < h.amount);
+            }
+            let (mut seen, mut prev) = (0, None);
+            while let Some(h) = s.next(origins, nth, prev) {
+                proptest::prop_assert!(h.index < h.amount);
+                seen += 1;
+                proptest::prop_assert!(seen <= s.entries.len(), "a header visited twice");
+                prev = Some(h.cursor);
+            }
+        }
     }
 }

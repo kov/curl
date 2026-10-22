@@ -2023,4 +2023,161 @@ mod tests {
             b"a%20b%2F%C3%A9-._~"
         );
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"http://",
+        b"https://",
+        b"file://",
+        b"ftp://",
+        b"imap://",
+        b"x-y+z://",
+        b"http:",
+        b"//",
+        b"user",
+        b":",
+        b"@",
+        b"host",
+        b"example.com",
+        b"[",
+        b"]",
+        b"::1",
+        b"%25eth0",
+        b"fe80::1",
+        b"1.2.3.4",
+        b"0x7f.1",
+        b"4294967296",
+        b"80",
+        b"65536",
+        b"/",
+        b"..",
+        b".",
+        b"?",
+        b"#",
+        b"%",
+        b"%2e",
+        b"%00",
+        b"%zz",
+        b" ",
+        b"\\",
+        b";",
+        b"=",
+        b"&",
+        b"+",
+        b"\t",
+        b"\xc3\xa9",
+        b"localhost",
+        b"c:",
+        b"|",
+        b"xn--",
+        b"\x7f",
+        b"\r\n",
+    ];
+    const URLS: &[&[u8]] = &[
+        b"http://user:pass;opt@example.com:8080/a/./b/../c?q=1&r#frag",
+        b"https://[fe80::1%25eth0]:443/",
+        b"file:///etc/passwd",
+        b"imap://u;AUTH=x@host/INBOX",
+        b"example.com/path with space",
+        b"../up?x#y",
+        b"//other.example/x",
+    ];
+    const PARTS: &[Part] = &[
+        Part::Url,
+        Part::Scheme,
+        Part::User,
+        Part::Password,
+        Part::Options,
+        Part::Host,
+        Part::ZoneId,
+        Part::Port,
+        Part::Path,
+        Part::Query,
+        Part::Fragment,
+    ];
+
+    fn parse_options() -> impl proptest::strategy::Strategy<Value = ParseOptions> {
+        use proptest::prelude::*;
+        any::<[bool; 8]>().prop_map(|b| ParseOptions {
+            default_scheme: b[0],
+            guess_scheme: b[1],
+            non_support_scheme: b[2],
+            no_authority: b[3],
+            path_as_is: b[4],
+            disallow_user: b[5],
+            allow_space: b[6],
+            url_encode: b[7],
+        })
+    }
+
+    fn get_options() -> impl proptest::strategy::Strategy<Value = GetOptions> {
+        use proptest::prelude::*;
+        any::<[bool; 9]>().prop_map(|b| GetOptions {
+            default_port: b[0],
+            no_default_port: b[1],
+            default_scheme: b[2],
+            url_decode: b[3],
+            url_encode: b[4],
+            get_empty: b[5],
+            no_guess_scheme: b[6],
+            punycode: b[7],
+            puny2idn: b[8],
+        })
+    }
+
+    fn set_options() -> impl proptest::strategy::Strategy<Value = SetOptions> {
+        use proptest::prelude::*;
+        (parse_options(), any::<bool>(), get_options()).prop_map(|(parse, append_query, get)| {
+            SetOptions {
+                parse,
+                append_query,
+                get,
+            }
+        })
+    }
+
+    /// Every part of `u`, each read or refused.
+    fn read_all(u: &Url, opts: GetOptions) {
+        for &part in PARTS {
+            u.get(part, opts).ok();
+        }
+    }
+
+    fn part_value() -> impl proptest::strategy::Strategy<Value = (Part, Option<Vec<u8>>)> {
+        (
+            proptest::sample::select(PARTS),
+            proptest::option::weighted(0.9, crate::untrusted::input(WORDS, URLS, 8)),
+        )
+    }
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(256))]
+
+        /// Any URL is parsed or refused under any flags, and every part of
+        /// one parsed is read back; any part set, alone or as a URL
+        /// resolved against it, leaves a URL whose parts read back too,
+        /// as does a redirect to it, followed or not.
+        #[test]
+        fn any_url_is_parsed_read_and_changed(
+            url in crate::untrusted::input(WORDS, URLS, 16),
+            popts in parse_options(),
+            gopts in get_options(),
+            sets in proptest::collection::vec((part_value(), set_options()), 0..4),
+            location in crate::untrusted::input(WORDS, URLS, 10),
+            path_as_is in proptest::prelude::any::<bool>(),
+        ) {
+            let mut u = Url::parse(&url, popts).unwrap_or_default();
+            read_all(&u, gopts);
+            for ((part, value), sopts) in &sets {
+                if u.set(*part, value.as_deref(), *sopts).is_ok() {
+                    read_all(&u, gopts);
+                }
+            }
+            let copy = u.try_clone().unwrap();
+            if let Ok(followed) = crate::proto::http1::follow::resolve(copy, &location, path_as_is) {
+                read_all(&followed, gopts);
+            }
+            let copy = u.try_clone().unwrap();
+            crate::proto::http1::follow::would_redirect(copy, &location, path_as_is).ok();
+        }
+    }
 }

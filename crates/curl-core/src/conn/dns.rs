@@ -644,4 +644,52 @@ mod tests {
         assert!(!answer(b"::1").resolved() && !answer(b"127.0.0.1").resolved());
         assert!(answer(b"localhost").resolved() && answer(b"*").resolved());
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"-",
+        b"+",
+        b"[",
+        b"]",
+        b":",
+        b",",
+        b"host",
+        b"example.com",
+        b"80",
+        b"65535",
+        b"65536",
+        b"1.2.3.4",
+        b"::1",
+        b"fe80::1%eth0",
+        b"127.0.0.1",
+        b"999.1.1.1",
+        b" ",
+    ];
+    const ENTRIES: &[&[u8]] = &[
+        b"host:80:1.2.3.4,[::1],5.6.7.8",
+        b"+[::1]:443:::1",
+        b"-host:80",
+        b"-[::1]:443",
+        b"example.com:8080:,,1.2.3.4",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any line is an entry, none, or refused; an entry keeps a
+        /// name C's buffers hold, and at least one address.
+        #[test]
+        fn any_line_is_an_entry_or_refused(line in crate::untrusted::input(WORDS, ENTRIES, 12)) {
+            match parse_entry(&line) {
+                Ok(Some(ListEntry::Add { name, addrs, .. })) => {
+                    proptest::prop_assert!(!name.is_empty() && name.len() <= 4096);
+                    proptest::prop_assert!(!addrs.is_empty());
+                }
+                Ok(Some(ListEntry::Remove { name, .. })) => {
+                    proptest::prop_assert!(!name.is_empty() && name.len() <= 4096);
+                }
+                Ok(None) | Err(BadEntry::Syntax { .. }) => {}
+                Err(BadEntry::OutOfMemory) => proptest::prop_assert!(false, "no allocation fails"),
+            }
+        }
+    }
 }

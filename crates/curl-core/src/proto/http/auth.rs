@@ -929,6 +929,82 @@ pub(crate) fn base64(
     Ok(())
 }
 
+/// Any request's view of authenticating, for the properties of what
+/// reads a response.
+#[cfg(test)]
+pub(crate) mod arbitrary {
+    use proptest::prelude::*;
+
+    use super::{AuthAsked, PeerAsked};
+    use crate::options::AuthMethods;
+
+    /// Any set of the methods, `ONLY` and `OTHER` among them.
+    pub(crate) fn methods() -> impl Strategy<Value = AuthMethods> {
+        any::<u8>().prop_map(|bits| {
+            [
+                AuthMethods::BASIC,
+                AuthMethods::DIGEST,
+                AuthMethods::BEARER,
+                AuthMethods::OTHER,
+                AuthMethods::ONLY,
+            ]
+            .into_iter()
+            .enumerate()
+            .filter(|&(i, _)| bits & (1 << i) != 0)
+            .fold(AuthMethods::NONE, |set, (_, m)| set | m)
+        })
+    }
+
+    pub(crate) fn peer_asked() -> impl Strategy<Value = PeerAsked> {
+        (methods(), methods(), methods(), any::<[bool; 5]>()).prop_map(
+            |(want, picked, avail, [credentials, user_or_password, bearer, done, digest_nonce])| {
+                PeerAsked {
+                    want,
+                    picked,
+                    credentials,
+                    user_or_password: credentials && user_or_password,
+                    bearer: credentials && bearer,
+                    done,
+                    avail,
+                    digest_nonce,
+                }
+            },
+        )
+    }
+
+    /// A request sent without its body to probe for a challenge, which
+    /// a response under 300 has made again (`req.authneg`).
+    pub(crate) const PROBE: AuthAsked = AuthAsked {
+        probe: true,
+        get_or_head: false,
+        ..AuthAsked::DEFAULT
+    };
+
+    /// A request with a user and password for Basic, which a 401
+    /// offering it has made again.
+    pub(crate) const BASIC: AuthAsked = AuthAsked {
+        host: PeerAsked {
+            want: AuthMethods::BASIC,
+            credentials: true,
+            user_or_password: true,
+            ..PeerAsked::DEFAULT
+        },
+        ..AuthAsked::DEFAULT
+    };
+
+    pub(crate) fn auth_asked() -> impl Strategy<Value = AuthAsked> {
+        (peer_asked(), peer_asked(), any::<[bool; 3]>()).prop_map(
+            |(host, proxy, [probe, get_or_head, problem])| AuthAsked {
+                host,
+                proxy,
+                probe,
+                get_or_head,
+                problem,
+            },
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1588,5 +1664,73 @@ mod tests {
         assert_eq!(basic(b"foob", b"r").as_deref(), Some("Zm9vYjpy"));
         // `http://@host/` and `http://:@host/` send none.
         assert_eq!(basic(b"", b""), None);
+    }
+
+    /// Words of challenges, and challenges whole.
+    const CHALLENGE_WORDS: &[&[u8]] = &[
+        b"Basic",
+        b"Digest",
+        b"Bearer",
+        b"NTLM",
+        b" ",
+        b"\t",
+        b",",
+        b", ",
+        b"=",
+        b"\"",
+        b"realm=\"r\"",
+        b"nonce=\"n\"",
+        b"qop=\"auth\"",
+        b"qop=auth-int",
+        b"stale=true",
+        b"algorithm=MD5",
+        b"algorithm=SHA-256-SESS",
+        b"opaque=\"o\"",
+        b"\\",
+        b"\r\n",
+    ];
+    const CHALLENGES: &[&[u8]] = &[
+        b"Basic realm=\"x\"",
+        b"Digest realm=\"r\", nonce=\"1\", qop=\"auth,auth-int\", algorithm=MD5-sess, \
+          opaque=\"o\", Basic",
+        b"Bearer, Basic realm=\"x\", Digest nonce=\"2\", stale=true",
+        b"Digest nonce=\"a\\\"b\", userhash=true, algorithm=SHA-512-256",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(256))]
+
+        /// Any challenges, read one line after another into what a
+        /// response offered, then acted on for any request: no panic,
+        /// and only the methods there are offered.
+        #[test]
+        fn any_challenges_are_read(
+            values in proptest::collection::vec(
+                crate::untrusted::input(CHALLENGE_WORDS, CHALLENGES, 12), 1..4),
+            asked in arbitrary::auth_asked(),
+            code in proptest::prop_oneof![
+                proptest::strategy::Just(401u16),
+                proptest::strategy::Just(407),
+                100..600u16,
+            ],
+        ) {
+            let mut offered = Offered::default();
+            for v in &values {
+                let sides = [
+                    (&mut offered.host, &asked.host),
+                    (&mut offered.proxy, &asked.proxy),
+                ];
+                for (challenges, side) in sides {
+                    let heard = challenges.read(v, side).expect("no allocation fails");
+                    proptest::prop_assert!(heard.notes().count() <= HEARD);
+                }
+            }
+            let known = AuthMethods::BASIC | AuthMethods::DIGEST | AuthMethods::BEARER;
+            for c in [&offered.host, &offered.proxy] {
+                proptest::prop_assert_eq!(c.offered & !known, AuthMethods::NONE);
+            }
+            let act = AuthAct::of(code, &offered, &asked);
+            act.fails(code, &asked);
+        }
     }
 }

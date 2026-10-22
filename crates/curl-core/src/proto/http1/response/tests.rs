@@ -1,8 +1,11 @@
 use std::num::NonZeroU64;
 
+use proptest::prelude::*;
+
 use super::*;
-use crate::proto::http1::fixture;
 use crate::proto::http1::framing::Note;
+use crate::proto::http1::{fixture, framing};
+use crate::untrusted;
 
 const ASKED: Asked = Asked {
     head: false,
@@ -43,6 +46,16 @@ struct Outcome {
 
 /// Feed `chunks` in turn, each as far as the parser takes it.
 fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outcome {
+    parse_sending(chunks, exchange, Unsent::default(), transfer_bytes)
+}
+
+/// `parse`, while the request's body is `sending`.
+fn parse_sending(
+    chunks: &[&[u8]],
+    exchange: Exchange,
+    sending: Unsent,
+    transfer_bytes: &mut u64,
+) -> Outcome {
     let mut p = HeadParser::new(exchange);
     let mut out = Outcome {
         lines: Vec::new(),
@@ -60,7 +73,8 @@ fn parse(chunks: &[&[u8]], exchange: Exchange, transfer_bytes: &mut u64) -> Outc
                 out.body.extend_from_slice(input);
                 break;
             }
-            let (used, event) = match p.feed(input, transfer_bytes, Unsent::default()) {
+            assert!(p.held().len() <= MAX_LINE, "a line kept past C's buffer");
+            let (used, event) = match p.feed(input, transfer_bytes, sending) {
                 Ok(fed) => fed,
                 Err(e) => {
                     out.error = Some(e);
@@ -843,4 +857,219 @@ fn head_bytes_are_counted_to_c_s_limits() {
         (10, 0),
         "a refused line is not counted"
     );
+}
+
+const HEAD_WORDS: &[&[u8]] = &[
+    b"HTTP/1.1 ",
+    b"HTTP/1.0 ",
+    b"HTTP/2 ",
+    b"http/",
+    b"HTTP/1.1 200 OK\r\n",
+    b"HTTP/1.1 100 Continue\r\n\r\n",
+    b"200",
+    b"101",
+    b"204",
+    b"304",
+    b"301",
+    b"401",
+    b"407",
+    b"416",
+    b"099",
+    b" OK",
+    b"\r\n",
+    b"\r\n",
+    b"\n",
+    b"\r",
+    b" ",
+    b"\t",
+    b":",
+    b"\0",
+    b"Content-Length: ",
+    b"Content-Length: 5\r\n",
+    b"Content-Length: 99999999999999999999",
+    b"Transfer-Encoding: ",
+    b"chunked",
+    b"gzip",
+    b"identity",
+    b", ",
+    b"Connection: close\r\n",
+    b"Connection: keep-alive\r\n",
+    b"Proxy-Connection: keep-alive\r\n",
+    b"Location: /x\r\n",
+    b"Location: http://h/y\r\n",
+    b"Content-Range: bytes 5-\r\n",
+    b"Content-Range: */10\r\n",
+    b"Last-Modified: Tue, 09 Nov 2010 14:49:00 GMT\r\n",
+    b"WWW-Authenticate: Basic\r\n",
+    b"WWW-Authenticate: Digest nonce=\"1\"\r\n",
+    b"Proxy-Authenticate: Bearer\r\n",
+    b"Trailer: x\r\n",
+    b"Content-Type: text/html\r\n",
+];
+
+const HEADS: &[&[u8]] = &[
+    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nFolded: a\r\n  b\r\n\r\n-foo-\n",
+    b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.0 301 Moved\r\nLocation: /x\r\n\
+      Connection: keep-alive\r\nContent-Length: 3\r\n\r\nabc",
+    b"HTTP/1.1 401 No\r\nWWW-Authenticate: Digest realm=\"r\", nonce=\"1\"\r\n\
+      WWW-Authenticate: Basic\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n",
+    b"HTTP/1.1 206 Partial\r\nContent-Range: bytes 5-9/10\r\nContent-Length: 5\r\n\
+      Last-Modified: Tue, 09 Nov 2010 14:49:00 GMT\r\n\r\n12345",
+    b"HTTP/1.1 407 Who\r\nProxy-Authenticate: Basic\r\nProxy-Connection: close\r\n\r\n",
+    b"no HTTP at all\n",
+];
+
+const STATUS_LINES: &[&[u8]] = &[
+    b"HTTP/1.1 200 OK\r\n",
+    b"HTTP/1.0 200 OK\r\n",
+    b"HTTP/1.1 206 Partial\r\n",
+    b"HTTP/1.1 301 Moved\r\n",
+    b"HTTP/1.0 302 Found\r\n",
+    b"HTTP/1.1 304 Same\r\n",
+    b"HTTP/1.1 401 Who\r\n",
+    b"HTTP/1.1 407 Who\r\n",
+    b"HTTP/1.1 416 Range\r\n",
+    b"HTTP/1.1 204 None\r\n",
+    b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\n",
+];
+
+const HEADER_LINES: &[&[u8]] = &[
+    b"Content-Length: 5\r\n",
+    b"Content-Length: 0\r\n",
+    b"Content-Length: 5, 5\r\n",
+    b"Transfer-Encoding: chunked\r\n",
+    b"Transfer-Encoding: gzip, chunked\r\n",
+    b"Transfer-Encoding: br, deflate, zstd, gzip, chunked\r\n",
+    b"Connection: close\r\n",
+    b"Connection: keep-alive\r\n",
+    b"Proxy-Connection: keep-alive\r\n",
+    b"Proxy-Connection: close\r\n",
+    b"Location: /x\r\n",
+    b"Location: /y\r\n",
+    b"Content-Range: bytes 5-9/10\r\n",
+    b"Content-Range: */10\r\n",
+    b"Last-Modified: Tue, 09 Nov 2010 14:49:00 GMT\r\n",
+    b"Last-Modified: Tue, 09 Nov 2060 14:49:00 GMT\r\n",
+    b"WWW-Authenticate: Basic\r\n",
+    b"WWW-Authenticate: Digest nonce=\"1\"\r\n",
+    b"WWW-Authenticate: Bearer, Basic\r\n",
+    b"Proxy-Authenticate: Basic\r\n",
+    b"Proxy-Authenticate: Digest nonce=\"2\"\r\n",
+    b"Trailer: x\r\n",
+    b"Folded: a\r\n b\r\n",
+];
+
+/// A head of whole lines, each one that says something of the body, and
+/// a little of it: what reaches the framing decision most often.
+fn whole_lines() -> impl Strategy<Value = Vec<u8>> {
+    (
+        proptest::sample::select(STATUS_LINES),
+        proptest::collection::vec(proptest::sample::select(HEADER_LINES), 0..8),
+        proptest::collection::vec(any::<u8>(), 0..8),
+    )
+        .prop_map(|(status, headers, body)| [status, &headers.concat(), b"\r\n", &body].concat())
+}
+
+fn exchange() -> impl Strategy<Value = Exchange> {
+    (
+        prop_oneof![Just(HttpVersion::Http10), Just(HttpVersion::Http11)],
+        any::<[bool; 2]>(),
+        framing::arbitrary::asked(),
+    )
+        .prop_map(|(sent, [reused, allow_09], asked)| Exchange {
+            sent,
+            reused,
+            allow_09,
+            asked,
+        })
+}
+
+proptest! {
+    #![proptest_config(untrusted::config(256))]
+
+    /// Any reply, to any request, is read or refused as it is whole,
+    /// whatever pieces it comes in, and no line is kept past C's buffer.
+    #[test]
+    fn any_head_is_read_alike_in_any_pieces(
+        reply in prop_oneof![untrusted::input(HEAD_WORDS, HEADS, 40), whole_lines()],
+        cuts in untrusted::cuts(),
+        exchange in exchange(),
+        sending in framing::arbitrary::sending(),
+    ) {
+        let whole = parse_sending(&[&reply], exchange, sending, &mut 0);
+        let pieces = untrusted::pieces(&reply, &cuts);
+        prop_assert_eq!(parse_sending(&pieces, exchange, sending, &mut 0), whole);
+    }
+}
+
+/// What C says before it delivers a line comes to four notes at most,
+/// all `Notes` holds, for every mix of what adds one: a length or not, a
+/// close, a location, a date for the time condition, a challenge; the
+/// request following, resuming, asking for its head alone, with a time
+/// condition, made again for credentials; its body read again, with
+/// some, much or an unknown amount left to send. Four are reached.
+#[test]
+fn a_line_never_needs_more_than_four_notes() {
+    use crate::options::{Condition, TimeCondition};
+    use crate::proto::http::auth::AuthAsked;
+    use crate::proto::http::auth::arbitrary::{BASIC, PROBE};
+    use crate::proto::http1::framing::Left;
+
+    let statuses: [&[u8]; 4] = [
+        b"HTTP/1.1 200 OK\r\n",
+        b"HTTP/1.0 200 OK\r\n",
+        b"HTTP/1.1 301 Moved\r\n",
+        b"HTTP/1.1 401 Who\r\n",
+    ];
+    let headers: [&[u8]; 5] = [
+        b"Content-Length: 5\r\n",
+        b"Connection: close\r\n",
+        b"Location: /x\r\n",
+        b"Last-Modified: Tue, 09 Nov 2010 14:49:00 GMT\r\n",
+        b"WWW-Authenticate: Basic\r\n",
+    ];
+    let unmet = TimeCondition {
+        when: Condition::ModifiedSince,
+        time: 2_000_000_000,
+    };
+    let mut most = 0;
+    for status in statuses {
+        for mask in 0..1u32 << headers.len() {
+            let mut reply = status.to_vec();
+            for (i, h) in headers.iter().enumerate() {
+                if mask & 1 << i != 0 {
+                    reply.extend_from_slice(h);
+                }
+            }
+            reply.extend_from_slice(b"\r\n");
+            for flags in 0..1u32 << 4 {
+                for auth in [AuthAsked::DEFAULT, PROBE, BASIC] {
+                    let exchange = asked(|a| {
+                        a.follow = flags & 1 != 0;
+                        a.time_condition = (flags & 2 != 0).then_some(unmet);
+                        a.resume_from = (flags & 4 != 0).then_some(5);
+                        a.head = flags & 8 != 0;
+                        a.auth = auth;
+                    });
+                    for rereads in [false, true] {
+                        for left in [Left::Nothing, Left::Bytes(10), Left::Unknown] {
+                            let sending = Unsent { rereads, left };
+                            let mut p = HeadParser::new(exchange);
+                            let mut input = &reply[..];
+                            while !input.is_empty() && !p.is_done() {
+                                let Ok((used, event)) = p.feed(input, &mut 0, sending) else {
+                                    break;
+                                };
+                                if let Some(HeadEvent::Line(line)) = event {
+                                    most = most.max(line.notes.taken());
+                                }
+                                input = &input[used..];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(most, 4, "the most notes a line came with");
 }

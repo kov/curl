@@ -307,4 +307,54 @@ mod tests {
         let v6 = Peer::new(HTTP, b"[fe80::1]".to_vec(), 1, Some(b"eth1".to_vec()));
         assert_eq!(zone_of(&v6, ":1::7"), Some(b"eth1".to_vec()));
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"host",
+        b"example.com",
+        b"EXAMPLE.com",
+        b"[",
+        b"]",
+        b":",
+        b"::1",
+        b"fe80::1",
+        b"%25",
+        b"%",
+        b"eth0",
+        b"80",
+        b"8080",
+        b"65535",
+        b"65536",
+        b"99999",
+        b"0",
+        b".",
+        b"-",
+        b"1.2.3.4",
+    ];
+    const ENTRIES: &[&[u8]] = &[
+        b"host:80:other:8080",
+        b"::[::1]:",
+        b"example.com::[fe80::1%25eth0]:443",
+        b":80:x:",
+        b"[::1]:80:1.2.3.4:",
+    ];
+    const ORIGINS: &[&str] = &["host", "example.com", "::1", "1.2.3.4"];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(256))]
+
+        /// Any entries name a peer or are refused, for any origin; the
+        /// peer named is never the origin.
+        #[test]
+        fn any_entries_name_a_peer_or_are_refused(
+            entries in proptest::collection::vec(
+                crate::untrusted::input(WORDS, ENTRIES, 10), 0..4),
+            host in proptest::sample::select(ORIGINS),
+            port in proptest::prelude::any::<u16>(),
+        ) {
+            let origin = peer(host, port);
+            if let Ok(Some(to)) = via(&origin, entries.iter().map(|e| &e[..])) {
+                proptest::prop_assert!(to != origin);
+            }
+        }
+    }
 }

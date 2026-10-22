@@ -114,6 +114,12 @@ impl Notes {
         *free.expect("at most four notes to a line") = Some(note);
     }
 
+    /// How many of the four slots are taken.
+    #[cfg(test)]
+    pub(crate) fn taken(&self) -> usize {
+        self.0.iter().flatten().count()
+    }
+
     /// The notes, a challenge line's one by one.
     pub(crate) fn iter(&self) -> impl Iterator<Item = Note> + '_ {
         self.0.iter().flatten().flat_map(|&note| {
@@ -773,4 +779,70 @@ fn copy(name: &[u8]) -> Result<Vec<u8>, FramingError> {
     let mut out = Vec::new();
     out.try_extend_from_slice(name)?;
     Ok(out)
+}
+
+/// Any request's asking, and any body left to send, for the properties of
+/// what reads a response.
+#[cfg(test)]
+pub(crate) mod arbitrary {
+    use proptest::prelude::*;
+
+    use super::{Asked, Left, NonZeroU64, Unsent};
+    use crate::options::{Condition, TimeCondition};
+    use crate::proto::http::auth::arbitrary::auth_asked;
+
+    /// A count, small or of any size C's `curl_off_t` holds.
+    fn count() -> impl Strategy<Value = u64> {
+        prop_oneof![0..4000u64, 0..=i64::MAX as u64]
+    }
+
+    fn time_condition() -> impl Strategy<Value = TimeCondition> {
+        (
+            prop_oneof![
+                Just(Condition::ModifiedSince),
+                Just(Condition::UnmodifiedSince),
+                Just(Condition::LastModified),
+            ],
+            prop_oneof![Just(0i64), 0..2_000_000_000i64, any::<i64>()],
+        )
+            .prop_map(|(when, time)| TimeCondition { when, time })
+    }
+
+    pub(crate) fn asked() -> impl Strategy<Value = Asked> {
+        (
+            any::<[bool; 8]>(),
+            proptest::option::of(count().prop_filter_map("not zero", NonZeroU64::new)),
+            proptest::option::of(count()),
+            auth_asked(),
+            proptest::option::of(time_condition()),
+        )
+            .prop_map(
+                |(b, max_filesize, resume_from, auth, time_condition)| Asked {
+                    head: b[0],
+                    ignore_length: b[1],
+                    max_filesize,
+                    decode_codings: b[2],
+                    raw_codings: b[3],
+                    fail_on_error: b[4],
+                    resume_from,
+                    follow: b[5],
+                    auth,
+                    http_proxy: b[6],
+                    forwarded: b[7],
+                    time_condition,
+                },
+            )
+    }
+
+    pub(crate) fn sending() -> impl Strategy<Value = Unsent> {
+        (
+            any::<bool>(),
+            prop_oneof![
+                Just(Left::Nothing),
+                Just(Left::Unknown),
+                count().prop_map(Left::Bytes),
+            ],
+        )
+            .prop_map(|(rereads, left)| Unsent { rereads, left })
+    }
 }

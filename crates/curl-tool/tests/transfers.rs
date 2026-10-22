@@ -916,6 +916,43 @@ fn data_from_the_start_is_no_resume() {
     assert_eq!(r.code, 7);
 }
 
+/// `--no-clobber` saves to the first numbered name not taken, trying
+/// as many as the debug build's `CURL_MAX_CLOBBER` allows.
+#[test]
+fn numbers_a_file_not_to_clobber() {
+    let s = Scratch::new("clobber");
+    s.write("f", b"new");
+    for taken in ["out.txt", "out-1.txt", "out-2.txt"] {
+        s.write(taken, b"old");
+    }
+    let run = |max: &str| {
+        curl_env(
+            &s,
+            &[
+                "-s",
+                "--no-clobber",
+                "-o",
+                "out.txt",
+                &s.url("f"),
+                "-w",
+                "%{filename_effective}",
+            ],
+            &[("CURL_MAX_CLOBBER", max)],
+        )
+    };
+    // The output is then named as the last name tried.
+    let r = run("3");
+    assert_eq!((r.code, &r.stdout[..]), (23, &b"out-2.txt"[..]));
+    assert!(!s.exists("out-3.txt"));
+    let r = run("4");
+    assert_eq!((r.code, &r.stdout[..]), (0, &b"out-3.txt"[..]));
+    assert_eq!(s.read("out-3.txt"), b"new");
+    assert_eq!(s.read("out.txt"), b"old");
+    // One past C's limit is not taken: the default holds.
+    let r = run("100001");
+    assert_eq!((r.code, &r.stdout[..]), (0, &b"out-4.txt"[..]));
+}
+
 /// `--stderr` sends what goes to standard error to a file, or to
 /// standard output for `-`.
 #[test]

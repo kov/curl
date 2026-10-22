@@ -245,8 +245,8 @@ const MAX_CLOBBER: u32 = 9999;
 /// `name`, a file name ended by a zero byte, opened only if nothing has
 /// it, or else the first of its numbered names that nothing has, which
 /// `name` then becomes (`tool_create_output_file`). The error is the last
-/// name's.
-fn open_unclobbered(name: &mut Vec<u8>) -> std::io::Result<File> {
+/// name's, and that name is left in `tried`.
+fn open_unclobbered(name: &mut Vec<u8>, tried: &mut Option<Vec<u8>>) -> std::io::Result<File> {
     let first = fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE);
     let mut err = match first {
         Ok(f) => return Ok(f),
@@ -277,7 +277,10 @@ fn open_unclobbered(name: &mut Vec<u8>) -> std::io::Result<File> {
                 *name = numbered;
                 return Ok(f);
             }
-            Err(e) => err = e,
+            Err(e) => {
+                err = e;
+                *tried = Some(numbered);
+            }
         }
     }
     Err(err)
@@ -370,8 +373,9 @@ impl Stream {
         if file.is_some() {
             return true;
         }
+        let mut tried = None;
         let opened = match self.clobber {
-            Clobber::Never => open_unclobbered(name),
+            Clobber::Never => open_unclobbered(name, &mut tried),
             // A name the server gives does not replace a file.
             Clobber::Default if self.server_named => {
                 fs::open_write(Stream::c_name(name), Keep::Absent, NEW_FILE_MODE)
@@ -392,6 +396,11 @@ impl Stream {
                 let reason = os_message(&e);
                 self.msgs
                     .warn(&[b"Failed to open the file ", shown, b": ", reason.as_bytes()]);
+                // C's output is then named as the last name it tried,
+                // though nothing was opened as it.
+                if let Some(last) = tried {
+                    *name = last;
+                }
                 false
             }
         }

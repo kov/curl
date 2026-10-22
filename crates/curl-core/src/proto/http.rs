@@ -20,10 +20,11 @@ use crate::progress::rate::Way;
 use crate::report::{ResponseVersion, Timer};
 use crate::time::Instant;
 use crate::trace;
+use crate::upload::chain;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
 
-use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
+use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing, Left, Unsent};
 use super::http1::request::{
     self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
@@ -164,10 +165,9 @@ pub(crate) struct Request {
     out: Vec<u8>,
     filled: usize,
     sent: usize,
-    /// The body, read at DO and as what is read goes.
-    upload: Option<Upload>,
-    /// The body is sent chunked, framed here as it is read.
-    chunks: Option<ChunkEncoder>,
+    /// The body, read at DO and as what is read goes, through its
+    /// stages: chunked, framed as it is read.
+    body: Option<chain::Body>,
     /// Body bytes sent (`writebytecount`).
     body_sent: u64,
     /// The body has been read from, or would have been but for a wait:
@@ -436,8 +436,7 @@ impl Request {
             out: Vec::new(),
             filled: 0,
             sent: 0,
-            upload: None,
-            chunks: None,
+            body: None,
             body_sent: 0,
             read_started: false,
             outgoing: Sending::Idle,
@@ -516,8 +515,8 @@ impl Request {
         &mut self,
         cx: &mut StepCx<'_, H>,
     ) -> Result<(), ErrorKind> {
-        match &mut self.upload {
-            Some(upload) => upload.rewind(cx),
+        match &mut self.body {
+            Some(body) => body.upload_mut().rewind(cx),
             None => Ok(()),
         }
     }
@@ -1022,11 +1021,15 @@ impl Request {
         self.out = out;
         self.filled = head_len;
         self.sent = 0;
-        self.upload = upload;
-        self.chunks = if chunked {
-            Some(ChunkEncoder::new().map_err(|_| ErrorKind::OutOfMemory)?)
-        } else {
-            None
+        self.body = match upload {
+            Some(upload) => {
+                let mut body = chain::Body::new(upload);
+                if chunked {
+                    body.chunked().map_err(|_| ErrorKind::OutOfMemory)?;
+                }
+                Some(body)
+            }
+            None => None,
         };
         self.body_sent = 0;
         self.outgoing = Sending::Head {
@@ -1057,7 +1060,7 @@ impl Request {
     fn fill<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
         self.start_reading(cx);
         let pausable = self.pipeline.pausable();
-        let upload = self.upload.as_mut().expect("a body to read");
+        let body = self.body.as_mut().expect("a body to read");
         let dest = &mut self.out[self.filled..];
         // Under a send limit, no more than it allows, and nothing once it
         // is spent (`Curl_client_read`).
@@ -1071,24 +1074,7 @@ impl Request {
             }
             None => dest,
         };
-        let got = match &mut self.chunks {
-            None => upload.read(cx, dest, pausable)?,
-            Some(chunks) => {
-                if let Some(room) = chunks.wants(dest.len()) {
-                    let got = upload.read(cx, room, pausable)?;
-                    let end = if got.eos {
-                        Some(trailer_block(cx)?)
-                    } else {
-                        None
-                    };
-                    chunks
-                        .got(got.n, end.as_deref())
-                        .map_err(|_| ErrorKind::OutOfMemory)?;
-                }
-                let (n, eos) = chunks.take(dest);
-                upload::Readout { n, eos }
-            }
-        };
+        let got = body.read(cx, dest, pausable, trailer_block)?;
         self.filled += got.n;
         self.outgoing
             .reading_mut()
@@ -1232,9 +1218,9 @@ impl Request {
             trace::info(cx, format_args!("upload completely sent off: {n} bytes"));
         } else if !matches!(self.stage, Stage::Done) {
             let sized = self
-                .upload
+                .body
                 .as_ref()
-                .and_then(Upload::size)
+                .and_then(|b| b.upload().size())
                 .is_some_and(|n| n != 0);
             let said = if sized {
                 "We are completely uploaded and fine"
@@ -1384,18 +1370,13 @@ impl Request {
     /// (`http_perhapsrewind`): its size less what went, unless all went.
     /// Sent `chunked`, its framing makes its size unknown
     /// (`cr_chunked_total_length`).
-    fn left_to_send(
-        upload: Option<&Upload>,
-        chunked: bool,
-        sent_all: bool,
-        body_sent: u64,
-    ) -> Unsent {
-        let rereads = upload.is_some_and(Upload::needs_rewind);
-        let left = match upload {
+    fn left_to_send(body: Option<&chain::Body>, sent_all: bool, body_sent: u64) -> Unsent {
+        let rereads = body.is_some_and(|b| b.upload().needs_rewind());
+        let left = match body {
             None => Left::Nothing,
             Some(_) if sent_all => Left::Nothing,
-            Some(_) if chunked => Left::Unknown,
-            Some(upload) => match upload.size() {
+            Some(body) if body.is_chunked() => Left::Unknown,
+            Some(body) => match body.upload().size() {
                 Some(size) => Left::Bytes(size.saturating_sub(body_sent)),
                 None => Left::Unknown,
             },
@@ -1443,8 +1424,7 @@ impl Request {
             pipeline,
             head,
             interim,
-            upload,
-            chunks,
+            body,
             outgoing,
             body_sent,
             ..
@@ -1454,7 +1434,7 @@ impl Request {
         // it was before.
         let bodyless = head.meta().bodyless();
         let sent_all = matches!(outgoing, Sending::Done | Sending::Aborted);
-        let unsent = Self::left_to_send(upload.as_ref(), chunks.is_some(), sent_all, *body_sent);
+        let unsent = Self::left_to_send(body.as_ref(), sent_all, *body_sent);
         let (used, event) = head
             .feed(input, &mut cx.report_mut().sizes_mut().header, unsent)
             .map_err(|e| head_failed(cx, &e))?;
@@ -1636,7 +1616,11 @@ impl Request {
             } else {
                 trace::info(cx, format_args!("Got HTTP failure 417 while sending data"));
                 self.closing = true;
-                if self.upload.as_ref().is_some_and(Upload::needs_rewind) {
+                if self
+                    .body
+                    .as_ref()
+                    .is_some_and(|b| b.upload().needs_rewind())
+                {
                     trace::info(cx, format_args!("Need to rewind upload for next request"));
                 }
             }

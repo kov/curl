@@ -771,7 +771,7 @@ witness: curl-core proto::http::tests::a_retried_request_rewinds_its_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
 --- old
-        let rereads = upload.is_some_and(Upload::needs_rewind);
+        let rereads = body.is_some_and(|b| b.upload().needs_rewind());
 --- new
         let rereads = false;
 

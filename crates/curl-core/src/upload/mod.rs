@@ -1,6 +1,7 @@
 //! What a transfer sends: C's client readers (`lib/sendf.c`'s `cr_in`,
 //! `cr_buf` and `cr_null`) as one struct, read by the protocol.
 
+pub(crate) mod chain;
 #[cfg(test)]
 mod tests;
 

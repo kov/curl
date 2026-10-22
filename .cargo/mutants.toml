@@ -203,4 +203,34 @@ exclude_re = [
     # Every HTTPS proxy type is refused alike, this build having no TLS:
     # which of them an `https` scheme keeps cannot be seen yet.
     'conn/proxy\.rs:.*: delete match arm ProxyType::Https2 \| ProxyType::Https3 in of_scheme$',
+    # `none` is the default set, by name.
+    'coding\.rs:.*: replace Decoders::none -> Decoders with Default::default\(\)$',
+    # The default `added` already does nothing.
+    'multi/mod\.rs:.*: replace MultiEvents::added with \(\)$',
+    # `AuthMethods::ANY` joins disjoint bits: `|` and `^` agree. A
+    # constant names no function, so the line's text is the anchor.
+    'options/mod\.rs:.*: replace \| with \^$',
+    # Only a system clock set before 1970 takes the negative arm.
+    'time\.rs:.*: delete - in <impl Clock for SystemClock>::unix_time$',
+    # The URL read back after the first parse has no dot segments and no
+    # empty parts left, so reparsing it as is, or reading it back with
+    # them, changes nothing (C's `follow_fake` does the same).
+    'proto/http1/follow\.rs:.*: delete field (path_as_is|get_empty) from struct (ParseOptions|GetOptions) expression in would_redirect$',
+    # A pool section closes connections and never resolves a name.
+    'multi/cx\.rs:.*: replace <impl Net for CloseLater<._>>::resolve -> Result<Vec<IpAddr>, ResolveFailure> with Ok\(vec!\[\]\)$',
+    # A transfer is in `Done` only inside a step, while its run is out of
+    # its slot where nothing asks for its lease; the invariant check
+    # asserts it never rests there.
+    'multi/state\.rs:.*: delete match arm TransferState::Done\(d\) in TransferState::lease$',
+    # A reservation size in the test scheme's decoder.
+    'proto/script\.rs:.*: replace \* with (\+|/) in <impl Decoder for Expand>::decode$',
+    # Where a run of bytes copied as is ends: cut one byte earlier or at
+    # the escape itself, the bytes written are the same.
+    'url/encode\.rs:.*: replace (&& with \|\||> with >=) in reencode$',
+    # One more look at the end finds nothing there to read as an escape.
+    'url/encode\.rs:.*: replace < with <= in uppercase_hex$',
+    # A fake peer hanging up on a request it has no reply for: whether it
+    # does so at the request's first send or once its head is whole, the
+    # request is never answered.
+    'conn/io\.rs:.*: replace > with >= in <impl Socket for FakeSocket>::send$',
 ]

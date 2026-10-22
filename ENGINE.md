@@ -1512,8 +1512,8 @@ DO, so `Did` goes straight to `Done`.
   The body is read through `Upload` in 64 KiB pieces, the resume point (`AtEnd`: the file's
   size) skipped, each piece written (SendError), counted without a DATA_OUT trace and
   checked; a last update ends DO.
-- Files are opened and directories listed through `curl_os::fs`, which copies neither the
-  path nor an entry's name.
+- Files are opened, renamed and removed and directories listed through `curl_os::fs`, which
+  copies neither the path nor an entry's name.
 
 ## 6. HTTP/1.x
 

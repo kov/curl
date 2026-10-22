@@ -223,3 +223,25 @@ witness: curl-core easy::tests::cookie_commands_note_what_c_traces
                 if let Some(said) = said {
 --- new
                 if let Some(said) = said.filter(|_| false) {
+
+=== the cookie jar is renamed into place by names std copies
+file: crates/curl-core/src/save.rs
+witness: curl-sys-abi handle_tests::flushes_a_jar_named_long_without_copying_the_name
+features: debug-hooks
+--- old
+    let renamed = written.and_then(|()| Ok(fs::rename(&temp, &target)?));
+--- new
+    let renamed = written.and_then(|()| {
+        use std::os::unix::ffi::OsStrExt as _;
+        let (from, to) = (temp.to_bytes(), target.to_bytes());
+        Ok(std::fs::rename(std::ffi::OsStr::from_bytes(from), std::ffi::OsStr::from_bytes(to))?)
+    });
+
+=== the cookie jar's temporary name grows as it is built
+file: crates/curl-core/src/save.rs
+witness: curl-sys-abi handle_tests::flushes_a_jar_named_long_without_copying_the_name
+features: debug-hooks
+--- old
+    temp.try_reserve_exact(dir.len() + TEMP_NAME + b".tmp".len())
+--- new
+    temp.try_reserve_exact(dir.len())

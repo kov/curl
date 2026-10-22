@@ -44,17 +44,21 @@ pub(crate) fn replace(path: &[u8], text: &[u8]) -> Result<(), SaveError> {
         return Ok(());
     }
     drop(file);
+    let dir = dir_of(path);
     let mut temp = Vec::new();
-    temp.try_extend_from_slice(dir_of(path))?;
+    // One allocation, whatever the name's length.
+    temp.try_reserve_exact(dir.len() + TEMP_NAME + b".tmp".len())
+        .map_err(|_| SaveError::OutOfMemory)?;
+    temp.try_extend_from_slice(dir)?;
     let mut random = [0u8; TEMP_NAME];
     alphanumeric(&mut random)?;
     temp.try_extend_from_slice(&random)?;
     temp.try_extend_from_slice(b".tmp")?;
     let temp = c_path(&temp)?;
     let written = write_temp(&temp, &was, text);
-    let renamed = written.and_then(|()| Ok(std::fs::rename(as_path(&temp), as_path(&target))?));
+    let renamed = written.and_then(|()| Ok(fs::rename(&temp, &target)?));
     if renamed.is_err() {
-        let _ = std::fs::remove_file(as_path(&temp));
+        let _ = fs::remove(&temp);
     }
     renamed
 }
@@ -104,11 +108,6 @@ fn c_path(path: &[u8]) -> Result<std::ffi::CString, SaveError> {
     v.try_extend_from_slice(path)?;
     // A name with a zero byte in it names no file.
     std::ffi::CString::new(v).map_err(|_| SaveError::Write)
-}
-
-fn as_path(c: &CStr) -> &std::path::Path {
-    use std::os::unix::ffi::OsStrExt as _;
-    std::path::Path::new(std::ffi::OsStr::from_bytes(c.to_bytes()))
 }
 
 #[cfg(test)]

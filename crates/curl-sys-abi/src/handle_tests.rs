@@ -4386,3 +4386,45 @@ fn clearing_an_option_makes_no_group() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// `CURLOPT_COOKIELIST` "FLUSH" replaces a jar named long making the
+/// allocations it makes for one named short, as C copies no name: std's
+/// rename copied each name of 384 bytes or more, the jar's and the one it
+/// is written under first, with an allocation that cannot fail, which
+/// aborted a torture run.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn flushes_a_jar_named_long_without_copying_the_name() {
+    use curl_alloc::track::measure;
+    let dir = std::env::temp_dir().join(format!("curl-shim-long-jar-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let flush = |name: &str| {
+        let mut path = format!("{}/", dir.to_str().unwrap());
+        while path.len() + name.len() < 400 && name == "long" {
+            path.push_str("./");
+        }
+        path.push_str(name);
+        std::fs::write(&path, b"old").unwrap();
+        let jar = std::ffi::CString::new(path.as_str()).unwrap();
+        let c = curl_easy_init();
+        pointer(c, ffi::CURLOPT_COOKIEJAR, jar.as_ptr().cast_mut());
+        // A reload of no file starts the jar.
+        pointer(c, ffi::CURLOPT_COOKIEFILE, c"".as_ptr().cast_mut());
+        pointer(c, ffi::CURLOPT_COOKIELIST, c"RELOAD".as_ptr().cast_mut());
+        let cookie = c".a.com\tTRUE\t/\tFALSE\t0\tname\tvalue";
+        pointer(c, ffi::CURLOPT_COOKIELIST, cookie.as_ptr().cast_mut());
+        let (set, cost) =
+            measure(|| pointer(c, ffi::CURLOPT_COOKIELIST, c"FLUSH".as_ptr().cast_mut()));
+        assert_eq!(set, CURLE_OK);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\tname\tvalue"), "{name}: {written:?}");
+        // SAFETY: a live handle, not used again.
+        unsafe { curl_easy_cleanup(c) };
+        (path.len(), cost.allocations)
+    };
+    let (short_len, short) = flush("short");
+    let (long_len, long) = flush("long");
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(short_len < 384 && long_len >= 400);
+    assert_eq!(long, short, "a long name cost more allocations");
+}

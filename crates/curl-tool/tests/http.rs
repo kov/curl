@@ -494,3 +494,391 @@ fn saves_the_cookie_jar() {
     assert!(!run.stderr.contains("save cookies"), "{}", run.stderr);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `-b` strings are joined by `;`, and a blank unless the next starts
+/// with one; together they may be 8199 bytes at most.
+#[test]
+fn joins_the_cookies_given() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&[
+        "-sS",
+        "-b",
+        "a=1",
+        "-b",
+        "b=2",
+        "-b",
+        " c=3",
+        "-b",
+        "\tc=4",
+        &s.url(),
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(
+        request.contains("\r\nCookie: a=1; b=2; c=3;\tc=4\r\n"),
+        "{request}"
+    );
+    let most = format!("a={}", "x".repeat(8197));
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&["-sS", "-b", &most, &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    assert!(s.request().contains(&format!("\r\nCookie: {most}\r\n")));
+    let run = curl(&["-b", &format!("{most}x"), "http://127.0.0.1:1/"]);
+    assert_eq!(
+        (run.code, &run.stderr[..]),
+        (
+            100,
+            "Warning: skipped provided cookie, the cookie header would go over 8200 bytes\n\
+             curl: (100) A value or data field grew larger than allowed\n"
+        )
+    );
+}
+
+/// What `--retry` does with a download it resumes (`-C -`): what an
+/// attempt wrote is kept, and the rest asked for, when the response says
+/// a range may be asked for (`Accept-Ranges: bytes`) or answers a range
+/// asked for; otherwise it is thrown away and the whole asked for again.
+#[test]
+fn resumes_a_retried_download() {
+    let retry = [
+        "-sS",
+        "-C",
+        "-",
+        "--retry",
+        "1",
+        "--retry-all-errors",
+        "--retry-delay",
+        "0.01",
+    ];
+    let partial = |head: &str, body: &str| format!("{head}\r\n\r\n{body}").into_bytes();
+    let rest = partial(
+        "HTTP/1.1 206 Partial\r\nContent-Range: bytes 5-9/10\r\nContent-Length: 5",
+        "56789",
+    );
+    let whole = partial("HTTP/1.1 200 OK\r\nContent-Length: 10", "0123456789");
+    let cases = [
+        // The first response, and the file there before, if any.
+        (
+            "HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nContent-Length: 10",
+            "01234",
+            None,
+            Some("bytes=5-"),
+        ),
+        (
+            "HTTP/1.1 200 OK\r\nAccept-Ranges: none\r\nContent-Length: 10",
+            "01234",
+            None,
+            None,
+        ),
+        (
+            "HTTP/1.1 206 Partial\r\nContent-Range: bytes 2-9/10\r\nContent-Length: 8",
+            "234",
+            Some("01"),
+            Some("bytes=5-"),
+        ),
+        // A range not asked for is no range.
+        (
+            "HTTP/1.1 206 Partial\r\nContent-Range: bytes 0-9/10\r\nContent-Length: 10",
+            "01234",
+            None,
+            None,
+        ),
+    ];
+    let dir = scratch("resume");
+    for (i, (head, body, before, again)) in cases.into_iter().enumerate() {
+        let out = dir.join(format!("out{i}"));
+        if let Some(before) = before {
+            std::fs::write(&out, before).unwrap();
+        }
+        let second = match again {
+            Some(_) => rest.clone(),
+            None => whole.clone(),
+        };
+        let s = Server::script(vec![vec![partial(head, body)], vec![second]]);
+        let mut args = retry.to_vec();
+        args.extend(["-o", out.to_str().unwrap()]);
+        let url = s.url();
+        args.push(&url);
+        let run = curl(&args);
+        assert_eq!(
+            (run.code, &run.stderr[..]),
+            (0, "curl: (18) end of response with 5 bytes missing\n"),
+            "{head}"
+        );
+        assert_eq!(std::fs::read(&out).unwrap(), b"0123456789", "{head}");
+        let requests = s.request();
+        let ranges: Vec<_> = requests
+            .lines()
+            .filter_map(|l| l.strip_prefix("Range: "))
+            .collect();
+        let first = before.map(|b| format!("bytes={}-", b.len()));
+        let want: Vec<_> = first.as_deref().into_iter().chain(again).collect();
+        assert_eq!(ranges, want, "{head}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A response that says to try again waits as its `Retry-After:` says,
+/// over `--retry-delay`, unless that would go past `--retry-max-time`;
+/// without either, the first wait is a second.
+#[test]
+fn waits_as_the_server_says() {
+    let busy =
+        |after: &str| format!("HTTP/1.1 503 Busy\r\n{after}Content-Length: 0\r\n\r\n").into_bytes();
+    let fine = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec();
+    let waited = "Warning: Problem : HTTP error. Retrying in 1 second. 1 retry left.\n";
+    let s = Server::script(vec![vec![busy("Retry-After: 1\r\n")], vec![fine.clone()]]);
+    let run = curl(&[
+        "--no-progress-meter",
+        "--retry",
+        "1",
+        "--retry-delay",
+        "0.01",
+        &s.url(),
+    ]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (0, &b"ok\n"[..], waited)
+    );
+    let s = Server::script(vec![vec![busy("")], vec![fine]]);
+    let run = curl(&["--no-progress-meter", "--retry", "1", &s.url()]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (0, &b"ok\n"[..], waited)
+    );
+    let s = Server::script(vec![vec![busy("Retry-After: 2\r\n")]]);
+    let run = curl(&[
+        "--no-progress-meter",
+        "--retry",
+        "1",
+        "--retry-max-time",
+        "1",
+        "-w",
+        "%{http_code} %{num_retries}",
+        &s.url(),
+    ]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (
+            0,
+            &b"503 0"[..],
+            "Warning: The Retry-After: time would make this command line exceed the maximum \n\
+             Warning: allowed time for retries.\n"
+        )
+    );
+}
+
+/// `--fail-with-body` adds its failure only to a transfer that did not
+/// fail already, or failed unsaid (`-s`).
+#[test]
+fn fails_with_body_unless_failed_already() {
+    let too_big = b"HTTP/1.1 404 Nope\r\nContent-Length: 6\r\n\r\nabcdef";
+    for (quiet, code, said) in [
+        (None, 63, "curl: (63) Maximum file size exceeded\n"),
+        (Some("-sS"), 63, "curl: (63) Maximum file size exceeded\n"),
+        (Some("-s"), 22, ""),
+    ] {
+        let s = Server::new(too_big);
+        let url = s.url();
+        let mut args = vec![
+            "--no-progress-meter",
+            "--fail-with-body",
+            "--max-filesize",
+            "2",
+        ];
+        args.extend(quiet);
+        args.push(&url);
+        let run = curl(&args);
+        assert_eq!((run.code, &run.stderr[..]), (code, said), "{quiet:?}");
+    }
+}
+
+/// `--haproxy-protocol` starts the connection with a PROXY line, which
+/// `--haproxy-clientip` alone also sends, with its address.
+#[test]
+fn sends_a_proxy_protocol_line() {
+    for (args, from) in [
+        (&["--haproxy-protocol"][..], "127.0.0.1 127.0.0.1"),
+        (&["--haproxy-clientip", "10.1.2.3"], "10.1.2.3 10.1.2.3"),
+    ] {
+        let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let url = s.url();
+        let mut all = vec!["-sS"];
+        all.extend_from_slice(args);
+        all.push(&url);
+        let run = curl(&all);
+        assert_eq!((run.code, &run.stderr[..]), (0, ""));
+        let request = s.request();
+        assert!(
+            request.starts_with(&format!("PROXY TCP4 {from} ")) && request.contains("\r\nGET / "),
+            "{request}"
+        );
+    }
+}
+
+/// `-i` shows a tunnel's CONNECT response before the response through it,
+/// unless `--suppress-connect-headers`.
+#[test]
+fn shows_the_connect_response_unless_suppressed() {
+    let tunnel = || {
+        Server::script(vec![vec![
+            b"HTTP/1.1 200 Connection established\r\nX-P: 1\r\n\r\n".to_vec(),
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n".to_vec(),
+        ]])
+    };
+    let through = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
+    for (suppress, shown) in [
+        (
+            false,
+            &b"HTTP/1.1 200 Connection established\r\nX-P: 1\r\n\r\n"[..],
+        ),
+        (true, b""),
+    ] {
+        let s = tunnel();
+        let proxy = s.url();
+        let mut args = vec!["-sS", "-i", "-p", "-x", &proxy];
+        if suppress {
+            args.push("--suppress-connect-headers");
+        }
+        args.push("http://target.invalid/");
+        let run = curl(&args);
+        assert_eq!((run.code, &run.stderr[..]), (0, ""));
+        assert_eq!(run.stdout, [shown, through].concat(), "{suppress}");
+        assert!(
+            s.request()
+                .starts_with("CONNECT target.invalid:80 HTTP/1.1\r\n")
+        );
+    }
+}
+
+/// `--netrc-file` alone reads its file for the login; `-u` sends one,
+/// basic.
+#[test]
+fn logs_in_as_told() {
+    let dir = scratch("netrc");
+    let netrc = dir.join("netrc");
+    std::fs::write(&netrc, "machine 127.0.0.1 login me password pw\n").unwrap();
+    for (args, auth) in [
+        (vec!["--netrc-file", netrc.to_str().unwrap()], "bWU6cHc="),
+        (vec!["-u", "a:b"], "YTpi"),
+    ] {
+        let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let url = s.url();
+        let mut all = vec!["-sS"];
+        all.extend(args);
+        all.push(&url);
+        let run = curl(&all);
+        assert_eq!((run.code, &run.stderr[..]), (0, ""));
+        let request = s.request();
+        assert!(
+            request.contains(&format!("\r\nAuthorization: Basic {auth}\r\n")),
+            "{request}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `--resolve` gives a name its address.
+#[test]
+fn resolves_as_told() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n");
+    let to = format!("nosuch.invalid:{}:127.0.0.1", s.port);
+    let url = format!("http://nosuch.invalid:{}/", s.port);
+    let run = curl(&["-sS", "--resolve", &to, &url]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (0, &b"ok\n"[..], "")
+    );
+    assert!(s.request().contains("\r\nHost: nosuch.invalid:PORT\r\n"));
+}
+
+/// `--compressed` asks for the codings this build undoes, and undoes
+/// them.
+#[test]
+fn undoes_a_compressed_response() {
+    // "hello\n", gzipped.
+    let gzipped = [
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xcb, 0x48, 0xcd, 0xc9, 0xc9,
+        0xe7, 0x02, 0x00, 0x20, 0x30, 0x3a, 0x36, 0x06, 0x00, 0x00, 0x00,
+    ];
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+        gzipped.len()
+    );
+    let s = Server::script(vec![vec![[head.as_bytes(), &gzipped].concat()]]);
+    let run = curl(&["-sS", "--compressed", &s.url()]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (0, &b"hello\n"[..], "")
+    );
+    assert!(s.request().contains("\r\nAccept-Encoding: "));
+}
+
+/// `-J` names the file `-O` saves as the response's
+/// `Content-Disposition:` says; a name `-o` gives is kept, and `-O`
+/// alone takes the URL's.
+#[test]
+fn names_a_remote_file_as_the_server_says() {
+    let named = b"HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename= \"cd-name\"\r\n\
+                  Content-Length: 3\r\n\r\nok\n";
+    let dir = scratch("remote-name");
+    let at = dir.to_str().unwrap();
+    let given = dir.join("given");
+    for (args, file) in [
+        (vec!["-O", "-J", "--output-dir", at], "cd-name"),
+        (vec!["-J", "-o", given.to_str().unwrap()], "given"),
+        (vec!["-O", "--output-dir", at], "url-name"),
+    ] {
+        let s = Server::new(named);
+        let url = format!("{}url-name", s.url());
+        let mut all = vec!["-sS"];
+        all.extend(&args);
+        all.push(&url);
+        let run = curl(&all);
+        assert_eq!((run.code, &run.stderr[..]), (0, ""), "{args:?}");
+        let files: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(files, [file], "{args:?}");
+        assert_eq!(std::fs::read(dir.join(file)).unwrap(), b"ok\n");
+        std::fs::remove_file(dir.join(file)).unwrap();
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A body sent after `Expect: 100-continue` waits a second for the 100
+/// that does not come, or as long as `--expect100-timeout` says.
+#[test]
+fn waits_for_a_continue_as_long_as_told() {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    for (wait, at_least, below) in [(None, 900, 3000), (Some("0.1"), 0, 700)] {
+        let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let url = s.url();
+        let mut args = vec!["-q", "-sS", "-T", "-"];
+        if let Some(wait) = wait {
+            args.extend(["--expect100-timeout", wait]);
+        }
+        args.push(&url);
+        let started = std::time::Instant::now();
+        let mut child = Command::new(&tool)
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"hello").unwrap();
+        let out = child.wait_with_output().unwrap();
+        let took = started.elapsed().as_millis();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!((at_least..below).contains(&took), "{wait:?}: {took} ms");
+        assert!(s.request().contains("\r\nExpect: 100-continue\r\n"));
+    }
+}

@@ -774,3 +774,163 @@ fn warns_of_an_empty_format_file() {
     assert_eq!((r.code, &r.stdout[..]), (0, &b"x"[..]));
     assert_eq!(r.stderr, "Warning: Failed to read <stdin>\n");
 }
+
+/// Without arguments the tool only says how to get help; with some but
+/// no URL, it says there is none first.
+#[test]
+fn says_how_to_get_help_without_a_url() {
+    let s = Scratch::new("nourl");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    // No configuration file is found to give one.
+    let home = s.path("");
+    // The hint names the manual where the build has one.
+    for (args, said) in [(&[][..], ""), (&["-q"], "curl: (2) no URL specified\n")] {
+        let out = Command::new(&tool)
+            .args(args)
+            .current_dir(&s.0)
+            .env("HOME", &home)
+            .env("CURL_HOME", &home)
+            .env("XDG_CONFIG_HOME", &home)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let hint = stderr
+            .strip_prefix(said)
+            .unwrap_or_else(|| panic!("{args:?}: {stderr}"));
+        assert!(
+            hint.starts_with("curl: try 'curl --help' ")
+                && hint.ends_with(" for more information\n")
+                && hint.matches('\n').count() == 1,
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+/// `%{urlnum}` counts the URLs of the command line from 0.
+#[test]
+fn numbers_the_urls() {
+    let s = Scratch::new("urlnum");
+    s.write("f", b"x");
+    let url = s.url("f");
+    let w = "%{urlnum}\n";
+    let r = curl(
+        &s,
+        &[
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            w,
+            &url,
+            "-o",
+            "/dev/null",
+            &url,
+            "-o",
+            "/dev/null",
+            &url,
+        ],
+    );
+    assert_eq!((r.code, &r.stdout[..]), (0, &b"0\n1\n2\n"[..]));
+}
+
+/// With `--globoff` an output name is not read for patterns, so a name
+/// with `#<name>` in it is taken as it is.
+#[test]
+fn takes_an_output_name_as_it_is_without_globbing() {
+    let s = Scratch::new("globoff-name");
+    s.write("f", b"x");
+    let r = curl(&s, &["-s", "-g", &s.url("f"), "-o", "out#<a>"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(s.read("out#<a>"), b"x");
+    let r = curl(&s, &["-s", &s.url("f"), "-o", "out2#<a>"]);
+    assert_eq!(r.code, 43);
+}
+
+/// `--create-dirs` makes the directories of the `-D` file too.
+#[test]
+fn creates_the_header_file_directories() {
+    let s = Scratch::new("dump-dirs");
+    s.write("f", b"x");
+    let r = curl(
+        &s,
+        &[
+            "-s",
+            "--create-dirs",
+            "-D",
+            "d/sub/h",
+            "-o",
+            "/dev/null",
+            &s.url("f"),
+        ],
+    );
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(s.exists("d/sub/h"));
+}
+
+/// An upload to a URL whose path ends in `/` is saved under the file's
+/// name.
+#[test]
+fn uploads_to_a_directory_under_the_file_s_name() {
+    let s = Scratch::new("upload-dir");
+    s.write("src", b"data");
+    std::fs::create_dir(s.0.join("up")).unwrap();
+    let r = curl(&s, &["-s", "-T", "src", &s.url("up/")]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(s.read("up/src"), b"data");
+}
+
+/// `-O` takes what the path has after its last slash, and after a
+/// backslash after that, trailing ones left out; a path without a name
+/// is `curl_response`. A URL without a scheme has one guessed.
+#[test]
+fn names_a_remote_file_after_the_url() {
+    let s = Scratch::new("remote-names");
+    for (url, name) in [
+        ("http://127.0.0.1:1/a/b//", "b"),
+        ("http://127.0.0.1:1/a\\b\\c", "c"),
+        ("http://127.0.0.1:1/a/b\\c", "c"),
+        ("http://127.0.0.1:1/x\\/z", "z"),
+        ("http://127.0.0.1:1/a\\", "a"),
+        ("http://127.0.0.1:1/", "curl_response"),
+        ("127.0.0.1:1/name", "name"),
+    ] {
+        let r = curl(
+            &s,
+            &["-s", "-O", url, "-w", "%{filename_effective}|%{exitcode}"],
+        );
+        assert_eq!(
+            (r.code, String::from_utf8(r.stdout).unwrap()),
+            (7, format!("{name}|7")),
+            "{url}"
+        );
+    }
+}
+
+/// Data is resumed only from a position past the start.
+#[test]
+fn data_from_the_start_is_no_resume() {
+    let s = Scratch::new("data-resume");
+    let r = curl(&s, &["-s", "-d", "x", "-C", "0", "http://127.0.0.1:1/"]);
+    assert_eq!(r.code, 7);
+}
+
+/// `--stderr` sends what goes to standard error to a file, or to
+/// standard output for `-`.
+#[test]
+fn sends_standard_error_where_told() {
+    let s = Scratch::new("stderr");
+    let failed = "curl: (37) Could not open file ";
+    let r = curl(&s, &["-sS", "--stderr", "err", &s.url("missing")]);
+    assert_eq!((r.code, &r.stderr[..]), (37, ""));
+    assert!(
+        String::from_utf8(s.read("err"))
+            .unwrap()
+            .starts_with(failed)
+    );
+    let r = curl(&s, &["-sS", "--stderr", "-", &s.url("missing")]);
+    assert_eq!((r.code, &r.stderr[..]), (37, ""));
+    assert!(String::from_utf8(r.stdout).unwrap().starts_with(failed));
+    assert!(!s.exists("-"));
+}

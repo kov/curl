@@ -457,6 +457,18 @@ cargo-mutants run on the milestone's diff.
     29's early close (`http_perhapsrewind`); a test of a server answering 401 after a few KB,
     and `perf.py` before and after.
 
+35. **share: safe across threads.** **To do**, before this milestone closes; approved. C's
+    `CURLSH` may be used from several threads, guarded by the application's lock functions;
+    ours is `TryRc` and `RefCell`, so that is a data race. The share becomes `Send + Sync`
+    with its own locks, one per kind of data, so safety never rests on the application's:
+    those are still called where and as C calls them, with no internal lock held across them
+    or across any callback. What it holds becomes `Send` (connections and sockets, `Net`, the
+    DNS cache, the jar), and so does `Easy`, held to it by a compile-time assertion; a
+    fallible `TryArc` joins `curl-alloc`; DESIGN.md's threading decision changes to say the
+    share is `Sync` and the multi is not. Asking a share for only some kinds (DNS without
+    connections) comes with it, as C does. Tested by two threads through the C ABI with no
+    lock functions, under Miri where it reaches.
+
 Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
 generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting
 connect and DO states and connection-scoped protocol state, with the first stage-6 protocol or

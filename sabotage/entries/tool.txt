@@ -939,3 +939,19 @@ witness: curl-tool goes_to_the_ipfs_gateway
     let http = proto == UrlProto::Http;
 --- new
     let http = proto != UrlProto::Other;
+
+=== --continue-at after --range is taken
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::rejects_like_c
+--- old
+            if op.range.is_some() {
+                return Err(exclusive_with_resume(msgs, b"--range"));
+            }
+--- new
+
+=== a lone number is a range without its dash
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::a_range_is_taken_as_c_takes_it
+--- old
+                text.try_push(b'-').map_err(|_| ParamError::NoMem)?;
+--- new

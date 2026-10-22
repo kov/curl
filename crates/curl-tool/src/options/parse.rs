@@ -645,6 +645,25 @@ mod tests {
         }
     }
 
+    /// `--range` is taken as given, but for a lone number, which gets a
+    /// dash and loses its leading zeros, as C prints the number it read.
+    #[test]
+    fn a_range_is_taken_as_c_takes_it() {
+        let range = |r: &str| line(&["x", "-r", r]).operations[0].range.clone();
+        for (given, taken) in [
+            ("1-2", "1-2"),
+            ("-500", "-500"),
+            ("0-10,12-15", "0-10,12-15"),
+            ("1-a", "1-a"),
+            ("007", "7-"),
+            ("1x-5", "1-"),
+            ("abc", "abc"),
+            ("99999999999999999999", "99999999999999999999"),
+        ] {
+            assert_eq!(range(given), Some(taken.as_bytes().to_vec()), "{given}");
+        }
+    }
+
     /// The cases checked against `build/c/src/curl`: the C tool rejects
     /// each with the same error.
     #[test]
@@ -675,6 +694,9 @@ mod tests {
             (&["x", "--remove-on-error", "-C", "-"], BadUse),
             (&["x", "-C", "-", "--remove-on-error"], BadUse),
             (&["x", "-C", "-1"], BadNumeric),
+            (&["x", "-r", "1-2", "-C", "3"], BadUse),
+            (&["x", "-C", "3", "-r", "1-2"], BadUse),
+            (&["x", "-r", ""], BlankString),
             (&["x", "--etag-save", ""], BlankString),
             (&["x", "y", "--etag-save", "e"], BadUse),
             (&["x", "--etag-compare", "e", "--url", "y"], BadUse),

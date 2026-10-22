@@ -106,6 +106,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) nodes: Vec<Node<'a>>,
     /// `--continue-at`.
     pub(crate) resume: Option<Resume>,
+    /// `--range`, as given, or with a dash added after a lone number.
+    pub(crate) range: Option<Vec<u8>>,
     /// `--clobber` and `--no-clobber`.
     pub(crate) clobber: Clobber,
     /// `--remove-on-error`.
@@ -509,6 +511,67 @@ fn exclusive_with_resume(msgs: &Messages, other: &[u8]) -> ParamError {
     ParamError::BadUse
 }
 
+/// `--range`'s value (`parse_range`): a lone number gets the dash a
+/// range needs; any other is taken as given, with a warning for a
+/// character that is no digit, dash or comma after a leading `N-`.
+fn range(msgs: &Messages, given: &[u8]) -> Result<Vec<u8>, ParamError> {
+    let copy = |s: &[u8]| {
+        let mut v = Vec::new();
+        v.try_extend_from_slice(s)
+            .map(|()| v)
+            .map_err(|_| ParamError::NoMem)
+    };
+    let digits = given.iter().take_while(|b| b.is_ascii_digit()).count();
+    // The number as `curlx_str_number` reads it: one past what an offset
+    // holds is none, and the text is checked from its start.
+    let number = (digits > 0)
+        .then(|| {
+            std::str::from_utf8(&given[..digits])
+                .ok()?
+                .parse::<i64>()
+                .ok()
+        })
+        .flatten();
+    let checked = match number {
+        Some(n) => match given[digits..].strip_prefix(b"-") {
+            Some(rest) => rest,
+            None => {
+                msgs.warn(&[
+                    b"A specified range MUST include at least one dash (-). Appending one for you",
+                ]);
+                // As C prints it: without the leading zeros given.
+                let mut digits = [0u8; 20];
+                let mut at = digits.len();
+                let mut n = n;
+                loop {
+                    at -= 1;
+                    digits[at] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let mut text = copy(&digits[at..])?;
+                text.try_push(b'-').map_err(|_| ParamError::NoMem)?;
+                return Ok(text);
+            }
+        },
+        None => given,
+    };
+    if checked
+        .iter()
+        .any(|&b| !b.is_ascii_digit() && b != b'-' && b != b',')
+    {
+        msgs.warn(&[
+            b"Invalid character is found in given range. A specified range MUST have only digits in 'start'-'stop'. The server's response to this request is uncertain.",
+        ]);
+    }
+    if given.is_empty() {
+        return Err(ParamError::BlankString);
+    }
+    copy(given)
+}
+
 /// The error of an etag option on more than one URL.
 fn etag_single_url(msgs: &Messages) -> ParamError {
     msgs.error(&[b"The etag options only work on a single URL"]);
@@ -681,7 +744,9 @@ pub(crate) fn apply<'a>(
         }
         Opt::ContinueAt => {
             let op = line.current();
-            // `--range` is not implemented, so it is never set here.
+            if op.range.is_some() {
+                return Err(exclusive_with_resume(msgs, b"--range"));
+            }
             if op.remove_on_error {
                 return Err(exclusive_with_resume(msgs, b"--remove-on-error"));
             }
@@ -692,6 +757,13 @@ pub(crate) fn apply<'a>(
                 b"-" => Resume::FromOutput,
                 at => Resume::At(number::offset(at)?),
             });
+        }
+        Opt::Range => {
+            if line.current().resume.is_some() {
+                return Err(exclusive_with_resume(msgs, b"--range"));
+            }
+            let range = range(msgs, value.text())?;
+            line.current().range = Some(range);
         }
         Opt::RemoveOnError => {
             let on = value.toggle();
@@ -1261,7 +1333,6 @@ pub(crate) fn apply<'a>(
         | Opt::Pubkey
         | Opt::Quote
         | Opt::RandomFile
-        | Opt::Range
         | Opt::Rate
         | Opt::RetryConnrefused
         | Opt::SaslAuthzid

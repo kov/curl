@@ -17,7 +17,7 @@ use crate::error::ErrorKind;
 use crate::handler::HeaderOrigin;
 use crate::multi::Host;
 use crate::multi::state::{StepCx, url_error};
-use crate::options::{Method, Resume};
+use crate::options::{Method, Ranged, Resume};
 use crate::progress;
 use crate::text::Text;
 use crate::trace;
@@ -120,7 +120,9 @@ impl Request {
         // A file the condition rules out is not read, nor are its headers
         // made, unless a range is asked for (`file_do`).
         let options = cx.easy().options();
-        if let Some(condition) = options.time_condition.filter(|_| options.resume.is_none())
+        if let Some(condition) = options
+            .time_condition
+            .filter(|_| options.ranged().is_none())
             && let Err(unmet) = condition.met_by(meta.mtime())
         {
             trace::info(cx, format_args!("{unmet}"));
@@ -142,18 +144,12 @@ impl Request {
         let mut expected = if is_dir { -1 } else { st_size };
         self.pipeline
             .announce_size(cx, u64::try_from(expected).ok());
-        let options = cx.easy().options();
-        if options.method == Method::Head {
+        if cx.easy().options().method == Method::Head {
             return Ok(());
         }
-        // C makes the resume point a range and reads it back
-        // (`setup_range`, `Curl_range`): "N-" from N on, and C's -1,
-        // "-1-", the last byte.
-        let (mut resume, max) = match options.resume {
-            None => (0, None),
-            Some(Resume::At(n)) => (i64::try_from(n.get()).unwrap_or(i64::MAX), None),
-            Some(Resume::AtEnd) => (-1, Some(1)),
-        };
+        let Span {
+            mut resume, max, ..
+        } = span_of(cx)?;
         if resume < 0 {
             resume += st_size;
         }
@@ -170,6 +166,12 @@ impl Request {
         }
         if let Some(max) = max {
             expected = max;
+            // No more is delivered (`maxdownload`): a file's reads stop
+            // there, a directory's listing is cut.
+            self.pipeline.expect(Expect {
+                max: u64::try_from(max).ok(),
+                ..Expect::default()
+            });
         }
         let known = u64::try_from(expected).ok().filter(|&n| n > 0);
         if known.is_some() {
@@ -181,13 +183,16 @@ impl Request {
         if resume != 0 && is_dir {
             return Err(ErrorKind::BadDownloadResume);
         }
-        // The last byte of an empty file is at -1, where C's seek fails
-        // and returns the -1 it is compared with: it reads from the start.
+        // Before the start, C's seek fails and returns -1, which only an
+        // offset of -1 is: the last byte of an empty file, read from the
+        // start. Any other fails.
         let file = self.file.as_mut().expect("opened to read");
-        if let Ok(at) = u64::try_from(resume)
-            && at > 0
-            && file.seek(SeekFrom::Start(at)).ok() != Some(at)
-        {
+        let sought = match u64::try_from(resume) {
+            Ok(0) => true,
+            Ok(at) => file.seek(SeekFrom::Start(at)).ok() == Some(at),
+            Err(_) => resume == -1,
+        };
+        if !sought {
             return Err(ErrorKind::BadDownloadResume);
         }
         if is_dir {
@@ -202,37 +207,36 @@ impl Request {
     /// headers, its size unknown, and with no time condition, as nothing
     /// is known to check it against; a resume needs the size, and fails.
     fn download_unstated<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-        let options = cx.easy().options();
-        match options.resume {
-            None => {}
-            Some(Resume::AtEnd) => {
-                let kind = ErrorKind::ReadError;
-                return Err(trace::fail(
-                    cx,
-                    kind,
-                    format_args!("cannot get the size of file."),
-                ));
-            }
-            // Past the size of -1 C has for it.
-            Some(Resume::At(_)) => {
-                let kind = ErrorKind::BadDownloadResume;
-                return Err(trace::fail(
-                    cx,
-                    kind,
-                    format_args!("failed to resume file:// transfer"),
-                ));
-            }
+        let Span { resume, max, .. } = span_of(cx)?;
+        if resume < 0 {
+            let kind = ErrorKind::ReadError;
+            return Err(trace::fail(
+                cx,
+                kind,
+                format_args!("cannot get the size of file."),
+            ));
+        }
+        // Past the size of -1 C has for it.
+        if resume > 0 {
+            let kind = ErrorKind::BadDownloadResume;
+            return Err(trace::fail(
+                cx,
+                kind,
+                format_args!("failed to resume file:// transfer"),
+            ));
         }
         // C returns before the body for a head request only after the
         // headers, which it has not made: the body is read, and its first
-        // bytes, wanted by none and after no head, are a weird reply.
-        if options.method == Method::Head {
-            self.pipeline.expect(Expect {
-                no_body: true,
-                no_head: true,
-                ..Expect::default()
-            });
-        }
+        // bytes, wanted by none and after no head, are a weird reply. It
+        // reads on, the size unknown, and delivers no more than the range
+        // asks for (`maxdownload`).
+        let head = cx.easy().options().method == Method::Head;
+        self.pipeline.expect(Expect {
+            no_body: head,
+            no_head: head,
+            max: max.and_then(|n| u64::try_from(n).ok()),
+            ..Expect::default()
+        });
         self.read_body(cx, None)?;
         progress::update(cx, false)
     }
@@ -356,6 +360,128 @@ impl Request {
         }
         progress::update(cx, false)
     }
+}
+
+/// Where a download starts and how much of it is asked for, in C's
+/// signed offsets: a start below zero counts back from the end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Span {
+    resume: i64,
+    max: Option<i64>,
+    /// The two numbers as read, 0 for one missing.
+    from: i64,
+    to: i64,
+}
+
+impl Span {
+    /// What the debug build traces of it (`Curl_range`'s `DEBUGF`).
+    #[cfg(feature = "debug-hooks")]
+    fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
+        let Span {
+            resume,
+            max,
+            from,
+            to,
+        } = self;
+        match max {
+            None => trace::info(cx, format_args!("RANGE {from} to end of file")),
+            Some(_) if resume < 0 => trace::info(cx, format_args!("RANGE the last {to} bytes")),
+            Some(max) => trace::info(cx, format_args!("RANGE from {from} getting {max} bytes")),
+        }
+        let max = max.unwrap_or(-1);
+        trace::info(
+            cx,
+            format_args!("range-download from {from} to {to}, totally {max} bytes"),
+        );
+    }
+}
+
+/// The span of the range asked for, if one is (`Curl_range`): `X-`, from X
+/// to the end; `-Y`, the last Y bytes; `X-Y`, from X to Y. Whatever
+/// follows the second number is not read. C makes a resume point a range
+/// first (`setup_range`): N from N on, and its -1 the last byte.
+fn span(ranged: Option<Ranged<'_>>) -> Result<Option<Span>, ErrorKind> {
+    let range: &[u8] = match ranged {
+        None => return Ok(None),
+        // `N-`, read back as N.
+        Some(Ranged::Resume(Resume::At(from))) => {
+            let from = i64::try_from(from.get()).unwrap_or(i64::MAX);
+            return Ok(Some(Span {
+                resume: from,
+                max: None,
+                from,
+                to: 0,
+            }));
+        }
+        Some(Ranged::Resume(Resume::AtEnd)) => b"-1-",
+        Some(Ranged::Given(given)) => given,
+    };
+    let (from, rest) = match number(range) {
+        Some((n, rest)) => (Some(n), rest),
+        None => (None, range),
+    };
+    let Some(rest) = rest.strip_prefix(b"-") else {
+        return Err(ErrorKind::RangeError);
+    };
+    let span = match (from, number(rest)) {
+        // No first number and no second, `-`, is from 0 on.
+        (from, None) => Span {
+            resume: from.unwrap_or(0),
+            max: None,
+            from: from.unwrap_or(0),
+            to: 0,
+        },
+        (None, Some((0, _))) => return Err(ErrorKind::RangeError),
+        (None, Some((to, _))) => Span {
+            resume: -to,
+            max: Some(to),
+            from: 0,
+            to,
+        },
+        (Some(from), Some((to, _))) => {
+            if from > to || to - from == i64::MAX {
+                return Err(ErrorKind::RangeError);
+            }
+            Span {
+                resume: from,
+                max: Some(to - from + 1),
+                from,
+                to,
+            }
+        }
+    };
+    Ok(Some(span))
+}
+
+/// The span of the range asked for, traced as the debug build traces it;
+/// none, the whole file.
+fn span_of<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Span, ErrorKind> {
+    let span = span(cx.easy().options().ranged())?;
+    #[cfg(feature = "debug-hooks")]
+    if let Some(span) = span {
+        span.trace(cx);
+    }
+    Ok(span.unwrap_or(Span {
+        resume: 0,
+        max: None,
+        from: 0,
+        to: 0,
+    }))
+}
+
+/// A number at the start of `s` and what follows it, as
+/// `curlx_str_number` reads one: digits, and none past what an offset
+/// holds.
+fn number(s: &[u8]) -> Option<(i64, &[u8])> {
+    let len = s.iter().take_while(|b| b.is_ascii_digit()).count();
+    if len == 0 {
+        return None;
+    }
+    let mut n: i64 = 0;
+    for &d in &s[..len] {
+        n = n.checked_mul(10)?.checked_add(i64::from(d - b'0'))?;
+    }
+    Some((n, &s[len..]))
 }
 
 /// The failure a test has the next read meet, if any.

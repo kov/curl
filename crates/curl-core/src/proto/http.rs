@@ -15,7 +15,7 @@ use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
-use crate::options::{Follow, Http, HttpVersion, Method, Resume, UploadSource};
+use crate::options::{Follow, Http, HttpVersion, Method, Ranged, Resume, UploadSource};
 use crate::report::{ResponseVersion, Timer};
 use crate::time::Instant;
 use crate::trace;
@@ -25,7 +25,7 @@ use crate::url::{GetOptions, Part, SetOptions, Url};
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing, Left, Unsent};
 use super::http1::request::{
-    self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RequestHead,
+    self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
 };
 use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
@@ -691,6 +691,14 @@ impl Request {
             // C's -1, which for a download names no range a server knows.
             Some(Resume::AtEnd) => return Err(ErrorKind::NotBuiltIn),
         };
+        // A download asks for its range; an upload, which cannot resume,
+        // says which range of the resource its body is (`http_range`).
+        let range = match (options.ranged(), body) {
+            (None, _) => None,
+            (Some(ranged), None) => Some(RangeLine::Get(ranged)),
+            (Some(Ranged::Given(range)), Some(_)) => Some(RangeLine::Upload { range, total: size }),
+            (Some(Ranged::Resume(_)), Some(_)) => unreachable!("an upload does not resume"),
+        };
         // The time condition's header, if the application sends none of
         // its own; a time C's `struct tm` cannot hold fails the request
         // all the same (`Curl_add_timecondition`).
@@ -745,7 +753,7 @@ impl Request {
             referer: cx.easy().report().referer(),
             proxy_authorization,
             authorization,
-            range_from: resume_from,
+            range,
             content,
             chunked: chunked && asked.is_none(),
             probe,
@@ -785,7 +793,9 @@ impl Request {
                 follow: http.follow != Follow::No,
                 auth: auth_asked,
                 http_proxy,
-                time_condition: options.time_condition.filter(|_| options.resume.is_none()),
+                time_condition: options
+                    .time_condition
+                    .filter(|_| options.ranged().is_none()),
                 forwarded,
             },
         };

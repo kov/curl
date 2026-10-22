@@ -828,3 +828,148 @@ fn a_file_the_time_condition_rules_out_is_not_read() {
     assert_eq!(seen.body(), b"llo");
     assert!(!unmet);
 }
+
+/// A range is read as `Curl_range` reads it: `X-`, `-Y` and `X-Y`, a
+/// number past an offset's none, what follows the second number left
+/// unread; `-0`, a start past the end and one with no dash after it are
+/// errors. A resume point is the range `N-`, C's -1 `-1-`.
+#[test]
+fn a_range_is_read_as_c_reads_it() {
+    use super::{Span, span};
+    use crate::options::Ranged;
+    let of = |r: &[u8]| span(Some(Ranged::Given(r))).map(|s| s.map(|s| (s.resume, s.max)));
+    assert_eq!(of(b"3-"), Ok(Some((3, None))));
+    assert_eq!(of(b"-"), Ok(Some((0, None))));
+    assert_eq!(of(b"-9"), Ok(Some((-9, Some(9)))));
+    assert_eq!(of(b"1-4"), Ok(Some((1, Some(4)))));
+    assert_eq!(of(b"2-3,5-6"), Ok(Some((2, Some(2)))));
+    assert_eq!(of(b"3-a"), Ok(Some((3, None))));
+    assert_eq!(of(b"-5-"), Ok(Some((-5, Some(5)))));
+    assert_eq!(of(b"4-4"), Ok(Some((4, Some(1)))));
+    assert_eq!(of(b"1-9223372036854775807"), Ok(Some((1, Some(i64::MAX)))));
+    assert_eq!(of(b"1-99999999999999999999"), Ok(Some((1, None))));
+    assert_eq!(of(b"-99999999999999999999"), Ok(Some((0, None))));
+    for bad in [
+        &b"-0"[..],
+        b"5-2",
+        b"abc",
+        b"",
+        b"3",
+        b"99999999999999999999-",
+        b"0-9223372036854775807",
+    ] {
+        assert_eq!(of(bad), Err(ErrorKind::RangeError), "{bad:?}");
+    }
+    assert_eq!(span(None), Ok(None));
+    let resumed = |r| span(Some(Ranged::Resume(r))).unwrap().unwrap();
+    assert_eq!(
+        resumed(at(7)),
+        Span {
+            resume: 7,
+            max: None,
+            from: 7,
+            to: 0
+        }
+    );
+    assert_eq!(
+        resumed(Resume::AtEnd),
+        Span {
+            resume: -1,
+            max: Some(1),
+            from: 0,
+            to: 1
+        }
+    );
+}
+
+fn ranged(s: &Scratch, name: &str, range: &[u8]) -> (Result<(), ErrorKind>, Seen, Easy) {
+    let (mut e, seen) = easy(&s.url(name));
+    e.options_mut().range = Some(range.to_vec());
+    let (r, e) = run(e);
+    (r, seen, e)
+}
+
+/// A download delivers the range asked for, its size announced as the
+/// range's however much of it the file has; the last bytes past the
+/// start, a start past the end and a bad range fail after the headers.
+#[test]
+fn a_download_delivers_its_range() {
+    let s = Scratch::new("range");
+    s.file("f", b"1234567890\n", Y2K_NOON);
+    for (range, body, size) in [
+        (&b"1-4"[..], &b"2345"[..], Some(4)),
+        (b"-3", b"90\n", Some(3)),
+        (b"8-", b"90\n", Some(3)),
+        (b"0-99", b"1234567890\n", Some(100)),
+        (b"-1", b"\n", Some(1)),
+    ] {
+        let (r, seen, e) = ranged(&s, "f", range);
+        assert_eq!(r, Ok(()), "{range:?}");
+        assert_eq!(seen.body(), body, "{range:?}");
+        assert_eq!(e.report().sizes().download_expected(), size, "{range:?}");
+    }
+    for (range, error) in [
+        (&b"-100"[..], ErrorKind::BadDownloadResume),
+        (b"20-30", ErrorKind::BadDownloadResume),
+        (b"-0", ErrorKind::RangeError),
+        (b"5-2", ErrorKind::RangeError),
+    ] {
+        let (r, seen, _) = ranged(&s, "f", range);
+        assert_eq!(r, Err(error), "{range:?}");
+        assert_eq!(seen.headers().len(), 4, "{range:?}");
+        assert_eq!(seen.body(), b"", "{range:?}");
+    }
+    // A head request is the headers, the range not read.
+    let (mut e, seen) = easy(&s.url("f"));
+    e.options_mut().range = Some(b"-0".to_vec());
+    e.options_mut().method = Method::Head;
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(seen.headers().len(), 4);
+}
+
+/// A directory's listing is cut at the range's size; any start in it
+/// fails.
+#[test]
+fn a_directory_listing_is_cut_at_its_range() {
+    let s = Scratch::new("dirrange");
+    std::fs::create_dir(s.0.join("d")).unwrap();
+    std::fs::write(s.0.join("d/abcdef"), b"").unwrap();
+    let (r, seen, _) = ranged(&s, "d/", b"0-3");
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.body(), b"abcd");
+    let (r, _, _) = ranged(&s, "d/", b"1-3");
+    assert_eq!(r, Err(ErrorKind::BadDownloadResume));
+}
+
+/// A file that cannot be stat'ed delivers no more than a range from its
+/// start; the last bytes need its size, and any other start fails.
+#[test]
+fn a_file_that_cannot_be_stated_delivers_a_range_from_its_start() {
+    let s = Scratch::new("unstatedrange");
+    s.file("f", b"hello", Y2K_NOON);
+    let range = |r: &'static [u8]| move |e: &mut Easy| e.options_mut().range = Some(r.to_vec());
+    let (r, seen, _) = unstated(&s, range(b"0-2"));
+    assert_eq!((r, seen.body()), (Ok(()), b"hel".to_vec()));
+    let (r, seen, _) = unstated(&s, range(b"-2"));
+    assert_eq!((r, seen.body()), (Err(ErrorKind::ReadError), Vec::new()));
+    let (r, _, _) = unstated(&s, range(b"1-2"));
+    assert_eq!(r, Err(ErrorKind::BadDownloadResume));
+}
+
+/// With a range asked for, a time condition is not checked.
+#[test]
+fn a_range_reads_past_a_time_condition() {
+    use crate::options::{Condition, TimeCondition};
+    let s = Scratch::new("rangecond");
+    s.file("f", b"hello", Y2K_NOON);
+    let (mut e, seen) = easy(&s.url("f"));
+    e.options_mut().range = Some(b"1-".to_vec());
+    e.options_mut().time_condition = Some(TimeCondition {
+        when: Condition::ModifiedSince,
+        time: Y2K_NOON as i64 + 1,
+    });
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(seen.body(), b"ello");
+    assert!(!e.report().condition_unmet());
+}

@@ -559,6 +559,10 @@ fn apply(
         (ffi::CURLOPT_MAXFILESIZE_LARGE, Off(n)) => options.limits.max_filesize = max_filesize(n)?,
         (ffi::CURLOPT_RESUME_FROM, Long(n)) => options.resume = resume(wide(n))?,
         (ffi::CURLOPT_RESUME_FROM_LARGE, Off(n)) => options.resume = resume(n)?,
+        (ffi::CURLOPT_RANGE, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            options.range = unsafe { owned(p) }?;
+        }
         (ffi::CURLOPT_INFILESIZE, Long(n)) => in_file_size(options, me, set, wide(n))?,
         (ffi::CURLOPT_INFILESIZE_LARGE, Off(n)) => in_file_size(options, me, set, n)?,
         (ffi::CURLOPT_NEW_FILE_PERMS, Long(n)) => {

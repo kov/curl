@@ -194,6 +194,29 @@ fn a_request_target_is_kept() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// `CURLOPT_RANGE` is copied; NULL takes it away; duphandle copies it.
+#[test]
+fn a_range_is_kept() {
+    let c = curl_easy_init();
+    let range = |c| options(c, |o| o.range.clone());
+    let mut given = *b"0-4\0";
+    assert_eq!(pointer(c, ffi::CURLOPT_RANGE, given.as_mut_ptr()), CURLE_OK);
+    given[0] = b'X';
+    std::hint::black_box(&given);
+    assert_eq!(range(c), Some(b"0-4".to_vec()));
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    assert_eq!(range(d), Some(b"0-4".to_vec()));
+    let null = ptr::null_mut::<c_char>();
+    assert_eq!(pointer(c, ffi::CURLOPT_RANGE, null), CURLE_OK);
+    assert_eq!(range(c), None);
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(d);
+    }
+}
+
 /// The HTTP options' strings and list are copied; NULL takes them away.
 /// HTTP/2 and HTTP/3 are not built in, as in a C build without them.
 #[test]

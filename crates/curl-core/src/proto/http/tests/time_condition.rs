@@ -141,6 +141,14 @@ fn a_document_that_meets_the_condition_is_read() {
         read(ranged.as_bytes(), Box::new(resumed)),
         (Some(206), b"oo-\n".to_vec())
     );
+    let range = |o: &mut Options| {
+        since(Condition::ModifiedSince, DEC_1999)(o);
+        o.range = Some(b"2-5".to_vec());
+    };
+    assert_eq!(
+        read(ranged.as_bytes(), Box::new(range)),
+        (Some(206), b"oo-\n".to_vec())
+    );
 }
 
 /// A 304 from the server says the condition was not met, only when one

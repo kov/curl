@@ -8,7 +8,7 @@ use crate::conn::Peer;
 use crate::date::HttpDate;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, LineSource};
-use crate::options::Listed;
+use crate::options::{Listed, Ranged, Resume};
 use crate::text::Text;
 use std::fmt::Write as _;
 
@@ -436,8 +436,8 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) referer: Option<&'o [u8]>,
     pub(crate) proxy_authorization: Option<Authorization<'o>>,
     pub(crate) authorization: Option<Authorization<'o>>,
-    /// The offset a GET or HEAD asks the rest from.
-    pub(crate) range_from: Option<u64>,
+    /// The range the request asks for, or for an upload sends.
+    pub(crate) range: Option<RangeLine<'o>>,
     /// The body the request sends, if it has one.
     pub(crate) content: Option<Content>,
     /// The library says the body is chunked (`http_req_set_TE`); one the
@@ -459,6 +459,16 @@ pub(crate) struct RequestHead<'o> {
     /// connection to the proxy (`origin_is_proxy`).
     pub(crate) forwarded: Option<Forwarding<'o>>,
     pub(crate) headers: &'o UserHeaders,
+}
+
+/// The range a request names (`http_range`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RangeLine<'o> {
+    /// A GET or HEAD asks for it: `Range:`.
+    Get(Ranged<'o>),
+    /// A POST or PUT sends its body as this range of a resource whose
+    /// size is the body's, C's -1 if not known: `Content-Range:`.
+    Upload { range: &'o [u8], total: Option<u64> },
 }
 
 /// A time condition as a request header (`Curl_add_timecondition`).
@@ -581,14 +591,31 @@ fn write_h1(
                     out.line(&[b"Authorization: ", method.as_bytes(), b" ", value])?;
                 }
             }
-            Part::Range => {
-                if let Some(from) = head.range_from
-                    && head.headers.replacing(b"Range").is_none()
+            Part::Range => match head.range {
+                Some(RangeLine::Get(ranged)) if head.headers.replacing(b"Range").is_none() => {
+                    let mut digits = [0u8; 20];
+                    let range: [&[u8]; 2] = match ranged {
+                        Ranged::Resume(Resume::At(from)) => {
+                            [decimal(from.get(), &mut digits), b"-"]
+                        }
+                        // C prints its -1 as the offset: `-1-`.
+                        Ranged::Resume(Resume::AtEnd) => [b"-1-", b""],
+                        Ranged::Given(given) => [given, b""],
+                    };
+                    out.line(&[b"Range: bytes=", range[0], range[1]])?;
+                }
+                Some(RangeLine::Upload { range, total })
+                    if head.headers.replacing(b"Content-Range").is_none() =>
                 {
                     let mut digits = [0u8; 20];
-                    out.line(&[b"Range: bytes=", decimal(from, &mut digits), b"-"])?;
+                    let total = match total {
+                        Some(n) => decimal(n, &mut digits),
+                        None => b"-1",
+                    };
+                    out.line(&[b"Content-Range: bytes ", range, b"/", total])?;
                 }
-            }
+                _ => {}
+            },
             Part::UserAgent => {
                 if let Some(ua) = head.user_agent.filter(|ua| !ua.is_empty())
                     && head.headers.replacing(b"User-Agent").is_none()
@@ -855,7 +882,7 @@ mod tests {
             referer: None,
             proxy_authorization: None,
             authorization: None,
-            range_from: None,
+            range: None,
             content: None,
             chunked: false,
             probe: false,
@@ -926,7 +953,7 @@ mod tests {
                 referer: Some(b"http://ref.example/x"),
                 proxy_authorization: None,
                 authorization: None,
-                range_from: None,
+                range: None,
                 content: None,
                 chunked: false,
                 probe: false,
@@ -978,7 +1005,7 @@ mod tests {
                 referer: None,
                 proxy_authorization: None,
                 authorization: Authorization::new("Basic", b"OmV4YW1wbGU=", trusted, &headers),
-                range_from: None,
+                range: None,
                 content: None,
                 chunked: false,
                 probe: false,
@@ -1143,7 +1170,7 @@ mod tests {
             referer: None,
             proxy_authorization: None,
             authorization: None,
-            range_from: None,
+            range: None,
             content: None,
             chunked: false,
             probe: false,
@@ -1197,7 +1224,7 @@ mod tests {
             referer: None,
             proxy_authorization: None,
             authorization: None,
-            range_from: None,
+            range: None,
             content: None,
             chunked: false,
             probe: false,
@@ -1247,7 +1274,7 @@ mod tests {
                 referer: None,
                 proxy_authorization: None,
                 authorization: None,
-                range_from: None,
+                range: None,
                 content: None,
                 chunked: false,
                 probe: false,

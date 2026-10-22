@@ -1118,6 +1118,7 @@ fn configure(
         o.method = Method::Head;
     }
     o.resume = config.resume;
+    o.range = op.range.as_deref().map(copy).transpose()?;
     o.progress = if run.global.no_progress || run.msgs.silent || config.terminal {
         Progress::Off
     } else if let Some(bar) = bar {

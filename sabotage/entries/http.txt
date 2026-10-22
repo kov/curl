@@ -252,9 +252,9 @@ witness: curl-core proto::http::auth::tests::encodes_basic_as_c
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http::tests::a_resumed_get_takes_only_the_rest
 --- old
-                if let Some(from) = head.range_from
+            Part::Range => match head.range {
 --- new
-                if let Some(from) = None::<u64>
+            Part::Range => match None::<RangeLine<'_>> {
 
 === a response starting anywhere satisfies a resume
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -1322,3 +1322,37 @@ witness: curl-core netrc::tests::finds_the_file_as_c
     let set = |name| Ok::<_, OutOfMemory>(var(name)?.filter(|v| !v.is_empty()));
 --- new
     let set = |name| Ok::<_, OutOfMemory>(var(name)?);
+
+=== the application's Range goes beside the library's
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::range::a_download_asks_for_its_range
+--- old
+                Some(RangeLine::Get(ranged)) if head.headers.replacing(b"Range").is_none() => {
+--- new
+                Some(RangeLine::Get(ranged)) => {
+
+=== the application's Content-Range goes beside the library's
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::range::an_upload_names_its_range
+--- old
+                    if head.headers.replacing(b"Content-Range").is_none() =>
+--- new
+                    if true =>
+
+=== an upload of unknown size names a size of nothing
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http::tests::range::an_upload_names_its_range
+--- old
+                        None => b"-1",
+--- new
+                        None => b"0",
+
+=== a range asked for is spared a failing 416
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::range::a_response_to_a_range_is_taken_as_it_comes
+--- old
+                resume_from: resume_from.filter(|_| self.method == Method::Get),
+--- new
+                resume_from: resume_from
+                    .or(options.range.as_ref().map(|_| 3))
+                    .filter(|_| self.method == Method::Get),

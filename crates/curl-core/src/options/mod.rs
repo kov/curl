@@ -34,6 +34,10 @@ pub struct Options {
     pub method: Method,
     /// Where in the resource the transfer starts.
     pub resume: Option<Resume>,
+    /// The part of the resource a download asks for, as given
+    /// (`CURLOPT_RANGE`): `X-Y`, `X-` or `-Y`, or for HTTP several of
+    /// them. A resume point is asked for in its place.
+    pub range: Option<Vec<u8>>,
     /// What a file an upload creates may be opened for.
     pub new_file_mode: FileMode,
     /// The remote file's time is read, where the protocol has to ask for
@@ -346,6 +350,16 @@ impl Options {
         Ok(())
     }
 
+    /// The range the transfer asks for, if any (`setup_range`): the
+    /// resume point's, else the application's.
+    pub(crate) fn ranged(&self) -> Option<Ranged<'_>> {
+        match (self.resume, &self.range) {
+            (Some(resume), _) => Some(Ranged::Resume(resume)),
+            (None, Some(given)) => Some(Ranged::Given(given)),
+            (None, None) => None,
+        }
+    }
+
     /// A copy (`curl_easy_duphandle`).
     pub fn try_clone(&self) -> Result<Options, OutOfMemory> {
         Ok(Options {
@@ -355,6 +369,7 @@ impl Options {
             url_rules: self.url_rules,
             method: self.method,
             resume: self.resume,
+            range: self.range.as_deref().map(copy).transpose()?,
             new_file_mode: self.new_file_mode,
             filetime: self.filetime,
             time_condition: self.time_condition,
@@ -667,6 +682,15 @@ pub enum Resume {
     /// At the end (C's -1): a download gets the last byte; an upload skips
     /// as much of its body as is stored already and appends the rest.
     AtEnd,
+}
+
+/// The range a transfer asks for, as C's `state.range` holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ranged<'o> {
+    /// From the resume point on: C's `N-`, and for its -1, `-1-`.
+    Resume(Resume),
+    /// The application's (`CURLOPT_RANGE`).
+    Given(&'o [u8]),
 }
 
 /// The permission bits of a file a transfer creates, before the umask

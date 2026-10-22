@@ -84,9 +84,9 @@ witness: curl-core proto::file::tests::a_download_resumes_into_the_file
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_download_resumes_into_the_file
 --- old
-            && file.seek(SeekFrom::Start(at)).ok() != Some(at)
+            Ok(at) => file.seek(SeekFrom::Start(at)).ok() == Some(at),
 --- new
-            && file.seek(SeekFrom::Start(0)).ok() != Some(0)
+            Ok(_) => file.seek(SeekFrom::Start(0)).ok() == Some(0),
 
 === a download resumes past its end
 file: crates/curl-core/src/proto/file.rs
@@ -100,18 +100,18 @@ witness: curl-core proto::file::tests::a_download_resumes_into_the_file
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_download_resumed_at_the_end_is_the_last_byte
 --- old
-            Some(Resume::AtEnd) => (-1, Some(1)),
+        Some(Ranged::Resume(Resume::AtEnd)) => b"-1-",
 --- new
-            Some(Resume::AtEnd) => (-1, None),
+        Some(Ranged::Resume(Resume::AtEnd)) => b"1-",
 
 === a head request reads the body
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_head_request_is_the_headers
 --- old
-        if options.method == Method::Head {
+        if cx.easy().options().method == Method::Head {
             return Ok(());
 --- new
-        if options.method == Method::Upload {
+        if cx.easy().options().method == Method::Upload {
             return Ok(());
 
 === a zero byte in the path is a name
@@ -252,8 +252,47 @@ witness: curl-core proto::file::tests::a_file_that_cannot_be_stated_is_read_with
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_head_request_on_a_file_that_cannot_be_stated_reads_its_body
 --- old
-                no_body: true,
-                no_head: true,
+            no_body: head,
+            no_head: head,
 --- new
-                no_body: false,
-                no_head: true,
+            no_body: false,
+            no_head: head,
+
+=== a range of the last bytes may count back from nothing
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_range_is_read_as_c_reads_it
+--- old
+        (None, Some((0, _))) => return Err(ErrorKind::RangeError),
+--- new
+        (None, Some((0, _))) => Span {
+            resume: 0,
+            max: Some(0),
+            from: 0,
+            to: 0,
+        },
+
+=== a range may end before it starts
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_range_is_read_as_c_reads_it
+--- old
+            if from > to || to - from == i64::MAX {
+--- new
+            if to - from == i64::MAX {
+
+=== a start before the file's is read from its start
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_download_delivers_its_range
+--- old
+            Err(_) => resume == -1,
+--- new
+            Err(_) => true,
+
+=== a directory's listing runs past its range
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_directory_listing_is_cut_at_its_range
+--- old
+            self.pipeline.expect(Expect {
+                max: u64::try_from(max).ok(),
+                ..Expect::default()
+            });
+--- new

@@ -211,3 +211,26 @@ witness: curl-os locale::tests::takes_the_environment_s_locale
     unsafe { libc::setlocale(libc::LC_NUMERIC, c"C".as_ptr()) };
 --- new
     unsafe { libc::setlocale(libc::LC_NUMERIC, c"".as_ptr()) };
+
+=== a file's name is copied to the heap, as std copies a long one
+file: crates/curl-os/src/fs.rs
+witness: curl-os takes_a_long_name_without_allocating
+--- old
+    let mut buf = [0u8; NAME_MAX_BYTES];
+--- new
+    let mut buf = vec![0u8; NAME_MAX_BYTES];
+
+=== a file's name is measured past its zero byte
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::takes_a_name_as_c_does
+--- old
+    let name = name.split(|&b| b == 0).next().unwrap_or_default();
+--- new
+
+=== a file's name as long as the system's limit is passed on
+file: crates/curl-os/src/fs.rs
+witness: curl-os fs::tests::takes_a_name_as_c_does
+--- old
+    if name.len() >= NAME_MAX_BYTES {
+--- new
+    if name.len() > NAME_MAX_BYTES {

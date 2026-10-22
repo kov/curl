@@ -1,9 +1,12 @@
-//! Files and directories, for `file:` URLs (`lib/file.c`). Opening a file
-//! and listing a directory are system calls of their own, so neither the
-//! path nor an entry's name is ever copied; reading, writing, seeking and
-//! the file's status go through the std `File` that opening gives.
-//! Standard error is pointed at a file here too, as the tool's `--stderr`
-//! asks, and a file is closed saying whether that went.
+//! Files and directories, by name: for `file:` URLs (`lib/file.c`), the
+//! files the library writes whole, and the tool's. Each operation on a
+//! name is a system call of its own taking it as a C string, so neither
+//! the name nor a directory entry's is ever copied to the heap: std's
+//! calls copy a name of 384 bytes or more with an allocation that cannot
+//! fail. Reading, writing, seeking and an open file's status go through
+//! the std `File` that opening gives. Standard error is pointed at a file
+//! here too, as the tool's `--stderr` asks, and a file is closed saying
+//! whether that went.
 
 #![allow(unsafe_code)]
 
@@ -30,6 +33,123 @@ pub enum Keep {
 /// reports with the same kind.
 pub fn denied(e: &io::Error) -> bool {
     e.raw_os_error() == Some(libc::EACCES)
+}
+
+/// The longest name the system takes, its ending zero byte included
+/// (`PATH_MAX`).
+const NAME_MAX_BYTES: usize = libc::PATH_MAX as usize;
+
+/// Call `f` with `name` as a C string, as C sees it: to its first zero
+/// byte, if it has one. It is copied to a buffer on the stack, not the
+/// heap; one too long for the system is refused with the error the system
+/// gives it (`ENAMETOOLONG`), without calling `f`.
+pub fn with_c_name<T>(name: &[u8], f: impl FnOnce(&CStr) -> io::Result<T>) -> io::Result<T> {
+    let name = name.split(|&b| b == 0).next().unwrap_or_default();
+    if name.len() >= NAME_MAX_BYTES {
+        return Err(io::Error::from_raw_os_error(libc::ENAMETOOLONG));
+    }
+    let mut buf = [0u8; NAME_MAX_BYTES];
+    buf[..name.len()].copy_from_slice(name);
+    let c = CStr::from_bytes_until_nul(&buf).expect("a zero byte after the name");
+    f(c)
+}
+
+/// What `stat(2)` says of a file, as much as is asked of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Status {
+    mode: libc::mode_t,
+    len: u64,
+    modified: i64,
+}
+
+impl Status {
+    /// Whether it is a regular file.
+    pub fn is_file(&self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFREG
+    }
+
+    /// Whether it is a directory.
+    pub fn is_dir(&self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFDIR
+    }
+
+    /// Its size in bytes.
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Whether it is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// When it was last modified, in seconds after the epoch.
+    pub fn modified(&self) -> i64 {
+        self.modified
+    }
+}
+
+/// The status of the file at `path`, a symbolic link followed.
+pub fn stat(path: &CStr) -> io::Result<Status> {
+    let mut st = core::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `path` is a C string and `st` room for a `stat`, both alive
+    // for the call, which fills `st` in when it returns 0.
+    if unsafe { libc::stat(path.as_ptr(), st.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `stat` returned 0, so it filled `st` in.
+    let st = unsafe { st.assume_init() };
+    Ok(Status {
+        mode: st.st_mode,
+        len: u64::try_from(st.st_size).unwrap_or(0),
+        modified: st.st_mtime,
+    })
+}
+
+/// Remove the name `path` (`unlink(2)`).
+pub fn remove(path: &CStr) -> io::Result<()> {
+    // SAFETY: `path` is a C string, alive for the call.
+    if unsafe { libc::unlink(path.as_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Give the file `from` the name `to`, in place of any file that had it
+/// (`rename(2)`).
+pub fn rename(from: &CStr, to: &CStr) -> io::Result<()> {
+    // SAFETY: both are C strings, alive for the call.
+    if unsafe { libc::rename(from.as_ptr(), to.as_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Make the directory `path`, with permissions `mode` before the umask
+/// (`mkdir(2)`).
+pub fn make_dir(path: &CStr, mode: u32) -> io::Result<()> {
+    // SAFETY: `path` is a C string, alive for the call.
+    if unsafe { libc::mkdir(path.as_ptr(), mode) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Set the access and modification times of the file at `path` to `t`
+/// seconds after the epoch (`utimes(2)`), by name: no permission to read
+/// or write it is needed, only to own it.
+pub fn set_times(path: &CStr, t: i64) -> io::Result<()> {
+    let at = libc::timeval {
+        tv_sec: t,
+        tv_usec: 0,
+    };
+    let times = [at, at];
+    // SAFETY: `path` is a C string and `times` two `timeval`s, both alive
+    // for the call, which only reads them.
+    if unsafe { libc::utimes(path.as_ptr(), times.as_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Open `path` to read it. A directory opens too.
@@ -293,6 +413,117 @@ mod tests {
         let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
         assert_eq!(rc, 0);
         assert_eq!(past.unwrap_err().raw_os_error(), Some(libc::EBADF));
+    }
+
+    /// `name`, with `./` repeated before its last part until it is longer
+    /// than std's 384-byte buffer on the stack: the same file, by a name
+    /// std copies to the heap.
+    fn long(name: &Path) -> Vec<u8> {
+        let (dir, file) = (name.parent().unwrap(), name.file_name().unwrap());
+        let mut long = dir.as_os_str().as_bytes().to_vec();
+        long.push(b'/');
+        while long.len() < 400 {
+            long.extend_from_slice(b"./");
+        }
+        long.extend_from_slice(file.as_bytes());
+        long
+    }
+
+    /// A name is taken to its first zero byte, as C sees it, and one the
+    /// system would refuse as too long is refused before it is asked.
+    #[test]
+    fn takes_a_name_as_c_does() {
+        let seen = |name: &[u8]| with_c_name(name, |c| Ok(c.to_bytes().to_vec()));
+        assert_eq!(seen(b"a/b").unwrap(), b"a/b");
+        assert_eq!(seen(b"a\0b").unwrap(), b"a");
+        assert_eq!(seen(b"").unwrap(), b"");
+        let mut cut = b"a\0".to_vec();
+        cut.resize(2 * NAME_MAX_BYTES, b'b');
+        assert_eq!(
+            seen(&cut).unwrap(),
+            b"a",
+            "what is past the zero byte is not looked at"
+        );
+        let longest = vec![b'a'; NAME_MAX_BYTES - 1];
+        assert_eq!(seen(&longest).unwrap(), longest);
+        let mut called = false;
+        let too_long = with_c_name(&[b'a'; NAME_MAX_BYTES], |_| {
+            called = true;
+            Ok(())
+        });
+        assert_eq!(
+            too_long.unwrap_err().raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+        assert!(!called);
+        // The system says the same of it.
+        let mut name = vec![b'a'; NAME_MAX_BYTES];
+        name.push(0);
+        let c = CStr::from_bytes_with_nul(&name).unwrap();
+        assert_eq!(
+            stat(c).unwrap_err().raw_os_error(),
+            Some(libc::ENAMETOOLONG)
+        );
+    }
+
+    /// A file's status, by a name std would copy, as std reads it.
+    #[test]
+    fn states_a_file() {
+        use std::os::unix::fs::MetadataExt as _;
+        let s = Scratch::new("stat");
+        std::fs::write(s.0.join("f"), b"hello").unwrap();
+        let f = with_c_name(&long(&s.0.join("f")), stat).unwrap();
+        let std = std::fs::metadata(s.0.join("f")).unwrap();
+        assert!(f.is_file() && !f.is_dir());
+        assert_eq!(f.len(), 5);
+        assert!(!f.is_empty());
+        assert_eq!(f.modified(), std.mtime());
+        let d = stat(&c(&s.0)).unwrap();
+        assert!(d.is_dir() && !d.is_file());
+        let missing = stat(&s.c("missing")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// Names are made, moved and removed; a directory is made with the
+    /// mode asked.
+    #[test]
+    fn makes_moves_and_removes_names() {
+        use std::os::unix::fs::MetadataExt as _;
+        let s = Scratch::new("names");
+        // A umask takes no permission from the owner, nor from a mode
+        // that gives none to anyone else.
+        make_dir(&s.c("d"), 0o500).unwrap();
+        let mode = std::fs::metadata(s.0.join("d")).unwrap().mode();
+        assert_eq!(mode & 0o777, 0o500);
+        let again = make_dir(&s.c("d"), 0o700).unwrap_err();
+        assert_eq!(again.kind(), io::ErrorKind::AlreadyExists);
+        std::fs::write(s.0.join("a"), b"moved").unwrap();
+        std::fs::write(s.0.join("b"), b"replaced").unwrap();
+        rename(&s.c("a"), &s.c("b")).unwrap();
+        assert_eq!(std::fs::read(s.0.join("b")).unwrap(), b"moved");
+        assert!(!s.0.join("a").exists());
+        remove(&s.c("b")).unwrap();
+        assert!(!s.0.join("b").exists());
+        let missing = remove(&s.c("b")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        let missing = rename(&s.c("b"), &s.c("c")).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// A file's times are set by name, though it may not be read.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no utimes")]
+    fn sets_a_file_s_times() {
+        use std::os::unix::fs::MetadataExt as _;
+        let s = Scratch::new("times");
+        open_write(&s.c("f"), Keep::Nothing, 0o200).unwrap();
+        for t in [1_000_000_000, -86_400, 0] {
+            set_times(&s.c("f"), t).unwrap();
+            let meta = std::fs::metadata(s.0.join("f")).unwrap();
+            assert_eq!((meta.mtime(), meta.atime()), (t, t));
+        }
+        let missing = set_times(&s.c("missing"), 0).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

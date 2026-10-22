@@ -1022,4 +1022,60 @@ mod tests {
         assert_eq!(copy.resolve.stamp(), o.resolve.stamp());
         assert!(copy.connect_to.iter().eq([&b"::b:2"[..]]));
     }
+
+    /// A copy keeps the proxy, the login and the cookies' options.
+    #[test]
+    fn a_copy_keeps_the_proxy_login_and_cookies() {
+        let mut o = Options::default();
+        o.proxy.url = Some(b"http://proxy.example:3128".to_vec());
+        o.proxy.user = Some(b"pu".to_vec());
+        o.login.user = Some(b"lu".to_vec());
+        o.login.bearer = Some(b"t".to_vec());
+        o.http.cookies.send = Some(b"a=1".to_vec());
+        o.http.cookies.new_session = true;
+        let copy = o.try_clone().unwrap();
+        assert_eq!(
+            copy.proxy.url.as_deref(),
+            Some(&b"http://proxy.example:3128"[..])
+        );
+        assert_eq!(copy.proxy.user.as_deref(), Some(&b"pu"[..]));
+        assert_eq!(copy.login.user.as_deref(), Some(&b"lu"[..]));
+        assert_eq!(copy.login.bearer.as_deref(), Some(&b"t"[..]));
+        assert_eq!(copy.http.cookies.send.as_deref(), Some(&b"a=1"[..]));
+        assert!(copy.http.cookies.new_session);
+    }
+
+    /// `CURLOPT_PROXYUSERPWD`: split at the first colon, each part
+    /// URL-decoded, one that decodes to a zero byte refused; none clears
+    /// both.
+    #[test]
+    fn a_proxy_s_user_and_password_are_split_and_decoded() {
+        let mut p = Proxy::default();
+        p.set_user_password(Some(b"us%3Aer:pa:ss")).unwrap();
+        assert_eq!(
+            (p.user.as_deref(), p.password.as_deref()),
+            (Some(&b"us:er"[..]), Some(&b"pa:ss"[..]))
+        );
+        assert_eq!(
+            p.set_user_password(Some(b"u:p%00")),
+            Err(ProxyUserError::Malformed)
+        );
+        p.set_user_password(None).unwrap();
+        assert_eq!((p.user, p.password), (None, None));
+    }
+
+    /// Methods combine as sets; a set of one method is that method, of
+    /// more, or with `ONLY`, none.
+    #[test]
+    fn auth_methods_are_sets() {
+        use AuthMethods as A;
+        assert_eq!(A::BASIC | A::BASIC, A::BASIC);
+        assert_eq!(A::ANY | A::DIGEST, A::ANY);
+        assert_eq!(A::BASIC.single(), Some(A::BASIC));
+        assert_eq!((A::BASIC | A::DIGEST).single(), None);
+        assert_eq!(A::ONLY.single(), None);
+        assert_eq!((A::DIGEST | A::ONLY).single(), None);
+        assert_eq!(format!("{:?}", A::DIGEST | A::ONLY), "{DIGEST, ONLY}");
+        assert_eq!(format!("{:?}", A::NONE), "{}");
+    }
 }

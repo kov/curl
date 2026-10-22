@@ -271,13 +271,23 @@ struct Wire {
     hang_up_unanswered: bool,
     /// The peer closed, whatever it was saying.
     hung_up: bool,
+    /// The peer answers each send with its next reply, not each
+    /// request's head: a handshake whose messages have no blank line.
+    per_send: bool,
+    /// The sends it was given.
+    sends: usize,
 }
 
 #[cfg(any(test, feature = "test-util"))]
 impl Wire {
     /// The peer has a request's head to answer with its next reply.
     fn answering(&self) -> bool {
-        self.answered < self.replies.len() && self.heads() > self.answered
+        let asked = if self.per_send {
+            self.sends
+        } else {
+            self.heads()
+        };
+        self.answered < self.replies.len() && asked > self.answered
     }
 
     /// The request heads the peer was sent.
@@ -323,6 +333,12 @@ impl Conversation {
         Conversation(
             curl_alloc::TryRc::try_new(std::cell::RefCell::new(wire)).expect("a test's peer fits"),
         )
+    }
+
+    /// The same peer, answering each send with its next reply.
+    pub fn per_send(self) -> Conversation {
+        self.0.borrow_mut().per_send = true;
+        self
     }
 
     /// The same peer, closing the connection when a request comes that
@@ -648,6 +664,7 @@ impl Socket for FakeSocket {
         wire.received
             .try_extend_from_slice(buf)
             .map_err(|_| io::ErrorKind::OutOfMemory)?;
+        wire.sends += 1;
         if wire.hang_up_unanswered
             && wire.answered == wire.replies.len()
             && wire.heads() > wire.answered

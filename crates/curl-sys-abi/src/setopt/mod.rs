@@ -525,6 +525,22 @@ fn apply(
             options.proxy.auth =
                 curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong)?);
         }
+        (ffi::CURLOPT_SOCKS5_AUTH, Long(n)) => {
+            let mask = n as core::ffi::c_ulong;
+            let (basic, gssapi) = (ffi::CURLAUTH_BASIC, ffi::CURLAUTH_GSSAPI);
+            if mask & !(basic | gssapi | ffi::CURLAUTH_ONLY) != 0 {
+                return Err(Refused::NotBuiltIn);
+            }
+            let only = mask & ffi::CURLAUTH_ONLY != 0;
+            if only && mask & (basic | gssapi) == 0 {
+                return Err(Refused::Bad);
+            }
+            options.proxy.socks5_auth = curl_core::options::Socks5Auth {
+                basic: mask & basic != 0,
+                gssapi: mask & gssapi != 0,
+                only,
+            };
+        }
         (ffi::CURLOPT_NOPROXY, Ptr(p)) => {
             // SAFETY: as above.
             options.proxy.no_proxy = unsafe { owned(p) }?;

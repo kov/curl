@@ -134,9 +134,9 @@ witness: curl-core proto::http::tests::a_custom_proxy_authorization_goes_beside_
 file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::a_tunnel_answers_a_407_over_the_same_connection
 --- old
-        self.proxy.as_ref().is_some_and(|p| p.http() && !p.forward)
+            .is_some_and(|p| (p.http() && !p.forward) || socks::Version::of(p.kind).is_some())
 --- new
-        self.proxy.as_ref().is_some_and(|p| p.http() && p.forward)
+            .is_some_and(|p| (p.http() && p.forward) || socks::Version::of(p.kind).is_some())
 
 === a 407's body to CONNECT is left on the connection
 file: crates/curl-core/src/proto/http1/tunnel.rs
@@ -181,13 +181,13 @@ witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on
     if false {
 
 === a connection redialed to the proxy is not counted
-file: crates/curl-core/src/multi/state/tunnel.rs
+file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
     cx.report_mut().count_connect();
-    trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
+    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
 --- new
-    trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
+    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
 
 === the answer to CONNECT is delivered though suppressed
 file: crates/curl-core/src/deliver/mod.rs
@@ -204,3 +204,62 @@ witness: curl-core proto::http::tests::a_407_not_from_a_forwarding_proxy_is_not_
             407 if asked.forwarded && value_of(line, b"Proxy-Authenticate:").is_some() => {
 --- new
             407 if value_of(line, b"Proxy-Authenticate:").is_some() => {
+
+=== a route through a SOCKS proxy makes no handshake
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::a_socks5_proxy_logs_the_user_in_and_connects
+--- old
+            .is_some_and(|p| (p.http() && !p.forward) || socks::Version::of(p.kind).is_some())
+--- new
+            .is_some_and(|p| p.http() && !p.forward)
+
+=== a SOCKS5 connection serves a transfer insisting on authentication without it
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::an_unauthenticated_socks5_connection_serves_no_transfer_insisting
+--- old
+        self.route.serves(wanted) && (!insists || self.socks5_authenticated)
+--- new
+        self.route.serves(wanted)
+
+=== a SOCKS5 proxy asking for the user and password is not given them
+file: crates/curl-core/src/conn/socks.rs
+witness: curl-core proto::http::tests::a_socks5_proxy_logs_the_user_in_and_connects
+--- old
+                self.authenticated = true;
+                self.login()?;
+--- new
+                self.authenticated = true;
+                self.request5()?;
+
+=== a SOCKS5 answer naming a host is read short of its name
+file: crates/curl-core/src/conn/socks.rs
+witness: curl-core conn::socks::tests::socks5_sends_the_name_and_reads_the_whole_answer
+--- old
+        3 => 4 + 1 + usize::from(r[4]) + 2,
+--- new
+        3 => 4 + 1 + 2,
+
+=== a SOCKS4 proxy is not asked for the address resolved here
+file: crates/curl-core/src/conn/socks.rs
+witness: curl-core proto::http::tests::a_socks4_proxy_is_asked_for_the_address_resolved_here
+--- old
+                Resolved::Address(IpAddr::V4(v4)) => v4.octets(),
+--- new
+                Resolved::Address(IpAddr::V4(_)) => [0, 0, 0, 1],
+
+=== SOCKS5 resolved here prefers IPv4 where either goes
+file: crates/curl-core/src/conn/socks.rs
+witness: curl-core conn::socks::tests::socks5_asks_for_the_address_resolved_here
+--- old
+            Version::V5 if ip != IpVersion::V4 => first(true).or_else(|| first(false)),
+--- new
+            Version::V5 if ip != IpVersion::V4 => first(false).or_else(|| first(true)),
+
+=== a SOCKS refusal is not kept for CURLINFO_PROXY_ERROR
+file: crates/curl-core/src/multi/state/socks.rs
+witness: curl-core proto::http::tests::a_socks_refusal_fails_with_the_proxy_s_error
+--- old
+    cx.report_mut().set_proxy_error(code);
+    match e.said() {
+--- new
+    match e.said() {

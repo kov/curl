@@ -14,6 +14,7 @@ use curl_alloc::TryVec;
 use crate::time::Instant;
 use curl_alloc::OutOfMemory;
 
+use crate::conn::ProxyError;
 use crate::error::UrlErrorKind;
 use crate::options::{AuthMethods, Method};
 use crate::url::{GetOptions, Part, Url};
@@ -97,6 +98,8 @@ pub struct TransferReport {
     proxy_auth_offered: AuthMethods,
     /// The status a proxy answered `CONNECT` with (`info.httpproxycode`).
     connect_code: Option<u16>,
+    /// What a SOCKS proxy's handshake failed at (`info.pxcode`).
+    proxy_error: Option<ProxyError>,
     /// The method the last request authenticated with to the proxy, or
     /// was chosen for the next (`info.proxyauthpicked`).
     proxy_auth_used: AuthMethods,
@@ -240,6 +243,16 @@ impl TransferReport {
 
     pub(crate) fn set_connect_code(&mut self, code: u16) {
         self.connect_code = Some(code);
+    }
+
+    /// What a SOCKS proxy's handshake failed at
+    /// (`CURLINFO_PROXY_ERROR`).
+    pub fn proxy_error(&self) -> Option<ProxyError> {
+        self.proxy_error
+    }
+
+    pub(crate) fn set_proxy_error(&mut self, error: ProxyError) {
+        self.proxy_error = Some(error);
     }
 
     /// The methods the proxy's challenges offered

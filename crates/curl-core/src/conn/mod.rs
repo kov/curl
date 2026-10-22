@@ -13,6 +13,7 @@ mod dns;
 pub mod io;
 mod pool;
 pub(crate) mod proxy;
+pub(crate) mod socks;
 
 pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup, Unresolved};
 pub(crate) use connect_to::{BadVia, via};
@@ -32,6 +33,7 @@ use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
 
 pub(crate) use self::buf::RecvBuf;
+pub use self::socks::ProxyError;
 
 /// What transfers keep for those after them: the connections and the
 /// names resolved. A multi holds its own; a share will hold them in its
@@ -160,9 +162,12 @@ impl Tcp {
         self.via.as_deref().unwrap_or(&self.origin)
     }
 
-    /// The route goes through a proxy's tunnel, which the setup makes.
-    pub(crate) fn tunnels(&self) -> bool {
-        self.proxy.as_ref().is_some_and(|p| p.http() && !p.forward)
+    /// The route goes through a proxy by a handshake the setup makes
+    /// over the connection to it: SOCKS's, or an HTTP proxy's tunnel.
+    pub(crate) fn handshakes(&self) -> bool {
+        self.proxy
+            .as_ref()
+            .is_some_and(|p| (p.http() && !p.forward) || socks::Version::of(p.kind).is_some())
     }
 }
 
@@ -176,6 +181,10 @@ pub(crate) struct ProxyRoute {
     /// The requests go to the proxy, which sends them on, rather than
     /// through a tunnel it opens.
     pub(crate) forward: bool,
+    /// A SOCKS5 proxy must have authenticated the user (`CURLAUTH_ONLY`
+    /// in `CURLOPT_SOCKS5_AUTH`): what the transfer asks of a connection,
+    /// not what the connection shares with it.
+    pub(crate) auth_only: bool,
 }
 
 /// The user and password a proxy is given, each empty for none.
@@ -368,6 +377,9 @@ pub(crate) struct Conn {
     /// It carried a request before the one leasing it (C's
     /// `bits.reuse`).
     served: bool,
+    /// Its SOCKS5 proxy authenticated the user
+    /// (`bits.socks5_authenticated`).
+    socks5_authenticated: bool,
     /// The version its last HTTP response said (`httpversion_seen`).
     seen_version: Option<ResponseVersion>,
     /// It is not to be kept for another request (C's `connclose`), or
@@ -395,6 +407,24 @@ impl Conn {
     /// Whether it goes through an HTTP proxy (`http_proxy.peer`).
     pub(crate) fn http_proxy(&self) -> bool {
         matches!(&self.route, Route::Tcp(Tcp { proxy: Some(p), .. }) if p.http())
+    }
+
+    /// Its SOCKS5 proxy authenticated the user.
+    pub(crate) fn socks5_authenticated(&mut self) {
+        self.socks5_authenticated = true;
+    }
+
+    /// Whether it may serve a transfer whose route is `wanted`: a route
+    /// that serves it, and the user authenticated by a SOCKS5 proxy if
+    /// the transfer insists (`url_match_proxy_use`).
+    pub(crate) fn serves(&self, wanted: &Route) -> bool {
+        let insists = match wanted {
+            Route::Tcp(Tcp { proxy: Some(p), .. }) => {
+                p.auth_only && matches!(p.kind, ProxyType::Socks5 | ProxyType::Socks5Hostname)
+            }
+            Route::Tcp(_) | Route::Local => false,
+        };
+        self.route.serves(wanted) && (!insists || self.socks5_authenticated)
     }
 
     /// Whether it carried a request before this one.
@@ -537,6 +567,7 @@ mod tests {
                 peer: proxy,
                 creds,
                 forward,
+                auth_only: false,
             }),
         })
     }

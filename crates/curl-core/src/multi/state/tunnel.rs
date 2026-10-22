@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
-use super::{Connecting, StepCx, TransferState, Wake, established};
+use super::{Connecting, Handshake, StepCx, TransferState, Wake, established};
 use crate::conn::Connected;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{Peer, RecvFailed};
@@ -43,6 +43,14 @@ pub(crate) struct Tunnel {
     head_bytes: usize,
 }
 
+/// The tunnel under way in a handshake.
+fn tunnel(handshake: &mut Option<Box<Handshake>>) -> &mut Tunnel {
+    match handshake.as_deref_mut() {
+        Some(Handshake::Connect(t)) => t,
+        _ => unreachable!("a tunnel is set up"),
+    }
+}
+
 impl Tunnel {
     /// What the handshake waits for on its socket.
     pub(super) fn interest(&self) -> Events {
@@ -57,12 +65,10 @@ impl Tunnel {
 /// Connected to the proxy: the tunnel's first `CONNECT` is made
 /// (`http_proxy_cf_connect`).
 pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    // Each connection to the proxy counts as it is made.
-    cx.report_mut().count_connect();
     trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
     match start(&c, cx) {
         Ok(tunnel) => {
-            c.tunnel = Some(tunnel);
+            c.handshake = Some(tunnel);
             (TransferState::Connecting(c), Wake::Again)
         }
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
@@ -81,7 +87,7 @@ fn proxy(c: &Connecting) -> (&Peer, Option<Secret<'_>>, bool) {
 
 /// A `CONNECT` made (`start_CONNECT`), with the proxy's credentials as
 /// far as they go.
-fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Tunnel>, ErrorKind> {
+fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshake>, ErrorKind> {
     let target = c.target();
     let mut digits = [0; 20];
     let port = decimal(u64::from(target.port()), &mut digits);
@@ -136,7 +142,7 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Tunnel>,
         authorized: output.header.is_some(),
         head_bytes: 0,
     };
-    try_box(tunnel).map_err(oom)
+    try_box(Handshake::Connect(tunnel)).map_err(oom)
 }
 
 /// Move the handshake on as far as its socket lets it.
@@ -159,7 +165,7 @@ enum Ran {
 
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
     loop {
-        let t = c.tunnel.as_mut().expect("a tunnel is set up");
+        let t = tunnel(&mut c.handshake);
         if t.sent < t.request.len() {
             let (pool, _) = cx.rest.pool_net(cx.me);
             let sent = pool.dialed(&c.lease).send(&t.request[t.sent..]);
@@ -174,7 +180,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
                     ));
                 }
             };
-            let t = c.tunnel.as_mut().expect("a tunnel is set up");
+            let t = tunnel(&mut c.handshake);
             let from = t.sent;
             t.sent += n;
             trace::bytes(cx, DebugKind::HeaderOut, &t.request[from..from + n]);
@@ -212,11 +218,11 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
 /// the line it was reading; the end of a 407 is no failure where
 /// credentials were sent and methods are left to try (`recv_CONNECT_resp`).
 fn closed<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
-    let t = c.tunnel.as_mut().expect("a tunnel is set up");
+    let t = tunnel(&mut c.handshake);
     if t.answer.closed() == Read::Line {
         line(c, cx)?;
     }
-    let t = c.tunnel.as_ref().expect("a tunnel is set up");
+    let t = tunnel(&mut c.handshake);
     let wanted = !cx.easy().options().proxy.auth.0.is_empty();
     if wanted && t.authorized && cx.easy().auth.proxy_offers(&t.challenges) {
         trace::info(cx, format_args!("Proxy CONNECT connection closed"));
@@ -232,7 +238,7 @@ fn closed<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
 /// A line of the answer is traced, checked, delivered and taken in
 /// (`single_header`).
 fn line<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-    let t = c.tunnel.as_mut().expect("a tunnel is set up");
+    let t = tunnel(&mut c.handshake);
     let line = t.answer.line();
     trace::bytes(cx, DebugKind::HeaderIn, line);
     if let Err(e) = t.answer.verify() {
@@ -268,7 +274,7 @@ fn line<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<(), Error
         Applied::Note(note) => trace::info(cx, format_args!("{note}")),
         Applied::Challenge => {
             let asked = proxy_asked(c, cx);
-            let t = c.tunnel.as_mut().expect("a tunnel is set up");
+            let t = tunnel(&mut c.handshake);
             let value = fields::header_value(t.answer.line()).unwrap_or(&[]);
             let heard = t.challenges.read(value, &asked).map_err(oom)?;
             for note in heard.notes() {
@@ -301,7 +307,7 @@ fn proxy_asked<H: Host>(c: &Connecting, cx: &StepCx<'_, H>) -> PeerAsked {
 /// The answer ended: the tunnel is up, or another `CONNECT` is made for
 /// the proxy's challenge, or it failed (`H1_CONNECT`'s response).
 fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
-    let t = c.tunnel.as_mut().expect("a tunnel is set up");
+    let t = tunnel(&mut c.handshake);
     if t.answer.chunks_read() {
         trace::info(cx, format_args!("chunk reading DONE"));
     }
@@ -326,7 +332,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             .auth
             .asked((None, peer), (secret, peer), false, true)
     };
-    let t = c.tunnel.as_mut().expect("a tunnel is set up");
+    let t = tunnel(&mut c.handshake);
     let closes = t.answer.closes();
     let offered = Offered {
         host: Challenges::default(),
@@ -356,7 +362,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     }
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
-        c.tunnel = None;
+        c.handshake = None;
         let (pool, mut net) = cx.rest.pool_net(cx.me);
         if !pool.redial(&c.lease, &mut net) {
             return Err(ErrorKind::CouldntConnect);
@@ -365,7 +371,7 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     }
     // Over the same connection.
     let tunnel = start(c, cx)?;
-    c.tunnel = Some(tunnel);
+    c.handshake = Some(tunnel);
     Ok(Ran::Again)
 }
 

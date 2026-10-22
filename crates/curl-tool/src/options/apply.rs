@@ -717,7 +717,7 @@ pub(crate) fn apply<'a>(
                 op.proxy_kind = ProxyType::Http;
             }
         }
-        Opt::Proxy10 => {
+        Opt::Proxy10 | Opt::Socks4 | Opt::Socks4a | Opt::Socks5 | Opt::Socks5Hostname => {
             let op = line.current();
             op.proxy = None;
             let proxy = value.text();
@@ -725,7 +725,13 @@ pub(crate) fn apply<'a>(
                 return Err(ParamError::BlankString);
             }
             op.proxy = Some(proxy);
-            op.proxy_kind = ProxyType::Http10;
+            op.proxy_kind = match spec.opt {
+                Opt::Socks4 => ProxyType::Socks4,
+                Opt::Socks4a => ProxyType::Socks4a,
+                Opt::Socks5 => ProxyType::Socks5,
+                Opt::Socks5Hostname => ProxyType::Socks5Hostname,
+                _ => ProxyType::Http10,
+            };
         }
         Opt::Noproxy => line.current().noproxy = Some(value.text()),
         Opt::Proxytunnel => line.current().proxytunnel = value.toggle(),
@@ -1141,14 +1147,10 @@ pub(crate) fn apply<'a>(
         | Opt::ServiceName
         | Opt::Sessionid
         | Opt::SignatureAlgorithms
-        | Opt::Socks4
-        | Opt::Socks4a
-        | Opt::Socks5
         | Opt::Socks5Basic
         | Opt::Socks5Gssapi
         | Opt::Socks5GssapiNec
         | Opt::Socks5GssapiService
-        | Opt::Socks5Hostname
         | Opt::SpeedLimit
         | Opt::SpeedTime
         | Opt::Ssl

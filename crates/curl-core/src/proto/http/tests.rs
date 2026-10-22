@@ -2780,6 +2780,122 @@ fn a_407_not_from_a_forwarding_proxy_is_not_the_proxy_s() {
     assert!(!text.contains("Proxy-Authorization"), "{text}");
 }
 
+/// Through a SOCKS proxy: `kind`'s proxy at `PORT`, for the origin
+/// `url`.
+fn through_socks(o: &mut Options, kind: &str, url: &[u8]) {
+    o.set_url(Some(url)).unwrap();
+    o.proxy.url = Some(format!("{kind}://127.0.0.1:{PORT}").into_bytes());
+}
+
+const SOCKS5_GRANTED: &[u8] = b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50";
+
+/// A SOCKS5 proxy that asks for the user and password is given them,
+/// then the name to resolve; the request then goes as to the origin, and
+/// the connection is traced as C traces it.
+#[test]
+fn a_socks5_proxy_logs_the_user_in_and_connects() {
+    let talk =
+        Conversation::replies(&[b"\x05\x02", b"\x01\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        through_socks(o, "socks5h", b"http://origin.example/a");
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let mut want =
+        b"\x05\x02\x00\x02\x01\x01u\x01p\x05\x01\x00\x03\x0eorigin.example\x00\x50".to_vec();
+    want.extend_from_slice(
+        b"GET /a HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n",
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&ran.request),
+        String::from_utf8_lossy(&want)
+    );
+    assert_eq!(ran.easy.report().connects(), 1);
+    let said = ran.seen.text();
+    let via = format!(" to origin.example port 80 (via 127.0.0.1 port {PORT})\n");
+    assert!(
+        said.iter()
+            .any(|l| l.starts_with("Opened SOCKS connection from ") && l.ends_with(&via)),
+        "{said:?}"
+    );
+}
+
+/// A SOCKS4 proxy is asked for the IPv4 address the name resolves to
+/// here, with an empty user.
+#[test]
+fn a_socks4_proxy_is_asked_for_the_address_resolved_here() {
+    let talk = Conversation::replies(&[b"\x00\x5a\x00\x00\x00\x00\x00\x00", OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        through_socks(o, "socks4", b"http://localhost:8990/a");
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.request
+            .starts_with(b"\x04\x01\x23\x1e\x7f\x00\x00\x01\x00GET /a HTTP/1.1\r\n"),
+        "{:?}",
+        String::from_utf8_lossy(&ran.request)
+    );
+}
+
+/// A SOCKS proxy that cannot connect fails the transfer with its error,
+/// kept for `CURLINFO_PROXY_ERROR`.
+#[test]
+fn a_socks_refusal_fails_with_the_proxy_s_error() {
+    let refused = b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00";
+    let talk = Conversation::replies(&[b"\x05\x00", refused], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        through_socks(o, "socks5h", b"http://origin.example/a");
+    });
+    assert_eq!(ran.result, Err(ErrorKind::Proxy));
+    let report = ran.easy.report();
+    assert_eq!(
+        report.proxy_error(),
+        Some(crate::conn::ProxyError::ReplyConnectionRefused)
+    );
+    assert!(
+        ran.seen
+            .text()
+            .iter()
+            .any(|l| l == "cannot complete SOCKS5 connection to origin.example. (5)\n"),
+        "{:?}",
+        ran.seen.text()
+    );
+}
+
+/// A connection whose SOCKS5 proxy did not authenticate the user serves
+/// no transfer that insists it must (test 1744); one it did serves both.
+#[test]
+fn an_unauthenticated_socks5_connection_serves_no_transfer_insisting() {
+    let first = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let second =
+        Conversation::replies(&[b"\x05\x02", b"\x01\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let creds = |o: &mut Options| {
+        through_socks(o, "socks5h", b"http://origin.example/a");
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+    };
+    let ran = get(&mut m, "/", first.clone(), creds);
+    assert_eq!(ran.result, Ok(()));
+    let ran = get_with(&mut m, ran.easy, "/", second.clone(), |o| {
+        creds(o);
+        o.proxy.socks5_auth.only = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().connects(), 1, "a new connection");
+    assert!(second.received().starts_with(b"\x05\x01\x02"));
+    // The one that authenticated is reused, insisting or not.
+    let ran = get_with(&mut m, ran.easy, "/", second.clone(), |o| {
+        creds(o);
+        o.proxy.socks5_auth.only = true;
+    });
+    assert_eq!(ran.easy.report().connects(), 0, "reused");
+}
+
 /// A tunnel's `CONNECT`, as test 1287's proxy sees it: the origin's
 /// authority, and only what the proxy is given.
 fn connect_of(proxy_authorization: &str) -> String {
@@ -2832,24 +2948,12 @@ fn a_tunnel_answers_a_407_over_the_same_connection() {
 /// and asked again with its credentials (`Connect me again please`).
 #[test]
 fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
-    let clock = ManualClock::new().unwrap();
-    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
     let challenge: &[u8] = b"HTTP/1.1 407 Who\r\n\
         Proxy-Authenticate: Basic realm=\"p\"\r\nProxy-Connection: close\r\n\
         Content-Length: 0\r\n\r\n";
     let first = Conversation::replies(&[challenge], true);
     let second = Conversation::replies(&[TUNNEL_UP, OK], false);
-    let net = FakeNet::new(clock.clone())
-        .with_peer(at, Peer::Accepts)
-        .with_conversation(at, first.clone())
-        .with_conversation(at, second.clone());
-    let env = Env {
-        clock: Box::new(clock.clone()),
-        net: Box::new(net),
-        arena: ArenaPolicy::new(16, 0).unwrap(),
-        waker: None,
-    };
-    let mut m = Multi::new(env).unwrap();
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
     let ran = get(&mut m, "/", second.clone(), |o| {
         o.set_url(Some(b"http://origin.example/a")).unwrap();
         o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());

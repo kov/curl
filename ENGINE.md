@@ -136,7 +136,8 @@ curl-core/src/
   multi/
     mod.rs                   Multi<H>, Host, Slot, the public API
     state.rs                 Run, TransferState and its variant structs, StepCx, the steps;
-                             state/tunnel.rs: the CONNECT handshake a transfer makes
+                             state/tunnel.rs, state/socks.rs: the CONNECT and SOCKS
+                             handshakes a transfer makes
     sched.rs                 RowSet (the dirty set), Counts, Tally
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
     sockets.rs               SocketTable, pollset diff, announce
@@ -148,6 +149,7 @@ curl-core/src/
     mod.rs                   ConnSlot, Conn, Route, Tcp, Scheme, Peer, Transport, ConnNumber
     pool.rs                  Pool, ConnLease, ReuseRules, Lock
     connect.rs               ConnectMachine, Eyeballs, Racing, Dialed
+    socks.rs                 the SOCKS4, 4a and 5 handshakes, sans-IO
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
@@ -853,8 +855,8 @@ machine through the pool, and NAMELOOKUP is marked when it resolves.
   pushes its finished `Layer`. Happy eyeballs never reads DNS sideways (C's
   `Curl_conn_dns_get_ai`), and the resolve record lives with the machine that started it, not
   on whichever transfer happens to call.
-- A route through an HTTP proxy that tunnels (`Tcp::tunnels`) does not end at the winning
-  attempt: the machine keeps its socket as `Stage::Tunnel(Dialed)`, with a receive buffer, and
+- A route through a proxy that makes a handshake (`Tcp::handshakes`: SOCKS, or an HTTP proxy
+  that tunnels) does not end at the winning attempt: the machine keeps its socket as `Stage::Tunnel(Dialed)`, with a receive buffer, and
   returns `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
   (`multi/state/tunnel.rs`) makes it. It renders the `CONNECT` with the proxy's side of its
   `Auth`, sends it and reads the answer through `Pool::dialed`, parses it with
@@ -863,6 +865,11 @@ machine through the pool, and NAMELOOKUP is marked when it resolves.
   write. A 407 is answered with another `CONNECT` on the same connection, its body dropped;
   a 2xx makes the `Conn` (`Pool::tunneled`), keeping what came after the answer, and is
   traced as established only then.
+- SOCKS likewise (`multi/state/socks.rs`, over the sans-IO `conn::socks::Handshake`). For SOCKS4
+  and SOCKS5, which resolve the destination here, the machine resolves it as it dials, through
+  the same cache, and the `Dialed` stage carries the answer. A failure is `ErrorKind::Proxy` with
+  the `ProxyError` kept for `CURLINFO_PROXY_ERROR`; a SOCKS5 proxy that authenticated the user
+  marks the `Conn`, which alone serves a transfer insisting on it (`CURLAUTH_ONLY`).
 - A proxy that closes the connection on its 407 starts the setup over from resolving
   (`Pool::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
   the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.

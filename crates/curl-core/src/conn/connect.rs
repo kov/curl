@@ -18,7 +18,8 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use super::dns::{Answer, DnsCache, Lookup};
 use super::io::{Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketPoll};
-use super::{Conn, ConnNumber, RecvBuf, RecvFailed, Route, Tcp, Transport, Use};
+use super::socks::Version;
+use super::{Conn, ConnNumber, Peer, RecvBuf, RecvFailed, Route, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
 
@@ -57,6 +58,9 @@ pub(crate) struct Dialed {
     socket: Box<dyn Socket>,
     connected_at: Instant,
     rx: RecvBuf,
+    /// The destination's addresses, for a SOCKS proxy that is not to
+    /// resolve its name, or why there are none.
+    target: Option<Result<(TryRc<Answer>, Found), Unresolved>>,
 }
 
 impl Dialed {
@@ -84,6 +88,16 @@ impl Dialed {
     /// The first `n` bytes received were used.
     pub(crate) fn consume(&mut self, n: usize) {
         self.rx.consume(n);
+    }
+
+    /// The addresses of the destination, resolved here.
+    pub(crate) fn target(&self) -> Option<&Result<(TryRc<Answer>, Found), Unresolved>> {
+        self.target.as_ref()
+    }
+
+    /// The proxy's address, and the connection's end here.
+    pub(crate) fn ends(&self) -> (SocketAddr, Option<SocketAddr>) {
+        (self.remote, self.socket.local_addr().ok())
     }
 }
 
@@ -371,14 +385,23 @@ impl ConnectMachine {
                     Ok(None) => {
                         let won = r.attempts.remove(i);
                         r.close_all(net);
-                        if self.route.tunnels() {
-                            // The connection is the proxy's; the tunnel
+                        if self.route.handshakes() {
+                            // The connection is the proxy's; the way
                             // through it is still to be made.
+                            let target = self.socks_target(net, setup, now);
+                            let target = match target {
+                                Ok(target) => target,
+                                Err(e) => {
+                                    net.close(won.socket);
+                                    return Err(e);
+                                }
+                            };
                             self.stage = Stage::Tunnel(Dialed {
                                 remote: won.remote,
                                 socket: won.socket,
                                 connected_at: now,
                                 rx: RecvBuf::default(),
+                                target,
                             });
                             return Ok(Drove::Connecting(self, Progress::Dialed));
                         }
@@ -441,45 +464,37 @@ impl ConnectMachine {
         setup: Setup<'_>,
         now: Instant,
     ) -> Result<(TryRc<Answer>, Found), ConnectError> {
-        let peer = self.route.destination();
-        let (name, port) = (peer.name(), peer.port());
-        let family = match self.route.ip {
-            IpVersion::Any => Family::Any,
-            IpVersion::V4 => Family::V4,
-            IpVersion::V6 => Family::V6,
-        };
-        let found = match setup
-            .dns
-            .lookup((name, port), family, setup.wildcard, setup.max_age, now)
-        {
-            Lookup::Found(answer) => return Ok((answer, Found::Cached)),
-            Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
-            Lookup::Stale => Found::Stale,
-            Lookup::Missing => Found::Resolved,
-        };
-        let oom = |OutOfMemory| ConnectError::OutOfMemory;
-        let answer = match shortcut(peer.shown(), name).map_err(oom)? {
-            Some(answer) => answer,
-            None => match net.resolve(name, family) {
-                Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
-                Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
-                Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
-                    let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
-                    let none = TryRc::try_new(none).map_err(oom)?;
-                    setup.dns.put(none, port, now, false).map_err(oom)?;
-                    return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
-                }
-                Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
-            },
-        };
-        let answer = TryRc::try_new(answer).map_err(oom)?;
-        setup
-            .dns
-            .put(answer.clone(), port, now, false)
-            .map_err(oom)?;
-        Ok((answer, found))
+        resolve(self.route.destination(), self.route.ip, net, setup, now)
     }
 
+    /// The destination's addresses, for a SOCKS proxy that is not to
+    /// resolve its name (`Curl_conn_dns_add_addr_resolve`); a resolver
+    /// that finds nothing is for the handshake to say.
+    #[expect(clippy::type_complexity, reason = "the field it fills")]
+    fn socks_target(
+        &self,
+        net: &mut dyn Net,
+        setup: Setup<'_>,
+        now: Instant,
+    ) -> Result<Option<Result<(TryRc<Answer>, Found), Unresolved>>, ConnectError> {
+        let Some(version) = self.route.proxy.as_ref().and_then(|p| Version::of(p.kind)) else {
+            return Ok(None);
+        };
+        if !version.resolves_locally() {
+            return Ok(None);
+        }
+        match resolve(
+            self.route.target(),
+            version.ip(self.route.ip),
+            net,
+            setup,
+            now,
+        ) {
+            Ok(found) => Ok(Some(Ok(found))),
+            Err(ConnectError::Unresolved(why)) => Ok(Some(Err(why))),
+            Err(e) => Err(e),
+        }
+    }
     /// The connection set up over `socket` to `remote`, found connected
     /// at `at`, with what was received over it and not used.
     fn conn(
@@ -503,6 +518,7 @@ impl ConnectMachine {
             use_: Use::Leased(NonZeroU32::MIN),
             rx,
             served: false,
+            socks5_authenticated: false,
             seen_version: None,
             close: false,
         }
@@ -551,6 +567,53 @@ impl Attempt {
             error,
         })
     }
+}
+
+/// The addresses `peer`'s name stands for, in the families `ip` allows:
+/// from the cache, a shortcut or the resolver, kept in the cache.
+fn resolve(
+    peer: &Peer,
+    ip: IpVersion,
+    net: &mut dyn Net,
+    setup: Setup<'_>,
+    now: Instant,
+) -> Result<(TryRc<Answer>, Found), ConnectError> {
+    let (name, port) = (peer.name(), peer.port());
+    let family = match ip {
+        IpVersion::Any => Family::Any,
+        IpVersion::V4 => Family::V4,
+        IpVersion::V6 => Family::V6,
+    };
+    let found = match setup
+        .dns
+        .lookup((name, port), family, setup.wildcard, setup.max_age, now)
+    {
+        Lookup::Found(answer) => return Ok((answer, Found::Cached)),
+        Lookup::Negative => return Err(ConnectError::Unresolved(Unresolved::Negative)),
+        Lookup::Stale => Found::Stale,
+        Lookup::Missing => Found::Resolved,
+    };
+    let oom = |OutOfMemory| ConnectError::OutOfMemory;
+    let answer = match shortcut(peer.shown(), name).map_err(oom)? {
+        Some(answer) => answer,
+        None => match net.resolve(name, family) {
+            Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
+            Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
+            Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
+                let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
+                let none = TryRc::try_new(none).map_err(oom)?;
+                setup.dns.put(none, port, now, false).map_err(oom)?;
+                return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
+            }
+            Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
+        },
+    };
+    let answer = TryRc::try_new(answer).map_err(oom)?;
+    setup
+        .dns
+        .put(answer.clone(), port, now, false)
+        .map_err(oom)?;
+    Ok((answer, found))
 }
 
 /// The addresses `host`, as the URL names it, stands for without asking

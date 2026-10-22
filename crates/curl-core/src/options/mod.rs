@@ -111,6 +111,30 @@ pub struct Proxy {
     /// The answer to `CONNECT` is not delivered, though its headers are
     /// kept (`CURLOPT_SUPPRESS_CONNECT_HEADERS`).
     pub suppress_connect_headers: bool,
+    /// How a SOCKS5 proxy may authenticate the user
+    /// (`CURLOPT_SOCKS5_AUTH`).
+    pub socks5_auth: Socks5Auth,
+}
+
+/// The methods a SOCKS5 proxy may authenticate with
+/// (`CURLOPT_SOCKS5_AUTH`): a user and password, GSS-API, and whether
+/// one of them must be, never none. Both, and none allowed, unless set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Socks5Auth {
+    pub basic: bool,
+    pub gssapi: bool,
+    /// The proxy must authenticate the user (`CURLAUTH_ONLY`).
+    pub only: bool,
+}
+
+impl Default for Socks5Auth {
+    fn default() -> Self {
+        Socks5Auth {
+            basic: true,
+            gssapi: true,
+            only: false,
+        }
+    }
 }
 
 /// Why `user:password` for a proxy is refused.
@@ -133,6 +157,7 @@ impl Proxy {
             password: self.password.as_deref().map(copy).transpose()?,
             auth: self.auth,
             suppress_connect_headers: self.suppress_connect_headers,
+            socks5_auth: self.socks5_auth,
         })
     }
 

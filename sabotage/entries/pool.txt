@@ -61,7 +61,7 @@ witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
 --- old
-            if !conn.route.serves(route) {
+            if !conn.serves(route) {
                 continue;
             }
 --- new
@@ -142,7 +142,7 @@ witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_afte
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 --- old
-        self.answered < self.replies.len() && self.heads() > self.answered
+        self.answered < self.replies.len() && asked > self.answered
 --- new
         self.answered < self.replies.len()
 
@@ -224,9 +224,9 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 --- old
                         r.close_all(net);
-                        if self.route.tunnels() {
+                        if self.route.handshakes() {
 --- new
-                        if self.route.tunnels() {
+                        if self.route.handshakes() {
 
 === a transfer is not woken for its next attempt
 file: crates/curl-core/src/multi/state.rs

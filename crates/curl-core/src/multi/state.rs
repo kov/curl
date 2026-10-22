@@ -23,6 +23,7 @@ use crate::options::{Follow, Lines, Method, Options, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
 
+mod socks;
 mod tunnel;
 use crate::proto::http1::follow;
 use crate::proto::{Inherited, ProtoState, ProtoStep};
@@ -142,8 +143,26 @@ pub(crate) struct Connecting {
     via: Option<TryRc<Peer>>,
     /// The proxy the route goes through.
     proxy: Option<ProxyRoute>,
-    /// The tunnel through it being set up, once connected to it.
-    tunnel: Option<Box<tunnel::Tunnel>>,
+    /// The handshake made over the connection to it, once connected.
+    handshake: Option<Box<Handshake>>,
+}
+
+/// A handshake with a proxy, over the connection to it.
+#[derive(Debug)]
+enum Handshake {
+    Socks(socks::Socks),
+    /// An HTTP proxy's tunnel, with `CONNECT`.
+    Connect(tunnel::Tunnel),
+}
+
+impl Handshake {
+    /// What it waits for on the connection's socket.
+    fn interest(&self) -> Events {
+        match self {
+            Handshake::Socks(s) => s.interest(),
+            Handshake::Connect(t) => t.interest(),
+        }
+    }
 }
 
 impl Connecting {
@@ -386,7 +405,7 @@ impl TransferState {
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
                 // A tunnel's handshake waits for what it sends or reads.
-                let events = c.tunnel.as_ref().map_or(Events::OUT, |t| t.interest());
+                let events = c.handshake.as_ref().map_or(Events::OUT, |h| h.interest());
                 for s in pool.sockets(&c.lease) {
                     set.add(s, events);
                 }
@@ -412,7 +431,7 @@ impl Connecting {
             origin,
             via: _,
             proxy: _,
-            tunnel: _,
+            handshake: _,
         } = self;
         TransferState::ProtoConnect(Attached {
             lease,
@@ -855,13 +874,13 @@ fn connecting<H: Host>(
     if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
         let ms = cx.easy().report().timings().since_single_ms(now);
         let kind = ErrorKind::OperationTimedout;
-        let kind = match c.tunnel {
-            Some(_) => trace::fail(
+        let kind = match c.handshake.as_deref() {
+            Some(Handshake::Connect(_)) => trace::fail(
                 cx,
                 kind,
                 format_args!("Proxy CONNECT aborted due to timeout"),
             ),
-            None => trace::fail(
+            Some(Handshake::Socks(_)) | None => trace::fail(
                 cx,
                 kind,
                 format_args!("Connection timed out after {ms} milliseconds"),
@@ -872,8 +891,10 @@ fn connecting<H: Host>(
     if StepCx::pause(cx).recv != RecvPause::Running {
         return (TransferState::Connecting(c), Wake::Idle);
     }
-    if c.tunnel.is_some() {
-        return tunnel::step(c, cx);
+    match c.handshake.as_deref() {
+        Some(Handshake::Socks(_)) => return socks::step(c, cx),
+        Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
+        None => {}
     }
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
@@ -920,7 +941,7 @@ fn connecting<H: Host>(
             }
             (TransferState::Connecting(c), Wake::Again)
         }
-        Ok(Connected::Connecting(Progress::Dialed)) => tunnel::dialed(c, cx),
+        Ok(Connected::Connecting(Progress::Dialed)) => dialed(c, cx),
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
             match until {
                 Some(at) => run
@@ -947,6 +968,17 @@ fn connecting<H: Host>(
     }
 }
 
+/// Connected to the proxy: its handshake starts, SOCKS's or an HTTP
+/// proxy's tunnel's. Each connection to the proxy counts as it is made.
+fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    cx.report_mut().count_connect();
+    let proxy = c.proxy.as_ref().expect("dialed through a proxy");
+    match crate::conn::socks::Version::of(proxy.kind) {
+        Some(version) => socks::dialed(c, cx, version),
+        None => tunnel::dialed(c, cx),
+    }
+}
+
 /// The connection is up, from `local` to `remote`, connected at `at`
 /// (`conn_connect_trace`): timed and traced, and counted unless through
 /// a tunnel, whose connections were counted as each was made.
@@ -958,7 +990,7 @@ fn established<H: Host>(
     at: Instant,
 ) -> (TransferState, Wake) {
     cx.report_mut().timings_mut().mark(Timer::Connect, at);
-    if c.tunnel.is_none() {
+    if c.handshake.is_none() {
         cx.report_mut().count_connect();
     }
     cx.report_mut().set_primary(Ends { remote, local });
@@ -1096,11 +1128,18 @@ fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
 /// address the URL names.
 fn report_answer<H: Host>(cx: &mut StepCx<'_, H>, c: &Connecting) {
     let (pool, _) = cx.rest.pool_net(cx.me);
-    let Some(answer) = pool.answer(&c.lease).filter(|a| a.resolved()) else {
+    let Some(answer) = pool.answer(&c.lease) else {
         return;
     };
+    report_resolved(cx, &answer, c.destination().port());
+}
+
+/// As `report_answer`, for `answer`, found for port `port`.
+fn report_resolved<H: Host>(cx: &mut StepCx<'_, H>, answer: &Answer, port: u16) {
+    if !answer.resolved() {
+        return;
+    }
     let host = Bytes(answer.name());
-    let port = c.destination().port();
     trace::info(cx, format_args!("Host {host}:{port} was resolved."));
     trace::info(cx, format_args!("IPv6: {}", Family(answer.addrs(), true)));
     trace::info(cx, format_args!("IPv4: {}", Family(answer.addrs(), false)));
@@ -1921,13 +1960,11 @@ fn choose_proxy<H: Host>(
         peer: TryRc::try_new(parsed.peer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         creds,
         forward: false,
+        auth_only: cx.easy().options().proxy.socks5_auth.only,
     };
+    // Through a SOCKS proxy, the request goes as to the origin.
     if !route.http() {
-        return Err(trace::fail(
-            cx,
-            ErrorKind::NotBuiltIn,
-            format_args!("SOCKS proxies are not built in yet"),
-        ));
+        return Ok(Some(route));
     }
     // A request goes to an HTTP proxy whole, unless it is asked to
     // tunnel, or reaches the origin through another peer; HTTP is the
@@ -2028,7 +2065,7 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         origin,
         via,
         proxy,
-        tunnel: None,
+        handshake: None,
     })
 }
 

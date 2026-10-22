@@ -29,22 +29,22 @@ witness: curl-core multi::tests::stale_answers_are_dropped
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-            Lookup::Found(answer) => return Ok((answer, Found::Cached)),
+        Lookup::Found(answer) => return Ok((answer, Found::Cached)),
 --- new
-            Lookup::Found(_) => Found::Resolved,
+        Lookup::Found(_) => Found::Resolved,
 
 === a name answered without a resolver is not kept
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::connections_are_numbered_in_their_traces
 --- old
-            .put(answer.clone(), port, now, false)
-            .map_err(oom)?;
-        Ok((answer, found))
+        .put(answer.clone(), port, now, false)
+        .map_err(oom)?;
+    Ok((answer, found))
 --- new
-            .put(answer.clone(), port, now, false)
-            .map_err(oom)?;
-        setup.dns.remove(name, port);
-        Ok((answer, found))
+        .put(answer.clone(), port, now, false)
+        .map_err(oom)?;
+    setup.dns.remove(name, port);
+    Ok((answer, found))
 
 === a transfer's end drops nothing stale
 file: crates/curl-core/src/multi/state.rs
@@ -76,9 +76,9 @@ witness: curl-core multi::tests::a_bad_resolve_entry_fails_the_transfer
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- old
-                    setup.dns.put(none, port, now, false).map_err(oom)?;
+                setup.dns.put(none, port, now, false).map_err(oom)?;
 --- new
-                    drop((none, port));
+                drop((none, port));
 
 === an answer for one family answers for both
 file: crates/curl-core/src/conn/dns.rs

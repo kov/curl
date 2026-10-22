@@ -258,6 +258,7 @@ impl Pool {
                 use_: Use::Leased(NonZeroU32::MIN),
                 rx: RecvBuf::default(),
                 served: false,
+                socks5_authenticated: false,
                 seen_version: None,
                 close: false,
             }),
@@ -298,7 +299,7 @@ impl Pool {
             let Use::Idle { since } = conn.use_ else {
                 continue;
             };
-            if !conn.route.serves(route) {
+            if !conn.serves(route) {
                 continue;
             }
             let number = conn.number;

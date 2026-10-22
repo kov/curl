@@ -9,6 +9,7 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_core::conn::ProxyError;
 use curl_core::options::AuthMethods;
 use curl_core::report::{ResponseVersion, TransferReport};
 use curl_core::version::Protocol;
@@ -232,6 +233,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_HTTPAUTH_AVAIL => Value::Long(auth_mask(r.auth_offered())),
         ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used())),
         ffi::CURLINFO_PROXYAUTH_AVAIL => Value::Long(auth_mask(r.proxy_auth_offered())),
+        ffi::CURLINFO_PROXY_ERROR => Value::Long(r.proxy_error().map_or(0, proxy_code)),
         ffi::CURLINFO_PROXYAUTH_USED => Value::Long(auth_mask(r.proxy_auth_used())),
         ffi::CURLINFO_REQUEST_SIZE => {
             Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))
@@ -347,6 +349,45 @@ pub unsafe extern "C" fn curl_easy_getinfo(
     CURLE_OK
 }
 const _: ffi::proto::curl_easy_getinfo = curl_easy_getinfo;
+
+/// A SOCKS proxy's error as its `CURLproxycode`.
+fn proxy_code(e: ProxyError) -> c_long {
+    match e {
+        ProxyError::BadAddressType => 1,
+        ProxyError::BadVersion => 2,
+        ProxyError::Closed => 3,
+        ProxyError::Gssapi => 4,
+        ProxyError::GssapiPermsg => 5,
+        ProxyError::GssapiProtection => 6,
+        ProxyError::Identd => 7,
+        ProxyError::IdentdDiffer => 8,
+        ProxyError::LongHostname => 9,
+        ProxyError::LongPasswd => 10,
+        ProxyError::LongUser => 11,
+        ProxyError::NoAuth => 12,
+        ProxyError::RecvAddress => 13,
+        ProxyError::RecvAuth => 14,
+        ProxyError::RecvConnect => 15,
+        ProxyError::RecvReqack => 16,
+        ProxyError::ReplyAddressTypeNotSupported => 17,
+        ProxyError::ReplyCommandNotSupported => 18,
+        ProxyError::ReplyConnectionRefused => 19,
+        ProxyError::ReplyGeneralServerFailure => 20,
+        ProxyError::ReplyHostUnreachable => 21,
+        ProxyError::ReplyNetworkUnreachable => 22,
+        ProxyError::ReplyNotAllowed => 23,
+        ProxyError::ReplyTtlExpired => 24,
+        ProxyError::ReplyUnassigned => 25,
+        ProxyError::RequestFailed => 26,
+        ProxyError::ResolveHost => 27,
+        ProxyError::SendAuth => 28,
+        ProxyError::SendConnect => 29,
+        ProxyError::SendRequest => 30,
+        ProxyError::UnknownFail => 31,
+        ProxyError::UnknownMode => 32,
+        ProxyError::UserRejected => 33,
+    }
+}
 
 #[cfg(test)]
 mod tests {

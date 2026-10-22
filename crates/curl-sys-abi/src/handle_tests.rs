@@ -217,6 +217,45 @@ fn a_range_is_kept() {
     }
 }
 
+/// `CURLOPT_AWS_SIGV4` makes AWS SigV4 the one method; NULL takes it out
+/// of the methods asked for and leaves the others. A string refused for
+/// its length leaves the one before it, and the method as it says.
+#[test]
+fn aws_sigv4_is_the_one_method() {
+    use curl_core::options::AuthMethods as M;
+    let c = curl_easy_init();
+    let state = |c| options(c, |o| (o.http.aws_sigv4.clone(), o.http.auth.0));
+    let mut given = *b"aws:amz:r:s\0";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_AWS_SIGV4, given.as_mut_ptr()),
+        CURLE_OK
+    );
+    given[0] = b'X';
+    std::hint::black_box(&given);
+    assert_eq!(state(c), (Some(b"aws:amz:r:s".to_vec()), M::AWS_SIGV4));
+    let any = ffi::CURLAUTH_BASIC | ffi::CURLAUTH_AWS_SIGV4;
+    assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, any as c_long), CURLE_OK);
+    let mut long_string = vec![b'a'; 8_000_001];
+    long_string.push(0);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_AWS_SIGV4, long_string.as_mut_ptr()),
+        ffi::CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(state(c), (Some(b"aws:amz:r:s".to_vec()), M::AWS_SIGV4));
+    assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, any as c_long), CURLE_OK);
+    let null = ptr::null_mut::<c_char>();
+    assert_eq!(pointer(c, ffi::CURLOPT_AWS_SIGV4, null), CURLE_OK);
+    assert_eq!(state(c), (None, M::BASIC));
+    let mut empty = *b"\0";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_AWS_SIGV4, empty.as_mut_ptr()),
+        CURLE_OK
+    );
+    assert_eq!(state(c), (Some(Vec::new()), M::AWS_SIGV4));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// The HTTP options' strings and list are copied; NULL takes them away.
 /// HTTP/2 and HTTP/3 are not built in, as in a C build without them.
 #[test]
@@ -318,7 +357,7 @@ fn http_options_reach_the_request() {
         CURLE_OK
     );
     assert_eq!(auth(c), M::ANY);
-    assert_eq!(crate::getinfo::auth_mask(auth(c)), 1 | 2 | 64);
+    assert_eq!(crate::getinfo::auth_mask(auth(c)), 1 | 2 | 64 | 128);
     let ie = ffi::CURLAUTH_DIGEST_IE | ffi::CURLAUTH_NTLM;
     assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, mask(ie)), CURLE_OK);
     assert_eq!(
@@ -340,7 +379,13 @@ fn http_options_reach_the_request() {
         (unknown, CURLE_OK, M::OTHER),
         (unknown | ffi::CURLAUTH_NTLM, CURLE_OK, M::OTHER),
         (unknown | ffi::CURLAUTH_ONLY, CURLE_OK, M::OTHER | M::ONLY),
-        (ffi::CURLAUTH_BASIC | sigv4, CURLE_OK, M::BASIC | M::OTHER),
+        (
+            ffi::CURLAUTH_BASIC | sigv4,
+            CURLE_OK,
+            M::BASIC | M::AWS_SIGV4,
+        ),
+        (sigv4, CURLE_OK, M::AWS_SIGV4),
+        (ffi::CURLAUTH_HTTPSIG, CURLE_NOT_BUILT_IN, M::AWS_SIGV4),
         (
             ffi::CURLAUTH_BEARER | (1 << 30),
             CURLE_OK,

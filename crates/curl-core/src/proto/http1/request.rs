@@ -233,6 +233,12 @@ impl UserHeaders {
         self.lines.items().iter().find(|h| h.replaces(name))
     }
 
+    /// The first line that replaces the library's header `name`, as the
+    /// application gave it (`Curl_checkheaders`).
+    pub(crate) fn line_replacing(&self, name: &[u8]) -> Option<&[u8]> {
+        self.replacing(name).map(|h| &h.line[..])
+    }
+
     /// Whether the application's `Expect` asks for `100-continue`; none
     /// if it gives no `Expect`.
     pub(crate) fn expects_continue(&self) -> Option<bool> {
@@ -436,6 +442,9 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) referer: Option<&'o [u8]>,
     pub(crate) proxy_authorization: Option<Authorization<'o>>,
     pub(crate) authorization: Option<Authorization<'o>>,
+    /// The lines a signature sends in Authorization's place, each ended
+    /// by CRLF: AWS SigV4's `Authorization` and the headers it adds.
+    pub(crate) signed: Option<&'o [u8]>,
     /// The range the request asks for, or for an upload sends.
     pub(crate) range: Option<RangeLine<'o>>,
     /// The body the request sends, if it has one.
@@ -589,6 +598,9 @@ fn write_h1(
             Part::Authorization => {
                 if let Some(Authorization { method, value }) = head.authorization {
                     out.line(&[b"Authorization: ", method.as_bytes(), b" ", value])?;
+                }
+                if let Some(lines) = head.signed {
+                    out.put(lines)?;
                 }
             }
             Part::Range => match head.range {
@@ -882,6 +894,7 @@ mod tests {
             referer: None,
             proxy_authorization: None,
             authorization: None,
+            signed: None,
             range: None,
             content: None,
             chunked: false,
@@ -953,6 +966,7 @@ mod tests {
                 referer: Some(b"http://ref.example/x"),
                 proxy_authorization: None,
                 authorization: None,
+                signed: None,
                 range: None,
                 content: None,
                 chunked: false,
@@ -1005,6 +1019,7 @@ mod tests {
                 referer: None,
                 proxy_authorization: None,
                 authorization: Authorization::new("Basic", b"OmV4YW1wbGU=", trusted, &headers),
+                signed: None,
                 range: None,
                 content: None,
                 chunked: false,
@@ -1170,6 +1185,7 @@ mod tests {
             referer: None,
             proxy_authorization: None,
             authorization: None,
+            signed: None,
             range: None,
             content: None,
             chunked: false,
@@ -1224,6 +1240,7 @@ mod tests {
             referer: None,
             proxy_authorization: None,
             authorization: None,
+            signed: None,
             range: None,
             content: None,
             chunked: false,
@@ -1274,6 +1291,7 @@ mod tests {
                 referer: None,
                 proxy_authorization: None,
                 authorization: None,
+                signed: None,
                 range: None,
                 content: None,
                 chunked: false,

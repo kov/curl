@@ -41,6 +41,7 @@ use std::num::NonZeroUsize;
 pub(crate) mod auth;
 pub(crate) mod cookies;
 pub(crate) mod digest;
+pub(crate) mod sigv4;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
 /// The most one read takes (`CURL_MAX_WRITE_SIZE`, BUFFERSIZE's default).
@@ -81,6 +82,31 @@ pub(crate) struct Challenged<'r> {
 /// Digest's client nonce.
 fn random(bytes: &mut [u8; 12]) -> Result<(), ()> {
     curl_os::random::fill(bytes).map_err(|_| ())
+}
+
+/// That `side` authenticates with `used`, as the user of `secret`, if
+/// it uses a method (`output_auth_headers`).
+fn auth_trace<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    side: &str,
+    used: AuthMethods,
+    secret: Option<Secret<'_>>,
+) {
+    if !used.is_empty() {
+        let user = secret.map_or(&b""[..], |s| s.user());
+        let name = used.name().as_bytes();
+        trace::info_with(
+            cx,
+            &[
+                side.as_bytes(),
+                b" auth using ",
+                name,
+                b" with user '",
+                user,
+                b"'",
+            ],
+        );
+    }
 }
 
 fn made(output: Result<Output, OutputError>) -> Result<Output, ErrorKind> {
@@ -521,6 +547,48 @@ impl Request {
         events
     }
 
+    /// The request signed with AWS SigV4, if it has credentials to sign
+    /// with.
+    fn sign_sigv4(
+        &self,
+        options: &crate::options::Options,
+        method: &[u8],
+        credentials: Option<Secret<'_>>,
+        now: i64,
+    ) -> Option<sigv4::Signing> {
+        let credentials = credentials?;
+        let (path, query) = match self.target.iter().position(|&b| b == b'?') {
+            Some(q) => (&self.target[..q], Some(&self.target[q + 1..])),
+            None => (&self.target[..], None),
+        };
+        let port = self.peer.port();
+        let request = sigv4::Request {
+            params: options.http.aws_sigv4.as_deref(),
+            method,
+            kind: match self.method {
+                Method::Get | Method::Head => sigv4::Kind::GetOrHead,
+                Method::Post => sigv4::Kind::Post,
+                Method::Upload => sigv4::Kind::Put,
+            },
+            hostname: self.peer.name(),
+            host: self.peer.shown(),
+            port: (port != DEFAULT_PORT).then_some(port),
+            path,
+            query,
+            headers: &options.http.headers,
+            post_fields: match &options.upload {
+                UploadSource::Bytes(bytes) => sigv4::PostFields::Bytes(bytes),
+                UploadSource::Lent(lent) => sigv4::PostFields::Lent(&**lent),
+                UploadSource::None | UploadSource::Read { .. } => sigv4::PostFields::None,
+            },
+            empty_upload: matches!(options.upload, UploadSource::Read { size: Some(0), .. }),
+            user: credentials.user(),
+            password: credentials.password(),
+            now,
+        };
+        Some(sigv4::sign(&request))
+    }
+
     /// The method the request line names: the application's own, unless
     /// a follow dropped it.
     fn method_line<'o>(&self, http: &'o Http) -> &'o [u8] {
@@ -572,6 +640,7 @@ impl Request {
             ),
             None => (&self.peer, None),
         };
+        let now = cx.unix_time();
         let (auth_state, options) = cx.easy_mut().auth_with_options();
         let http = &options.http;
         let method = self.method_line(http);
@@ -603,6 +672,40 @@ impl Request {
                 .side(Side::Host)
                 .output(credentials, custom, &request, random),
         )?;
+        // AWS SigV4 is signed now, with what the request will be; it
+        // fails a path kept as given (`Curl_output_aws_sigv4`).
+        let signing = if auth.used == AuthMethods::AWS_SIGV4 {
+            if options.url_rules.path_as_is {
+                return Err(trace::fail(
+                    cx,
+                    ErrorKind::BadFunctionArgument,
+                    format_args!("Cannot use sigv4 authentication with path-as-is flag"),
+                ));
+            }
+            (!custom)
+                .then(|| self.sign_sigv4(options, method, credentials, now))
+                .flatten()
+        } else {
+            None
+        };
+        let signed = match signing {
+            None => None,
+            Some(sigv4::Signing { notes, result }) => match result {
+                Ok(lines) => Some((notes, lines)),
+                Err(e) => {
+                    // What C traces before it fails: the proxy's
+                    // authenticating, and the signing's notes.
+                    auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+                    for note in &notes {
+                        trace::info_with(cx, &[note]);
+                    }
+                    return Err(match e.message() {
+                        Some(said) => trace::fail(cx, e.kind(), format_args!("{said}")),
+                        None => e.kind(),
+                    });
+                }
+            },
+        };
         let probe = auth.probe || proxy_auth.probe;
         let auth_asked = cx.easy().auth.asked(
             (credentials, &self.peer),
@@ -747,6 +850,7 @@ impl Request {
             referer: cx.easy().report().referer(),
             proxy_authorization,
             authorization,
+            signed: signed.as_ref().map(|(_, lines)| &lines[..]),
             range,
             content,
             chunked: chunked && asked.is_none(),
@@ -795,13 +899,9 @@ impl Request {
         };
         // Named once in use, though Digest sends nothing before its
         // first challenge (`output_auth_headers`).
-        if !proxy_auth.used.is_empty() {
-            let user = proxy_secret.map_or(&b""[..], |s| s.user());
-            let name = proxy_auth.used.name().as_bytes();
-            trace::info_with(
-                cx,
-                &[b"Proxy auth using ", name, b" with user '", user, b"'"],
-            );
+        auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+        for note in signed.iter().flat_map(|(notes, _)| notes) {
+            trace::info_with(cx, &[note]);
         }
         if let Some(method) = authenticated {
             let user = self.credentials.as_ref().map_or(&b""[..], |c| c.user());

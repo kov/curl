@@ -38,6 +38,13 @@ impl Auth {
     pub(crate) fn start(&mut self, host: AuthMethods, proxy: AuthMethods) {
         self.problem = false;
         self.host.start(host);
+        // AWS SigV4 is never a proxy's: asked of one, it is as a method
+        // not implemented (`output_auth_headers`).
+        let proxy = if proxy.contains(AuthMethods::AWS_SIGV4) {
+            (proxy & !AuthMethods::AWS_SIGV4) | AuthMethods::OTHER
+        } else {
+            proxy
+        };
         self.proxy.start(proxy);
     }
 
@@ -252,6 +259,12 @@ impl PeerAuth {
                     Some(copy(credentials.bearer)?)
                 };
                 (value.is_some(), value)
+            }
+            // Signed where the request is made, unless the application
+            // sends its own Authorization; never more than once.
+            Some(AuthMethods::AWS_SIGV4) => {
+                self.done = true;
+                (true, None)
             }
             Some(AuthMethods::DIGEST) => {
                 // In use from the start; done once a challenge is answered.
@@ -847,6 +860,10 @@ impl<'a> Secret<'a> {
 
     pub(crate) fn user(&self) -> &'a [u8] {
         self.user
+    }
+
+    pub(crate) fn password(&self) -> &'a [u8] {
+        self.password
     }
 
     /// A user or a password, not both empty (`Curl_creds_has_user_or_pass`).
@@ -1646,6 +1663,32 @@ mod tests {
         assert_eq!(send(&token(b"t"), false), Some((br, b"t".to_vec())));
         assert_eq!(send(&token(b"t"), true), None, "the application's own");
         assert_eq!(send(&token(b""), false), None, "no token");
+    }
+
+    /// AWS SigV4 wanted alone is in use at once, sending nothing itself:
+    /// the request is signed where it is made. A proxy never uses it.
+    #[test]
+    fn aws_sigv4_is_used_at_once_and_never_by_a_proxy() {
+        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let request = AuthRequest {
+            origin: &peer,
+            method: b"GET",
+            uri: b"/",
+            get_or_head: true,
+        };
+        let sigv4 = AuthMethods::AWS_SIGV4;
+        let mut auth = Auth::default();
+        auth.start(sigv4, sigv4);
+        let secret = || Some(Secret::new(b"u", b"p"));
+        let mut output = |side| {
+            let out = auth
+                .side(side)
+                .output(secret(), false, &request, |_| Ok(()))
+                .unwrap();
+            (out.used, out.header, out.probe)
+        };
+        assert_eq!(output(Side::Host), (sigv4, None, false));
+        assert_eq!(output(Side::Proxy), (AuthMethods::NONE, None, false));
     }
 
     /// The values the C tool sends, and RFC 4648's vectors.

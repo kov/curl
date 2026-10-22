@@ -164,6 +164,8 @@ pub(crate) struct Operation<'a> {
     /// The methods to authenticate with; none for the library's default
     /// (C's `authtype`).
     pub(crate) auth: AuthMethods,
+    /// `--aws-sigv4`: what AWS SigV4 signs with, as given.
+    pub(crate) aws_sigv4: Option<&'a [u8]>,
     /// `--request`.
     pub(crate) custom_request: Option<&'a [u8]>,
     /// `--referer`, without its `;auto`.
@@ -929,6 +931,11 @@ pub(crate) fn apply<'a>(
             op.bearer = Some(text);
             op.auth = op.auth | AuthMethods::BEARER;
         }
+        Opt::AwsSigv4 => {
+            let op = line.current();
+            op.auth = op.auth | AuthMethods::AWS_SIGV4;
+            op.aws_sigv4 = Some(value.text());
+        }
         Opt::Basic => {
             let op = line.current();
             op.auth = if value.toggle() {
@@ -1210,7 +1217,6 @@ pub(crate) fn apply<'a>(
         | Opt::Alpn
         | Opt::AltSvc
         | Opt::Append
-        | Opt::AwsSigv4
         | Opt::CaNative
         | Opt::Cacert
         | Opt::Capath

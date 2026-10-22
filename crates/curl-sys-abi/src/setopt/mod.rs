@@ -101,6 +101,8 @@ unsafe fn string<'a>(p: *mut c_void) -> Result<Option<&'a [u8]>, Refused> {
 /// `CURLAUTH_ONLY` this build does not implement kept as `OTHER`, and
 /// bits past 32 dropped, as C stores the mask in 32 bits. A mask with no
 /// bit below `CURLAUTH_ONLY` left, but for one of none, is not built in.
+/// So is one of HTTP signatures alone, which this build lacks: C, which
+/// has them, takes it.
 fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMethods, Refused> {
     use curl_core::options::AuthMethods;
     if mask == ffi::CURLAUTH_NONE {
@@ -109,10 +111,7 @@ fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMeth
     let digest = ffi::CURLAUTH_DIGEST | ffi::CURLAUTH_DIGEST_IE;
     let lacking = ffi::CURLAUTH_NTLM | ffi::CURLAUTH_NEGOTIATE;
     let mut rest = mask & 0x7fff_ffff & !lacking;
-    // Not built yet, though C has them: refused when they are all that
-    // is asked, until AWS SigV4 comes with step 36 and HTTP signatures
-    // with theirs.
-    if rest & !(ffi::CURLAUTH_AWS_SIGV4 | ffi::CURLAUTH_HTTPSIG) == 0 {
+    if rest & !ffi::CURLAUTH_HTTPSIG == 0 {
         return Err(Refused::NotBuiltIn);
     }
     let mut methods = AuthMethods::NONE;
@@ -120,6 +119,7 @@ fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMeth
         (ffi::CURLAUTH_BASIC, AuthMethods::BASIC),
         (digest, AuthMethods::DIGEST),
         (ffi::CURLAUTH_BEARER, AuthMethods::BEARER),
+        (ffi::CURLAUTH_AWS_SIGV4, AuthMethods::AWS_SIGV4),
     ] {
         if rest & bits != 0 {
             methods = methods | method;
@@ -726,6 +726,21 @@ fn apply(
         (ffi::CURLOPT_CUSTOMREQUEST, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.http.custom_method = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_AWS_SIGV4, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let mut given = unsafe { owned(p) };
+            if let Ok(params) = &mut given {
+                options.http.aws_sigv4 = params.take();
+            }
+            // Set, it is the one method; cleared, it is taken out of
+            // those asked for: as the string stands, refused or not.
+            let auth = &mut options.http.auth.0;
+            *auth = match options.http.aws_sigv4 {
+                Some(_) => curl_core::options::AuthMethods::AWS_SIGV4,
+                None => *auth & !curl_core::options::AuthMethods::AWS_SIGV4,
+            };
+            given?;
         }
         (ffi::CURLOPT_REQUEST_TARGET, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.

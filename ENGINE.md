@@ -1699,7 +1699,10 @@ what to send (`output`, from a `Secret`: the request's `Credentials` for the ori
 route's `ProxyCreds` for the proxy, never a token; the method and the path): the proxy's
 first, as `Proxy-Authorization`, and only to a proxy the request goes to whole. One method
 wanted is sent at once, more wait for a peer to choose. Basic and Bearer are done once sent;
-Digest is in use from the start and done only once it answers a challenge, so a request with
+AWS SigV4, never a proxy's and never offered by a peer, is in use at once when it is the one
+method wanted and sends nothing itself: the request signs itself where it renders
+(`proto::http::sigv4`, with what the request will be: method, path, query, the application's
+headers, the POST data), and the lines it makes go where `Authorization` goes. Digest is in use from the start and done only once it answers a challenge, so a request with
 a body sent before that is a probe: `Content-Length: 0` in place of the application's, no
 body read (`authneg`). The request hands its response's head parser an `AuthAsked`, and the
 parser reads a 401's `WWW-Authenticate:` and a 407's `Proxy-Authenticate:` lines into each
@@ -1717,7 +1720,8 @@ peer or with other credentials it is not there. An answered 401
 ends `Follow` to the request's own URL, counted as a redirect, keeping `Options::port`. Each
 request counts what it moves from nothing (`Sizes::new_request`, `Curl_pgrsReset`); heads and
 request bytes are counted over the transfer. The hashes Digest computes with (MD5, SHA-256,
-SHA-512/256) are `crate::hash`, fixed state and no allocation, ported from C's built-ins.
+SHA-512/256) and SigV4's HMAC-SHA256 are `crate::hash`, fixed state and no allocation, ported
+from C's built-ins.
 
 ### 6.5 Cookies
 

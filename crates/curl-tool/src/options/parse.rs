@@ -1021,6 +1021,14 @@ mod tests {
         assert_eq!(auth(&["x", "--basic", "--digest"]), basic | digest);
         assert_eq!(auth(&["x", "--basic", "--digest", "--no-basic"]), digest);
         assert_eq!(auth(&["x", "--basic", "--digest", "--no-digest"]), basic);
+        let sigv4 = |args: &[&str]| {
+            let op = &line(args).operations[0];
+            (op.auth, op.aws_sigv4)
+        };
+        assert_eq!(
+            sigv4(&["x", "--basic", "--aws-sigv4", "a:b", "--aws-sigv4", ""]),
+            (basic | AuthMethods::AWS_SIGV4, Some(&b""[..]))
+        );
     }
 
     /// `--location-trusted` alone sends credentials on; `--max-redirs`

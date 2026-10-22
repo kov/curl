@@ -98,6 +98,7 @@ pub(crate) fn auth_mask(methods: AuthMethods) -> c_long {
         (AuthMethods::BASIC, ffi::CURLAUTH_BASIC),
         (AuthMethods::DIGEST, ffi::CURLAUTH_DIGEST),
         (AuthMethods::BEARER, ffi::CURLAUTH_BEARER),
+        (AuthMethods::AWS_SIGV4, ffi::CURLAUTH_AWS_SIGV4),
     ]
     .into_iter()
     .filter(|&(method, _)| methods.contains(method))

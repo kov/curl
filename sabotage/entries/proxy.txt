@@ -443,9 +443,13 @@ witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_fir
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_first_challenge
 --- old
-        if !proxy_auth.used.is_empty() {
+        auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+        for note in signed
 --- new
         if proxy_auth.header.is_some() {
+            auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+        }
+        for note in signed
 
 === a redial looks the proxy's name up again
 file: crates/curl-core/src/conn/connect.rs

@@ -1,0 +1,132 @@
+=== a long HMAC key is hashed first
+file: crates/curl-core/src/hash.rs
+witness: curl-core hash::tests::hmacs_as_rfc_4231
+--- old
+    if key.len() > BLOCK {
+--- new
+    if key.len() > 2 * BLOCK + 8 {
+
+=== the region is taken from the host only when not given
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::reads_the_parameters_as_c
+--- old
+        if region.is_empty() {
+--- new
+        if true {
+
+=== headers of one name are signed as one, their values joined
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::signs_the_headers_as_c
+--- old
+            Some(last) if name(last) == name(&entry) => {
+--- new
+            Some(last) if false && name(last) == name(&entry) => {
+
+=== a run of blanks in a signed value is one space
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::signs_the_headers_as_c
+--- old
+            while read < entry.len() && is_blank(entry[read]) {
+                read += 1;
+            }
+            if read < entry.len() {
+--- new
+            if read < entry.len() {
+
+=== the application's own date replaces the date header
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::signs_the_headers_as_c
+--- old
+    if canonical.given_time.is_none() {
+--- new
+    if true {
+
+=== S3 does not sign an upload of a size not known to be empty
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::hashes_the_payload_as_c
+--- old
+    let empty = request.kind == Kind::GetOrHead || request.empty_upload;
+--- new
+    let empty = true;
+
+=== a decoded plus in a query stays encoded
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
+--- old
+                if decoded == b'+' {
+--- new
+                if decoded == 0 {
+
+=== a query of 128 components is too large
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
+--- old
+        if pairs.len() + 1 == MAX_QUERY {
+--- new
+        if pairs.len() == MAX_QUERY {
+
+=== query parts of empty keys keep their order, whatever their values
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::canonical_queries_as_unit_1980
+--- old
+        (true, true) => std::cmp::Ordering::Equal,
+--- new
+        (true, true) => a.1.cmp(&b.1),
+
+=== S3's services sign the path as it is
+file: crates/curl-core/src/proto/http/sigv4.rs
+witness: curl-core proto::http::sigv4::tests::canonical_paths_as_unit_1979
+--- old
+        b"s3" | b"s3express" | b"s3-outposts" | b"s3-object-lambda"
+--- new
+        b"s3" | b"s3express" | b"s3-outposts"
+
+=== the application's own Authorization is not signed
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::sigv4::an_own_authorization_is_not_signed
+--- old
+            (!custom)
+                .then(|| self.sign_sigv4(options, method, credentials, now))
+--- new
+            (true)
+                .then(|| self.sign_sigv4(options, method, credentials, now))
+
+=== a path kept as given fails before an own Authorization is looked for
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::sigv4::a_signing_fails_as_c_fails_it
+--- old
+            if options.url_rules.path_as_is {
+--- new
+            if options.url_rules.path_as_is && !custom {
+
+=== the signing's notes are traced
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::sigv4::a_request_is_signed_where_authorization_goes
+--- old
+        for note in signed.iter().flat_map(|(notes, _)| notes) {
+--- new
+        for note in signed.iter().flat_map(|(notes, _)| notes).skip(9) {
+
+=== a proxy never uses AWS SigV4
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::aws_sigv4_is_used_at_once_and_never_by_a_proxy
+--- old
+        let proxy = if proxy.contains(AuthMethods::AWS_SIGV4) {
+--- new
+        let proxy = if false {
+
+=== CURLOPT_AWS_SIGV4 makes AWS SigV4 the one method
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::aws_sigv4_is_the_one_method
+--- old
+                Some(_) => curl_core::options::AuthMethods::AWS_SIGV4,
+--- new
+                Some(_) => *auth | curl_core::options::AuthMethods::AWS_SIGV4,
+
+=== a mask of AWS SigV4 alone is taken
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::http_options_reach_the_request
+--- old
+    if rest & !ffi::CURLAUTH_HTTPSIG == 0 {
+--- new
+    if rest & !(ffi::CURLAUTH_HTTPSIG | ffi::CURLAUTH_AWS_SIGV4) == 0 {

@@ -1267,6 +1267,13 @@ fn configure(
 /// (`http_setopts`).
 fn http_options(o: &mut options::Options, op: &Operation<'_>) -> Result<(), OutOfMemory> {
     let http = &mut o.http;
+    // As `CURLOPT_AWS_SIGV4` takes it, after the methods: given, it is
+    // the one method; not, it is none of them.
+    http.aws_sigv4 = op.aws_sigv4.map(copy).transpose()?;
+    http.auth.0 = match op.aws_sigv4 {
+        Some(_) => options::AuthMethods::AWS_SIGV4,
+        None => http.auth.0 & !options::AuthMethods::AWS_SIGV4,
+    };
     http.follow = op.follow;
     http.unrestricted_auth = op.unrestricted_auth;
     http.auto_referer = op.auto_referer;

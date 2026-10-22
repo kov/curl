@@ -1037,6 +1037,10 @@ pub struct Http {
     /// or of the whole URL to a proxy; nothing else reads it
     /// (`CURLOPT_REQUEST_TARGET`).
     pub request_target: Option<Vec<u8>>,
+    /// What AWS Signature Version 4 signs with,
+    /// `provider0[:provider1[:region[:service]]]`, if set
+    /// (`CURLOPT_AWS_SIGV4`).
+    pub aws_sigv4: Option<Vec<u8>>,
     /// A response code of 400 or more fails the transfer at the end of
     /// its head (`CURLOPT_FAILONERROR`).
     pub fail_on_error: bool,
@@ -1122,6 +1126,9 @@ impl AuthMethods {
     pub const BASIC: AuthMethods = AuthMethods(1);
     pub const DIGEST: AuthMethods = AuthMethods(2);
     pub const BEARER: AuthMethods = AuthMethods(4);
+    /// AWS Signature Version 4, which no server asks for: used at once
+    /// when it is the one method wanted (`CURLOPT_AWS_SIGV4`).
+    pub const AWS_SIGV4: AuthMethods = AuthMethods(8);
     /// Methods this library does not implement, asked for all the same:
     /// never used, but with one of the others, that one is used only once
     /// a server asks for it, as with `ONLY`.
@@ -1131,7 +1138,7 @@ impl AuthMethods {
     pub const ONLY: AuthMethods = AuthMethods(0x80);
     /// Every method there is, chosen from as a server asks
     /// (`CURLAUTH_ANY`).
-    pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 0x40 | 0x80);
+    pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 8 | 0x40 | 0x80);
 
     pub fn contains(self, other: AuthMethods) -> bool {
         self.0 & other.0 == other.0
@@ -1144,7 +1151,7 @@ impl AuthMethods {
     /// The one method this is, if it is exactly one this library
     /// implements; with `ONLY` or `OTHER`, none.
     pub(crate) fn single(self) -> Option<AuthMethods> {
-        let known = Self::BASIC.0 | Self::DIGEST.0 | Self::BEARER.0;
+        let known = Self::BASIC.0 | Self::DIGEST.0 | Self::BEARER.0 | Self::AWS_SIGV4.0;
         (self.0.count_ones() == 1 && self.0 & !known == 0).then_some(self)
     }
 
@@ -1154,6 +1161,7 @@ impl AuthMethods {
             Self::BASIC => "Basic",
             Self::DIGEST => "Digest",
             Self::BEARER => "Bearer",
+            Self::AWS_SIGV4 => "AWS_SIGV4",
             _ => unreachable!("one method: {self:?}"),
         }
     }
@@ -1186,6 +1194,7 @@ impl fmt::Debug for AuthMethods {
             (Self::BASIC, "BASIC"),
             (Self::DIGEST, "DIGEST"),
             (Self::BEARER, "BEARER"),
+            (Self::AWS_SIGV4, "AWS_SIGV4"),
             (Self::OTHER, "OTHER"),
             (Self::ONLY, "ONLY"),
         ];
@@ -1258,6 +1267,7 @@ impl Http {
             referer: self.referer.as_deref().map(copy).transpose()?,
             custom_method: self.custom_method.as_deref().map(copy).transpose()?,
             request_target: self.request_target.as_deref().map(copy).transpose()?,
+            aws_sigv4: self.aws_sigv4.as_deref().map(copy).transpose()?,
             fail_on_error: self.fail_on_error,
             continue_wait: self.continue_wait,
             keep_sending_on_error: self.keep_sending_on_error,

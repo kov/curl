@@ -212,10 +212,12 @@ exclude_re = [
     'options/mod\.rs:.*: replace \| with \^$',
     # Only a system clock set before 1970 takes the negative arm.
     'time\.rs:.*: delete - in <impl Clock for SystemClock>::unix_time$',
-    # The URL read back after the first parse has no dot segments and no
-    # empty parts left, so reparsing it as is, or reading it back with
-    # them, changes nothing (C's `follow_fake` does the same).
-    'proto/http1/follow\.rs:.*: delete field (path_as_is|get_empty) from struct (ParseOptions|GetOptions) expression in would_redirect$',
+    # `retry_request` asks itself whether the connection was reused: a
+    # send failing on a fresh one ends the transfer either way.
+    'multi/state\.rs:.*: replace match guard x\.lease\.conn\(\)\.reused\(\) with true in step$',
+    # Nothing read leaves the buffer empty, and the send loop it returns
+    # to has spent its one read: it stops all the same.
+    'proto/http\.rs:.*: replace > with >= in Request::fill$',
     # A pool section closes connections and never resolves a name.
     'multi/cx\.rs:.*: replace <impl Net for CloseLater<._>>::resolve -> Result<Vec<IpAddr>, ResolveFailure> with Ok\(vec!\[\]\)$',
     # A transfer is in `Done` only inside a step, while its run is out of

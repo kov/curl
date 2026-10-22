@@ -542,13 +542,8 @@ impl Challenges {
         *open = *open | AuthMethods::DIGEST;
         let rest = &value[AuthMethods::DIGEST.name().len()..];
         let (digest, read) = match rest.first() {
-            Some(b' ' | b'\t') => {
-                let blanks = rest
-                    .iter()
-                    .take_while(|&&b| b == b' ' || b == b'\t')
-                    .count();
-                Digest::decode(&rest[blanks..], asked.digest_nonce)
-            }
+            // The blanks are passed as those between pairs are.
+            Some(b' ' | b'\t') => Digest::decode(rest, asked.digest_nonce),
             // Nothing after the name, or a comma: no challenge.
             _ => (Digest::default(), Err(DigestError::Bad)),
         };
@@ -1129,10 +1124,18 @@ mod tests {
         let (c, notes) = read(&[b"Digest nonce=\"1\"", b"Digest nonce=\"2\""], false);
         assert_eq!(notes, [HeardNote::DuplicateDigest]);
         assert!(!c.refused);
+        let (c, notes) = read(&[b"Digest\tnonce=\"1\""], false);
+        assert!(notes.is_empty() && !c.refused(), "a tab before the pairs");
+        assert!(
+            Challenges::default()
+                .read(b"Digest nonce=\"1\"", &PeerAsked::DEFAULT)
+                .unwrap()
+                .is_empty()
+        );
         for bad in [&b"Digest"[..], b"Digest,nonce=1", b"Digest realm=\"r\""] {
             let (c, notes) = read(&[bad], false);
             assert_eq!(
-                (c.refused, notes),
+                (c.refused(), notes),
                 (true, vec![HeardNote::Problem(d)]),
                 "{bad:?}"
             );
@@ -1354,6 +1357,12 @@ mod tests {
             };
             AuthAct::of(200, &offered, asked)
         };
+        let redirect = AuthAct::of(300, &Offered::default(), &probe);
+        assert_eq!(
+            redirect,
+            AuthAct::default(),
+            "only a 2xx lets a probe through"
+        );
         let act = of(Challenges::default(), &probe);
         assert_eq!(
             (act.picked, act.reload, act.done, act.problem),
@@ -1444,6 +1453,23 @@ mod tests {
         read(&mut auth);
         assert!(!answers(&mut auth, &b, &right), "another origin");
         assert!(!answers(&mut auth, &a, &right), "starts it over too");
+        // Two differences in the bytes do not cancel out.
+        read(&mut auth);
+        assert!(answers(&mut auth, &a, &creds(b"ab")));
+        assert!(!answers(&mut auth, &a, &creds(b"ba")), "other credentials");
+        // A challenge refused for want of a nonce is kept, and answers
+        // nothing.
+        let (digest, refused) = Digest::decode(b"realm=\"r\"", false);
+        assert!(refused.is_err());
+        let challenges = Challenges {
+            open: Some(AuthMethods::DIGEST),
+            offered: AuthMethods::DIGEST,
+            refused: true,
+            digest: Some(digest),
+        };
+        auth.apply(None, false, challenges, &a).unwrap();
+        assert!(!auth.asked(None, &a).digest_nonce);
+        assert!(!answers(&mut auth, &a, &right), "no nonce to answer");
         // A pick leaves nothing open.
         let a_again = peer(b"a");
         auth.apply(
@@ -1454,6 +1480,95 @@ mod tests {
         )
         .unwrap();
         assert_eq!(auth.asked(None, &a).avail, AuthMethods::NONE);
+    }
+
+    /// The handle's state as transfers read it: a problem acted on, until
+    /// the next transfer; the proxy's methods left open; a side finished,
+    /// or done by a response.
+    #[test]
+    fn keeps_the_handle_s_state() {
+        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let mut auth = Auth::default();
+        auth.start(AuthMethods::ANY, AuthMethods::ANY);
+        assert!(!auth.problem());
+        let problem = AuthAct {
+            problem: true,
+            ..AuthAct::default()
+        };
+        auth.apply(&problem, Offered::default(), &peer, &peer)
+            .unwrap();
+        assert!(auth.problem());
+        auth.start(AuthMethods::ANY, AuthMethods::ANY);
+        assert!(!auth.problem(), "until the next transfer");
+        assert!(!auth.proxy_offers(&Challenges::default()));
+        assert!(auth.proxy_offers(&offered(AuthMethods::BASIC)));
+        let open = Offered {
+            host: Challenges::default(),
+            proxy: offered(AuthMethods::BASIC),
+        };
+        auth.apply(&AuthAct::default(), open, &peer, &peer).unwrap();
+        assert!(auth.proxy_offers(&Challenges::default()), "left open");
+        assert!(
+            !auth.proxy_offers(&offered(AuthMethods::NONE)),
+            "a refusal closes them"
+        );
+        let asked = |auth: &Auth| auth.asked((None, &peer), (None, &peer), false, true);
+        assert!(!asked(&auth).host.done && !asked(&auth).proxy.done);
+        auth.side(Side::Proxy).finish();
+        assert!(asked(&auth).proxy.done && !asked(&auth).host.done);
+        let done = AuthAct {
+            done: true,
+            ..AuthAct::default()
+        };
+        auth.apply(&done, Offered::default(), &peer, &peer).unwrap();
+        assert!(asked(&auth).host.done);
+    }
+
+    /// Basic and Digest only with a user or a password, Bearer only with
+    /// a token; a token sent only where the application sends no
+    /// Authorization of its own.
+    #[test]
+    fn picks_and_sends_by_what_the_credentials_have() {
+        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let (none, b, br) = (AuthMethods::NONE, AuthMethods::BASIC, AuthMethods::BEARER);
+        let pick = |secret: Secret<'_>, methods| {
+            let mut auth = Auth::default();
+            auth.start(AuthMethods::ANY, AuthMethods::NONE);
+            let asked = auth.asked((Some(secret), &peer), (None, &peer), false, true);
+            let offered = Offered {
+                host: offered(methods),
+                proxy: Challenges::default(),
+            };
+            AuthAct::of(401, &offered, &asked).picked
+        };
+        assert_eq!(pick(Secret::new(b"", b""), b), Some(none));
+        assert_eq!(pick(Secret::new(b"u", b""), b), Some(b));
+        assert_eq!(pick(Secret::new(b"", b"p"), b), Some(b));
+        assert_eq!(pick(Secret::new(b"u", b"p"), b | br), Some(b));
+        let token = |bearer: &[u8]| Credentials {
+            user: b"u".to_vec(),
+            password: Vec::new(),
+            bearer: bearer.to_vec(),
+            source: Source::Options,
+            trusted: Trusted::own_url(),
+        };
+        assert_eq!(pick(token(b"t").secret(), b | br), Some(br));
+        let request = AuthRequest {
+            origin: &peer,
+            method: b"GET",
+            uri: b"/",
+            get_or_head: true,
+        };
+        let send = |c: &Credentials, custom| {
+            let mut side = PeerAuth::default();
+            side.start(br);
+            side.output(Some(c.secret()), custom, &request, |_| Ok(()))
+                .unwrap()
+                .header
+        };
+        assert_eq!(send(&token(b"t"), false), Some((br, b"t".to_vec())));
+        assert_eq!(send(&token(b"t"), true), None, "the application's own");
+        assert_eq!(send(&token(b""), false), None, "no token");
     }
 
     /// The values the C tool sends, and RFC 4648's vectors.

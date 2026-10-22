@@ -190,6 +190,10 @@ exclude_re = [
     # A reservation size: one byte short only makes the NUL's push grow
     # the buffer.
     'save\.rs:.*: replace \+ with \* in c_path$',
+    # `choose` joins disjoint bits, where `|` and `^` agree; `majority` is
+    # the majority with either of its `^` made `|`, as `&` binds tighter
+    # than `^` and `^` than `|`.
+    'hash\.rs:.*: replace (\| with \^|\^ with \|) in (choose|majority)$',
     # A literal copied for an entry that does not match the host belongs
     # to an entry discarded whole at the next one, before anything reads
     # it: copying it only allocates.

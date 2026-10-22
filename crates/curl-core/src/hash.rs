@@ -3,6 +3,8 @@
 //! (`lib/md5.c`, `lib/sha256.c`, `lib/curl_sha512_256.c`). Each keeps a
 //! fixed state and allocates nothing.
 
+use std::ops::{BitAnd, BitOr, BitXor, Not};
+
 /// A hash, fed in pieces.
 pub(crate) trait Hash: Default {
     /// The digest's length in bytes.
@@ -68,6 +70,23 @@ impl<const N: usize> Blocks<N> {
     }
 }
 
+/// Each bit of `y` where `x`'s is set, of `z` where it is clear: MD5's
+/// first two rounds and SHA-2's `Ch`.
+fn choose<T>(x: T, y: T, z: T) -> T
+where
+    T: Copy + BitAnd<Output = T> + BitOr<Output = T> + Not<Output = T>,
+{
+    (x & y) | (!x & z)
+}
+
+/// Each bit as most of `x`, `y` and `z` have it: SHA-2's `Maj`.
+fn majority<T>(x: T, y: T, z: T) -> T
+where
+    T: Copy + BitAnd<Output = T> + BitXor<Output = T>,
+{
+    (x & y) ^ (x & z) ^ (y & z)
+}
+
 const MD5_K: [u32; 64] = [
     0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
     0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
@@ -114,8 +133,8 @@ fn md5_compress(state: &mut [u32; 4], block: &[u8; 64]) {
     let [mut a, mut b, mut c, mut d] = *state;
     for i in 0..64 {
         let f = match i / 16 {
-            0 => (b & c) | (!b & d),
-            1 => (b & d) | (c & !d),
+            0 => choose(b, c, d),
+            1 => choose(d, b, c),
             2 => b ^ c ^ d,
             _ => c ^ (b | !d),
         };
@@ -197,15 +216,13 @@ fn sha256_compress(state: &mut [u32; 8], block: &[u8; 64]) {
     for i in 0..64 {
         let [a, b, c, d, e, f, g, h] = v;
         let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let ch = (e & f) ^ (!e & g);
         let t1 = h
             .wrapping_add(s1)
-            .wrapping_add(ch)
+            .wrapping_add(choose(e, f, g))
             .wrapping_add(SHA256_K[i])
             .wrapping_add(w[i]);
         let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-        let maj = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = s0.wrapping_add(maj);
+        let t2 = s0.wrapping_add(majority(a, b, c));
         v = [t1.wrapping_add(t2), a, b, c, d.wrapping_add(t1), e, f, g];
     }
     for (s, x) in state.iter_mut().zip(v) {
@@ -360,15 +377,13 @@ fn sha512_compress(state: &mut [u64; 8], block: &[u8; 128]) {
     for i in 0..80 {
         let [a, b, c, d, e, f, g, h] = v;
         let s1 = e.rotate_right(14) ^ e.rotate_right(18) ^ e.rotate_right(41);
-        let ch = (e & f) ^ (!e & g);
         let t1 = h
             .wrapping_add(s1)
-            .wrapping_add(ch)
+            .wrapping_add(choose(e, f, g))
             .wrapping_add(SHA512_K[i])
             .wrapping_add(w[i]);
         let s0 = a.rotate_right(28) ^ a.rotate_right(34) ^ a.rotate_right(39);
-        let maj = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = s0.wrapping_add(maj);
+        let t2 = s0.wrapping_add(majority(a, b, c));
         v = [t1.wrapping_add(t2), a, b, c, d.wrapping_add(t1), e, f, g];
     }
     for (s, x) in state.iter_mut().zip(v) {
@@ -475,6 +490,33 @@ mod tests {
         assert_eq!(
             hex::<Sha512_256>(&seq),
             "2231f2a1b489b244f766a0b831edb7738a34dc11c82cf2b58860396b5c067037"
+        );
+    }
+
+    /// The longest input whose length fits in its last block, and one
+    /// longer: `a` repeated, as `md5sum`, `sha256sum` and `openssl dgst
+    /// -sha512-256` hash it.
+    #[test]
+    fn pads_the_last_block_as_c() {
+        let a55 = [b'a'; 55];
+        assert_eq!(hex::<Md5>(&a55), "ef1772b6dff9a122358552954ad0df65");
+        assert_eq!(
+            hex::<Sha256>(&a55),
+            "9f4390f8d30c2dd92ec9f095b65e2b9ae9b0a925a5258e241c9f1e910f734318"
+        );
+        assert_eq!(
+            hex::<Sha512_256>(&a55),
+            "f6513468f05e7cec7d52fc337ef79dfa7c82520268d3aeba4002ead9a5642916"
+        );
+        let a111 = [b'a'; 111];
+        assert_eq!(hex::<Md5>(&a111), "089f243d1e831c5879aa375ee364a06e");
+        assert_eq!(
+            hex::<Sha256>(&a111),
+            "6374f73208854473827f6f6a3f43b1f53eaa3b82c21c1a6d69a2110b2a79baad"
+        );
+        assert_eq!(
+            hex::<Sha512_256>(&a111),
+            "0239e429f98d0ed61ee8e2a7c30afe98c1c3a80ce5dff62a107e9c538f7632ce"
         );
     }
 

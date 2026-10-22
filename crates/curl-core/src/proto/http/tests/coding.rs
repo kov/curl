@@ -242,13 +242,19 @@ fn a_trailer_stays_behind_the_body_held_before_its_decoder() {
     o.callbacks.write = Some(Handler::write(handler.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(handler.clone()).unwrap());
     let id = m.add(e, (), &mut NoEvents).unwrap();
+    // The whole reply read while paused, the body held still coded: the
+    // transfer is not over while it holds it.
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "over with its body held");
     for _ in 0..100 {
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         if let Some(msg) = m.info_read() {
             assert_eq!(msg.result, Ok(()));
             break;
         }
-        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     }
     let order: Vec<&str> = handler
         .seen

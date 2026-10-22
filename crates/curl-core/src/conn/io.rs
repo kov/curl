@@ -284,6 +284,9 @@ struct Wire {
     late: bool,
     /// The reply due was read for once already, and would block.
     waited: bool,
+    /// Sends past this many fail, the peer gone though nothing says so
+    /// to a poll yet: a reset that arrives as the request goes.
+    breaks_after: Option<usize>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -365,6 +368,17 @@ impl Conversation {
     /// first looks for it: a peer slower than the request's sender.
     pub fn late_replies(self) -> Conversation {
         self.0.lock().expect("no test panics holding the wire").late = true;
+        self
+    }
+
+    /// The same peer, gone after its first `n` sends: those past them
+    /// fail as on a connection reset, though the socket never polls
+    /// readable for it.
+    pub fn breaking_after(self, n: usize) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .breaks_after = Some(n);
         self
     }
 
@@ -700,7 +714,7 @@ impl Socket for FakeSocket {
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         let n = std::num::NonZeroUsize::new(buf.len()).expect("a send needs bytes");
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
-        if wire.hung_up {
+        if wire.hung_up || wire.breaks_after.is_some_and(|n| wire.sends >= n) {
             return Err(io::Error::from_raw_os_error(libc_errno::EPIPE));
         }
         if wire.stalls > 0 {

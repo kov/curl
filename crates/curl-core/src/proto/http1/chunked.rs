@@ -800,6 +800,10 @@ mod tests {
         assert_eq!(e.take(&mut dest), (4, false));
         assert_eq!(&dest[..4], b"bc\r\n");
         assert_eq!(e.wants(100_000).unwrap().len(), CHUNK_MAX - 12);
+        // A room of exactly the least chunk is no small read: what fits
+        // framed is read (`blen < sizeof(tmp)` alone reads a decent one).
+        assert_eq!(e.wants(CHUNK_MIN).unwrap().len(), CHUNK_MIN - 12);
+        assert_eq!(e.wants(CHUNK_MIN - 1).unwrap().len(), CHUNK_MIN);
         e.got(0, Some(b"")).unwrap();
         assert!(e.wants(10).is_none(), "ended");
         assert_eq!(e.take(&mut dest), (5, true));

@@ -1298,7 +1298,7 @@ fn a_body_waits_for_a_100() {
         !ran.seen
             .text()
             .iter()
-            .any(|l| l.starts_with("Done waiting"))
+            .any(|l| l.starts_with("Done waiting") || l.starts_with("Keep sending"))
     );
     let (asked, waited) = expecting(&continued, b"a=b", |o| {
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
@@ -4221,4 +4221,213 @@ fn proxy_from_the_environment() {
         let uses = "Uses proxy env variable NO_PROXY == '127.0.0.1'\n".to_string();
         assert!(said.contains(&uses), "{said:?}");
     }
+}
+
+/// A request whose head cannot be sent over a reused connection, its
+/// peer gone, is made again on a fresh one; over a fresh one, the failure
+/// is the transfer's (`multistate_do` retries a reused connection alone).
+#[test]
+fn a_send_failing_on_a_reused_connection_is_made_again() {
+    let first = Conversation::replies(&[OK], false).breaking_after(1);
+    let second = Conversation::replies(&[OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/", first.clone(), |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let ran = get_with(&mut m, ran.easy, "/", second.clone(), |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(second.received(), request_of("/"));
+    let fresh = Conversation::replies(&[OK], false).breaking_after(0);
+    let spare = Conversation::replies(&[OK], false);
+    let mut m = serving(Peer::Accepts, &[&fresh, &spare]);
+    let ran = get(&mut m, "/", fresh, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::SendError));
+    assert!(spare.received().is_empty(), "not made again");
+}
+
+/// Digest's client nonce is random: never the encoding of zero bytes,
+/// and another for each handle.
+#[test]
+fn a_digest_client_nonce_is_random() {
+    let challenge: &[u8] = b"HTTP/1.1 401 Who\r\n\
+        WWW-Authenticate: Digest realm=\"r\", nonce=\"n\", qop=\"auth\"\r\nContent-Length: 0\r\n\r\n";
+    let cnonce = || {
+        let (mut m, talk, _) = server(&[challenge, OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+            o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+        });
+        assert_eq!(ran.result, Ok(()));
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        let at = text.find("cnonce=\"").expect("a client nonce") + 8;
+        let len = text[at..].find('"').unwrap();
+        text[at..at + len].to_string()
+    };
+    let (one, two) = (cnonce(), cnonce());
+    assert_ne!(one, "AAAAAAAAAAAAAAAA");
+    assert_ne!(one, two);
+}
+
+/// Only a 100 releases a body held for one: another interim response
+/// leaves it held until the wait runs out (`http_on_1xx_response`).
+#[test]
+fn only_a_100_releases_a_held_body() {
+    let processing = [&b"HTTP/1.1 102 Processing\r\n\r\n"[..], OK_EMPTY].concat();
+    let (ran, waited) = expecting(&processing, b"a=b", |o| {
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+        o.http.continue_wait = crate::options::ContinueWait(Duration::from_millis(300));
+    });
+    assert_eq!((ran.result, waited), (Ok(()), Duration::from_millis(300)));
+    assert!(ran.request.ends_with(b"\r\n\r\na=b"));
+}
+
+/// A 417 after the 100, before any of the body went, is one while
+/// sending, not while waiting: the connection closes and the request is
+/// made again without `Expect` (`http_handle_send_error`).
+#[test]
+fn a_417_after_the_100_is_one_while_sending() {
+    let refused = [
+        &b"HTTP/1.1 100 Continue\r\n\r\n"[..],
+        b"HTTP/1.1 417 Nope\r\nContent-Length: 0\r\n\r\n",
+    ]
+    .concat();
+    let first = Conversation::replies(&[&refused], false);
+    let second = Conversation::replies(&[OK_EMPTY], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/p", first, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let said = "Got HTTP failure 417 while sending data\n".to_string();
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+    assert_eq!(ran.easy.report().connects(), 2);
+}
+
+/// An error response heard while the body goes stops it, saying how much
+/// went (`req_set_upload_done`).
+#[test]
+fn an_upload_stopped_says_how_much_went() {
+    const SIZE: usize = 300_000;
+    let not_found = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let talk = Conversation::replies(&[not_found], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let stream = Stream::new(big_body(SIZE));
+    let ran = get(&mut m, "/a", talk.clone(), |o| {
+        o.method = Method::Upload;
+        o.upload = stream.source(false);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let went = after_head(&talk.received());
+    assert!(went > 0 && went < SIZE);
+    let said = format!("abort upload after having sent {went} bytes\n");
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+}
+
+/// An empty body sent says the request went, not that an upload did
+/// (`req_set_upload_done`, a total length of zero).
+#[test]
+fn an_empty_body_says_the_request_went() {
+    let (mut m, talk, _) = server(&[OK_EMPTY], false);
+    let ran = get(&mut m, "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(Vec::new()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let said = "Request completely sent off\n".to_string();
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+}
+
+/// An error response that stops the body waiting for a 100 stops the
+/// wait's timer with it (`cr_exp100_done`): with the rest of the response
+/// still to come, nothing is due.
+#[test]
+fn a_body_stopped_while_awaiting_a_100_stops_its_timer() {
+    let (mut m, _talk, _) = server(&[b"HTTP/1.1 404 Nope\r\nContent-Length: 5\r\n\r\n"], false);
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/p").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+    o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    m.add(e, (), &mut NoEvents).unwrap();
+    for _ in 0..5 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(m.info_read().is_none(), "the body is still to come");
+    assert_eq!(m.timeout(), None);
+}
+
+/// A head that fills the request's buffer leaves its body to the passes
+/// after it, read into the buffer as the head goes.
+#[test]
+fn a_head_filling_the_buffer_sends_the_body_after_it() {
+    let (mut m, talk, _) = server(&[OK_EMPTY], false);
+    let big = format!("X-Big: {}", "b".repeat(70_000));
+    let ran = get(&mut m, "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+        o.http.headers = UserHeaders::new([big.as_bytes()]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.request.ends_with(b"\r\n\r\na=b"));
+}
+
+/// A body all sent leaves nothing to send, whatever its size: a
+/// redirect after it has no reason to close the connection
+/// (`http_perhapsrewind` once `Curl_req_done_sending`).
+#[test]
+fn a_body_all_sent_has_nothing_left() {
+    use crate::proto::http1::framing::Left;
+    let source = UploadSource::Read {
+        handler: Handler::read(Stream::new(b"x")).unwrap(),
+        rewind: None,
+        size: None,
+    };
+    let upload = crate::upload::Upload::new(&source);
+    let left = |sent_all| super::Request::left_to_send(Some(&upload), sent_all, 1).left;
+    assert_eq!(left(true), Left::Nothing);
+    assert_eq!(left(false), Left::Unknown);
+}
+
+/// A redirect's body is weighed once, as its `Location:` is read
+/// (`http_header_l`): wherever the field is in the head, and however many
+/// fields follow it.
+#[test]
+fn a_redirect_weighs_the_body_once_at_its_location() {
+    for reply in [
+        &b"HTTP/1.1 307 Moved\r\nContent-Length: 0\r\nLocation: /b\r\n\r\n"[..],
+        b"HTTP/1.1 307 Moved\r\nLocation: /b\r\nA: 1\r\nContent-Length: 0\r\n\r\n",
+    ] {
+        let (mut m, talk, _) = server(&[reply, OK], false);
+        let stream = Stream::new(b"body");
+        let ran = get(&mut m, "/a", talk, |o| {
+            o.method = Method::Upload;
+            o.upload = stream.source(true);
+            o.http.follow = Follow::All;
+        });
+        assert_eq!(ran.result, Ok(()));
+        let need = "Need to rewind upload for next request\n".to_string();
+        let said = ran.seen.text().iter().filter(|l| **l == need).count();
+        assert_eq!(said, 1, "{:?}", ran.seen.text());
+        assert_eq!(stream.rewinds.get(), 1);
+    }
+}
+
+/// A location without a scheme keeps the port the application applies,
+/// though it names a host: the C build follows `//127.0.0.1/b` on the
+/// applied port too, its URL showing none.
+#[test]
+fn a_location_without_a_scheme_keeps_the_applied_port() {
+    let (mut m, talk, _) = server(&[&redirect(301, "//127.0.0.1/b"), OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
+        o.port = std::num::NonZeroU16::new(PORT);
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let said = "Issue another request to this URL: 'http://127.0.0.1/b'\n".to_string();
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+    assert!(second_request(&ran).starts_with("GET /b HTTP/1.1\r\n"));
 }

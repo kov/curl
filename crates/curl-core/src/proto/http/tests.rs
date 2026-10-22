@@ -1347,6 +1347,55 @@ fn a_body_goes_when_the_wait_for_a_100_runs_out() {
     assert!(done.is_some() && done < sent, "{text:?}");
 }
 
+/// A final response that ends before any 100, on a connection that
+/// closes, stops the body unsent rather than wait for the 100 and send it
+/// to a server that may have closed: said when the response's end is read
+/// and the connection is to close, silently but for the abort when the
+/// connection's end is the response's.
+#[test]
+fn a_response_ending_on_a_closing_connection_stops_the_body() {
+    let asked = |o: &mut Options| {
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    };
+    let closing = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n";
+    let (ran, waited) = expecting(closing, b"a=b", asked);
+    assert_eq!((ran.result, waited), (Ok(()), Duration::ZERO));
+    assert!(ran.request.ends_with(b"\r\n\r\n"), "the head alone");
+    assert_eq!(ran.easy.report().sizes().upload(), 0);
+    let text = ran.seen.text();
+    let stop = text
+        .iter()
+        .position(|l| l == "we are done reading and this is set to close, stop send\n");
+    let abort = text.iter().position(|l| l == "abort upload\n");
+    assert!(stop.is_some() && abort == stop.map(|at| at + 1), "{text:?}");
+    assert!(
+        !text.iter().any(|l| l.starts_with("Done waiting")),
+        "{text:?}"
+    );
+
+    let (mut m, talk, clock) = server(&[b"HTTP/1.1 200 OK\r\n\r\nok\n"], true);
+    let start = clock.now();
+    let until_close = get(&mut m, "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap(),
+        );
+        asked(o);
+    });
+    assert_eq!(until_close.result, Ok(()));
+    assert_eq!(clock.now(), start, "no wait for the 100");
+    assert!(until_close.request.ends_with(b"\r\n\r\n"), "the head alone");
+    assert_eq!(until_close.seen.body(), b"ok\n");
+    let text = until_close.seen.text();
+    assert!(text.contains(&"abort upload\n".to_string()), "{text:?}");
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.starts_with("we are done reading") || l.starts_with("Done waiting")),
+        "{text:?}"
+    );
+}
+
 /// An error response before the body has gone stops it, the connection
 /// not used again; the application can have it sent anyway.
 #[test]

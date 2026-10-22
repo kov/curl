@@ -60,9 +60,9 @@ witness: curl-core proto::http::tests::a_head_wants_no_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 --- old
-        if head.meta().close() || self.pipeline.body_closes() || self.closing {
+        self.head().meta().close() || self.pipeline.body_closes() || self.closing
 --- new
-        if self.pipeline.body_closes() || self.closing {
+        self.pipeline.body_closes() || self.closing
 
 === an exchanging transfer waits on nothing
 file: crates/curl-core/src/multi/state.rs
@@ -532,9 +532,9 @@ witness: curl-core proto::http::tests::an_error_response_stops_the_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::an_error_response_stops_the_body
 --- old
-        if head.meta().close() || self.pipeline.body_closes() || self.closing {
+        self.head().meta().close() || self.pipeline.body_closes() || self.closing
 --- new
-        if head.meta().close() || self.pipeline.body_closes() {
+        self.head().meta().close() || self.pipeline.body_closes()
 
 === the library's Expect line is not sent
 file: crates/curl-core/src/proto/http.rs
@@ -1287,3 +1287,21 @@ witness: curl-core proto::http::tests::a_417_retry_drops_the_application_s_port
     apply_port(&mut url, run, cx);
     match url.get(Part::Url, get) {
         Ok(whole) => run.url = whole,
+
+=== a response ending on a closing connection lets the body go on
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_response_ending_on_a_closing_connection_stops_the_body
+--- old
+        if reading && matches!(self.stage, Stage::Done) && self.sending() && self.closes() {
+--- new
+        if false && reading && matches!(self.stage, Stage::Done) && self.sending() && self.closes() {
+
+=== the connection's end lets the body go on
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_response_ending_on_a_closing_connection_stops_the_body
+--- old
+                    if self.sending() {
+                        self.upload_done(cx, true);
+--- new
+                    if false && self.sending() {
+                        self.upload_done(cx, true);

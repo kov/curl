@@ -1046,6 +1046,28 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<Read, ErrorKind> {
+        let reading = !matches!(self.stage, Stage::Done);
+        let read = self.read_some(cx, lease)?;
+        // The response ended on a connection that closes: the server may
+        // close it now, so nothing more of the request goes. A
+        // multiplexed stream will stop here too.
+        if reading && matches!(self.stage, Stage::Done) && self.sending() && self.closes() {
+            trace::info(
+                cx,
+                format_args!("we are done reading and this is set to close, stop send"),
+            );
+            self.upload_done(cx, true);
+            cx.mark(Timer::PostTransfer);
+        }
+        Ok(read)
+    }
+
+    /// `receive`'s reads.
+    fn read_some<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+    ) -> Result<Read, ErrorKind> {
         let mut reads = 0;
         loop {
             if matches!(self.stage, Stage::Done) || cx.pause().recv_paused() {
@@ -1070,6 +1092,12 @@ impl Request {
             match lease.get().recv(max) {
                 Ok(Recv::WouldBlock) => return Ok(Read::Waits),
                 Ok(Recv::Eof) => {
+                    // The connection's end stops the sending too
+                    // (`Curl_req_stop_send_recv`).
+                    if self.sending() {
+                        self.upload_done(cx, true);
+                        cx.mark(Timer::PostTransfer);
+                    }
                     self.end(cx)?;
                     self.stage = Stage::Done;
                 }
@@ -1509,6 +1537,14 @@ impl Request {
         }
     }
 
+    /// The connection is not used again (C's `conn->bits.close`): the
+    /// response's head says so (`Connection: close`, a body read until
+    /// the connection closes), its body showed more than it should, or
+    /// the request decided it (`streamclose`).
+    fn closes(&self) -> bool {
+        self.head().meta().close() || self.pipeline.body_closes() || self.closing
+    }
+
     /// The request is over (`Curl_http_done`): a line still held is
     /// delivered, whatever came of it; a reply with nothing in it is an
     /// error, unless the request is to be made again; the connection is
@@ -1547,7 +1583,7 @@ impl Request {
         if let Some(seen) = head.last_version() {
             lease.get().saw_version(seen);
         }
-        if head.meta().close() || self.pipeline.body_closes() || self.closing {
+        if self.closes() {
             lease.get().mark_close();
         }
         result?;

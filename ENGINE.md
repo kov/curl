@@ -496,7 +496,10 @@ The request is over when its response is and nothing more of it is to send.
 A step reads first, until the socket has nothing, the response is over or receiving pauses, and
 at most eleven times (`sendrecv_dl`'s `maxloops`), then sends what is left with at most one more
 buffer of the body (`Curl_sendrecv`), so a response that comes while the body goes is heard
-within a buffer. A step that stops at the eleventh read says `ProtoStep::AtReadLimit`, and the engine,
+within a buffer. A response that ends on a connection that is to close stops the sending, as
+the server may close it now ("we are done reading and this is set to close, stop send"), and
+the connection's end stops it too (`Curl_req_stop_send_recv`): either is `Sending::Aborted`, a
+body waiting for a 100 included, with nothing more sent. A step that stops at the eleventh read says `ProtoStep::AtReadLimit`, and the engine,
 past the step's timeout and progress checks, marks the transfer dirty (`Curl_multi_mark_dirty`):
 it runs in the next pass without waiting on its socket, and the multi's timeout is 0 until then.
 A peer that sends faster than it is read thus cannot keep a pass from ending, so the time limits,

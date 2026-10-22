@@ -134,7 +134,7 @@ witness: curl-sys-abi handle_tests::the_transfers_sockets_are_listed
 file: crates/curl-sys-abi/src/multi.rs
 witness: curl-sys-abi handle_tests::the_transfers_sockets_are_listed
 --- old
-    if !ufds.is_null() && need as usize != filled {
+    if !ufds.is_null() && need as usize != wfds.n {
 --- new
     if false {
 
@@ -177,3 +177,11 @@ witness: curl-core multi::wait::tests::the_event_table_follows_the_socket_callba
                 self.sockets.remove(at);
 --- new
                 let _ = at;
+
+=== curl_multi_waitfds lists a socket waited on twice as two entries
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi multi::tests::a_socket_listed_twice_is_folded
+--- old
+        if let Some(entry) = wfds[..self.n].iter_mut().rev().find(|e| e.fd == fd) {
+--- new
+        if let Some(entry) = wfds[..0].iter_mut().rev().find(|e| e.fd == fd) {

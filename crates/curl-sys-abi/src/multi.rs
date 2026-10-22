@@ -1121,42 +1121,96 @@ pub unsafe extern "C" fn curl_multi_waitfds(
     }
     // SAFETY: admitted on `m`, which nothing else runs on.
     let multi = unsafe { multi(m) };
-    let fds = if ufds.is_null() {
-        &mut [][..]
-    } else {
+    let mut wfds = WaitFds {
         // SAFETY: the caller gives `size` entries at `ufds`.
-        unsafe { std::slice::from_raw_parts_mut(ufds, size as usize) }
+        wfds: (!ufds.is_null())
+            .then(|| unsafe { std::slice::from_raw_parts_mut(ufds, size as usize) }),
+        n: 0,
     };
-    let mut filled = 0;
     let mut need: c_uint = 0;
     // SAFETY: as above.
     unsafe { multi.core_mut() }.sockets(|socket, events| {
-        let fd = socket.key().get();
         // A pollset reads and writes, nothing else.
         let wanted = wait_revents(events);
-        if wanted == 0 {
-            return;
+        if wanted != 0 {
+            need = need.saturating_add(wfds.add(socket.key().get(), wanted));
         }
-        // C folds a socket listed twice into one entry (`cwfds_add_sock`);
-        // no two transfers wait on one socket until connections are
-        // shared.
-        assert!(
-            fds[..filled].iter().all(|e| e.fd != fd),
-            "socket {fd} listed twice"
-        );
-        if let Some(entry) = fds.get_mut(filled) {
-            entry.fd = fd;
-            entry.events = wanted;
-            filled += 1;
-        }
-        need = need.saturating_add(1);
     });
     // SAFETY: as the caller guarantees.
     unsafe { put(fd_count, need) };
-    if !ufds.is_null() && need as usize != filled {
+    if !ufds.is_null() && need as usize != wfds.n {
         // Too few entries: the count says how many are needed.
         return CURLM_OUT_OF_MEMORY;
     }
     CURLM_OK
 }
 const _: ffi::proto::curl_multi_waitfds = curl_multi_waitfds;
+
+/// The application's entries as `curl_multi_waitfds` fills them
+/// (`struct Curl_waitfds`).
+struct WaitFds<'a> {
+    /// The entries, or none when the application asks only for the count.
+    wfds: Option<&'a mut [curl_waitfd]>,
+    /// How many of them are filled.
+    n: usize,
+}
+
+impl WaitFds<'_> {
+    /// List `fd` waiting for `events`, and say how many entries that needs
+    /// (`cwfds_add_sock`). A socket already listed gains the events and
+    /// needs none; one that does not fit is left out but still counted.
+    /// With no entries, every socket counts, a repeat too.
+    fn add(&mut self, fd: curl_socket_t, events: i16) -> c_uint {
+        let Some(wfds) = self.wfds.as_deref_mut() else {
+            return 1;
+        };
+        if let Some(entry) = wfds[..self.n].iter_mut().rev().find(|e| e.fd == fd) {
+            entry.events |= events;
+            return 0;
+        }
+        if let Some(entry) = wfds.get_mut(self.n) {
+            entry.fd = fd;
+            entry.events = events;
+            self.n += 1;
+        }
+        1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A socket listed twice is one entry with both waits, as C's
+    /// `cwfds_add_sock` folds it; one that did not fit is counted again;
+    /// with no entries, every listing counts. The numbers are what C's
+    /// function gives for the same four listings.
+    #[test]
+    fn a_socket_listed_twice_is_folded() {
+        let (r, w) = (CURL_WAIT_POLLIN as i16, CURL_WAIT_POLLOUT as i16);
+        let list = |wfds: Option<&mut [curl_waitfd]>| {
+            let mut wfds = WaitFds { wfds, n: 0 };
+            let need: c_uint = [(5, r), (6, w), (6, r), (5, w)]
+                .into_iter()
+                .map(|(fd, events)| wfds.add(fd, events))
+                .sum();
+            (need, wfds.n)
+        };
+        let blank = curl_waitfd {
+            fd: -1,
+            events: 0,
+            revents: 0,
+        };
+        let entries = |e: &[curl_waitfd]| e.iter().map(|e| (e.fd, e.events)).collect::<Vec<_>>();
+
+        let mut room = [blank; 3];
+        assert_eq!(list(Some(&mut room)), (2, 2));
+        assert_eq!(entries(&room), [(5, r | w), (6, r | w), (-1, 0)]);
+
+        let mut one = [blank; 1];
+        assert_eq!(list(Some(&mut one)), (3, 1), "6 never fit, twice");
+        assert_eq!(entries(&one), [(5, r | w)]);
+
+        assert_eq!(list(None), (4, 0), "no entries: each listing counts");
+    }
+}

@@ -769,10 +769,7 @@ mod tests {
             run(&["-J", "-C", "-", "x", "--next", "y"]),
             Ok((2, None, None))
         );
-        assert_eq!(
-            run(&["x", "--remove-on-error"]),
-            Ok((1, Some("remove-on-error"), None))
-        );
+        assert_eq!(run(&["x", "--remove-on-error"]), Ok((1, None, None)));
         assert_eq!(
             run(&["x", "--proto", "=file"]),
             Ok((1, Some("proto"), None))

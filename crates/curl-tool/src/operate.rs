@@ -1218,6 +1218,7 @@ fn finish(
             }
             let mut stream = out.stream();
             let mut result = result;
+            let opened = stream.is_open_file();
             if stream.close().is_err() && result.is_ok() {
                 let kind = ErrorKind::WriteError;
                 // C's text, with its prefix twice.
@@ -1228,6 +1229,14 @@ fn finish(
                     msgs.error(&[why.as_bytes()]);
                 }
                 result = Err(kind);
+            }
+            // A file this transfer opened goes if it failed.
+            if opened
+                && result.is_err()
+                && op.remove_on_error
+                && let Some(name) = stream.file_name()
+            {
+                remove_partial(name, msgs);
             }
             if result.is_ok()
                 && op.remote_time
@@ -1311,6 +1320,20 @@ fn settle(
         result = Err(ErrorKind::WriteError);
     }
     result
+}
+
+/// Remove the output file `name` a failed transfer wrote
+/// (`--remove-on-error`), if it is a regular file: said in a note, or
+/// warned of if it is not removed.
+fn remove_partial(name: &[u8], msgs: Messages) {
+    let path = OsStr::from_bytes(name);
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+        msgs.warn(&[b"Skipping removal; not a regular file: ", name]);
+    } else if std::fs::remove_file(path).is_ok() {
+        msgs.note(&[b"Removed output file: ", name]);
+    } else {
+        msgs.warn(&[b"Failed removing: ", name]);
+    }
 }
 
 /// Give `name` the modification and access time `t`, seconds after the

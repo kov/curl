@@ -1198,3 +1198,79 @@ fn bounds_the_password_asked_for() {
     let run = curl_typing(&["-u", &user, "http://127.0.0.1:1/"], b"xy\n");
     assert_eq!((run.code, run.stderr.len()), (27, 256));
 }
+
+/// `--remove-on-error`: the file a failed transfer wrote is removed, a
+/// note saying so when tracing; one that is no regular file is kept,
+/// warned of; one never opened, as the transfer failed first, is kept as
+/// it was; and a transfer that succeeds keeps its file.
+#[test]
+fn removes_the_file_a_failed_transfer_wrote() {
+    const PARTIAL: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nhalf";
+    let dir = std::env::temp_dir().join(format!("curl-tool-rm-on-error-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("out");
+    let name = file.to_str().unwrap();
+    let s = Server::new(PARTIAL);
+    let run = curl(&[
+        "--no-progress-meter",
+        "-v",
+        "--remove-on-error",
+        &s.url(),
+        "-o",
+        name,
+    ]);
+    let said: Vec<_> = run
+        .stderr
+        .lines()
+        .filter(|l| !l.starts_with(['*', '<', '>', '{', '}']))
+        .collect();
+    assert_eq!(run.code, 18);
+    let note = format!("Note: Removed output file: {name}");
+    assert_eq!(
+        said,
+        [
+            "curl: (18) end of response with 16 bytes missing",
+            note.as_str()
+        ]
+    );
+    assert!(!file.exists());
+    // Not tracing, nothing is said of it.
+    let s = Server::new(PARTIAL);
+    let run = curl(&["-sS", "--remove-on-error", &s.url(), "-o", name]);
+    assert_eq!(
+        run.stderr,
+        "curl: (18) end of response with 16 bytes missing\n"
+    );
+    assert!(!file.exists());
+    let s = Server::new(PARTIAL);
+    let run = curl(&[
+        "-S",
+        "--no-progress-meter",
+        "--remove-on-error",
+        &s.url(),
+        "-o",
+        "/dev/null",
+    ]);
+    assert_eq!(
+        run.stderr,
+        "curl: (18) end of response with 16 bytes missing\n\
+         Warning: Skipping removal; not a regular file: /dev/null\n"
+    );
+    std::fs::write(&file, "before").unwrap();
+    let run = curl(&[
+        "-sS",
+        "--remove-on-error",
+        "http://127.0.0.1:1/",
+        "-o",
+        name,
+    ]);
+    assert_eq!(run.code, 7);
+    assert_eq!(std::fs::read(&file).unwrap(), b"before");
+    let s = Server::new(OK);
+    let run = curl(&["-sS", "--remove-on-error", &s.url(), "-o", name]);
+    assert_eq!(
+        (run.code, std::fs::read(&file).unwrap()),
+        (0, b"-foo-\n".to_vec())
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}

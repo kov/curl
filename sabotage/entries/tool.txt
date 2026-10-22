@@ -748,3 +748,37 @@ witness: curl-tool an_included_header_that_cannot_be_written_fails
             }
 --- new
             None => {}
+
+=== --remove-on-error leaves a failed transfer's file
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool removes_the_file_a_failed_transfer_wrote
+--- old
+                && op.remove_on_error
+--- new
+                && op.remove_on_error
+                && false
+
+=== --remove-on-error removes a file the transfer never opened
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool removes_the_file_a_failed_transfer_wrote
+--- old
+            if opened
+                && result.is_err()
+--- new
+            if result.is_err()
+
+=== --remove-on-error removes what is no regular file
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool removes_the_file_a_failed_transfer_wrote
+--- old
+    if !std::fs::metadata(path).is_ok_and(|m| m.is_file()) {
+--- new
+    if false {
+
+=== --remove-on-error warns where C notes
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool removes_the_file_a_failed_transfer_wrote
+--- old
+        msgs.note(&[b"Removed output file: ", name]);
+--- new
+        msgs.warn(&[b"Removed output file: ", name]);

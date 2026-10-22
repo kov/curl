@@ -687,9 +687,6 @@ pub(crate) fn apply<'a>(
                 return Err(exclusive_with_resume(msgs, b"--remove-on-error"));
             }
             op.remove_on_error = on;
-            if on {
-                line.not_implemented(spec, "--");
-            }
         }
         Opt::Clobber => {
             let on = value.toggle();

@@ -894,6 +894,31 @@ impl Url {
 
     /// The whole URL (`urlget_url`).
     fn whole(&self, opts: GetOptions) -> Result<Bytes, UrlErrorKind> {
+        self.whole_with(opts, true)
+    }
+
+    /// The whole URL as `get` reads it back with `get_empty`, without its
+    /// user and password: what a report shows of it (`effective_url`).
+    pub(crate) fn shown(&self) -> Result<Bytes, UrlErrorKind> {
+        let opts = GetOptions {
+            get_empty: true,
+            ..GetOptions::NONE
+        };
+        self.whole_with(opts, false)
+    }
+
+    /// The application's port in place of the URL's own (`CURLOPT_PORT`).
+    pub(crate) fn set_port(&mut self, port: std::num::NonZeroU16) {
+        self.port = Some(port.get());
+    }
+
+    /// The whole URL, with its user and password if `credentials`.
+    fn whole_with(&self, opts: GetOptions, credentials: bool) -> Result<Bytes, UrlErrorKind> {
+        let (user, password) = if credentials {
+            (self.user.as_deref(), self.password.as_deref())
+        } else {
+            (None, None)
+        };
         // Each shown with its separator, or not at all.
         let fragment = match &self.fragment {
             Some(Tail::Text(f)) => Some(&f[..]),
@@ -909,8 +934,8 @@ impl Url {
         // that needs no encoding is read back in one allocation.
         let parts = [
             self.scheme.as_ref().map(|s| &s.name[..]),
-            self.user.as_deref(),
-            self.password.as_deref(),
+            user,
+            password,
             self.options.as_deref(),
             self.host.as_deref(),
             self.zone_id.as_deref(),
@@ -984,10 +1009,10 @@ impl Url {
             push(&mut out, scheme)?;
             push(&mut out, b"://")?;
         }
-        if let Some(user) = &self.user {
+        if let Some(user) = user {
             push(&mut out, user)?;
         }
-        if let Some(password) = &self.password {
+        if let Some(password) = password {
             push(&mut out, b":")?;
             push(&mut out, password)?;
         }
@@ -995,7 +1020,7 @@ impl Url {
             push(&mut out, b";")?;
             push(&mut out, options)?;
         }
-        if self.user.is_some() || self.password.is_some() || options.is_some() {
+        if user.is_some() || password.is_some() || options.is_some() {
             push(&mut out, b"@")?;
         }
         push(&mut out, shown_host.as_deref().unwrap_or(host))?;

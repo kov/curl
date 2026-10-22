@@ -2753,6 +2753,70 @@ fn the_application_s_port_holds_until_an_absolute_redirect() {
     );
 }
 
+/// The application's port goes where the request goes, not into the URL
+/// a 401's retry traces, the report keeps and a referer names: the C
+/// build traces `'http://127.0.0.1:1/a'` there, its `state.url` read back
+/// before `Curl_peer_from_url` sets the port in `state.uh`.
+#[test]
+fn a_401_retry_names_the_url_without_the_application_s_port() {
+    let (mut m, talk, _) = server(&[CHALLENGE, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
+        o.port = std::num::NonZeroU16::new(PORT);
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::ANY);
+        o.http.auto_referer = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let said = "Issue another request to this URL: 'http://127.0.0.1:1/a'\n".to_string();
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+    assert_eq!(ran.easy.report().url().unwrap(), b"http://127.0.0.1:1/a");
+    let text = String::from_utf8_lossy(&ran.request);
+    let second = &text[text.rfind("GET /a ").unwrap()..];
+    assert!(
+        second.contains(&format!("\r\nHost: 127.0.0.1:{PORT}\r\n"))
+            && second.contains("\r\nReferer: http://127.0.0.1:1/a\r\n"),
+        "{second}"
+    );
+}
+
+/// A relative redirect resolves against the URL with the application's
+/// port applied (C's `state.uh`), both followed and kept: the C build
+/// traces and reports the applied port there, and sends the first
+/// request's own URL as the referer.
+#[test]
+fn a_relative_redirect_resolves_with_the_application_s_port() {
+    let (mut m, talk, _) = server(&[&redirect(302, "/b"), OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
+        o.port = std::num::NonZeroU16::new(PORT);
+        o.http.follow = Follow::All;
+        o.http.auto_referer = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let said = format!("Issue another request to this URL: 'http://127.0.0.1:{PORT}/b'\n");
+    assert!(ran.seen.text().contains(&said), "{:?}", ran.seen.text());
+    let second = second_request(&ran);
+    assert!(
+        second.contains("\r\nReferer: http://127.0.0.1:1/a\r\n"),
+        "{second}"
+    );
+    assert_eq!(
+        ran.easy.report().url().unwrap(),
+        format!("http://127.0.0.1:{PORT}/b").as_bytes()
+    );
+
+    let (mut m, talk, _) = server(&[&redirect(302, "/b")], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.set_url(Some(b"http://127.0.0.1:1/a")).unwrap();
+        o.port = std::num::NonZeroU16::new(PORT);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().url().unwrap(), b"http://127.0.0.1:1/a");
+    let kept = format!("http://127.0.0.1:{PORT}/b");
+    assert_eq!(ran.easy.report().redirect_url(), Some(kept.as_bytes()));
+}
+
 /// A redirect that sets a cookie.
 const SETS_A_COOKIE: &[u8] = b"HTTP/1.1 302 Moved\r\nLocation: /b\r\n\
     Set-Cookie: a=1; path=/\r\nContent-Length: 0\r\n\r\n";

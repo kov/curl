@@ -1587,7 +1587,9 @@ body was still held, and closed if some of it went. A URL the application keeps 
 before the text URL: each transfer reads it as it starts, taking a copy of it as the first leg's
 parsed URL; it is reached only inside a closure, so no borrow of it outlives the read.
 `Options::port` replaces the port of that first URL, and of each leg after, until a redirect
-leads to an absolute URL (`Inherited::allow_port`). The referer a request sends is the report's (`state.referer`): the application's, copied
+leads to an absolute URL (`Inherited::allow_port`); as C sets it only in `state.uh`, it goes into
+where the request goes and what a relative redirect resolves against (`request_url`), never into
+`Run::url`, so the URL a retry traces, the report keeps and a referer names is the one asked for. The referer a request sends is the report's (`state.referer`): the application's, copied
 at the transfer's start, until a redirect followed with AUTOREFERER replaces it with the URL it
 came from, without credentials or fragment.
 Authenticating is `Auth`, on the `Easy` as C keeps `state.authhost`, `state.authproxy` and

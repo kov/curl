@@ -307,13 +307,12 @@ witness: curl-core proto::http::tests::retry_after_reads_seconds_and_dates
     Some(Duration::from_secs(secs))
 
 === the report's URL keeps its credentials
-file: crates/curl-core/src/report.rs
+file: crates/curl-core/src/url/mod.rs
 witness: curl-core proto::http::tests::the_report_s_url_has_no_credentials
 --- old
-        url.forget_credentials();
-        let get = GetOptions {
+        self.whole_with(opts, false)
 --- new
-        let get = GetOptions {
+        self.whole_with(opts, true)
 
 === the line ending a head is assumed to fit in two bytes
 file: crates/curl-core/src/proto/http.rs
@@ -1233,3 +1232,23 @@ witness: curl-core proto::http::tests::a_step_reads_eleven_times_at_most_and_run
 --- old
                                     cx.rest.dirty.insert(cx.me.index());
 --- new
+
+=== the URL a 401's retry names carries the application's port
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_401_retry_names_the_url_without_the_application_s_port
+--- old
+    match url.get(Part::Url, get) {
+        Ok(whole) => run.url = whole,
+--- new
+    apply_port(&mut url, run, cx);
+    match url.get(Part::Url, get) {
+        Ok(whole) => run.url = whole,
+
+=== a relative redirect resolves without the application's port
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_relative_redirect_resolves_with_the_application_s_port
+--- old
+    apply_port(&mut url, run, cx);
+    Ok(url)
+--- new
+    Ok(url)

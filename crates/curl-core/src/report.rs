@@ -17,7 +17,7 @@ use curl_alloc::OutOfMemory;
 use crate::conn::ProxyError;
 use crate::error::UrlErrorKind;
 use crate::options::{AuthMethods, Method};
-use crate::url::{GetOptions, Part, Url};
+use crate::url::Url;
 use crate::version::Protocol;
 
 /// The ends of a connection: the peer's address, and the local one if
@@ -340,13 +340,8 @@ impl TransferReport {
     /// Keep `url`'s text without its credentials. The transfer's start
     /// made sure the URL reads back with them, so without them it can
     /// fail only for memory.
-    pub(crate) fn set_url(&mut self, mut url: Url) -> Result<(), OutOfMemory> {
-        url.forget_credentials();
-        let get = GetOptions {
-            get_empty: true,
-            ..GetOptions::NONE
-        };
-        let text = match url.get(Part::Url, get) {
+    pub(crate) fn set_url(&mut self, url: &Url) -> Result<(), OutOfMemory> {
+        let text = match url.shown() {
             Ok(text) => text,
             Err(UrlErrorKind::OutOfMemory) => return Err(OutOfMemory),
             Err(e) => unreachable!("a URL that read back with credentials fails without: {e:?}"),

@@ -52,7 +52,8 @@ pub(crate) struct Run {
     pub(crate) state: TransferState,
     pub(crate) deadlines: Deadlines,
     /// The URL the request under way asked for, read back whole,
-    /// credentials and all (C's `state.url`): a retry asks for it again.
+    /// credentials and all, without the application's port (C's
+    /// `state.url`): a retry asks for it again.
     url: Vec<u8>,
     /// Requests made again on a fresh connection, their reused one having
     /// died (`state.retrycount`).
@@ -1539,10 +1540,25 @@ fn after_exchange<H: Host>(
 /// The URL of the request just made, as it was parsed for it (C's
 /// `state.uh`).
 fn request_url<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> Result<Url, ErrorKind> {
-    match parse_url(&run.url, cx.easy().options()) {
-        Ok(url) => Ok(url),
-        Err(UrlRefused::Rejected(e)) => Err(url_error(e)),
-        Err(UrlRefused::Failed(kind)) => Err(kind),
+    let mut url = match parse_url(&run.url, cx.easy().options()) {
+        Ok(url) => url,
+        Err(UrlRefused::Rejected(e)) => return Err(url_error(e)),
+        Err(UrlRefused::Failed(kind)) => return Err(kind),
+    };
+    apply_port(&mut url, run, cx);
+    Ok(url)
+}
+
+/// The application's port set over `url`'s, unless a redirect took it
+/// away (`Curl_peer_from_url`'s `port_override`).
+fn apply_port<H: Host>(url: &mut Url, run: &Run, cx: &StepCx<'_, H>) {
+    if let Some(port) = cx
+        .easy()
+        .options()
+        .port
+        .filter(|_| run.inherited.allow_port)
+    {
+        url.set_port(port);
     }
 }
 
@@ -1794,25 +1810,6 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         return TransferState::Init.fail(e);
     }
     cx.report_mut().set_method(run.inherited.method);
-    // The application's port over the URL's (`Curl_peer_from_url`).
-    if let Some(port) = cx
-        .easy()
-        .options()
-        .port
-        .filter(|_| run.inherited.allow_port)
-    {
-        let mut digits = [0u8; 5];
-        let mut cursor = std::io::Cursor::new(&mut digits[..]);
-        std::io::Write::write_fmt(&mut cursor, format_args!("{port}"))
-            .expect("a port fits in five digits");
-        let n = cursor.position() as usize;
-        if url
-            .set(Part::Port, Some(&digits[..n]), SetOptions::NONE)
-            .is_err()
-        {
-            return TransferState::Init.fail(ErrorKind::OutOfMemory);
-        }
-    }
     cx.mark(Timer::StartSingle);
     cx.mark(Timer::PostQueue);
     // Counted from nothing for each request (`Curl_init_do`).
@@ -1821,7 +1818,10 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     speedometer.start_over();
     // Read back once parsed, credentials and all, as C reads it back
     // (`url.c`, `CURLUPART_URL` into `state.url`): one that cannot be,
-    // grown past the limit, fails the transfer without a word.
+    // grown past the limit, fails the transfer without a word. It is read
+    // before the application's port is applied, so the URL traced,
+    // reported and sent as a referer is the one asked for; were HSTS to
+    // upgrade it, C would read it back again, port and all.
     let get = GetOptions {
         get_empty: true,
         ..GetOptions::NONE
@@ -1830,6 +1830,14 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         Ok(whole) => run.url = whole,
         Err(e) => return TransferState::Init.fail(url_error(e)),
     }
+    // The transfer's URL from here on is the report's, whatever fails.
+    if let Err(OutOfMemory) = cx.report_mut().set_url(&url) {
+        return TransferState::Init.fail(ErrorKind::OutOfMemory);
+    }
+    // The application's port over the URL's, where the request goes and
+    // what a relative redirect resolves against (`Curl_peer_from_url`
+    // sets it in `state.uh`).
+    apply_port(&mut url, run, cx);
     let scheme = match url.get(Part::Scheme, GetOptions::NONE) {
         Ok(s) => s,
         Err(e) => return TransferState::Init.fail(url_error(e)),
@@ -1857,33 +1865,21 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             let follow: &[u8] = if redirected { b" (in redirect)" } else { b"" };
             let kind = ErrorKind::UnsupportedProtocol;
             let kind = trace::fail_with(cx, kind, &[b"Protocol \"", &scheme, why, follow]);
-            // Out of memory keeping the URL, the first failure stands.
-            let _kept = cx.report_mut().set_url(url);
             return TransferState::Init.fail(kind);
         }
-        Err(e) => {
-            // As above.
-            let _kept = cx.report_mut().set_url(url);
-            return TransferState::Init.fail(e);
-        }
+        Err(e) => return TransferState::Init.fail(e),
     };
     // A host name may be no longer than C lets a URL be (`MAX_URL_LEN`,
     // `Curl_peer_from_url`).
     if url.host_held().is_some_and(|host| host.len() > MAX_HOST) {
         let kind = ErrorKind::UrlMalformat;
         let kind = trace::fail_with(cx, kind, &[b"Too long hostname (maximum is 65535)"]);
-        // As above.
-        let _kept = cx.report_mut().set_url(url);
         return TransferState::Init.fail(kind);
     }
     let target = proto.network(&url);
     let target = match target {
         Ok(Some(target)) => target,
         Ok(None) => {
-            // The transfer's URL from here on is the report's.
-            if let Err(OutOfMemory) = cx.report_mut().set_url(url) {
-                return TransferState::Init.fail(ErrorKind::OutOfMemory);
-            }
             let lease = match acquire(cx, Route::Local) {
                 Ok(Acquired::New(lease)) => lease,
                 Ok(Acquired::Reused(_)) => {
@@ -1902,14 +1898,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
                 origin: None,
             });
         }
-        Err(e) => {
-            // As above.
-            let _kept = cx.report_mut().set_url(url);
-            return TransferState::Init.fail(e);
-        }
+        Err(e) => return TransferState::Init.fail(e),
     };
     let Ok(origin) = TryArc::try_new(target) else {
-        let _kept = cx.report_mut().set_url(url);
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
     if run.inherited.first.is_none() {
@@ -1917,17 +1908,11 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     }
     let via = match connect_to(cx, &origin) {
         Ok(via) => via,
-        Err(e) => {
-            let _kept = cx.report_mut().set_url(url);
-            return TransferState::Init.fail(e);
-        }
+        Err(e) => return TransferState::Init.fail(e),
     };
     let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some()) {
         Ok(proxy) => proxy,
-        Err(e) => {
-            let _kept = cx.report_mut().set_url(url);
-            return TransferState::Init.fail(e);
-        }
+        Err(e) => return TransferState::Init.fail(e),
     };
     // A request a proxy sends on names the whole URL, and the connection
     // is the proxy's (`origin_is_proxy`).
@@ -1935,16 +1920,12 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let origin = match &proxy {
         Some(p) if p.forward => {
             if let Err(e) = proto.forward(&url) {
-                let _kept = cx.report_mut().set_url(url);
                 return TransferState::Init.fail(e);
             }
             p.peer.clone()
         }
         _ => origin,
     };
-    if let Err(OutOfMemory) = cx.report_mut().set_url(url) {
-        return TransferState::Init.fail(ErrorKind::OutOfMemory);
-    }
     let route = Tcp {
         origin,
         via,

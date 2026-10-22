@@ -13,7 +13,7 @@ pub(crate) mod http1;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 
-use curl_alloc::TryRc;
+use curl_alloc::TryArc;
 
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
@@ -39,7 +39,7 @@ pub(super) fn zone(url: &Url) -> Result<Option<Vec<u8>>, ErrorKind> {
 pub(crate) struct Inherited {
     /// Where the first request went (`state.initial_origin`): what the
     /// application said for it goes nowhere else.
-    pub(crate) first: Option<TryRc<Peer>>,
+    pub(crate) first: Option<TryArc<Peer>>,
     /// The method, which a redirect may have turned into a GET
     /// (`state.httpreq`).
     pub(crate) method: Method,

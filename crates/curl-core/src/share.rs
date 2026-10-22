@@ -134,3 +134,10 @@ impl Drop for Inner {
         caches.pool.close_idle(&mut **self.net.get_mut());
     }
 }
+
+// What a share holds may move to whichever thread uses it next.
+const _: () = {
+    const fn sendable<T: Send>() {}
+    sendable::<Caches>();
+    sendable::<Jar>();
+};

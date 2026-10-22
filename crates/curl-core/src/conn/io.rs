@@ -35,7 +35,7 @@ impl SocketKey {
 }
 
 /// A socket the network opened.
-pub trait Socket: fmt::Debug {
+pub trait Socket: fmt::Debug + Send {
     fn key(&self) -> SocketKey;
 
     /// How to learn whether it is ready: a descriptor to poll, or, for a
@@ -250,7 +250,7 @@ pub enum Peer {
 /// keeps a clone to read what the peer was sent.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Clone, Debug)]
-pub struct Conversation(curl_alloc::TryRc<std::cell::RefCell<Wire>>);
+pub struct Conversation(curl_alloc::TryArc<std::sync::Mutex<Wire>>);
 
 /// A fake connection's two directions, shared by its socket, its network
 /// and the test.
@@ -331,28 +331,40 @@ impl Conversation {
             wire.replies.try_push(copy).expect("a test's replies fit");
         }
         Conversation(
-            curl_alloc::TryRc::try_new(std::cell::RefCell::new(wire)).expect("a test's peer fits"),
+            curl_alloc::TryArc::try_new(std::sync::Mutex::new(wire)).expect("a test's peer fits"),
         )
     }
 
     /// The same peer, answering each send with its next reply.
     pub fn per_send(self) -> Conversation {
-        self.0.borrow_mut().per_send = true;
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .per_send = true;
         self
     }
 
     /// The same peer, closing the connection when a request comes that
     /// it has no reply left for.
     pub fn hanging_up_unanswered(self) -> Conversation {
-        self.0.borrow_mut().hang_up_unanswered = true;
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .hang_up_unanswered = true;
         self
     }
 
     /// What the peer was sent so far.
     pub fn received(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        out.try_extend_from_slice(&self.0.borrow().received)
-            .expect("a test's request fits");
+        out.try_extend_from_slice(
+            &self
+                .0
+                .lock()
+                .expect("no test panics holding the wire")
+                .received,
+        )
+        .expect("a test's request fits");
         out
     }
 }
@@ -457,7 +469,8 @@ impl FakeNet {
             .as_ref()
             .expect("an open socket")
             .0
-            .borrow_mut()
+            .lock()
+            .expect("no test panics holding the wire")
             .hung_up = true;
     }
 
@@ -508,7 +521,7 @@ impl Net for FakeNet {
         let wire = match self.conversations.iter().position(|(a, _)| *a == addr) {
             Some(at) => self.conversations.remove(at).1,
             None => Conversation(
-                curl_alloc::TryRc::try_new(std::cell::RefCell::new(Wire::default()))
+                curl_alloc::TryArc::try_new(std::sync::Mutex::new(Wire::default()))
                     .map_err(|_| io::ErrorKind::OutOfMemory)?,
             ),
         };
@@ -588,7 +601,7 @@ impl Socket for FakeSocket {
     }
 
     fn readiness(&self) -> Readiness<'_> {
-        let wire = self.wire.0.borrow();
+        let wire = self.wire.0.lock().expect("no test panics holding the wire");
         if wire.hung_up {
             return Readiness::Known {
                 now: Events::IN | Events::OUT,
@@ -627,7 +640,7 @@ impl Socket for FakeSocket {
 
     fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
         assert!(!buf.is_empty(), "a receive needs room");
-        let mut wire = self.wire.0.borrow_mut();
+        let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         if wire.hung_up {
             return Ok(Recv::Eof);
         }
@@ -657,7 +670,7 @@ impl Socket for FakeSocket {
 
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         let n = std::num::NonZeroUsize::new(buf.len()).expect("a send needs bytes");
-        let mut wire = self.wire.0.borrow_mut();
+        let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         if wire.hung_up {
             return Err(io::Error::from_raw_os_error(libc_errno::EPIPE));
         }

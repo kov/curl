@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use std::num::NonZeroU32;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use super::dns::{Answer, DnsCache, Lookup};
 use super::io::{Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketPoll};
@@ -59,7 +59,7 @@ pub(crate) struct Dialed {
     rx: RecvBuf,
     /// The destination's addresses, for a SOCKS proxy that is not to
     /// resolve its name, or why there are none.
-    target: Option<Result<(TryRc<Answer>, Found), Unresolved>>,
+    target: Option<Result<(TryArc<Answer>, Found), Unresolved>>,
     /// A SOCKS5 proxy on the way authenticated the user.
     socks5_authenticated: bool,
 }
@@ -98,7 +98,7 @@ impl Dialed {
     }
 
     /// The addresses of the destination, resolved here.
-    pub(crate) fn target(&self) -> Option<&Result<(TryRc<Answer>, Found), Unresolved>> {
+    pub(crate) fn target(&self) -> Option<&Result<(TryArc<Answer>, Found), Unresolved>> {
         self.target.as_ref()
     }
 
@@ -149,7 +149,7 @@ pub(crate) enum Found {
 /// alternate, IPv6 first, each in the answer's order.
 #[derive(Debug)]
 struct Eyeballs {
-    answer: TryRc<Answer>,
+    answer: TryArc<Answer>,
     /// How many of each family's addresses were tried.
     v6: usize,
     v4: usize,
@@ -160,7 +160,7 @@ struct Eyeballs {
 }
 
 impl Eyeballs {
-    fn new(answer: TryRc<Answer>, ip: IpVersion) -> Eyeballs {
+    fn new(answer: TryArc<Answer>, ip: IpVersion) -> Eyeballs {
         let any = !answer.resolved() || ip == IpVersion::Any;
         Eyeballs {
             answer,
@@ -308,7 +308,7 @@ impl ConnectMachine {
     }
 
     /// The addresses the name resolved to, once it has.
-    pub(crate) fn answer(&self) -> Option<&TryRc<Answer>> {
+    pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         match &self.stage {
             Stage::Resolving | Stage::Tunnel(_) => None,
             Stage::Racing(r) => Some(&r.eyeballs.answer),
@@ -473,7 +473,7 @@ impl ConnectMachine {
         net: &mut dyn Net,
         setup: Setup<'_>,
         now: Instant,
-    ) -> Result<(TryRc<Answer>, Found), ConnectError> {
+    ) -> Result<(TryArc<Answer>, Found), ConnectError> {
         resolve(self.route.destination(), self.route.ip, net, setup, now)
     }
 
@@ -486,7 +486,7 @@ impl ConnectMachine {
         net: &mut dyn Net,
         setup: Setup<'_>,
         now: Instant,
-    ) -> Result<Option<Result<(TryRc<Answer>, Found), Unresolved>>, ConnectError> {
+    ) -> Result<Option<Result<(TryArc<Answer>, Found), Unresolved>>, ConnectError> {
         let Some(leg) = self.route.socks() else {
             return Ok(None);
         };
@@ -581,7 +581,7 @@ fn resolve(
     net: &mut dyn Net,
     setup: Setup<'_>,
     now: Instant,
-) -> Result<(TryRc<Answer>, Found), ConnectError> {
+) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let (name, port) = (peer.name(), peer.port());
     let family = match ip {
         IpVersion::Any => Family::Any,
@@ -605,14 +605,14 @@ fn resolve(
             Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
             Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
                 let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
-                let none = TryRc::try_new(none).map_err(oom)?;
+                let none = TryArc::try_new(none).map_err(oom)?;
                 setup.dns.put(none, port, now, false).map_err(oom)?;
                 return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
             }
             Err(why) => return Err(ConnectError::Unresolved(Unresolved::Resolver(why))),
         },
     };
-    let answer = TryRc::try_new(answer).map_err(oom)?;
+    let answer = TryArc::try_new(answer).map_err(oom)?;
     setup
         .dns
         .put(answer.clone(), port, now, false)
@@ -692,7 +692,7 @@ mod tests {
         };
         let peer = Peer::new(scheme, b"abc.test".to_vec(), 123, None);
         let route = Tcp {
-            origin: TryRc::try_new(peer).unwrap(),
+            origin: TryArc::try_new(peer).unwrap(),
             via: None,
             ip,
             proxy: None,
@@ -700,7 +700,7 @@ mod tests {
         let mut m = ConnectMachine::new(ConnNumber(0), route, start);
         m.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(
-                TryRc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
+                TryArc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
                 ip,
             ),
             attempts: Vec::new(),
@@ -760,7 +760,7 @@ mod tests {
         };
         let peer = Peer::new(scheme, b"localhost".to_vec(), 5, None);
         let route = Tcp {
-            origin: TryRc::try_new(peer).unwrap(),
+            origin: TryArc::try_new(peer).unwrap(),
             via: None,
             ip: IpVersion::Any,
             proxy: None,
@@ -892,7 +892,7 @@ mod tests {
     fn eyeballs_alternate_the_families() {
         let ip = |s: &str| s.parse::<IpAddr>().unwrap();
         let addrs = ["1.1.1.1", "::1", "2.2.2.2", "3.3.3.3", "::2"].map(ip);
-        let answer = || TryRc::try_new(Answer::new(b"a.test", addrs.to_vec()).unwrap()).unwrap();
+        let answer = || TryArc::try_new(Answer::new(b"a.test", addrs.to_vec()).unwrap()).unwrap();
         let order = |mut e: Eyeballs| std::iter::from_fn(move || e.next()).collect::<Vec<_>>();
         let all = ["::1", "1.1.1.1", "::2", "2.2.2.2", "3.3.3.3"].map(ip);
         assert_eq!(order(Eyeballs::new(answer(), IpVersion::Any)), all);
@@ -905,7 +905,7 @@ mod tests {
             ["::1", "::2"].map(ip)
         );
         let literal =
-            TryRc::try_new(Answer::new(b"1.1.1.1", vec![ip("1.1.1.1")]).unwrap()).unwrap();
+            TryArc::try_new(Answer::new(b"1.1.1.1", vec![ip("1.1.1.1")]).unwrap()).unwrap();
         assert_eq!(
             order(Eyeballs::new(literal, IpVersion::V6)),
             [ip("1.1.1.1")]

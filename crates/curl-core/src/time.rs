@@ -97,49 +97,54 @@ impl Clock for SystemClock {
 /// keeps one and gives another to the multi.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Clone, Debug)]
-pub struct ManualClock(curl_alloc::TryRc<ManualTime>);
+pub struct ManualClock(curl_alloc::TryArc<ManualTime>);
 
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug)]
 pub struct ManualTime {
-    now: std::cell::Cell<Instant>,
-    /// The calendar time at the clock's epoch.
-    unix_epoch: std::cell::Cell<i64>,
+    /// Now, and the calendar time at the clock's epoch.
+    at: std::sync::Mutex<(Instant, i64)>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
 impl ManualClock {
     /// A clock at its epoch, which is 1970's.
     pub fn new() -> Result<Self, curl_alloc::OutOfMemory> {
-        Ok(ManualClock(curl_alloc::TryRc::try_new(ManualTime {
-            now: std::cell::Cell::new(Instant::EPOCH),
-            unix_epoch: std::cell::Cell::new(0),
+        Ok(ManualClock(curl_alloc::TryArc::try_new(ManualTime {
+            at: std::sync::Mutex::new((Instant::EPOCH, 0)),
         })?))
+    }
+
+    fn at(&self) -> std::sync::MutexGuard<'_, (Instant, i64)> {
+        self.0.at.lock().expect("no test panics holding the clock")
     }
 
     /// Move the time `d` forward.
     pub fn advance(&self, d: Duration) {
-        self.0.now.set(self.0.now.get().after(d));
+        let mut at = self.at();
+        at.0 = at.0.after(d);
     }
 
     /// Make the calendar time `secs` now; it moves with the clock.
     pub fn set_unix_time(&self, secs: i64) {
-        self.0.unix_epoch.set(secs - self.elapsed_secs());
+        let elapsed = self.elapsed_secs();
+        self.at().1 = secs - elapsed;
     }
 
     fn elapsed_secs(&self) -> i64 {
-        i64::try_from(self.0.now.get().since(Instant::EPOCH).as_secs()).expect("u64 µs in i64 s")
+        i64::try_from(self.at().0.since(Instant::EPOCH).as_secs()).expect("u64 µs in i64 s")
     }
 }
 
 #[cfg(any(test, feature = "test-util"))]
 impl Clock for ManualClock {
     fn now(&self) -> Instant {
-        self.0.now.get()
+        self.at().0
     }
 
     fn unix_time(&self) -> i64 {
-        self.0.unix_epoch.get() + self.elapsed_secs()
+        let epoch = self.at().1;
+        epoch + self.elapsed_secs()
     }
 }
 

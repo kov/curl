@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use super::connect::{ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
 use super::dns::Answer;
@@ -47,7 +47,7 @@ impl Drop for ConnLease {
 /// pool takes it at the four places C does, each a critical section of
 /// its own: a transfer's arrival, the search for a connection to reuse,
 /// the addition of a new one, and a connection's return.
-pub(crate) trait Lock {
+pub(crate) trait Lock: Send {
     fn lock(&self);
     fn unlock(&self);
 }
@@ -451,7 +451,7 @@ impl Pool {
 
     /// What the name of a connection being set up resolved to, once it
     /// has.
-    pub(crate) fn answer(&self, lease: &ConnLease) -> Option<TryRc<Answer>> {
+    pub(crate) fn answer(&self, lease: &ConnLease) -> Option<TryArc<Answer>> {
         match self.conns.get(lease.id) {
             Some(ConnSlot::Connecting(m)) => m.answer().cloned(),
             Some(ConnSlot::Open(_) | ConnSlot::Failed(_)) => None,

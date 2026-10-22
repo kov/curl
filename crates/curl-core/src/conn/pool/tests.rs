@@ -1,13 +1,10 @@
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use super::*;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
 use crate::conn::{DnsCache, Failure, Limit, Scheme, Setup, Tcp};
 
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
-use curl_alloc::TryRc;
+use curl_alloc::TryArc;
 
 /// No limit: with no transfers, nothing to guess one from.
 const UNLIMITED: Limit = Limit {
@@ -62,7 +59,7 @@ fn tcp(port: u16) -> Route {
 fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
     let peer = crate::conn::Peer::new(scheme, host.to_vec(), port, None);
     Route::Tcp(Tcp {
-        origin: TryRc::try_new(peer).unwrap(),
+        origin: TryArc::try_new(peer).unwrap(),
         via: None,
         ip: IpVersion::Any,
         proxy: None,
@@ -825,13 +822,13 @@ fn a_search_prunes_once_a_second() {
 #[test]
 fn the_lock_is_taken_where_c_takes_it() {
     #[derive(Clone, Default)]
-    struct Recording(Rc<RefCell<Vec<&'static str>>>);
+    struct Recording(std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>);
     impl Lock for Recording {
         fn lock(&self) {
-            self.0.borrow_mut().push("lock");
+            self.0.lock().unwrap().push("lock");
         }
         fn unlock(&self) {
-            self.0.borrow_mut().push("unlock");
+            self.0.lock().unwrap().push("unlock");
         }
     }
     let (mut net, clock) = net();
@@ -839,7 +836,7 @@ fn the_lock_is_taken_where_c_takes_it() {
     let log = Recording::default();
     let mut pool = Pool::with_lock(Box::new(log.clone())).unwrap();
     let sections = |log: &Recording| {
-        let taken = std::mem::take(&mut *log.0.borrow_mut());
+        let taken = std::mem::take(&mut *log.0.lock().unwrap());
         assert!(
             taken.chunks(2).all(|c| c == ["lock", "unlock"]),
             "{taken:?}"

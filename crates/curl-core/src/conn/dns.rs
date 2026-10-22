@@ -5,7 +5,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::conn::io::Family;
 use crate::time::Instant;
@@ -70,7 +70,7 @@ pub(crate) struct DnsCache {
 
 #[derive(Debug)]
 struct Entry {
-    answer: TryRc<Answer>,
+    answer: TryArc<Answer>,
     port: u16,
     added: Instant,
     /// Given by the application without `+`: it never goes stale.
@@ -80,7 +80,7 @@ struct Entry {
 /// What the cache had for a name.
 #[derive(Debug)]
 pub(crate) enum Lookup {
-    Found(TryRc<Answer>),
+    Found(TryArc<Answer>),
     /// The name was found not to exist.
     Negative,
     /// It had gone stale, and is gone.
@@ -133,7 +133,7 @@ impl DnsCache {
     /// was kept for them; whether something was.
     pub(crate) fn put(
         &mut self,
-        answer: TryRc<Answer>,
+        answer: TryArc<Answer>,
         port: u16,
         now: Instant,
         permanent: bool,
@@ -483,7 +483,7 @@ mod tests {
         let clock = ManualClock::new().unwrap();
         let now = clock.now();
         let answer = |name: &[u8], addrs: Vec<IpAddr>| {
-            TryRc::try_new(Answer::new(name, addrs).unwrap()).unwrap()
+            TryArc::try_new(Answer::new(name, addrs).unwrap()).unwrap()
         };
         let mut cache = DnsCache::default();
         cache
@@ -525,7 +525,7 @@ mod tests {
         let clock = ManualClock::new().unwrap();
         let start = clock.now();
         let answer =
-            |name: &[u8]| TryRc::try_new(Answer::new(name, vec![ip("1.2.3.4")]).unwrap()).unwrap();
+            |name: &[u8]| TryArc::try_new(Answer::new(name, vec![ip("1.2.3.4")]).unwrap()).unwrap();
         let mut cache = DnsCache::default();
         let at = |s| start.after(Duration::from_secs(s));
         cache.put(answer(b"p"), 1, at(0), true).unwrap();
@@ -553,7 +553,7 @@ mod tests {
         let clock = ManualClock::new().unwrap();
         let now = clock.now();
         let answer =
-            |name: &[u8]| TryRc::try_new(Answer::new(name, vec![ip("1.2.3.4")]).unwrap()).unwrap();
+            |name: &[u8]| TryArc::try_new(Answer::new(name, vec![ip("1.2.3.4")]).unwrap()).unwrap();
         let mut cache = DnsCache::default();
         assert!(!cache.put(answer(b"Example.com"), 80, now, false).unwrap());
         assert!(matches!(

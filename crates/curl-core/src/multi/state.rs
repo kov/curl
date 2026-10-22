@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec, try_box};
+use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
 use crate::conn::io::{Events, ResolveFailure};
 use crate::conn::proxy::{self, Refused};
@@ -129,7 +129,7 @@ pub(crate) struct Plan {
     /// The connection's origin: the proxy, for one the request goes to
     /// whole.
     origin: Origin,
-    via: Option<TryRc<Peer>>,
+    via: Option<TryArc<Peer>>,
     proxy: Option<ProxyRoute>,
 }
 
@@ -141,7 +141,7 @@ pub(crate) struct Connecting {
     /// The host and port the request is for, and the peer connected to
     /// in their place, as the failure names them.
     origin: Origin,
-    via: Option<TryRc<Peer>>,
+    via: Option<TryArc<Peer>>,
     /// The proxy the route goes through.
     proxy: Option<ProxyRoute>,
     /// The handshake made over the connection to it, once connected.
@@ -186,7 +186,7 @@ impl Connecting {
 
 /// Who the request is for (C's `conn->origin`), shared with the
 /// connection's route.
-type Origin = TryRc<Peer>;
+type Origin = TryArc<Peer>;
 
 /// A request holding its connection.
 #[derive(Debug)]
@@ -1415,7 +1415,7 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
             }
         };
         let answer = Answer::new(name, addrs).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        let answer = TryRc::try_new(answer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+        let answer = TryArc::try_new(answer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         if cx.rest.caches.dns.remove(name, port) {
             let name = Bytes(name);
             trace::info(
@@ -1855,7 +1855,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
             return TransferState::Init.fail(e);
         }
     };
-    let Ok(origin) = TryRc::try_new(target) else {
+    let Ok(origin) = TryArc::try_new(target) else {
         let _kept = cx.report_mut().set_url(url);
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
@@ -1999,7 +1999,7 @@ fn parse_proxy<H: Host>(
     cx: &mut StepCx<'_, H>,
     text: &[u8],
     pre: bool,
-) -> Result<(ProxyType, TryRc<Peer>, Option<TryRc<ProxyCreds>>), ErrorKind> {
+) -> Result<(ProxyType, TryArc<Peer>, Option<TryArc<ProxyCreds>>), ErrorKind> {
     let options = &cx.easy().options().proxy;
     let kind = if pre { ProxyType::Socks4 } else { options.kind };
     let parsed = match proxy::parse(text, kind, options.port) {
@@ -2051,14 +2051,14 @@ fn parse_proxy<H: Host>(
     let creds = match (user, password) {
         (None, None) => None,
         (user, password) => Some(
-            TryRc::try_new(ProxyCreds {
+            TryArc::try_new(ProxyCreds {
                 user: user.unwrap_or_default(),
                 password: password.unwrap_or_default(),
             })
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         ),
     };
-    let peer = TryRc::try_new(parsed.peer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    let peer = TryArc::try_new(parsed.peer).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     Ok((parsed.kind, peer, creds))
 }
 
@@ -2216,10 +2216,10 @@ fn connect_to<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Peer,
     entries: &Lines,
-) -> Result<Option<TryRc<Peer>>, ErrorKind> {
+) -> Result<Option<TryArc<Peer>>, ErrorKind> {
     match crate::conn::via(origin, entries.iter()) {
         Ok(None) => Ok(None),
-        Ok(Some(via)) => TryRc::try_new(via)
+        Ok(Some(via)) => TryArc::try_new(via)
             .map(Some)
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory),
         Err(BadVia::OutOfMemory) => Err(ErrorKind::OutOfMemory),

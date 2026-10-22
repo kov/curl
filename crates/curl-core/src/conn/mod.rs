@@ -27,7 +27,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
@@ -141,8 +141,8 @@ impl Route {
 /// go to whole.
 #[derive(Clone, Debug)]
 pub(crate) struct Tcp {
-    pub(crate) origin: TryRc<Peer>,
-    pub(crate) via: Option<TryRc<Peer>>,
+    pub(crate) origin: TryArc<Peer>,
+    pub(crate) via: Option<TryArc<Peer>>,
     pub(crate) ip: IpVersion,
     pub(crate) proxy: Option<ProxyRoute>,
 }
@@ -190,17 +190,17 @@ pub(crate) struct SocksLeg<'a> {
 #[derive(Clone, Debug)]
 pub(crate) struct PreProxy {
     pub(crate) kind: ProxyType,
-    pub(crate) peer: TryRc<Peer>,
-    pub(crate) creds: Option<TryRc<ProxyCreds>>,
+    pub(crate) peer: TryArc<Peer>,
+    pub(crate) creds: Option<TryArc<ProxyCreds>>,
 }
 
 /// The proxy a route goes through (C's `conn->http_proxy`).
 #[derive(Clone, Debug)]
 pub(crate) struct ProxyRoute {
     pub(crate) kind: ProxyType,
-    pub(crate) peer: TryRc<Peer>,
+    pub(crate) peer: TryArc<Peer>,
     /// The user and password the proxy is given, if any.
-    pub(crate) creds: Option<TryRc<ProxyCreds>>,
+    pub(crate) creds: Option<TryArc<ProxyCreds>>,
     /// The requests go to the proxy, which sends them on, rather than
     /// through a tunnel it opens.
     pub(crate) forward: bool,
@@ -233,8 +233,8 @@ struct ProxyKey<'a> {
 impl ProxyRoute {
     pub(crate) fn new(
         kind: ProxyType,
-        peer: TryRc<Peer>,
-        creds: Option<TryRc<ProxyCreds>>,
+        peer: TryArc<Peer>,
+        creds: Option<TryArc<ProxyCreds>>,
         forward: bool,
         auth_only: bool,
     ) -> ProxyRoute {
@@ -630,9 +630,9 @@ mod tests {
     }
 
     fn via_proxy(host: &[u8], user: Option<&[u8]>, forward: bool) -> Route {
-        let proxy = TryRc::try_new(peer(host, 3128, None)).unwrap();
+        let proxy = TryArc::try_new(peer(host, 3128, None)).unwrap();
         let creds = user.map(|u| {
-            TryRc::try_new(ProxyCreds {
+            TryArc::try_new(ProxyCreds {
                 user: u.to_vec(),
                 password: Vec::new(),
             })
@@ -641,7 +641,7 @@ mod tests {
         let origin = if forward {
             proxy.clone()
         } else {
-            TryRc::try_new(peer(b"origin.example", 80, None)).unwrap()
+            TryArc::try_new(peer(b"origin.example", 80, None)).unwrap()
         };
         Route::Tcp(Tcp {
             origin,
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn proxied_routes_match_as_c() {
         let direct = Route::Tcp(Tcp {
-            origin: TryRc::try_new(peer(b"proxy.example", 3128, None)).unwrap(),
+            origin: TryArc::try_new(peer(b"proxy.example", 3128, None)).unwrap(),
             via: None,
             ip: IpVersion::Any,
             proxy: None,
@@ -683,7 +683,7 @@ mod tests {
             Route::Tcp(mut tcp) => {
                 let pre = PreProxy {
                     kind,
-                    peer: TryRc::try_new(peer(host, 1080, None)).unwrap(),
+                    peer: TryArc::try_new(peer(host, 1080, None)).unwrap(),
                     creds: None,
                 };
                 tcp.proxy = tcp.proxy.map(|p| p.behind(pre));

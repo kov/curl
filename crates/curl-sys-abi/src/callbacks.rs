@@ -416,26 +416,14 @@ unsafe extern "C" fn fread(ptr: *mut c_char, size: usize, n: usize, stream: *mut
     unsafe { libc::fread(ptr.cast(), size, n, stream.cast()) }
 }
 
-/// The write function's verdict on `len` bytes (`cw_out_cb_write`).
-fn write_verdict(cx: &mut TransferCx<'_>, len: usize, wrote: usize) -> Write {
-    if wrote == len {
-        Write::Accepted
-    } else if wrote == CURL_WRITEFUNC_PAUSE as usize {
+/// The write function's verdict on what it was given (`cw_out_cb_write`).
+fn write_verdict(wrote: usize) -> Write {
+    if wrote == CURL_WRITEFUNC_PAUSE as usize {
         Write::Pause
     } else if wrote == CURL_WRITEFUNC_ERROR as usize {
         Write::Fail
     } else {
-        // A count of its own: the reason is the shim's to give.
-        let why = try_format(format_args!(
-            "Failure writing output to destination, passed {len} returned {wrote}"
-        ));
-        cx.fail(
-            why.as_ref()
-                .map_or(&b"Failure writing output to destination"[..], |w| {
-                    w.as_bytes()
-                }),
-        );
-        Write::Fail
+        Write::Took(wrote)
     }
 }
 
@@ -455,7 +443,7 @@ impl WriteHandler for Adapter {
                 )
             }
         });
-        write_verdict(cx, body.len(), wrote)
+        write_verdict(wrote)
     }
 }
 
@@ -480,7 +468,7 @@ impl HeaderHandler for Adapter {
                 )
             }
         });
-        write_verdict(cx, line.len(), wrote)
+        write_verdict(wrote)
     }
 }
 

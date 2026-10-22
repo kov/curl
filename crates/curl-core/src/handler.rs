@@ -21,6 +21,10 @@ pub enum Write {
     Pause,
     /// The transfer fails with a write error.
     Fail,
+    /// This many of the bytes given were taken: any other count than all
+    /// of them fails the transfer with a write error, as a destination
+    /// that could not take them.
+    Took(usize),
 }
 
 /// What a read handler gave (`CURLOPT_READFUNCTION`'s return).

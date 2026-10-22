@@ -163,6 +163,36 @@ fn a_failed_write_fails_the_transfer() {
     );
 }
 
+/// A handler that took all it was given goes on; one that took less fails
+/// the transfer with C's reason (`cw_out_cb_write`), traced.
+#[test]
+fn a_short_count_fails_with_c_s_reason() {
+    let log = Log::default();
+    let mut e = script(vec![body(b"one"), body(b"two")]);
+    let mut h = Recorder::new("write", &log);
+    h.verdict = Write::Took(3);
+    e.options_mut().callbacks.write = Some(handler(h));
+    assert_eq!(run_alone(e), Ok(()));
+    assert_eq!(log.lock().unwrap().len(), 2);
+
+    let mut e = script(vec![body(b"one"), body(b"two")]);
+    let mut h = Recorder::new("write", &log);
+    h.verdict = Write::Took(1);
+    let trace = Trace::default();
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.write = Some(handler(h));
+    e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
+    let mut m = multi();
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::WriteError));
+    let e = m.remove(id, &mut NoEvents).unwrap().easy;
+    let why = &b"Failure writing output to destination, passed 3 returned 1"[..];
+    assert_eq!(e.report().failure(), Some(why));
+    assert_eq!(trace.0.lock().unwrap()[0], [why, b"\n"].concat());
+    assert_eq!(log.lock().unwrap().len(), 3, "nothing after it");
+}
+
 /// Fails with a reason of its own.
 struct Explains;
 
@@ -197,8 +227,7 @@ impl crate::handler::TextSink for Trace {
 }
 
 /// A handler that says why it fails gives the transfer's reason, and the
-/// transfer adds none of its own: C's write callback adapter is the one
-/// that calls `failf` for a short count. The failure sink hears it once.
+/// transfer adds none of its own. The failure sink hears it once.
 #[test]
 fn a_handler_s_own_reason_is_the_only_one() {
     let mut e = script(vec![body(b"one")]);

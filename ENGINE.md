@@ -354,7 +354,7 @@ last variants.
 ### 2.8 Handlers
 
 ```rust
-pub enum Write { Accepted, Pause, Fail }          // the shim maps a short count to Fail
+pub enum Write { Accepted, Pause, Fail, Took(usize) } // Took(n != len) fails, as a short count
 pub enum Read { Data(NonZeroUsize), Eof, Pause, Abort } // Data(n > buf.len()) is rejected, not asserted
 pub enum ProgressVerdict { Continue, ContinueWithMeter, Abort }
 pub trait WriteHandler  { fn write(&self, cx: &mut TransferCx<'_>, body: &[u8]) -> Write; }
@@ -1267,7 +1267,8 @@ pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize
   hands it on in order when the output is flushed. The transfer holds output while it does.
   `Write::Pause` → `Held` with the unconsumed piece kept and `pause.recv = Held`; on a protocol
   without pause support (`file://`) it is WriteError "Write callback asked for PAUSE when not
-  supported". `Write::Fail` or a short count → `Failed`, a terminal variant with no path to a
+  supported". `Write::Fail`, or `Write::Took` short of the piece (WriteError "Failure writing
+  output to destination, passed N returned M"), → `Failed`, a terminal variant with no path to a
   handler (#13337). Held beyond 64 MiB → TooLarge "pause buffer not large enough".
   `max_filesize` against delivered bytes is checked before each piece; SIZE_DELIVERED is bumped
   after the handler returns.
@@ -1812,10 +1813,8 @@ adapters are its own, installed in place of the ones it was cloned with.
 ### 7.6 Callback adapters (C shapes stay here)
 
 - **Write**: `(ptr, 1, len, userdata)`; CURL_WRITEFUNC_PAUSE → `Write::Pause`; CURL_WRITEFUNC_ERROR
-  → `Fail` ("client returned ERROR on write of N bytes"); `n != len` → `Fail` ("Failure writing
-  output to destination, passed N returned M", which the adapter gives with `TransferCx::fail`:
-  a handler that gave its reason gets none from the core); NULL → fwrite to WRITEDATA or
-  stdout. The adapter
+  → `Fail` ("client returned ERROR on write of N bytes"); any other count `n` → `Took(n)`, which
+  the core reports when it is not all; NULL → fwrite to WRITEDATA or stdout. The adapter
   reads `ccb` at call time, so a setopt of WRITEFUNCTION/WRITEDATA inside the callback applies to
   the next piece.
 - **Header**: HEADERFUNCTION, else WRITEFUNCTION if HEADERDATA is set, else discard; userdata is

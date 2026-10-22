@@ -698,6 +698,12 @@ fn verdict<H: Host>(
 ) -> Result<bool, ErrorKind> {
     match w {
         Write::Accepted => Ok(true),
+        Write::Took(took) if took == len => Ok(true),
+        Write::Took(took) => Err(trace::fail(
+            cx,
+            ErrorKind::WriteError,
+            format_args!("Failure writing output to destination, passed {len} returned {took}"),
+        )),
         Write::Pause if !pausable => Err(trace::fail(
             cx,
             ErrorKind::WriteError,

@@ -396,3 +396,11 @@ witness: curl-core easy::tests::a_handle_moves_to_another_thread
 pub trait WriteHandler: Send + Sync {
 --- new
 pub trait WriteHandler: Sync {
+
+=== a handler's short count is taken as all
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core deliver::tests::a_short_count_fails_with_c_s_reason
+--- old
+        Write::Took(took) if took == len => Ok(true),
+--- new
+        Write::Took(_) => Ok(true),

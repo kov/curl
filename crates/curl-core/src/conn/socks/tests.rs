@@ -303,3 +303,166 @@ fn socks5_refusals_are_said_as_c() {
         )
     );
 }
+
+/// SOCKS4 resolves the destination in IPv4 alone; the others in the
+/// families asked for.
+#[test]
+fn only_socks4_insists_on_ipv4() {
+    for (version, want) in [
+        (Version::V4, IpVersion::V4),
+        (Version::V4a, IpVersion::V6),
+        (Version::V5, IpVersion::V6),
+        (Version::V5Hostname, IpVersion::V6),
+    ] {
+        assert_eq!(version.ip(IpVersion::V6), want, "{version:?}");
+    }
+}
+
+/// A SOCKS5 proxy's reply codes, each as its `CURLproxycode`; and a
+/// SOCKS4 proxy's identd refusals, in C's words.
+#[test]
+fn reply_codes_are_c_s() {
+    for (code, want) in [
+        (1, ProxyError::ReplyGeneralServerFailure),
+        (2, ProxyError::ReplyNotAllowed),
+        (3, ProxyError::ReplyNetworkUnreachable),
+        (4, ProxyError::ReplyHostUnreachable),
+        (5, ProxyError::ReplyConnectionRefused),
+        (6, ProxyError::ReplyTtlExpired),
+        (7, ProxyError::ReplyCommandNotSupported),
+        (8, ProxyError::ReplyAddressTypeNotSupported),
+        (9, ProxyError::ReplyUnassigned),
+    ] {
+        let e = SocksError::Refused5(b"h".to_vec(), code);
+        assert_eq!(e.code(), Some(want), "{code}");
+        assert_eq!(
+            said(&e),
+            format!("cannot complete SOCKS5 connection to h. ({code})")
+        );
+    }
+    let refused4 = |code| SocksError::Refused4 {
+        code,
+        port: 80,
+        ip: [10, 0, 0, 1],
+    };
+    let head = "[SOCKS] cannot complete SOCKS4 connection to 10.0.0.1:80.";
+    assert_eq!(
+        said(&refused4(92)),
+        format!(
+            "{head} (92), request rejected because SOCKS server cannot connect to identd on the \
+             client."
+        )
+    );
+    assert_eq!(
+        said(&refused4(93)),
+        format!(
+            "{head} (93), request rejected because the client program and identd report \
+             different user-ids."
+        )
+    );
+    assert_eq!(said(&refused4(94)), format!("{head} (94), Unknown."));
+}
+
+/// The longest user, password and name each request carries is 255
+/// bytes; a password one longer is refused as C refuses it.
+#[test]
+fn fields_of_255_bytes_go() {
+    let long = [b'x'; 255];
+    let d = dest(b"h", Resolved::Remote);
+    let mut h = Handshake::new(Version::V4a, d, creds(&long, b""), Socks5Auth::default()).unwrap();
+    assert_eq!(send(&mut h).len(), 8 + 256 + 2);
+    let d = dest(&long, Resolved::Remote);
+    let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default()).unwrap();
+    send(&mut h);
+    h.take(b"\x05\x00").unwrap();
+    assert_eq!(send(&mut h).len(), 5 + 255 + 2);
+    let login = |user: &[u8], password: &[u8]| {
+        let d = dest(b"h", Resolved::Remote);
+        let auth = Socks5Auth::default();
+        let mut h = Handshake::new(Version::V5Hostname, d, creds(user, password), auth).unwrap();
+        send(&mut h);
+        h.take(b"\x05\x02").map(|_| send(&mut h).len())
+    };
+    assert_eq!(login(&long, &long), Ok(3 + 255 + 255));
+    let e = login(b"u", &[b'p'; 256]).unwrap_err();
+    assert_eq!(
+        (said(&e).as_str(), e.code()),
+        (
+            "Excessive password length for proxy auth",
+            Some(ProxyError::LongPasswd)
+        )
+    );
+}
+
+/// The method a SOCKS5 proxy picks must be one allowed: GSS-API, never
+/// built in, fails either way; basic authentication only if allowed.
+#[test]
+fn a_socks5_proxy_s_pick_is_checked_against_what_is_allowed() {
+    let pick = |reply: &[u8], auth: Socks5Auth| {
+        let d = dest(b"h", Resolved::Remote);
+        let mut h = Handshake::new(Version::V5Hostname, d, creds(b"u", b"p"), auth).unwrap();
+        send(&mut h);
+        let e = h.take(reply).unwrap_err();
+        (said(&e), e.code(), h.authenticated())
+    };
+    let allowed = Socks5Auth::default();
+    let gssapi = |gssapi| Socks5Auth { gssapi, ..allowed };
+    let basic = |basic| Socks5Auth { basic, ..allowed };
+    let permsg = Some(ProxyError::GssapiPermsg);
+    assert_eq!(
+        pick(b"\x05\x01", gssapi(true)),
+        (
+            "SOCKS5 GSSAPI per-message authentication is not supported.".to_owned(),
+            permsg,
+            true
+        )
+    );
+    assert_eq!(
+        pick(b"\x05\x01", gssapi(false)),
+        (
+            "SOCKS5 GSSAPI per-message authentication is not enabled.".to_owned(),
+            permsg,
+            false
+        )
+    );
+    assert_eq!(
+        pick(b"\x05\x02", basic(false)),
+        (
+            "BASIC authentication proposed but not enabled.".to_owned(),
+            Some(ProxyError::NoAuth),
+            false
+        )
+    );
+}
+
+/// A SOCKS5 answer is as long as its address: an IPv6 one 22 bytes, an
+/// IPv4 one 10; an address with a colon that is no IPv6 address is
+/// refused with nothing said (`CURLPX_BAD_ADDRESS_TYPE`).
+#[test]
+fn a_socks5_answer_is_read_by_its_address_type() {
+    let connecting = |name: &[u8]| {
+        let d = dest(name, Resolved::Remote);
+        let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default()).unwrap();
+        send(&mut h);
+        h.take(b"\x05\x00").map(|_| {
+            send(&mut h);
+            h
+        })
+    };
+    let mut h = connecting(b"h").unwrap();
+    let mut v6 = b"\x05\x00\x00\x04".to_vec();
+    v6.extend_from_slice(&[0; 16 + 2]);
+    assert_eq!(h.take(&v6[..8]), Ok(Took::Need(22)));
+    assert_eq!(h.take(&v6), Ok(Took::Read(22)));
+    assert!(h.done());
+    let mut h = connecting(b"h").unwrap();
+    assert_eq!(
+        h.take(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50more"),
+        Ok(Took::Read(10))
+    );
+    let e = connecting(b"not:v6").unwrap_err();
+    assert_eq!(
+        (e.said().is_none(), e.code()),
+        (true, Some(ProxyError::BadAddressType))
+    );
+}

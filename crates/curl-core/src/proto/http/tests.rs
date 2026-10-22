@@ -2734,6 +2734,63 @@ fn a_custom_host_names_the_cookies_host() {
     );
 }
 
+/// A custom `Host:` that starts with a bracket names an address: what is
+/// inside, or all after the bracket, its last byte twice, as C moves it.
+#[test]
+fn a_custom_host_in_brackets_names_the_cookies_host() {
+    let reply = b"HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nContent-Length: 0\r\n\r\n";
+    for (host, domain) in [
+        (&b"Host: [::1]:99"[..], &b"::1"[..]),
+        (b"Host: [ab", b"abb"),
+    ] {
+        let (mut m, talk, _) = server(&[reply], false);
+        let mut ran = get(&mut m, "/d/e", talk, |o| {
+            o.http.headers = UserHeaders::new([host]).unwrap();
+            o.http.cookies.files.push(b"").unwrap();
+        });
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(
+            ran.easy.cookie_list().unwrap(),
+            [[domain, b"\tFALSE\t/d\tFALSE\t0\ta\t1"].concat()]
+        );
+    }
+}
+
+/// The cookie files are read as a transfer starts and their cookies sent;
+/// one missing or a directory is warned of and passed over
+/// (`Curl_cookie_loadfiles`).
+#[test]
+fn cookie_files_are_read_as_a_transfer_starts() {
+    let dir = std::env::temp_dir().join(format!("curl-cookie-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("jar");
+    std::fs::write(&file, b"127.0.0.1\tFALSE\t/\tFALSE\t0\ta\t1\n").unwrap();
+    let missing = dir.join("missing");
+    let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
+    let ran = run("/", OK, false, |o| {
+        for p in [&missing, &dir, &file] {
+            o.http.cookies.files.push(&name(p)).unwrap();
+        }
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(ran.result, Ok(()));
+    let request = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(request.contains("\r\nCookie: a=1\r\n"), "{request}");
+    let text = ran.seen.text().concat();
+    for warning in [
+        format!(
+            "WARNING: failed to open cookie file \"{}\"\n",
+            missing.display()
+        ),
+        format!(
+            "WARNING: cookie filename points to a directory: \"{}\"\n",
+            dir.display()
+        ),
+    ] {
+        assert!(text.contains(&warning), "{text}");
+    }
+}
+
 /// One request stores 50 `Set-Cookie:` lines at most; the next request
 /// stores its own 50 (`MAX_SET_COOKIE_AMOUNT`, per request).
 #[test]

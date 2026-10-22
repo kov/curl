@@ -8,8 +8,6 @@
 //! that handles sharing the jar take turns with it whichever threads run
 //! them; what an operation says is traced once the lock is let go.
 
-use std::io::Read as _;
-
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::cookie::{Jar, Source, Suffixes};
@@ -83,12 +81,11 @@ pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     if easy.options().http.cookies.wanted() {
         easy.enable_cookies();
     }
-    let on = easy.cookies.is_some();
     // Out of the options while the trace is reached; put back however
-    // reading them ends.
+    // reading them ends. A file named has turned the jar on.
     let files = std::mem::take(&mut easy.options_mut().http.cookies.files);
     let mut texts = Vec::new();
-    let read = match on && files.iter().next().is_some() {
+    let read = match files.iter().next().is_some() {
         true => read_files(cx, &files, &mut texts).map(Some),
         false => Ok(None),
     };
@@ -249,7 +246,7 @@ pub(crate) fn read_file(name: &[u8]) -> Result<Option<Vec<u8>>, ErrorKind> {
 
 /// The whole of `file`; a read that fails fails the transfer, as C's
 /// `Curl_get_line` fails it.
-fn read_all(file: &mut std::fs::File) -> Result<Vec<u8>, ErrorKind> {
+fn read_all(file: &mut impl std::io::Read) -> Result<Vec<u8>, ErrorKind> {
     let mut text = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -369,4 +366,162 @@ fn jar_cookies(
 
 fn oom(_: OutOfMemory) -> ErrorKind {
     ErrorKind::OutOfMemory
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn this_host_is_secure() {
+        for (host, secure) in [
+            (&b"localhost"[..], true),
+            (b"LocalHost", true),
+            (b"127.0.0.1", true),
+            (b"::1", true),
+            (b"example.com", false),
+            (b"127.0.0.2", false),
+            (b"::2", false),
+            (b"localhost.example", false),
+        ] {
+            let site = Site { host, path: b"/" };
+            assert_eq!(site.secure(), secure, "{}", host.escape_ascii());
+        }
+    }
+
+    fn held() -> Held {
+        Held {
+            verbose: true,
+            lines: Vec::new(),
+            failed: false,
+        }
+    }
+
+    /// The `Cookie:` value the jar `file` gives a request to example.com,
+    /// whether the line is full, and what was said.
+    fn cookie_line(file: &[u8]) -> (String, bool, Vec<String>) {
+        let mut jar = Jar::default();
+        jar.load(file, false, false, None, 0).unwrap();
+        let site = Site {
+            host: b"example.com",
+            path: b"/",
+        };
+        let mut held = held();
+        let (mut value, mut count, mut full) = (Vec::new(), 0, false);
+        jar_cookies(
+            &mut jar, &site, 0, &mut held, &mut value, &mut count, &mut full,
+        )
+        .unwrap();
+        let said = held
+            .lines
+            .iter()
+            .map(|l| String::from_utf8(l.clone()).unwrap())
+            .collect();
+        (String::from_utf8(value).unwrap(), full, said)
+    }
+
+    fn cookie(name: &str, value_len: usize) -> String {
+        format!(
+            "example.com\tFALSE\t/\tFALSE\t0\t{name}\t{}\n",
+            "v".repeat(value_len)
+        )
+    }
+
+    #[test]
+    fn the_line_holds_8190_bytes_with_its_name() {
+        // "Cookie: " and `a=` and the value, short of 8190.
+        let (value, full, said) = cookie_line(cookie("a", 8179).as_bytes());
+        assert_eq!((value.len(), full, said.len()), (8181, false, 0));
+        let (value, full, said) = cookie_line(cookie("a", 8180).as_bytes());
+        assert_eq!((value.as_str(), full), ("", true));
+        assert_eq!(
+            said,
+            ["Restricted outgoing cookies due to header size, 'a' not sent"]
+        );
+    }
+
+    #[test]
+    fn each_cookie_after_the_first_counts_its_separator() {
+        // Sent longest name first, each fitting with all before it but
+        // its own separator: 8 for "Cookie: ", 5 for `ccc=v`, 2 + 103 for
+        // `; bb=` and its value, and 1 + 8069 + 1 for `a=` and its value
+        // make 8189.
+        let three = |a: usize| [cookie("ccc", 1), cookie("bb", 100), cookie("a", a)].concat();
+        let (value, full, _) = cookie_line(three(8069).as_bytes());
+        assert!(!full);
+        assert_eq!(
+            value,
+            format!("ccc=v; bb={}; a={}", "v".repeat(100), "v".repeat(8069))
+        );
+        let (value, full, said) = cookie_line(three(8070).as_bytes());
+        assert!(full);
+        assert_eq!(value, format!("ccc=v; bb={}", "v".repeat(100)));
+        assert_eq!(
+            said,
+            ["Restricted outgoing cookies due to header size, 'a' not sent"]
+        );
+    }
+
+    #[test]
+    fn lines_are_held_only_for_a_verbose_transfer_and_until_one_fails() {
+        let mut quiet = Held {
+            verbose: false,
+            ..held()
+        };
+        quiet.hold(&[b"a"]);
+        assert!(quiet.lines.is_empty());
+        // Those after one that could not be held are not held either, so
+        // that what is traced is all that was said up to the failure.
+        let mut failed = Held {
+            failed: true,
+            ..held()
+        };
+        failed.hold(&[b"a"]);
+        assert!(failed.lines.is_empty());
+        let mut held = held();
+        held.hold(&[b"a", b"b"]);
+        assert_eq!(held.lines, [b"ab".to_vec()]);
+    }
+
+    /// A reader giving `pieces` in turn, then the end.
+    struct Pieces(Vec<std::io::Result<Vec<u8>>>);
+
+    impl std::io::Read for Pieces {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Ok(0);
+            }
+            let piece = self.0.remove(0)?;
+            buf[..piece.len()].copy_from_slice(&piece);
+            Ok(piece.len())
+        }
+    }
+
+    #[test]
+    fn a_read_is_retried_when_interrupted_and_fails_otherwise() {
+        let interrupted = || Err(std::io::ErrorKind::Interrupted.into());
+        let mut reader = Pieces(vec![Ok(b"ab".to_vec()), interrupted(), Ok(b"c".to_vec())]);
+        assert_eq!(read_all(&mut reader), Ok(b"abc".to_vec()));
+        let mut reader = Pieces(vec![
+            Ok(b"ab".to_vec()),
+            Err(std::io::ErrorKind::Other.into()),
+            Ok(b"c".to_vec()),
+        ]);
+        assert_eq!(read_all(&mut reader), Err(ErrorKind::ReadError));
+    }
+
+    #[test]
+    fn a_cookie_file_is_read_whole_if_it_is_one() {
+        let dir = std::env::temp_dir().join(format!("curl-cookie-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("jar");
+        let text = "x".repeat(10_000);
+        std::fs::write(&file, &text).unwrap();
+        let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
+        assert_eq!(read_file(&name(&file)), Ok(Some(text.into_bytes())));
+        assert_eq!(read_file(&name(&dir)), Ok(None));
+        assert_eq!(read_file(&name(&dir.join("missing"))), Ok(None));
+        assert_eq!(read_file(b""), Ok(None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

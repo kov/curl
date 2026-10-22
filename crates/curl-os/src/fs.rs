@@ -198,6 +198,78 @@ mod tests {
         assert!(read.contains("to the file\n"), "{read:?}");
     }
 
+    /// Only `EACCES` is a refusal: `EPERM` is not, though std gives both
+    /// the same kind, and neither is an error the system did not report.
+    #[test]
+    fn denied_is_eacces_alone() {
+        assert!(denied(&io::Error::from_raw_os_error(libc::EACCES)));
+        assert!(!denied(&io::Error::from_raw_os_error(libc::EPERM)));
+        assert!(!denied(&io::Error::other("not the system's")));
+    }
+
+    /// Standard input reads through a descriptor of its own.
+    #[test]
+    fn standard_input_has_a_descriptor_of_its_own() {
+        let fd = stdin().unwrap();
+        assert!(fd.as_raw_fd() > libc::STDERR_FILENO, "{fd:?}");
+    }
+
+    /// The environment variable that tells the test binary it is the child
+    /// `descriptors_may_be_missing_or_zero` runs itself in.
+    const CHILD: &str = "CURL_OS_FS_DESCRIPTOR_CHILD";
+
+    /// A file opened may be descriptor 0, and standard input closed or a
+    /// descriptor limit below standard error's are errors, not crashes.
+    /// Run in a child process, as it closes stdin and lowers the limit.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot start a process")]
+    fn descriptors_may_be_missing_or_zero() {
+        if std::env::var_os(CHILD).is_some() {
+            return in_child();
+        }
+        let name = "fs::tests::descriptors_may_be_missing_or_zero";
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stdout}{stderr}");
+        assert!(stdout.contains("1 passed"), "the child ran it: {stdout}");
+    }
+
+    fn in_child() {
+        let s = Scratch::new("descriptors");
+        std::fs::write(s.0.join("f"), b"zero").unwrap();
+        // SAFETY: nothing in this process reads stdin.
+        assert_eq!(unsafe { libc::close(libc::STDIN_FILENO) }, 0);
+        let none = stdin().unwrap_err();
+        assert_eq!(none.raw_os_error(), Some(libc::EBADF));
+        let mut zero = open_read(&s.c("f")).unwrap();
+        assert_eq!(zero.as_raw_fd(), 0, "the lowest free descriptor");
+        let mut read = String::new();
+        zero.read_to_string(&mut read).unwrap();
+        assert_eq!(read, "zero");
+        // SAFETY: a zeroed `rlimit` is valid, and is filled in by the call.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        // SAFETY: `limit` is valid to write and lives through the call.
+        let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) };
+        assert_eq!(rc, 0);
+        let saved = limit.rlim_cur;
+        // Descriptor 2 is past a limit of 2, so `dup2` cannot make it.
+        limit.rlim_cur = 2;
+        // SAFETY: `limit` is valid and lives through the call.
+        let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
+        assert_eq!(rc, 0);
+        let past = stderr_to(&zero);
+        limit.rlim_cur = saved;
+        // SAFETY: as above.
+        let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
+        assert_eq!(rc, 0);
+        assert_eq!(past.unwrap_err().raw_os_error(), Some(libc::EBADF));
+    }
+
     #[test]
     fn opens_files_to_read_and_write() {
         let s = Scratch::new("open");

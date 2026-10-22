@@ -64,13 +64,7 @@ pub fn lookup(name: &[u8], family: Family) -> Result<Vec<IpAddr>, Failure> {
     let rc =
         unsafe { libc::getaddrinfo(text.as_ptr(), ptr::null(), &raw const hints, &raw mut first) };
     if rc != 0 {
-        return Err(match rc {
-            libc::EAI_NONAME => Failure::NotFound,
-            libc::EAI_NODATA => Failure::NoData,
-            libc::EAI_AGAIN => Failure::Again,
-            libc::EAI_MEMORY => Failure::OutOfMemory,
-            _ => Failure::Failed,
-        });
+        return Err(failure(rc));
     }
     let list = List(first);
     let mut addrs: Vec<IpAddr> = Vec::new();
@@ -87,6 +81,19 @@ pub fn lookup(name: &[u8], family: Family) -> Result<Vec<IpAddr>, Failure> {
         at = node.ai_next;
     }
     Ok(addrs)
+}
+
+/// What a failure `getaddrinfo` returned says. Only no such name and no
+/// such data are answers (as C's `gai_negative` tells them apart), which
+/// the caller keeps; the resolver failing now is not.
+fn failure(rc: libc::c_int) -> Failure {
+    match rc {
+        libc::EAI_NONAME => Failure::NotFound,
+        libc::EAI_NODATA => Failure::NoData,
+        libc::EAI_AGAIN => Failure::Again,
+        libc::EAI_MEMORY => Failure::OutOfMemory,
+        _ => Failure::Failed,
+    }
 }
 
 /// The address a node holds, if of a family known here.
@@ -146,5 +153,71 @@ mod tests {
         assert_eq!(seen, localhost, "each once");
         assert!(lookup(b"nonexist.invalid", Family::Any).is_err());
         assert_eq!(lookup(b"bad\0name", Family::Any), Err(Failure::NotFound));
+        assert!(lookup(b"", Family::Any).is_err());
+    }
+
+    /// Each of `getaddrinfo`'s failures says what it means.
+    #[test]
+    fn failures_say_why() {
+        for (rc, why) in [
+            (libc::EAI_NONAME, Failure::NotFound),
+            (libc::EAI_NODATA, Failure::NoData),
+            (libc::EAI_AGAIN, Failure::Again),
+            (libc::EAI_MEMORY, Failure::OutOfMemory),
+            (libc::EAI_FAIL, Failure::Failed),
+            (libc::EAI_SYSTEM, Failure::Failed),
+        ] {
+            assert_eq!(failure(rc), why, "{rc}");
+        }
+    }
+
+    /// A node's address is read only when it is as long as its family's.
+    #[test]
+    fn a_short_address_is_none() {
+        let mut sin = libc::sockaddr_in {
+            sin_family: libc::AF_INET as libc::sa_family_t,
+            sin_port: 0,
+            sin_addr: libc::in_addr {
+                s_addr: u32::from(Ipv4Addr::new(192, 0, 2, 1)).to_be(),
+            },
+            sin_zero: [0; 8],
+        };
+        let mut sin6 = libc::sockaddr_in6 {
+            sin6_family: libc::AF_INET6 as libc::sa_family_t,
+            sin6_port: 0,
+            sin6_flowinfo: 0,
+            sin6_addr: libc::in6_addr {
+                s6_addr: Ipv6Addr::LOCALHOST.octets(),
+            },
+            sin6_scope_id: 0,
+        };
+        let node = |family, addr: *mut libc::sockaddr, len: usize| libc::addrinfo {
+            ai_flags: 0,
+            ai_family: family,
+            ai_socktype: libc::SOCK_STREAM,
+            ai_protocol: 0,
+            ai_addrlen: libc::socklen_t::try_from(len).unwrap(),
+            ai_addr: addr,
+            ai_canonname: ptr::null_mut(),
+            ai_next: ptr::null_mut(),
+        };
+        let v4 = (&raw mut sin).cast::<libc::sockaddr>();
+        let v6 = (&raw mut sin6).cast::<libc::sockaddr>();
+        let (len4, len6) = (
+            mem::size_of::<libc::sockaddr_in>(),
+            mem::size_of::<libc::sockaddr_in6>(),
+        );
+        assert_eq!(
+            address(&node(libc::AF_INET, v4, len4)),
+            Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)))
+        );
+        assert_eq!(address(&node(libc::AF_INET, v4, len4 - 1)), None);
+        assert_eq!(
+            address(&node(libc::AF_INET6, v6, len6)),
+            Some(IpAddr::V6(Ipv6Addr::LOCALHOST))
+        );
+        assert_eq!(address(&node(libc::AF_INET6, v6, len6 - 1)), None);
+        assert_eq!(address(&node(libc::AF_INET, ptr::null_mut(), len4)), None);
+        assert_eq!(address(&node(libc::AF_UNIX, v6, len6)), None);
     }
 }

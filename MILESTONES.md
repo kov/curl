@@ -410,7 +410,9 @@ cargo-mutants run on the milestone's diff.
     them on the Rust leg, which claims no NTLM, Kerberos or SPNEGO and so no `crypto`. They
     are run with the gate forced open by `inventory/measure/gated.py`, a regression net kept
     out of the score; delete it when the Rust build claims one of the three.
-    Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31);
+    Waiting: the tool's password prompt for `-u` without one, with step 38; NTLM, Negotiate,
+    AWS SigV4 and HTTP signatures, each refused as not built until its own step, as a C
+    build without it refuses; 407, with the proxies (step 31);
     `http_perhapsrewind`'s early close of a large body, and its "Need to rewind" line on an
     auth reload, with step 34.
 30. **http: cookies.** **Done**, but for what waits on later work. The jar (ENGINE.md 6.5),
@@ -440,15 +442,15 @@ cargo-mutants run on the milestone's diff.
     `CURLOPT_HAPROXYPROTOCOL`, `CURLOPT_HAPROXY_CLIENT_IP`, `--haproxy-protocol` and
     `--haproxy-clientip`; a SOCKS pre-proxy in front of the HTTP proxy, with
     `CURLOPT_PRE_PROXY` and `--preproxy`. 152 of the 158 proxy tests the Rust leg runs pass.
-    Waiting, on options no step has yet: 729 on `--limit-rate`, 970 and 972 on `%{json}`, 1613
-    on `--request-target`, 1851 on `--ipfs-gateway`, 2008 on `--get`, and gated test 1001 on
+    Waiting, on step 36's options: 729 on `--limit-rate`, 970 and 972 on `%{json}`, 1613 on
+    `--request-target`, 1851 on `--ipfs-gateway`, 2008 on `--get`, and gated test 1001 on
     `--range`. HTTPS proxies wait on TLS.
 32. **http: decompress.** **Done**, but for 3236. The pause gate holds a paused body still
     coded, as C's does; Content-Encoding and `Accept-Encoding` (`--compressed`), Transfer-Encoding
     and `TE` (`--tr-encoding`), and `--raw` for both, with a binding crate per library:
     `curl-zlib` (`deflate`, `gzip`), `curl-brotli` (`br`) and `curl-zstd`. The 28 compression
     tests run on both legs and 27 pass; 3236 waits on C's `write` trace component
-    (`curl_global_trace`), which nothing schedules yet.
+    (`curl_global_trace`), which opens milestone 3.
 33. **http: the headers API, and time conditions.** **Done.** Each request's headers kept for
     `curl_easy_header` and `curl_easy_nextheader`, by origin and request across redirects, and
     the tool's `%header{}` and `%{header_json}` reading them (421, 764, 765, 1670, 1671). `-z`
@@ -484,6 +486,54 @@ cargo-mutants run on the milestone's diff.
     connections) comes with it, as C does. Tested by two threads through the C ABI with no
     lock functions, under Miri where it reaches.
 
+36. **tool: the remaining HTTP/1.1 options.** In this order: `-G`/`--get` (2008); `-r`/
+    `CURLOPT_RANGE`, with the 206 and 416 answers (gated 1001), and `CURLOPT_RESUME_FROM` -1 on
+    a GET sending C's `Range: bytes=-N-` instead of refusing it; `--limit-rate` (729,
+    `MAX_RECV_SPEED_LARGE`, `MAX_SEND_SPEED_LARGE`), after step 38's read bound, as both change
+    the same read loop; `--request-target` (1613); `%{json}` (970, 972); `--aws-sigv4` (the
+    tests behind the `crypto` gate); `--ipfs-gateway` (1851).
+37. **http: multipart/MIME.** `curl_mime_*`, `CURLOPT_MIMEPOST`, `CURLOPT_HTTPPOST`
+    (`curl_formadd`), the tool's `-F` and `--form-string`; the multipart encoder with its size
+    and rewind, and the `Content-Type` boundary. The upload source becomes a source plus an
+    ordered chain of sans-IO readers, each with its own fixed buffer, as C's client readers
+    are chained; SMTP, IMAP and FTP's ASCII mode reuse it later.
+38. **Matching C, and what the milestone's reviews found.**
+    - The application's lists (`HTTPHEADER`, `PROXYHEADER`, `CONNECT_TO`, `RESOLVE`) read at
+      each leg, as C reads them per request, not copied at setopt; the WebKit backend's pattern
+      (set once, appended to after) tested through the C ABI on both legs.
+    - The read half bounded to C's 11 reads a pass, then run again while data may be pending, so
+      a fast peer cannot starve timeouts, progress or other transfers.
+    - The tool's password prompt for `-u` and `-U` without one (`checkpasswd`).
+    - Unknown `CURLOPT_HTTPAUTH`/`PROXYAUTH` bits accepted and ignored, as C does.
+    - file:// reads on through a failed `fstat`, without a size, as C does.
+    - `curl_multi_waitfds` folds a socket listed twice into one entry (`cwfds_add_sock`).
+    - `Route` compared field by field with nothing left out by `..`, built once per leg.
+    - No option taken from its home across a trace a debug handler can see.
+    - The send side's flags as one state enum.
+    - A property test per parser entry point: malformed input returns an error, never panics.
+    - A 401's retry trace names the URL as given, not with `CURLOPT_PORT` applied.
+    - IPv6 zone ids applied to the socket address, with C's link-local fallback.
+    - `DIVERGENCE.md` lists each deliberate, permanent difference from C with its pinning test;
+      temporary gaps stay in this file.
+
+## Milestone 3: connections in layers, then TLS
+
+Status: **planned**. Opens with what TLS stands on, decided at milestone 2's review:
+
+- **Component tracing.** `curl_global_trace` and `--trace-config`: one process-wide setting
+  in the shim's root, read live through a shared handle the core is given; C's components,
+  syntax and `ids`/`time` prefixes; the `CURL_TRC_*` lines of the components built so far,
+  each later protocol bringing its own. Closes 3236, 3235, 1515, 758 and 19.
+- **The engine rewrite in ENGINE.md:** who owns a connection (exclusive leases; pool places
+  for multiplexed, reserved and closing connections; the socket's closer carried from its
+  creation; a lease checked against its home pool) and the layer stack as a pull chain like
+  C's filters, one `Stream` owned by a dialed socket and a connection alike.
+- **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
+- **HTTP's decisions after an exchange** moved from the engine into `proto/http`.
+- **TLS**, its first sub-step the layer stack.
+- **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
+  claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
+
 After this milestone: **a corpus of real command lines**, as compatibility guidance. Some
 thousands of curl invocations sampled from public shell scripts, Dockerfiles, CI configurations
 and documentation, kept under `inventory/` with their sources and parsed as a shell would (quotes,
@@ -495,4 +545,7 @@ diff what they accept, warn about and refuse. It is also the evidence for a diff
 Later, with the protocol that needs it: the scheme facts (family, PROTOPT flags, default port)
 generated from `gen/schemes.py` rather than copied by hand, by stage 4 at the latest; resting
 connect and DO states and connection-scoped protocol state, with the first stage-6 protocol or
-STARTTLS; the request renderer writing each part through a field sink, when HTTP/2 starts.
+STARTTLS; the request renderer writing each part through a field sink, when HTTP/2 starts;
+HTTP/2 delivering a sibling stream's data to its transfer at once, as C does, rather than
+buffering it per stream; FTP's data connection as a second chain beside the control
+connection's; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.

@@ -1160,12 +1160,6 @@ pub(crate) fn apply<'a>(
                 }
                 None => Some(write_out::Format::Given(value.text())),
             };
-            if let Some(missing) = format
-                .as_ref()
-                .and_then(|f| write_out::unimplemented(f.bytes()))
-            {
-                line.feature_not_implemented(missing);
-            }
             line.current().write_out = format;
         }
         Opt::ProgressMeter => line.global.no_progress = !value.toggle(),

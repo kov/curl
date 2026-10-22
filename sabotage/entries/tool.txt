@@ -964,3 +964,27 @@ witness: curl-tool tests::names_the_libraries_as_c
 --- new
         let libraries: [&dyn std::fmt::Display; 3] = [&zlib, &brotli, &zstd];
         let _ = psl;
+
+=== %time{}'s microseconds lose their leading zeros
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_the_time_as_c
+--- old
+            Some(b'f') => try_format(format_args!("{micros:06}")),
+--- new
+            Some(b'f') => try_format(format_args!("{micros}")),
+
+=== %time{} writes past C's buffer
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_the_time_as_c
+--- old
+const TIME_BUFFER: usize = 256;
+--- new
+const TIME_BUFFER: usize = 257;
+
+=== %time{} leaves its own conversions to strftime
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_the_time_as_c
+--- old
+            Some(b'Z') => try_format(format_args!("UTC")),
+--- new
+            Some(b'Z') => try_format(format_args!("%Z")),

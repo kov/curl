@@ -187,3 +187,11 @@ features: debug-hooks
         match e.raw_os_error() {
 --- new
         match e.raw_os_error().filter(|&code| code < 0) {
+
+=== an empty formatted time is something made
+file: crates/curl-os/src/time.rs
+witness: curl-os time::tests::formats_a_time_in_utc
+--- old
+    (n > 0).then_some(n)
+--- new
+    Some(n)

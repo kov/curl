@@ -800,10 +800,7 @@ mod tests {
             run(&["-T", ".", "x"]),
             Ok((1, Some("uploading standard input without blocking"), None))
         );
-        assert_eq!(
-            run(&["-w", "%time{%Y}", "x"]),
-            Ok((1, Some("--write-out %time{}"), None))
-        );
+        assert_eq!(run(&["-w", "%time{%Y}", "x"]), Ok((1, None, None)));
         assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None, None)));
     }
 

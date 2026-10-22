@@ -85,6 +85,9 @@ fn main() -> ExitCode {
     let argv = command_line();
     #[cfg(feature = "debug-hooks")]
     memory_tracking_init();
+    // C takes the environment's locale (`setlocale(LC_ALL, "")`), which
+    // only `--write-out`'s `%time{}` reads here.
+    curl_os::time::time_locale_from_environment();
     let mut msgs = Messages::new();
     let curlrc = if config::reads_curlrc(&argv) {
         match config::find_curlrc(

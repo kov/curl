@@ -1,9 +1,7 @@
 //! `--write-out`: text after each transfer, with `%{variable}`s replaced
 //! by what the transfer reports (`src/tool_writeout.c`).
 //!
-//! Every variable C knows is written here. A function not implemented
-//! yet (`%time{}`) is refused when the option is read, never written
-//! without it.
+//! Every variable and function C knows is written here.
 
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
@@ -273,8 +271,8 @@ enum Piece<'f> {
         name: &'f [u8],
         all: Option<&'f [u8]>,
     },
-    /// `%time{`, not implemented yet.
-    Function(&'static str),
+    /// `%time{format}`: the time now, formatted.
+    Time(&'f [u8]),
     /// A name too long for C's buffer: nothing more is written.
     End,
 }
@@ -303,7 +301,11 @@ fn pieces<'f>(format: &'f [u8], mut each: impl FnMut(Piece<'f>) -> bool) {
             },
             (b'%', Some(_)) if rest[1..].starts_with(b"header{") => header(&rest[8..]),
             (b'%', Some(_)) if rest[1..].starts_with(b"time{") => {
-                (Piece::Function("--write-out %time{}"), rest.len())
+                match rest[6..].iter().position(|&b| b == b'}') {
+                    Some(len) => (Piece::Time(&rest[6..6 + len]), 6 + len + 1),
+                    // Unclosed: written, and reading goes on after it.
+                    None => (Piece::Text(b"%time{"), 6),
+                }
             }
             (b'%', Some(_)) if rest[1..].starts_with(b"output{") => {
                 let after = &rest[8..];
@@ -369,21 +371,6 @@ fn header(after: &[u8]) -> (Piece<'_>, usize) {
         Piece::Text(b"")
     };
     (piece, 8 + end + 1)
-}
-
-/// What `format` uses that is not implemented yet, if anything: the
-/// option is refused for it.
-pub(crate) fn unimplemented(format: &[u8]) -> Option<&'static str> {
-    let mut missing = None;
-    pieces(format, |piece| {
-        match piece {
-            Piece::Function(f) => missing = Some(f),
-            Piece::End => return false,
-            _ => {}
-        }
-        missing.is_none()
-    });
-    missing
 }
 
 /// Write `format` for a transfer that reports `facts`, to standard output
@@ -458,11 +445,76 @@ fn write_to(format: &[u8], facts: &Facts<'_>, stdout: &mut dyn Write, stderr: &m
             Piece::Header { name, all } => {
                 let _ = header_value(facts.report.headers(), name, all, out);
             }
-            Piece::Function(_) => unreachable!("refused when the option was read"),
+            Piece::Time(format) => {
+                let _ = time(format, now(), out);
+            }
             Piece::End => return false,
         }
         true
     });
+}
+
+/// The time now, in seconds since the epoch and microseconds; in the
+/// debug test build, what `CURL_TIME` says, its microseconds the
+/// number's last six digits.
+fn now() -> (i64, u32) {
+    #[cfg(feature = "debug-hooks")]
+    if let Some(t) = curl_core::report::debug_info::time() {
+        let secs = i64::try_from(t).expect("no larger than C's offsets");
+        return (secs, (t % 1_000_000) as u32);
+    }
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = i64::try_from(since.as_secs()).unwrap_or(i64::MAX);
+    (secs, since.subsec_micros())
+}
+
+/// C's buffer for a formatted time, its zero byte included.
+const TIME_BUFFER: usize = 256;
+
+/// `%time{format}` at `now` (`outtime`): `format` as `strftime` makes it
+/// of the time in UTC, with `%f` the microseconds, `%s` the seconds since
+/// the epoch and `%z` and `%Z` UTC's, put in first as C does; nothing if
+/// the result is empty or too long for C's buffer.
+fn time(format: &[u8], now: (i64, u32), out: &mut dyn Write) -> std::io::Result<()> {
+    let (secs, micros) = now;
+    let mut made = Vec::new();
+    let mut at = 0;
+    while at < format.len() {
+        let next = format.get(at + 1).copied().filter(|_| format[at] == b'%');
+        let inserted = match next {
+            Some(b'f') => try_format(format_args!("{micros:06}")),
+            Some(b's') => try_format(format_args!("{secs}")),
+            Some(b'Z') => try_format(format_args!("UTC")),
+            Some(b'z') => try_format(format_args!("+0000")),
+            // Left for `strftime` to make one `%` of.
+            Some(b'%') => try_format(format_args!("%%")),
+            // Any other is `strftime`'s, read from the `%` on.
+            Some(_) | None => {
+                made.try_push(format[at])
+                    .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+                at += 1;
+                continue;
+            }
+        };
+        let inserted = inserted.map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+        made.try_extend_from_slice(inserted.as_bytes())
+            .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+        at += 2;
+    }
+    // C's format is a C string: it ends at a zero byte.
+    if let Some(zero) = made.iter().position(|&b| b == 0) {
+        made.truncate(zero);
+    }
+    made.try_push(0)
+        .map_err(|_| std::io::ErrorKind::OutOfMemory)?;
+    let format = std::ffi::CStr::from_bytes_with_nul(&made).expect("one zero byte, at the end");
+    let mut buf = [0u8; TIME_BUFFER];
+    match curl_os::time::format_utc(format, secs, &mut buf) {
+        Some(n) => out.write_all(&buf[..n]),
+        None => Ok(()),
+    }
 }
 
 /// `%header{}`'s value: the last response's first `name`, or with a
@@ -859,7 +911,11 @@ mod tests {
                     }
                     out.push(b'>');
                 }
-                Piece::Function(f) => out.extend_from_slice(f.as_bytes()),
+                Piece::Time(f) => {
+                    out.extend_from_slice(b"<t:");
+                    out.extend_from_slice(f);
+                    out.push(b'>');
+                }
                 Piece::End => return false,
             }
             true
@@ -1176,17 +1232,36 @@ mod tests {
     }
 
     #[test]
-    fn refuses_what_is_not_implemented() {
-        assert_eq!(unimplemented(b"%{url} %{exitcode}\\n"), None);
-        assert_eq!(unimplemented(b"%{nosuch}"), None);
-        assert_eq!(unimplemented(b"x %{json} %{certs} %{xfer_id}"), None);
-        assert_eq!(unimplemented(b"%header{a} %{header_json}"), None);
-        assert_eq!(unimplemented(b"%time{%H}"), Some("--write-out %time{}"));
-        assert_eq!(unimplemented(b"%output{f}"), None);
-        let after_end = format!("%{{{}}}%{{http_code}}", "a".repeat(24));
-        assert_eq!(unimplemented(after_end.as_bytes()), None);
+    fn variables_are_sorted() {
         // The table is C's, sorted for its binary search.
         assert!(VARIABLES.windows(2).all(|w| w[0].name < w[1].name));
+    }
+
+    /// `%time{}` as C writes it at the time test 1981 sets: its own
+    /// conversions put in before `strftime`'s, `%%` left for it to make
+    /// one `%` of; nothing for an empty format or a result past C's
+    /// buffer; an unclosed one written as it is.
+    #[test]
+    fn writes_the_time_as_c() {
+        let at = |format: &[u8]| {
+            let mut out = Vec::new();
+            time(format, (1_754_037_103, 37_103), &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        assert_eq!(
+            at(b"%d/%b/%Y %H:%M:%S.%f %z %Z%%s %s"),
+            "01/Aug/2025 08:31:43.037103 +0000 UTC%s 1754037103"
+        );
+        assert_eq!(at(b"%"), "%");
+        assert_eq!(at(b"x%"), "x%");
+        assert_eq!(at(b"%%%"), "%%");
+        assert_eq!(at(b""), "");
+        assert_eq!(at(b"%f"), "037103");
+        assert_eq!(at(b"a\0%Y"), "a");
+        assert_eq!(at("x".repeat(255).as_bytes()).len(), 255);
+        assert_eq!(at("x".repeat(256).as_bytes()), "");
+        assert_eq!(render(b"%time{%H}x"), b"<t:%H>x");
+        assert_eq!(render(b"a%time{%H"), b"a%time{%H");
     }
 
     const WORDS: &[&[u8]] = &[
@@ -1234,14 +1309,13 @@ mod tests {
 
         /// Any format is read, and what it asks for written, as
         /// `write_to` writes it but for the files it would open, for any
-        /// URL and headers; or it is refused as not implemented.
+        /// URL and headers.
         #[test]
         fn any_format_is_written(
             format in crate::untrusted::input(WORDS, FORMATS, 16),
             url in crate::untrusted::input(WORDS, URLS, 4),
             failed in proptest::prelude::any::<bool>(),
         ) {
-            unimplemented(&format);
             let report = TransferReport::default();
             let facts = Facts {
                 result: if failed { Err(ErrorKind::CouldntConnect) } else { Ok(()) },
@@ -1269,6 +1343,7 @@ mod tests {
                     Piece::Header { name, all } => {
                         header_value(&store, name, all, &mut out).unwrap();
                     }
+                    Piece::Time(f) => time(f, (0, 0), &mut out).unwrap(),
                     Piece::End => return false,
                     _ => {}
                 }

@@ -13,8 +13,8 @@ use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use std::time::Duration;
 
 use crate::handler::{
-    DebugHandler, Handler, HeaderHandler, LineSource, ProgressHandler, ReadHandler, Rewind,
-    TextSink, TrailerHandler, WriteHandler,
+    DebugHandler, Handler, HeaderHandler, LentBytes, LineSource, ProgressHandler, ReadHandler,
+    Rewind, TextSink, TrailerHandler, WriteHandler,
 };
 use crate::time::TimeLimit;
 use crate::url::SharedUrl;
@@ -295,6 +295,13 @@ impl Login {
 }
 
 impl Options {
+    /// The application's header lists read again from their sources, as
+    /// C walks them each time it builds a request or a `CONNECT`.
+    pub(crate) fn reread_headers(&mut self) -> Result<(), OutOfMemory> {
+        self.http.headers.refill()?;
+        self.proxy.headers.refill()
+    }
+
     /// The URL to transfer (`CURLOPT_URL`), as given: it is parsed when
     /// the transfer starts.
     pub fn url(&self) -> Option<&[u8]> {
@@ -1111,6 +1118,8 @@ pub enum UploadSource {
     /// These bytes, shared by every copy of the options
     /// (`CURLOPT_COPYPOSTFIELDS`).
     Bytes(TryArc<Vec<u8>>),
+    /// Bytes the application lends, read where they are as they are sent.
+    Lent(Handler<dyn LentBytes>),
     /// What a handler reads, `size` bytes if known (`CURLOPT_READFUNCTION`,
     /// `CURLOPT_INFILESIZE_LARGE`). Without a rewind, a request that must be
     /// sent again after reading fails with SendFailRewind.

@@ -1140,9 +1140,9 @@ witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 --- old
-            .filter(|_| !probe)
+        let mut upload = body.filter(|_| !probe).map(|_| {
 --- new
-            .filter(|_| true)
+        let mut upload = body.filter(|_| true).map(|_| {
 
 === Digest gives way to the application's Authorization
 file: crates/curl-core/src/proto/http.rs
@@ -1252,3 +1252,21 @@ witness: curl-core proto::http::tests::a_relative_redirect_resolves_with_the_app
     Ok(url)
 --- new
     Ok(url)
+
+=== a POST asked chunked stops at the size it was given
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_post_asked_chunked_as_its_request_is_built_reads_to_the_end
+--- old
+            if asked == Some(true) && self.method == Method::Post {
+--- new
+            if asked == Some(true) && self.method == Method::Upload {
+
+=== the header lists are read as the leg starts, not as the request is built
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_post_asked_chunked_as_its_request_is_built_reads_to_the_end
+--- old
+            .reread_headers()
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+--- new
+            .try_clone()
+            .map_err(|_| ErrorKind::OutOfMemory)?;

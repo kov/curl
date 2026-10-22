@@ -12,13 +12,11 @@ use core::ffi::{CStr, c_char, c_int, c_long, c_void};
 use core::num::NonZeroUsize;
 use core::ptr::{self, NonNull};
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::handler::{
-    DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, ProgressHandler, ProgressNow,
-    ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink, TrailerHandler,
-    TrailerLines, Trailers, Write, WriteHandler,
+    DebugHandler, DebugKind, Handler, HeaderHandler, HeaderOrigin, LentBytes, ProgressHandler,
+    ProgressNow, ProgressVerdict, Read, ReadHandler, Rewind, RewindFailed, TextSink,
+    TrailerHandler, TrailerLines, Trailers, Write, WriteHandler,
 };
 use curl_core::multi::TransferCx;
 use curl_core::options::{Callbacks, Method, Options, Progress, UploadSource};
@@ -306,12 +304,8 @@ pub(crate) fn sync_upload(
             let post = unsafe { easy.as_ref() }.post.borrow();
             let size = u64::try_from(post.size).ok();
             match &post.fields {
-                // Read from the read function, a body the application asks
-                // chunked is read to its end whatever its size
-                // (`set_reader`, C's issue 13229).
-                PostFields::None if options.http.headers.asks_chunked() == Some(true) => {
-                    read(None)?
-                }
+                // Read to its end whatever its size if the request is
+                // asked chunked, which the core decides as it builds it.
                 PostFields::None => read(size)?,
                 PostFields::Copied(bytes) => match size.and_then(|n| usize::try_from(n).ok()) {
                     Some(n) if n < bytes.len() => {
@@ -328,16 +322,7 @@ pub(crate) fn sync_upload(
                         // size, are a C string.
                         None => unsafe { libc::strlen(at.as_ptr().cast()) },
                     };
-                    let fields = Fields(TryArc::try_new(AppFields {
-                        at: *at,
-                        len,
-                        read: AtomicUsize::new(0),
-                    })?);
-                    UploadSource::Read {
-                        handler: Handler::read(fields.clone())?,
-                        rewind: Some(Handler::rewind(fields)?),
-                        size: Some(len as u64),
-                    }
+                    UploadSource::Lent(Handler::lent(AppFields { at: *at, len })?)
                 }
             }
         }
@@ -348,13 +333,9 @@ pub(crate) fn sync_upload(
 
 /// The application's `CURLOPT_POSTFIELDS`, read where they are as they
 /// are sent, by the read and the rewind both.
-#[derive(Clone)]
-struct Fields(TryArc<AppFields>);
-
 struct AppFields {
     at: NonNull<u8>,
     len: usize,
-    read: AtomicUsize,
 }
 
 // SAFETY: the fields are the application's, only read, and kept alive and
@@ -364,26 +345,20 @@ unsafe impl Send for AppFields {}
 // SAFETY: as for `Send`: what is shared is only read.
 unsafe impl Sync for AppFields {}
 
-impl ReadHandler for Fields {
-    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
-        let fields = &*self.0;
-        let read = fields.read.load(Ordering::Relaxed);
-        let n = (fields.len - read).min(buf.len());
-        let start = fields.at.as_ptr().wrapping_add(read);
+impl LentBytes for AppFields {
+    fn size(&self) -> u64 {
+        self.len as u64
+    }
+
+    fn copy_at(&self, at: u64, buf: &mut [u8]) -> usize {
+        let at = usize::try_from(at).expect("an offset below the fields' length");
+        let n = (self.len - at).min(buf.len());
         // SAFETY: the application keeps its fields, `len` bytes, alive and
         // unchanged until the transfer is over, as `CURLOPT_POSTFIELDS`
-        // requires; `read + n` is within them.
-        let from = unsafe { core::slice::from_raw_parts(start, n) };
+        // requires; `at + n` is within them.
+        let from = unsafe { core::slice::from_raw_parts(self.at.as_ptr().wrapping_add(at), n) };
         buf[..n].copy_from_slice(from);
-        fields.read.store(read + n, Ordering::Relaxed);
-        NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
-    }
-}
-
-impl Rewind for Fields {
-    fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
-        self.0.read.store(0, Ordering::Relaxed);
-        Ok(())
+        n
     }
 }
 

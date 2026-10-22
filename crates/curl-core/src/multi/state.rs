@@ -1791,27 +1791,16 @@ fn retry_request<H: Host>(
     Ok(true)
 }
 
-/// The lists the application may change after giving them, read again
-/// from their sources as a request starts: C walks them where it uses
-/// them, for each request and each connection.
-pub(super) fn refill_lists<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-    let options = cx.easy_mut().options_mut();
-    options
-        .http
-        .headers
-        .refill()
-        .and_then(|()| options.proxy.headers.refill())
-        .and_then(|()| options.connect_to.refill())
-        .map_err(|_| ErrorKind::OutOfMemory)
-}
-
 /// C's SETUP and CONNECT, which always run in one pass, for each request
 /// of a transfer: the leg's timers, the protocol and a connection for
 /// `url`, then the protocol connects over it.
 fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> TransferState {
     run.deadlines.start_leg(cx.rest.now);
-    if let Err(e) = refill_lists(cx) {
-        return TransferState::Init.fail(e);
+    // The connect-to entries as the application's source has them now,
+    // as C walks them for each connection it sets up; the header lists
+    // are read as the request is built.
+    if let Err(OutOfMemory) = cx.easy_mut().options_mut().connect_to.refill() {
+        return TransferState::Init.fail(ErrorKind::OutOfMemory);
     }
     cx.report_mut().set_method(run.inherited.method);
     cx.mark(Timer::StartSingle);

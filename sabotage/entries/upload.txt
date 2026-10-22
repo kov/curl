@@ -297,3 +297,19 @@ witness: curl-core proto::http::tests::a_challenge_mid_body_closes_rather_than_s
             self.perhaps_rewind(sending, &mut note);
         }
 --- new
+
+=== lent bytes have no size
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-sys-abi handle_tests::post_fields_asked_chunked_keep_their_size
+--- old
+            Source::Lent(bytes) => Some(bytes.size()),
+--- new
+            Source::Lent(_) => None,
+
+=== lent bytes need no rewind once read
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core upload::tests::lent_bytes_are_read_in_place_and_rewound
+--- old
+            Source::Lent(_) => self.read > 0,
+--- new
+            Source::Lent(_) => false,

@@ -538,28 +538,36 @@ witness: curl-core upload::tests::a_pause_blocks_an_upload_only_every_way_it_mov
             if !slot.pause.blocks(crate::deliver::Directions::default()) {
 
 === the application's lists are read only when they are set
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-sys-abi handle_tests::header_lines_appended_after_the_option_are_sent
 --- old
-    if let Err(e) = refill_lists(cx) {
+            .reread_headers()
+            .map_err(|_| ErrorKind::OutOfMemory)?;
 --- new
-    if let Err(e) = Ok::<(), ErrorKind>(()) {
+            .try_clone()
+            .map_err(|_| ErrorKind::OutOfMemory)?;
 
 === the application's lists are read only for a transfer's first request
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-sys-abi handle_tests::header_lines_appended_during_a_redirect_go_with_the_next_request
 --- old
-    if let Err(e) = refill_lists(cx) {
+        let options = cx.easy_mut().options_mut();
+        options
+            .reread_headers()
 --- new
-    if let Err(e) = if run.inherited.first.is_none() { refill_lists(cx) } else { Ok(()) } {
+        let first = cx.report_mut().redirects() == 0;
+        let options = cx.easy_mut().options_mut();
+        (if first { options.reread_headers() } else { Ok(()) })
 
 === a CONNECT sent again for credentials reads the lists as the first did
 file: crates/curl-core/src/multi/state/tunnel.rs
 witness: curl-sys-abi handle_tests::proxy_header_lines_appended_after_the_option_are_sent
 --- old
-    super::refill_lists(cx)?;
+    options
+        .reread_headers()
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
 --- new
-    // The lists as they were.
+    let _ = options;
 
 === the resolve list is read as it was set, not as the transfer starts
 file: crates/curl-core/src/multi/state.rs
@@ -591,3 +599,11 @@ pub(crate) enum Listed<T> {
 #[derive(Debug)]
 #[repr(C)]
 pub(crate) enum Listed<T> {
+
+=== the connect-to list is read only when it is set
+file: crates/curl-core/src/multi/state.rs
+witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_after_the_option_are_used
+--- old
+    if let Err(OutOfMemory) = cx.easy_mut().options_mut().connect_to.refill() {
+--- new
+    if let Err(OutOfMemory) = Ok::<(), OutOfMemory>(()) {

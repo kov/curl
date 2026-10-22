@@ -1460,6 +1460,73 @@ fn a_body_of_unknown_size_goes_chunked() {
     assert_eq!(ran.easy.report().sizes().upload(), 23, "framing counts");
 }
 
+/// The application's lines, which it may add to at any time.
+#[derive(Clone, Default)]
+struct Appendable(Arc<Mutex<Vec<Vec<u8>>>>);
+
+impl crate::handler::LineSource for Appendable {
+    fn lines(
+        &self,
+        line: &mut dyn FnMut(&[u8]) -> Result<(), curl_alloc::OutOfMemory>,
+    ) -> Result<(), curl_alloc::OutOfMemory> {
+        self.0.lock().unwrap().iter().try_for_each(|l| line(l))
+    }
+}
+
+/// Adds a line to the application's list as the connection is first
+/// tried: after the transfer and its request started, before the request
+/// is built.
+struct AppendsOnTrying(Appendable, &'static [u8]);
+
+impl DebugHandler for AppendsOnTrying {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        if kind == DebugKind::Text && data.starts_with(b"  Trying") {
+            self.0.0.lock().unwrap().push(self.1.to_vec());
+        }
+    }
+}
+
+/// A POST read from a handler, asked chunked by a header line the
+/// application adds after the transfer started, goes chunked and is read
+/// to its end whatever size it was given; an upload keeps its size. C
+/// reads the list and decides as it builds the request (`set_reader`,
+/// `http_req_set_TE`); the C build sends all 20 bytes.
+#[test]
+fn a_post_asked_chunked_as_its_request_is_built_reads_to_the_end() {
+    for (method, sent) in [
+        (Method::Post, "14\r\n0123456789abcdefghij\r\n0\r\n\r\n"),
+        (Method::Upload, "5\r\n01234\r\n0\r\n\r\n"),
+    ] {
+        let list = Appendable::default();
+        list.0.lock().unwrap().push(b"Expect:".to_vec());
+        let stream = Stream::new(b"0123456789abcdefghij");
+        let ran = with_body(method, b"", |o| {
+            o.upload = match stream.source(false) {
+                UploadSource::Read {
+                    handler, rewind, ..
+                } => UploadSource::Read {
+                    handler,
+                    rewind,
+                    size: Some(5),
+                },
+                _ => unreachable!(),
+            };
+            o.http.headers =
+                UserHeaders::from_source(Handler::lines(list.clone()).unwrap()).unwrap();
+            let appends = AppendsOnTrying(list.clone(), b"Transfer-Encoding: chunked");
+            o.callbacks.debug = Some(Handler::debug(appends).unwrap());
+        });
+        assert_eq!(ran.result, Ok(()));
+        let request = String::from_utf8(ran.request).unwrap();
+        assert!(
+            request.contains("\r\nTransfer-Encoding: chunked\r\n")
+                && !request.contains("Content-Length")
+                && request.ends_with(&format!("\r\n\r\n{sent}")),
+            "{method:?}: {request}"
+        );
+    }
+}
+
 /// HTTP/1.0 cannot send a body of unknown size.
 #[test]
 fn http_1_0_refuses_a_body_of_unknown_size() {

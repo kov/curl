@@ -248,6 +248,59 @@ fn the_read_that_completes_the_size_ends_the_body() {
     });
 }
 
+/// Bytes the application lends, copied from where they are as they are
+/// read.
+struct Lends(Vec<u8>);
+
+impl crate::handler::LentBytes for Lends {
+    fn size(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    fn copy_at(&self, at: u64, buf: &mut [u8]) -> usize {
+        let rest = &self.0[usize::try_from(at).unwrap()..];
+        let n = rest.len().min(buf.len());
+        buf[..n].copy_from_slice(&rest[..n]);
+        n
+    }
+}
+
+/// Lent bytes are read in pieces from where the last read left them, end
+/// with their last byte, and start over at a rewind; read from at all,
+/// they must be rewound to be sent again, as C's `cr_buf` must.
+#[test]
+fn lent_bytes_are_read_in_place_and_rewound() {
+    let (mut m, _clock) = multi();
+    let id = m.add(script(vec![]), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let source = UploadSource::Lent(Handler::lent(Lends(b"abcde".to_vec())).unwrap());
+    m.with_step_cx(id, |cx| {
+        let mut upload = Upload::new(&source);
+        assert_eq!(upload.size(), Some(5));
+        assert!(!upload.needs_rewind());
+        let mut buf = [0; 3];
+        assert_eq!(
+            upload.read(cx, &mut buf, true),
+            Ok(Readout { n: 3, eos: false })
+        );
+        assert_eq!(&buf, b"abc");
+        assert!(upload.needs_rewind());
+        assert_eq!(
+            upload.read(cx, &mut buf, true),
+            Ok(Readout { n: 2, eos: true })
+        );
+        assert_eq!(&buf[..2], b"de");
+        assert_eq!(upload.rewind(cx), Ok(()));
+        assert!(!upload.needs_rewind());
+        let mut all = [0; 8];
+        assert_eq!(
+            upload.read(cx, &mut all, true),
+            Ok(Readout { n: 5, eos: true })
+        );
+        assert_eq!(&all[..5], b"abcde");
+    });
+}
+
 /// A handler that said it was done, aborted, or gave more than it had room
 /// for is not called again: the same answer comes back.
 #[test]

@@ -42,12 +42,12 @@ witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
             if n == 0 {
 
 === a chunked POST from the read function stops at its size
-file: crates/curl-sys-abi/src/callbacks.rs
-witness: curl-sys-abi handle_tests::the_post_options_combine_as_in_c
+file: crates/curl-core/src/proto/http.rs
+witness: curl-sys-abi handle_tests::a_post_asked_chunked_as_its_request_is_built_reads_to_the_end
 --- old
-                PostFields::None if options.http.headers.asks_chunked() == Some(true) => {
+            if asked == Some(true) && self.method == Method::Post {
 --- new
-                PostFields::None if false => {
+            if false {
 
 === curl_url_get leaves the part pointer as it was on an error
 file: crates/curl-sys-abi/src/url.rs

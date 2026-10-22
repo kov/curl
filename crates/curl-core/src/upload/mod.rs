@@ -8,7 +8,7 @@ use curl_alloc::TryArc;
 
 use crate::deliver::SendPause;
 use crate::error::ErrorKind;
-use crate::handler::{DebugKind, Handler, Read, ReadHandler, Rewind};
+use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::options::UploadSource;
@@ -30,6 +30,7 @@ pub(crate) struct Upload {
 enum Source {
     None,
     Bytes(TryArc<Vec<u8>>),
+    Lent(Handler<dyn LentBytes>),
     Read {
         handler: Handler<dyn ReadHandler>,
         rewind: Option<Handler<dyn Rewind>>,
@@ -63,6 +64,7 @@ impl Upload {
         let source = match source {
             UploadSource::None => Source::None,
             UploadSource::Bytes(bytes) => Source::Bytes(bytes.clone()),
+            UploadSource::Lent(bytes) => Source::Lent(bytes.clone()),
             UploadSource::Read {
                 handler,
                 rewind,
@@ -84,7 +86,21 @@ impl Upload {
     /// The handler was called, and must be rewound for the body to be
     /// sent again (`Curl_creader_needs_rewind`).
     pub(crate) fn needs_rewind(&self) -> bool {
-        matches!(self.source, Source::Read { .. }) && self.called
+        match self.source {
+            Source::Read { .. } => self.called,
+            // Read where they are, as C's `cr_buf` reads its buffer.
+            Source::Lent(_) => self.read > 0,
+            Source::None | Source::Bytes(_) => false,
+        }
+    }
+
+    /// Read to its end, whatever size the handler was given: a POST the
+    /// application asks chunked (`set_reader`, C's issue 13229). Bytes,
+    /// lent or not, keep their length.
+    pub(crate) fn read_to_end(&mut self) {
+        if let Source::Read { size, .. } = &mut self.source {
+            *size = None;
+        }
     }
 
     /// The body's size, where known (`Curl_creader_total_length`).
@@ -92,6 +108,7 @@ impl Upload {
         match &self.source {
             Source::None => Some(0),
             Source::Bytes(bytes) => Some(bytes.len() as u64),
+            Source::Lent(bytes) => Some(bytes.size()),
             Source::Read { size, .. } => *size,
         }
     }
@@ -115,6 +132,23 @@ impl Upload {
                 self.read += n as u64;
                 let eos = at + n == bytes.len();
                 return Ok(Readout { n, eos });
+            }
+            Source::Lent(bytes) => {
+                let len = bytes.size();
+                let left = usize::try_from(len - self.read).unwrap_or(usize::MAX);
+                let n = if left == 0 {
+                    0
+                } else {
+                    let room = buf.len().min(left);
+                    let n = bytes.copy_at(self.read, &mut buf[..room]);
+                    assert!(n <= room, "lent bytes copy no more than fit");
+                    n
+                };
+                self.read += n as u64;
+                return Ok(Readout {
+                    n,
+                    eos: self.read == len,
+                });
             }
             Source::Read { handler, size, .. } => (handler.clone(), *size),
         };

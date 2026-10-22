@@ -322,9 +322,6 @@ impl Request {
             }
         };
         let credentials = with_netrc(credentials, peer.shown(), cx)?;
-        let cookie_host =
-            cookies::custom_host(&cx.easy().options().http.headers, gate.same_origin())
-                .map_err(|_| ErrorKind::OutOfMemory)?;
         Ok(Request {
             pipeline: Pipeline::new(Reach::Network),
             target,
@@ -353,7 +350,7 @@ impl Request {
             head: None,
             stage: Stage::Head,
             interim: false,
-            cookie_host,
+            cookie_host: None,
             set_cookies: 0,
         })
     }
@@ -483,6 +480,15 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
     ) -> Result<(), ErrorKind> {
+        // The application's header lists as they are now, as C walks them
+        // while it builds the request; the cookies' host is the one its
+        // `Host:` names then (`http_set_aptr_host`).
+        let options = cx.easy_mut().options_mut();
+        options
+            .reread_headers()
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        self.cookie_host = cookies::custom_host(&options.http.headers, self.gate.same_origin())
+            .map_err(|_| ErrorKind::OutOfMemory)?;
         let reused = lease.conn().reused();
         // On a connection's first request (`http_check_new_conn`); no
         // other version is spoken here.
@@ -575,21 +581,26 @@ impl Request {
                 format_args!("HTTP upload cannot be resumed"),
             ));
         }
+        // The application's Transfer-Encoding decides whether the body is
+        // chunked; otherwise one of unknown size is, which HTTP/1.0 cannot
+        // send (`http_req_set_TE`).
+        let asked = http.headers.asks_chunked();
         // A probe goes without its body, saying it has none
-        // (`Curl_creader_set_null`).
-        let mut upload = body
-            .filter(|_| !probe)
-            .map(|_| Upload::new(&options.upload));
+        // (`Curl_creader_set_null`). A POST asked chunked is read to its
+        // end (`set_reader`).
+        let mut upload = body.filter(|_| !probe).map(|_| {
+            let mut upload = Upload::new(&options.upload);
+            if asked == Some(true) && self.method == Method::Post {
+                upload.read_to_end();
+            }
+            upload
+        });
         let size = if probe {
             Some(0)
         } else {
             upload.as_ref().and_then(Upload::size)
         };
-        // The application's Transfer-Encoding decides whether the body is
-        // chunked; otherwise one of unknown size is, which HTTP/1.0 cannot
-        // send (`http_req_set_TE`).
         let size_unknown = upload.is_some() && size.is_none();
-        let asked = http.headers.asks_chunked();
         if asked.is_none() && size_unknown && self.version == HttpVersion::Http10 {
             return Err(trace::fail(
                 cx,

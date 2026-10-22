@@ -485,6 +485,7 @@ fn the_post_options_combine_as_in_c() {
     enum Body {
         None,
         Bytes(Vec<u8>),
+        Lent(u64),
         Read(Option<u64>),
     }
     let c = curl_easy_init();
@@ -492,6 +493,7 @@ fn the_post_options_combine_as_in_c() {
         options(c, |o| match &o.upload {
             UploadSource::None => Body::None,
             UploadSource::Bytes(b) => Body::Bytes(b.to_vec()),
+            UploadSource::Lent(b) => Body::Lent(curl_core::handler::LentBytes::size(&**b)),
             UploadSource::Read { size, .. } => Body::Read(*size),
         })
     };
@@ -541,13 +543,13 @@ fn the_post_options_combine_as_in_c() {
     );
     assert_eq!(
         body(c),
-        Body::Read(Some(3)),
+        Body::Lent(3),
         "the application's, to its zero byte"
     );
     assert_eq!(long(c, ffi::CURLOPT_UPLOAD, 1), CURLE_OK);
     assert_eq!((method(c), body(c)), (Method::Upload, Body::Read(None)));
     assert_eq!(long(c, ffi::CURLOPT_POST, 1), CURLE_OK);
-    assert_eq!(body(c), Body::Read(Some(3)), "the fields are kept");
+    assert_eq!(body(c), Body::Lent(3), "the fields are kept");
     assert_eq!(long(c, ffi::CURLOPT_HTTPGET, 1), CURLE_OK);
     assert_eq!((method(c), body(c)), (Method::Get, Body::None));
     assert_eq!(
@@ -559,8 +561,9 @@ fn the_post_options_combine_as_in_c() {
         long(c, ffi::CURLOPT_POSTFIELDSIZE, -2),
         CURLE_BAD_FUNCTION_ARGUMENT
     );
-    // From the read function, a body asked chunked is read to its end,
-    // the fields as long as their size.
+    // From the read function, the size given stands, though a body
+    // asked chunked is read to its end: the request decides that as it
+    // is built.
     assert_eq!(long(c, ffi::CURLOPT_POSTFIELDSIZE, 5), CURLE_OK);
     assert_eq!(body(c), Body::Read(Some(5)));
     let mut te = *b"Transfer-Encoding: chunked\0";
@@ -568,12 +571,12 @@ fn the_post_options_combine_as_in_c() {
     let list =
         unsafe { crate::strings::curl_slist_append(ptr::null_mut(), te.as_mut_ptr().cast()) };
     assert_eq!(pointer(c, ffi::CURLOPT_HTTPHEADER, list), CURLE_OK);
-    assert_eq!(body(c), Body::Read(None));
+    assert_eq!(body(c), Body::Read(Some(5)));
     assert_eq!(
         pointer(c, ffi::CURLOPT_POSTFIELDS, text.as_mut_ptr()),
         CURLE_OK
     );
-    assert_eq!(body(c), Body::Read(Some(5)));
+    assert_eq!(body(c), Body::Lent(5));
     pointer(c, ffi::CURLOPT_HTTPHEADER, ptr::null_mut::<c_char>());
     // SAFETY: made above, no longer kept by the handle, not used again.
     unsafe { crate::strings::curl_slist_free_all(list) };
@@ -3648,6 +3651,109 @@ fn the_trailer_function_ends_a_chunked_body() {
     let (code, request) = run(ffi::CURL_TRAILERFUNC_ABORT);
     assert_eq!(code, CURLE_ABORTED_BY_CALLBACK);
     assert!(!request.contains("X-T"), "{request}");
+}
+
+/// Appends `Transfer-Encoding: chunked` to the list at `data` as the
+/// connection is first tried: after the transfer started, before its
+/// request is built.
+unsafe extern "C" fn chunked_on_trying(
+    _: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    data: *mut c_void,
+) -> c_int {
+    // SAFETY: the shim's `n` bytes.
+    let text = unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), n) };
+    if kind == ffi::CURLINFO_TEXT && text.starts_with(b"  Trying") {
+        // SAFETY: `data` is the list's head, which an append keeps.
+        append(
+            unsafe { *data.cast::<*mut ffi::curl_slist>() },
+            &[c"Transfer-Encoding: chunked"],
+        );
+    }
+    0
+}
+
+/// A POST from the read function is sent chunked, and read to its end
+/// whatever `CURLOPT_POSTFIELDSIZE` said, if its request is asked chunked
+/// when it is built: the C build sends all 20 bytes when the line is
+/// appended after the transfer started (`set_reader`, `http_req_set_TE`).
+#[test]
+fn a_post_asked_chunked_as_its_request_is_built_reads_to_the_end() {
+    let (port, server) = serve(vec![OK]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let mut feed = Feed {
+        left: b"0123456789abcdefghij".to_vec(),
+        answer: None,
+    };
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    long(c, ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, 1);
+    long(c, ffi::CURLOPT_POST, 1);
+    long(c, ffi::CURLOPT_POSTFIELDSIZE, 5);
+    function(c, ffi::CURLOPT_READFUNCTION, read as ReadFn as *const ());
+    pointer(c, ffi::CURLOPT_READDATA, &raw mut feed);
+    let mut list = append(ptr::null_mut(), &[c"X-A: 1"]);
+    pointer(c, ffi::CURLOPT_HTTPHEADER, list);
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(
+        c,
+        ffi::CURLOPT_DEBUGFUNCTION,
+        chunked_on_trying as DebugFn as *const (),
+    );
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut list);
+    // SAFETY: a live handle, whose list lives through the transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let request = String::from_utf8(server.join().unwrap().remove(0)).unwrap();
+    assert!(
+        request.contains("\r\nTransfer-Encoding: chunked\r\n")
+            && !request.contains("Content-Length")
+            && request.ends_with("\r\n\r\n14\r\n0123456789abcdefghij\r\n0\r\n\r\n"),
+        "{request}"
+    );
+    // SAFETY: a live handle, not used again; then the list it kept.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::strings::curl_slist_free_all(list);
+    }
+}
+
+/// `CURLOPT_POSTFIELDS` asked chunked keep their size: as many bytes as
+/// `CURLOPT_POSTFIELDSIZE` says go, in one chunk, and the size, being
+/// small, adds no `Expect: 100-continue`, as the C build sends them
+/// (`set_buf`, `addexpect`).
+#[test]
+fn post_fields_asked_chunked_keep_their_size() {
+    let (port, server) = serve(vec![OK]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let mut fields = *b"0123456789abcdefghij";
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    long(c, ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, 1);
+    pointer(c, ffi::CURLOPT_POSTFIELDS, fields.as_mut_ptr());
+    long(c, ffi::CURLOPT_POSTFIELDSIZE, 5);
+    let list = append(ptr::null_mut(), &[c"Transfer-Encoding: chunked"]);
+    pointer(c, ffi::CURLOPT_HTTPHEADER, list);
+    // SAFETY: a live handle, whose list and fields live through the
+    // transfer.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    let request = String::from_utf8(server.join().unwrap().remove(0)).unwrap();
+    assert!(
+        request.contains("\r\nTransfer-Encoding: chunked\r\n")
+            && !request.contains("Expect")
+            && request.ends_with("\r\n\r\n5\r\n01234\r\n0\r\n\r\n"),
+        "{request}"
+    );
+    // SAFETY: a live handle, not used again; then the list it kept.
+    unsafe {
+        curl_easy_cleanup(c);
+        crate::strings::curl_slist_free_all(list);
+    }
 }
 
 /// What a debug function saw sent of the body.

@@ -1319,13 +1319,19 @@ from `options.upload` and read by the protocol.
   read". `Read::Data` carries a `NonZeroUsize`: the shim maps C's 0 to `Eof`.
 - `Read::Pause` pauses the transfer's sending (`SendPause::Paused`) and gives nothing; on a
   protocol that cannot pause it is ReadError "Read callback asked for PAUSE when not supported".
-- COPYPOSTFIELDS is `Bytes`. Non-copied POSTFIELDS is a shim `ReadHandler` over the app's
-  pointer (§7.6); the core never holds a raw borrow, and it reads at transfer time as C does.
+- COPYPOSTFIELDS is `Bytes`. Non-copied POSTFIELDS is `Lent`, a shim `LentBytes` over the
+  app's pointer (§7.6) that copies from an offset the `Upload` keeps; the core never holds a raw
+  borrow, and it reads at transfer time as C does. Like `Bytes` (C's `cr_buf`), lent bytes keep
+  their size whatever the coding.
   Line-ending conversion (CURLOPT_CRLF, FTP ASCII) comes with the protocols that use it.
 - HTTP/1's chunked coding is `ChunkEncoder` (`http1/chunked.rs`, C's `cr_chunked`), between
   `Upload` and the send buffer: once what it framed is taken, it reads the body into its own
   buffer, at least 1 KiB however little room the send buffer has, otherwise what fits framed
-  (at most 64 KiB); each read is a chunk, and the body's end `0\r\n\r\n`.
+  (at most 64 KiB); each read is a chunk, and the body's end `0\r\n\r\n`. Whether a body
+  goes chunked is decided as each request is built, from the header lists read again then
+  (`Options::reread_headers`, as C walks them in `Curl_http`): the application's
+  `Transfer-Encoding` line, or else a body of unknown size. A POST read from a handler and asked
+  chunked is read to its end, whatever size it was given (`Upload::read_to_end`, `set_reader`).
 - `Upload::rewind` is a no-op if nothing was read (`Bytes`) or the handler was never called,
   whatever it answered (`Read`); otherwise `Bytes` starts over and `Read` calls its `Rewind`
   (shim: SEEKFUNCTION(0), IOCTLFUNCTION, fseek iff the default fread), without one or on its
@@ -1792,7 +1798,7 @@ adapters are its own, installed in place of the ones it was cloned with.
   `ContinueWithMeter`.
 - **Rewind**: SEEKFUNCTION(0), then IOCTLFUNCTION(RESTARTREAD), then fseek iff READFUNCTION is the
   default, else fail.
-- **Non-copied POSTFIELDS**: a shim `ReadHandler` over the app's pointer and POSTFIELDSIZE, read at
+- **Non-copied POSTFIELDS**: a shim `LentBytes` over the app's pointer and POSTFIELDSIZE, read at
   transfer time (SAFETY: the CURLOPT_POSTFIELDS contract keeps the buffer alive). Setting it after
   `add_handle` takes effect (1531).
 - **Sockets**: OPEN/SOCKOPT/CLOSESOCKETFUNCTION as a `SocketHooks` impl; the shim makes a

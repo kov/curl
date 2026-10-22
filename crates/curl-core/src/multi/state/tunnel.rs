@@ -99,8 +99,12 @@ fn proxy(c: &Connecting) -> (&Peer, Option<Secret<'_>>, bool) {
 /// A `CONNECT` made (`start_CONNECT`), with the proxy's credentials as
 /// far as they go.
 fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshake>, ErrorKind> {
-    // Each `CONNECT` reads the application's lists as they are now.
-    super::refill_lists(cx)?;
+    // Each `CONNECT` reads the application's header lists as they are
+    // now.
+    let options = cx.easy_mut().options_mut();
+    options
+        .reread_headers()
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     let target = c.route.target();
     let mut digits = [0; 20];
     let port = decimal(u64::from(target.port()), &mut digits);

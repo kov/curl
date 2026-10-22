@@ -111,6 +111,17 @@ pub enum HeaderOrigin {
     Interim,
 }
 
+/// Bytes the application holds and lends as a body, of a known length:
+/// read where they are as they are sent, not copied when given
+/// (`CURLOPT_POSTFIELDS`). The body's position is the transfer's.
+pub trait LentBytes: Send + Sync {
+    /// How many there are.
+    fn size(&self) -> u64;
+    /// Copy into `buf` those from `at`, which is below `size`, as many as
+    /// fit; how many.
+    fn copy_at(&self, at: u64, buf: &mut [u8]) -> usize;
+}
+
 /// A list of lines the application keeps, and may change after giving
 /// it: read again each time a transfer would read the option it is given
 /// for, so that a line added since is seen (`CURLOPT_HTTPHEADER` and the
@@ -209,6 +220,12 @@ impl Handler<dyn WriteHandler> {
 impl Handler<dyn HeaderHandler> {
     pub fn header(handler: impl HeaderHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn LentBytes> {
+    pub fn lent(bytes: impl LentBytes + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(bytes)?)
     }
 }
 

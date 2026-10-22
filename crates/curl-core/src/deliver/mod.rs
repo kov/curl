@@ -228,6 +228,8 @@ impl Pipeline {
     ) -> Result<(), ErrorKind> {
         if origin != HeaderOrigin::Connect {
             self.accountant.response_started(cx);
+        } else if cx.easy().options().proxy.suppress_connect_headers {
+            return Ok(());
         }
         // An included line is body, to be held and replayed with it.
         if cx.easy().options().output.include_header {

@@ -176,6 +176,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) noproxy: Option<&'a [u8]>,
     /// `--proxytunnel`.
     pub(crate) proxytunnel: bool,
+    /// `--suppress-connect-headers`.
+    pub(crate) suppress_connect_headers: bool,
     /// `--path-as-is`.
     pub(crate) path_as_is: bool,
     /// `--proxy-user`.
@@ -727,6 +729,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::Noproxy => line.current().noproxy = Some(value.text()),
         Opt::Proxytunnel => line.current().proxytunnel = value.toggle(),
+        Opt::SuppressConnectHeaders => line.current().suppress_connect_headers = value.toggle(),
         Opt::PathAsIs => line.current().path_as_is = value.toggle(),
         Opt::ProxyUser => line.current().proxy_user = Some(value.text()),
         Opt::ProxyAnyauth => line.current().proxy_anyauth = value.toggle(),
@@ -1158,7 +1161,6 @@ pub(crate) fn apply<'a>(
         | Opt::Sslv2
         | Opt::Sslv3
         | Opt::StyledOutput
-        | Opt::SuppressConnectHeaders
         | Opt::TcpFastopen
         | Opt::TcpNodelay
         | Opt::TelnetOption

@@ -2846,6 +2846,40 @@ fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
     );
 }
 
+/// Suppressed, the proxy's answer to `CONNECT` reaches neither the header
+/// handler nor the included output, but is still kept with the headers
+/// (`CURLOPT_SUPPRESS_CONNECT_HEADERS`, ahead of which C collects them).
+#[test]
+fn suppressed_connect_headers_are_kept_and_not_delivered() {
+    use crate::report::{Origins, Request};
+    let up: &[u8] = b"HTTP/1.1 200 Fine\r\nVia: tunnel\r\n\r\n";
+    for suppress in [false, true] {
+        let (mut m, talk, _) = server(&[up, OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(b"http://origin.example/a")).unwrap();
+            o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.proxy.tunnel = true;
+            o.proxy.suppress_connect_headers = suppress;
+            o.output.include_header = true;
+        });
+        assert_eq!(ran.result, Ok(()));
+        let delivered = ran.seen.of("header").contains(&b"Via: tunnel\r\n".to_vec());
+        let included = String::from_utf8_lossy(&ran.seen.body()).contains("Via: tunnel");
+        assert_eq!(
+            (delivered, included),
+            (!suppress, !suppress),
+            "suppress {suppress}"
+        );
+        let kept = ran.easy.report().headers().get(
+            b"Via",
+            0,
+            Origins::from(HeaderOrigin::Connect),
+            Request::Last,
+        );
+        assert!(kept.is_ok(), "suppress {suppress}");
+    }
+}
+
 /// A connection whose last response said HTTP/1.0 is sent HTTP/1.0 by
 /// the next transfer to use it, as test 1078's second URL is
 /// (`conn->httpversion_seen`).

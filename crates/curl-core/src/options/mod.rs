@@ -108,6 +108,9 @@ pub struct Proxy {
     pub password: Option<Vec<u8>>,
     /// The methods it may be authenticated with (`CURLOPT_PROXYAUTH`).
     pub auth: HttpAuth,
+    /// The answer to `CONNECT` is not delivered, though its headers are
+    /// kept (`CURLOPT_SUPPRESS_CONNECT_HEADERS`).
+    pub suppress_connect_headers: bool,
 }
 
 /// Why `user:password` for a proxy is refused.
@@ -129,6 +132,7 @@ impl Proxy {
             user: self.user.as_deref().map(copy).transpose()?,
             password: self.password.as_deref().map(copy).transpose()?,
             auth: self.auth,
+            suppress_connect_headers: self.suppress_connect_headers,
         })
     }
 

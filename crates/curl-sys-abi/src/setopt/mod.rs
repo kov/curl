@@ -549,6 +549,9 @@ fn apply(
             };
         }
         (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => options.proxy.tunnel = n != 0,
+        (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, Long(n)) => {
+            options.proxy.suppress_connect_headers = n != 0;
+        }
         (ffi::CURLOPT_NETRC_FILE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             options.netrc.file = unsafe { owned(p) }?;

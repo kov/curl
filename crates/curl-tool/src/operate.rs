@@ -1059,6 +1059,11 @@ fn configure(
     }
     o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
     o.proxy.tunnel = op.proxytunnel;
+    // The debug test build suppresses them on request as well, as C's
+    // library does.
+    o.proxy.suppress_connect_headers = op.suppress_connect_headers
+        || (cfg!(feature = "debug-hooks")
+            && std::env::var_os("CURL_DBG_SUPPRESS_CONNECT_HDS").is_some());
     o.url_rules.path_as_is = op.path_as_is;
     // One method, in C's order (`proxy_setopts`).
     let proxy_auth = if op.proxy_anyauth {

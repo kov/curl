@@ -4,6 +4,7 @@
 //! the body's framing folded from it at the head's end (`http_on_response`,
 //! `http_size`).
 
+use crate::coding::Named;
 use std::fmt;
 use std::num::NonZeroU64;
 use std::time::Duration;
@@ -243,6 +244,8 @@ pub(crate) struct Meta {
     chunked: bool,
     /// Transfer decoders stacked, chunked among them.
     codings: u8,
+    /// The transfer codings other than chunked, in the order listed.
+    transfer: [Option<Named>; MAX_CODINGS as usize],
     /// A transfer coding other than chunked makes `Content-Length` void.
     length_void: bool,
     /// The connection closes after the response.
@@ -517,6 +520,10 @@ impl Meta {
             }
             // A second chunked is ignored.
             if !(is_chunked && self.chunked) {
+                if !is_chunked {
+                    let slot = self.transfer.iter_mut().find(|t| t.is_none());
+                    *slot.expect("no more than the most codings") = Some(Named::of(name));
+                }
                 self.codings += 1;
                 self.chunked |= is_chunked;
             }
@@ -609,6 +616,11 @@ impl Meta {
     /// The current response may carry no body (1xx, 204, 304).
     pub(crate) fn bodyless(&self) -> bool {
         self.bodyless
+    }
+
+    /// The transfer codings to undo after chunked, in the order listed.
+    pub(crate) fn transfer_codings(&self) -> impl Iterator<Item = Named> + '_ {
+        self.transfer.iter().map_while(|t| *t)
     }
 
     pub(crate) fn close(&self) -> bool {

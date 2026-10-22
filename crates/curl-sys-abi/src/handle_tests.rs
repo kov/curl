@@ -150,6 +150,7 @@ fn boolean_options_take_any_nonzero_value() {
         }),
         (ffi::CURLOPT_HTTP_TRANSFER_DECODING, |o| !o.http.raw),
         (ffi::CURLOPT_HTTP_CONTENT_DECODING, |o| !o.http.raw_content),
+        (ffi::CURLOPT_TRANSFER_ENCODING, |o| o.http.transfer_encoding),
         (ffi::CURLOPT_SSL_VERIFYPEER, |o| o.tls.verify_peer),
         (ffi::CURLOPT_SSL_VERIFYHOST, |o| o.tls.verify_host),
     ] {

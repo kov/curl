@@ -416,6 +416,9 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) probe: bool,
     /// The codings `Accept-Encoding` asks for, if any.
     pub(crate) accept_encoding: Option<Accepted<'o>>,
+    /// `TE: gzip` asks for gzip as a transfer coding, and `Connection`
+    /// names it (`http_hd_te`).
+    pub(crate) te: bool,
     /// What the `Cookie:` line says, if the request has one.
     pub(crate) cookie: Option<&'o [u8]>,
     /// The request goes to a proxy that sends it on: it asks to keep the
@@ -591,7 +594,7 @@ fn write_h1(
                 }
             }
             Part::Custom => custom(head, gate, out)?,
-            Part::Connection => connection(head.headers, out)?,
+            Part::Connection => connection(head.headers, head.te, out)?,
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
             Part::ProxyConnection => {
@@ -632,7 +635,12 @@ fn write_h1(
                     }
                 }
             }
-            Part::Te | Part::AltUsed | Part::Upgrade | Part::Conditionals => {}
+            Part::Te => {
+                if head.te {
+                    out.line(&[b"TE: gzip"])?;
+                }
+            }
+            Part::AltUsed | Part::Upgrade | Part::Conditionals => {}
         }
     }
     Ok(())
@@ -701,13 +709,26 @@ fn custom(
 /// The application's Connection headers (`http_add_connection_hd`): the
 /// first with a value as the library's, its value trimmed, then the rest as
 /// given.
-fn connection(headers: &UserHeaders, out: &mut Out<'_>) -> Result<(), ErrorKind> {
+fn connection(headers: &UserHeaders, te: bool, out: &mut Out<'_>) -> Result<(), ErrorKind> {
     let mut given = headers
         .lines
         .iter()
         .filter(|h| h.replaces(b"Connection") && h.value().is_some_and(|v| !v.is_empty()));
-    if let Some(first) = given.next() {
-        out.line(&[b"Connection: ", first.value().expect("filtered on it")])?;
+    // The application's first, then the library's tokens after it
+    // (`http_add_connection_hd`).
+    match (given.next(), te) {
+        (Some(first), true) => {
+            out.line(&[
+                b"Connection: ",
+                first.value().expect("filtered on it"),
+                b", TE",
+            ])?;
+        }
+        (Some(first), false) => {
+            out.line(&[b"Connection: ", first.value().expect("filtered on it")])?;
+        }
+        (None, true) => out.line(&[b"Connection: TE"])?,
+        (None, false) => {}
     }
     for h in given {
         out.line(&[&h.line])?;
@@ -790,6 +811,7 @@ mod tests {
             chunked: false,
             probe: false,
             accept_encoding: None,
+            te: false,
             cookie: None,
             forwarded: None,
             headers: &headers,
@@ -859,6 +881,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 accept_encoding: None,
+                te: false,
                 cookie: None,
                 forwarded: None,
 
@@ -909,6 +932,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 accept_encoding: None,
+                te: false,
                 cookie: None,
                 forwarded: None,
 
@@ -1072,6 +1096,7 @@ mod tests {
             chunked: false,
             probe: false,
             accept_encoding: None,
+            te: false,
             cookie: None,
             forwarded,
             headers: &headers,
@@ -1124,6 +1149,7 @@ mod tests {
             chunked: false,
             probe: false,
             accept_encoding: None,
+            te: false,
             cookie: None,
             forwarded: None,
             headers: &headers,
@@ -1172,6 +1198,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 accept_encoding: None,
+                te: false,
                 cookie: None,
                 forwarded: None,
 

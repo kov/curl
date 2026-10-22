@@ -391,6 +391,7 @@ fn apply(
         }
         (ffi::CURLOPT_HTTP_TRANSFER_DECODING, Long(n)) => options.http.raw = n == 0,
         (ffi::CURLOPT_HTTP_CONTENT_DECODING, Long(n)) => options.http.raw_content = n == 0,
+        (ffi::CURLOPT_TRANSFER_ENCODING, Long(n)) => options.http.transfer_encoding = n != 0,
         (ffi::CURLOPT_HTTP_VERSION, Long(n)) => options.http.version = http_version(n)?,
         (ffi::CURLOPT_DISALLOW_USERNAME_IN_URL, Long(n)) => {
             options.url_rules.disallow_user = n != 0;

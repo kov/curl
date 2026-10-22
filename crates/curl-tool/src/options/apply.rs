@@ -209,6 +209,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) raw: bool,
     /// `--compressed`.
     pub(crate) compressed: bool,
+    /// `--tr-encoding`.
+    pub(crate) tr_encoding: bool,
     /// `--happy-eyeballs-timeout-ms`, if given.
     pub(crate) happy_eyeballs_ms: Option<u64>,
     /// `--ipv4` or `--ipv6`, whichever came last.
@@ -871,6 +873,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::Raw => line.current().raw = value.toggle(),
         Opt::Compressed => line.current().compressed = value.toggle(),
+        Opt::TrEncoding => line.current().tr_encoding = value.toggle(),
         Opt::HappyEyeballsTimeoutMs => line.current().happy_eyeballs_ms = Some(value.number()),
         Opt::Ipv4 => line.current().ip_version = Some(IpVersion::V4),
         Opt::Ipv6 => line.current().ip_version = Some(IpVersion::V6),
@@ -1210,7 +1213,6 @@ pub(crate) fn apply<'a>(
         | Opt::Tlsv11
         | Opt::Tlsv12
         | Opt::Tlsv13
-        | Opt::TrEncoding
         | Opt::TraceConfig
         | Opt::TraceIds
         | Opt::UnixSocket

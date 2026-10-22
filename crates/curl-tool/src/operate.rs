@@ -1053,6 +1053,7 @@ fn configure(
     http.allow_09 = op.http09;
     http.raw = op.raw;
     http.raw_content = op.raw;
+    http.transfer_encoding = op.tr_encoding;
     if op.compressed {
         http.accept_encoding = Some(curl_core::coding::AcceptEncoding::All);
     }

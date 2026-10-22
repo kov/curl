@@ -202,3 +202,65 @@ fn a_trailer_stays_behind_the_body_held_before_its_decoder() {
     );
     assert_eq!(handler.seen.body(), vec![b'z'; 20000]);
 }
+
+fn transfer_coded(o: &mut Options) {
+    o.http.transfer_encoding = true;
+}
+
+/// Transfer codings asked for send `TE: gzip` and name it in
+/// `Connection`, after the application's first: only where gzip can be
+/// undone, and not where the application sends its own `TE`.
+#[test]
+fn te_asks_for_gzip_when_it_can_be_undone() {
+    let lines = |e: Easy, set: fn(&mut Options)| {
+        let ran = fetch(e, OK, set);
+        let request = String::from_utf8(ran.request).unwrap();
+        request
+            .lines()
+            .filter(|l| l.starts_with("TE") || l.starts_with("Connection"))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        lines(decoding(), transfer_coded),
+        ["TE: gzip", "Connection: TE"]
+    );
+    assert!(lines(Easy::new(), transfer_coded).is_empty());
+    assert!(lines(decoding(), |_| {}).is_empty());
+    let kept = |o: &mut Options| {
+        transfer_coded(o);
+        o.http.headers = UserHeaders::new([&b"Connection: keep"[..], b"Connection: more"]).unwrap();
+    };
+    assert_eq!(
+        lines(decoding(), kept),
+        ["TE: gzip", "Connection: keep, TE", "Connection: more"]
+    );
+    let own = |o: &mut Options| {
+        transfer_coded(o);
+        o.http.headers = UserHeaders::new([&b"TE: mine"[..]]).unwrap();
+    };
+    assert_eq!(lines(decoding(), own), ["TE: mine"]);
+}
+
+/// A transfer coding is undone after the chunks, before the body is
+/// counted: the size downloaded is the decoded one, as in C.
+#[test]
+fn a_transfer_coded_body_is_undone_before_it_is_counted() {
+    let chunked =
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n";
+    let ran = fetch(decoding(), chunked, transfer_coded);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"aabbcc");
+    assert_eq!(ran.easy.report().sizes().download(), 6);
+    // Without chunked, the close ends the body; with content codings too,
+    // the transfer's are undone first.
+    let closing = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\nContent-Encoding: br\r\n\r\nx";
+    let (mut m, talk, _) = server(&[closing], true);
+    let ran = get_with(&mut m, decoding(), "/", talk, |o| {
+        transfer_coded(o);
+        all(o);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"xxxx");
+    assert_eq!(ran.easy.report().sizes().download(), 2);
+}

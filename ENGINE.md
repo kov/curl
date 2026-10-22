@@ -1188,17 +1188,16 @@ flag (multi.c:4023) becomes the move-out above, which the compiler checks.
 pub(crate) struct Pipeline {
     raw_trace: bool,                             // DATA_IN of raw bytes before any decoding
     framing: BodyDecoder,                        // None | Length{left} | Chunked | UntilClose
+    codings: Option<Box<Codings>>,               // transfer decoders, gate, content decoders
     accountant: BodyAccountant,                  // STARTTRANSFER, maxdownload, max_filesize (raw), short EOS
-    gate: Option<Box<Gate>>,                     // once a decoder that blows up is added
-    decoders: Vec<Box<dyn Decoder>>,             // a 6th coding is BadContentEncoding at parse
     out: ClientOut,
 }
 pub(crate) enum ClientOut { Direct, Held(HeldOutput), Failed }
 pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize, held: usize }  // cap 64 MiB
 ```
 
-- **Order is the field order**: raw trace, transfer decoding, accounting, pause gate, content
-  decoders (last listed runs first), client output. The header collector writes into the
+- **Order is the chain's**: raw trace, transfer decoding (chunks, then the `Codings`' transfer
+  decoders), accounting, pause gate, content decoders (last listed runs first), client output. The header collector writes into the
   report's `HeaderStore` from the response parser, before the line reaches `out`.
 - **`ClientOut`** passes body in pieces of at most 16384 bytes whatever BUFFERSIZE is, header
   lines whole; with `include_header` a line goes to the write handler, then the header handler.
@@ -1228,7 +1227,9 @@ pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize
   sixth is BadContentEncoding at once. The last stacked undoes first. The decoders are the
   handle's (`Easy::set_decoders`, kept through `reset`), given by the tool and the shim from the
   binding crates, as the public suffixes are; `Accept-Encoding` lists them for
-  `AcceptEncoding::All`. A decoder writes to a `coding::Sink`, which also answers whether the
+  `AcceptEncoding::All`. Transfer codings other than chunked, asked for with `TE: gzip` (only
+  where the handle undoes gzip), are stacked the same way when the body starts, and undone
+  before the body is counted, so the size downloaded is the decoded one, as in C. A decoder writes to a `coding::Sink`, which also answers whether the
   transfer's time is up and says a failure as the transfer's error.
 - **Accounting after the call**: the handler is called with a context that borrows the report;
   the context is dropped; then `accountant` bumps SIZE_DOWNLOAD. The borrow checker enforces the

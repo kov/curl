@@ -444,12 +444,12 @@ cargo-mutants run on the milestone's diff.
     Waiting, on options no step has yet: 729 on `--limit-rate`, 970 and 972 on `%{json}`, 1613
     on `--request-target`, 1851 on `--ipfs-gateway`, 2008 on `--get`, and gated test 1001 on
     `--range`. HTTPS proxies wait on TLS.
-32. **http: decompress.** **In progress.** Done: the pause gate holding encoded bytes, as C's
-    does; Content-Encoding, `Accept-Encoding`, `--compressed` and `--raw`'s content half, with
-    zlib (`curl-zlib`) for `deflate` and `gzip`, brotli (`curl-brotli`) for `br` and zstd
-    (`curl-zstd`). To do: `--tr-encoding`
-    (387, 418, 1122–1125, 1170, 1171, 1277, 1546, 1617). 3236 waits on C's `write` trace
-    component (`curl_global_trace`), which nothing schedules yet.
+32. **http: decompress.** **Done**, but for 3236. The pause gate holds a paused body still
+    coded, as C's does; Content-Encoding and `Accept-Encoding` (`--compressed`), Transfer-Encoding
+    and `TE` (`--tr-encoding`), and `--raw` for both, with a binding crate per library:
+    `curl-zlib` (`deflate`, `gzip`), `curl-brotli` (`br`) and `curl-zstd`. The 28 compression
+    tests run on both legs and 27 pass; 3236 waits on C's `write` trace component
+    (`curl_global_trace`), which nothing schedules yet.
 33. **http: the headers API, and time conditions.** **To do.** Each request's headers kept
     for `curl_easy_header` and `curl_easy_nextheader`, by origin and request across step 26's
     redirects; the tool's `%header{}` and `%{header_json}` read from them (T1 tests 421, 764,

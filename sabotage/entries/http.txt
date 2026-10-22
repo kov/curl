@@ -292,11 +292,11 @@ witness: curl-core proto::http::tests::the_report_knows_the_response_as_its_line
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::the_report_knows_the_response_as_its_lines_arrive
 --- old
-                self.body_start(cx);
+                self.body_start(cx)?;
                 self.pipeline.header(cx, blank, origin)?;
 --- new
                 self.pipeline.header(cx, blank, origin)?;
-                self.body_start(cx);
+                self.body_start(cx)?;
 
 === Retry-After has no ceiling
 file: crates/curl-core/src/proto/http1/framing.rs

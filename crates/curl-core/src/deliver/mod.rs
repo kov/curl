@@ -38,43 +38,74 @@ pub(crate) enum Reach {
 /// One request's output, from the protocol to the handlers.
 #[derive(Debug)]
 pub(crate) struct Pipeline {
+    /// The codings to undo, and the gate in front of the content ones.
+    /// Boxed: few responses have any, and every protocol's state carries
+    /// a pipeline.
+    codings: Option<Box<Codings>>,
     accountant: BodyAccountant,
-    /// What holds output in front of the decoders while a handler pauses,
-    /// once one that blows up is added (`cw-pause`). Boxed: few responses
-    /// have one, and every protocol's state carries a pipeline.
-    gate: Option<Box<Gate>>,
-    /// The content codings to undo, in the order the response gives them
-    /// (`CURL_CW_CONTENT_DECODE`).
-    decoders: Vec<Box<dyn Decoder>>,
     out: ClientOut,
     reach: Reach,
+}
+
+/// A response's codings to undo, in the order of the chain.
+#[derive(Debug, Default)]
+struct Codings {
+    /// The transfer codings to undo after chunked, before the body is
+    /// counted (`CURL_CW_TRANSFER_DECODE`).
+    transfer: Vec<Box<dyn Decoder>>,
+    /// What holds output in front of the content decoders while a
+    /// handler pauses, once a decoder that blows up is added
+    /// (`cw-pause`, `cwriter_ensure_pause_writer`).
+    gate: Option<Gate>,
+    /// The content codings to undo, in the order the response gives them
+    /// (`CURL_CW_CONTENT_DECODE`).
+    content: Vec<Box<dyn Decoder>>,
 }
 
 impl Pipeline {
     pub(crate) fn new(reach: Reach) -> Pipeline {
         Pipeline {
+            codings: None,
             accountant: BodyAccountant::default(),
-            gate: None,
-            decoders: Vec::new(),
             out: ClientOut::default(),
             reach,
         }
     }
 
-    /// How many content codings are stacked.
-    pub(crate) fn decoders(&self) -> usize {
-        self.decoders.len()
+    /// The codings, made the first time a decoder is added; the gate
+    /// made if `decoder` blows up.
+    fn codings_for(&mut self, decoder: &dyn Decoder) -> Result<&mut Codings, ErrorKind> {
+        let oom = |_| ErrorKind::OutOfMemory;
+        if self.codings.is_none() {
+            self.codings = Some(curl_alloc::try_box(Codings::default()).map_err(oom)?);
+        }
+        let codings = self.codings.as_mut().expect("made above");
+        if decoder.blows_up() && codings.gate.is_none() {
+            codings.gate = Some(Gate::default());
+        }
+        Ok(codings)
     }
 
-    /// Undo a content coding, after those added before it; one that may
-    /// blow up puts the gate in front of them all
-    /// (`cwriter_ensure_pause_writer`).
+    /// Undo a transfer coding, after those added before it.
+    pub(crate) fn add_transfer_decoder(
+        &mut self,
+        decoder: Box<dyn Decoder>,
+    ) -> Result<(), ErrorKind> {
+        self.codings_for(&*decoder)?
+            .transfer
+            .try_push(decoder)
+            .map_err(|_| ErrorKind::OutOfMemory)
+    }
+
+    /// How many content codings are stacked.
+    pub(crate) fn decoders(&self) -> usize {
+        self.codings.as_ref().map_or(0, |c| c.content.len())
+    }
+
+    /// Undo a content coding, after those added before it.
     pub(crate) fn add_decoder(&mut self, decoder: Box<dyn Decoder>) -> Result<(), ErrorKind> {
-        if decoder.blows_up() && self.gate.is_none() {
-            let gate = curl_alloc::try_box(Gate::default()).map_err(|_| ErrorKind::OutOfMemory)?;
-            self.gate = Some(gate);
-        }
-        self.decoders
+        self.codings_for(&*decoder)?
+            .content
             .try_push(decoder)
             .map_err(|_| ErrorKind::OutOfMemory)
     }
@@ -88,12 +119,17 @@ impl Pipeline {
     pub(crate) fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let pausable = self.pausable();
         self.out.flush(cx, pausable)?;
-        let Some(gate) = &mut self.gate else {
+        let Some(Codings {
+            gate: Some(gate),
+            content,
+            ..
+        }) = self.codings.as_deref_mut()
+        else {
             return Ok(());
         };
         gate.flush(&mut Past {
             cx,
-            decoders: &mut self.decoders,
+            decoders: content,
             out: &mut self.out,
             pausable,
         })
@@ -102,7 +138,12 @@ impl Pipeline {
     /// Whether output is held: the request cannot be over until it is
     /// delivered.
     pub(crate) fn holds_output(&self) -> bool {
-        self.out.holds_output() || self.gate.as_ref().is_some_and(|g| g.holds_output())
+        self.out.holds_output()
+            || self
+                .codings
+                .as_ref()
+                .and_then(|c| c.gate.as_ref())
+                .is_some_and(Gate::holds_output)
     }
 
     /// Give `bytes` to what comes after the accountant: the gate if there
@@ -114,13 +155,17 @@ impl Pipeline {
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
         let pausable = self.pausable();
+        let (gate, decoders) = match self.codings.as_deref_mut() {
+            Some(c) => (c.gate.as_mut(), &mut c.content[..]),
+            None => (None, &mut [][..]),
+        };
         let mut past = Past {
             cx,
-            decoders: &mut self.decoders,
+            decoders,
             out: &mut self.out,
             pausable,
         };
-        match &mut self.gate {
+        match gate {
             Some(gate) => gate.write(kind, bytes, &mut past),
             None => past.take(kind, bytes),
         }
@@ -173,14 +218,27 @@ impl Pipeline {
         }
     }
 
-    /// Deliver body bytes as a decoder made them of bytes already traced
-    /// (`cw_download`): none when none was wanted, and no more than the
-    /// expected size, what is past it noted and the connection given up.
+    /// Deliver body bytes, already traced, of their transfer codings,
+    /// through those to undo.
     pub(crate) fn decoded<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
+        let Some(codings) = self.codings.as_mut().filter(|c| !c.transfer.is_empty()) else {
+            return self.counted(cx, bytes);
+        };
+        // Out for the run, so that what they make reaches the rest.
+        let mut transfer = std::mem::take(&mut codings.transfer);
+        let result = decode::run(&mut transfer, bytes, &mut Counted { cx, pipeline: self });
+        self.codings.as_mut().expect("taken from it").transfer = transfer;
+        result
+    }
+
+    /// Deliver body bytes as the transfer decoders made them
+    /// (`cw_download`): none when none was wanted, and no more than the
+    /// expected size, what is past it noted and the connection given up.
+    fn counted<H: Host>(&mut self, cx: &mut StepCx<'_, H>, bytes: &[u8]) -> Result<(), ErrorKind> {
         let expect = self.accountant.expect;
         self.accountant.response_started(cx);
         if expect.no_body && !bytes.is_empty() {
@@ -295,6 +353,26 @@ impl Pipeline {
             return Ok(());
         }
         self.onward(cx, OutKind::Header(origin), line)
+    }
+}
+
+/// What the transfer decoders write to: the accountant, and the rest.
+struct Counted<'p, 'c, H: Host> {
+    cx: &'p mut StepCx<'c, H>,
+    pipeline: &'p mut Pipeline,
+}
+
+impl<H: Host> Sink for Counted<'_, '_, H> {
+    fn write(&mut self, bytes: &[u8]) -> Result<(), ErrorKind> {
+        self.pipeline.counted(self.cx, bytes)
+    }
+
+    fn timed_out(&self) -> bool {
+        self.cx.time_up()
+    }
+
+    fn fail(&mut self, kind: ErrorKind, said: std::fmt::Arguments<'_>) -> ErrorKind {
+        trace::fail(self.cx, kind, said)
     }
 }
 

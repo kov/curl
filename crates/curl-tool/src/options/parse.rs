@@ -891,10 +891,7 @@ mod tests {
             run(&["x", "-H", "@file"]),
             Ok((1, Some("reading headers from a file"), None))
         );
-        assert_eq!(
-            run(&["x", "--tr-encoding"]),
-            Ok((1, Some("tr-encoding"), None))
-        );
+        assert!(line(&["x", "--tr-encoding"]).operations[0].tr_encoding);
     }
 
     #[test]

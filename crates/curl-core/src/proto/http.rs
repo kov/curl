@@ -5,7 +5,7 @@
 
 use curl_alloc::{TryVec as _, try_box};
 
-use crate::coding::{AcceptEncoding, Decoder, Identity, Named, Unrecognized};
+use crate::coding::{AcceptEncoding, Coding, Decoder, Identity, Named, Unrecognized};
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{ConnLease, Peer, RecvFailed};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
@@ -658,6 +658,10 @@ impl Request {
                 Some(AcceptEncoding::All) => Some(Accepted::All(cx.easy().decoders())),
                 Some(AcceptEncoding::Given(value)) => Some(Accepted::Given(value)),
             },
+            // Only with gzip to undo, as C sends it only built with zlib.
+            te: http.transfer_encoding
+                && cx.easy().decoders().maker(Coding::Gzip).is_some()
+                && !http.headers.replaces(b"TE"),
             cookie: cookie.as_deref(),
             forwarded: forwarded.then(|| Forwarding {
                 own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
@@ -1120,7 +1124,7 @@ impl Request {
                         &long
                     }
                 };
-                self.body_start(cx);
+                self.body_start(cx)?;
                 self.pipeline.header(cx, blank, origin)?;
             }
             LineKind::End { .. } => pipeline.header(cx, line.bytes, origin)?,
@@ -1214,8 +1218,12 @@ impl Request {
     }
 
     /// The final head ended: what it expects of the body (`http_size`).
-    fn body_start<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
+    fn body_start<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let head = self.head.as_ref().expect("made at DO");
+        for named in head.meta().transfer_codings() {
+            self.pipeline
+                .add_transfer_decoder(decoder_for(cx, named)?)?;
+        }
         let framing = head.framing().expect("a final head decides its framing");
         let size = head.meta().size();
         let no_body = self.method == Method::Head;
@@ -1242,6 +1250,7 @@ impl Request {
             }
             Framing::UntilClose => Stage::Body(Body::UntilClose),
         };
+        Ok(())
     }
 
     /// Decode chunks from `input`; what is left, which is nothing unless
@@ -1447,17 +1456,23 @@ fn content_codings<H: Host>(
                 ),
             ));
         }
-        let decoder: Box<dyn Decoder> = match Named::of(name) {
-            Named::Identity => try_box(Identity).map_err(|_| ErrorKind::OutOfMemory)?,
-            Named::Coding(coding) => match cx.easy().decoders().maker(coding) {
-                Some(make) => make()?,
-                None => try_box(Unrecognized).map_err(|_| ErrorKind::OutOfMemory)?,
-            },
-            Named::Unknown => try_box(Unrecognized).map_err(|_| ErrorKind::OutOfMemory)?,
-        };
-        pipeline.add_decoder(decoder)?;
+        pipeline.add_decoder(decoder_for(cx, Named::of(name))?)?;
     }
     Ok(())
+}
+
+/// A decoder for a coding a response names: one passing the body by for
+/// `identity`, one failing it for a coding the handle cannot undo.
+fn decoder_for<H: Host>(cx: &StepCx<'_, H>, named: Named) -> Result<Box<dyn Decoder>, ErrorKind> {
+    let oom = |_| ErrorKind::OutOfMemory;
+    Ok(match named {
+        Named::Identity => try_box(Identity).map_err(oom)?,
+        Named::Coding(coding) => match cx.easy().decoders().maker(coding) {
+            Some(make) => make()?,
+            None => try_box(Unrecognized).map_err(oom)?,
+        },
+        Named::Unknown => try_box(Unrecognized).map_err(oom)?,
+    })
 }
 
 /// The most content codings a response may stack (`MAX_ENCODE_STACK`).

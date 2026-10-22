@@ -101,7 +101,7 @@ pub fn stat(path: &CStr) -> io::Result<Status> {
     let st = unsafe { st.assume_init() };
     Ok(Status {
         mode: st.st_mode,
-        len: u64::try_from(st.st_size).unwrap_or(0),
+        len: u64::try_from(st.st_size).expect("the system reports no negative size"),
         modified: st.st_mtime,
     })
 }

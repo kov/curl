@@ -66,6 +66,8 @@ enum Refused {
     Unknown,
     /// A protocol, or a version of one, this build leaves out.
     Unsupported,
+    /// A value that decodes to a zero byte (`CURLE_URL_MALFORMAT`).
+    Malformed,
 }
 
 impl From<OutOfMemory> for Refused {
@@ -501,6 +503,28 @@ fn apply(
             // SAFETY: the application passes a C string or NULL.
             options.proxy.url = unsafe { owned(p) }?;
         }
+        (ffi::CURLOPT_PROXYUSERPWD, Ptr(p)) => {
+            use curl_core::options::ProxyUserError;
+            // SAFETY: as above.
+            let pair = unsafe { string(p) }?;
+            options.proxy.set_user_password(pair).map_err(|e| match e {
+                ProxyUserError::OutOfMemory => Refused::OutOfMemory,
+                ProxyUserError::Malformed => Refused::Malformed,
+            })?;
+        }
+        (ffi::CURLOPT_PROXYUSERNAME, Ptr(p)) => {
+            // SAFETY: as above.
+            options.proxy.user = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_PROXYPASSWORD, Ptr(p)) => {
+            // SAFETY: as above.
+            options.proxy.password = unsafe { owned(p) }?;
+        }
+        (ffi::CURLOPT_PROXYAUTH, Long(n)) => {
+            // As `CURLOPT_HTTPAUTH`.
+            options.proxy.auth =
+                curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong)?);
+        }
         (ffi::CURLOPT_NOPROXY, Ptr(p)) => {
             // SAFETY: as above.
             options.proxy.no_proxy = unsafe { owned(p) }?;
@@ -706,6 +730,7 @@ pub unsafe extern "C" fn curl_easy_setopt(
         Ok(Err(Refused::NotBuiltIn)) => return CURLE_NOT_BUILT_IN,
         Ok(Err(Refused::Unknown)) => return CURLE_UNKNOWN_OPTION,
         Ok(Err(Refused::Unsupported)) => return ffi::CURLE_UNSUPPORTED_PROTOCOL,
+        Ok(Err(Refused::Malformed)) => return ffi::CURLE_URL_MALFORMAT,
         Err(_) => return CURLE_RECURSIVE_API_CALL,
     };
     // Kept only once the change is whole.

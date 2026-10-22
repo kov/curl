@@ -2570,3 +2570,57 @@ fn proxy_options_are_checked_as_in_c() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// `CURLOPT_PROXYUSERPWD` splits at the first colon and decodes each
+/// part, refusing a zero byte, as setopt.c does; the proxy's methods are
+/// read as `CURLOPT_HTTPAUTH`'s.
+#[test]
+fn proxy_credentials_are_decoded_as_in_c() {
+    let c = curl_easy_init();
+    let set = |s: &core::ffi::CStr| pointer(c, ffi::CURLOPT_PROXYUSERPWD, s.as_ptr().cast_mut());
+    assert_eq!(set(c"a%3Ab:c:d%20"), CURLE_OK);
+    options(c, |o| {
+        assert_eq!(o.proxy.user.as_deref(), Some(&b"a:b"[..]));
+        assert_eq!(o.proxy.password.as_deref(), Some(&b"c:d "[..]));
+    });
+    assert_eq!(set(c"user"), CURLE_OK);
+    options(c, |o| {
+        assert_eq!(
+            (o.proxy.user.as_deref(), o.proxy.password.as_deref()),
+            (Some(&b"user"[..]), None)
+        )
+    });
+    assert_eq!(set(c"a:b%00"), ffi::CURLE_URL_MALFORMAT);
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_PROXYUSERPWD, ptr::null_mut::<c_void>()),
+        CURLE_OK
+    );
+    options(c, |o| {
+        assert_eq!(
+            (o.proxy.user.as_deref(), o.proxy.password.as_deref()),
+            (None, None)
+        )
+    });
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_PROXYUSERNAME, c"x%41".as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    options(c, |o| {
+        assert_eq!(
+            o.proxy.user.as_deref(),
+            Some(&b"x%41"[..]),
+            "taken as it is"
+        )
+    });
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROXYAUTH, ffi::CURLAUTH_ANY as c_long),
+        CURLE_OK
+    );
+    options(c, |o| {
+        assert_eq!(o.proxy.auth.0, curl_core::options::AuthMethods::ANY)
+    });
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_PROXYAUTH_AVAIL), 0);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_PROXYAUTH_USED), 0);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}

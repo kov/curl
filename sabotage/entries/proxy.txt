@@ -61,3 +61,61 @@ witness: curl-sys-abi handle_tests::proxy_options_are_checked_as_in_c
 --- new
             let port = n as u16;
             options.proxy.port = NonZeroU16::new(port);
+
+=== a 407 fails whatever the proxy's credentials
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_407_as_c
+--- old
+            407 => !asked.proxy.credentials || self.problem,
+--- new
+            407 => true,
+
+=== a problem with the proxy's challenge does not stop the origin's
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_407_as_c
+--- old
+            problem: asked.problem || offered.host.refused || offered.proxy.refused,
+--- new
+            problem: asked.problem || offered.host.refused,
+
+=== a proxy is offered Bearer
+file: crates/curl-core/src/proto/http/auth.rs
+witness: curl-core proto::http::auth::tests::acts_on_a_407_as_c
+--- old
+            let picked = pick(&offered.proxy, &asked.proxy, false);
+--- new
+            let picked = pick(&offered.proxy, &asked.proxy, asked.proxy.bearer);
+
+=== the origin's Digest challenge is kept for the proxy
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::an_origin_s_digest_is_answered_through_a_proxy
+--- old
+            .apply(&act, offered, origin, proxy)
+--- new
+            .apply(&act, offered, proxy, proxy)
+
+=== a proxy's URL without credentials leaves out the options'
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credentials
+--- old
+        (None, None) => (
+            options.user.as_deref().map(copied).transpose()?,
+--- new
+        (None, None) => (
+            None,
+
+=== a proxy's 407 challenge is not read
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credentials
+--- old
+            407 if value_of(line, b"Proxy-Authenticate:").is_some() => {
+--- new
+            408 if value_of(line, b"Proxy-Authenticate:").is_some() => {
+
+=== the proxy's credentials are not decoded
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::proxy_credentials_are_decoded_as_in_c
+--- old
+                    login.user.as_deref().map(decoded).transpose()?,
+--- new
+                    login.user.as_deref().map(|u| Ok(u.to_vec())).transpose()?,

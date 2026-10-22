@@ -12,7 +12,7 @@ use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::id::ArenaPolicy;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::{Lines, Options};
-use crate::proto::http::auth::HostAuth;
+use crate::proto::http::auth::Auth;
 use crate::report::TransferReport;
 use crate::save::{self, SaveError};
 use crate::share::{Lent, Share};
@@ -37,7 +37,7 @@ pub struct Easy {
     /// from one to the next; `Multi::add` drops it.
     pub(crate) private: Option<Private>,
     /// Authenticating with the origin, from one transfer to the next.
-    pub(crate) auth: HostAuth,
+    pub(crate) auth: Auth,
     /// The cookie jar, once the options or the application turn it on
     /// (C's `cookies` with `cookie_engine`): kept from one transfer to
     /// the next, and through `reset`. On a share that keeps cookies, the
@@ -85,7 +85,7 @@ impl Easy {
     }
 
     /// The authentication state, beside the options it reads.
-    pub(crate) fn auth_with_options(&mut self) -> (&mut HostAuth, &Options) {
+    pub(crate) fn auth_with_options(&mut self) -> (&mut Auth, &Options) {
         (&mut self.auth, &self.options)
     }
 
@@ -121,7 +121,7 @@ impl Easy {
             meter_titled: false,
             resolve_read: 0,
             wildcard_resolve: false,
-            auth: HostAuth::default(),
+            auth: Auth::default(),
             private: None,
             // A jar of its own, empty, if this one's is on.
             cookies: self.cookies.as_ref().map(|_| Jar::default()),
@@ -142,7 +142,7 @@ impl Easy {
         self.meter_titled = false;
         self.resolve_read = 0;
         self.wildcard_resolve = false;
-        self.auth = HostAuth::default();
+        self.auth = Auth::default();
     }
 
     /// The share the handle's transfers use.

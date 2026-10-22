@@ -231,6 +231,8 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),
         ffi::CURLINFO_HTTPAUTH_AVAIL => Value::Long(auth_mask(r.auth_offered())),
         ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used())),
+        ffi::CURLINFO_PROXYAUTH_AVAIL => Value::Long(auth_mask(r.proxy_auth_offered())),
+        ffi::CURLINFO_PROXYAUTH_USED => Value::Long(auth_mask(r.proxy_auth_used())),
         ffi::CURLINFO_REQUEST_SIZE => {
             Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))
         }

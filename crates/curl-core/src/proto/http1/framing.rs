@@ -14,7 +14,7 @@ use super::fields;
 use super::response::{HttpVersion, Status};
 use crate::date::{self, BadDate};
 use crate::options::AuthMethods;
-use crate::proto::http::auth::{AuthAct, AuthAsked, Challenges, Heard, HeardNote};
+use crate::proto::http::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
 const MAX_CODINGS: u8 = 5;
@@ -246,8 +246,8 @@ pub(crate) struct Meta {
     /// The body is read and dropped: a 416 to a resumed GET
     /// (`ignorebody`).
     ignore_body: bool,
-    /// What a 401's challenges offered.
-    challenges: Challenges,
+    /// What a 401's and a 407's challenges offered.
+    challenges: Offered,
     /// What the final head led to in authenticating.
     auth: AuthAct,
 }
@@ -344,9 +344,18 @@ impl Meta {
         if value_of(line, b"Trailer:").is_some() {
             self.trailer = true;
         }
-        if status.code == 401 && value_of(line, b"WWW-Authenticate:").is_some() {
+        let challenge = match status.code {
+            401 if value_of(line, b"WWW-Authenticate:").is_some() => {
+                Some((&mut self.challenges.host, &asked.auth.host))
+            }
+            407 if value_of(line, b"Proxy-Authenticate:").is_some() => {
+                Some((&mut self.challenges.proxy, &asked.auth.proxy))
+            }
+            _ => None,
+        };
+        if let Some((challenges, asked)) = challenge {
             let v = fields::header_value(line).unwrap_or(&[]);
-            let heard = self.challenges.read(v, &asked.auth)?;
+            let heard = challenges.read(v, asked)?;
             return Ok((!heard.is_empty()).then_some(Note::Heard(heard)));
         }
         Ok(None)
@@ -546,8 +555,8 @@ impl Meta {
         self.location.as_deref().filter(|_| self.follow)
     }
 
-    /// The 401's challenges, taken for the handle to keep.
-    pub(crate) fn take_challenges(&mut self) -> Challenges {
+    /// The 401's and 407's challenges, taken for the handle to keep.
+    pub(crate) fn take_challenges(&mut self) -> Offered {
         std::mem::take(&mut self.challenges)
     }
 

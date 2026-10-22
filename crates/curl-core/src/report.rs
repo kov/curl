@@ -93,6 +93,11 @@ pub struct TransferReport {
     /// The method the last request authenticated with, or was chosen
     /// for the next (`info.httpauthpicked`).
     auth_used: AuthMethods,
+    /// The methods the proxy's challenges offered (`info.proxyauthavail`).
+    proxy_auth_offered: AuthMethods,
+    /// The method the last request authenticated with to the proxy, or
+    /// was chosen for the next (`info.proxyauthpicked`).
+    proxy_auth_used: AuthMethods,
 }
 
 impl TransferReport {
@@ -223,6 +228,26 @@ impl TransferReport {
 
     pub(crate) fn set_auth_used(&mut self, method: AuthMethods) {
         self.auth_used = method;
+    }
+
+    /// The methods the proxy's challenges offered
+    /// (`CURLINFO_PROXYAUTH_AVAIL`).
+    pub fn proxy_auth_offered(&self) -> AuthMethods {
+        self.proxy_auth_offered
+    }
+
+    pub(crate) fn add_proxy_auth_offered(&mut self, methods: AuthMethods) {
+        self.proxy_auth_offered = self.proxy_auth_offered | methods;
+    }
+
+    /// The method the last request authenticated with to the proxy, or
+    /// that was chosen for the next one (`CURLINFO_PROXYAUTH_USED`).
+    pub fn proxy_auth_used(&self) -> AuthMethods {
+        self.proxy_auth_used
+    }
+
+    pub(crate) fn set_proxy_auth_used(&mut self, method: AuthMethods) {
+        self.proxy_auth_used = method;
     }
 
     pub(crate) fn count_redirect(&mut self) {

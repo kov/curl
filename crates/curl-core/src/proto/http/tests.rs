@@ -2682,3 +2682,71 @@ fn a_forwarding_proxy_gets_the_whole_url() {
     let left = format!("Connection #0 to host 127.0.0.1:{PORT} left intact\n");
     assert!(ran.seen.text().contains(&left), "{:?}", ran.seen.text());
 }
+
+const PROXY_CHALLENGE: &[u8] = b"HTTP/1.1 407 Who\r\n\
+    Proxy-Authenticate: Basic realm=\"p\"\r\nContent-Length: 0\r\n\r\n";
+
+/// A proxy is given the options' credentials where its URL has none, once
+/// its 407 picks a method from those wanted; they go before the origin's,
+/// whose own go from the first request (`Curl_http_output_auth`).
+#[test]
+fn a_proxy_is_answered_with_its_own_credentials() {
+    let (mut m, talk, _) = server(&[PROXY_CHALLENGE, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.auth = crate::options::HttpAuth(AuthMethods::ANY);
+        o.login = crate::options::Login::from_pair(b"u2:p2").unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let request = |proxy: &str| {
+        format!(
+            "GET http://origin.example/a HTTP/1.1\r\nHost: origin.example\r\n{proxy}\
+             Authorization: Basic dTI6cDI=\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\
+             Proxy-Connection: Keep-Alive\r\n\r\n"
+        )
+    };
+    assert_eq!(
+        text,
+        request("") + &request("Proxy-Authorization: Basic dTpw\r\n")
+    );
+    let report = ran.easy.report();
+    assert_eq!(report.proxy_auth_offered(), AuthMethods::BASIC);
+    assert_eq!(report.proxy_auth_used(), AuthMethods::BASIC);
+    assert_eq!(report.auth_offered(), AuthMethods::NONE);
+    let said = ran.seen.text();
+    let proxy = said
+        .iter()
+        .position(|l| l == "Proxy auth using Basic with user 'u'\n");
+    let server = said
+        .iter()
+        .rposition(|l| l == "Server auth using Basic with user 'u2'\n");
+    assert!(
+        proxy.is_some_and(|p| server.is_some_and(|s| p < s)),
+        "{said:?}"
+    );
+}
+
+/// Through a proxy, the origin's Digest challenge is kept for the origin,
+/// not for the proxy the connection goes to, and answered.
+#[test]
+fn an_origin_s_digest_is_answered_through_a_proxy() {
+    let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let second = text.rfind("GET ").unwrap();
+    assert!(
+        text[second..]
+            .contains("\r\nAuthorization: Digest username=\"u\", realm=\"r\", nonce=\"n\""),
+        "{text}"
+    );
+}

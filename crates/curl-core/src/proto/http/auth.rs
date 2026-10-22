@@ -2,9 +2,9 @@
 //! `Curl_http_input_auth` and `Curl_http_auth_act`): Basic, Bearer and
 //! Digest, with the credentials the options or the URL carry
 //! (`url_set_data_creds`), sent at once or once a server's challenge asks
-//! for it.
+//! for it; to the origin, and to an HTTP proxy a request goes through.
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::digest::{Digest, DigestError};
 use super::request::Trusted;
@@ -14,10 +14,80 @@ use crate::netrc::Found;
 use crate::options::{AuthMethods, Login, NetrcMode};
 use crate::url::{GetOptions, Part, Url, decode_but_zero};
 
-/// Authenticating with the origin, over a handle's transfers (C's
-/// `state.authhost` and `state.authproblem`).
+/// Authenticating over a handle's transfers, with the origin and with the
+/// HTTP proxy (C's `state.authhost` and `state.authproxy`), and whether
+/// either went wrong (`state.authproblem`), which stops both.
 #[derive(Debug, Default)]
-pub(crate) struct HostAuth {
+pub(crate) struct Auth {
+    host: PeerAuth,
+    proxy: PeerAuth,
+    /// The credentials were refused, or none fit the challenge.
+    problem: bool,
+}
+
+/// Which peer a request authenticates with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Side {
+    Host,
+    Proxy,
+}
+
+impl Auth {
+    /// A transfer starts, wanting `host` of the origin and `proxy` of the
+    /// proxy (`Curl_pretransfer`).
+    pub(crate) fn start(&mut self, host: AuthMethods, proxy: AuthMethods) {
+        self.problem = false;
+        self.host.start(host);
+        self.proxy.start(proxy);
+    }
+
+    pub(crate) fn side(&mut self, side: Side) -> &mut PeerAuth {
+        match side {
+            Side::Host => &mut self.host,
+            Side::Proxy => &mut self.proxy,
+        }
+    }
+
+    /// What a request asks of its response's challenges: with these
+    /// credentials for the origin, and for the proxy, each kept with its
+    /// peer.
+    pub(crate) fn asked(
+        &self,
+        host: (Option<Secret<'_>>, &Peer),
+        proxy: (Option<Secret<'_>>, &Peer),
+        probe: bool,
+        get_or_head: bool,
+    ) -> AuthAsked {
+        AuthAsked {
+            host: self.host.asked(host.0, host.1),
+            proxy: self.proxy.asked(proxy.0, proxy.1),
+            probe,
+            get_or_head,
+            problem: self.problem,
+        }
+    }
+
+    /// What a response offered, and what its challenges led to
+    /// (`Curl_http_auth_act`): the origin's kept for `origin`, the
+    /// proxy's for `proxy`.
+    pub(crate) fn apply(
+        &mut self,
+        act: &AuthAct,
+        offered: Offered,
+        origin: &Peer,
+        proxy: &Peer,
+    ) -> Result<(), OutOfMemory> {
+        self.problem = act.problem;
+        self.host
+            .apply(act.picked, act.done, offered.host, origin)?;
+        self.proxy
+            .apply(act.proxy_picked, false, offered.proxy, proxy)
+    }
+}
+
+/// Authenticating with one peer, over a handle's transfers.
+#[derive(Debug, Default)]
+pub(crate) struct PeerAuth {
     /// The methods the transfer may use.
     want: AuthMethods,
     /// The method chosen. Kept from one transfer to the next, as the
@@ -25,8 +95,6 @@ pub(crate) struct HostAuth {
     picked: Picked,
     /// Authenticating is as far as it goes.
     done: bool,
-    /// The credentials were refused, or none fit the challenge.
-    problem: bool,
     /// The last Digest challenge read (C's `state.digest`).
     digest: Option<DigestState>,
     /// The methods offered and not yet picked from (`avail`): a response
@@ -62,7 +130,7 @@ impl Picked {
 /// other origin it is not there, and other credentials start it over.
 #[derive(Debug)]
 struct DigestState {
-    origin: TryRc<Peer>,
+    origin: Peer,
     answered: Option<Answered>,
     digest: Digest,
 }
@@ -79,6 +147,7 @@ struct Answered {
 /// What a request is, for its credentials to answer.
 #[derive(Debug)]
 pub(crate) struct AuthRequest<'r> {
+    /// The peer authenticated with.
     pub(crate) origin: &'r Peer,
     /// The method as the request line names it.
     pub(crate) method: &'r [u8],
@@ -114,10 +183,9 @@ impl From<OutOfMemory> for OutputError {
     }
 }
 
-impl HostAuth {
-    /// A transfer starts, wanting `want` (`Curl_pretransfer`).
-    pub(crate) fn start(&mut self, want: AuthMethods) {
-        self.problem = false;
+impl PeerAuth {
+    /// A transfer starts, wanting `want`.
+    fn start(&mut self, want: AuthMethods) {
         self.want = want;
         let kept = self.picked.methods() & want;
         self.picked = if kept.is_empty() {
@@ -128,13 +196,13 @@ impl HostAuth {
     }
 
     /// What `request`, with `credentials`, sends to authenticate with
-    /// the origin (`Curl_http_output_auth`, `output_auth_headers`).
+    /// the peer (`Curl_http_output_auth`, `output_auth_headers`).
     /// `custom` says the application sends its own Authorization, which
     /// Basic and Bearer do not replace; Digest goes beside it, as C's
     /// does. `random` makes Digest's client nonce.
     pub(crate) fn output(
         &mut self,
-        credentials: Option<&Credentials>,
+        credentials: Option<Secret<'_>>,
         custom: bool,
         request: &AuthRequest<'_>,
         random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
@@ -163,7 +231,7 @@ impl HostAuth {
                 let value = if custom || !credentials.has_bearer() {
                     None
                 } else {
-                    Some(copy(&credentials.bearer)?)
+                    Some(copy(credentials.bearer)?)
                 };
                 (value.is_some(), value)
             }
@@ -189,12 +257,12 @@ impl HostAuth {
     /// `request`'s origin, if one with a nonce is (`Curl_output_digest`).
     fn answer_digest(
         &mut self,
-        credentials: &Credentials,
+        credentials: Secret<'_>,
         request: &AuthRequest<'_>,
         random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
     ) -> Result<Option<Vec<u8>>, OutputError> {
         let stale = self.digest.as_ref().is_some_and(|s| {
-            *s.origin != *request.origin
+            s.origin != *request.origin
                 || s.answered
                     .as_ref()
                     .is_some_and(|a| !credentials.answers_as(a))
@@ -211,8 +279,8 @@ impl HostAuth {
         }
         let mut failed = false;
         let value = state.digest.response(
-            &credentials.user,
-            &credentials.password,
+            credentials.user,
+            credentials.password,
             request.method,
             request.uri,
             |bytes| failed = random(bytes).is_err(),
@@ -224,62 +292,71 @@ impl HostAuth {
     }
 
     /// What a request to `origin` asks of its response's challenges.
-    pub(crate) fn asked(
-        &self,
-        credentials: Option<&Credentials>,
-        probe: bool,
-        get_or_head: bool,
-        origin: &Peer,
-    ) -> AuthAsked {
-        AuthAsked {
+    fn asked(&self, credentials: Option<Secret<'_>>, origin: &Peer) -> PeerAsked {
+        PeerAsked {
             want: self.want,
             picked: self.picked.methods(),
             credentials: credentials.is_some(),
-            user_or_password: credentials.is_some_and(Credentials::has_user_or_password),
-            bearer: credentials.is_some_and(Credentials::has_bearer),
+            user_or_password: credentials.is_some_and(|c| c.has_user_or_password()),
+            bearer: credentials.is_some_and(|c| c.has_bearer()),
             done: self.done,
-            probe,
-            get_or_head,
-            problem: self.problem,
             avail: self.avail,
             digest_nonce: self
                 .digest
                 .as_ref()
-                .is_some_and(|s| *s.origin == *origin && s.digest.has_nonce()),
+                .is_some_and(|s| s.origin == *origin && s.digest.has_nonce()),
         }
     }
 
-    /// What a response from `origin` offered, and what its challenges led
-    /// to (`Curl_http_auth_act`). A Digest challenge read replaces the
-    /// one kept, refused or not, as C's does (`Curl_input_digest`).
-    pub(crate) fn apply(&mut self, act: &AuthAct, challenges: Challenges, origin: TryRc<Peer>) {
-        if let Some(picked) = act.picked {
+    /// What a response from `origin` offered, the method it led to pick
+    /// and whether authenticating is done. A Digest challenge read
+    /// replaces the one kept, refused or not, as C's does
+    /// (`Curl_input_digest`).
+    fn apply(
+        &mut self,
+        picked: Option<AuthMethods>,
+        done: bool,
+        challenges: Challenges,
+        origin: &Peer,
+    ) -> Result<(), OutOfMemory> {
+        if let Some(picked) = picked {
             self.picked = if picked.is_empty() {
                 Picked::Nothing
             } else {
                 Picked::Methods(picked)
             };
         }
-        self.problem = act.problem;
-        self.done |= act.done;
+        self.done |= done;
         // A pick takes from what was open, and leaves nothing open.
-        self.avail = match act.picked {
+        self.avail = match picked {
             Some(_) => AuthMethods::NONE,
             None => challenges.open.unwrap_or(self.avail),
         };
         if let Some(digest) = challenges.digest {
             self.digest = Some(DigestState {
-                origin,
+                origin: origin.try_clone()?,
                 answered: None,
                 digest,
             });
         }
+        Ok(())
     }
 }
 
 /// What a request knows of authenticating, for its response to act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct AuthAsked {
+    pub(crate) host: PeerAsked,
+    pub(crate) proxy: PeerAsked,
+    /// The request went without its body (`req.authneg`).
+    probe: bool,
+    get_or_head: bool,
+    problem: bool,
+}
+
+/// What a request knows of authenticating with one peer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PeerAsked {
     want: AuthMethods,
     picked: AuthMethods,
     /// The request has credentials, empty ones too.
@@ -287,29 +364,34 @@ pub(crate) struct AuthAsked {
     user_or_password: bool,
     bearer: bool,
     done: bool,
-    probe: bool,
-    get_or_head: bool,
-    problem: bool,
     /// The methods offered before and not picked from.
     avail: AuthMethods,
-    /// A Digest nonce from the origin was answered already.
+    /// A Digest nonce from the peer was answered already.
     digest_nonce: bool,
 }
 
-impl AuthAsked {
-    /// A request without credentials, wanting nothing.
-    pub(crate) const DEFAULT: AuthAsked = AuthAsked {
+impl PeerAsked {
+    /// Without credentials, wanting nothing.
+    pub(crate) const DEFAULT: PeerAsked = PeerAsked {
         want: AuthMethods::NONE,
         picked: AuthMethods::NONE,
         credentials: false,
         user_or_password: false,
         bearer: false,
         done: false,
+        avail: AuthMethods::NONE,
+        digest_nonce: false,
+    };
+}
+
+impl AuthAsked {
+    /// A request without credentials, wanting nothing.
+    pub(crate) const DEFAULT: AuthAsked = AuthAsked {
+        host: PeerAsked::DEFAULT,
+        proxy: PeerAsked::DEFAULT,
         probe: false,
         get_or_head: true,
         problem: false,
-        avail: AuthMethods::NONE,
-        digest_nonce: false,
     };
 }
 
@@ -317,6 +399,14 @@ impl Default for AuthAsked {
     fn default() -> Self {
         Self::DEFAULT
     }
+}
+
+/// What a response's challenges offered: a 401's the origin's, a 407's
+/// the proxy's.
+#[derive(Debug, Default)]
+pub(crate) struct Offered {
+    pub(crate) host: Challenges,
+    pub(crate) proxy: Challenges,
 }
 
 /// What the challenges of a response offered (`Curl_http_input_auth`).
@@ -367,12 +457,12 @@ impl Heard {
 }
 
 impl Challenges {
-    /// A `WWW-Authenticate:` value, its methods one after another,
-    /// separated by commas; what C says of it.
+    /// A `WWW-Authenticate:` or `Proxy-Authenticate:` value, its methods
+    /// one after another, separated by commas; what C says of it.
     pub(crate) fn read(
         &mut self,
         mut value: &[u8],
-        asked: &AuthAsked,
+        asked: &PeerAsked,
     ) -> Result<Heard, OutOfMemory> {
         let mut heard = Heard::default();
         let mut open = self.open(asked);
@@ -408,7 +498,7 @@ impl Challenges {
 
     /// The methods open: those left from before, until a challenge is
     /// read.
-    fn open(&self, asked: &AuthAsked) -> AuthMethods {
+    fn open(&self, asked: &PeerAsked) -> AuthMethods {
         self.open.unwrap_or(asked.avail)
     }
 
@@ -418,7 +508,7 @@ impl Challenges {
     fn digest_challenge(
         &mut self,
         value: &[u8],
-        asked: &AuthAsked,
+        asked: &PeerAsked,
         open: &mut AuthMethods,
         heard: &mut Heard,
     ) -> Result<(), OutOfMemory> {
@@ -465,8 +555,11 @@ fn names(value: &[u8], name: &str) -> bool {
 /// What a final response leads to, once its head is in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AuthAct {
-    /// The method chosen, none if none fits, when one was chosen.
+    /// The method chosen for the origin, none if none fits, when one was
+    /// chosen.
     pub(crate) picked: Option<AuthMethods>,
+    /// The method chosen for the proxy, as `picked`.
+    pub(crate) proxy_picked: Option<AuthMethods>,
     pub(crate) problem: bool,
     /// The request is made again, its body not delivered.
     pub(crate) reload: bool,
@@ -474,38 +567,37 @@ pub(crate) struct AuthAct {
 }
 
 impl AuthAct {
-    /// What a response with `code` and these `challenges` leads to, for
-    /// a request that asked `asked` (`Curl_http_auth_act`, `pickoneauth`).
-    pub(crate) fn of(code: u16, challenges: &Challenges, asked: &AuthAsked) -> AuthAct {
+    /// What a response with `code` offering `offered` leads to, for a
+    /// request that asked `asked` (`Curl_http_auth_act`, `pickoneauth`):
+    /// a 401 picks a method for the origin, a 407 for the proxy, and a
+    /// probe let through for both.
+    pub(crate) fn of(code: u16, offered: &Offered, asked: &AuthAsked) -> AuthAct {
         let mut act = AuthAct {
-            problem: asked.problem || challenges.refused,
+            problem: asked.problem || offered.host.refused || offered.proxy.refused,
             ..AuthAct::default()
         };
         if act.problem {
             return act;
         }
-        if asked.credentials && (code == 401 || asked.probe && code < 300) {
-            let mut open = challenges.open(asked) & asked.want;
-            if !asked.bearer {
-                open = open & !AuthMethods::BEARER;
-            }
-            // In C's order of preference.
-            let picked = if open.contains(AuthMethods::BEARER) {
-                AuthMethods::BEARER
-            } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password {
-                AuthMethods::DIGEST
-            } else if open.contains(AuthMethods::BASIC) && asked.user_or_password {
-                AuthMethods::BASIC
-            } else {
-                AuthMethods::NONE
-            };
+        let probed = asked.probe && code < 300;
+        if asked.host.credentials && (code == 401 || probed) {
+            let picked = pick(&offered.host, &asked.host, asked.host.bearer);
             act.picked = Some(picked);
-            act.problem = picked.is_empty();
-            act.reload = !picked.is_empty();
+            act.problem |= picked.is_empty();
         }
+        if asked.proxy.credentials && (code == 407 || probed) {
+            // Never Bearer, whatever was offered.
+            let picked = pick(&offered.proxy, &asked.proxy, false);
+            act.proxy_picked = Some(picked);
+            act.problem |= picked.is_empty();
+        }
+        act.reload = [act.picked, act.proxy_picked]
+            .iter()
+            .any(|p| p.is_some_and(|p| !p.is_empty()));
         // A probe let through without a method picked is made again
-        // with its body, authenticating as far as it goes.
-        if !act.reload && code < 300 && !asked.done && asked.probe && !asked.get_or_head {
+        // with its body, authenticating with the origin as far as it
+        // goes.
+        if !act.reload && code < 300 && !asked.host.done && asked.probe && !asked.get_or_head {
             act.reload = true;
             act.done = true;
         }
@@ -514,14 +606,31 @@ impl AuthAct {
 
     /// Whether a 401 or 407 is an error to fail on, as other codes of 400
     /// or more are (`http_should_fail`): one asking for credentials the
-    /// request has, not yet refused, is not.
+    /// request has for that peer, not yet refused, is not.
     pub(crate) fn fails(&self, code: u16, asked: &AuthAsked) -> bool {
         match code {
-            401 => !asked.credentials || self.problem,
-            // No proxy credentials yet.
-            407 => true,
+            401 => !asked.host.credentials || self.problem,
+            407 => !asked.proxy.credentials || self.problem,
             _ => true,
         }
+    }
+}
+
+/// The method `challenges` lead a request asking `asked` to pick, in C's
+/// order of preference, Bearer only if `bearer`; none if none fits.
+fn pick(challenges: &Challenges, asked: &PeerAsked, bearer: bool) -> AuthMethods {
+    let mut open = challenges.open(asked) & asked.want;
+    if !bearer {
+        open = open & !AuthMethods::BEARER;
+    }
+    if open.contains(AuthMethods::BEARER) {
+        AuthMethods::BEARER
+    } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password {
+        AuthMethods::DIGEST
+    } else if open.contains(AuthMethods::BASIC) && asked.user_or_password {
+        AuthMethods::BASIC
+    } else {
+        AuthMethods::NONE
     }
 }
 
@@ -684,12 +793,50 @@ impl Credentials {
         &self.user
     }
 
+    /// What these authenticate with.
+    pub(crate) fn secret(&self) -> Secret<'_> {
+        Secret {
+            user: &self.user,
+            password: &self.password,
+            bearer: &self.bearer,
+        }
+    }
+
+    /// The leave to send these to the request's origin.
+    pub(crate) fn trusted(&self) -> Trusted {
+        self.trusted
+    }
+}
+
+/// What a request authenticates with to one peer: a user and a password,
+/// and a token, each empty for none.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Secret<'a> {
+    user: &'a [u8],
+    password: &'a [u8],
+    bearer: &'a [u8],
+}
+
+impl<'a> Secret<'a> {
+    /// A user and a password, without a token: a proxy takes none.
+    pub(crate) fn new(user: &'a [u8], password: &'a [u8]) -> Secret<'a> {
+        Secret {
+            user,
+            password,
+            bearer: &[],
+        }
+    }
+
+    pub(crate) fn user(&self) -> &'a [u8] {
+        self.user
+    }
+
     /// A user or a password, not both empty (`Curl_creds_has_user_or_pass`).
-    pub(crate) fn has_user_or_password(&self) -> bool {
+    fn has_user_or_password(&self) -> bool {
         !self.user.is_empty() || !self.password.is_empty()
     }
 
-    pub(crate) fn has_bearer(&self) -> bool {
+    fn has_bearer(&self) -> bool {
         !self.bearer.is_empty()
     }
 
@@ -697,23 +844,18 @@ impl Credentials {
     /// is answered with others.
     fn answered(&self) -> Result<Answered, OutOfMemory> {
         Ok(Answered {
-            user: copy(&self.user)?,
-            password: copy(&self.password)?,
-            bearer: copy(&self.bearer)?,
+            user: copy(self.user)?,
+            password: copy(self.password)?,
+            bearer: copy(self.bearer)?,
         })
     }
 
     /// Whether these are those `answered` kept (`Curl_creds_same`, whose
     /// comparisons take the same time whatever the bytes).
     fn answers_as(&self, answered: &Answered) -> bool {
-        same_secret(&self.user, &answered.user)
-            & same_secret(&self.password, &answered.password)
-            & same_secret(&self.bearer, &answered.bearer)
-    }
-
-    /// The leave to send these to the request's origin.
-    pub(crate) fn trusted(&self) -> Trusted {
-        self.trusted
+        same_secret(self.user, &answered.user)
+            & same_secret(self.password, &answered.password)
+            & same_secret(self.bearer, &answered.bearer)
     }
 
     /// `user:password` in base64, what `Authorization: Basic` carries;
@@ -726,7 +868,7 @@ impl Credentials {
         let mut out = Vec::new();
         out.try_reserve_exact(len.div_ceil(3) * 4)
             .map_err(|_| OutOfMemory)?;
-        let bytes = self.user.iter().chain(b":").chain(&self.password).copied();
+        let bytes = self.user.iter().chain(b":").chain(self.password).copied();
         base64(bytes, len, &mut out)?;
         Ok(Some(out))
     }
@@ -911,9 +1053,9 @@ mod tests {
     #[test]
     fn reads_challenges_as_c() {
         let read = |values: &[&[u8]], picked| {
-            let asked = AuthAsked {
+            let asked = PeerAsked {
                 picked,
-                ..AuthAsked::DEFAULT
+                ..PeerAsked::DEFAULT
             };
             let mut c = Challenges::default();
             let mut refused = Vec::new();
@@ -944,9 +1086,9 @@ mod tests {
     #[test]
     fn reads_digest_challenges_as_c() {
         let read = |values: &[&[u8]], had_nonce| {
-            let asked = AuthAsked {
+            let asked = PeerAsked {
                 digest_nonce: had_nonce,
-                ..AuthAsked::DEFAULT
+                ..PeerAsked::DEFAULT
             };
             let mut c = Challenges::default();
             let mut notes = Vec::new();
@@ -987,9 +1129,9 @@ mod tests {
         assert_eq!(notes.len(), HEARD);
         // Left open by an earlier response not acted on, a Digest
         // challenge is not read again (test 2027).
-        let leftover = AuthAsked {
+        let leftover = PeerAsked {
             avail: d,
-            ..AuthAsked::DEFAULT
+            ..PeerAsked::DEFAULT
         };
         let mut c = Challenges::default();
         let notes: Vec<_> = c
@@ -1000,7 +1142,7 @@ mod tests {
         assert_eq!(notes, [HeardNote::DuplicateDigest]);
         assert!(c.digest.is_none());
         // A refusal closes it, and the next is read.
-        let basic = AuthAsked {
+        let basic = PeerAsked {
             picked: AuthMethods::BASIC,
             ..leftover
         };
@@ -1014,80 +1156,156 @@ mod tests {
         assert!(c.digest.is_some());
     }
 
+    fn offered(m: AuthMethods) -> Challenges {
+        Challenges {
+            open: Some(m),
+            offered: m,
+            refused: false,
+            digest: None,
+        }
+    }
+
+    /// What a response offering the origin `host` leads to.
+    fn host_act(code: u16, host: Challenges, asked: &PeerAsked) -> AuthAct {
+        let offered = Offered {
+            host,
+            proxy: Challenges::default(),
+        };
+        let asked = AuthAsked {
+            host: *asked,
+            ..AuthAsked::DEFAULT
+        };
+        AuthAct::of(code, &offered, &asked)
+    }
+
+    fn of_host(asked: &PeerAsked) -> AuthAsked {
+        AuthAsked {
+            host: *asked,
+            ..AuthAsked::DEFAULT
+        }
+    }
+
     /// A 401 with credentials picks Basic if offered and wanted, else is
     /// a problem; with none, nothing is picked. Only a 401 the request
     /// can still answer escapes fail-on-error.
     #[test]
     fn acts_on_a_401_as_c() {
-        let offered = |m| Challenges {
-            open: Some(m),
-            offered: m,
-            refused: false,
-            digest: None,
-        };
-        let asked = AuthAsked {
+        let asked = PeerAsked {
             want: AuthMethods::ANY,
             credentials: true,
             user_or_password: true,
-            ..AuthAsked::DEFAULT
+            ..PeerAsked::DEFAULT
         };
-        let act = AuthAct::of(401, &offered(AuthMethods::BASIC), &asked);
+        let act = host_act(401, offered(AuthMethods::BASIC), &asked);
         assert_eq!(
             (act.picked, act.reload, act.problem),
             (Some(AuthMethods::BASIC), true, false)
         );
-        assert!(!act.fails(401, &asked));
-        let act = AuthAct::of(401, &offered(AuthMethods::BEARER), &asked);
+        assert!(!act.fails(401, &of_host(&asked)));
+        let act = host_act(401, offered(AuthMethods::BEARER), &asked);
         assert_eq!(
             (act.picked, act.reload, act.problem),
             (Some(AuthMethods::NONE), false, true)
         );
-        assert!(act.fails(401, &asked));
-        let digest_only = AuthAsked {
+        assert!(act.fails(401, &of_host(&asked)));
+        let digest_only = PeerAsked {
             want: AuthMethods::DIGEST,
             ..asked
         };
-        let act = AuthAct::of(401, &offered(AuthMethods::BASIC), &digest_only);
+        let act = host_act(401, offered(AuthMethods::BASIC), &digest_only);
         assert!(act.problem && !act.reload);
-        let both = offered(AuthMethods::BASIC | AuthMethods::BEARER);
-        let act = AuthAct::of(401, &both, &asked);
+        let both = || offered(AuthMethods::BASIC | AuthMethods::BEARER);
+        let act = host_act(401, both(), &asked);
         assert_eq!(act.picked, Some(AuthMethods::BASIC), "no token: not Bearer");
-        let token = AuthAsked {
+        let token = PeerAsked {
             bearer: true,
             ..asked
         };
-        let act = AuthAct::of(401, &both, &token);
+        let act = host_act(401, both(), &token);
         assert_eq!(act.picked, Some(AuthMethods::BEARER), "Bearer before Basic");
-        let empty = AuthAsked {
+        let empty = PeerAsked {
             user_or_password: false,
             ..asked
         };
-        assert!(AuthAct::of(401, &offered(AuthMethods::BASIC), &empty).problem);
-        let without = AuthAsked::DEFAULT;
-        let act = AuthAct::of(401, &offered(AuthMethods::BASIC), &without);
+        assert!(host_act(401, offered(AuthMethods::BASIC), &empty).problem);
+        let without = PeerAsked::DEFAULT;
+        let act = host_act(401, offered(AuthMethods::BASIC), &without);
         assert_eq!(act, AuthAct::default());
-        assert!(act.fails(401, &without));
-        assert!(AuthAct::of(200, &offered(AuthMethods::BASIC), &asked) == AuthAct::default());
+        assert!(act.fails(401, &of_host(&without)));
+        assert!(host_act(200, offered(AuthMethods::BASIC), &asked) == AuthAct::default());
         // Digest after Bearer, before Basic, and only with a user or a
         // password.
-        let all = offered(AuthMethods::BASIC | AuthMethods::DIGEST | AuthMethods::BEARER);
+        let all = || offered(AuthMethods::BASIC | AuthMethods::DIGEST | AuthMethods::BEARER);
         assert_eq!(
-            AuthAct::of(401, &all, &asked).picked,
+            host_act(401, all(), &asked).picked,
             Some(AuthMethods::DIGEST)
         );
         assert_eq!(
-            AuthAct::of(401, &all, &token).picked,
+            host_act(401, all(), &token).picked,
             Some(AuthMethods::BEARER)
         );
-        let digest = offered(AuthMethods::DIGEST);
-        assert!(AuthAct::of(401, &digest, &empty).problem);
+        assert!(host_act(401, offered(AuthMethods::DIGEST), &empty).problem);
         // A 401 with no challenge picks from what was left open.
-        let leftover = AuthAsked {
+        let leftover = PeerAsked {
             avail: AuthMethods::DIGEST,
             ..asked
         };
-        let act = AuthAct::of(401, &Challenges::default(), &leftover);
+        let act = host_act(401, Challenges::default(), &leftover);
         assert_eq!(act.picked, Some(AuthMethods::DIGEST));
+    }
+
+    /// A 407 picks for the proxy as a 401 does for the origin, never
+    /// Bearer; a 401 leaves the proxy alone, and a problem with either
+    /// stops both (`state.authproblem`).
+    #[test]
+    fn acts_on_a_407_as_c() {
+        let creds = PeerAsked {
+            want: AuthMethods::ANY,
+            credentials: true,
+            user_or_password: true,
+            bearer: true,
+            ..PeerAsked::DEFAULT
+        };
+        let asked = AuthAsked {
+            host: creds,
+            proxy: creds,
+            ..AuthAsked::DEFAULT
+        };
+        let of = |code, host, proxy| AuthAct::of(code, &Offered { host, proxy }, &asked);
+        let both = || offered(AuthMethods::BASIC | AuthMethods::BEARER);
+        let act = of(407, Challenges::default(), both());
+        assert_eq!(
+            (act.picked, act.proxy_picked, act.reload, act.problem),
+            (None, Some(AuthMethods::BASIC), true, false)
+        );
+        assert!(!act.fails(407, &asked));
+        let act = of(401, both(), both());
+        assert_eq!(
+            (act.picked, act.proxy_picked),
+            (Some(AuthMethods::BEARER), None)
+        );
+        let act = of(407, Challenges::default(), offered(AuthMethods::BEARER));
+        assert_eq!(
+            (act.proxy_picked, act.reload),
+            (Some(AuthMethods::NONE), false)
+        );
+        assert!(act.problem && act.fails(407, &asked));
+        let refused = Challenges {
+            refused: true,
+            ..offered(AuthMethods::BASIC)
+        };
+        let act = of(401, both(), refused);
+        assert_eq!(
+            (act.picked, act.problem),
+            (None, true),
+            "the proxy's stops the host's"
+        );
+        let without = AuthAsked {
+            proxy: PeerAsked::DEFAULT,
+            ..asked
+        };
+        let act = AuthAct::of(407, &Offered::default(), &without);
+        assert!(act.fails(407, &without) && !act.fails(407, &asked));
     }
 
     /// A probe a server lets through unasked is made again with its
@@ -1095,15 +1313,26 @@ mod tests {
     /// authenticate picks as a 401 does.
     #[test]
     fn acts_on_a_probe_as_c() {
-        let probe = AuthAsked {
+        let creds = PeerAsked {
             want: AuthMethods::DIGEST,
             credentials: true,
             user_or_password: true,
+            ..PeerAsked::DEFAULT
+        };
+        let probe = AuthAsked {
+            host: creds,
             probe: true,
             get_or_head: false,
             ..AuthAsked::DEFAULT
         };
-        let act = AuthAct::of(200, &Challenges::default(), &probe);
+        let of = |host, asked: &AuthAsked| {
+            let offered = Offered {
+                host,
+                proxy: Challenges::default(),
+            };
+            AuthAct::of(200, &offered, asked)
+        };
+        let act = of(Challenges::default(), &probe);
         assert_eq!(
             (act.picked, act.reload, act.done, act.problem),
             (Some(AuthMethods::NONE), true, true, true)
@@ -1112,18 +1341,28 @@ mod tests {
             get_or_head: true,
             ..probe
         };
-        assert!(!AuthAct::of(200, &Challenges::default(), &get).reload);
+        assert!(!of(Challenges::default(), &get).reload);
         let done = AuthAsked {
-            done: true,
+            host: PeerAsked {
+                done: true,
+                ..creds
+            },
             ..probe
         };
-        assert!(!AuthAct::of(200, &Challenges::default(), &done).reload);
+        assert!(!of(Challenges::default(), &done).reload);
         let digest = Challenges {
             open: Some(AuthMethods::DIGEST),
             offered: AuthMethods::DIGEST,
             ..Challenges::default()
         };
-        let act = AuthAct::of(401, &digest, &probe);
+        let act = AuthAct::of(
+            401,
+            &Offered {
+                host: digest,
+                proxy: Challenges::default(),
+            },
+            &probe,
+        );
         assert_eq!(
             (act.picked, act.reload, act.done),
             (Some(AuthMethods::DIGEST), true, false)
@@ -1143,7 +1382,7 @@ mod tests {
             source: Source::Options,
             trusted: Trusted::own_url(),
         };
-        let read = |auth: &mut HostAuth| {
+        let read = |auth: &mut PeerAuth| {
             let (digest, read) = Digest::decode(b"realm=\"r\", nonce=\"n\"", false);
             read.unwrap();
             let challenges = Challenges {
@@ -1152,29 +1391,27 @@ mod tests {
                 refused: false,
                 digest: Some(digest),
             };
-            auth.apply(
-                &AuthAct::default(),
-                challenges,
-                TryRc::try_new(peer(b"a")).unwrap(),
-            );
+            auth.apply(None, false, challenges, &peer(b"a")).unwrap();
         };
-        let answers = |auth: &mut HostAuth, at: &Peer, c: &Credentials| {
+        let answers = |auth: &mut PeerAuth, at: &Peer, c: &Credentials| {
             let request = AuthRequest {
                 origin: at,
                 method: b"GET",
                 uri: b"/",
                 get_or_head: true,
             };
-            let out = auth.output(Some(c), false, &request, |_| Ok(())).unwrap();
+            let out = auth
+                .output(Some(c.secret()), false, &request, |_| Ok(()))
+                .unwrap();
             out.header.is_some()
         };
         let (a, b, right) = (peer(b"A"), peer(b"b"), creds(b"p"));
-        let mut auth = HostAuth::default();
+        let mut auth = PeerAuth::default();
         auth.start(AuthMethods::DIGEST);
         read(&mut auth);
-        assert_eq!(auth.asked(None, false, true, &a).avail, AuthMethods::DIGEST);
-        assert!(auth.asked(None, false, true, &a).digest_nonce);
-        assert!(!auth.asked(None, false, true, &b).digest_nonce);
+        assert_eq!(auth.asked(None, &a).avail, AuthMethods::DIGEST);
+        assert!(auth.asked(None, &a).digest_nonce);
+        assert!(!auth.asked(None, &b).digest_nonce);
         assert!(
             answers(&mut auth, &a, &right),
             "its own origin, in any case"
@@ -1186,30 +1423,26 @@ mod tests {
         assert!(!answers(&mut auth, &b, &right), "another origin");
         assert!(!answers(&mut auth, &a, &right), "starts it over too");
         // A pick leaves nothing open.
-        let act = AuthAct {
-            picked: Some(AuthMethods::DIGEST),
-            ..AuthAct::default()
-        };
+        let a_again = peer(b"a");
         auth.apply(
-            &act,
+            Some(AuthMethods::DIGEST),
+            false,
             Challenges::default(),
-            TryRc::try_new(peer(b"a")).unwrap(),
-        );
-        assert_eq!(auth.asked(None, false, true, &a).avail, AuthMethods::NONE);
+            &a_again,
+        )
+        .unwrap();
+        assert_eq!(auth.asked(None, &a).avail, AuthMethods::NONE);
     }
 
     /// The values the C tool sends, and RFC 4648's vectors.
     #[test]
     fn encodes_basic_as_c() {
         let basic = |u: &[u8], p: &[u8]| {
-            let c = Credentials {
-                user: u.to_vec(),
-                password: p.to_vec(),
-                bearer: Vec::new(),
-                source: Source::Options,
-                trusted: Trusted::own_url(),
-            };
-            c.basic().unwrap().map(|b| String::from_utf8(b).unwrap())
+            let secret = Secret::new(u, p);
+            secret
+                .basic()
+                .unwrap()
+                .map(|b| String::from_utf8(b).unwrap())
         };
         assert_eq!(basic(b"", b"example").as_deref(), Some("OmV4YW1wbGU="));
         assert_eq!(basic(b"u", b"").as_deref(), Some("dTo="));

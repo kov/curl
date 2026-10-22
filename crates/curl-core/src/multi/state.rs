@@ -21,6 +21,7 @@ use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::options::{Follow, Lines, Method, Options, ResolveList};
 use crate::progress::{self, Speedometer};
+use crate::proto::http::Challenged;
 use crate::proto::http1::follow;
 use crate::proto::{Inherited, ProtoState, ProtoStep};
 use crate::report::{Ends, Starts, Timer, TransferReport};
@@ -1208,8 +1209,9 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     }
     run.retries = 0;
     run.inherited = Inherited::new(cx.easy().options().method);
-    let want = cx.easy().options().http.auth.0;
-    cx.easy_mut().auth.start(want);
+    let options = cx.easy().options();
+    let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
+    cx.easy_mut().auth.start(want, proxy_want);
     // The application's referer, until a redirect gives another.
     if let Some(given) = &cx.easy().options().http.referer {
         let mut referer = Vec::new();
@@ -1340,16 +1342,31 @@ fn after_exchange<H: Host>(
             code: 417,
         });
     }
-    // A 401 whose challenge the request can answer has it made again.
-    if let Some((challenges, act, code)) = x.proto.auth() {
-        cx.report_mut().add_auth_offered(challenges.offered);
-        if let Some(picked) = act.picked
-            && !picked.is_empty()
-        {
-            cx.report_mut().set_auth_used(picked);
+    // A 401 or 407 whose challenge the request can answer has it made
+    // again.
+    if let Some(Challenged {
+        offered,
+        act,
+        code,
+        origin,
+    }) = x.proto.auth()
+    {
+        let report = cx.report_mut();
+        report.add_auth_offered(offered.host.offered);
+        report.add_proxy_auth_offered(offered.proxy.offered);
+        if let Some(picked) = act.picked.filter(|p| !p.is_empty()) {
+            report.set_auth_used(picked);
         }
-        let origin = x.origin.clone().expect("an HTTP request has an origin");
-        cx.easy_mut().auth.apply(&act, challenges, origin);
+        if let Some(picked) = act.proxy_picked.filter(|p| !p.is_empty()) {
+            report.set_proxy_auth_used(picked);
+        }
+        // The proxy's challenge is kept for the proxy, which is the
+        // connection's origin when the request went to it whole.
+        let proxy = x.origin.as_deref().expect("an HTTP request has an origin");
+        cx.easy_mut()
+            .auth
+            .apply(&act, offered, origin, proxy)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
         if act.reload {
             let mut location = Vec::new();
             location
@@ -1840,11 +1857,23 @@ fn choose_proxy<H: Host>(
             ));
         }
     };
-    let creds = match (parsed.user, parsed.password) {
+    // The URL's user and password, else the options' (`proxy_parse`).
+    let options = &cx.easy().options().proxy;
+    let (user, password) = match (parsed.user, parsed.password) {
+        (None, None) => (
+            options.user.as_deref().map(copied).transpose()?,
+            options.password.as_deref().map(copied).transpose()?,
+        ),
+        given => given,
+    };
+    let creds = match (user, password) {
         (None, None) => None,
         (user, password) => Some(
-            TryRc::try_new(ProxyCreds { user, password })
-                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
+            TryRc::try_new(ProxyCreds {
+                user: user.unwrap_or_default(),
+                password: password.unwrap_or_default(),
+            })
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         ),
     };
     let route = ProxyRoute {

@@ -93,6 +93,12 @@ impl<'a> Authorization<'a> {
         (!headers.replaces(b"Authorization")).then_some(Authorization { method, value })
     }
 
+    /// A `Proxy-Authorization` line, for a proxy, which the gate does not
+    /// hold back.
+    pub(crate) fn to_proxy(method: &'static str, value: &'a [u8]) -> Authorization<'a> {
+        Authorization { method, value }
+    }
+
     /// A line that goes even beside the application's own Authorization.
     pub(crate) fn alongside(
         method: &'static str,
@@ -358,6 +364,7 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) port: Option<u16>,
     pub(crate) user_agent: Option<&'o [u8]>,
     pub(crate) referer: Option<&'o [u8]>,
+    pub(crate) proxy_authorization: Option<Authorization<'o>>,
     pub(crate) authorization: Option<Authorization<'o>>,
     /// The offset a GET or HEAD asks the rest from.
     pub(crate) range_from: Option<u64>,
@@ -471,6 +478,11 @@ fn write_h1(
                     out.put(b"\r\n")?;
                 }
             },
+            Part::ProxyAuthorization => {
+                if let Some(Authorization { method, value }) = head.proxy_authorization {
+                    out.line(&[b"Proxy-Authorization: ", method.as_bytes(), b" ", value])?;
+                }
+            }
             Part::Authorization => {
                 if let Some(Authorization { method, value }) = head.authorization {
                     out.line(&[b"Authorization: ", method.as_bytes(), b" ", value])?;
@@ -538,8 +550,7 @@ fn write_h1(
                     out.line(&[b"Proxy-Connection: Keep-Alive"])?;
                 }
             }
-            Part::ProxyAuthorization
-            | Part::Te
+            Part::Te
             | Part::AcceptEncoding
             | Part::AltUsed
             | Part::Upgrade
@@ -689,6 +700,7 @@ mod tests {
             port: Some(PORT),
             user_agent: Some(UA),
             referer: None,
+            proxy_authorization: None,
             authorization: None,
             range_from: None,
             content: None,
@@ -757,6 +769,7 @@ mod tests {
                 port: Some(PORT),
                 user_agent: Some(b"ua/1"),
                 referer: Some(b"http://ref.example/x"),
+                proxy_authorization: None,
                 authorization: None,
                 range_from: None,
                 content: None,
@@ -805,6 +818,7 @@ mod tests {
                 port: None,
                 user_agent: Some(b"ua/1"),
                 referer: None,
+                proxy_authorization: None,
                 authorization: Authorization::new("Basic", b"OmV4YW1wbGU=", trusted, &headers),
                 range_from: None,
                 content: None,
@@ -970,6 +984,7 @@ mod tests {
             port: None,
             user_agent: None,
             referer: None,
+            proxy_authorization: None,
             authorization: None,
             range_from: None,
             content: None,
@@ -1017,6 +1032,7 @@ mod tests {
                 port: None,
                 user_agent: None,
                 referer: None,
+                proxy_authorization: None,
                 authorization: None,
                 range_from: None,
                 content: None,

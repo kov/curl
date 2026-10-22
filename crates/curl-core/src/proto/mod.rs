@@ -256,8 +256,8 @@ impl ProtoState {
         }
     }
 
-    /// Where the response redirects to, if it is followed, and its code.
-    pub(crate) fn auth(&mut self) -> Option<(http::auth::Challenges, http::auth::AuthAct, u16)> {
+    /// What the final response's challenges offered and led to.
+    pub(crate) fn auth(&mut self) -> Option<http::Challenged<'_>> {
         match *self {
             ProtoState::Http(ref mut r) => r.auth(),
             ProtoState::File(_) => None,

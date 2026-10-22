@@ -27,7 +27,10 @@ use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
 use crate::options::AuthMethods;
 use crate::options::NetrcMode;
-use auth::{AuthRequest, Credentials, CredentialsError, NetrcLookup, OutputError};
+use auth::{
+    AuthAct, AuthRequest, Credentials, CredentialsError, NetrcLookup, Offered, Output, OutputError,
+    Secret, Side,
+};
 use std::ffi::CStr;
 
 pub(crate) mod auth;
@@ -55,6 +58,27 @@ enum BodyKind {
 
 /// The port a URL without one means.
 const DEFAULT_PORT: u16 = 80;
+
+/// What a final response's challenges offered and led to, its code, and
+/// the origin the request authenticated with.
+pub(crate) struct Challenged<'r> {
+    pub(crate) offered: Offered,
+    pub(crate) act: AuthAct,
+    pub(crate) code: u16,
+    pub(crate) origin: &'r Peer,
+}
+
+/// Digest's client nonce.
+fn random(bytes: &mut [u8; 12]) -> Result<(), ()> {
+    curl_os::random::fill(bytes).map_err(|_| ())
+}
+
+fn made(output: Result<Output, OutputError>) -> Result<Output, ErrorKind> {
+    output.map_err(|e| match e {
+        OutputError::OutOfMemory => ErrorKind::OutOfMemory,
+        OutputError::Random => ErrorKind::FailedInit,
+    })
+}
 
 /// An HTTP request and its response.
 #[derive(Debug)]
@@ -350,14 +374,18 @@ impl Request {
         Some((head.meta().follow()?, head.status()?.code))
     }
 
-    /// What the final response's challenges offered, what they led to,
-    /// and the response's code.
-    /// The challenges are taken out, for the handle to keep.
-    pub(crate) fn auth(&mut self) -> Option<(auth::Challenges, auth::AuthAct, u16)> {
+    /// What the final response's challenges offered and led to; the
+    /// challenges are taken out, for the handle to keep.
+    pub(crate) fn auth(&mut self) -> Option<Challenged<'_>> {
         let head = self.head.as_mut()?;
         let code = head.status()?.code;
         let act = *head.meta().auth();
-        Some((head.meta_mut().take_challenges(), act, code))
+        Some(Challenged {
+            offered: head.meta_mut().take_challenges(),
+            act,
+            code,
+            origin: &self.peer,
+        })
     }
 
     /// A 417 refused the request's `Expect: 100-continue`.
@@ -433,31 +461,62 @@ impl Request {
         lease: &ConnLease,
     ) -> Result<(), ErrorKind> {
         let reused = cx.conn(lease).reused();
-        let forwarded = cx.conn(lease).forwarded();
         let http_proxy = cx.conn(lease).http_proxy();
+        // The proxy the request goes to whole, and what it is given.
+        let forwarding = cx
+            .conn(lease)
+            .forwarding()
+            .map(|p| (p.peer.clone(), p.creds.clone()));
+        let forwarded = forwarding.is_some();
         let get_or_head = matches!(self.method, Method::Get | Method::Head);
-        let credentials = self.credentials.as_ref();
-        let (host_auth, options) = cx.easy_mut().auth_with_options();
+        let credentials = self.credentials.as_ref().map(Credentials::secret);
+        // Without one, nothing goes to a proxy: its side is done at once,
+        // as for its own peer.
+        let (proxy_peer, proxy_secret) = match &forwarding {
+            Some((peer, creds)) => (
+                &**peer,
+                creds.as_deref().map(|c| Secret::new(&c.user, &c.password)),
+            ),
+            None => (&self.peer, None),
+        };
+        let (auth_state, options) = cx.easy_mut().auth_with_options();
         let http = &options.http;
         let method = self.method_line(http);
+        // The proxy's first, as C's `Curl_http_output_auth` makes them.
         let request = AuthRequest {
-            origin: &self.peer,
+            origin: proxy_peer,
             method,
             uri: &self.target,
             get_or_head,
         };
-        let custom_auth = http.headers.replaces(b"Authorization");
-        let random = |bytes: &mut [u8; 12]| curl_os::random::fill(bytes).map_err(|_| ());
-        let auth = match host_auth.output(credentials, custom_auth, &request, random) {
-            Ok(auth) => auth,
-            Err(OutputError::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
-            Err(OutputError::Random) => return Err(ErrorKind::FailedInit),
+        let custom = http.headers.replaces(b"Proxy-Authorization");
+        let proxy_auth = made(auth_state.side(Side::Proxy).output(
+            proxy_secret,
+            custom,
+            &request,
+            random,
+        ))?;
+        let request = AuthRequest {
+            origin: &self.peer,
+            ..request
         };
-        let auth_asked = cx
-            .easy()
-            .auth
-            .asked(credentials, auth.probe, get_or_head, &self.peer);
+        let custom = http.headers.replaces(b"Authorization");
+        let auth = made(
+            auth_state
+                .side(Side::Host)
+                .output(credentials, custom, &request, random),
+        )?;
+        let probe = auth.probe || proxy_auth.probe;
+        let auth_asked = cx.easy().auth.asked(
+            (credentials, &self.peer),
+            (proxy_secret, proxy_peer),
+            probe,
+            get_or_head,
+        );
         cx.report_mut().set_auth_used(auth.used);
+        if forwarded {
+            cx.report_mut().set_proxy_auth_used(proxy_auth.used);
+        }
         let http = &cx.easy().options().http;
         let application = http.cookies.send.is_some()
             && !http.headers.replaces(b"Cookie")
@@ -482,9 +541,9 @@ impl Request {
         // A probe goes without its body, saying it has none
         // (`Curl_creader_set_null`).
         let mut upload = body
-            .filter(|_| !auth.probe)
+            .filter(|_| !probe)
             .map(|_| Upload::new(&options.upload));
-        let size = if auth.probe {
+        let size = if probe {
             Some(0)
         } else {
             upload.as_ref().and_then(Upload::size)
@@ -549,6 +608,10 @@ impl Request {
             }
             _ => None,
         };
+        let proxy_authorization = proxy_auth
+            .header
+            .as_ref()
+            .map(|(method, value)| Authorization::to_proxy(method.name(), value));
         let authenticated = (!auth.used.is_empty()).then_some(auth.used);
         let head = RequestHead {
             method,
@@ -562,11 +625,12 @@ impl Request {
             port: shown_port,
             user_agent: http.user_agent.as_deref(),
             referer: cx.easy().report().referer(),
+            proxy_authorization,
             authorization,
             range_from: resume_from,
             content,
             chunked: chunked && asked.is_none(),
-            probe: auth.probe,
+            probe,
             cookie: cookie.as_deref(),
             forwarded,
             headers: &http.headers,
@@ -593,6 +657,14 @@ impl Request {
                 http_proxy,
             },
         };
+        if let Some(method) = proxy_auth.header.as_ref().map(|(m, _)| m) {
+            let user = proxy_secret.map_or(&b""[..], |s| s.user());
+            let name = method.name().as_bytes();
+            trace::info_with(
+                cx,
+                &[b"Proxy auth using ", name, b" with user '", user, b"'"],
+            );
+        }
         if let Some(method) = authenticated {
             let user = self.credentials.as_ref().map_or(&b""[..], |c| c.user());
             let name = method.name().as_bytes();

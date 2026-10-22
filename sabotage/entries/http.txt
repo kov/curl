@@ -960,9 +960,9 @@ witness: curl-core proto::http::tests::the_method_chosen_is_kept_for_the_next_tr
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 --- old
-            let mut open = challenges.open(asked) & asked.want;
+    let mut open = challenges.open(asked) & asked.want;
 --- new
-            let mut open = challenges.open(asked);
+    let mut open = challenges.open(asked);
 
 === the application's token goes to any origin
 file: crates/curl-core/src/proto/http/auth.rs
@@ -977,17 +977,17 @@ witness: curl-core proto::http::auth::tests::composes_a_token_with_the_rest
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 --- old
-            let picked = if open.contains(AuthMethods::BEARER) {
+    if open.contains(AuthMethods::BEARER) {
 --- new
-            let picked = if open.contains(AuthMethods::BEARER) && !open.contains(AuthMethods::BASIC) {
+    if open.contains(AuthMethods::BEARER) && !open.contains(AuthMethods::BASIC) {
 
 === Bearer is picked without a token
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 --- old
-            if !asked.bearer {
+    if !bearer {
 --- new
-            if asked.bearer && !asked.bearer {
+    if bearer && !bearer {
 
 === a token wanted alone is not sent
 file: crates/curl-core/src/proto/http/auth.rs
@@ -1069,9 +1069,9 @@ witness: curl-core netrc::tests::reads_the_rest_of_the_grammar
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::acts_on_a_probe_as_c
 --- old
-        if !act.reload && code < 300 && !asked.done && asked.probe && !asked.get_or_head {
+        if !act.reload && code < 300 && !asked.host.done && asked.probe && !asked.get_or_head {
 --- new
-        if act.picked.is_none() && code < 300 && !asked.done && asked.probe && !asked.get_or_head {
+        if act.picked.is_none() && code < 300 && !asked.host.done && asked.probe && !asked.get_or_head {
 
 === Digest without a nonce counts as done
 file: crates/curl-core/src/proto/http/auth.rs
@@ -1103,7 +1103,7 @@ witness: curl-core proto::http::tests::a_probe_let_through_is_made_again_with_it
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::keeps_digest_for_its_origin_and_credentials
 --- old
-            *s.origin != *request.origin
+            s.origin != *request.origin
 --- new
             false
 
@@ -1127,9 +1127,9 @@ witness: curl-core proto::http::auth::tests::reads_digest_challenges_as_c
 file: crates/curl-core/src/proto/http/auth.rs
 witness: curl-core proto::http::auth::tests::acts_on_a_401_as_c
 --- old
-            } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password {
+    } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password {
 --- new
-            } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password && !open.contains(AuthMethods::BASIC) {
+    } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password && !open.contains(AuthMethods::BASIC) {
 
 === a probe sends the application's Content-Length
 file: crates/curl-core/src/proto/http1/request.rs
@@ -1143,7 +1143,7 @@ witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_digest_post_probes_without_its_body
 --- old
-            .filter(|_| !auth.probe)
+            .filter(|_| !probe)
 --- new
             .filter(|_| true)
 

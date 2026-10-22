@@ -425,10 +425,12 @@ cargo-mutants run on the milestone's diff.
     the environment and the no-proxy list, joining the route (ENGINE.md 4.5); a plain HTTP
     request forwarded whole, with `Proxy-Connection`; `CURLOPT_PROXY`, `NOPROXY`,
     `PROXYPORT`, `PROXYTYPE`, `HTTPPROXYTUNNEL` and `CURLINFO_USED_PROXY`; the tool's `-x`,
-    `--noproxy`, `--proxy1.0` and `-p`. 76 of the 158 proxy tests the Rust leg runs pass.
-    Next: Proxy-Authorization and the proxy's 407 (`-U`, `--proxy-user` and the rest); then
-    CONNECT, after the dial result is split from the pooled `Conn` (§4.2's `TunnelEvent` and
-    `&mut ProxyAuth`); then SOCKS.
+    `--noproxy`, `--proxy1.0` and `-p`; Proxy-Authorization and the proxy's 407, with
+    `CURLOPT_PROXYUSERPWD`, `PROXYUSERNAME`, `PROXYPASSWORD`, `PROXYAUTH`,
+    `CURLINFO_PROXYAUTH_*` and the tool's `-U`, `--proxy-anyauth`, `--proxy-basic` and
+    `--proxy-digest`. 94 of the 158 proxy tests the Rust leg runs pass. Next: CONNECT, after
+    the dial result is split from the pooled `Conn` (§4.2's `TunnelEvent`, with the proxy's
+    side of `Auth` lent as `&mut PeerAuth`); then SOCKS.
 32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as
     C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a
     binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and

@@ -26,7 +26,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 
-use curl_alloc::TryRc;
+use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use crate::options::{IpVersion, ProxyType};
 
@@ -149,12 +149,6 @@ impl Tcp {
     pub(crate) fn destination(&self) -> &Peer {
         self.via.as_deref().unwrap_or(&self.origin)
     }
-
-    /// The requests go whole to a proxy, which is the origin
-    /// (`origin_is_proxy`).
-    pub(crate) fn forwarded(&self) -> bool {
-        self.proxy.as_ref().is_some_and(|p| p.forward)
-    }
 }
 
 /// The proxy a route goes through (C's `conn->http_proxy`).
@@ -169,11 +163,11 @@ pub(crate) struct ProxyRoute {
     pub(crate) forward: bool,
 }
 
-/// What a proxy is told it is talking to.
+/// The user and password a proxy is given, each empty for none.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ProxyCreds {
-    pub(crate) user: Option<Vec<u8>>,
-    pub(crate) password: Option<Vec<u8>>,
+    pub(crate) user: Vec<u8>,
+    pub(crate) password: Vec<u8>,
 }
 
 /// What of a route's proxy a connection must share to serve another
@@ -259,6 +253,20 @@ impl Peer {
             zone,
             scope,
         }
+    }
+
+    pub(crate) fn try_clone(&self) -> Result<Peer, OutOfMemory> {
+        let copy = |bytes: &[u8]| {
+            let mut v = Vec::new();
+            v.try_extend_from_slice(bytes).map(|()| v)
+        };
+        Ok(Peer {
+            scheme: self.scheme,
+            host: copy(&self.host)?,
+            port: self.port,
+            zone: self.zone.as_deref().map(copy).transpose()?,
+            scope: self.scope,
+        })
     }
 
     pub(crate) fn scheme(&self) -> Scheme {
@@ -358,9 +366,13 @@ impl Conn {
         }
     }
 
-    /// Whether requests go whole to a proxy over it (`origin_is_proxy`).
-    pub(crate) fn forwarded(&self) -> bool {
-        matches!(&self.route, Route::Tcp(tcp) if tcp.forwarded())
+    /// The proxy requests go to whole over it, if they do
+    /// (`origin_is_proxy`).
+    pub(crate) fn forwarding(&self) -> Option<&ProxyRoute> {
+        match &self.route {
+            Route::Tcp(Tcp { proxy: Some(p), .. }) if p.forward => Some(p),
+            _ => None,
+        }
     }
 
     /// Whether it goes through an HTTP proxy (`http_proxy.peer`).
@@ -480,8 +492,8 @@ mod tests {
         let proxy = TryRc::try_new(peer(host, 3128, None)).unwrap();
         let creds = user.map(|u| {
             TryRc::try_new(ProxyCreds {
-                user: Some(u.to_vec()),
-                password: None,
+                user: u.to_vec(),
+                password: Vec::new(),
             })
             .unwrap()
         });

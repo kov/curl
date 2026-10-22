@@ -101,6 +101,21 @@ pub struct Proxy {
     /// Every transfer tunnels through an HTTP proxy, with `CONNECT`
     /// (`CURLOPT_HTTPPROXYTUNNEL`).
     pub tunnel: bool,
+    /// The user an HTTP proxy is given where its URL names none
+    /// (`CURLOPT_PROXYUSERNAME`).
+    pub user: Option<Vec<u8>>,
+    /// Its password, likewise (`CURLOPT_PROXYPASSWORD`).
+    pub password: Option<Vec<u8>>,
+    /// The methods it may be authenticated with (`CURLOPT_PROXYAUTH`).
+    pub auth: HttpAuth,
+}
+
+/// Why `user:password` for a proxy is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyUserError {
+    OutOfMemory,
+    /// A part decodes to a zero byte.
+    Malformed,
 }
 
 impl Proxy {
@@ -111,7 +126,35 @@ impl Proxy {
             port: self.port,
             no_proxy: self.no_proxy.as_deref().map(copy).transpose()?,
             tunnel: self.tunnel,
+            user: self.user.as_deref().map(copy).transpose()?,
+            password: self.password.as_deref().map(copy).transpose()?,
+            auth: self.auth,
         })
+    }
+
+    /// The user and password from `user:password`, split at the first
+    /// colon and each URL-decoded (`CURLOPT_PROXYUSERPWD`); none clears
+    /// both.
+    pub fn set_user_password(&mut self, pair: Option<&[u8]>) -> Result<(), ProxyUserError> {
+        let decoded = |part: &[u8]| match crate::url::decode_but_zero(part) {
+            Ok(Some(decoded)) => Ok(decoded),
+            Ok(None) => Err(ProxyUserError::Malformed),
+            Err(_) => Err(ProxyUserError::OutOfMemory),
+        };
+        let (user, password) = match pair {
+            None => (None, None),
+            Some(pair) => {
+                let login =
+                    Login::from_pair(pair).map_err(|OutOfMemory| ProxyUserError::OutOfMemory)?;
+                (
+                    login.user.as_deref().map(decoded).transpose()?,
+                    login.password.as_deref().map(decoded).transpose()?,
+                )
+            }
+        };
+        self.user = user;
+        self.password = password;
+        Ok(())
     }
 }
 

@@ -528,6 +528,16 @@ fn transfer(
     if configure(&mut easy, op, run, &out, &config).is_err() {
         return failed(&easy, ErrorKind::OutOfMemory);
     }
+    if let Some(pair) = op.proxy_user {
+        let set = easy.options_mut().proxy.set_user_password(Some(pair));
+        if let Err(e) = set {
+            let kind = match e {
+                options::ProxyUserError::OutOfMemory => ErrorKind::OutOfMemory,
+                options::ProxyUserError::Malformed => ErrorKind::UrlMalformat,
+            };
+            return failed(&easy, kind);
+        }
+    }
     easy.options_mut().http.cookies.send = cookies;
     let ended = if skip {
         Ended::Skipped
@@ -1049,6 +1059,19 @@ fn configure(
     }
     o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
     o.proxy.tunnel = op.proxytunnel;
+    // One method, in C's order (`proxy_setopts`).
+    let proxy_auth = if op.proxy_anyauth {
+        Some(options::AuthMethods::ANY)
+    } else if op.proxy_digest {
+        Some(options::AuthMethods::DIGEST)
+    } else if op.proxy_basic {
+        Some(options::AuthMethods::BASIC)
+    } else {
+        None
+    };
+    if let Some(methods) = proxy_auth {
+        o.proxy.auth = options::HttpAuth(methods);
+    }
     http.fail_on_error = op.fail == Fail::WithoutBody;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);

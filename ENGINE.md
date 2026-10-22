@@ -857,7 +857,8 @@ machine through the pool, and NAMELOOKUP is marked when it resolves.
   connected filter from the top". It emits `TunnelEvent`s (status line, header lines, auth
   challenge, response code); the transfer applies them to its report, header callback and auth
   state. A filter never writes into a transfer.
-- Proxy authentication state is passed in as `&mut ProxyAuth` from the transfer for the call.
+- Proxy authentication state is lent as `&mut PeerAuth`, the proxy's side of the transfer's `Auth`,
+  for the call.
 - Socket open order is one function in `conn::io` with C's sequence: OPENSOCKET callback (or
   `Net::open`), "Trying" trace, nodelay/keepalive, SOCKOPT callback (`AlreadyConnected` skips
   connect; other failure is AbortedByCallback), bind, nonblock, connect.
@@ -1514,24 +1515,31 @@ parsed URL; it is reached only inside a closure, so no borrow of it outlives the
 leads to an absolute URL (`Inherited::allow_port`). The referer a request sends is the report's (`state.referer`): the application's, copied
 at the transfer's start, until a redirect followed with AUTOREFERER replaces it with the URL it
 came from, without credentials or fragment.
-Authenticating with the origin is `HostAuth`, on the `Easy` as C keeps `state.authhost` on
-the handle: the method picked outlives the transfer, cut to the methods wanted as the next
-one starts (`start`). `Picked` tells a method not yet picked from a pick that found nothing
-(C's `CURLAUTH_PICKNONE`), which sends nothing until the next transfer. Each request asks it
-what to send (`output`, from the request's `Credentials`, method and path): one method wanted
-is sent at once, more wait for a server to choose. Basic and Bearer are done once sent;
+Authenticating is `Auth`, on the `Easy` as C keeps `state.authhost`, `state.authproxy` and
+`state.authproblem` on the handle: a `PeerAuth` for the origin and one for the proxy a request
+goes to whole, and one problem flag that stops both. Each side's method picked outlives the
+transfer, cut to the methods wanted as the next one starts (`start`; the proxy's are
+`Options::proxy.auth`). `Picked` tells a method not yet picked from a pick that found nothing
+(C's `CURLAUTH_PICKNONE`), which sends nothing until the next transfer. Each request asks each side
+what to send (`output`, from a `Secret`: the request's `Credentials` for the origin, the
+route's `ProxyCreds` for the proxy, never a token; the method and the path): the proxy's
+first, as `Proxy-Authorization`, and only to a proxy the request goes to whole. One method
+wanted is sent at once, more wait for a peer to choose. Basic and Bearer are done once sent;
 Digest is in use from the start and done only once it answers a challenge, so a request with
 a body sent before that is a probe: `Content-Length: 0` in place of the application's, no
 body read (`authneg`). The request hands its response's head parser an `AuthAsked`, and the
-parser reads a 401's `WWW-Authenticate:` lines into `Challenges` as they come, as it reads
+parser reads a 401's `WWW-Authenticate:` and a 407's `Proxy-Authenticate:` lines into each
+side's `Challenges` as they come, as it reads
 `Location:`, so that at the head's end it knows, before the End line is delivered, whether
-the response is answered again (`AuthAct`: its body dropped as a followed redirect's is) and
-whether fail-on-error lets it through. A probe let through is made again with its body. The
+the response is answered again (`AuthAct`, which picks for the origin on a 401 and for the
+proxy, never Bearer, on a 407: its body dropped as a followed redirect's is) and whether
+fail-on-error lets it through. A probe let through is made again with its body. The
 exchange's end moves the challenges into `HostAuth`: the methods offered and not picked from
 stay open across responses and transfers until a pick, as C's `avail` does, so a Digest
 challenge met while Digest is still open is a duplicate and not read (test 2027). The Digest
-challenge read is kept with the origin that sent it and the credentials first answering it,
-and asked for by another origin or with other credentials it is not there. An answered 401
+challenge read is kept with the peer that sent it, the request's URL host for the origin's and
+the connection's for the proxy's, and the credentials first answering it; asked for by another
+peer or with other credentials it is not there. An answered 401
 ends `Follow` to the request's own URL, counted as a redirect, keeping `Options::port`. Each
 request counts what it moves from nothing (`Sizes::new_request`, `Curl_pgrsReset`); heads and
 request bytes are counted over the transfer. The hashes Digest computes with (MD5, SHA-256,

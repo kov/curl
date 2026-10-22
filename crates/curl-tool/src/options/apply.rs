@@ -176,6 +176,14 @@ pub(crate) struct Operation<'a> {
     pub(crate) noproxy: Option<&'a [u8]>,
     /// `--proxytunnel`.
     pub(crate) proxytunnel: bool,
+    /// `--proxy-user`.
+    pub(crate) proxy_user: Option<&'a [u8]>,
+    /// `--proxy-anyauth`.
+    pub(crate) proxy_anyauth: bool,
+    /// `--proxy-basic`.
+    pub(crate) proxy_basic: bool,
+    /// `--proxy-digest`.
+    pub(crate) proxy_digest: bool,
     /// `--junk-session-cookies`.
     pub(crate) cookie_session: bool,
     /// `--http1.0` and `--http1.1`.
@@ -717,6 +725,10 @@ pub(crate) fn apply<'a>(
         }
         Opt::Noproxy => line.current().noproxy = Some(value.text()),
         Opt::Proxytunnel => line.current().proxytunnel = value.toggle(),
+        Opt::ProxyUser => line.current().proxy_user = Some(value.text()),
+        Opt::ProxyAnyauth => line.current().proxy_anyauth = value.toggle(),
+        Opt::ProxyBasic => line.current().proxy_basic = value.toggle(),
+        Opt::ProxyDigest => line.current().proxy_digest = value.toggle(),
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
@@ -1087,8 +1099,6 @@ pub(crate) fn apply<'a>(
         | Opt::PathAsIs
         | Opt::Pinnedpubkey
         | Opt::Preproxy
-        | Opt::ProxyAnyauth
-        | Opt::ProxyBasic
         | Opt::ProxyCaNative
         | Opt::ProxyCacert
         | Opt::ProxyCapath
@@ -1096,7 +1106,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyCertType
         | Opt::ProxyCiphers
         | Opt::ProxyCrlfile
-        | Opt::ProxyDigest
         | Opt::ProxyHeader
         | Opt::ProxyHttp2
         | Opt::ProxyHttp3
@@ -1115,7 +1124,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyTlspassword
         | Opt::ProxyTlsuser
         | Opt::ProxyTlsv1
-        | Opt::ProxyUser
         | Opt::Pubkey
         | Opt::Quote
         | Opt::RandomFile

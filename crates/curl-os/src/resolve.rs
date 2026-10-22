@@ -139,6 +139,7 @@ mod tests {
     /// The loopback names resolve, by family as asked; a name that cannot
     /// exist does not.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri's getaddrinfo takes no family")]
     fn looks_up_names_as_the_system_knows_them() {
         let v4 = lookup(b"127.0.0.1", Family::Any).unwrap();
         assert_eq!(v4, [IpAddr::V4(Ipv4Addr::LOCALHOST)]);

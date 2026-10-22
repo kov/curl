@@ -121,11 +121,13 @@ impl Dir {
             let err = io::Error::last_os_error();
             return (err.raw_os_error() != Some(0)).then_some(Err(err));
         }
+        // The record is only as long as its name: `d_name` is reached by a
+        // pointer, as a reference to the whole array may reach past it.
         // SAFETY: a non-null entry is valid until the stream is read again
         // or closed, which the borrow of `self` prevents.
-        let name = unsafe { &(*entry).d_name };
+        let name = unsafe { (&raw const (*entry).d_name).cast::<core::ffi::c_char>() };
         // SAFETY: `d_name` holds the entry's name, ended by a NUL.
-        let name = unsafe { CStr::from_ptr(name.as_ptr()) };
+        let name = unsafe { CStr::from_ptr(name) };
         Some(Ok(name.to_bytes()))
     }
 }
@@ -316,6 +318,7 @@ mod tests {
 
     /// A listing closes its directory when it goes.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri's descriptors are not in /proc/self/fd")]
     fn a_listing_closes_its_directory() {
         let s = Scratch::new("close");
         let dir = std::fs::canonicalize(&s.0).unwrap();

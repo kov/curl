@@ -25,9 +25,7 @@ pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
     if !cx.easy().options().output.verbose {
         return;
     }
-    let (mut line, _) = Text::<LINE_MAX>::clipped(args);
-    end_line(&mut line);
-    text(cx, line.bytes());
+    text(cx, line(args).0.bytes());
 }
 
 /// `info` with a line made of `parts`, which need not be text.
@@ -35,12 +33,35 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
     if !cx.easy().options().output.verbose {
         return;
     }
+    text(cx, line_with(parts).0.bytes());
+}
+
+/// A line for `info`, formatted while what it names is borrowed from the
+/// transfer, to be traced with `info_line` once nothing is: the debug
+/// handler may change the options it came from.
+pub(crate) struct Line(Text<LINE_MAX>);
+
+pub(crate) fn line(args: fmt::Arguments<'_>) -> Line {
+    let (mut line, _) = Text::<LINE_MAX>::clipped(args);
+    end_line(&mut line);
+    Line(line)
+}
+
+/// `line` made of `parts`, which need not be text.
+pub(crate) fn line_with(parts: &[&[u8]]) -> Line {
     let mut line = Text::<LINE_MAX>::new();
     for part in parts {
         line.push_clipped(part);
     }
     end_line(&mut line);
-    text(cx, line.bytes());
+    Line(line)
+}
+
+/// Trace a line `line` formatted, as `info` would have.
+pub(crate) fn info_line<H: Host>(cx: &mut StepCx<'_, H>, line: &Line) {
+    if cx.easy().options().output.verbose {
+        text(cx, line.0.bytes());
+    }
 }
 
 /// End a trace line (`trc_end_buf`): with a newline where it leaves room
@@ -61,8 +82,7 @@ pub(crate) fn fail<H: Host>(
     kind: ErrorKind,
     args: fmt::Arguments<'_>,
 ) -> ErrorKind {
-    let (detail, _) = Text::<DETAIL_MAX>::clipped(args);
-    failed(cx, kind, detail)
+    failed(cx, kind, reason(args).0)
 }
 
 /// `fail` with a reason made of `parts`, which need not be text.
@@ -76,6 +96,23 @@ pub(crate) fn fail_with<H: Host>(
         detail.push_clipped(part);
     }
     failed(cx, kind, detail)
+}
+
+/// Why the transfer fails, formatted while what it names is borrowed
+/// from the transfer, to be given with `fail_for` once nothing is.
+pub(crate) struct Reason(Text<DETAIL_MAX>);
+
+pub(crate) fn reason(args: fmt::Arguments<'_>) -> Reason {
+    Reason(Text::<DETAIL_MAX>::clipped(args).0)
+}
+
+/// `fail` with a reason `reason` formatted.
+pub(crate) fn fail_for<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    kind: ErrorKind,
+    reason: Reason,
+) -> ErrorKind {
+    failed(cx, kind, reason.0)
 }
 
 fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_MAX>) -> ErrorKind {

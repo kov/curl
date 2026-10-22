@@ -2215,6 +2215,69 @@ fn a_custom_method_follows_as_the_mode_says() {
     assert!(text.contains(&"Drop custom request method for next request\n".to_string()));
 }
 
+/// A debug handler that changes the transfer's options when a line
+/// starting with `at` is traced, as an application's may.
+struct ChangesOn {
+    at: &'static [u8],
+    change: Box<dyn Fn(&mut Options) + Send + Sync>,
+}
+
+impl DebugHandler for ChangesOn {
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        if kind == DebugKind::Text && data.starts_with(self.at) {
+            let me = cx.me();
+            (self.change)(cx.options_mut(me).expect("its own transfer"));
+        }
+    }
+}
+
+/// A custom method the debug handler sets while the switch to GET is
+/// traced is the next request's, as C's `http_switch_to_get` leaves it.
+#[test]
+fn a_custom_method_set_while_a_redirect_is_traced_stands() {
+    let ran = redirected(303, Method::Get, b"", |o| {
+        o.http.custom_method = Some(b"DELETE".to_vec());
+        let change = ChangesOn {
+            at: b"Stick to DELETE instead of GET",
+            change: Box::new(|o| o.http.custom_method = Some(b"PATCH".to_vec())),
+        };
+        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let second = second_request(&ran);
+    assert!(second.starts_with("PATCH /b "), "{second}");
+}
+
+/// The resolve and connect-to lists stay in the options while their
+/// entries are traced: what the debug handler sets them to then stands.
+#[test]
+fn lists_set_while_their_entries_are_traced_stand() {
+    let lines = |l: &crate::options::Lines| l.iter().map(<[u8]>::to_vec).collect::<Vec<_>>();
+    let entry = format!("127.0.0.1:{PORT}:127.0.0.1");
+    let ran = run("/", OK, false, |o| {
+        o.resolve.set([entry.as_bytes()]).unwrap();
+        let change = ChangesOn {
+            at: b"[DNS] added 127.0.0.1",
+            change: Box::new(|o| o.resolve.set([&b"set.test:1:127.0.0.1"[..]]).unwrap()),
+        };
+        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let resolve: Vec<_> = ran.easy.options().resolve.entries().collect();
+    assert_eq!(resolve, [b"set.test:1:127.0.0.1"]);
+
+    let ran = run("/", OK, false, |o| {
+        o.connect_to.set([&b"::localhost:x"[..]]).unwrap();
+        let change = ChangesOn {
+            at: b"No valid port number",
+            change: Box::new(|o| o.connect_to.set([&b"::127.0.0.1:1"[..]]).unwrap()),
+        };
+        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::SetoptOptionSyntax));
+    assert_eq!(lines(&ran.easy.options().connect_to), [b"::127.0.0.1:1"]);
+}
+
 /// A body read from a handler, `data`, started over by its rewind
 /// handler if it has one; counts its rewinds.
 #[derive(Clone)]
@@ -2804,6 +2867,31 @@ fn cookie_files_are_read_as_a_transfer_starts() {
     ] {
         assert!(text.contains(&warning), "{text}");
     }
+}
+
+/// A cookie file the debug handler names while a missing one is warned
+/// of is read for the same transfer, as C walks the list it appends to.
+#[test]
+fn a_cookie_file_named_while_one_is_warned_of_is_read() {
+    let dir = std::env::temp_dir().join(format!("curl-cookie-named-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("jar");
+    std::fs::write(&file, b"127.0.0.1\tFALSE\t/\tFALSE\t0\ta\t1\n").unwrap();
+    let name = file.as_os_str().as_encoded_bytes().to_vec();
+    let ran = run("/", OK, false, |o| {
+        o.http.cookies.files.push(b"missing").unwrap();
+        let change = ChangesOn {
+            at: b"WARNING: failed to open cookie file \"missing\"",
+            change: Box::new(move |o| o.http.cookies.files.push(&name).unwrap()),
+        };
+        o.callbacks.debug = Some(Handler::debug(change).unwrap());
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(ran.result, Ok(()));
+    let request = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(request.contains("\r\nCookie: a=1\r\n"), "{request}");
+    let files: Vec<_> = ran.easy.options().http.cookies.files.iter().collect();
+    assert_eq!(files.len(), 2, "the file named stays named");
 }
 
 /// One request stores 50 `Set-Cookie:` lines at most; the next request

@@ -550,7 +550,7 @@ impl ResolveList {
         self.stamp
     }
 
-    fn try_clone(&self) -> Result<ResolveList, OutOfMemory> {
+    pub(crate) fn try_clone(&self) -> Result<ResolveList, OutOfMemory> {
         Ok(ResolveList {
             entries: self.entries.try_clone()?,
             stamp: self.stamp,

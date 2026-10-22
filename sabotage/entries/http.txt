@@ -726,9 +726,9 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
 --- old
         inherited.ignore_custom = true;
-        trace::info(cx, format_args!("Switch to GET because of {code} response"));
+        Some(trace::line(format_args!(
 --- new
-        trace::info(cx, format_args!("Switch to GET because of {code} response"));
+        Some(trace::line(format_args!(
 
 === a redirected body is not rewound
 file: crates/curl-core/src/multi/state.rs

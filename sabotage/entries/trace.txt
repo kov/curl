@@ -59,3 +59,49 @@ witness: curl-core deliver::tests::the_first_reason_is_the_one_kept
     if first && let Some(sink) = cx.easy().options().callbacks.failure.clone() {
 --- new
     if let Some(sink) = cx.easy().options().callbacks.failure.clone() {
+
+=== the custom method is out of the options while the switch to GET is traced
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_custom_method_set_while_a_redirect_is_traced_stands
+--- old
+    if let Some(said) = said {
+        trace::info_line(cx, &said);
+    }
+--- new
+    if let Some(said) = said {
+        let custom = cx.easy_mut().options_mut().http.custom_method.take();
+        trace::info_line(cx, &said);
+        cx.easy_mut().options_mut().http.custom_method = custom;
+    }
+
+=== the cookie files are out of the options while one is warned of
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::a_cookie_file_named_while_one_is_warned_of_is_read
+--- old
+        trace::info_line(cx, &said);
+--- new
+        let files = std::mem::take(&mut cx.easy_mut().options_mut().http.cookies.files);
+        trace::info_line(cx, &said);
+        cx.easy_mut().options_mut().http.cookies.files = files;
+
+=== the resolve list read is written back over what the debug handler set
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_stand
+--- old
+    let read = read_entries(cx, &entries);
+    if read.is_ok() {
+--- new
+    let read = read_entries(cx, &entries);
+    cx.easy_mut().options_mut().resolve = entries;
+    if read.is_ok() {
+
+=== the connect-to list is out of the options while its bad entry is traced
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_stand
+--- old
+    Err(trace::fail_for(cx, kind, reason))
+--- new
+    let entries = std::mem::take(&mut cx.easy_mut().options_mut().connect_to);
+    let failed = trace::fail_for(cx, kind, reason);
+    cx.easy_mut().options_mut().connect_to = entries;
+    Err(failed)

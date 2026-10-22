@@ -15,7 +15,6 @@ use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
-use crate::options::Lines;
 use crate::proto::http1::request::{SameOrigin, UserHeaders};
 use crate::trace;
 
@@ -81,15 +80,13 @@ pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     if easy.options().http.cookies.wanted() {
         easy.enable_cookies();
     }
-    // Out of the options while the trace is reached; put back however
-    // reading them ends. A file named has turned the jar on.
-    let files = std::mem::take(&mut easy.options_mut().http.cookies.files);
+    // A file named has turned the jar on.
     let mut texts = Vec::new();
-    let read = match files.iter().next().is_some() {
-        true => read_files(cx, &files, &mut texts).map(Some),
+    let named = easy.options().http.cookies.files.iter().next().is_some();
+    let read = match named {
+        true => read_files(cx, &mut texts).map(Some),
         false => Ok(None),
     };
-    cx.easy_mut().options_mut().http.cookies.files = files;
     // Those read before one failed are kept, and the jar not started.
     if !texts.is_empty() || matches!(read, Ok(Some(()))) {
         let new_session = cx.easy().options().http.cookies.new_session;
@@ -124,40 +121,40 @@ fn jar_section<R>(easy: &mut Easy, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
     }
 }
 
-/// Read the cookie files `files` names onto `texts`, tracing those that
-/// cannot be.
-fn read_files<H: Host>(
-    cx: &mut StepCx<'_, H>,
-    files: &Lines,
-    texts: &mut Vec<Vec<u8>>,
-) -> Result<(), ErrorKind> {
-    for name in files.iter() {
-        // An empty name reads nothing, and turns the jar on all the same.
-        if name.is_empty() {
-            continue;
-        }
-        let text = match open(name)? {
-            Opened::File(mut file) => read_all(&mut file)?,
-            Opened::Missing => {
-                trace::info_with(
-                    cx,
-                    &[b"WARNING: failed to open cookie file \"", name, b"\""],
-                );
+/// Read the cookie files the options name onto `texts`, tracing those
+/// that cannot be. They are taken by their place in the list, which stays
+/// in the options while a file is traced: the debug handler may add one,
+/// and C, walking the list it appends to, reads that one too.
+fn read_files<H: Host>(cx: &mut StepCx<'_, H>, texts: &mut Vec<Vec<u8>>) -> Result<(), ErrorKind> {
+    let mut at = 0;
+    loop {
+        let said = {
+            let files = &cx.easy().options().http.cookies.files;
+            let Some(name) = files.iter().nth(at) else {
+                break;
+            };
+            at += 1;
+            // An empty name reads nothing, and turns the jar on all the
+            // same.
+            if name.is_empty() {
                 continue;
             }
-            Opened::Directory => {
-                trace::info_with(
-                    cx,
-                    &[
-                        b"WARNING: cookie filename points to a directory: \"",
-                        name,
-                        b"\"",
-                    ],
-                );
-                continue;
+            match open(name)? {
+                Opened::File(mut file) => {
+                    texts.try_push(read_all(&mut file)?).map_err(oom)?;
+                    continue;
+                }
+                Opened::Missing => {
+                    trace::line_with(&[b"WARNING: failed to open cookie file \"", name, b"\""])
+                }
+                Opened::Directory => trace::line_with(&[
+                    b"WARNING: cookie filename points to a directory: \"",
+                    name,
+                    b"\"",
+                ]),
             }
         };
-        texts.try_push(text).map_err(oom)?;
+        trace::info_line(cx, &said);
     }
     Ok(())
 }

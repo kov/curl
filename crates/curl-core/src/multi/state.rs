@@ -20,7 +20,7 @@ use crate::conn::{
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::options::{Follow, Lines, Method, Options, ProxyType, ResolveList};
+use crate::options::{Follow, Method, Options, ProxyType, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
 use crate::share::Kind;
@@ -1382,11 +1382,16 @@ fn read_resolve<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         .resolve
         .refill()
         .map_err(|_| ErrorKind::OutOfMemory)?;
-    // Out of the options while the cache and the trace are reached; put
-    // back however reading it ends.
-    let entries = std::mem::take(&mut cx.easy_mut().options_mut().resolve);
+    // A copy is read, as the cache and the trace are reached while it is:
+    // the debug handler may set the list, which the next transfer then
+    // reads.
+    let entries = cx
+        .easy()
+        .options()
+        .resolve
+        .try_clone()
+        .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
     let read = read_entries(cx, &entries);
-    cx.easy_mut().options_mut().resolve = entries;
     if read.is_ok() {
         cx.easy_mut().resolve_read = list;
     }
@@ -1694,20 +1699,31 @@ fn referer_of(url: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// The next request asks for a GET (`http_switch_to_get`): traced and the
 /// custom method dropped only if the redirect's code is obeyed.
 fn switch_to_get<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, code: u16) {
-    let follow = cx.easy().options().http.follow;
-    // Out of the options while it is traced; put back after.
-    let custom = cx.easy_mut().options_mut().http.custom_method.take();
+    let http = &cx.easy().options().http;
+    let custom = http.custom_method.as_deref();
     let inherited = &mut run.inherited;
-    if (custom.is_some() || inherited.method != Method::Get) && follow == Follow::ObeyCode {
+    // Formatted before it is traced, as the debug handler may set the
+    // custom method, and the next request uses what it sets.
+    let said = if (custom.is_some() || inherited.method != Method::Get)
+        && http.follow == Follow::ObeyCode
+    {
         inherited.ignore_custom = true;
-        trace::info(cx, format_args!("Switch to GET because of {code} response"));
-    } else if let Some(custom) = custom.as_deref()
-        && follow != Follow::FirstOnly
+        Some(trace::line(format_args!(
+            "Switch to GET because of {code} response"
+        )))
+    } else if let Some(custom) = custom
+        && http.follow != Follow::FirstOnly
     {
         let custom = Bytes(custom);
-        trace::info(cx, format_args!("Stick to {custom} instead of GET"));
+        Some(trace::line(format_args!(
+            "Stick to {custom} instead of GET"
+        )))
+    } else {
+        None
+    };
+    if let Some(said) = said {
+        trace::info_line(cx, &said);
     }
-    cx.easy_mut().options_mut().http.custom_method = custom;
     // A HEAD stays bodyless, as `CURLOPT_NOBODY` keeps it.
     if run.inherited.method != Method::Head {
         run.inherited.method = Method::Get;
@@ -1899,12 +1915,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     if run.inherited.first.is_none() {
         run.inherited.first = Some(origin.clone());
     }
-    // Out of the options while the failure is traced; put back however
-    // the search ends.
-    let entries = std::mem::take(&mut cx.easy_mut().options_mut().connect_to);
-    let via = connect_to(cx, &origin, &entries);
-    cx.easy_mut().options_mut().connect_to = entries;
-    let via = match via {
+    let via = match connect_to(cx, &origin) {
         Ok(via) => via,
         Err(e) => {
             let _kept = cx.report_mut().set_url(url);
@@ -2239,19 +2250,23 @@ pub(super) fn wake_pending<H: Host>(
 fn connect_to<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Peer,
-    entries: &Lines,
 ) -> Result<Option<TryArc<Peer>>, ErrorKind> {
-    match crate::conn::via(origin, entries.iter()) {
-        Ok(None) => Ok(None),
-        Ok(Some(via)) => TryArc::try_new(via)
-            .map(Some)
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory),
-        Err(BadVia::OutOfMemory) => Err(ErrorKind::OutOfMemory),
+    // The reason formatted while the entries are borrowed, and given once
+    // they are not: the debug handler may set them.
+    let (kind, reason) = match crate::conn::via(origin, cx.easy().options().connect_to.iter()) {
+        Ok(None) => return Ok(None),
+        Ok(Some(via)) => {
+            return TryArc::try_new(via)
+                .map(Some)
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory);
+        }
+        Err(BadVia::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
         Err(BadVia::Syntax { kind, why, text }) => {
             let text = Bytes(text);
-            Err(trace::fail(cx, kind, format_args!("{why} in '{text}'")))
+            (kind, trace::reason(format_args!("{why} in '{text}'")))
         }
-    }
+    };
+    Err(trace::fail_for(cx, kind, reason))
 }
 
 /// A connection for the transfer, and the trace of what the search for

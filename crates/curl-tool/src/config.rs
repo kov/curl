@@ -147,7 +147,10 @@ pub(crate) fn entries(text: &mut [u8]) -> Result<Vec<Entry<'_>>, Unread> {
             .iter()
             .position(|&b| b == b'\n')
             .map_or(text.len(), |at| start + at);
-        if end - start > MAX_LINE {
+        // C reads the line with its newline into a buffer of `MAX_LINE`
+        // bytes, its terminating zero counted.
+        let newline = usize::from(end < text.len());
+        if end - start + newline >= MAX_LINE {
             return Err(Unread::TooLong);
         }
         // C reads it as a string.
@@ -403,6 +406,24 @@ mod tests {
                 (8, "last".into(), None, &[]),
             ]
         );
+    }
+
+    /// A line, its newline and C's zero fit in 10 MiB, on any line.
+    #[test]
+    fn refuses_a_line_too_long() {
+        let max = 10 * 1024 * 1024;
+        let read = |len: usize, newline: bool| {
+            let mut text = b"silent\n".to_vec();
+            text.resize(text.len() + len, b'#');
+            if newline {
+                text.push(b'\n');
+            }
+            entries(&mut text).map(|e| e.len())
+        };
+        assert_eq!(read(max - 2, true), Ok(1));
+        assert_eq!(read(max - 1, true), Err(Unread::TooLong));
+        assert_eq!(read(max - 1, false), Ok(1));
+        assert_eq!(read(max, false), Err(Unread::TooLong));
     }
 
     /// One URL a line, comments and blank lines left out, a line as long as

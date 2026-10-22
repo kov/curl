@@ -40,6 +40,13 @@ fn ranges_hold_addresses_as_c() {
         ("fe80::ab47:4396:55c9:8474", "::", 0, true),
         ("::1", "::", 0, true),
         ("::1", "::", -1, false),
+        // A prefix that ends inside a byte: that byte's leading bits.
+        ("2001:db8::8000:0:0:1", "2001:db8:0:0:8000::", 65, true),
+        ("2001:db8::7fff:0:0:1", "2001:db8::", 65, true),
+        ("2001:db8::8000:0:0:1", "2001:db8::", 65, false),
+        ("2001:db8::200:0:0:1", "2001:db8::", 70, true),
+        ("2001:db8::400:0:0:1", "2001:db8::", 70, false),
+        ("2001:db8::200:0:0:1", "2001:db8::", 71, false),
     ] {
         let got = cidr6(ip.as_bytes(), net.as_bytes(), bits(b));
         assert_eq!(got, want, "{ip} in {net}/{b}");
@@ -217,6 +224,24 @@ fn the_environment_names_proxies_as_c() {
         detected("ftp", &[("all_proxy", "b"), ("ALL_PROXY", "c")]),
         some("all_proxy", "b")
     );
+    // C's name is cut to 19 bytes: a long scheme's suffix is cut short,
+    // a longer one's left off.
+    let long = "abcdefghijklmn";
+    assert_eq!(
+        detected(
+            long,
+            &[("abcdefghijklmn_proxy", "a"), ("abcdefghijklmn_prox", "b")]
+        ),
+        some("abcdefghijklmn_prox", "b")
+    );
+    let longer = "abcdefghijklmnopqrstu";
+    assert_eq!(
+        detected(
+            longer,
+            &[("abcdefghijklmnopqrs_", "a"), ("ABCDEFGHIJKLMNOPQRS", "b")]
+        ),
+        some("ABCDEFGHIJKLMNOPQRS", "b")
+    );
 }
 
 fn parsed(text: &str, kind: ProxyType, port: u16) -> Result<(ProxyType, String, u16), Refused> {
@@ -271,7 +296,17 @@ fn proxy_urls_read_as_c() {
         parsed("[::1]:3128", Http, 0),
         ok(Http, "http://[::1]", 3128)
     );
+    // A port the scheme has anyway is no port given (`CURLU_NO_DEFAULT_PORT`).
+    assert_eq!(
+        parsed("http://example.com:80", Http, 3128),
+        ok(Http, "http://example.com", 3128)
+    );
     assert_eq!(parsed("ftp://example.com", Http, 0), Err(Refused::Scheme));
+    // A scheme no URL knows is still read, then refused as no proxy's.
+    assert_eq!(
+        parsed("gopherz://example.com", Http, 0),
+        Err(Refused::Scheme)
+    );
     assert_eq!(parsed("https://example.com", Http, 0), Err(Refused::Https));
     assert_eq!(parsed("example.com", Https, 0), Err(Refused::Https));
     assert!(matches!(

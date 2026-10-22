@@ -198,4 +198,9 @@ exclude_re = [
     # to an entry discarded whole at the next one, before anything reads
     # it: copying it only allocates.
     'netrc\.rs:.*: replace match guard kept with true in literal$',
+    # Names of equal length are compared above: past it `<` and `<=` agree.
+    'conn/proxy\.rs:.*: replace < with <= in match_host$',
+    # Every HTTPS proxy type is refused alike, this build having no TLS:
+    # which of them an `https` scheme keeps cannot be seen yet.
+    'conn/proxy\.rs:.*: delete match arm ProxyType::Https2 \| ProxyType::Https3 in of_scheme$',
 ]

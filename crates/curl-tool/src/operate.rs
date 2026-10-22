@@ -1421,7 +1421,7 @@ impl ReadHandler for UploadFile {
 }
 
 impl Rewind for UploadFile {
-    fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
+    fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
         match self
             .0
             .lock()
@@ -1429,7 +1429,12 @@ impl Rewind for UploadFile {
             .seek(SeekFrom::Start(0))
         {
             Ok(_) => Ok(()),
-            Err(_) => Err(RewindFailed),
+            Err(_) => {
+                // C's seek callback answers `CURL_SEEKFUNC_CANTSEEK`, and
+                // its library says so.
+                cx.fail(b"seek callback returned error 2");
+                Err(RewindFailed)
+            }
         }
     }
 }

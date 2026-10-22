@@ -304,6 +304,37 @@ fn uploads_standard_input() {
     );
 }
 
+/// A redirect that has `-T -` send its body again cannot, from a pipe:
+/// the seek fails, and the library says so after the tool's reason.
+#[test]
+fn cannot_send_piped_standard_input_again() {
+    let s = Server::new(b"HTTP/1.1 307 Again\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut child = Command::new(tool)
+        .args(["-q", "-sSv", "-L", "-T", "-", "-H", "Expect:", &s.url()])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"hello").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(65), "{stderr}");
+    assert!(
+        stderr.contains(
+            "\n* seek callback returned error 2\n\
+             * rewind of client reader 'cr-in' failed: 65\n"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.ends_with("\ncurl: (65) seek callback returned error 2\n"),
+        "{stderr}"
+    );
+}
+
 /// `-X` sends its method, noting when it is the one implied; data is
 /// not resumed.
 #[test]

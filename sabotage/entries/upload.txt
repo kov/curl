@@ -140,11 +140,11 @@ witness: curl-core upload::tests::a_rewind_needs_the_handler_s_rewind_once_read
 --- old
                 None => false,
             };
-            if !rewound && cx.easy().report().reasons() != reasons {
+            if !rewound {
 --- new
                 None => true,
             };
-            if !rewound && cx.easy().report().reasons() != reasons {
+            if !rewound {
 
 === a request with a body is sent at DID
 file: crates/curl-core/src/multi/state.rs
@@ -190,9 +190,9 @@ witness: curl-core progress::tests::both_directions_add_up
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::a_rewind_handler_s_reason_is_the_transfer_s
 --- old
-            if !rewound && cx.easy().report().reasons() != reasons {
+                if cx.easy().report().reasons() == reasons {
 --- new
-            if !rewound && cx.easy().report().reasons() != reasons && false {
+                if cx.easy().report().reasons() == reasons || true {
 
 === a pause of either way blocks an upload
 file: crates/curl-core/src/deliver/pause.rs

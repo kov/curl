@@ -192,7 +192,8 @@ impl Upload {
     /// Start the body over (`cr_in_rewind`, `cr_buf_cntrl`). A handler that
     /// was called, whatever it answered, needs its rewind: without one, or
     /// if it fails, SendFailRewind ("necessary data rewind was not
-    /// possible").
+    /// possible", unless the handler gave its own reason), followed by
+    /// the reader's failure (`Curl_client_start`).
     pub(crate) fn rewind<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         if let Source::Read { rewind, .. } = &self.source {
             if !self.called {
@@ -203,11 +204,13 @@ impl Upload {
                 Some(rewind) => rewind.rewind(&mut TransferCx::new(cx)).is_ok(),
                 None => false,
             };
-            if !rewound && cx.easy().report().reasons() != reasons {
-                return Err(ErrorKind::SendFailRewind);
-            }
             if !rewound {
-                let why = format_args!("necessary data rewind was not possible");
+                if cx.easy().report().reasons() == reasons {
+                    let why = format_args!("necessary data rewind was not possible");
+                    trace::fail(cx, ErrorKind::SendFailRewind, why);
+                }
+                // C's reader is `cr-in`, and 65 its `CURLE_SEND_FAIL_REWIND`.
+                let why = format_args!("rewind of client reader 'cr-in' failed: 65");
                 return Err(trace::fail(cx, ErrorKind::SendFailRewind, why));
             }
         }

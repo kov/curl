@@ -416,12 +416,17 @@ fn a_rewind_handler_s_reason_is_the_transfer_s() {
         (kept, traced)
     };
     let mine = b"seek callback returned error 1";
+    let reader = b"rewind of client reader 'cr-in' failed: 65\n";
     let closed = b"closing connection #0\n";
     assert_eq!(
         reason(true),
         (
             Some(mine.to_vec()),
-            vec![[&mine[..], b"\n"].concat(), closed.to_vec()]
+            vec![
+                [&mine[..], b"\n"].concat(),
+                reader.to_vec(),
+                closed.to_vec()
+            ]
         )
     );
     let its = b"necessary data rewind was not possible";
@@ -429,7 +434,7 @@ fn a_rewind_handler_s_reason_is_the_transfer_s() {
         reason(false),
         (
             Some(its.to_vec()),
-            vec![[&its[..], b"\n"].concat(), closed.to_vec()]
+            vec![[&its[..], b"\n"].concat(), reader.to_vec(), closed.to_vec()]
         )
     );
 }

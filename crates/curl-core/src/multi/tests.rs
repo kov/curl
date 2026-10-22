@@ -1278,6 +1278,34 @@ fn events_wait_for_a_socket_with_nothing_due() {
     assert_eq!(drive_by_events(&mut m, id), Ok(Err(ErrorKind::GotNothing)));
 }
 
+/// Driven by events, a transfer's timers are waited for as the multi
+/// sets them: one with no socket to watch sleeps until its time is up,
+/// and one whose socket stays silent until its connect timeout, neither
+/// woken late (`curl_easy_perform_ev`'s timer callback).
+#[test]
+fn events_wait_for_the_timer_the_multi_sets() {
+    let (mut m, clock) = networked();
+    let mut e = easy("stall://a");
+    e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let start = clock.now();
+    assert_eq!(
+        drive_by_events(&mut m, id),
+        Ok(Err(ErrorKind::OperationTimedout))
+    );
+    assert_eq!(clock.now().since(start), Duration::from_millis(1000));
+    let (mut m, clock) = networked();
+    let mut e = easy("tcp://127.0.0.1:3/");
+    e.options_mut().limits.connect = crate::time::TimeLimit::from_millis(700);
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let start = clock.now();
+    assert_eq!(
+        drive_by_events(&mut m, id),
+        Ok(Err(ErrorKind::OperationTimedout))
+    );
+    assert_eq!(clock.now().since(start), Duration::from_millis(700));
+}
+
 /// A verbose transfer of `url`, and its trace.
 fn traced(url: &str) -> (Easy, TextLines) {
     let mut e = easy(url);

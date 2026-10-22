@@ -1681,6 +1681,36 @@ fn a_share_keeps_connections_across_handles() {
     assert_eq!(closed.load(Ordering::Relaxed), 2, "closed with the share");
 }
 
+/// A connection of a share's pool that a transfer does not give back,
+/// for it may not be reused, is closed through the transfer's network
+/// once the transfer is done with the pool: at once, not with the share.
+#[test]
+fn a_share_s_connection_not_kept_is_closed_at_once() {
+    use crate::conn::io::Peer;
+    use crate::share::{Kind, Share};
+    let clock = ManualClock::new().unwrap();
+    let closed = std::sync::Arc::new(AtomicU32::new(0));
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
+        FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
+        closed.clone(),
+    )));
+    let env = || Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(OneNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut m: Multi = Multi::new(env()).unwrap();
+    let mut e = easy("tcp://127.0.0.1:1/");
+    e.set_share(Some(share.clone()));
+    e.options_mut().limits.reuse.forbid = true;
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    assert_eq!(closed.load(Ordering::Relaxed), 1, "closed as given back");
+}
+
 /// The connections left idle are closed with their multi
 /// (`Curl_cpool_destroy`).
 #[test]

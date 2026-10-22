@@ -252,3 +252,36 @@ const _: () = {
     const fn shared<T: Send + Sync>() {}
     shared::<Share>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a share keeps changes only while nothing else holds it
+    /// (`CURLSHE_IN_USE`): each kind is kept and let go on its own, the
+    /// cookies forgotten as they are.
+    #[test]
+    fn what_is_kept_changes_only_while_the_share_is_idle() {
+        let share = Share::new().unwrap();
+        assert_eq!(share.holders(), 1);
+        share.keep(Kind::Names).unwrap();
+        share.keep(Kind::Cookies).unwrap();
+        assert!(share.keeps(Kind::Names) && share.keeps(Kind::Cookies));
+        assert!(!share.keeps(Kind::Connections));
+        share.stop_keeping(Kind::Names).unwrap();
+        assert!(!share.keeps(Kind::Names), "let go");
+        assert!(share.keeps(Kind::Cookies), "the other kept");
+        assert!(share.cookies().is_some(), "the jar kept with them");
+        let held = share.clone();
+        assert_eq!(share.holders(), 2);
+        assert!(share.keep(Kind::Connections).is_err());
+        assert!(share.stop_keeping(Kind::Cookies).is_err());
+        assert!(held.keeps(Kind::Cookies), "unchanged while held");
+        drop(held);
+        assert_eq!(share.holders(), 1);
+        share.stop_keeping(Kind::Cookies).unwrap();
+        assert!(!share.keeps(Kind::Cookies));
+        assert!(share.cookies().is_none(), "the jar forgotten");
+        assert_eq!(format!("{share:?}"), "Share");
+    }
+}

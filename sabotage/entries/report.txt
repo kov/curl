@@ -86,9 +86,11 @@ witness: curl-core deliver::tests::a_connect_answer_does_not_start_the_response
 --- old
         if origin != HeaderOrigin::Connect {
             self.accountant.response_started(cx);
-        }
+        } else if
 --- new
         self.accountant.response_started(cx);
+        if origin != HeaderOrigin::Connect {
+        } else if
 
 === a header's value keeps its trailing blanks
 file: crates/curl-core/src/report/headers.rs

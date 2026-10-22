@@ -178,3 +178,12 @@ witness: curl-os a_refused_copy_is_out_of_memory
                 Ok(copy)
 --- new
                 Ok(v.to_vec())
+
+=== an OS error's message is made through std's display, which allocates
+file: crates/curl-os/src/error.rs
+witness: curl-tool tests::gives_an_os_error_s_message_without_allocating
+features: debug-hooks
+--- old
+        match e.raw_os_error() {
+--- new
+        match e.raw_os_error().filter(|&code| code < 0) {

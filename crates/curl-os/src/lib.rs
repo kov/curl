@@ -1,13 +1,14 @@
 //! The operating-system interfaces the rest of the code reaches through
 //! safe functions: the process's command line and environment, the
-//! terminal, the local time of day, the user database, random bytes,
-//! with `net` sockets, polling, the system's resolver and the waker, and
-//! with `fs` files and directories. Linux first; each module says what
-//! it needs of the platform.
+//! terminal, an error's text, the local time of day, the user database,
+//! random bytes, with `net` sockets, polling, the system's resolver and
+//! the waker, and with `fs` files and directories. Linux first; each
+//! module says what it needs of the platform.
 
 #[cfg(feature = "args")]
 pub mod args;
 pub mod env;
+pub mod error;
 #[cfg(feature = "fs")]
 pub mod fs;
 #[cfg(feature = "net")]

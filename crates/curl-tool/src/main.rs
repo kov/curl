@@ -162,20 +162,10 @@ fn run(
     }
 }
 
-/// An operating system error's message, as `strerror` gives it: without
-/// the number std adds.
-pub(crate) fn os_message(e: &std::io::Error) -> String {
-    let Ok(shown) = curl_alloc::try_format(format_args!("{e}")) else {
-        return String::new();
-    };
-    match shown.find(" (os error ") {
-        Some(at) => {
-            let mut shown = shown;
-            shown.truncate(at);
-            shown
-        }
-        None => shown,
-    }
+/// An operating system error's message, as `curlx_strerror` gives it:
+/// without the number std adds, and made without allocating.
+pub(crate) fn os_message(e: &std::io::Error) -> curl_os::error::ErrorText {
+    curl_os::error::ErrorText::of(e)
 }
 
 /// Show what the command line asked for instead of transfers.
@@ -242,6 +232,20 @@ fn version_info() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The message is the system's text alone, made without allocating,
+    /// as `curlx_strerror` writes it into a buffer on the stack: an
+    /// allocation the tool could not refuse would abort the torture run
+    /// (test 1683).
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn gives_an_os_error_s_message_without_allocating() {
+        // ENOENT, 2 on every Unix.
+        let e = std::io::Error::from_raw_os_error(2);
+        let (message, cost) = curl_alloc::track::measure(|| os_message(&e));
+        assert_eq!(message.as_bytes(), b"No such file or directory");
+        assert_eq!(cost.allocations, 0, "the message allocated");
+    }
 
     /// As `curlx_str_number`: leading digits, at most `LONG_MAX`.
     #[test]

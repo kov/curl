@@ -19,6 +19,7 @@ use crate::report::TransferReport;
 use crate::save::{self, SaveError};
 use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock as _, SystemClock};
+use crate::trace;
 
 /// A transfer's configuration. `Multi::add` takes it by value to run it
 /// and `Multi::remove` gives it back; `perform` runs it on its own. The
@@ -239,7 +240,15 @@ impl Easy {
     /// in the Netscape format, turning the jar on if it is not
     /// (`CURLOPT_COOKIELIST`). Its domain is not checked against the
     /// public suffixes.
-    pub fn add_cookie(&mut self, line: &[u8]) -> Result<(), ErrorKind> {
+    ///
+    /// `notes` hears each line C would trace of it, its end included: why
+    /// it was dropped, or, once a transfer or a reload has started the
+    /// jar, that it was added.
+    pub fn add_cookie(
+        &mut self,
+        line: &[u8],
+        mut notes: impl FnMut(&[u8]),
+    ) -> Result<(), ErrorKind> {
         let now = SystemClock::new().unix_time();
         // Counted with the last request's, and dropped silently past
         // their limit, as C counts it.
@@ -247,7 +256,13 @@ impl Easy {
         let suffixes = self.public_suffixes().map_err(oom)?;
         let list = suffixes.as_ref().map(Suffixes::list);
         let added = self
-            .with_jar(true, |jar| jar.add_line(line, list, now, &mut set))
+            .with_jar(true, |jar| {
+                let said = jar.add_line(line, list, now, &mut set)?;
+                if let Some(said) = said {
+                    said.lines(|parts| notes(trace::line_with(parts).bytes()));
+                }
+                Ok(())
+            })
             .expect("made if missing")
             .map_err(oom);
         self.set_cookies = set;
@@ -269,18 +284,17 @@ impl Easy {
 
     /// Read the cookie files into the jar again, without checking their
     /// domains against the public suffixes (`CURLOPT_COOKIELIST`
-    /// `RELOAD`). A file that cannot be opened is passed over.
-    pub fn reload_cookies(&mut self) -> Result<(), ErrorKind> {
+    /// `RELOAD`), each in turn, as one use of the jar. A file that cannot
+    /// be opened is passed over; one that cannot be read stops the walk.
+    ///
+    /// `notes` hears each line C would trace, its end included: a file
+    /// that cannot be opened, then what each file's lines say, in turn.
+    pub fn reload_cookies(&mut self, mut notes: impl FnMut(&[u8])) -> Result<(), ErrorKind> {
         let cookies = &self.options.http.cookies;
         if cookies.files.iter().next().is_none() {
             return Ok(());
         }
-        let mut texts = Vec::new();
-        // Each file read, even one that is not there, starts the jar.
-        for name in cookies.files.iter() {
-            let text = crate::proto::http::cookies::read_file(name)?;
-            texts.try_push(text.unwrap_or_default()).map_err(oom)?;
-        }
+        let files = cookies.files.try_clone().map_err(oom)?;
         let new_session = cookies.new_session;
         let now = SystemClock::new().unix_time();
         let suffixes = self.public_suffixes().map_err(oom)?;
@@ -288,12 +302,31 @@ impl Easy {
         let mut set = self.set_cookies;
         let loaded = self
             .with_jar(true, |jar| {
-                texts.iter().try_for_each(|text| {
-                    jar.load(text, new_session, true, list, now, &mut set, |_| {})
-                })
+                for name in files.iter() {
+                    // An empty name reads nothing; each other one that
+                    // is not there is warned of. Either starts the jar.
+                    let text = match name.is_empty() {
+                        true => None,
+                        false => match crate::proto::http::cookies::read_named(name)? {
+                            Ok(text) => Some(text),
+                            Err(warning) => {
+                                notes(warning.bytes());
+                                None
+                            }
+                        },
+                    };
+                    let Some(text) = text else {
+                        jar.start();
+                        continue;
+                    };
+                    jar.load(&text, new_session, true, list, now, &mut set, |said| {
+                        said.lines(|parts| notes(trace::line_with(parts).bytes()));
+                    })
+                    .map_err(oom)?;
+                }
+                Ok(())
             })
-            .expect("made if missing")
-            .map_err(oom);
+            .expect("made if missing");
         self.set_cookies = set;
         loaded
     }
@@ -788,8 +821,8 @@ mod tests {
         let session = b"example.com\tFALSE\t/\tFALSE\t0\ts\t1";
         let lasting = b"example.com\tFALSE\t/\tFALSE\t4102444800\tp\t2";
         let mut e = Easy::new();
-        e.add_cookie(session).unwrap();
-        e.add_cookie(lasting).unwrap();
+        e.add_cookie(session, |_| {}).unwrap();
+        e.add_cookie(lasting, |_| {}).unwrap();
         let mut list = e.cookie_list().unwrap();
         list.sort();
         assert_eq!(list, [session.to_vec(), lasting.to_vec()]);
@@ -797,7 +830,7 @@ mod tests {
         assert_eq!(e.cookie_list().unwrap(), [lasting.to_vec()]);
         e.clear_cookies().unwrap();
         assert!(e.cookie_list().unwrap().is_empty());
-        e.add_cookie(lasting).unwrap();
+        e.add_cookie(lasting, |_| {}).unwrap();
         e.options_mut()
             .http
             .cookies
@@ -807,6 +840,58 @@ mod tests {
         e.forget_cookies();
         assert!(e.cookie_list().unwrap().is_empty());
         assert!(e.options().http.cookies.files.iter().next().is_none());
+    }
+
+    /// A reload notes each file it cannot open as it reaches it, between
+    /// what the files before and after it say; a cookie added notes why
+    /// it was dropped, and, once the reload has started the jar, that it
+    /// was added (the C build's `CURLOPT_COOKIELIST` trace).
+    #[test]
+    fn cookie_commands_note_what_c_traces() {
+        let dir = std::env::temp_dir().join(format!("curl-reload-notes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a"), "Set-Cookie: =\n").unwrap();
+        std::fs::write(dir.join("b"), "Set-Cookie: b\x01=x; domain=example.com\n").unwrap();
+        let name = |p: &str| dir.join(p).to_str().unwrap().to_string();
+        let mut notes = Vec::new();
+        let mut e = Easy::new();
+        let add = |e: &mut Easy, line: &str, notes: &mut Vec<String>| {
+            e.add_cookie(line.as_bytes(), |l| {
+                notes.push(String::from_utf8(l.to_vec()).unwrap());
+            })
+            .unwrap();
+        };
+        add(&mut e, ".a.com\tTRUE\t/\tFALSE\t0\tfirst\tx", &mut notes);
+        add(&mut e, "Set-Cookie: =", &mut notes);
+        assert_eq!(notes, ["invalid cookie, dropped\n"]);
+        notes.clear();
+        for file in ["a", "missing", "", "b"] {
+            let file = if file.is_empty() {
+                String::new()
+            } else {
+                name(file)
+            };
+            e.options_mut()
+                .http
+                .cookies
+                .files
+                .push(file.as_bytes())
+                .unwrap();
+        }
+        e.reload_cookies(|l| notes.push(String::from_utf8(l.to_vec()).unwrap()))
+            .unwrap();
+        add(&mut e, ".b.com\tTRUE\t/\tFALSE\t0\tsecond\ty", &mut notes);
+        let missing = name("missing");
+        assert_eq!(
+            notes,
+            [
+                "invalid cookie, dropped\n".to_string(),
+                format!("WARNING: failed to open cookie file \"{missing}\"\n"),
+                "invalid octets in name, cookie dropped\n".to_string(),
+                "Added cookie second=\"y\" for domain b.com, path /, expire 0\n".to_string(),
+            ]
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The application's `Set-Cookie:` lines count toward the 50 one
@@ -819,12 +904,12 @@ mod tests {
         let add = |e: &mut Easy, n: usize, prefix: &str| {
             for i in 0..n {
                 let line = format!("Set-Cookie: {prefix}{i}=v; domain=example.com");
-                e.add_cookie(line.as_bytes()).unwrap();
+                e.add_cookie(line.as_bytes(), |_| {}).unwrap();
             }
         };
         let netscape = |e: &mut Easy, name: &str| {
             let line = format!("example.com\tFALSE\t/\tFALSE\t0\t{name}\tv");
-            e.add_cookie(line.as_bytes()).unwrap();
+            e.add_cookie(line.as_bytes(), |_| {}).unwrap();
         };
         let mut e = Easy::new();
         add(&mut e, 60, "a");

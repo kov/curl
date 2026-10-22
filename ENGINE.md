@@ -262,6 +262,12 @@ Text goes to the debug handler, or without one to the STDERR sink after `* `. Th
 "!!! WARNING !!!" lines go to the first transfer added to a multi, at its first step rather than
 inside `add`, which has no transfer context.
 
+Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
+handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
+they are set) is handed to a `notes` closure the caller passes, line by line in the transfer's
+own formatting; the shim sends those lines to the debug function, or the STDERR stream, once
+the handle is no longer borrowed, so the function may call back into it.
+
 C's `CURLE_AGAIN` has three meanings (would-block, "rebuild the sub-chain", "nothing yet") and
 "OK with 0 bytes" means EOF; here they are distinct variants. `NO_CONNECTION_AVAILABLE` is
 `Acquire::Wait`, never an `Error`. `Again`, `NoConnectionAvailable` and `RecursiveApiCall`

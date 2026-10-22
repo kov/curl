@@ -640,6 +640,33 @@ impl TextSink for Adapter {
     }
 }
 
+/// A line of text the handle traces outside a transfer, where no
+/// `TransferCx` reaches its debug handler (`infof` from setopt): to the
+/// debug function, or without one to the standard error stream after
+/// `* `, as `Curl_debug` sends it. Called with nothing of the handle
+/// borrowed, so the function may call back into it.
+pub(crate) fn trace_text(easy: &ShimEasy, line: &[u8]) {
+    let ccb = easy.ccb.get();
+    match ccb.debug {
+        // SAFETY: the application's debug function takes the bytes,
+        // which it may not change, as C's does; its answer is ignored,
+        // as C ignores it.
+        Some(f) => unsafe {
+            f(
+                ptr::from_ref(easy).cast_mut().cast(),
+                ffi::CURLINFO_TEXT,
+                line.as_ptr().cast_mut().cast(),
+                line.len(),
+                ccb.debug_data,
+            );
+        },
+        None => {
+            to_stream(ccb.stderr, b"* ");
+            to_stream(ccb.stderr, line);
+        }
+    }
+}
+
 /// Text to a C stream; a failed write has nowhere else to be told.
 fn to_stream(stream: *mut libc::FILE, text: &[u8]) {
     // Never NULL: setopt makes a NULL STDERR standard error.

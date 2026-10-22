@@ -705,7 +705,7 @@ impl Lines {
         self.0.items_mut().try_push(copy(line)?)
     }
 
-    fn try_clone(&self) -> Result<Lines, OutOfMemory> {
+    pub(crate) fn try_clone(&self) -> Result<Lines, OutOfMemory> {
         Ok(Lines(self.0.try_clone(|line| copy(line))?))
     }
 }

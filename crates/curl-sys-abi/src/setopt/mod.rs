@@ -905,6 +905,9 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
     // SAFETY: as the caller guarantees; its length was checked with the
     // option.
     let given = unsafe { string(p) }.ok().flatten();
+    // What a cookie command traces, held until the handle is no longer
+    // borrowed: the debug function may call back into it.
+    let mut notes: Vec<Vec<u8>> = Vec::new();
     let done = shim.with_easy(|e| {
         let easy = match e {
             easy::EasyRef::Easy(easy) => easy,
@@ -917,11 +920,16 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
         match (option, given) {
             (ffi::CURLOPT_COOKIEFILE, None) => easy.forget_cookies(),
             (ffi::CURLOPT_COOKIEJAR, _) => easy.enable_cookies(),
-            (ffi::CURLOPT_COOKIELIST, Some(command)) => return cookie_command(easy, command),
+            (ffi::CURLOPT_COOKIELIST, Some(command)) => {
+                return cookie_command(easy, command, &mut notes);
+            }
             _ => {}
         }
         Ok(())
     });
+    for line in &notes {
+        callbacks::trace_text(shim, line);
+    }
     match done {
         Ok(Ok(())) => CURLE_OK,
         Ok(Err(kind)) => crate::error_codes::easy_code(kind),
@@ -929,9 +937,22 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
     }
 }
 
-/// `CURLOPT_COOKIELIST`: a command, in any case, or a cookie to store.
-fn cookie_command(easy: &mut curl_core::easy::Easy, command: &[u8]) -> Result<(), ErrorKind> {
-    if command.eq_ignore_ascii_case(b"ALL") {
+/// `CURLOPT_COOKIELIST`: a command, in any case, or a cookie to store;
+/// what a verbose handle traces of it into `notes`.
+fn cookie_command(
+    easy: &mut curl_core::easy::Easy,
+    command: &[u8],
+    notes: &mut Vec<Vec<u8>>,
+) -> Result<(), ErrorKind> {
+    let verbose = easy.options().output.verbose;
+    let mut short = false;
+    let note = |line: &[u8]| {
+        if verbose && !short {
+            let mut held = Vec::new();
+            short = held.try_extend_from_slice(line).is_err() || notes.try_push(held).is_err();
+        }
+    };
+    let done = if command.eq_ignore_ascii_case(b"ALL") {
         easy.clear_cookies()
     } else if command.eq_ignore_ascii_case(b"SESS") {
         easy.clear_session_cookies()
@@ -941,9 +962,13 @@ fn cookie_command(easy: &mut curl_core::easy::Easy, command: &[u8]) -> Result<()
         easy.save_cookies().ok();
         Ok(())
     } else if command.eq_ignore_ascii_case(b"RELOAD") {
-        easy.reload_cookies()
+        easy.reload_cookies(note)
     } else {
-        easy.add_cookie(command)
+        easy.add_cookie(command, note)
+    };
+    match short {
+        true => done.and(Err(ErrorKind::OutOfMemory)),
+        false => done,
     }
 }
 const _: ffi::proto::curl_easy_setopt = curl_easy_setopt;

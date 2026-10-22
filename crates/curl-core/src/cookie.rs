@@ -442,20 +442,20 @@ impl Jar {
     }
 
     /// Store a line the application gives (`CURLOPT_COOKIELIST`): a
-    /// `Set-Cookie:` line or one in the Netscape format.
-    pub(crate) fn add_line(
-        &mut self,
-        line: &[u8],
+    /// `Set-Cookie:` line or one in the Netscape format; what it says, if
+    /// anything.
+    pub(crate) fn add_line<'a>(
+        &'a mut self,
+        line: &'a [u8],
         suffixes: Option<&dyn PublicSuffixes>,
         now: i64,
         set: &mut u8,
-    ) -> Result<(), OutOfMemory> {
+    ) -> Result<Option<Said<'a>>, OutOfMemory> {
         let line = match strip_prefix_ignore_case(line, b"Set-Cookie:") {
             Some(rest) => Line::Header(rest),
             None => Line::Netscape(line),
         };
-        self.add(line, Source::Application, suffixes, now, set)?;
-        Ok(())
+        self.add(line, Source::Application, suffixes, now, set)
     }
 
     /// Store the cookie a server's `Set-Cookie:` field sets, `value`

@@ -1781,6 +1781,112 @@ fn the_trace_goes_to_the_debug_function_or_the_stream() {
     close(stream);
 }
 
+/// A debug function that, as it is told text, asks for the handle's
+/// response code: one called with the handle borrowed would fail it.
+unsafe extern "C" fn debug_asking(
+    h: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    data: *mut c_void,
+) -> c_int {
+    let mut code: c_long = -1;
+    // SAFETY: a live handle, and a long to the info.
+    let asked = unsafe { curl_easy_getinfo(h, ffi::CURLINFO_RESPONSE_CODE, &raw mut code) };
+    assert_eq!(asked, CURLE_OK);
+    // SAFETY: as `debug_count` is called.
+    unsafe { debug_count(h, kind, ptr, n, data) }
+}
+
+/// `CURLOPT_COOKIELIST` traces, as it is set, what C traces: a file a
+/// reload cannot open, then what each file's lines say, in their order,
+/// and a cookie added once the jar runs; to the debug function, which
+/// may call back into the handle, else to the STDERR stream after `* `,
+/// and nothing unless verbose. As the C build traces the same steps.
+#[test]
+fn a_cookie_list_is_traced_as_it_is_set() {
+    let dir = std::env::temp_dir().join(format!("curl-shim-cookielist-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let jar = dir.join("jar");
+    std::fs::write(
+        &jar,
+        ".example.com\tTRUE\t/\tFALSE\t0\tsess\tv1\nbroken line\n\
+         Set-Cookie: bad\x01=x; domain=example.com\nSet-Cookie: =\n",
+    )
+    .unwrap();
+    let missing = dir.join("missing");
+    let c_path = |p: &std::path::Path| std::ffi::CString::new(p.to_str().unwrap()).unwrap();
+    let (jar, missing, dir_name) = (c_path(&jar), c_path(&missing), c_path(&dir));
+    let run = |c: *mut CURL| {
+        let set = |what: &std::ffi::CStr| {
+            assert_eq!(
+                pointer(c, ffi::CURLOPT_COOKIELIST, what.as_ptr().cast_mut()),
+                CURLE_OK
+            );
+        };
+        set(c"junk before the jar runs");
+        set(c".a.com\tTRUE\t/\tFALSE\t0\tfirst\tx");
+        for file in [&missing, &jar, &dir_name] {
+            pointer(c, ffi::CURLOPT_COOKIEFILE, file.as_ptr().cast_mut());
+        }
+        set(c"RELOAD");
+        set(c"junk after");
+        set(c".b.com\tTRUE\t/\tFALSE\t0\tsecond\ty");
+        set(c".b.com\tTRUE\t/\tFALSE\t0\tsecond\tz");
+        set(c"Set-Cookie: hy=2; domain=b.com");
+    };
+    let expected = [
+        format!(
+            "WARNING: failed to open cookie file \"{}\"\n",
+            missing.to_str().unwrap()
+        ),
+        "invalid octets in name, cookie dropped\n".to_string(),
+        "invalid cookie, dropped\n".to_string(),
+        format!(
+            "WARNING: cookie filename points to a directory: \"{}\"\n",
+            dir_name.to_str().unwrap()
+        ),
+        "Added cookie second=\"y\" for domain b.com, path /, expire 0\n".to_string(),
+        "Replaced cookie second=\"z\" for domain b.com, path /, expire 0\n".to_string(),
+        "Added cookie hy=\"2\" for domain b.com, path (nil), expire 0\n".to_string(),
+    ];
+    let mut seen = Seen::default();
+    let c = curl_easy_init();
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    let f = debug_asking as DebugFn as *const ();
+    function(c, ffi::CURLOPT_DEBUGFUNCTION, f);
+    pointer(c, ffi::CURLOPT_DEBUGDATA, &raw mut seen);
+    run(c);
+    assert_eq!(seen.handle, c as usize);
+    let texts: Vec<_> = seen
+        .texts
+        .iter()
+        .filter(|t| !t.contains("debug build"))
+        .collect();
+    assert_eq!(texts, expected.iter().collect::<Vec<_>>());
+    // SAFETY: a live handle, then not used again.
+    unsafe { curl_easy_cleanup(c) };
+    let stream = tmpfile();
+    let c = curl_easy_init();
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    pointer(c, ffi::CURLOPT_STDERR, stream);
+    run(c);
+    // SAFETY: a live handle, then not used again.
+    unsafe { curl_easy_cleanup(c) };
+    let starred: String = expected.iter().map(|l| format!("* {l}")).collect();
+    assert_eq!(stream_text(stream), starred);
+    close(stream);
+    let stream = tmpfile();
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_STDERR, stream);
+    run(c);
+    // SAFETY: a live handle, then not used again.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(stream_text(stream), "");
+    close(stream);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// A reason longer than ERRORBUFFER keeps its first 255 bytes.
 #[test]
 fn a_long_reason_is_cut_to_the_buffer() {

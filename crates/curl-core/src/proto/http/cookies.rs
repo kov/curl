@@ -124,19 +124,7 @@ fn read_files<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
             if name.is_empty() {
                 continue;
             }
-            match open(name)? {
-                Opened::File(mut file) => Ok(read_all(&mut file)?),
-                Opened::Missing => Err(trace::line_with(&[
-                    b"WARNING: failed to open cookie file \"",
-                    name,
-                    b"\"",
-                ])),
-                Opened::Directory => Err(trace::line_with(&[
-                    b"WARNING: cookie filename points to a directory: \"",
-                    name,
-                    b"\"",
-                ])),
-            }
+            read_named(name)?
         };
         match opened {
             Ok(text) => load_text(cx, &text)?,
@@ -261,16 +249,22 @@ fn open(name: &[u8]) -> Result<Opened, ErrorKind> {
     Ok(Opened::File(file))
 }
 
-/// The text of the cookie file `name`, none if it is no file or cannot
-/// be opened; an empty name reads none.
-pub(crate) fn read_file(name: &[u8]) -> Result<Option<Vec<u8>>, ErrorKind> {
-    if name.is_empty() {
-        return Ok(None);
-    }
-    match open(name)? {
-        Opened::File(mut file) => read_all(&mut file).map(Some),
-        Opened::Missing | Opened::Directory => Ok(None),
-    }
+/// The text of the cookie file `name`, or the warning C traces when it
+/// is no file or cannot be opened (`cookie_load`). The name is not empty.
+pub(crate) fn read_named(name: &[u8]) -> Result<Result<Vec<u8>, trace::Line>, ErrorKind> {
+    Ok(match open(name)? {
+        Opened::File(mut file) => Ok(read_all(&mut file)?),
+        Opened::Missing => Err(trace::line_with(&[
+            b"WARNING: failed to open cookie file \"",
+            name,
+            b"\"",
+        ])),
+        Opened::Directory => Err(trace::line_with(&[
+            b"WARNING: cookie filename points to a directory: \"",
+            name,
+            b"\"",
+        ])),
+    })
 }
 
 /// The whole of `file`; a read that fails fails the transfer, as C's
@@ -549,10 +543,16 @@ mod tests {
         let text = "x".repeat(10_000);
         std::fs::write(&file, &text).unwrap();
         let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
-        assert_eq!(read_file(&name(&file)), Ok(Some(text.into_bytes())));
-        assert_eq!(read_file(&name(&dir)), Ok(None));
-        assert_eq!(read_file(&name(&dir.join("missing"))), Ok(None));
-        assert_eq!(read_file(b""), Ok(None));
+        let read = |p: &std::path::Path| match read_named(&name(p)).unwrap() {
+            Ok(text) => Ok(text),
+            Err(line) => Err(String::from_utf8(line.bytes().to_vec()).unwrap()),
+        };
+        assert_eq!(read(&file), Ok(text.into_bytes()));
+        let dir_name = dir.display();
+        let said = format!("WARNING: cookie filename points to a directory: \"{dir_name}\"\n");
+        assert_eq!(read(&dir), Err(said));
+        let said = format!("WARNING: failed to open cookie file \"{dir_name}/missing\"\n");
+        assert_eq!(read(&dir.join("missing")), Err(said));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

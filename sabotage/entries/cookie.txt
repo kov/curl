@@ -181,3 +181,45 @@ witness: curl-core proto::http::tests::cookie_files_are_read_in_turn_with_their_
 --- new
             let _ = said;
         })
+
+=== the cookie list's notes are not traced as it is set
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_cookie_list_is_traced_as_it_is_set
+--- old
+        callbacks::trace_text(shim, line);
+--- new
+        let _ = line;
+
+=== a quiet handle traces its cookie list
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::a_cookie_list_is_traced_as_it_is_set
+--- old
+        if verbose && !short {
+--- new
+        if !short {
+
+=== a reload does not warn of a cookie file it cannot open
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::cookie_commands_note_what_c_traces
+--- old
+                                notes(warning.bytes());
+--- new
+                                drop(warning);
+
+=== a reload does not note what its files' lines say
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::cookie_commands_note_what_c_traces
+--- old
+                    jar.load(&text, new_session, true, list, now, &mut set, |said| {
+                        said.lines(|parts| notes(trace::line_with(parts).bytes()));
+                    })
+--- new
+                    jar.load(&text, new_session, true, list, now, &mut set, |_| {})
+
+=== a cookie the application adds notes nothing
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::cookie_commands_note_what_c_traces
+--- old
+                if let Some(said) = said {
+--- new
+                if let Some(said) = said.filter(|_| false) {

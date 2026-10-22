@@ -1086,7 +1086,9 @@ proptest! {
                         said_text(&said);
                     }
                 }
-                JarOp::Add(line) => jar.add_line(line, suffixes, now, &mut set).unwrap(),
+                JarOp::Add(line) => {
+                    jar.add_line(line, suffixes, now, &mut set).unwrap();
+                }
                 JarOp::Start => jar.start(),
                 JarOp::Later(by) => now += by,
                 JarOp::ClearSession => jar.clear_session(),

@@ -41,6 +41,13 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
 /// handler may change the options it came from.
 pub(crate) struct Line(Text<LINE_MAX>);
 
+impl Line {
+    /// The line, its end included.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.0.bytes()
+    }
+}
+
 pub(crate) fn line(args: fmt::Arguments<'_>) -> Line {
     let (mut line, _) = Text::<LINE_MAX>::clipped(args);
     end_line(&mut line);

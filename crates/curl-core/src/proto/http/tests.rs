@@ -3235,12 +3235,12 @@ fn cookies_are_counted_with_the_request_s_as_c_counts_them() {
     let add = |e: &mut Easy, n: usize, prefix: &str| {
         for i in 0..n {
             let line = format!("Set-Cookie: {prefix}{i}=1; domain=127.0.0.1");
-            e.add_cookie(line.as_bytes()).unwrap();
+            e.add_cookie(line.as_bytes(), |_| {}).unwrap();
         }
     };
     let netscape = |e: &mut Easy, name: &str| {
         let line = format!("127.0.0.1\tFALSE\t/\tFALSE\t0\t{name}\t1");
-        e.add_cookie(line.as_bytes()).unwrap();
+        e.add_cookie(line.as_bytes(), |_| {}).unwrap();
     };
     let dir = std::env::temp_dir().join(format!("curl-cookie-count-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -3303,7 +3303,7 @@ fn a_share_keeps_cookies_for_its_handles() {
     let mut two = Easy::new();
     one.set_share(Some(share.clone()));
     two.set_share(Some(share.clone()));
-    one.add_cookie(line).unwrap();
+    one.add_cookie(line, |_| {}).unwrap();
     assert!(two.cookie_list().unwrap().is_empty(), "each its own");
     // Kept from when no handle holds the share.
     one.set_share(None);
@@ -3311,7 +3311,7 @@ fn a_share_keeps_cookies_for_its_handles() {
     share.keep(crate::share::Kind::Cookies).unwrap();
     one.set_share(Some(share.clone()));
     two.set_share(Some(share.clone()));
-    one.add_cookie(line).unwrap();
+    one.add_cookie(line, |_| {}).unwrap();
     assert_eq!(two.cookie_list().unwrap(), [line.to_vec()]);
     // Saved only once a transfer started the jar; reading files does.
     let dir = std::env::temp_dir().join(format!("curl-share-jar-{}", std::process::id()));
@@ -3321,7 +3321,7 @@ fn a_share_keeps_cookies_for_its_handles() {
     two.save_cookies().unwrap();
     assert!(!jar.exists(), "no transfer started it");
     two.options_mut().http.cookies.files.push(b"").unwrap();
-    two.reload_cookies().unwrap();
+    two.reload_cookies(|_| {}).unwrap();
     two.save_cookies().unwrap();
     let saved = std::fs::read(&jar).unwrap();
     assert!(saved.ends_with(b"\n\nexample.com\tFALSE\t/\tFALSE\t0\ta\t1\n"));
@@ -3372,7 +3372,7 @@ fn a_share_s_jar_takes_cookies_from_two_threads() {
                 e.set_share(Some(share));
                 for i in 0..EACH {
                     let line = format!("example.com\tFALSE\t/\tFALSE\t0\tt{t}_{i}\t1");
-                    e.add_cookie(line.as_bytes()).unwrap();
+                    e.add_cookie(line.as_bytes(), |_| {}).unwrap();
                 }
             });
         }

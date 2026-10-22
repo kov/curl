@@ -23,6 +23,10 @@ pub enum Piece {
     SendAll,
     /// The body from its start again, as for a request sent again.
     Rewind,
+    /// A content coding to undo from here on, one that makes this many
+    /// bytes of each it is given, as a decompressor may make far more than
+    /// it reads.
+    Expand(usize),
 }
 
 /// The pieces, shared by every copy of the options.

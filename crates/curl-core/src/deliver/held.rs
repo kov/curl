@@ -22,7 +22,7 @@ pub(crate) enum OutKind {
 
 /// Held output: ranges into one buffer, each run of body one entry, each
 /// header line its own, so appending is O(1).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct HeldOutput {
     bytes: Vec<u8>,
     entries: Vec<Entry>,
@@ -30,6 +30,14 @@ pub(crate) struct HeldOutput {
     first: usize,
     /// Bytes not yet delivered.
     held: usize,
+    /// The most it holds.
+    limit: usize,
+}
+
+impl Default for HeldOutput {
+    fn default() -> HeldOutput {
+        HeldOutput::limited(MAX_HELD)
+    }
 }
 
 #[derive(Debug)]
@@ -39,10 +47,21 @@ struct Entry {
 }
 
 impl HeldOutput {
+    /// Holding at most `limit` bytes.
+    pub(crate) fn limited(limit: usize) -> HeldOutput {
+        HeldOutput {
+            bytes: Vec::new(),
+            entries: Vec::new(),
+            first: 0,
+            held: 0,
+            limit,
+        }
+    }
+
     /// Hold `data` after what is held; body joins body held just before
-    /// it. Past `MAX_HELD` is TooLarge ("pause buffer not large enough").
+    /// it. Past the limit is TooLarge ("pause buffer not large enough").
     pub(crate) fn append(&mut self, kind: OutKind, data: &[u8]) -> Result<(), ErrorKind> {
-        if self.held + data.len() > MAX_HELD {
+        if self.held + data.len() > self.limit {
             return Err(ErrorKind::TooLarge);
         }
         let start = self.bytes.len();

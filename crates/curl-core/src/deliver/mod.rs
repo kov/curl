@@ -2,11 +2,14 @@
 //! client writer chain (`lib/sendf.c`, `lib/cw-out.c`) as one struct, in
 //! the order of its fields.
 
+mod decode;
 mod held;
 mod pause;
 
 pub use pause::PauseRequest;
 pub(crate) use pause::{Directions, Pause, RecvPause, SendPause};
+
+use curl_alloc::TryVec;
 
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};
@@ -14,6 +17,8 @@ use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::report::Timer;
 use crate::trace;
+pub(crate) use decode::Decoder;
+use decode::{Gate, Onward};
 use held::{HeldOutput, OutKind};
 
 /// The most body a write handler is given at once (`CURL_MAX_WRITE_SIZE`).
@@ -34,6 +39,13 @@ pub(crate) enum Reach {
 #[derive(Debug)]
 pub(crate) struct Pipeline {
     accountant: BodyAccountant,
+    /// What holds output in front of the decoders while a handler pauses,
+    /// once one that blows up is added (`cw-pause`). Boxed: few responses
+    /// have one, and every protocol's state carries a pipeline.
+    gate: Option<Box<Gate>>,
+    /// The content codings to undo, in the order the response gives them
+    /// (`CURL_CW_CONTENT_DECODE`).
+    decoders: Vec<Box<dyn Decoder>>,
     out: ClientOut,
     reach: Reach,
 }
@@ -42,9 +54,28 @@ impl Pipeline {
     pub(crate) fn new(reach: Reach) -> Pipeline {
         Pipeline {
             accountant: BodyAccountant::default(),
+            gate: None,
+            decoders: Vec::new(),
             out: ClientOut::default(),
             reach,
         }
+    }
+
+    /// Undo a content coding, after those added before it; one that may
+    /// blow up puts the gate in front of them all
+    /// (`cwriter_ensure_pause_writer`).
+    #[cfg_attr(
+        not(any(test, feature = "test-util")),
+        expect(dead_code, reason = "only the test protocol adds one yet")
+    )]
+    pub(crate) fn add_decoder(&mut self, decoder: Box<dyn Decoder>) -> Result<(), ErrorKind> {
+        if decoder.blows_up() && self.gate.is_none() {
+            let gate = curl_alloc::try_box(Gate::default()).map_err(|_| ErrorKind::OutOfMemory)?;
+            self.gate = Some(gate);
+        }
+        self.decoders
+            .try_push(decoder)
+            .map_err(|_| ErrorKind::OutOfMemory)
     }
 
     /// Whether the protocol can pause, its input and its output.
@@ -54,13 +85,44 @@ impl Pipeline {
 
     /// Replay held output, unless a handler holds it still.
     pub(crate) fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-        self.out.flush(cx, self.pausable())
+        let pausable = self.pausable();
+        self.out.flush(cx, pausable)?;
+        let Some(gate) = &mut self.gate else {
+            return Ok(());
+        };
+        gate.flush(&mut Past {
+            cx,
+            decoders: &mut self.decoders,
+            out: &mut self.out,
+            pausable,
+        })
     }
 
     /// Whether output is held: the request cannot be over until it is
     /// delivered.
     pub(crate) fn holds_output(&self) -> bool {
-        self.out.holds_output()
+        self.out.holds_output() || self.gate.as_ref().is_some_and(|g| g.holds_output())
+    }
+
+    /// Give `bytes` to what comes after the accountant: the gate if there
+    /// is one, then the decoders, then the handlers.
+    fn onward<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        kind: OutKind,
+        bytes: &[u8],
+    ) -> Result<(), ErrorKind> {
+        let pausable = self.pausable();
+        let mut past = Past {
+            cx,
+            decoders: &mut self.decoders,
+            out: &mut self.out,
+            pausable,
+        };
+        match &mut self.gate {
+            Some(gate) => gate.write(kind, bytes, &mut past),
+            None => past.take(kind, bytes),
+        }
     }
 
     /// The body's size, as the response announces it, or not
@@ -138,7 +200,7 @@ impl Pipeline {
         }
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(wanted, max_filesize);
-        self.out.body(cx, &bytes[..allowed], self.pausable())?;
+        self.onward(cx, OutKind::Body, &bytes[..allowed])?;
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
         self.accountant.bytecount += allowed as u64;
@@ -231,12 +293,45 @@ impl Pipeline {
         } else if cx.easy().options().proxy.suppress_connect_headers {
             return Ok(());
         }
-        // An included line is body, to be held and replayed with it.
-        if cx.easy().options().output.include_header {
-            self.out.body(cx, line, self.pausable())?;
-        }
-        self.out.header(cx, line, origin, self.pausable())
+        self.onward(cx, OutKind::Header(origin), line)
     }
+}
+
+/// What is past the gate: the decoders, which pass header lines by, then
+/// the handlers.
+struct Past<'p, 'c, H: Host> {
+    cx: &'p mut StepCx<'c, H>,
+    decoders: &'p mut [Box<dyn Decoder>],
+    out: &'p mut ClientOut,
+    pausable: bool,
+}
+
+impl<H: Host> Onward for Past<'_, '_, H> {
+    fn paused(&self) -> bool {
+        handler_paused(self.cx)
+    }
+
+    fn take(&mut self, kind: OutKind, bytes: &[u8]) -> Result<(), ErrorKind> {
+        let (cx, out, pausable) = (&mut *self.cx, &mut *self.out, self.pausable);
+        match kind {
+            OutKind::Body => decode::run(self.decoders, bytes, &mut |piece| {
+                out.body(cx, piece, pausable)
+            }),
+            OutKind::Header(origin) => {
+                // An included line is body, to be held and replayed with it.
+                if cx.easy().options().output.include_header {
+                    out.body(cx, bytes, pausable)?;
+                }
+                out.header(cx, bytes, origin, pausable)
+            }
+        }
+    }
+}
+
+/// A handler asked for a pause: output stops at once and is held. One the
+/// application asked for from inside a handler does not stop it.
+fn handler_paused<H: Host>(cx: &StepCx<'_, H>) -> bool {
+    cx.pause().recv == RecvPause::Held
 }
 
 /// The body as received, before any decoding, to the debug handler of a
@@ -405,9 +500,8 @@ impl ClientOut {
             ClientOut::Held(held) => held,
         };
         // Only a handler's own pause stops the replay, and it is the only
-        // thing that leaves an entry part delivered; one the application
-        // asked for from inside it does not.
-        while cx.pause().recv != RecvPause::Held {
+        // thing that leaves an entry part delivered.
+        while !handler_paused(cx) {
             let Some((kind, bytes)) = held.front() else {
                 break;
             };

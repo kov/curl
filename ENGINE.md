@@ -156,6 +156,7 @@ curl-core/src/
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
   deliver/                   Pipeline, BodyAccountant, ClientOut, HeldOutput;
+                             decode.rs: Decoder, Gate;
                              pause.rs: Pause, PauseRequest, Directions
   progress/                  Speedometer, the low-speed check, the meter
   upload/                    Upload, Readout (C's client readers)
@@ -1188,8 +1189,8 @@ pub(crate) struct Pipeline {
     raw_trace: bool,                             // DATA_IN of raw bytes before any decoding
     framing: BodyDecoder,                        // None | Length{left} | Chunked | UntilClose
     accountant: BodyAccountant,                  // STARTTRANSFER, maxdownload, max_filesize (raw), short EOS
-    gate: PauseGate,                             // ≤4 KiB pieces into decoders; holds encoded input while Held
-    decoders: InlineVec<ContentDecoder, 5>,      // a 6th coding is BadContentEncoding at parse
+    gate: Option<Box<Gate>>,                     // once a decoder that blows up is added
+    decoders: Vec<Box<dyn Decoder>>,             // a 6th coding is BadContentEncoding at parse
     out: ClientOut,
 }
 pub(crate) enum ClientOut { Direct, Held(HeldOutput), Failed }
@@ -1207,6 +1208,12 @@ pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize
   last range: O(1) per append (C's quadratic class). The cap counts what is still held;
   delivered bytes are compacted away once more than the cap has gone, by moving, never
   allocating.
+- **The gate** (`cw-pause`) exists from the first decoder that may make more than it reads
+  (`Decoder::blows_up`, C's `CURL_CW_FLAG_BLOWUP`), so a response without one runs as it
+  would with no gate. Body and header lines alike pass through it, the body in pieces of at
+  most 4096 bytes; while a handler's pause holds output (`pause.recv == Held`, the one test
+  `ClientOut`'s replay uses too) it holds what comes, still encoded and without a cap, and
+  hands it on in order when the output is flushed. The transfer holds output while it does.
   `Write::Pause` → `Held` with the unconsumed piece kept and `pause.recv = Held`; on a protocol
   without pause support (`file://`) it is WriteError "Write callback asked for PAUSE when not
   supported". `Write::Fail` or a short count → `Failed`, a terminal variant with no path to a

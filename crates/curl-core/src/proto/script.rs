@@ -3,7 +3,7 @@
 
 use curl_alloc::TryVec;
 
-use crate::deliver::{Pipeline, Reach};
+use crate::deliver::{Decoder, Pipeline, Reach};
 use crate::error::ErrorKind;
 use crate::handler::HeaderOrigin;
 use crate::multi::Host;
@@ -39,6 +39,32 @@ impl Default for Player {
             send_buffer: Vec::new(),
             uploaded: false,
         }
+    }
+}
+
+/// Each byte it is given, so many times.
+#[derive(Debug)]
+struct Expand(usize);
+
+impl Decoder for Expand {
+    fn decode(
+        &mut self,
+        input: &[u8],
+        out: &mut dyn FnMut(&[u8]) -> Result<(), ErrorKind>,
+    ) -> Result<(), ErrorKind> {
+        let mut made = Vec::new();
+        made.try_reserve(input.len() * self.0)
+            .map_err(|_| ErrorKind::OutOfMemory)?;
+        for &b in input {
+            for _ in 0..self.0 {
+                made.try_push(b).expect("reserved");
+            }
+        }
+        out(&made)
+    }
+
+    fn blows_up(&self) -> bool {
+        true
     }
 }
 
@@ -106,6 +132,11 @@ impl Player {
                 Piece::Connect(line) => self.pipeline.header(cx, line, HeaderOrigin::Connect)?,
                 Piece::Body(bytes) => self.pipeline.body(cx, bytes)?,
                 Piece::Size(size) => self.pipeline.announce_size(cx, Some(*size)),
+                Piece::Expand(n) => {
+                    let decoder =
+                        curl_alloc::try_box(Expand(*n)).map_err(|_| ErrorKind::OutOfMemory)?;
+                    self.pipeline.add_decoder(decoder)?;
+                }
                 Piece::Yield => {
                     self.next += 1;
                     return Ok(ProtoStep::Blocked);

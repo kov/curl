@@ -788,11 +788,19 @@ fn response() -> Vec<Piece> {
     ]
 }
 
-/// Run `pieces`, pausing on the calls in `pause_on` and unpausing from
-/// outside after every pass; what the handlers took.
+/// Run `response()`, pausing on the calls in `pause_on` and unpausing
+/// from outside after every pass; what the handlers took.
 fn paused_run(include_header: bool, pause_on: &'static [usize]) -> Vec<(&'static str, Vec<u8>)> {
+    paused_play(response(), include_header, pause_on)
+}
+
+fn paused_play(
+    pieces: Vec<Piece>,
+    include_header: bool,
+    pause_on: &'static [usize],
+) -> Vec<(&'static str, Vec<u8>)> {
     let mut m = multi();
-    let mut e = script(response());
+    let mut e = script(pieces);
     e.options_mut().output.include_header = include_header;
     let calls = planned(&mut e, pausing_on(pause_on));
     let id = m.add(e, (), &mut NoEvents).unwrap();
@@ -833,6 +841,95 @@ fn held_output_is_replayed_in_the_order_it_came() {
             );
         }
     }
+}
+
+/// Behind a decoder, the body goes to it in pieces of at most 4 KiB, as
+/// it came to the debug handler, and what it makes goes to the write
+/// handler as it is made (`CW_PAUSE_DEC_WRITE_CHUNK`).
+#[test]
+fn a_decoder_is_given_the_body_in_pieces_of_4_kib() {
+    let pieces = vec![Piece::Expand(2), Piece::Body(bytes(20000))];
+    let (result, seen) = played(pieces, |o, _| o.output.verbose = true);
+    assert_eq!(result, Ok(()));
+    assert_eq!(lengths(&seen, "debug"), [20000]);
+    assert_eq!(lengths(&seen, "write"), [8192, 8192, 8192, 8192, 7232]);
+    let written: Vec<u8> = seen
+        .iter()
+        .filter(|(n, _)| *n == "write")
+        .flat_map(|(_, b)| b.clone())
+        .collect();
+    let twice: Vec<u8> = bytes(20000).iter().flat_map(|&b| [b, b]).collect();
+    assert_eq!(written, twice);
+}
+
+/// Behind a decoder, a handler's pause holds what is yet to be decoded,
+/// header lines among it in the order they came: what the handlers take
+/// once unpaused is what they would have taken unpaused.
+#[test]
+fn output_held_before_a_decoder_is_replayed_in_the_order_it_came() {
+    let decoded = || {
+        let mut pieces = vec![Piece::Expand(2)];
+        pieces.extend(response());
+        pieces
+    };
+    for include_header in [false, true] {
+        let straight = paused_play(decoded(), include_header, &[]);
+        for pause_on in [
+            &[0][..],
+            &[2],
+            &[4],
+            &[5],
+            &[1, 3, 5, 7],
+            &[3, 4, 5, 6, 7, 8],
+        ] {
+            assert_eq!(
+                paused_play(decoded(), include_header, pause_on),
+                straight,
+                "-i {include_header}, pausing on {pause_on:?}"
+            );
+        }
+    }
+}
+
+/// Counts what it takes; pauses on its first call.
+#[derive(Clone, Default)]
+struct PausesFirst {
+    calls: std::rc::Rc<std::cell::Cell<usize>>,
+    took: std::rc::Rc<std::cell::Cell<usize>>,
+}
+
+impl WriteHandler for PausesFirst {
+    fn write(&self, _: &mut TransferCx<'_>, body: &[u8]) -> Write {
+        self.calls.set(self.calls.get() + 1);
+        if self.calls.get() == 1 {
+            return Write::Pause;
+        }
+        self.took.set(self.took.get() + body.len());
+        Write::Accepted
+    }
+}
+
+/// While a handler pauses, the body waits undecoded: a decoder making far
+/// more than 64 MiB of a body is no reason to fail, as holding what it
+/// made would be.
+#[test]
+fn a_pause_holds_the_body_before_it_is_decoded() {
+    const FACTOR: usize = 1024;
+    let size = 128 * 1024;
+    assert!(size * FACTOR > super::held::MAX_HELD);
+    let mut m = multi();
+    let mut e = script(vec![Piece::Expand(FACTOR), Piece::Body(bytes(size))]);
+    let writer = PausesFirst::default();
+    e.options_mut().callbacks.write = Some(handler(writer.clone()));
+    let id = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert!(m.info_read().is_none(), "not over while output is held");
+    assert_eq!(writer.took.get(), 0);
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert_eq!(writer.took.get(), size * FACTOR);
+    assert_eq!(m.easy(id).unwrap().report().sizes().download(), size as u64);
 }
 
 /// The piece a handler paused on is given again, whole, then the rest.

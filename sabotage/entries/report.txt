@@ -60,14 +60,14 @@ witness: curl-core upload::tests::an_aborting_read_is_timed_to_its_end
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_handler_reads_its_report_as_it_stands
 --- old
-        self.out.body(cx, &bytes[..allowed], self.pausable())?;
+        self.onward(cx, OutKind::Body, &bytes[..allowed])?;
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
         self.accountant.bytecount += allowed as u64;
         cx.report_mut().sizes_mut().download += allowed as u64;
 --- new
         cx.report_mut().sizes_mut().download += allowed as u64;
-        self.out.body(cx, &bytes[..allowed], self.pausable())?;
+        self.onward(cx, OutKind::Body, &bytes[..allowed])?;
         self.accountant.bytecount += allowed as u64;
 
 === the delivered size counts the piece in progress

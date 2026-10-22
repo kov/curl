@@ -444,8 +444,8 @@ cargo-mutants run on the milestone's diff.
     Waiting, on options no step has yet: 729 on `--limit-rate`, 970 and 972 on `%{json}`, 1613
     on `--request-target`, 1851 on `--ipfs-gateway`, 2008 on `--get`, and gated test 1001 on
     `--range`. HTTPS proxies wait on TLS.
-32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as
-    C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a
+32. **http: decompress.** **In progress.** Done: the pause gate holding encoded bytes, as C's
+    does, and the decoder slot, which changes nothing until a decoder is added. To do: a
     binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and
     Content-Encoding.
 33. **http: the headers API, and time conditions.** **To do.** Each request's headers kept

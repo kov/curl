@@ -49,8 +49,10 @@ pub(crate) const MAX_WRITE: usize = 65536;
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_header_line_goes_out_whole
 --- old
+        OutKind::Body => deliver_body(cx, bytes, pausable),
         OutKind::Header(origin) => {
 --- new
+        OutKind::Body => deliver_body(cx, bytes, pausable),
         OutKind::Header(origin) if bytes.len() > MAX_WRITE => {
             deliver(cx, kind, &bytes[..MAX_WRITE], pausable)?;
             deliver(cx, kind, &bytes[MAX_WRITE..], pausable)
@@ -61,16 +63,16 @@ witness: curl-core deliver::tests::a_header_line_goes_out_whole
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::included_header_lines_go_to_the_write_handler_first
 --- old
-        if cx.easy().options().output.include_header {
-            self.out.body(cx, line, self.pausable())?;
-        }
-        self.out.header(cx, line, origin, self.pausable())
+                if cx.easy().options().output.include_header {
+                    out.body(cx, bytes, pausable)?;
+                }
+                out.header(cx, bytes, origin, pausable)
 --- new
-        self.out.header(cx, line, origin, self.pausable())?;
-        if cx.easy().options().output.include_header {
-            self.out.body(cx, line, self.pausable())?;
-        }
-        Ok(())
+                out.header(cx, bytes, origin, pausable)?;
+                if cx.easy().options().output.include_header {
+                    out.body(cx, bytes, pausable)?;
+                }
+                Ok(())
 
 === a failed output takes writes again
 file: crates/curl-core/src/deliver/mod.rs
@@ -120,7 +122,7 @@ witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_receive
 file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_receive_pause_inside_the_replay_lets_it_finish
 --- old
-        while cx.pause().recv != RecvPause::Held {
+        while !handler_paused(cx) {
 --- new
         while !cx.pause().recv_paused() {
 
@@ -205,9 +207,9 @@ witness: curl-core deliver::tests::a_pause_where_none_is_supported_fails_the_wri
 file: crates/curl-core/src/deliver/held.rs
 witness: curl-core deliver::tests::at_most_64_mib_of_output_is_held
 --- old
-        if self.held + data.len() > MAX_HELD {
+        HeldOutput::limited(MAX_HELD)
 --- new
-        if self.held + data.len() > usize::MAX / 2 {
+        HeldOutput::limited(usize::MAX / 2)
 
 === the cap counts what was delivered
 file: crates/curl-core/src/deliver/held.rs
@@ -370,3 +372,19 @@ witness: curl-core proto::http::tests::a_416_to_a_resumed_get_is_read_and_droppe
 --- new
         if false {
             self.accountant.bytecount += wanted as u64;
+
+=== a decoder is given the body whole
+file: crates/curl-core/src/deliver/decode.rs
+witness: curl-core deliver::tests::a_decoder_is_given_the_body_in_pieces_of_4_kib
+--- old
+        OutKind::Body => len.min(GATE_PIECE),
+--- new
+        OutKind::Body => len,
+
+=== the gate lets the body by while a handler pauses
+file: crates/curl-core/src/deliver/decode.rs
+witness: curl-core deliver::tests::a_pause_holds_the_body_before_it_is_decoded
+--- old
+        while self.held.is_empty() && !onward.paused() {
+--- new
+        while self.held.is_empty() {

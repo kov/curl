@@ -1757,4 +1757,214 @@ mod tests {
             UrlErrorKind::UnsupportedScheme
         );
     }
+
+    /// `base` with `what` set to `value` as `opts` say, read back whole.
+    fn set_on(
+        base: &str,
+        what: Part,
+        value: &[u8],
+        opts: SetOptions,
+    ) -> Result<String, UrlErrorKind> {
+        let mut u = Url::parse(base.as_bytes(), ParseOptions::NONE)?;
+        u.set(what, Some(value), opts)?;
+        let whole = u.get(Part::Url, GetOptions::NONE)?;
+        Ok(String::from_utf8(whole).unwrap())
+    }
+
+    /// Parts set alone, and relative URLs, as the C build's
+    /// `curl_url_set` makes them.
+    #[test]
+    fn parts_are_set_as_c_sets_them() {
+        let none = SetOptions::NONE;
+        let append = SetOptions {
+            append_query: true,
+            ..none
+        };
+        let encode = SetOptions {
+            parse: ParseOptions {
+                url_encode: true,
+                ..ParseOptions::NONE
+            },
+            ..none
+        };
+        let both = SetOptions {
+            append_query: true,
+            ..encode
+        };
+        let q = Part::Query;
+        let cases: &[(&str, Part, &[u8], SetOptions, &str)] = &[
+            ("http://h/?a=1", q, b"b=2", none, "http://h/?b=2"),
+            ("http://h/?a=1", q, b"b=2", append, "http://h/?a=1&b=2"),
+            (
+                "http://h/?a=1",
+                q,
+                b"c=d e=f",
+                both,
+                "http://h/?a=1&c=d+e%3Df",
+            ),
+            // Only an appended query keeps its first `=`.
+            ("http://h/", q, b"a=b=c d", encode, "http://h/?a%3Db%3Dc+d"),
+            (
+                "http://h/",
+                Part::Fragment,
+                b"a=b=c d",
+                both,
+                "http://h/#a%3Db%3Dc%20d",
+            ),
+            (
+                "http://h/",
+                Part::User,
+                b"a=b=c d",
+                both,
+                "http://a%3Db%3Dc%20d@h/",
+            ),
+            (
+                "http://h/",
+                Part::Path,
+                b"a=b c=d",
+                both,
+                "http://h/a=b%20c=d",
+            ),
+        ];
+        for &(base, what, value, opts, want) in cases {
+            assert_eq!(
+                set_on(base, what, value, opts).as_deref(),
+                Ok(want),
+                "{base} {what:?} {}",
+                show(value)
+            );
+        }
+        // A query set empty, not encoded, is there but empty: what is
+        // appended to it needs no `&`.
+        let mut u = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
+        u.set(q, Some(b""), none).unwrap();
+        let empty = GetOptions {
+            get_empty: true,
+            ..GetOptions::NONE
+        };
+        assert_eq!(u.get(Part::Url, empty).unwrap(), b"http://h/?");
+        u.set(q, Some(b"b=1"), append).unwrap();
+        assert_eq!(
+            u.get(Part::Url, GetOptions::NONE).unwrap(),
+            b"http://h/?b=1"
+        );
+        // As long as C takes, and no longer.
+        let path = |n: usize| {
+            let mut p = vec![b'a'; n];
+            p[0] = b'/';
+            p
+        };
+        let mut u = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
+        assert_eq!(u.set(Part::Path, Some(&path(MAX_INPUT)), none), Ok(()));
+        assert_eq!(
+            u.set(Part::Path, Some(&path(MAX_INPUT + 1)), none),
+            Err(UrlErrorKind::MalformedInput)
+        );
+        assert_eq!(
+            u.set(Part::Path, Some(b"/a\0b"), none),
+            Err(UrlErrorKind::MalformedInput)
+        );
+    }
+
+    /// A relative URL set over a whole one is resolved against it as C
+    /// resolves it: a scheme guessed or defaulted makes `x:y` relative, a
+    /// base whose scheme was guessed is read back with it, dot segments go
+    /// whatever the flags, and a new host ends at its first `/` or `?`.
+    #[test]
+    fn relative_urls_resolve_as_c_resolves_them() {
+        let with = |parse: ParseOptions| SetOptions {
+            parse,
+            ..SetOptions::NONE
+        };
+        let default = with(ParseOptions {
+            default_scheme: true,
+            ..ParseOptions::NONE
+        });
+        let guess = with(ParseOptions {
+            guess_scheme: true,
+            ..ParseOptions::NONE
+        });
+        let as_is = with(ParseOptions {
+            path_as_is: true,
+            ..ParseOptions::NONE
+        });
+        let u = Part::Url;
+        let dir = "http://example.com/dir/";
+        type Case<'a> = (&'a str, &'a [u8], SetOptions, Result<&'a str, UrlErrorKind>);
+        let cases: &[Case<'_>] = &[
+            (
+                dir,
+                b"foo:bar",
+                default,
+                Ok("http://example.com/dir/foo:bar"),
+            ),
+            (dir, b"foo:bar", guess, Ok("http://example.com/dir/foo:bar")),
+            ("http://h/a/b", b"../c/./d", as_is, Ok("http://h/c/d")),
+            ("http://h/a/b", b"/x/../y", as_is, Ok("http://h/y")),
+            (
+                "http://h/a/b?c",
+                b"//other.example:8080/x?y",
+                SetOptions::NONE,
+                Ok("http://other.example:8080/x?y"),
+            ),
+            (
+                "http://h/a/b?c",
+                b"//other.example?q=1",
+                SetOptions::NONE,
+                Ok("http://other.example/?q=1"),
+            ),
+            (
+                "http://h/a/b?c",
+                b"//other.example",
+                SetOptions::NONE,
+                Ok("http://other.example/"),
+            ),
+            (
+                "http://h/a/b?c",
+                b"//o.example/p//q",
+                SetOptions::NONE,
+                Ok("http://o.example/p//q"),
+            ),
+            (
+                "http://h/a/b?c",
+                b"//u@o.example:81",
+                SetOptions::NONE,
+                Ok("http://u@o.example:81/"),
+            ),
+        ];
+        for &(base, rel, opts, want) in cases {
+            assert_eq!(
+                set_on(base, u, rel, opts).as_deref(),
+                want.as_deref(),
+                "{base} {}",
+                show(rel)
+            );
+        }
+        // Not guessing, `foo:` is a scheme this build does not know.
+        assert!(set_on(dir, u, b"foo:bar", SetOptions::NONE).is_err());
+        // A base whose scheme was guessed is read back with it, whatever
+        // the flags say of reading.
+        let mut g = Url::parse(b"example.com/a/", guess.parse).unwrap();
+        let no_guess = SetOptions {
+            get: GetOptions {
+                no_guess_scheme: true,
+                ..GetOptions::NONE
+            },
+            ..SetOptions::NONE
+        };
+        g.set(u, Some(b"b"), no_guess).unwrap();
+        assert_eq!(
+            g.get(u, GetOptions::NONE).unwrap(),
+            b"http://example.com/a/b"
+        );
+    }
+
+    /// `curl_easy_escape`: all but letters, digits and `-._~`.
+    #[test]
+    fn escape_is_c_s() {
+        assert_eq!(
+            escape("a b/\u{e9}-._~".as_bytes()).unwrap(),
+            b"a%20b%2F%C3%A9-._~"
+        );
+    }
 }

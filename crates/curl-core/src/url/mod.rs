@@ -1924,6 +1924,20 @@ mod tests {
                 SetOptions::NONE,
                 Ok("http://u%2fs@o.example/a%2Fb"),
             ),
+            // The host's part ends at its first `/` or `?`, looked for
+            // after any later `//` (`find_host_sep`).
+            (
+                "http://h/a/b?c",
+                b"//o?x y",
+                SetOptions::NONE,
+                Ok("http://o/?x+y"),
+            ),
+            (
+                "http://h/a/b?c",
+                b"//o.example/a%2f//c%2f/x",
+                SetOptions::NONE,
+                Ok("http://o.example/a%2f//c%2f/x"),
+            ),
             (
                 "http://h/a/b?c",
                 b"//other.example?q=1",

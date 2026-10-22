@@ -142,6 +142,7 @@ mod tests {
             followed("/d/café/./e".as_bytes(), false),
             "http://h/d/caf%C3%A9/e"
         );
+        assert_eq!(followed(b"http://h/a b?x y", false), "http://h/a%20b?x+y");
         assert_eq!(followed(b"http://h/a/../b", false), "http://h/b");
         assert_eq!(followed(b"http://h/a/../b", true), "http://h/a/../b");
     }

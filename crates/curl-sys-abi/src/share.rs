@@ -10,9 +10,10 @@
 
 #![allow(unsafe_code)]
 
-use core::cell::Cell;
 use core::ffi::{c_int, c_void};
 use core::ptr::{self, NonNull};
+use core::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 use curl_alloc::try_box;
 use curl_core::handler::Handler;
@@ -28,23 +29,46 @@ use crate::setopt::function;
 /// C's `CURL_GOOD_SHARE`, which tells a live share.
 const MAGIC: u32 = 0x7e11_7a1e;
 
+/// A share as C's functions reach it: from any thread, at once, so what
+/// C keeps beside the core's share is behind a lock of its own, held only
+/// to read or change it, never across a call to the application.
 pub(crate) struct ShimShare {
-    magic: Cell<u32>,
+    magic: AtomicU32,
     core: Share,
-    /// What it shares, a bit per `curl_lock_data` (`specifier`).
-    kinds: Cell<u32>,
-    lock: Cell<curl_lock_function>,
-    unlock: Cell<curl_unlock_function>,
-    user: Cell<*mut c_void>,
-    /// A handle has been given it (`has_been_shared`).
-    linked_once: Cell<bool>,
+    settings: Mutex<Settings>,
 }
+
+#[derive(Clone, Copy)]
+struct Settings {
+    /// What it shares, a bit per `curl_lock_data` (`specifier`).
+    kinds: u32,
+    lock: curl_lock_function,
+    unlock: curl_unlock_function,
+    user: *mut c_void,
+    /// A handle has been given it (`has_been_shared`).
+    linked_once: bool,
+}
+
+// SAFETY: `user` is the application's, only handed back to its own lock
+// functions, which C calls from whichever thread uses the share; the
+// application, which shares the share across threads, makes them fit to
+// be.
+unsafe impl Send for Settings {}
 
 fn bit(data: curl_lock_data) -> u32 {
     1 << data.0
 }
 
 impl ShimShare {
+    /// What C keeps beside the core's share, as it is now.
+    fn settings(&self) -> Settings {
+        *self.settings.lock().expect("no panic holds it")
+    }
+
+    fn change(&self, f: impl FnOnce(&mut Settings)) {
+        f(&mut self.settings.lock().expect("no panic holds it"));
+    }
+
     /// Whether a handle holds it.
     fn in_use(&self) -> bool {
         self.core.holders() > 1
@@ -54,10 +78,11 @@ impl ShimShare {
     /// set and, with no handle, a handle has been given it
     /// (`share_lock_acquire`); whether it was.
     fn lock_share(&self, curl: *mut CURL) -> bool {
-        let (Some(lock), Some(_)) = (self.lock.get(), self.unlock.get()) else {
+        let set = self.settings();
+        let (Some(lock), Some(_)) = (set.lock, set.unlock) else {
             return false;
         };
-        if curl.is_null() && !self.linked_once.get() {
+        if curl.is_null() && !set.linked_once {
             return false;
         }
         // SAFETY: the application's lock function, called as C calls it.
@@ -66,7 +91,7 @@ impl ShimShare {
                 curl,
                 ffi::CURL_LOCK_DATA_SHARE,
                 ffi::CURL_LOCK_ACCESS_SINGLE,
-                self.user.get(),
+                set.user,
             );
         }
         true
@@ -76,9 +101,10 @@ impl ShimShare {
         if !locked {
             return;
         }
-        if let Some(unlock) = self.unlock.get() {
+        let set = self.settings();
+        if let Some(unlock) = set.unlock {
             // SAFETY: as in `lock_share`.
-            unsafe { unlock(curl, ffi::CURL_LOCK_DATA_SHARE, self.user.get()) };
+            unsafe { unlock(curl, ffi::CURL_LOCK_DATA_SHARE, set.user) };
         }
     }
 }
@@ -92,7 +118,7 @@ unsafe fn share<'a>(sh: *mut CURLSH) -> Option<&'a ShimShare> {
     let sh = NonNull::new(sh.cast::<ShimShare>())?;
     // SAFETY: as the caller guarantees.
     let sh = unsafe { sh.as_ref() };
-    (sh.magic.get() == MAGIC).then_some(sh)
+    (sh.magic.load(Ordering::Acquire) == MAGIC).then_some(sh)
 }
 
 #[unsafe(no_mangle)]
@@ -101,13 +127,15 @@ pub extern "C" fn curl_share_init() -> *mut CURLSH {
         return ptr::null_mut();
     };
     let shim = ShimShare {
-        magic: Cell::new(MAGIC),
+        magic: AtomicU32::new(MAGIC),
         core,
-        kinds: Cell::new(bit(ffi::CURL_LOCK_DATA_SHARE)),
-        lock: Cell::new(None),
-        unlock: Cell::new(None),
-        user: Cell::new(ptr::null_mut()),
-        linked_once: Cell::new(false),
+        settings: Mutex::new(Settings {
+            kinds: bit(ffi::CURL_LOCK_DATA_SHARE),
+            lock: None,
+            unlock: None,
+            user: ptr::null_mut(),
+            linked_once: false,
+        }),
     };
     match try_box(shim) {
         Ok(shim) => Box::leak(shim) as *mut ShimShare as *mut CURLSH,
@@ -140,11 +168,9 @@ pub unsafe extern "C" fn curl_share_setopt(
             let on = option == ffi::CURLSHOPT_SHARE;
             match kind(sh, data, on) {
                 CURLSHE_OK => {
-                    let kinds = sh.kinds.get();
-                    sh.kinds.set(if on {
-                        kinds | bit(data)
-                    } else {
-                        kinds & !bit(data)
+                    sh.change(|set| match on {
+                        true => set.kinds |= bit(data),
+                        false => set.kinds &= !bit(data),
                     });
                     CURLSHE_OK
                 }
@@ -155,19 +181,22 @@ pub unsafe extern "C" fn curl_share_setopt(
             // SAFETY: the application passes a pointer.
             let p = unsafe { args.next_arg::<*mut c_void>() };
             // SAFETY: it is a lock function or NULL.
-            sh.lock.set(unsafe { function(p) });
+            let lock = unsafe { function(p) };
+            sh.change(|set| set.lock = lock);
             CURLSHE_OK
         }
         ffi::CURLSHOPT_UNLOCKFUNC => {
             // SAFETY: the application passes a pointer.
             let p = unsafe { args.next_arg::<*mut c_void>() };
             // SAFETY: it is an unlock function or NULL.
-            sh.unlock.set(unsafe { function(p) });
+            let unlock = unsafe { function(p) };
+            sh.change(|set| set.unlock = unlock);
             CURLSHE_OK
         }
         ffi::CURLSHOPT_USERDATA => {
             // SAFETY: the application passes a pointer.
-            sh.user.set(unsafe { args.next_arg::<*mut c_void>() });
+            let user = unsafe { args.next_arg::<*mut c_void>() };
+            sh.change(|set| set.user = user);
             CURLSHE_OK
         }
         _ => CURLSHE_BAD_OPTION,
@@ -262,13 +291,19 @@ pub unsafe extern "C" fn curl_share_cleanup(sh: *mut CURLSH) -> CURLSHcode {
         return CURLSHE_IN_USE;
     }
     let locked = shim.lock_share(ptr::null_mut());
-    shim.magic.set(0);
+    shim.magic.store(0, Ordering::Release);
     // SAFETY: the share came from `Box::leak` in `curl_share_init`, no
     // handle holds it, and the caller does not use it again. The lock
     // functions are copied out before it goes.
     let gone = unsafe { Box::from_raw(sh.cast::<ShimShare>()) };
-    let (lock, unlock, user) = (gone.lock.get(), gone.unlock.get(), gone.user.get());
-    let connections = gone.kinds.get() & bit(ffi::CURL_LOCK_DATA_CONNECT) != 0;
+    let Settings {
+        kinds,
+        lock,
+        unlock,
+        user,
+        ..
+    } = gone.settings();
+    let connections = kinds & bit(ffi::CURL_LOCK_DATA_CONNECT) != 0;
     if locked && let Some(unlock) = unlock {
         // SAFETY: as in `lock_share`.
         unsafe { unlock(ptr::null_mut(), ffi::CURL_LOCK_DATA_SHARE, user) };
@@ -311,7 +346,7 @@ pub(crate) unsafe fn set(easy: &ShimEasy, sh: *mut CURLSH) -> Result<(), Refused
     let linked = set_core(easy, Some(new));
     if linked.is_ok() {
         easy.share.set(Some(NonNull::from(new)));
-        new.linked_once.set(true);
+        new.change(|set| set.linked_once = true);
     }
     new.unlock_share(curl, locked);
     linked
@@ -342,12 +377,13 @@ pub(crate) fn unlink(easy: &ShimEasy) -> Result<(), Refused> {
 /// makes of what is shared.
 fn set_core(easy: &ShimEasy, share: Option<&ShimShare>) -> Result<(), Refused> {
     let watch = match share {
-        Some(sh) if sh.lock.get().is_some() || sh.unlock.get().is_some() => {
+        Some(sh) if sh.settings().lock.is_some() || sh.settings().unlock.is_some() => {
+            let set = sh.settings();
             let calls = LockCalls {
                 curl: easy.as_curl(),
-                lock: sh.lock.get(),
-                unlock: sh.unlock.get(),
-                user: sh.user.get(),
+                lock: set.lock,
+                unlock: set.unlock,
+                user: set.user,
             };
             let calls: Box<dyn ShareLock> = try_box(calls).map_err(|_| Refused::OutOfMemory)?;
             Some(Handler::new(calls).map_err(|_| Refused::OutOfMemory)?)
@@ -377,3 +413,9 @@ pub(crate) enum Refused {
     Running,
     OutOfMemory,
 }
+
+// C's share functions may be called from several threads at once.
+const _: () = {
+    const fn shared<T: Send + Sync>() {}
+    shared::<ShimShare>();
+};

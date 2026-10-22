@@ -2824,6 +2824,32 @@ fn last_modified_gives_the_file_time_when_asked() {
     assert_eq!(ran.easy.report().filetime(), Some(0));
 }
 
+/// Handles on two threads store cookies in one share's jar at once, and
+/// every one is there at the end.
+#[test]
+fn a_share_s_jar_takes_cookies_from_two_threads() {
+    use crate::share::{Kind, Share};
+    const EACH: usize = 20;
+    let share = Share::new().unwrap();
+    share.keep(Kind::Cookies).unwrap();
+    std::thread::scope(|scope| {
+        for t in 0..2 {
+            let share = share.clone();
+            scope.spawn(move || {
+                let mut e = Easy::new();
+                e.set_share(Some(share));
+                for i in 0..EACH {
+                    let line = format!("example.com\tFALSE\t/\tFALSE\t0\tt{t}_{i}\t1");
+                    e.add_cookie(line.as_bytes()).unwrap();
+                }
+            });
+        }
+    });
+    let mut e = Easy::new();
+    e.set_share(Some(share));
+    assert_eq!(e.cookie_list().unwrap().len(), 2 * EACH);
+}
+
 /// A transfer on a share that keeps names and cookies tells the
 /// application of each use it makes of them, where C locks them (test
 /// 506): the jar read and started, the name looked up, kept and let go,

@@ -2401,6 +2401,76 @@ unsafe extern "C" fn record_unlock(curl: *mut CURL, data: ffi::curl_lock_data, _
         .push((false, data.0 as c_int, curl as usize));
 }
 
+/// Handles on two threads use one share at once, with no lock functions
+/// set: each stores cookies in its jar and reads files over its pool and
+/// names, and every cookie is there at the end.
+#[test]
+fn a_share_is_used_from_two_threads_at_once() {
+    use crate::share::{curl_share_cleanup, curl_share_init, curl_share_setopt};
+    const EACH: usize = 100;
+    let sh = curl_share_init();
+    for data in [
+        ffi::CURL_LOCK_DATA_COOKIE,
+        ffi::CURL_LOCK_DATA_DNS,
+        ffi::CURL_LOCK_DATA_CONNECT,
+    ] {
+        // SAFETY: a live share and an int, as the option takes.
+        let set = unsafe { curl_share_setopt(sh, ffi::CURLSHOPT_SHARE, data.0 as c_int) };
+        assert_eq!(set, ffi::CURLSHE_OK);
+    }
+    let (path, url) = file("threads", b"hello");
+    // The share's address, to cross to the threads; it outlives them.
+    let at = sh as usize;
+    let url = &url;
+    std::thread::scope(|scope| {
+        for t in 0..2 {
+            scope.spawn(move || {
+                let c = curl_easy_init();
+                assert_eq!(
+                    pointer(c, ffi::CURLOPT_SHARE, at as *mut ffi::CURLSH),
+                    CURLE_OK
+                );
+                pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+                function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+                for i in 0..EACH {
+                    let line = format!("example.com\tFALSE\t/\tFALSE\t0\tt{t}_{i}\t1");
+                    let line = std::ffi::CString::new(line).unwrap();
+                    assert_eq!(
+                        pointer(c, ffi::CURLOPT_COOKIELIST, line.as_ptr().cast_mut()),
+                        CURLE_OK
+                    );
+                    // SAFETY: a live handle.
+                    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+                }
+                // SAFETY: a live handle, not used again.
+                unsafe { curl_easy_cleanup(c) };
+            });
+        }
+    });
+    let c = curl_easy_init();
+    assert_eq!(pointer(c, ffi::CURLOPT_SHARE, sh), CURLE_OK);
+    let mut list: *mut ffi::curl_slist = ptr::null_mut();
+    let mut count = 0;
+    // SAFETY: a live handle, the list the info takes, walked to its end
+    // and freed; then the handle and the share, not used again.
+    unsafe {
+        assert_eq!(
+            curl_easy_getinfo(c, ffi::CURLINFO_COOKIELIST, &raw mut list),
+            CURLE_OK
+        );
+        let mut at = list;
+        while !at.is_null() {
+            count += 1;
+            at = (*at).next;
+        }
+        crate::strings::curl_slist_free_all(list);
+        curl_easy_cleanup(c);
+        assert_eq!(curl_share_cleanup(sh), ffi::CURLSHE_OK);
+    }
+    assert_eq!(count, 2 * EACH);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// The share answers each kind of data as C built like this one does,
 /// refuses changes and its cleanup while a handle holds it, which a reset
 /// keeps and a copy does not, and calls the lock functions for itself as

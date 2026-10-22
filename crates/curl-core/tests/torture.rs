@@ -34,6 +34,10 @@ use curl_core::time::{Clock, ManualClock, TimeLimit};
 static ALLOCATOR: Tracker = Tracker;
 
 fn main() {
+    let wanted: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
     for (name, test) in [
         (
             "add_perform_remove_survives_every_allocation_failing",
@@ -72,6 +76,10 @@ fn main() {
             a_cold_group_is_made_or_refused_at_its_first_set,
         ),
     ] {
+        // The tests whose names hold a filter given, if any is, as libtest.
+        if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
+            continue;
+        }
         // Reported as libtest does, the name before the run, so that a run
         // that aborts still shows which test it was in.
         track::untracked(|| {

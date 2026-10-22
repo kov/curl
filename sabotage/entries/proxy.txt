@@ -38,9 +38,9 @@ witness: curl-core proto::http::tests::a_forwarding_proxy_gets_the_whole_url
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http::tests::a_forwarding_proxy_gets_the_whole_url
 --- old
-                if head.forwarded && !head.headers.replaces(b"Proxy-Connection") {
+                if let Some(f) = head.forwarded
 --- new
-                if !head.forwarded && !head.headers.replaces(b"Proxy-Connection") {
+                if let Some(f) = head.forwarded.xor(Some(Forwarding { own_headers: None }))
 
 === a proxy's Proxy-Connection: close is not heard
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -124,11 +124,12 @@ witness: curl-sys-abi handle_tests::proxy_credentials_are_decoded_as_in_c
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_custom_proxy_authorization_goes_beside_the_proxy_s
 --- old
-            proxy_secret,
-            false,
+        let proxy_custom = options
+            .proxy
+            .own_headers(http)
+            .replaces(b"Proxy-Authorization");
 --- new
-            proxy_secret,
-            http.headers.replaces(b"Proxy-Authorization"),
+        let proxy_custom = http.headers.replaces(b"Proxy-Authorization");
 
 === a route through a proxy tunnels where it forwards
 file: crates/curl-core/src/conn/mod.rs
@@ -263,3 +264,51 @@ witness: curl-core proto::http::tests::a_socks_refusal_fails_with_the_proxy_s_er
     match e.said() {
 --- new
     match e.said() {
+
+=== the proxy's own lines are not sent with CONNECT
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
+--- old
+        for (name, value) in self.headers.for_connect(self.trusted) {
+--- new
+        for (name, value) in self.headers.for_connect(self.trusted).take(0) {
+
+=== the proxy's own Host does not replace the library's in CONNECT
+file: crates/curl-core/src/proto/http1/tunnel.rs
+witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
+--- old
+        if !theirs(b"Host") {
+--- new
+        if true {
+
+=== a CONNECT sends a line with something after its semicolon
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::tunnel::tests::the_proxy_s_lines_replace_the_library_s_and_follow
+--- old
+                b';' if rest.is_empty() => rest,
+--- new
+                b';' => rest,
+
+=== a forwarded request leaves the proxy's own lines out
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::a_forwarded_request_sends_the_proxy_s_lines_after
+--- old
+    for h in head.headers.sendable(gate.trusted()).chain(proxy) {
+--- new
+    for h in head.headers.sendable(gate.trusted()).chain(proxy.take(0)) {
+
+=== the proxy's own Proxy-Authorization does not replace the library's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_replaces_the_library_s
+--- old
+            forwarded && proxy_custom,
+--- new
+            false,
+
+=== unified headers are not the proxy's own
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_replaces_the_library_s
+--- old
+        if self.unified_headers {
+--- new
+        if false {

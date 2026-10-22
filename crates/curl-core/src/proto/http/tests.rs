@@ -2754,6 +2754,36 @@ fn a_custom_proxy_authorization_goes_beside_the_proxy_s() {
     assert!(text.contains("\r\nProxy-Authorization: Mine\r\n"), "{text}");
 }
 
+/// The proxy's own `Proxy-Authorization` replaces the one the library
+/// would make, and so does the application's for the origin where the
+/// two are unified (`CURLOPT_HEADEROPT`), as C's `Curl_checkProxyheaders`
+/// finds it.
+#[test]
+fn the_proxy_s_own_proxy_authorization_replaces_the_library_s() {
+    for unified in [false, true] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.set_url(Some(b"http://origin.example/a")).unwrap();
+            o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+            o.proxy.user = Some(b"u".to_vec());
+            o.proxy.password = Some(b"p".to_vec());
+            o.proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+            let mine = UserHeaders::new([&b"Proxy-Authorization: Mine"[..]]).unwrap();
+            if unified {
+                o.http.headers = mine;
+                o.proxy.unified_headers = true;
+            } else {
+                o.proxy.headers = mine;
+            }
+        });
+        assert_eq!(ran.result, Ok(()));
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        assert!(!text.contains("Basic dTpw"), "{text}");
+        let mine = text.matches("\r\nProxy-Authorization: Mine\r\n").count();
+        assert_eq!(mine, 1, "{text}");
+    }
+}
+
 /// A 407 from a host the request reached without a proxy's sending it
 /// on is not the proxy's: its challenge is not read, and the proxy is
 /// not answered with it later (test 1616).

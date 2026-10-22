@@ -1059,6 +1059,7 @@ fn configure(
     }
     o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
     o.proxy.tunnel = op.proxytunnel;
+    o.proxy.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
     // The debug test build suppresses them on request as well, as C's
     // library does.
     o.proxy.suppress_connect_headers = op.suppress_connect_headers

@@ -236,6 +236,35 @@ impl UserHeaders {
 
     /// The lines that may go as the application gave them: its credentials
     /// among them only with the gate's leave.
+    /// The lines as a `CONNECT` sends them (`dynhds_add_custom`): each
+    /// name trimmed, with what follows its colon and blanks, to the end;
+    /// `Name;` alone with an empty value. A line with nothing after its
+    /// colon, or anything after its semicolon, or no name, is left out,
+    /// and so are an Authorization and a Cookie unless `trusted`.
+    pub(crate) fn for_connect(
+        &self,
+        trusted: Option<Trusted>,
+    ) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.lines.iter().filter_map(move |h| {
+            let line = &h.line[..];
+            let at = line.iter().position(|&b| b == b':' || b == b';')?;
+            let rest = &line[at + 1..];
+            let rest = &rest[rest
+                .iter()
+                .position(|&b| !is_blank(b))
+                .unwrap_or(rest.len())..];
+            let value = match line[at] {
+                b':' if !rest.is_empty() => rest,
+                b';' if rest.is_empty() => rest,
+                _ => return None,
+            };
+            let name = trim(&line[..at]);
+            let secret =
+                name.eq_ignore_ascii_case(b"Authorization") || name.eq_ignore_ascii_case(b"Cookie");
+            (!name.is_empty() && (trusted.is_some() || !secret)).then_some((name, value))
+        })
+    }
+
     fn sendable(&self, trusted: Option<Trusted>) -> impl Iterator<Item = &UserHeader> {
         self.lines
             .iter()
@@ -351,6 +380,14 @@ impl Part {
     ];
 }
 
+/// A request going to a proxy that sends it on.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Forwarding<'o> {
+    /// The proxy's own lines, sent after the application's for the
+    /// origin, where the two are kept apart.
+    pub(crate) own_headers: Option<&'o UserHeaders>,
+}
+
 /// What a request says, for one origin.
 #[derive(Debug)]
 pub(crate) struct RequestHead<'o> {
@@ -380,7 +417,7 @@ pub(crate) struct RequestHead<'o> {
     pub(crate) cookie: Option<&'o [u8]>,
     /// The request goes to a proxy that sends it on: it asks to keep the
     /// connection to the proxy (`origin_is_proxy`).
-    pub(crate) forwarded: bool,
+    pub(crate) forwarded: Option<Forwarding<'o>>,
     pub(crate) headers: &'o UserHeaders,
 }
 
@@ -546,7 +583,12 @@ fn write_h1(
             Part::End => out.put(b"\r\n")?,
             // What no option asks for yet.
             Part::ProxyConnection => {
-                if head.forwarded && !head.headers.replaces(b"Proxy-Connection") {
+                if let Some(f) = head.forwarded
+                    && !head.headers.replaces(b"Proxy-Connection")
+                    && !f
+                        .own_headers
+                        .is_some_and(|h| h.replaces(b"Proxy-Connection"))
+                {
                     out.line(&[b"Proxy-Connection: Keep-Alive"])?;
                 }
             }
@@ -597,7 +639,12 @@ fn custom(
     gate: &CredentialGate,
     out: &mut Out<'_>,
 ) -> Result<(), ErrorKind> {
-    for h in head.headers.sendable(gate.trusted()) {
+    let proxy = head
+        .forwarded
+        .and_then(|f| f.own_headers)
+        .into_iter()
+        .flat_map(|h| h.sendable(gate.trusted()));
+    for h in head.headers.sendable(gate.trusted()).chain(proxy) {
         // Host goes as its own part or not at all, Connection with the
         // library's.
         if h.asks == Asks::Nothing || h.is(b"Host") || h.is(b"Connection") {
@@ -707,8 +754,7 @@ mod tests {
             chunked: false,
             probe: false,
             cookie: None,
-            forwarded: false,
-
+            forwarded: None,
             headers: &headers,
         };
         let here = peer(b"127.0.0.1");
@@ -776,7 +822,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 cookie: None,
-                forwarded: false,
+                forwarded: None,
 
                 headers: &headers,
             };
@@ -825,7 +871,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 cookie: None,
-                forwarded: false,
+                forwarded: None,
 
                 headers: &headers,
             };
@@ -965,6 +1011,53 @@ mod tests {
         );
     }
 
+    /// A request a proxy forwards sends the proxy's own lines after the
+    /// application's for the origin (test 1528); a Proxy-Connection in
+    /// either replaces the library's.
+    #[test]
+    fn a_forwarded_request_sends_the_proxy_s_lines_after() {
+        let headers = UserHeaders::new([&b"X-A: 1"[..]]).unwrap();
+        let own = UserHeaders::new([&b"X-B: 2"[..], b"Proxy-Connection: close"]).unwrap();
+        let head = |forwarded| RequestHead {
+            method: b"GET",
+            target: b"http://origin/",
+            version: Version::Http11,
+            host: b"origin",
+            port: None,
+            user_agent: None,
+            referer: None,
+            proxy_authorization: None,
+            authorization: None,
+            range_from: None,
+            content: None,
+            chunked: false,
+            probe: false,
+            cookie: None,
+            forwarded,
+            headers: &headers,
+        };
+        let here = peer(b"origin");
+        let gate = CredentialGate::new(&here, &here, false);
+        let mut out = Vec::new();
+        let apart = Forwarding {
+            own_headers: Some(&own),
+        };
+        render_h1(&head(Some(apart)), &gate, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "GET http://origin/ HTTP/1.1\r\nHost: origin\r\nAccept: */*\r\n\
+             X-A: 1\r\nX-B: 2\r\nProxy-Connection: close\r\n\r\n"
+        );
+        out.clear();
+        let unified = Forwarding { own_headers: None };
+        render_h1(&head(Some(unified)), &gate, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            "GET http://origin/ HTTP/1.1\r\nHost: origin\r\nAccept: */*\r\n\
+             Proxy-Connection: Keep-Alive\r\nX-A: 1\r\n\r\n"
+        );
+    }
+
     /// Another origin gets the library's Host, and Authorization and
     /// Cookie only when credentials may follow the transfer anywhere.
     #[test]
@@ -991,8 +1084,7 @@ mod tests {
             chunked: false,
             probe: false,
             cookie: None,
-            forwarded: false,
-
+            forwarded: None,
             headers: &headers,
         };
         let first = peer(b"127.0.0.1");
@@ -1039,7 +1131,7 @@ mod tests {
                 chunked: false,
                 probe: false,
                 cookie: None,
-                forwarded: false,
+                forwarded: None,
 
                 headers: &headers,
             };

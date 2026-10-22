@@ -436,9 +436,9 @@ cargo-mutants run on the milestone's diff.
     `--suppress-connect-headers`; a 407's challenge read only from a forwarding proxy (gated
     test 1616); SOCKS4, 4a and 5 (ENGINE.md 4.2), with `CURLOPT_SOCKS5_AUTH`,
     `CURLINFO_PROXY_ERROR` and the tool's `--socks4`, `--socks4a`, `--socks5` and
-    `--socks5-hostname`. 138 of the 158 proxy tests the Rust leg runs pass. Next: the proxy
-    headers (`CURLOPT_PROXYHEADER`, `CURLOPT_HEADEROPT`), the PROXY protocol and
-    `--preproxy`; gated test 1001 waits on `--range`, 729 on `--limit-rate`.
+    `--socks5-hostname`; the proxy's own headers, with `CURLOPT_PROXYHEADER`,
+    `CURLOPT_HEADEROPT` and `--proxy-header`. 145 of the 158 proxy tests the Rust leg runs
+    pass. Next: the PROXY protocol and `--preproxy`; gated test 1001 waits on `--range`, 729 on `--limit-rate`.
 32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as
     C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a
     binding crate per library (zlib, brotli, zstd), `--compressed`, `--tr-encoding` and

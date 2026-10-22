@@ -136,6 +136,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) write_out: Option<write_out::Format<'a>>,
     /// `--header`, in the order given.
     pub(crate) headers: Vec<&'a [u8]>,
+    /// `--proxy-header`, in the order given.
+    pub(crate) proxy_headers: Vec<&'a [u8]>,
     /// `--resolve`, in the order given.
     pub(crate) resolve: Vec<&'a [u8]>,
     /// `--connect-to`, in the order given.
@@ -677,18 +679,27 @@ pub(crate) fn apply<'a>(
                 .choose(wanted, msgs)
                 .map_err(|()| ParamError::BadUse)?;
         }
-        Opt::Header => {
+        Opt::Header | Opt::ProxyHeader => {
             let header = value.text();
+            let proxy = spec.opt == Opt::ProxyHeader;
             if header.first() == Some(&b'@') {
                 line.feature_not_implemented("reading headers from a file");
             } else if !header.iter().any(|&b| b == b':' || b == b';') {
+                let kind: &[u8] = if proxy { b"proxy" } else { b"HTTP" };
                 msgs.warn(&[
-                    b"The provided HTTP header '",
+                    b"The provided ",
+                    kind,
+                    b" header '",
                     header,
                     b"' does not look like a header?",
                 ]);
             }
-            line.current().headers.try_push(header)?;
+            let op = line.current();
+            if proxy {
+                op.proxy_headers.try_push(header)?;
+            } else {
+                op.headers.try_push(header)?;
+            }
         }
         Opt::Cookie => {
             // A string with `=` is cookies to send, else a file to read.
@@ -1117,7 +1128,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyCertType
         | Opt::ProxyCiphers
         | Opt::ProxyCrlfile
-        | Opt::ProxyHeader
         | Opt::ProxyHttp2
         | Opt::ProxyHttp3
         | Opt::ProxyInsecure

@@ -22,7 +22,7 @@ use crate::url::{GetOptions, Part, SetOptions, Url};
 
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing};
-use super::http1::request::{self, Authorization, CredentialGate, RequestHead};
+use super::http1::request::{self, Authorization, CredentialGate, Forwarding, RequestHead};
 use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
 use crate::options::AuthMethods;
@@ -241,6 +241,11 @@ fn with_netrc<H: Host>(
 }
 
 impl Request {
+    /// Credentials may go to the request's origin.
+    pub(crate) fn trusted(&self) -> Option<request::Trusted> {
+        self.gate.trusted()
+    }
+
     /// A request for `url`, whose scheme is `http`, after the transfer's
     /// earlier ones left it `inherited`.
     pub(crate) fn new<H: Host>(
@@ -499,12 +504,14 @@ impl Request {
             uri: &self.target,
             get_or_head,
         };
-        // The application's proxy headers, which would replace it, are
-        // none: its own headers are kept apart from them, and go beside
-        // (`Curl_checkProxyheaders`, with `sep_headers`).
+        // The proxy's own headers may replace it (`Curl_checkProxyheaders`).
+        let proxy_custom = options
+            .proxy
+            .own_headers(http)
+            .replaces(b"Proxy-Authorization");
         let proxy_auth = made(auth_state.side(Side::Proxy).output(
             proxy_secret,
-            false,
+            forwarded && proxy_custom,
             &request,
             random,
         ))?;
@@ -644,7 +651,9 @@ impl Request {
             chunked: chunked && asked.is_none(),
             probe,
             cookie: cookie.as_deref(),
-            forwarded,
+            forwarded: forwarded.then(|| Forwarding {
+                own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
+            }),
             headers: &http.headers,
         };
         let mut out = Vec::new();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::proto::http1::request::CredentialGate;
 
 /// Every line `input` gives out, each applied, until the answer ends or
 /// the input runs out; the head's end with `auth_problem`.
@@ -34,6 +35,8 @@ fn renders_connect_as_c() {
         http10: true,
         proxy_authorization: Some(("Basic", b"eW91YXJlOnlvdXJzZWxm")),
         user_agent: Some(b""),
+        headers: &UserHeaders::default(),
+        trusted: CredentialGate::FIRST.trusted(),
     };
     request.render(&mut out).unwrap();
     assert_eq!(
@@ -48,12 +51,69 @@ fn renders_connect_as_c() {
         http10: false,
         proxy_authorization: None,
         user_agent: Some(b"curl/test"),
+        headers: &UserHeaders::default(),
+        trusted: CredentialGate::FIRST.trusted(),
     };
     request.render(&mut out).unwrap();
     assert_eq!(
         out,
         b"CONNECT [::1]:80 HTTP/1.1\r\nHost: [::1]:80\r\nUser-Agent: curl/test\r\n\
           Proxy-Connection: Keep-Alive\r\n\r\n"
+    );
+}
+
+/// The application's lines for the proxy replace the library's Host,
+/// User-Agent and Proxy-Connection, then follow them as `CONNECT` sends
+/// them (tests 287 and 1428): a name trimmed, and an empty `Name;`; those
+/// with no value or no name left out, and Authorization and Cookie unless
+/// they may go.
+#[test]
+fn the_proxy_s_lines_replace_the_library_s_and_follow() {
+    let headers = UserHeaders::new([
+        &b"User-Agent: looser/2007"[..],
+        b"Host: elsewhere",
+        b"X-Pad :  v  ",
+        b"X-Empty;",
+        b"X-None:",
+        b"X-Semi; x",
+        b" : ignored",
+        b"no colon",
+        b"Cookie: a=b",
+    ])
+    .unwrap();
+    let request = |trusted| ConnectRequest {
+        authority: b"origin:80",
+        http10: false,
+        proxy_authorization: None,
+        user_agent: Some(b"curl/test"),
+        headers: &headers,
+        trusted,
+    };
+    let mut out = Vec::new();
+    request(CredentialGate::FIRST.trusted())
+        .render(&mut out)
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "CONNECT origin:80 HTTP/1.1\r\nProxy-Connection: Keep-Alive\r\n\
+         User-Agent: looser/2007\r\nHost: elsewhere\r\nX-Pad: v  \r\nX-Empty: \r\n\
+         Cookie: a=b\r\n\r\n"
+    );
+    out.clear();
+    request(None).render(&mut out).unwrap();
+    assert!(!out.windows(7).any(|w| w == b"Cookie:"));
+    let own = UserHeaders::new([&b"Proxy-Connection: close"[..]]).unwrap();
+    out.clear();
+    ConnectRequest {
+        headers: &own,
+        ..request(None)
+    }
+    .render(&mut out)
+    .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out),
+        "CONNECT origin:80 HTTP/1.1\r\nHost: origin:80\r\nUser-Agent: curl/test\r\n\
+         Proxy-Connection: close\r\n\r\n"
     );
 }
 

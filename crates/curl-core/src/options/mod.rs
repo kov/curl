@@ -114,6 +114,12 @@ pub struct Proxy {
     /// How a SOCKS5 proxy may authenticate the user
     /// (`CURLOPT_SOCKS5_AUTH`).
     pub socks5_auth: Socks5Auth,
+    /// The header lines an HTTP proxy is sent of its own
+    /// (`CURLOPT_PROXYHEADER`).
+    pub headers: UserHeaders,
+    /// The proxy is sent the application's headers for the origin in
+    /// their place (`CURLHEADER_UNIFIED` in `CURLOPT_HEADEROPT`).
+    pub unified_headers: bool,
 }
 
 /// The methods a SOCKS5 proxy may authenticate with
@@ -158,7 +164,20 @@ impl Proxy {
             auth: self.auth,
             suppress_connect_headers: self.suppress_connect_headers,
             socks5_auth: self.socks5_auth,
+            headers: self.headers.try_clone()?,
+            unified_headers: self.unified_headers,
         })
+    }
+
+    /// The header lines an HTTP proxy is sent of its own, which replace
+    /// the library's to it (`Curl_checkProxyheaders`): the origin's where
+    /// the two are unified.
+    pub(crate) fn own_headers<'a>(&'a self, http: &'a Http) -> &'a UserHeaders {
+        if self.unified_headers {
+            &http.headers
+        } else {
+            &self.headers
+        }
     }
 
     /// The user and password from `user:password`, split at the first

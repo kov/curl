@@ -608,6 +608,14 @@ fn apply(
             // A POST's body depends on its `Transfer-Encoding`.
             callbacks::sync_upload(options, me, set)?;
         }
+        (ffi::CURLOPT_PROXYHEADER, Ptr(p)) => {
+            // SAFETY: the application passes a list or NULL.
+            options.proxy.headers = UserHeaders::new(unsafe { list_lines(p) })?;
+        }
+        // Any bit but `CURLHEADER_SEPARATE`'s is ignored, as in C.
+        (ffi::CURLOPT_HEADEROPT, Long(n)) => {
+            options.proxy.unified_headers = n & ffi::CURLHEADER_SEPARATE == 0;
+        }
         (ffi::CURLOPT_CONNECT_TO, Ptr(p)) => {
             // SAFETY: the application passes a list or NULL.
             options.connect_to.set(unsafe { list_lines(p) })?;

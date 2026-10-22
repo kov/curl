@@ -16,12 +16,13 @@ use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
 use crate::options::ProxyType;
+use crate::proto::ProtoState;
 use crate::proto::http::auth::{
     AuthAct, AuthRequest, Challenges, HeardNote, Offered, OutputError, PeerAsked, Secret, Side,
 };
 use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
-use crate::proto::http1::request::decimal;
+use crate::proto::http1::request::{CredentialGate, decimal};
 use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read};
 use crate::time::Instant;
 use crate::trace;
@@ -106,12 +107,16 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshak
         get_or_head: true,
     };
     let random = |bytes: &mut [u8; 12]| curl_os::random::fill(bytes).map_err(|_| ());
-    // The application's proxy headers, which could replace it, are none.
+    let options = cx.easy().options();
+    let custom = options
+        .proxy
+        .own_headers(&options.http)
+        .replaces(b"Proxy-Authorization");
     let output = cx
         .easy_mut()
         .auth
         .side(Side::Proxy)
-        .output(secret, false, &request, random);
+        .output(secret, custom, &request, random);
     let output = output.map_err(|e| match e {
         OutputError::OutOfMemory => ErrorKind::OutOfMemory,
         OutputError::Random => ErrorKind::FailedInit,
@@ -127,11 +132,18 @@ fn start<H: Host>(c: &Connecting, cx: &mut StepCx<'_, H>) -> Result<Box<Handshak
     }
     trace::info_with(cx, &[b"Establishing HTTP proxy tunnel to ", &authority]);
     let mut out = Vec::new();
+    let options = cx.easy().options();
+    let trusted = match &c.proto {
+        ProtoState::Http(request) => request.trusted(),
+        _ => CredentialGate::FIRST.trusted(),
+    };
     let connect = ConnectRequest {
         authority: &authority,
         http10,
         proxy_authorization: output.header.as_ref().map(|(m, v)| (m.name(), &v[..])),
-        user_agent: cx.easy().options().http.user_agent.as_deref(),
+        user_agent: options.http.user_agent.as_deref(),
+        headers: options.proxy.own_headers(&options.http),
+        trusted,
     };
     connect.render(&mut out).map_err(oom)?;
     let tunnel = Tunnel {

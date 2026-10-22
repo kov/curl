@@ -13,6 +13,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::chunked::{ChunkDecoder, ChunkError};
 use super::fields::{self, BadLine};
 use super::framing::value_of;
+use super::request::{Trusted, UserHeaders};
 
 /// The longest line of an answer (`DYN_PROXY_CONNECT_HEADERS`).
 const MAX_LINE: usize = 16384;
@@ -28,6 +29,11 @@ pub(crate) struct ConnectRequest<'a> {
     pub(crate) proxy_authorization: Option<(&'static str, &'a [u8])>,
     /// None, or an empty one, sends none.
     pub(crate) user_agent: Option<&'a [u8]>,
+    /// The application's lines for the proxy, which replace the
+    /// library's Host, User-Agent and Proxy-Connection and follow them.
+    pub(crate) headers: &'a UserHeaders,
+    /// Its Authorization and Cookie may go (`Curl_auth_allowed_to_host`).
+    pub(crate) trusted: Option<Trusted>,
 }
 
 impl ConnectRequest<'_> {
@@ -40,15 +46,26 @@ impl ConnectRequest<'_> {
             }
             out.try_extend_from_slice(b"\r\n")
         };
+        let theirs = |name: &[u8]| self.headers.replaces(name);
         line(&[b"CONNECT ", self.authority, b" HTTP/", version])?;
-        line(&[b"Host: ", self.authority])?;
+        if !theirs(b"Host") {
+            line(&[b"Host: ", self.authority])?;
+        }
         if let Some((method, value)) = self.proxy_authorization {
             line(&[b"Proxy-Authorization: ", method.as_bytes(), b" ", value])?;
         }
-        if let Some(ua) = self.user_agent.filter(|ua| !ua.is_empty()) {
+        if let Some(ua) = self
+            .user_agent
+            .filter(|ua| !ua.is_empty() && !theirs(b"User-Agent"))
+        {
             line(&[b"User-Agent: ", ua])?;
         }
-        line(&[b"Proxy-Connection: Keep-Alive"])?;
+        if !theirs(b"Proxy-Connection") {
+            line(&[b"Proxy-Connection: Keep-Alive"])?;
+        }
+        for (name, value) in self.headers.for_connect(self.trusted) {
+            line(&[name, b": ", value])?;
+        }
         line(&[])
     }
 }

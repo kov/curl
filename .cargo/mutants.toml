@@ -235,4 +235,11 @@ exclude_re = [
     # does so at the request's first send or once its head is whole, the
     # request is never answered.
     'conn/io\.rs:.*: replace > with >= in <impl Socket for FakeSocket>::send$',
+    # A URL with none of `{}[]` globs to itself, one fixed part.
+    'curl-tool/src/glob\.rs:.*: replace has_patterns -> bool with true$',
+    # At the URL's end the inner loop reads nothing and the body breaks.
+    'curl-tool/src/glob\.rs:.*: replace < with <= in Glob::parse_all$',
+    # Neither factor is ever below 1: the amount starts at 1, and a set or
+    # range makes at least one URL.
+    'curl-tool/src/glob\.rs:.*: replace \|\| with && in multiply$',
 ]

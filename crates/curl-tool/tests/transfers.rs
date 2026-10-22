@@ -619,3 +619,18 @@ fn refuses_binary_output_to_a_terminal() {
     let r = curl_env(&s, &["-o", "-", &s.url("bin")], &tty);
     assert_eq!((r.code, &r.stdout[..]), (0, &b"a\0b"[..]));
 }
+
+/// A refused pattern is shown with a caret under its column; one with no
+/// column is shown alone.
+#[test]
+fn reports_a_bad_pattern() {
+    let s = Scratch::new("badglob");
+    let r = curl(&s, &["h/[2-1]"]);
+    assert_eq!(r.code, 3);
+    assert_eq!(
+        r.stderr,
+        "curl: (3) bad range in position 8:\nh/[2-1]\n       ^\n"
+    );
+    let r = curl(&s, &[&format!("h/{}", "{a,b}".repeat(64))]);
+    assert_eq!((r.code, &r.stderr[..]), (3, "curl: (3) range overflow\n"));
+}

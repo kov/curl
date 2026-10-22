@@ -532,11 +532,13 @@ fn parse_range(
             }
         }
         *pos += *at - start;
+        // A start past the end makes the span negative, narrower than any
+        // step.
         let span = max - min;
         if !matched
             || step == 0
             || (min == max && step != 1)
-            || (min != max && (min > max || step as i32 > span || span > i32::from(b'z' - b'a')))
+            || (min != max && (step as i32 > span || span > i32::from(b'z' - b'a')))
         {
             return Err(GlobError::malformed("bad range", *pos));
         }
@@ -583,7 +585,8 @@ fn parse_range(
         }
     }
     *pos += *at - start;
-    if step == 0 || (min == max && step != 1) || (min != max && (min > max || step > max - min)) {
+    // A start past the end is a step wider than the range.
+    if step == 0 || (min == max && step != 1) || (min != max && step > max - min) {
         return Err(GlobError::malformed("bad range", *pos));
     }
     if i64::MAX - step < max {
@@ -635,6 +638,40 @@ mod tests {
             ["http://[::1]:8/1", "http://[::1]:8/2"]
         );
         assert_eq!(all("h/a[]").0, ["h/a[]"]);
+        // A range's bounds may be equal, its step as wide as it, and a
+        // blank may follow the `-` of numbers.
+        assert_eq!(all("h/[a-c]x").0, ["h/ax", "h/bx", "h/cx"]);
+        assert_eq!(all("h/[a-c:2]").0, ["h/a", "h/c"]);
+        assert_eq!(all("h/[a-a]").0, ["h/a"]);
+        assert_eq!(all("h/[a-z]").1, 26);
+        assert_eq!(all("h/[3-3]").0, ["h/3"]);
+        assert_eq!(all("h/[1- 3]").0, ["h/1", "h/2", "h/3"]);
+        assert_eq!(all("h/[1-3:2]").0, ["h/1", "h/3"]);
+        // The last end whose step cannot overflow.
+        let (_, n) = Glob::parse(b"h/[1-9223372036854775806]").unwrap();
+        assert_eq!(n, 9_223_372_036_854_775_806);
+        // A name is 1 to 64 bytes: `<>`, or a longer one, is text.
+        let long = "a".repeat(64);
+        assert_eq!(all(&format!("h/{{<{long}>x}}")).0, ["h/x"]);
+        assert_eq!(
+            all(&format!("h/{{<{long}a>x}}")).0,
+            [format!("h/<{long}a>x")]
+        );
+        assert_eq!(all("h/{<>a}").0, ["h/<>a"]);
+    }
+
+    /// A URL may have 255 patterns, its fixed parts counted, and no more.
+    #[test]
+    fn counts_its_patterns() {
+        let url = |n: usize| -> Vec<u8> {
+            (0..n)
+                .flat_map(|i| if i % 2 == 0 { &b"a"[..] } else { b"{b}" })
+                .copied()
+                .collect()
+        };
+        assert!(Glob::parse(&url(255)).is_ok());
+        let e = Glob::parse(&url(256)).err().unwrap();
+        assert_eq!((e.what, e.pos), (Some("too many {} sets"), 385));
     }
 
     /// Errors carry C's words and its column, from 1.
@@ -652,6 +689,31 @@ mod tests {
         assert_eq!(refused("h/[a-z:0]"), (Some("bad range"), 10));
         assert_eq!(refused("h/[1-3:5]"), (Some("bad range"), 10));
         assert_eq!(refused("{<n>a}{<n>b}"), (Some("Duplicate glob name"), 10));
+        // The columns count escapes, names and the elements before.
+        let cases = [
+            (r"h/\{a}", "unmatched close brace/bracket", 6),
+            ("h/{<>a}x}", "unmatched close brace/bracket", 8),
+            ("h/[<n>2-1]", "bad range", 11),
+            ("h/{a,b", "unmatched brace", 7),
+            (r"h/{a\", "unmatched brace", 6),
+            (r"h/{\a", "unmatched brace", 6),
+            ("h/[ab]]", "bad range", 4),
+            ("h/[a-c", "bad range", 4),
+            // C reads the URL up to its zero.
+            ("h/[a-\0]x", "bad range", 4),
+            ("h/[c-a]", "bad range", 8),
+            ("h/[a-a:2]", "bad range", 10),
+            ("h/[a-c:3]", "bad range", 10),
+            ("h/[A-z]", "bad range", 8),
+            ("h/[3-1]", "bad range", 8),
+            ("h/[1-3", "bad range", 7),
+            ("h/[3-3:2]", "bad range", 10),
+            ("h/[1-3:3]", "bad range", 10),
+            ("h/[1-9223372036854775807]", "range end/step overflow", 26),
+        ];
+        for (url, what, pos) in cases {
+            assert_eq!(refused(url), (Some(what), pos), "{url}");
+        }
     }
 
     /// `#N` names the Nth pattern; `#<name>` a named one, which must
@@ -676,5 +738,9 @@ mod tests {
             )
         );
         assert_eq!(name(&Glob::literal(), "#1#<").unwrap(), "#1#<");
+        // The last pattern can be named.
+        let (mut glob, _) = Glob::parse(b"{a,b}").unwrap();
+        glob.next_url().unwrap();
+        assert_eq!(name(&glob, "#1").unwrap(), "a");
     }
 }

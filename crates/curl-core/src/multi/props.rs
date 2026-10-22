@@ -132,7 +132,7 @@ fn run(ops: &[Op]) {
         match *op {
             Op::Add(url) => {
                 let armed = ev.abort_next;
-                match m.add(easy_for(url), (), &mut ev) {
+                match m.add(Box::new(easy_for(url)), (), &mut ev) {
                     Ok(id) => {
                         assert!(!ids.contains(&id), "{id:?} handed out twice");
                         ids.push(id);

@@ -20,7 +20,7 @@ mod wait;
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryArc, try_box};
+use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
 use crate::conn::{AddLimits, Caches};
@@ -155,7 +155,10 @@ enum Life {
 
 struct Slot<H: Host> {
     owner: H::Transfer,
-    easy: Easy,
+    /// In memory of its own, which the handle's owner hands in and takes
+    /// back: the transfer's options and report do not move, nor are they
+    /// kept twice.
+    easy: Box<Easy>,
     /// Reachable while the run is out, for the transfer's own handlers.
     pause: Pause,
     /// The transfer's own handler changed its pause while its run was out:
@@ -165,20 +168,20 @@ struct Slot<H: Host> {
     /// Beside the pause, which starts it over.
     speedometer: Speedometer,
     /// Out only while the transfer is being stepped.
-    run: Option<Box<Run>>,
+    run: Option<Run>,
 }
 
 /// An `Easy` the multi did not take, and why.
 #[derive(Debug)]
 pub struct AddError {
     pub kind: MultiErrorKind,
-    pub easy: Easy,
+    pub easy: Box<Easy>,
 }
 
 /// A transfer taken out of the multi.
 #[derive(Debug)]
 pub struct Removed<H: Host> {
-    pub easy: Easy,
+    pub easy: Box<Easy>,
     pub owner: H::Transfer,
     /// The timer callback's verdict on the change; an abort leaves the
     /// multi dead, but the transfer is out.
@@ -290,13 +293,9 @@ impl<H: Host> Multi<H> {
     /// Add a transfer, to run at the next `perform` (`curl_multi_add_handle`).
     /// Everything the transfer can need from the multi's tables is
     /// reserved here, so running it allocates nothing in them.
-    #[expect(
-        clippy::result_large_err,
-        reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
-    )]
     pub fn add(
         &mut self,
-        easy: Easy,
+        easy: Box<Easy>,
         owner: H::Transfer,
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<TransferId, AddError> {
@@ -305,20 +304,12 @@ impl<H: Host> Multi<H> {
         added
     }
 
-    #[expect(
-        clippy::result_large_err,
-        reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
-    )]
     fn add_unchecked(
         &mut self,
-        easy: Easy,
+        easy: Box<Easy>,
         owner: H::Transfer,
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<TransferId, AddError> {
-        #[expect(
-            clippy::result_large_err,
-            reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
-        )]
         let refuse = |kind, easy| Err(AddError { kind, easy });
         if self.life == Life::Dead {
             // A dead multi starts over once its transfers are gone.
@@ -332,9 +323,6 @@ impl<H: Host> Multi<H> {
         // private multi goes.
         let mut easy = easy;
         easy.private = None;
-        let Ok(run) = try_box(Run::new()) else {
-            return refuse(MultiErrorKind::OutOfMemory, easy);
-        };
         let Ok(vacancy) = self.slots.reserve() else {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         };
@@ -345,6 +333,7 @@ impl<H: Host> Multi<H> {
         {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         }
+        let run = Run::new();
         #[cfg(feature = "debug-hooks")]
         let run = {
             let mut run = run;
@@ -582,11 +571,11 @@ impl<H: Host> Multi<H> {
     }
 
     pub fn easy(&self, id: TransferId) -> Option<&Easy> {
-        self.slots.get(id).map(|s| &s.easy)
+        self.slots.get(id).map(|s| &*s.easy)
     }
 
     pub fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.slots.get_mut(id).map(|s| &mut s.easy)
+        self.slots.get_mut(id).map(|s| &mut *s.easy)
     }
 
     fn run_of(&self, id: TransferId) -> &Run {
@@ -680,7 +669,7 @@ impl<H: Host> Multi<H> {
     /// Give back the connection of transfer `id`, whose `Run` is out of
     /// its slot, as a premature end: traced to the transfer, as C's
     /// `multi_done` runs with it still attached.
-    fn abandon(&mut self, id: TransferId, run: Box<Run>, ev: &mut dyn MultiEvents<H>) {
+    fn abandon(&mut self, id: TransferId, run: Run, ev: &mut dyn MultiEvents<H>) {
         let now = self.clock.now();
         let mut cx = StepCx {
             me: id,
@@ -1009,7 +998,7 @@ fn pause_transfer<H: Host>(
 /// Put transfer `id`'s run back in its slot, and judge a pause its own
 /// handler asked for while the run was out, as `pause_transfer` judges
 /// one asked for while it is in.
-fn put_back<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, run: Box<Run>) {
+fn put_back<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, run: Run) {
     let slot = slots.get_mut(id).expect("still in the multi");
     if std::mem::take(&mut slot.judge_pause)
         && !slot.pause.blocks(run.state.directions(slot.easy.options()))

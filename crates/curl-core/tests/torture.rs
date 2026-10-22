@@ -147,6 +147,9 @@ fn scenario() -> Result<Outcome, OutOfMemory> {
             continue;
         }
         easy.options_mut().limits.total = TimeLimit::from_millis(1000);
+        let Ok(easy) = try_box(easy) else {
+            continue;
+        };
         match m.add(easy, (), &mut ev) {
             Ok(added) => {
                 *id = Some(added);
@@ -318,7 +321,7 @@ fn pause_scenario() -> Result<Paused, OutOfMemory> {
     script.push(Piece::SendAll);
     script.push(Piece::Body(pieces(10)?));
     easy.options_mut().script = Some(Script::new(script)?);
-    let id = match m.add(easy, (), &mut NoEvents) {
+    let id = match m.add(try_box(easy)?, (), &mut NoEvents) {
         Ok(id) => id,
         Err(AddError {
             kind: MultiErrorKind::OutOfMemory,
@@ -481,7 +484,7 @@ fn get_through(
     o.callbacks.write = Some(Handler::write(Taker(took.clone()))?);
     o.callbacks.header = Some(Handler::header(Taker(took.clone()))?);
     set(o)?;
-    let id = match m.add(easy, (), &mut NoEvents) {
+    let id = match m.add(try_box(easy)?, (), &mut NoEvents) {
         Ok(id) => id,
         Err(AddError {
             kind: MultiErrorKind::OutOfMemory,
@@ -689,7 +692,7 @@ fn a_lost_trailer_line_fails_the_request() {
     o.http.headers =
         UserHeaders::new([&b"Transfer-Encoding: chunked"[..], b"Expect:"]).expect("headers");
     o.callbacks.trailer = Some(Handler::trailer(LosesOne).expect("a handler"));
-    let id = m.add(easy, (), &mut NoEvents).expect("added");
+    let id = m.add(Box::new(easy), (), &mut NoEvents).expect("added");
     let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
         .expect("the transfer is in the multi");
     assert_eq!(result, Err(ErrorKind::OutOfMemory));

@@ -95,7 +95,7 @@ fn body(b: &[u8]) -> Piece {
 /// Run `e` alone to its end and return its result.
 fn run_alone(e: Easy) -> Result<(), ErrorKind> {
     let mut m = multi();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     drive_to_completion(&mut m, id, &mut NoEvents).unwrap()
 }
 
@@ -183,7 +183,7 @@ fn a_short_count_fails_with_c_s_reason() {
     e.options_mut().callbacks.write = Some(handler(h));
     e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
     let mut m = multi();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Err(ErrorKind::WriteError));
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
@@ -237,7 +237,7 @@ fn a_handler_s_own_reason_is_the_only_one() {
     e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
     e.options_mut().callbacks.failure = Some(Handler::text(told.clone()).unwrap());
     let mut m = multi();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Err(ErrorKind::WriteError));
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
@@ -269,7 +269,7 @@ fn the_first_reason_is_the_one_kept() {
     e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
     e.options_mut().callbacks.failure = Some(Handler::text(told.clone()).unwrap());
     let mut m = multi();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     drive_to_completion(&mut m, id, &mut NoEvents)
         .unwrap()
         .unwrap_err();
@@ -306,7 +306,7 @@ fn a_handler_reaches_its_own_transfer() {
     let seen = std::sync::Arc::new(Introspect(crate::test_cell::Cell::new(None)));
     let mut e = script(vec![body(b"x")]);
     e.options_mut().callbacks.write = Some(Handler::write(RcWrite(seen.clone())).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     assert_eq!(
         drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
         Ok(())
@@ -551,7 +551,7 @@ fn failed_output_stays_failed() {
     e.options_mut().callbacks.write = Some(handler(h));
     e.options_mut().callbacks.header =
         Some(Handler::header(Recorder::new("header", &log)).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     // Exchanging, as a protocol delivering output is.
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
@@ -596,7 +596,7 @@ fn probed(include_header: bool) -> (Vec<(u64, u64, Duration)>, crate::report::Si
     ]);
     e.options_mut().callbacks.write = Some(Handler::write(probe.clone()).unwrap());
     e.options_mut().output.include_header = include_header;
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     assert_eq!(
         drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
         Ok(())
@@ -633,7 +633,7 @@ fn a_connect_answer_does_not_start_the_response() {
         Piece::Connect(b"Via: proxy\r\n".to_vec()),
         Piece::Status(b"HTTP/1.1 200 OK\r\n".to_vec()),
     ]
-    .map(|p| m.add(script(vec![p]), (), &mut NoEvents).unwrap());
+    .map(|p| m.add(Box::new(script(vec![p])), (), &mut NoEvents).unwrap());
     for id in ids {
         assert_eq!(
             drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
@@ -673,9 +673,9 @@ fn next(e: &Easy, prev: Option<HeaderCursor>) -> Option<HeaderView<'_>> {
 
 /// Run `e` alone to its end and give it back.
 fn rerun(m: &mut Multi, e: Easy) -> Easy {
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     assert_eq!(drive_to_completion(m, id, &mut NoEvents).unwrap(), Ok(()));
-    m.remove(id, &mut NoEvents).unwrap().easy
+    *m.remove(id, &mut NoEvents).unwrap().easy
 }
 
 /// Header lines are stored as they arrive, the status line and the end of
@@ -833,7 +833,7 @@ fn paused_play(
     let mut e = script(pieces);
     e.options_mut().output.include_header = include_header;
     let calls = planned(&mut e, pausing_on(pause_on));
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..100 {
         m.perform(&mut NoEvents).unwrap();
         if let Some(msg) = m.info_read() {
@@ -951,7 +951,7 @@ fn a_pause_holds_the_body_before_it_is_decoded() {
     let mut e = script(vec![Piece::Expand(FACTOR), Piece::Body(bytes(size))]);
     let writer = PausesFirst::default();
     e.options_mut().callbacks.write = Some(handler(writer.clone()));
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert!(m.info_read().is_none(), "not over while output is held");
     assert_eq!(writer.took.get(), 0);
@@ -968,7 +968,7 @@ fn the_paused_piece_is_given_again_whole() {
     let mut m = multi();
     let mut e = script(vec![Piece::Body(bytes(40000))]);
     let calls = planned(&mut e, pausing_on(&[1]));
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let lens: Vec<_> = calls
         .lock()
@@ -1006,7 +1006,7 @@ fn held_output_keeps_the_transfer_going_until_its_time_is_up() {
     e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
     planned(&mut e, pausing_on(&[0]));
     drop(clock);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     assert_eq!(
         drive_to_completion(&mut m, id, &mut NoEvents),
         Ok(Err(ErrorKind::OperationTimedout))
@@ -1041,7 +1041,7 @@ fn a_decoder_learns_whether_the_transfer_s_time_is_up() {
         let mut e = easy("stall://a");
         e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
         let calls = planned(&mut e, pausing_on(&[]));
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         clock.advance(Duration::from_millis(advance));
         m.with_step_cx(id, |cx| {
@@ -1081,7 +1081,7 @@ impl crate::coding::Decoder for Refuses {
 fn no_bytes_reach_no_decoder() {
     let mut m = multi();
     let e = easy("stall://a");
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut p = Pipeline::new(Reach::Network);
@@ -1098,7 +1098,7 @@ fn a_pause_where_none_is_supported_fails_the_write() {
     let mut m = multi();
     let mut e = easy("stall://a");
     let calls = planned(&mut e, pausing_on(&[0]));
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut p = Pipeline::new(Reach::Local);
@@ -1121,7 +1121,9 @@ fn at_most_64_mib_of_output_is_held() {
 #[test]
 fn a_transfer_not_exchanging_cannot_be_paused() {
     let mut m = multi();
-    let id = m.add(easy("null://a"), (), &mut NoEvents).unwrap();
+    let id = m
+        .add(Box::new(easy("null://a")), (), &mut NoEvents)
+        .unwrap();
     let ev = &mut NoEvents;
     assert_eq!(
         m.pause(id, PauseRequest::RECV, ev),
@@ -1155,7 +1157,7 @@ fn a_receive_pause_finishes_the_write_under_way() {
         }
         Write::Accepted
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let lens: Vec<_> = calls
         .lock()
@@ -1188,13 +1190,13 @@ fn a_sibling_s_unpause_replays_at_once() {
     let mut m = multi();
     let mut a = script(vec![Piece::Body(bytes(40000))]);
     let a_calls = planned(&mut a, pausing_on(&[0, 2]));
-    let a_id = m.add(a, (), &mut NoEvents).unwrap();
+    let a_id = m.add(Box::new(a), (), &mut NoEvents).unwrap();
     let mut b = script(vec![body(b"1"), body(b"2")]);
     let b_calls = planned(&mut b, move |cx, _| {
         cx.pause(a_id, PauseRequest::CONT).unwrap();
         Write::Accepted
     });
-    m.add(b, (), &mut NoEvents).unwrap();
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let a_seen: Vec<_> = a_calls
         .lock()
@@ -1232,7 +1234,7 @@ fn an_unpause_inside_the_replay_lets_it_go_on() {
         }
         _ => Write::Accepted,
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     let lens: Vec<_> = calls
@@ -1261,7 +1263,7 @@ fn a_failed_replay_fails_the_unpause_and_then_the_transfer() {
         1 => Write::Fail,
         _ => Write::Accepted,
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         m.pause(id, PauseRequest::CONT, &mut NoEvents),
@@ -1302,7 +1304,7 @@ fn an_unpause_tells_the_timer() {
     let mut e = script(vec![body(b"one")]);
     planned(&mut e, pausing_on(&[0]));
     let ev = &mut Timers::default();
-    let id = m.add(e, (), ev).unwrap();
+    let id = m.add(Box::new(e), (), ev).unwrap();
     m.perform(ev).unwrap();
     let before = ev.0;
     // A change, but still paused every way it wants.
@@ -1333,7 +1335,7 @@ fn a_receive_pause_inside_the_replay_lets_it_finish() {
         }
         _ => Write::Accepted,
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     let seen: Vec<_> = calls
@@ -1368,7 +1370,7 @@ fn output_written_while_held_goes_behind_it() {
     let mut m = multi();
     let mut e = easy("stall://a");
     let calls = planned(&mut e, pausing_on(&[0]));
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut p = Pipeline::new(Reach::Network);
@@ -1402,7 +1404,7 @@ fn accounting() -> (Multi, TransferId, Log, Trace) {
     e.options_mut().callbacks.write = Some(handler(Recorder::new("write", &log)));
     e.options_mut().callbacks.debug = Some(Handler::debug(trace.clone()).unwrap());
     let mut m = multi();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     (m, id, log, trace)
 }

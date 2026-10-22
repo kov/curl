@@ -50,7 +50,7 @@ numbers are those of `SCOPE.md`.
    context only if C allows that call from that callback. Contexts reach every other transfer
    and the multi's tables through `EngineRest`.
 9. **No engine borrow is live across a call-out except two owned values moved out of their
-   homes**: the stepping transfer's `Box<Run>` and its connection's receive buffer. Everything
+   homes**: the stepping transfer's `Run` and its connection's receive buffer. Everything
    else stays in `EngineRest`, which the context borrows.
 10. **Side effects are synchronous where C's are.** The timer callback fires inside `add`,
     `remove` and `pause`; the socket callback fires inside `remove` and `pause`; the pollset of
@@ -328,11 +328,11 @@ pub struct Multi<H: Host = NoHost> {
 
 pub(crate) struct Slot<H: Host> {
     owner: H::Transfer,
-    easy: Easy,                      // options + live report; reachable from contexts
+    easy: Box<Easy>,                 // options + live report; reachable from contexts
     pause: Pause,                    // reachable while the run is out (§3.6)
     judge_pause: bool,               // its own handler paused while it was out
     speedometer: Speedometer,        // beside the pause, which starts it over
-    run: Option<Box<Run>>,           // see below
+    run: Option<Run>,                // see below
 }
 pub(crate) struct Run {              // created at add, dropped at removal
     state: TransferState,
@@ -345,10 +345,17 @@ pub(crate) struct Run {              // created at add, dropped at removal
 Planned with the steps that need them: an internal owner for transfers the engine makes itself
 (`Owner::Internal`, with server push), the pending cursor (with `WaitReason`), the shutdown set, and, in `Run`, the follow, auth and rate-limit state.
 
-A row holds its slot boxed: a slot is about a kilobyte, and a table starts with C's sixteen
+A row holds its slot boxed: a slot is most of a kilobyte, and a table starts with C's sixteen
 rows, which C's limits on a transfer's memory count as pointers (libtest 500).
 
-`Slot.run` is `None` in exactly one situation: while the engine has moved the `Box<Run>` out to
+The `Easy` is boxed on its own and handed in and out by that box (`Multi::add` takes a
+`Box<Easy>`; `Removed` and `AddError` give it back): the C shim keeps a handle's `Easy` in the
+same box while it is on its own, so its options and report exist once, wherever the handle is,
+and a handle's memory is one `Easy`, not one in the shim's handle and a second in the slot
+(libtest 751 adds a thousand handles under a cap). The `Run` lives in the slot, as C's
+per-transfer state lives in its `Curl_easy`: one allocation at `add`, not two.
+
+`Slot.run` is `None` in exactly one situation: while the engine has moved the `Run` out to
 step it, and for that duration the slot is reachable only through `EngineRest`, whose methods
 treat the missing run as "this is the transfer being stepped". It is not a lifecycle flag: the
 `Run` exists from `add` to `remove`, and `TransferState::Init` and `Completed` are its first and
@@ -713,7 +720,7 @@ out, is `BadEasyHandle`.
 `run_dirty` iterates by index cursor, re-reading the dirty set after each transfer; a transfer
 marked dirty by a callback at a higher index is visited in the same pass (C's `bset_next`).
 
-**`run_single(id, now)`** moves the `Box<Run>` out of the slot (a pointer move), and loops
+**`run_single(id, now)`** moves the `Run` out of the slot, and loops
 while the step returns `Wake::Again`: deadline check for connected states, dispatch on the
 variant, the extra deadline check before DO, then `is_finished` (error → `fail`; else the
 progress callback once connected, `Abort` → `Done(Err)`). It puts the `Run` back before
@@ -759,7 +766,7 @@ callback nested inside them gets its own `EventCx`.
 
 The rules that keep this sound:
 - **During a call-out, the engine holds only owned values moved out of their homes**: the
-  stepping transfer's `Box<Run>` and, while delivering received bytes, the connection's
+  stepping transfer's `Run` and, while delivering received bytes, the connection's
   `RecvBuf` (taken with `mem::take`, which allocates nothing, and put back after delivery).
   The pool, the other slots and every table stay in `EngineRest`. No iterator over engine state
   is live across a call-out. An option is never moved out: a callback reaches the options and
@@ -782,7 +789,7 @@ The rules that keep this sound:
   handler, its run out of the slot, sets `judge_pause`; the engine judges it when the run is
   back (`put_back`), against the protocol as the step left it.
 - **A call on a sibling transfer** routes to that slot. A sibling's unpause flushes its
-  pipeline synchronously by the same rule as a step: its `Box<Run>` is moved out for the flush
+  pipeline synchronously by the same rule as a step: its `Run` is moved out for the flush
   and put back after, so the handlers it calls get a context whose `EngineRest` does not alias
   it. A `pause` reaching a transfer whose `Run` is already out (the stepping one, or one being
   flushed) finds no pipeline to flush and only changes the value; nesting is bounded by that,
@@ -1900,7 +1907,8 @@ Each is either unobservable through the ABI or a fixed bug:
 | What | When | Bound |
 |---|---|---|
 | arena row, timer entry, dirty capacity, socket-user and notification capacity | `add` (fails with the `Easy` handed back) | transfers added |
-| `Box<Run>` | `add` | one per transfer |
+| `Box<Slot>` (the `Run` in it) | `add` | one per transfer |
+| `Box<Easy>` | the shim's `curl_easy_init` and `curl_easy_duphandle`; `Easy::perform` | one per handle |
 | `ConnectMachine`, attempts' sockets, `Conn` buffers, layer pipes | acquire / stage entry | limits, BUFFERSIZE, UPLOAD_BUFFERSIZE |
 | `HeaderStore` growth | per line, after the budget check | 300 KiB/response, 20× per transfer, 5000 |
 | `HeldOutput` | only while held | 64 MiB → TooLarge |

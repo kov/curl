@@ -275,26 +275,27 @@ witness: curl-core multi::props::random_calls_keep_the_multi_consistent
             let _ = id;
         }
 
-=== a transfer's run is boxed infallibly at add
+=== a transfer's slot is boxed infallibly at add
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core add_perform_remove_survives_every_allocation_failing
 --- old
-        let Ok(run) = try_box(Run::new()) else {
+        let slot = curl_alloc::try_box_or_back(Slot {
+            owner,
+            easy,
+            pause: Pause::default(),
+            judge_pause: false,
+            speedometer: Speedometer::default(),
+            run: Some(run),
+        });
 --- new
-        let Ok::<_, OutOfMemory>(run) = Ok(Box::new(Run::new())) else {
-
-=== an add refused for memory leaks the run it made
-file: crates/curl-core/src/multi/mod.rs
-witness: curl-core add_perform_remove_survives_every_allocation_failing
---- old
-            || self.notify.reserve(rows).is_err()
-        {
-            return refuse(MultiErrorKind::OutOfMemory, easy);
---- new
-            || self.notify.reserve(rows).is_err()
-        {
-            std::mem::forget(run);
-            return refuse(MultiErrorKind::OutOfMemory, easy);
+        let slot = Ok::<Box<Slot<H>>, Slot<H>>(Box::new(Slot {
+            owner,
+            easy,
+            pause: Pause::default(),
+            judge_pause: false,
+            speedometer: Speedometer::default(),
+            run: Some(run),
+        }));
 
 === notifications get less room than a pass can queue
 file: crates/curl-core/src/multi/notify.rs

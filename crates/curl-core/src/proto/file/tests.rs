@@ -155,10 +155,10 @@ fn run(e: Easy) -> (Result<(), ErrorKind>, Easy) {
         waker: None,
     };
     let mut m: Multi = Multi::new(env).unwrap();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     assert_eq!(m.perform(&mut NoEvents).unwrap(), 0, "over in one pass");
     let result = m.info_read().expect("a message").result;
-    (result, m.remove(id, &mut NoEvents).unwrap().easy)
+    (result, *m.remove(id, &mut NoEvents).unwrap().easy)
 }
 
 fn down(total: Option<u64>, now: u64) -> ProgressNow {

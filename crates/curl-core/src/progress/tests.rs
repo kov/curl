@@ -321,7 +321,7 @@ fn the_handler_is_called_at_each_pass_and_at_the_end() {
     let (mut m, clock) = multi();
     let mut e = script(vec![Piece::Size(1000), body(400), Piece::Yield, body(600)]);
     let calls = recorded(&mut e, go);
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     clock.advance(Duration::from_millis(1));
     m.perform(&mut NoEvents).unwrap();
     let known = |n| ProgressNow {
@@ -362,7 +362,7 @@ fn progress_off_calls_nothing_but_takes_stock() {
     let calls = recorded(&mut e, go);
     let sink = metered(&mut e);
     e.options_mut().progress = Progress::Off;
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_millis(10));
     m.perform(&mut NoEvents).unwrap();
@@ -387,7 +387,7 @@ fn an_abort_fails_the_transfer_with_no_last_call() {
                 ProgressVerdict::Continue
             }
         });
-        m.add(e, (), &mut NoEvents).unwrap();
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(
             result(&mut m),
@@ -418,7 +418,7 @@ fn an_abort_after_the_request_fails_the_transfer() {
                 ProgressVerdict::Continue
             }
         });
-        m.add(e, (), &mut NoEvents).unwrap();
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(
             result(&mut m),
@@ -468,7 +468,7 @@ fn the_meter_draws_once_a_second_and_ends_its_line() {
         body(1000),
     ]);
     let sink = metered(&mut e);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let first = text(&sink);
     assert_eq!(first.matches('\r').count(), 1, "{first:?}");
@@ -505,7 +505,7 @@ fn a_handler_may_ask_for_the_meter() {
     let mut e = script(vec![body(10)]);
     let sink = metered(&mut e);
     recorded(&mut e, |_, _| ProgressVerdict::ContinueWithMeter);
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let all = text(&sink);
     assert!(all.starts_with(meter::HEADER), "{all:?}");
@@ -532,7 +532,7 @@ fn a_transfer_too_slow_for_too_long_times_out() {
         Piece::Yield,
     ]);
     e.options_mut().limits.low_speed = slow(1000, 2);
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let mut ended = None;
     for second in 0..10 {
         m.perform(&mut NoEvents).unwrap();
@@ -557,7 +557,7 @@ fn a_transfer_fast_enough_is_not_stopped() {
     }
     let mut e = script(pieces);
     e.options_mut().limits.low_speed = slow(1000, 2);
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..6 {
         m.perform(&mut NoEvents).unwrap();
         clock.advance(Duration::from_secs(1));
@@ -587,7 +587,7 @@ fn a_paused_transfer_is_not_too_slow() {
     ]);
     e.options_mut().limits.low_speed = slow(1000, 2);
     e.options_mut().callbacks.write = Some(Handler::write(Pausing).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..5 {
         m.perform(&mut NoEvents).unwrap();
         clock.advance(Duration::from_secs(1));
@@ -626,7 +626,7 @@ fn an_unpause_from_the_progress_handler_replays_at_once() {
         cx.pause(me, PauseRequest::CONT).unwrap();
         ProgressVerdict::Continue
     });
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(*written.lock().unwrap(), [10, 10], "paused, then replayed");
     assert_eq!(calls.lock().unwrap().len(), 6);
@@ -655,7 +655,7 @@ fn an_unpause_forgets_the_slow_time() {
     pieces.extend((0..8).map(|_| Piece::Yield));
     let mut e = script(pieces);
     e.options_mut().limits.low_speed = slow(1000, 2);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_secs(1));
     m.perform(&mut NoEvents).unwrap();
@@ -679,7 +679,7 @@ fn a_transfer_cut_short_ends_the_meter_without_drawing_it() {
     let mut e = script(vec![body(10), Piece::Yield, Piece::Yield]);
     e.options_mut().limits.total = crate::time::TimeLimit::from_millis(500);
     let sink = metered(&mut e);
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let first = text(&sink);
     clock.advance(Duration::from_millis(600));
@@ -697,7 +697,7 @@ fn slow_until(act: impl FnOnce(&mut Multi, TransferId)) -> Option<u64> {
     pieces.extend((0..20).map(|_| Piece::Yield));
     let mut e = script(pieces);
     e.options_mut().limits.low_speed = slow(1000, 3);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let mut act = Some(act);
     for second in 0..15 {
         m.perform(&mut NoEvents).unwrap();

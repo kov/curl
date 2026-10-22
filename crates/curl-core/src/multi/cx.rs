@@ -455,13 +455,9 @@ pub struct NotifyCx<'a, H: Host> {
 }
 
 impl<H: Host> NotifyCx<'_, H> {
-    #[expect(
-        clippy::result_large_err,
-        reason = "the refused Easy comes back by value: boxing it would allocate when memory ran out"
-    )]
     pub fn add(
         &mut self,
-        easy: Easy,
+        easy: Box<Easy>,
         owner: H::Transfer,
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<TransferId, AddError> {

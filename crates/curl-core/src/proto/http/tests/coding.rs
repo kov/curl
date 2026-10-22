@@ -184,7 +184,7 @@ fn an_unrecognized_coding_fails_while_paused() {
         .unwrap();
     all(o);
     o.callbacks.header = Some(Handler::header(handler.clone()).unwrap());
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let msg = m.info_read().expect("over, though paused");
     assert_eq!(msg.result, Err(ErrorKind::BadContentEncoding));
@@ -241,7 +241,7 @@ fn a_trailer_stays_behind_the_body_held_before_its_decoder() {
     all(o);
     o.callbacks.write = Some(Handler::write(handler.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(handler.clone()).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     // The whole reply read while paused, the body held still coded: the
     // transfer is not over while it holds it.
     for _ in 0..10 {

@@ -451,8 +451,18 @@ impl Easy {
     pub(crate) fn perform_in(&mut self, multi: &mut Multi, drive: Drive) -> Result<(), Error> {
         // The easy handle's limit is its multi's (`curl_easy_perform`).
         multi.conn_limits_mut().max_connects = Some(self.options().limits.reuse.max_connects);
-        let (result, easy) = run_to_end(multi, std::mem::take(self), drive);
-        *self = easy;
+        // The multi holds its transfers in memory of their own.
+        let result = match curl_alloc::try_box_or_back(std::mem::take(self)) {
+            Ok(easy) => {
+                let (result, easy) = run_to_end(multi, easy, drive);
+                *self = *easy;
+                result
+            }
+            Err(easy) => {
+                *self = easy;
+                Err(ErrorKind::OutOfMemory)
+            }
+        };
         result.map_err(|kind| Error::with_detail(kind, self.report().failure()))
     }
 }
@@ -487,7 +497,11 @@ pub(crate) enum Drive {
 
 /// Add `easy` to `multi`, drive it to its end as `drive` says, and take it
 /// out again: its result, and the handle.
-fn run_to_end(multi: &mut Multi, easy: Easy, drive: Drive) -> (Result<(), ErrorKind>, Easy) {
+fn run_to_end(
+    multi: &mut Multi,
+    easy: Box<Easy>,
+    drive: Drive,
+) -> (Result<(), ErrorKind>, Box<Easy>) {
     let id = match multi.add(easy, (), &mut NoEvents) {
         Ok(id) => id,
         Err(AddError { kind, easy }) => return (Err(multi_error(kind)), easy),
@@ -808,7 +822,7 @@ mod tests {
             waker: None,
         };
         let mut m: Multi = Multi::new(env).unwrap();
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         let e = m.remove(id, &mut NoEvents).unwrap().easy;
         assert!(e.private.is_none());
     }

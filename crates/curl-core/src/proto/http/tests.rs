@@ -154,14 +154,14 @@ fn get_with(
     o.callbacks.header = Some(Handler::header(seen.clone()).unwrap());
     o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
     set(o);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(m, id, &mut NoEvents).unwrap();
     let easy = m.remove(id, &mut NoEvents).unwrap().easy;
     Ran {
         result,
         request: talk.received(),
         seen,
-        easy,
+        easy: *easy,
     }
 }
 
@@ -261,7 +261,7 @@ fn a_paused_last_piece_waits_to_be_delivered() {
         let o = e.options_mut();
         o.set_url(Some(url.as_bytes())).unwrap();
         o.callbacks.write = Some(Handler::write(writer.clone()).unwrap());
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         for _ in 0..4 {
             m.perform(&mut NoEvents).unwrap();
         }
@@ -739,7 +739,7 @@ fn an_exchange_waits_to_read_its_socket() {
     let mut e = Easy::new();
     let url = format!("http://127.0.0.1:{PORT}/");
     e.options_mut().set_url(Some(url.as_bytes())).unwrap();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let waits = |m: &Multi| {
         let mut seen = Vec::new();
@@ -1126,7 +1126,7 @@ fn a_request_is_retried_five_times_at_most() {
         let url = format!("http://127.0.0.1:{PORT}/");
         e.options_mut().set_url(Some(url.as_bytes())).unwrap();
         e.options_mut().callbacks.write = Some(Handler::write(Seen::default()).unwrap());
-        ids.push(m.add(e, (), &mut NoEvents).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
     }
     // Kept in the multi, so that the pool keeps their connections.
     for &id in &ids {
@@ -1910,10 +1910,10 @@ fn the_method_chosen_is_kept_for_the_next_transfer() {
     for (want, sent) in [(AuthMethods::ANY, true), (AuthMethods::DIGEST, false)] {
         let (mut m, talk, _) = server(&[OK], false);
         easy.options_mut().http.auth = crate::options::HttpAuth(want);
-        let id = m.add(easy, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(easy), (), &mut NoEvents).unwrap();
         let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
         assert_eq!(result, Ok(()));
-        easy = m.remove(id, &mut NoEvents).unwrap().easy;
+        easy = *m.remove(id, &mut NoEvents).unwrap().easy;
         let received = talk.received();
         assert_eq!(
             fixture::find(&received, b"Authorization: Basic dTpw").is_some(),
@@ -2562,7 +2562,7 @@ fn a_pass_sends_one_buffer_of_the_body() {
     o.set_url(Some(url.as_bytes())).unwrap();
     o.method = Method::Upload;
     o.upload = stream.source(true);
-    let _id = m.add(e, (), &mut NoEvents).unwrap();
+    let _id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let body = |r: &[u8]| {
         r.windows(4)
             .position(|w| w == b"\r\n\r\n")
@@ -4035,7 +4035,7 @@ fn waiting(m: &mut Multi, set: impl FnOnce(&mut Options)) -> Vec<crate::conn::io
     let url = format!("http://127.0.0.1:{PORT}/");
     e.options_mut().set_url(Some(url.as_bytes())).unwrap();
     set(e.options_mut());
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
     m.sockets(|_, events| seen.push(events));
@@ -4924,7 +4924,7 @@ fn a_body_stopped_while_awaiting_a_100_stops_its_timer() {
     o.method = Method::Post;
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
     o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..5 {
         m.perform(&mut NoEvents).unwrap();
     }
@@ -5074,7 +5074,7 @@ fn endless_get(set: impl FnOnce(&mut Options)) -> (Easy, Drops) {
 fn a_step_reads_eleven_times_at_most_and_runs_again_at_once() {
     let (mut m, talks) = endless(1);
     let (e, drops) = endless_get(|_| {});
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     while talks[0].endless_reads() == 0 {
         m.perform(&mut NoEvents).unwrap();
     }
@@ -5098,7 +5098,7 @@ fn an_endless_body_ends_at_the_time_limit() {
         o.output.verbose = true;
         o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Err(ErrorKind::OperationTimedout));
     let text = seen.text();
@@ -5134,7 +5134,7 @@ fn a_progress_abort_stops_an_endless_body() {
     let (e, _) = endless_get(move |o| {
         o.progress = crate::options::Progress::Handler(Handler::progress(progress).unwrap());
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Err(ErrorKind::AbortedByCallback));
     assert_eq!(aborts.calls.get(), 5);
@@ -5147,8 +5147,8 @@ fn transfers_with_endless_bodies_take_turns() {
     let (mut m, talks) = endless(2);
     let (one, one_got) = endless_get(|_| {});
     let (two, two_got) = endless_get(|_| {});
-    m.add(one, (), &mut NoEvents).unwrap();
-    m.add(two, (), &mut NoEvents).unwrap();
+    m.add(Box::new(one), (), &mut NoEvents).unwrap();
+    m.add(Box::new(two), (), &mut NoEvents).unwrap();
     while talks.iter().any(|t| t.endless_reads() == 0) {
         m.perform(&mut NoEvents).unwrap();
     }

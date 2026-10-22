@@ -60,10 +60,10 @@ fn completions_are_read_in_id_order() {
     let ev = &mut NoEvents;
     let ids: Vec<_> = ["null://a", "stall://b", "null://c", "nope://d"]
         .into_iter()
-        .map(|u| m.add(easy(u), (), ev).unwrap())
+        .map(|u| m.add(Box::new(easy(u)), (), ev).unwrap())
         .collect();
-    let no_url = m.add(Easy::new(), (), ev).unwrap();
-    let no_host = m.add(easy("null://"), (), ev).unwrap();
+    let no_url = m.add(Box::new(Easy::new()), (), ev).unwrap();
+    let no_host = m.add(Box::new(easy("null://")), (), ev).unwrap();
     assert_eq!(
         m.counts().running,
         6,
@@ -96,7 +96,7 @@ fn completions_are_read_in_id_order() {
 fn removing_twice_finds_nothing_the_second_time() {
     let (mut m, _clock) = multi();
     let ev = &mut NoEvents;
-    let id = m.add(easy("null://a"), (), ev).unwrap();
+    let id = m.add(Box::new(easy("null://a")), (), ev).unwrap();
     let removed = m.remove(id, ev).expect("in the multi");
     assert_eq!(removed.easy.options().url(), Some(&b"null://a"[..]));
     assert!(m.remove(id, ev).is_none());
@@ -117,7 +117,7 @@ fn removing_twice_finds_nothing_the_second_time() {
 fn removing_a_running_transfer_gives_its_connection_back() {
     let (mut m, _clock) = multi();
     let ev = &mut NoEvents;
-    let id = m.add(easy("stall://a"), (), ev).unwrap();
+    let id = m.add(Box::new(easy("stall://a")), (), ev).unwrap();
     m.perform(ev).unwrap();
     assert_eq!(m.caches.pool.len(), 1);
     m.remove(id, ev).unwrap();
@@ -128,11 +128,11 @@ fn removing_a_running_transfer_gives_its_connection_back() {
 fn the_timer_hears_of_add_and_remove() {
     let (mut m, _clock) = multi();
     let mut ev = RecordingEvents::default();
-    let id = m.add(easy("stall://a"), (), &mut ev).unwrap();
+    let id = m.add(Box::new(easy("stall://a")), (), &mut ev).unwrap();
     assert_eq!(ev.timer, [SET_NOW], "inside the add");
     m.perform(&mut ev).unwrap();
     assert_eq!(ev.timer, [SET_NOW, TimerChange::Clear]);
-    let other = m.add(easy("stall://b"), (), &mut ev).unwrap();
+    let other = m.add(Box::new(easy("stall://b")), (), &mut ev).unwrap();
     m.remove(other, &mut ev).unwrap().status.unwrap();
     assert_eq!(
         ev.timer[2..],
@@ -150,7 +150,7 @@ fn a_timer_abort_inside_add_refuses_the_transfer() {
         abort_at: Some(1),
         ..RecordingEvents::default()
     };
-    let refused = m.add(easy("null://a"), (), &mut ev).unwrap_err();
+    let refused = m.add(Box::new(easy("null://a")), (), &mut ev).unwrap_err();
     assert_eq!(refused.kind, MultiErrorKind::AbortedByCallback);
     assert_eq!(refused.easy.options().url(), Some(&b"null://a"[..]));
     assert_eq!(m.counts().current, 0);
@@ -167,10 +167,10 @@ fn a_dead_multi_fails_its_transfers_and_takes_no_more() {
         abort_at: Some(2),
         ..RecordingEvents::default()
     };
-    let id = m.add(easy("stall://a"), (), &mut ev).unwrap();
+    let id = m.add(Box::new(easy("stall://a")), (), &mut ev).unwrap();
     assert_eq!(m.perform(&mut ev), Err(MultiErrorKind::AbortedByCallback));
     assert_eq!(m.timeout(), Some(Duration::ZERO));
-    let refused = m.add(easy("null://b"), (), &mut ev).unwrap_err();
+    let refused = m.add(Box::new(easy("null://b")), (), &mut ev).unwrap_err();
     assert_eq!(refused.kind, MultiErrorKind::AbortedByCallback);
     assert_eq!(m.perform(&mut ev), Ok(0));
     assert_eq!(
@@ -190,7 +190,7 @@ fn timers_wake_transfers_through_socket_action() {
     let mut ev = RecordingEvents::default();
     let mut e = easy("stall://a");
     e.options_mut().limits.total = TimeLimit::from_millis(1500);
-    let id = m.add(e, (), &mut ev).unwrap();
+    let id = m.add(Box::new(e), (), &mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(
         ev.timer,
@@ -223,7 +223,7 @@ fn a_timer_abort_inside_remove_still_removes() {
         abort_at: Some(2),
         ..RecordingEvents::default()
     };
-    let id = m.add(easy("stall://a"), (), &mut ev).unwrap();
+    let id = m.add(Box::new(easy("stall://a")), (), &mut ev).unwrap();
     let removed = m.remove(id, &mut ev).expect("in the multi");
     assert_eq!(removed.status, Err(MultiErrorKind::AbortedByCallback));
     assert_eq!(removed.easy.options().url(), Some(&b"stall://a"[..]));
@@ -276,10 +276,10 @@ fn stall_within(ms: u64) -> Easy {
 fn socket_action_catches_what_came_due_while_it_ran() {
     let (mut m, lag) = lagging_multi();
     let ev = &mut NoEvents;
-    let late = m.add(stall_within(10), (), ev).unwrap();
+    let late = m.add(Box::new(stall_within(10)), (), ev).unwrap();
     m.perform(ev).unwrap();
     // Something to run, which takes long enough for `late` to come due.
-    m.add(easy("stall://b"), (), ev).unwrap();
+    m.add(Box::new(easy("stall://b")), (), ev).unwrap();
     lag.set(Duration::from_millis(10));
     m.socket_action(SocketEvent::Timeout, ev).unwrap();
     assert_eq!(
@@ -292,7 +292,7 @@ fn socket_action_catches_what_came_due_while_it_ran() {
 fn socket_action_runs_nothing_late_when_nothing_ran() {
     let (mut m, lag) = lagging_multi();
     let ev = &mut NoEvents;
-    m.add(stall_within(10), (), ev).unwrap();
+    m.add(Box::new(stall_within(10)), (), ev).unwrap();
     m.perform(ev).unwrap();
     lag.set(Duration::from_millis(10));
     m.socket_action(SocketEvent::Timeout, ev).unwrap();
@@ -308,7 +308,7 @@ fn a_fired_timer_queues_the_next_one() {
     let ev = &mut NoEvents;
     let mut e = stall_within(3000);
     e.options_mut().limits.connect = TimeLimit::from_millis(1000);
-    m.add(e, (), ev).unwrap();
+    m.add(Box::new(e), (), ev).unwrap();
     m.perform(ev).unwrap();
     assert_eq!(m.timeout(), Some(Duration::from_millis(1000)));
     clock.advance(Duration::from_millis(1000));
@@ -322,7 +322,7 @@ fn transfers_on_later_rows_get_timers() {
     let (mut m, _clock) = multi();
     let ev = &mut NoEvents;
     for ms in [3000, 2000, 1000] {
-        m.add(stall_within(ms), (), ev).unwrap();
+        m.add(Box::new(stall_within(ms)), (), ev).unwrap();
     }
     m.perform(ev).unwrap();
     assert_eq!(m.timeout(), Some(Duration::from_millis(1000)));
@@ -338,7 +338,7 @@ fn a_refused_add_counts_nothing_as_running() {
         abort_at: Some(1),
         ..RecordingEvents::default()
     };
-    m.add(easy("null://a"), (), &mut ev).unwrap_err();
+    m.add(Box::new(easy("null://a")), (), &mut ev).unwrap_err();
     assert_eq!(
         m.counts(),
         Counts {
@@ -353,7 +353,7 @@ fn a_refused_add_counts_nothing_as_running() {
 fn a_transfer_s_easy_is_reached_by_its_id() {
     let (mut m, _clock) = multi();
     let ev = &mut NoEvents;
-    let id = m.add(easy("null://a"), (), ev).unwrap();
+    let id = m.add(Box::new(easy("null://a")), (), ev).unwrap();
     assert_eq!(m.easy(id).unwrap().options().url(), Some(&b"null://a"[..]));
     m.easy_mut(id)
         .unwrap()
@@ -372,7 +372,7 @@ fn a_url_without_a_scheme_is_guessed() {
     let ev = &mut NoEvents;
     // Guessed as http, a name the resolver, which knows only literal
     // addresses, cannot resolve.
-    let id = m.add(easy("example.com/a"), (), ev).unwrap();
+    let id = m.add(Box::new(easy("example.com/a")), (), ev).unwrap();
     m.perform(ev).unwrap();
     assert_eq!(
         messages(&mut m),
@@ -418,10 +418,10 @@ impl MultiEvents<NoHost> for NotifyEvents {
         }
         if let Some(b) = self.remove.take() {
             let removed = cx.remove(b, self).expect("in the multi");
-            self.removed.push(removed.easy);
+            self.removed.push(*removed.easy);
         }
         if let Some(e) = self.add.take() {
-            let id = cx.add(e, (), self).expect("added");
+            let id = cx.add(Box::new(e), (), self).expect("added");
             self.added.push(id);
         }
         if self.disable {
@@ -441,9 +441,9 @@ fn notifications_come_in_the_order_things_happened() {
     let (mut m, _clock) = multi();
     notifying(&mut m);
     let mut ev = NotifyEvents::default();
-    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
-    let b = m.add(easy("nope://b"), (), &mut ev).unwrap();
-    let c = m.add(easy("null://c"), (), &mut ev).unwrap();
+    let a = m.add(Box::new(easy("null://a")), (), &mut ev).unwrap();
+    let b = m.add(Box::new(easy("nope://b")), (), &mut ev).unwrap();
+    let c = m.add(Box::new(easy("null://c")), (), &mut ev).unwrap();
     ev.trigger = Some(a);
     m.perform(&mut ev).unwrap();
     assert_eq!(
@@ -463,13 +463,13 @@ fn info_read_is_notified_again_once_every_message_is_read() {
     let (mut m, _clock) = multi();
     notifying(&mut m);
     let mut ev = NotifyEvents::default();
-    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
+    let a = m.add(Box::new(easy("null://a")), (), &mut ev).unwrap();
     ev.trigger = Some(a);
     m.perform(&mut ev).unwrap();
-    let b = m.add(easy("null://b"), (), &mut ev).unwrap();
+    let b = m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
     m.perform(&mut ev).unwrap();
     assert_eq!(messages(&mut m).len(), 2);
-    let c = m.add(easy("null://c"), (), &mut ev).unwrap();
+    let c = m.add(Box::new(easy("null://c")), (), &mut ev).unwrap();
     m.perform(&mut ev).unwrap();
     assert_eq!(
         ev.log,
@@ -487,13 +487,13 @@ fn info_read_is_notified_again_once_every_message_is_read() {
 fn notifications_are_off_until_enabled() {
     let (mut m, _clock) = multi();
     let mut ev = NotifyEvents::default();
-    m.add(easy("null://a"), (), &mut ev).unwrap();
+    m.add(Box::new(easy("null://a")), (), &mut ev).unwrap();
     m.set_notify(NotifyKind::EasyDone, true);
     m.set_notify(NotifyKind::EasyDone, false);
     m.perform(&mut ev).unwrap();
     assert_eq!(ev.log, []);
     m.set_notify(NotifyKind::InfoRead, true);
-    m.add(easy("null://b"), (), &mut ev).unwrap();
+    m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
     messages(&mut m);
     m.perform(&mut ev).unwrap();
     assert_eq!(ev.log, [Notification::InfoRead]);
@@ -504,8 +504,8 @@ fn a_kind_turned_off_before_delivery_is_dropped() {
     let (mut m, _clock) = multi();
     notifying(&mut m);
     let mut ev = NotifyEvents::default();
-    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
-    m.add(easy("null://b"), (), &mut ev).unwrap();
+    let a = m.add(Box::new(easy("null://a")), (), &mut ev).unwrap();
+    m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
     ev.trigger = Some(a);
     ev.disable = true;
     m.perform(&mut ev).unwrap();
@@ -518,8 +518,8 @@ fn a_removed_transfer_s_notification_reaches_no_one() {
     let (mut m, _clock) = multi();
     notifying(&mut m);
     let mut ev = NotifyEvents::default();
-    let a = m.add(easy("null://a"), (), &mut ev).unwrap();
-    let b = m.add(easy("null://b"), (), &mut ev).unwrap();
+    let a = m.add(Box::new(easy("null://a")), (), &mut ev).unwrap();
+    let b = m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
     ev.trigger = Some(a);
     ev.remove = Some(b);
     ev.add = Some(easy("null://c"));
@@ -542,10 +542,10 @@ fn a_removed_transfer_s_notification_reaches_no_one() {
 fn the_timer_callback_can_read_messages() {
     let (mut m, _clock) = multi();
     let mut ev = NotifyEvents::default();
-    let a = m.add(easy("nope://a"), (), &mut ev).unwrap();
+    let a = m.add(Box::new(easy("nope://a")), (), &mut ev).unwrap();
     m.perform(&mut ev).unwrap();
     ev.read_in_timer = true;
-    m.add(easy("null://b"), (), &mut ev).unwrap();
+    m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
     assert_eq!(ev.read, [(a, Err(ErrorKind::UnsupportedProtocol))]);
 }
 
@@ -554,7 +554,7 @@ fn socket_action_delivers_notifications() {
     let (mut m, clock) = multi();
     m.set_notify(NotifyKind::EasyDone, true);
     let mut ev = NotifyEvents::default();
-    let id = m.add(stall_within(10), (), &mut ev).unwrap();
+    let id = m.add(Box::new(stall_within(10)), (), &mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(ev.log, []);
     clock.advance(Duration::from_millis(10));
@@ -622,11 +622,11 @@ impl MultiEvents<NoHost> for Probe {
 fn callbacks_reach_the_multi_through_their_contexts() {
     let (mut m, _clock) = multi();
     let mut ev = Probe::default();
-    let first = m.add(stall_within(5000), (), &mut ev).unwrap();
+    let first = m.add(Box::new(stall_within(5000)), (), &mut ev).unwrap();
     m.perform(&mut ev).unwrap();
     ev.target = Some(first);
     // The timer hears of the add, and changes the first transfer's URL.
-    let id = m.add(easy("null://b"), (), &mut ev).unwrap();
+    let id = m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
     let url = |o: &str| format!("{:?}", Some(o.as_bytes().to_vec()));
     assert_eq!(
         ev.in_timer,
@@ -700,7 +700,7 @@ fn poll_sleeps_out_its_timeout_with_nothing_to_wait_for() {
 fn the_multi_s_own_timeout_cuts_a_wait_short() {
     let (mut m, clock) = multi();
     let ev = &mut NoEvents;
-    m.add(stall_within(1500), (), ev).unwrap();
+    m.add(Box::new(stall_within(1500)), (), ev).unwrap();
     let max = Duration::from_secs(10);
     let took = slept(&clock, || {
         m.wait(&mut [], max, WaitMode::Poll).unwrap();
@@ -807,8 +807,8 @@ fn a_failed_poll_is_unrecoverable() {
 fn driving_a_transfer_to_completion_leaves_others_messages() {
     let (mut m, clock) = multi();
     let ev = &mut NoEvents;
-    let sibling = m.add(easy("nope://a"), (), ev).unwrap();
-    let id = m.add(stall_within(2500), (), ev).unwrap();
+    let sibling = m.add(Box::new(easy("nope://a")), (), ev).unwrap();
+    let id = m.add(Box::new(stall_within(2500)), (), ev).unwrap();
     let took = slept(&clock, || {
         assert_eq!(
             drive_to_completion(&mut m, id, ev),
@@ -825,7 +825,7 @@ fn driving_a_transfer_to_completion_leaves_others_messages() {
         [(sibling.index(), Err(ErrorKind::UnsupportedProtocol), 0)],
         "the driven transfer's message is read, the sibling's is not"
     );
-    let done = m.add(easy("null://b"), (), ev).unwrap();
+    let done = m.add(Box::new(easy("null://b")), (), ev).unwrap();
     assert_eq!(drive_to_completion(&mut m, done, ev), Ok(Ok(())));
     m.remove(done, ev).unwrap();
     assert_eq!(
@@ -852,7 +852,9 @@ impl MultiEvents<NoHost> for RemoveWhenDone {
 fn driving_a_transfer_a_callback_takes_out_is_an_error() {
     let (mut m, _clock) = multi();
     m.set_notify(NotifyKind::EasyDone, true);
-    let id = m.add(stall_within(1500), (), &mut NoEvents).unwrap();
+    let id = m
+        .add(Box::new(stall_within(1500)), (), &mut NoEvents)
+        .unwrap();
     let ev = &mut RemoveWhenDone {
         victim: id,
         removed: false,
@@ -875,7 +877,7 @@ fn us(n: u64) -> Duration {
 fn a_report_times_the_phases_a_transfer_reached() {
     let (mut m, clock) = multi();
     let ev = &mut NoEvents;
-    let id = m.add(stall_within(1000), (), ev).unwrap();
+    let id = m.add(Box::new(stall_within(1000)), (), ev).unwrap();
     clock.advance(Duration::from_millis(5));
     m.perform(ev).unwrap();
     clock.advance(Duration::from_millis(1000));
@@ -904,7 +906,7 @@ fn a_url_too_long_to_read_back_fails_its_transfer() {
     let mut url = b"file:/".to_vec();
     url.resize(7_999_999, b'a');
     let (e, lines) = traced(std::str::from_utf8(&url).unwrap());
-    let id = m.add(e, (), ev).unwrap();
+    let id = m.add(Box::new(e), (), ev).unwrap();
     m.perform(ev).unwrap();
     assert_eq!(
         messages(&mut m),
@@ -922,7 +924,7 @@ fn a_url_too_long_to_read_back_fails_its_transfer() {
     url.resize(7_999_997, b'a');
     url.push(b'?');
     let (e, _) = traced(std::str::from_utf8(&url).unwrap());
-    let id = m.add(e, (), ev).unwrap();
+    let id = m.add(Box::new(e), (), ev).unwrap();
     m.perform(ev).unwrap();
     assert_eq!(
         messages(&mut m),
@@ -936,8 +938,8 @@ fn a_url_too_long_to_read_back_fails_its_transfer() {
 fn a_transfer_failing_before_its_request_gets_the_skipped_times() {
     let (mut m, clock) = multi();
     let ev = &mut NoEvents;
-    let no_url = m.add(Easy::new(), (), ev).unwrap();
-    let unsupported = m.add(easy("nope://a"), (), ev).unwrap();
+    let no_url = m.add(Box::new(Easy::new()), (), ev).unwrap();
+    let unsupported = m.add(Box::new(easy("nope://a")), (), ev).unwrap();
     clock.advance(Duration::from_millis(5));
     m.perform(ev).unwrap();
     for id in [no_url, unsupported] {
@@ -963,10 +965,10 @@ fn a_transfer_a_dead_multi_ends_unstarted_gets_a_report() {
         abort_at: Some(2),
         ..RecordingEvents::default()
     };
-    let id = m.add(easy("null://a"), (), &mut ev).unwrap();
+    let id = m.add(Box::new(easy("null://a")), (), &mut ev).unwrap();
     // A later add moves the wake-up, and that timer call aborts.
     clock.advance(Duration::from_millis(1));
-    let refused = m.add(easy("null://b"), (), &mut ev).unwrap_err();
+    let refused = m.add(Box::new(easy("null://b")), (), &mut ev).unwrap_err();
     assert_eq!(refused.kind, MultiErrorKind::AbortedByCallback);
     m.perform(&mut ev).unwrap();
     assert_eq!(
@@ -986,7 +988,7 @@ fn a_transfer_a_dead_multi_ends_unstarted_gets_a_report() {
 fn every_run_reports_afresh() {
     let (mut m, clock) = multi();
     let ev = &mut NoEvents;
-    let id = m.add(stall_within(1000), (), ev).unwrap();
+    let id = m.add(Box::new(stall_within(1000)), (), ev).unwrap();
     m.perform(ev).unwrap();
     clock.advance(Duration::from_millis(1000));
     m.perform(ev).unwrap();
@@ -1057,9 +1059,13 @@ fn callbacks_read_reports_and_the_multi_counts_messages() {
     let mut ev = Inspect::default();
     m.set_notify(NotifyKind::EasyDone, true);
     let missing = m
-        .add(easy("file:///nonexistent/curl-core-test"), (), &mut ev)
+        .add(
+            Box::new(easy("file:///nonexistent/curl-core-test")),
+            (),
+            &mut ev,
+        )
         .unwrap();
-    let other = m.add(easy("null://b"), (), &mut ev).unwrap();
+    let other = m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
     assert_eq!(m.unread(), 0);
     let walked: Vec<_> =
         std::iter::successors(m.next_transfer(None), |&id| m.next_transfer(Some(id))).collect();
@@ -1147,7 +1153,7 @@ fn an_established_connection_forgets_the_next_attempt() {
         waker: None,
     };
     let mut m: Multi = Multi::new(env).unwrap();
-    m.add(easy("http://localhost:7/"), (), &mut NoEvents)
+    m.add(Box::new(easy("http://localhost:7/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     let next = Some(Duration::from_millis(200));
@@ -1181,7 +1187,7 @@ fn events_drive_a_transfer_as_waits_do() {
         let mut m: Multi = Multi::new(env).unwrap();
         let mut e = easy("http://127.0.0.1:7/");
         e.options_mut().limits.total = TimeLimit::from_millis(1000);
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         let start = clock.now();
         let result = if by_events {
             drive_by_events(&mut m, id)
@@ -1281,7 +1287,7 @@ fn events_wait_for_a_socket_with_nothing_due() {
     };
     let mut m: Multi = Multi::new(env).unwrap();
     let id = m
-        .add(easy("http://127.0.0.1:7/"), (), &mut NoEvents)
+        .add(Box::new(easy("http://127.0.0.1:7/")), (), &mut NoEvents)
         .unwrap();
     assert_eq!(drive_by_events(&mut m, id), Ok(Err(ErrorKind::GotNothing)));
 }
@@ -1295,7 +1301,7 @@ fn events_wait_for_the_timer_the_multi_sets() {
     let (mut m, clock) = networked();
     let mut e = easy("stall://a");
     e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let start = clock.now();
     assert_eq!(
         drive_by_events(&mut m, id),
@@ -1305,7 +1311,7 @@ fn events_wait_for_the_timer_the_multi_sets() {
     let (mut m, clock) = networked();
     let mut e = easy("tcp://127.0.0.1:3/");
     e.options_mut().limits.connect = crate::time::TimeLimit::from_millis(700);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let start = clock.now();
     assert_eq!(
         drive_by_events(&mut m, id),
@@ -1317,7 +1323,7 @@ fn events_wait_for_the_timer_the_multi_sets() {
     let (mut m, clock) = networked();
     let mut e = easy("http://127.0.0.1:4/");
     e.options_mut().limits.total = crate::time::TimeLimit::from_millis(1000);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let start = clock.now();
     assert_eq!(
         drive_by_events(&mut m, id),
@@ -1354,7 +1360,7 @@ fn a_host_name_too_long_is_refused() {
     let (mut m, _clock) = networked();
     let long = format!("http://{}/", "a".repeat(0x10000));
     let (e, lines) = traced(&long);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         messages(&mut m),
@@ -1363,7 +1369,7 @@ fn a_host_name_too_long_is_refused() {
     assert_eq!(trace_of(&lines), ["Too long hostname (maximum is 65535)\n"]);
     // One byte shorter goes on to be looked up.
     let (e, _) = traced(&format!("http://{}/", "a".repeat(0xffff)));
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_ne!(
         messages(&mut m)[0],
@@ -1377,7 +1383,7 @@ fn a_host_name_too_long_is_refused() {
 fn a_refused_connect_fails_as_c_says() {
     let (mut m, _clock) = networked();
     let (e, lines) = traced("tcp://127.0.0.1:2/");
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     // The socket is looked at as soon as the connect starts
     // (`cf_tcp_connect`): a refusal already there fails in the same pass.
     m.perform(&mut NoEvents).unwrap();
@@ -1410,7 +1416,7 @@ fn a_refused_connect_fails_as_c_says() {
 fn an_accepted_connect_goes_on_to_the_request() {
     let (mut m, clock) = networked();
     let (e, lines) = traced("tcp://127.0.0.1:4/");
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.counts().running, 1);
     // The wait ends when the peer answers.
@@ -1440,7 +1446,7 @@ fn a_silent_peer_times_out_at_the_connect_limit() {
     let (mut m, clock) = networked();
     let (mut e, lines) = traced("tcp://127.0.0.1:3/");
     e.options_mut().limits.connect = TimeLimit::from_millis(1500);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let start = clock.now();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.timeout(), Some(Duration::from_millis(1500)));
@@ -1475,9 +1481,9 @@ fn a_silent_peer_times_out_at_the_connect_limit() {
 fn unresolved_and_immediate_failures() {
     let (mut m, _clock) = networked();
     let (named, named_lines) = traced("tcp://example.com:80/");
-    let named = m.add(named, (), &mut NoEvents).unwrap();
+    let named = m.add(Box::new(named), (), &mut NoEvents).unwrap();
     let (nobody, nobody_lines) = traced("tcp://[::1]:9/");
-    let nobody = m.add(nobody, (), &mut NoEvents).unwrap();
+    let nobody = m.add(Box::new(nobody), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         messages(&mut m),
@@ -1525,7 +1531,7 @@ fn through_proxies(
     if let Some(to) = connect_to {
         o.connect_to.set([to.as_bytes()]).unwrap();
     }
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..4 {
         m.perform(&mut NoEvents).unwrap();
         m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
@@ -1617,7 +1623,7 @@ fn a_failed_connect_names_the_first_proxy() {
 fn removing_a_connecting_transfer_closes_its_socket() {
     let (mut m, _clock) = networked();
     let (e, lines) = traced("tcp://127.0.0.1:3/");
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let mut open = 0;
     m.sockets(|_, _| open += 1);
@@ -1633,7 +1639,7 @@ fn removing_a_connecting_transfer_closes_its_socket() {
     );
     // So too when the multi goes with the transfer in it.
     let (e, lines) = traced("tcp://127.0.0.1:3/");
-    m.add(e, (), &mut NoEvents).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     drop(m);
     assert_eq!(trace_of(&lines)[2], "closing connection #1\n");
@@ -1645,7 +1651,7 @@ fn removing_a_connecting_transfer_closes_its_socket() {
 fn a_paused_transfer_does_not_connect() {
     let (mut m, clock) = networked();
     let id = m
-        .add(easy("tcp://127.0.0.1:4/"), (), &mut NoEvents)
+        .add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     let watched = |m: &Multi| {
@@ -1674,7 +1680,7 @@ fn a_paused_transfer_does_not_connect() {
 fn the_next_transfer_reuses_the_connection_left() {
     let (mut m, clock) = networked();
     let (first, _) = traced("tcp://127.0.0.1:4/");
-    let first = m.add(first, (), &mut NoEvents).unwrap();
+    let first = m.add(Box::new(first), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
         .unwrap();
@@ -1682,7 +1688,7 @@ fn the_next_transfer_reuses_the_connection_left() {
     assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
     clock.advance(Duration::from_millis(7));
     let (second, lines) = traced("tcp://127.0.0.1:4/");
-    let second = m.add(second, (), &mut NoEvents).unwrap();
+    let second = m.add(Box::new(second), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(second.index(), Ok(()), 0)]);
     assert_eq!(
@@ -1698,7 +1704,7 @@ fn the_next_transfer_reuses_the_connection_left() {
         (Duration::ZERO, Duration::ZERO)
     );
     let (third, lines) = traced("tcp://127.0.0.1:1/");
-    let third = m.add(third, (), &mut NoEvents).unwrap();
+    let third = m.add(Box::new(third), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(third.index(), Ok(()), 0)]);
     assert_eq!(
@@ -1893,7 +1899,7 @@ fn a_multi_closes_its_idle_connections_when_dropped() {
     };
     let mut m: Multi = Multi::new(env).unwrap();
     let id = m
-        .add(easy("tcp://127.0.0.1:1/"), (), &mut NoEvents)
+        .add(Box::new(easy("tcp://127.0.0.1:1/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
@@ -1909,7 +1915,7 @@ fn a_multi_closes_its_idle_connections_when_dropped() {
 fn an_ipv6_host_is_named_as_c_names_it() {
     let (mut m, _clock) = networked();
     let (first, lines) = traced("tcp://[::1]:1/");
-    let first = m.add(first, (), &mut NoEvents).unwrap();
+    let first = m.add(Box::new(first), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
     assert_eq!(
@@ -1921,7 +1927,7 @@ fn an_ipv6_host_is_named_as_c_names_it() {
         ]
     );
     let (second, lines) = traced("tcp://[::1]:1/");
-    let second = m.add(second, (), &mut NoEvents).unwrap();
+    let second = m.add(Box::new(second), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(second.index(), Ok(()), 0)]);
     assert_eq!(
@@ -1940,7 +1946,7 @@ fn an_ipv6_host_is_named_as_c_names_it() {
 fn localhost_names_are_the_loopback_addresses() {
     let (mut m, _clock) = networked();
     let (refused, lines) = traced("tcp://localhost:2/");
-    let refused = m.add(refused, (), &mut NoEvents).unwrap();
+    let refused = m.add(Box::new(refused), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
         .unwrap();
@@ -1966,7 +1972,7 @@ fn localhost_names_are_the_loopback_addresses() {
     );
     assert!(trace_of(&lines)[7].starts_with("Failed to connect to localhost:2 after "));
     let (named, lines) = traced("tcp://Foo.LocalHost.:1/");
-    let named = m.add(named, (), &mut NoEvents).unwrap();
+    let named = m.add(Box::new(named), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(named.index(), Ok(()), 0)]);
     assert_eq!(
@@ -1988,7 +1994,7 @@ fn localhost_names_are_the_loopback_addresses() {
 fn a_silent_address_gives_way_after_the_eyeballs_delay() {
     let (mut m, clock) = networked();
     let (e, lines) = traced("tcp://localhost:4/");
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(trace_of(&lines).last().unwrap(), "  Trying [::1]:4...\n");
     assert_eq!(m.timeout(), Some(Duration::from_millis(200)));
@@ -2018,7 +2024,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
         .resolve
         .set([&b"foo.test:1:127.0.0.1"[..]])
         .unwrap();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
     assert_eq!(
@@ -2090,7 +2096,7 @@ fn stale_answers_are_dropped() {
     let (mut m, clock) = networked();
     let run = |m: &mut Multi, url: &str| {
         let (e, lines) = traced(url);
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
             .unwrap();
@@ -2125,7 +2131,7 @@ fn the_resolver_s_answers_are_kept() {
     let mut run = |url: &str, ip| {
         let (mut e, lines) = traced(url);
         e.options_mut().ip_version = ip;
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         let result = messages(&mut m).last().map(|r| r.1);
         m.remove(id, &mut NoEvents).unwrap();
@@ -2184,7 +2190,7 @@ fn answers_may_be_kept_for_ever() {
     let run = |m: &mut Multi, url: &str| {
         let (mut e, lines) = traced(url);
         e.options_mut().limits.reuse.dns_max_age = None;
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
             .unwrap();
@@ -2211,7 +2217,7 @@ fn a_bad_resolve_entry_fails_the_transfer() {
         .resolve
         .set([&b"foo.test:1:127.0.0.1,example.com"[..]])
         .unwrap();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         messages(&mut m),
@@ -2244,8 +2250,8 @@ fn a_full_pool_is_traced_by_the_transfer_filling_it() {
     m.conn_limits_mut().max_connects = NonZeroU32::new(1);
     let (a, a_lines) = traced("tcp://127.0.0.1:1/");
     let (b, b_lines) = traced("tcp://localhost:1/");
-    m.add(a, (), &mut NoEvents).unwrap();
-    m.add(b, (), &mut NoEvents).unwrap();
+    m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.counts().running, 0);
     assert_eq!(
@@ -2273,7 +2279,7 @@ fn a_transfer_can_refuse_to_share_its_connection() {
         let (mut e, lines) = traced("tcp://127.0.0.1:1/");
         e.options_mut().limits.reuse.forbid = forbid;
         e.options_mut().limits.reuse.fresh = fresh;
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         m.remove(id, &mut NoEvents).unwrap();
         trace_of(&lines)
@@ -2305,8 +2311,8 @@ fn a_transfer_waits_for_room_under_the_host_limit() {
     m.conn_limits_mut().max_host = NonZeroU32::new(1);
     let (a, a_lines) = traced("tcp://127.0.0.1:4/");
     let (b, b_lines) = traced("tcp://127.0.0.1:4/");
-    let a = m.add(a, (), &mut NoEvents).unwrap();
-    let b = m.add(b, (), &mut NoEvents).unwrap();
+    let a = m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    let b = m.add(Box::new(b), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         trace_of(&b_lines),
@@ -2348,8 +2354,8 @@ fn a_waiting_transfer_reads_its_ip_version_as_it_looks_again() {
     m.conn_limits_mut().max_host = NonZeroU32::new(1);
     let (a, _) = traced("tcp://127.0.0.1:4/");
     let (b, b_lines) = traced("tcp://127.0.0.1:4/");
-    let a = m.add(a, (), &mut NoEvents).unwrap();
-    let b = m.add(b, (), &mut NoEvents).unwrap();
+    let a = m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    let b = m.add(Box::new(b), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         trace_of(&b_lines),
@@ -2386,7 +2392,7 @@ fn a_transfer_finding_room_lets_the_next_look() {
     let mut add = |url: &str, fresh| {
         let (mut e, lines) = traced(url);
         e.options_mut().limits.reuse.fresh = fresh;
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         (id, lines)
     };
     // One never connects, one is done after 5 ms; two wait for room.
@@ -2415,7 +2421,7 @@ fn an_idle_connection_makes_room_under_the_total_limit() {
     m.conn_limits_mut().max_total = NonZeroU32::new(1);
     for url in ["tcp://127.0.0.1:1/", "tcp://localhost:1/"] {
         let (e, lines) = traced(url);
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
         assert!(trace_of(&lines).last().unwrap().ends_with("left intact\n"));
@@ -2434,8 +2440,8 @@ fn a_waiting_transfer_runs_out_of_time() {
     let (a, _) = traced("tcp://127.0.0.1:3/");
     let (mut b, b_lines) = traced("tcp://127.0.0.1:1/");
     b.options_mut().limits.total = TimeLimit::from_millis(100);
-    let a = m.add(a, (), &mut NoEvents).unwrap();
-    let b = m.add(b, (), &mut NoEvents).unwrap();
+    let a = m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    let b = m.add(Box::new(b), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_millis(100));
     m.perform(&mut NoEvents).unwrap();
@@ -2463,10 +2469,10 @@ fn a_waiting_transfer_is_removed_cleanly() {
     let (mut m, _clock) = networked();
     m.conn_limits_mut().max_host = NonZeroU32::new(1);
     let a = m
-        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
     let b = m
-        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.remove(b, &mut NoEvents).unwrap();
@@ -2482,7 +2488,7 @@ fn the_pool_s_limit_is_guessed_from_the_transfers() {
     let (mut m, clock) = networked();
     let mut run = |url: &str| {
         let (e, lines) = traced(url);
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         m.remove(id, &mut NoEvents).unwrap();
         clock.advance(Duration::from_secs(1));
@@ -2500,7 +2506,7 @@ fn the_pool_s_limit_is_guessed_from_the_transfers() {
         ]
     );
     let (e, lines) = traced("tcp://127.0.0.1:1/");
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.remove(id, &mut NoEvents).unwrap();
     assert_eq!(
@@ -2520,7 +2526,7 @@ fn a_connection_serves_only_the_peer_it_goes_through() {
     let mut run = |to: &[&[u8]]| {
         let (mut e, lines) = traced("tcp://foo.test:9/");
         e.options_mut().connect_to.set(to.iter().copied()).unwrap();
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         let result = messages(&mut m).last().unwrap().1;
         m.remove(id, &mut NoEvents).unwrap();
@@ -2568,7 +2574,7 @@ fn an_ip_version_limits_the_addresses_tried() {
     let (v4, lines) = traced("tcp://localhost:1/");
     let mut v4 = v4;
     v4.options_mut().ip_version = crate::options::IpVersion::V4;
-    let v4 = m.add(v4, (), &mut NoEvents).unwrap();
+    let v4 = m.add(Box::new(v4), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(v4.index(), Ok(()), 0)]);
     assert_eq!(
@@ -2582,7 +2588,7 @@ fn an_ip_version_limits_the_addresses_tried() {
         ]
     );
     let (any, lines) = traced("tcp://localhost:1/");
-    let any = m.add(any, (), &mut NoEvents).unwrap();
+    let any = m.add(Box::new(any), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(any.index(), Ok(()), 0)]);
     assert_eq!(
@@ -2592,7 +2598,7 @@ fn an_ip_version_limits_the_addresses_tried() {
     let (v6, lines) = traced("tcp://localhost:1/");
     let mut v6 = v6;
     v6.options_mut().ip_version = crate::options::IpVersion::V6;
-    let v6 = m.add(v6, (), &mut NoEvents).unwrap();
+    let v6 = m.add(Box::new(v6), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(v6.index(), Ok(()), 0)]);
     assert_eq!(
@@ -2613,7 +2619,7 @@ fn an_ip_version_limits_the_addresses_tried() {
 fn a_pause_never_blocks_a_setup() {
     let (mut m, _clock) = networked();
     let id = m
-        .add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_ne!(m.timeout(), Some(Duration::ZERO));
@@ -2678,8 +2684,8 @@ fn connections_are_numbered_in_their_traces() {
     let url = "tcp://127.0.0.1:4/";
     let (a, _) = traced(url);
     let (b, b_lines) = traced(url);
-    m.add(a, (), &mut NoEvents).unwrap();
-    m.add(b, (), &mut NoEvents).unwrap();
+    m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_millis(5));
     m.perform(&mut NoEvents).unwrap();
@@ -2704,7 +2710,7 @@ fn connections_are_numbered_in_their_traces() {
     net.lock().unwrap().hang_up(SocketKey::new(1000));
     net.lock().unwrap().hang_up(SocketKey::new(1001));
     let (c, c_lines) = traced(url);
-    m.add(c, (), &mut NoEvents).unwrap();
+    m.add(Box::new(c), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         trace_of(&c_lines)[..6],
@@ -2734,7 +2740,7 @@ fn a_wake_ends_a_wait_on_a_transfer_s_socket() {
         waker: Some(waker.clone()),
     };
     let mut m: Multi = Multi::new(env).unwrap();
-    m.add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+    m.add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     waker.wake().unwrap();
@@ -2777,7 +2783,7 @@ fn scoped_net() -> (Multi, std::num::NonZeroU32) {
 /// line saying a name was in the cache, as the address after the first
 /// transfer is.
 fn run_traced(m: &mut Multi, e: Easy, lines: &TextLines) -> (Result<(), ErrorKind>, Vec<String>) {
-    let h = m.add(e, (), &mut NoEvents).unwrap();
+    let h = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let done = messages(m);
     assert_eq!(done.len(), 1, "{done:?}");

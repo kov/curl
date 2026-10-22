@@ -150,7 +150,7 @@ fn traced(e: &mut Easy) -> Traced {
 
 fn run(e: Easy) -> (Result<(), ErrorKind>, crate::report::Sizes) {
     let (mut m, _clock) = multi();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let r = result(&mut m).expect("over in one pass");
     (r, *m.easy(id).unwrap().report().sizes())
@@ -232,7 +232,7 @@ fn the_read_that_completes_the_size_ends_the_body() {
     let mut e = script(vec![]);
     fed(&mut e, &[1; 30], Some(30), None, plain);
     let source = e.options().upload.clone();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut upload = Upload::new(&source);
@@ -270,7 +270,7 @@ impl crate::handler::LentBytes for Lends {
 #[test]
 fn bytes_need_a_rewind_once_read() {
     let (mut m, _clock) = multi();
-    let id = m.add(script(vec![]), (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(script(vec![])), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let source = UploadSource::Bytes(TryArc::try_new(b"abcde".to_vec()).unwrap());
     m.with_step_cx(id, |cx| {
@@ -293,7 +293,7 @@ fn bytes_need_a_rewind_once_read() {
 #[test]
 fn lent_bytes_are_read_in_place_and_rewound() {
     let (mut m, _clock) = multi();
-    let id = m.add(script(vec![]), (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(script(vec![])), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let source = UploadSource::Lent(Handler::lent(Lends(b"abcde".to_vec())).unwrap());
     m.with_step_cx(id, |cx| {
@@ -340,7 +340,7 @@ fn the_handler_s_end_and_failures_stick() {
         let mut e = script(vec![]);
         let seen = fed(&mut e, b"", None, None, move |_| Some(answer));
         let source = e.options().upload.clone();
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         m.with_step_cx(id, |cx| {
             let mut upload = Upload::new(&source);
@@ -366,7 +366,7 @@ fn an_aborting_read_is_timed_to_its_end() {
     fed(&mut e, b"hello", None, None, |n| {
         Some(if n == 0 { Read::Pause } else { Read::Abort })
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(result(&mut m), None, "paused");
@@ -389,7 +389,7 @@ fn a_pausing_handler_pauses_the_sending() {
         (n == 0).then_some(Read::Pause)
     });
     let sent = traced(&mut e);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(result(&mut m), None, "paused");
@@ -408,7 +408,7 @@ fn a_pausing_handler_pauses_the_sending() {
     let mut e = script(vec![]);
     fed(&mut e, b"", None, None, |_| Some(Read::Pause));
     let source = e.options().upload.clone();
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     m.with_step_cx(id, |cx| {
         let mut upload = Upload::new(&source);
@@ -483,7 +483,7 @@ fn a_rewind_handler_s_reason_is_the_transfer_s() {
             *rewind = Some(Handler::rewind(Explains).unwrap());
         }
         let (mut m, _clock) = multi();
-        let id = m.add(e, (), &mut NoEvents).unwrap();
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(result(&mut m), Some(Err(ErrorKind::SendFailRewind)));
         let kept = m.easy(id).unwrap().report().failure().map(<[u8]>::to_vec);
@@ -534,7 +534,7 @@ fn a_rewind_needs_the_handler_s_rewind_once_read() {
     let seen = fed(&mut e, b"x", None, Some(true), |n| {
         (n == 0).then_some(Read::Pause)
     });
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     // Unpaused, the piece reads again and the rewind follows.
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
@@ -550,7 +550,7 @@ fn a_request_with_a_body_is_sent_when_its_body_is() {
     let (mut m, clock) = multi();
     let mut e = script(vec![Piece::Send(1), Piece::Yield, Piece::SendAll]);
     fed(&mut e, b"ab", None, None, plain);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_millis(20));
     m.perform(&mut NoEvents).unwrap();
@@ -560,7 +560,7 @@ fn a_request_with_a_body_is_sent_when_its_body_is() {
 
     let (mut m, clock) = multi();
     let id = m
-        .add(script(vec![Piece::Yield]), (), &mut NoEvents)
+        .add(Box::new(script(vec![Piece::Yield])), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_millis(20));
@@ -584,7 +584,7 @@ fn progress_counts_what_is_sent() {
     fed(&mut e, &[0; 800], Some(800), None, plain);
     let last = Arc::new(Cell::new(None));
     e.options_mut().progress = Progress::Handler(Handler::progress(Last(last.clone())).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_secs(1));
     m.perform(&mut NoEvents).unwrap();
@@ -610,7 +610,7 @@ fn a_pause_blocks_an_upload_only_every_way_it_moves() {
         Piece::Yield,
     ]);
     fed(&mut e, &[1; 10], None, None, plain);
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let runs_again = |m: &Multi| m.timeout() == Some(Duration::ZERO);
     assert!(!runs_again(&m), "resting at the yield");
@@ -649,7 +649,7 @@ fn a_pause_in_the_step_that_sent_the_body_blocks() {
     ]);
     e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"ab".to_vec()).unwrap());
     e.options_mut().callbacks.write = Some(Handler::write(PauseOnWrite).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.easy(id).unwrap().report().sizes().upload(), 2, "sent");
     assert_ne!(
@@ -672,7 +672,7 @@ fn a_pause_in_a_step_still_sending_runs_it_again() {
     ]);
     e.options_mut().upload = UploadSource::Bytes(TryArc::try_new(b"ab".to_vec()).unwrap());
     e.options_mut().callbacks.write = Some(Handler::write(PauseOnWrite).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         m.easy(id).unwrap().report().sizes().upload(),

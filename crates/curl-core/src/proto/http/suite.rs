@@ -309,7 +309,7 @@ fn run(test: u32) -> Result<Result<(), String>, Skip> {
     o.http.ignore_content_length = c.ignore_length;
     o.callbacks.write = Some(Handler::write(got.clone()).unwrap());
     o.callbacks.header = Some(Handler::header(got.clone()).unwrap());
-    let id = m.add(e, (), &mut NoEvents).unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     let code = result.err().map_or(0, code_of);
     let (output, headers) = got.written.lock().unwrap().clone();

@@ -579,11 +579,11 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
     }
 
     fn easy(&self, id: TransferId) -> Option<&Easy> {
-        self.rest.tell.slots.get(id).map(|s| &s.easy)
+        self.rest.tell.slots.get(id).map(|s| &*s.easy)
     }
 
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
-        self.rest.tell.slots.get_mut(id).map(|s| &mut s.easy)
+        self.rest.tell.slots.get_mut(id).map(|s| &mut *s.easy)
     }
 
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind> {

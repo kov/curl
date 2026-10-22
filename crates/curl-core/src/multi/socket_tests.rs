@@ -150,7 +150,9 @@ use SocketWhat::{Out, Remove};
 #[test]
 fn a_transfer_s_socket_is_announced_and_removed() {
     let (mut m, clock, mut ev) = networked();
-    let id = m.add(easy("tcp://127.0.0.1:4/"), (), &mut ev).unwrap();
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(ev.calls, [(id.index(), 1000, Out, None, 0)]);
     // Unknown, so nothing runs; the same, so nothing is told.
@@ -175,7 +177,8 @@ fn a_transfer_s_socket_is_announced_and_removed() {
 #[test]
 fn perform_tells_the_socket_callback_nothing() {
     let (mut m, _clock, mut ev) = networked();
-    m.add(easy("tcp://127.0.0.1:3/"), (), &mut ev).unwrap();
+    m.add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut ev)
+        .unwrap();
     m.perform(&mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(ev.calls, [], "not due, so not run");
@@ -186,7 +189,8 @@ fn perform_tells_the_socket_callback_nothing() {
 #[test]
 fn a_socket_closed_within_a_run_is_never_announced() {
     let (mut m, _clock, mut ev) = networked();
-    m.add(easy("tcp://127.0.0.1:2/"), (), &mut ev).unwrap();
+    m.add(Box::new(easy("tcp://127.0.0.1:2/")), (), &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(m.counts().running, 0);
     assert_eq!((ev.calls.len(), ev.closed.get()), (0, 1));
@@ -197,7 +201,9 @@ fn a_socket_closed_within_a_run_is_never_announced() {
 #[test]
 fn a_socket_is_removed_before_it_closes() {
     let (mut m, _clock, mut ev) = networked();
-    let id = m.add(easy("tcp://127.0.0.1:3/"), (), &mut ev).unwrap();
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     m.remove(id, &mut ev).unwrap();
     assert_eq!(
@@ -215,7 +221,9 @@ fn a_socket_is_removed_before_it_closes() {
 #[test]
 fn a_pause_is_heard_inside_the_call() {
     let (mut m, _clock, mut ev) = networked();
-    let id = m.add(easy("tcp://127.0.0.1:3/"), (), &mut ev).unwrap();
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     m.pause(id, PauseRequest::RECV, &mut ev).unwrap();
     m.pause(id, PauseRequest::RECV, &mut ev).unwrap();
@@ -237,7 +245,9 @@ fn a_pause_is_heard_inside_the_call() {
 fn an_aborting_socket_callback_kills_the_multi() {
     let (mut m, _clock, mut ev) = networked();
     ev.abort_at = Some(1);
-    let id = m.add(easy("tcp://127.0.0.1:3/"), (), &mut ev).unwrap();
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut ev)
+        .unwrap();
     assert_eq!(
         m.socket_action(SocketEvent::Timeout, &mut ev),
         Err(MultiErrorKind::AbortedByCallback)
@@ -287,7 +297,8 @@ fn the_socket_callback_sees_the_transfers() {
     let mut m: Multi<Host8> = Multi::new(env).unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut ev = Owners(seen.clone());
-    m.add(easy("tcp://127.0.0.1:3/"), 42, &mut ev).unwrap();
+    m.add(Box::new(easy("tcp://127.0.0.1:3/")), 42, &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(*seen.lock().unwrap(), [Some(42)]);
 }
@@ -297,7 +308,9 @@ fn the_socket_callback_sees_the_transfers() {
 #[test]
 fn a_removed_transfer_leaves_its_sockets() {
     let (mut m, clock, mut ev) = networked();
-    let id = m.add(easy("tcp://127.0.0.1:4/"), (), &mut ev).unwrap();
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     clock.advance(Duration::from_millis(5));
     m.perform(&mut ev).unwrap();
@@ -316,7 +329,7 @@ fn a_removed_transfer_leaves_its_sockets() {
 #[test]
 fn without_a_socket_callback_no_socket_is_recorded() {
     let (mut m, _clock, _) = networked();
-    m.add(easy("tcp://127.0.0.1:3/"), (), &mut NoEvents)
+    m.add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut NoEvents)
         .unwrap();
@@ -328,7 +341,9 @@ fn without_a_socket_callback_no_socket_is_recorded() {
 #[test]
 fn a_timer_abort_inside_a_pause_tells_the_sockets_nothing() {
     let (mut m, _clock, mut ev) = networked();
-    let id = m.add(easy("tcp://127.0.0.1:3/"), (), &mut ev).unwrap();
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     ev.abort_timer = true;
     assert_eq!(
@@ -343,7 +358,8 @@ fn a_timer_abort_inside_a_pause_tells_the_sockets_nothing() {
 fn a_notification_assigns_as_the_multi_does() {
     let (mut m, _clock, mut ev) = networked();
     m.set_notify(NotifyKind::EasyDone, true);
-    m.add(easy("tcp://127.0.0.1:2/"), (), &mut ev).unwrap();
+    m.add(Box::new(easy("tcp://127.0.0.1:2/")), (), &mut ev)
+        .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(ev.assigned_in_notify, [Err(UnknownSocket)]);
 }

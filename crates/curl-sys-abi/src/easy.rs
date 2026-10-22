@@ -70,12 +70,9 @@ pub(crate) struct ShimEasy {
 }
 
 /// Where the handle's transfer is.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "the handle is boxed whole; the transfer lives in it while on its own"
-)]
 enum Home {
-    Detached(Easy),
+    /// In memory of its own, which moves to the multi and back whole.
+    Detached(Box<Easy>),
     Added {
         multi: NonNull<ShimMulti>,
         id: TransferId,
@@ -94,13 +91,13 @@ impl ShimEasy {
         post: callbacks::Post,
         errbuf: *mut c_char,
     ) -> Result<NonNull<ShimEasy>, OutOfMemory> {
+        let mut easy = try_box(easy)?;
         let shim = try_box(ShimEasy::empty(false, ccb, set))?;
         let shim = NonNull::from(Box::leak(shim));
         // SAFETY: just made, and reached only through this pointer.
         let me = unsafe { shim.as_ref() };
         me.errbuf.set(errbuf);
         *me.post.borrow_mut() = post;
-        let mut easy = easy;
         if let Err(e) = callbacks::install(easy.options_mut(), shim, &set, &ccb, errbuf) {
             // SAFETY: made above by `Box::leak`, used nowhere else.
             drop(unsafe { Box::from_raw(shim.as_ptr()) });
@@ -165,7 +162,7 @@ impl ShimEasy {
     }
 
     /// The handle's transfer, to add to a multi.
-    pub(crate) fn detach(&self) -> Easy {
+    pub(crate) fn detach(&self) -> Box<Easy> {
         match self.home.replace(Home::Nowhere) {
             Home::Detached(easy) => easy,
             Home::Added { .. } | Home::Nowhere => unreachable!("a handle on its own"),
@@ -565,7 +562,7 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
 
 impl ShimEasy {
     /// The transfer the multi gave back.
-    pub(crate) fn return_home(&self, easy: Easy) {
+    pub(crate) fn return_home(&self, easy: Box<Easy>) {
         self.home.replace(Home::Detached(easy));
     }
 

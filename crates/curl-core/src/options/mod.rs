@@ -39,6 +39,8 @@ pub struct Options {
     /// The remote file's time is read, where the protocol has to ask for
     /// it (`CURLOPT_FILETIME`): HTTP's `Last-Modified`.
     pub filetime: bool,
+    /// The remote file is transferred only if its time meets this.
+    pub time_condition: Option<TimeCondition>,
     pub limits: Limits,
     /// Which of a name's addresses a connection may use
     /// (`CURLOPT_IPRESOLVE`).
@@ -334,6 +336,7 @@ impl Options {
             resume: self.resume,
             new_file_mode: self.new_file_mode,
             filetime: self.filetime,
+            time_condition: self.time_condition,
             limits: self.limits,
             ip_version: self.ip_version,
             port: self.port,
@@ -399,6 +402,71 @@ impl Method {
             Method::Head => b"HEAD",
             Method::Post => b"POST",
             Method::Upload => b"PUT",
+        }
+    }
+}
+
+/// A condition on the remote file's time (`CURLOPT_TIMECONDITION`,
+/// `CURLOPT_TIMEVALUE_LARGE`). A range asked for sets it aside, as does a
+/// file whose time is not known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeCondition {
+    pub when: Condition,
+    /// Seconds since 1970-01-01 00:00:00 UTC; at 0, any file meets it.
+    pub time: i64,
+}
+
+/// What a time condition asks of the file, and the HTTP header it sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Condition {
+    /// Modified after the time (`If-Modified-Since`).
+    ModifiedSince,
+    /// Not modified after it (`If-Unmodified-Since`).
+    UnmodifiedSince,
+    /// Sent as `Last-Modified`; checked as `ModifiedSince`, as C does.
+    LastModified,
+}
+
+impl Condition {
+    /// The header a request sends it as.
+    pub(crate) fn header(self) -> &'static [u8] {
+        match self {
+            Condition::ModifiedSince => b"If-Modified-Since",
+            Condition::UnmodifiedSince => b"If-Unmodified-Since",
+            Condition::LastModified => b"Last-Modified",
+        }
+    }
+}
+
+/// Why a file fails a time condition, as C says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unmet {
+    NotNewEnough,
+    NotOldEnough,
+}
+
+impl fmt::Display for Unmet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Unmet::NotNewEnough => "The requested document is not new enough",
+            Unmet::NotOldEnough => "The requested document is not old enough",
+        })
+    }
+}
+
+impl TimeCondition {
+    /// Whether a file modified at `doc`, 0 for not known, meets it
+    /// (`Curl_meets_timecondition`).
+    pub(crate) fn met_by(self, doc: i64) -> Result<(), Unmet> {
+        if doc == 0 || self.time == 0 {
+            return Ok(());
+        }
+        match self.when {
+            Condition::ModifiedSince | Condition::LastModified if doc <= self.time => {
+                Err(Unmet::NotNewEnough)
+            }
+            Condition::UnmodifiedSince if doc >= self.time => Err(Unmet::NotOldEnough),
+            _ => Ok(()),
         }
     }
 }

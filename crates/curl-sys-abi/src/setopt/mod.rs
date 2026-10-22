@@ -19,7 +19,8 @@ use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::options::{
     ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines, LowSpeed,
-    MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits, UserHeaders,
+    MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits, TimeCondition,
+    UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -195,6 +196,21 @@ fn low_speed(set: &CSettings) -> Option<LowSpeed> {
     Some(LowSpeed {
         limit: NonZeroU64::new(u64::try_from(set.low_speed_limit).ok()?)?,
         time: NonZeroU16::new(u16::try_from(set.low_speed_time).ok()?)?,
+    })
+}
+
+/// The time condition the two settings make together.
+fn time_condition(set: &CSettings) -> Option<TimeCondition> {
+    use curl_core::options::Condition;
+    let when = match set.time_condition {
+        ffi::CURL_TIMECOND_IFMODSINCE => Condition::ModifiedSince,
+        ffi::CURL_TIMECOND_IFUNMODSINCE => Condition::UnmodifiedSince,
+        ffi::CURL_TIMECOND_LASTMOD => Condition::LastModified,
+        _ => return None,
+    };
+    Some(TimeCondition {
+        when,
+        time: set.time_value,
     })
 }
 
@@ -433,6 +449,21 @@ fn apply(
             }
         }
         (ffi::CURLOPT_CONNECTTIMEOUT_MS, Long(n)) => options.limits.connect = time_limit(n, 1)?,
+        (ffi::CURLOPT_TIMECONDITION, Long(n)) => {
+            if !(ffi::CURL_TIMECOND_NONE..ffi::CURL_TIMECOND_LAST.0.into()).contains(&n) {
+                return Err(Refused::Bad);
+            }
+            set.time_condition = n;
+            options.time_condition = time_condition(set);
+        }
+        (ffi::CURLOPT_TIMEVALUE, Long(n)) => {
+            set.time_value = wide(n);
+            options.time_condition = time_condition(set);
+        }
+        (ffi::CURLOPT_TIMEVALUE_LARGE, Off(n)) => {
+            set.time_value = n;
+            options.time_condition = time_condition(set);
+        }
         (ffi::CURLOPT_LOW_SPEED_LIMIT, Long(n)) => {
             if n < 0 {
                 return Err(Refused::Bad);
@@ -879,5 +910,15 @@ mod tests {
         assert_eq!(low_speed(&set), None);
         set.low_speed_time = 3;
         assert!(low_speed(&set).is_some());
+        set.time_value = 7;
+        assert_eq!(time_condition(&set), None);
+        set.time_condition = ffi::CURL_TIMECOND_LASTMOD;
+        assert_eq!(
+            time_condition(&set),
+            Some(TimeCondition {
+                when: curl_core::options::Condition::LastModified,
+                time: 7
+            })
+        );
     }
 }

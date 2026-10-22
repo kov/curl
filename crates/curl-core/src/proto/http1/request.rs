@@ -5,7 +5,10 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::coding::{Coding, Decoders};
 use crate::conn::Peer;
+use crate::date::HttpDate;
 use crate::error::ErrorKind;
+use crate::text::Text;
+use std::fmt::Write as _;
 
 use super::fields;
 
@@ -419,12 +422,21 @@ pub(crate) struct RequestHead<'o> {
     /// `TE: gzip` asks for gzip as a transfer coding, and `Connection`
     /// names it (`http_hd_te`).
     pub(crate) te: bool,
+    /// The time condition's header, unless the application sends its own.
+    pub(crate) conditional: Option<Conditional>,
     /// What the `Cookie:` line says, if the request has one.
     pub(crate) cookie: Option<&'o [u8]>,
     /// The request goes to a proxy that sends it on: it asks to keep the
     /// connection to the proxy (`origin_is_proxy`).
     pub(crate) forwarded: Option<Forwarding<'o>>,
     pub(crate) headers: &'o UserHeaders,
+}
+
+/// A time condition as a request header (`Curl_add_timecondition`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Conditional {
+    pub(crate) name: &'static [u8],
+    pub(crate) date: HttpDate,
 }
 
 /// What an `Accept-Encoding` says.
@@ -640,7 +652,14 @@ fn write_h1(
                     out.line(&[b"TE: gzip"])?;
                 }
             }
-            Part::AltUsed | Part::Upgrade | Part::Conditionals => {}
+            Part::Conditionals => {
+                if let Some(c) = head.conditional {
+                    let mut date = Text::<40>::new();
+                    write!(date, "{}", c.date).expect("a date fits");
+                    out.line(&[c.name, b": ", date.bytes()])?;
+                }
+            }
+            Part::AltUsed | Part::Upgrade => {}
         }
     }
     Ok(())
@@ -812,6 +831,7 @@ mod tests {
             probe: false,
             accept_encoding: None,
             te: false,
+            conditional: None,
             cookie: None,
             forwarded: None,
             headers: &headers,
@@ -882,6 +902,7 @@ mod tests {
                 probe: false,
                 accept_encoding: None,
                 te: false,
+                conditional: None,
                 cookie: None,
                 forwarded: None,
 
@@ -933,6 +954,7 @@ mod tests {
                 probe: false,
                 accept_encoding: None,
                 te: false,
+                conditional: None,
                 cookie: None,
                 forwarded: None,
 
@@ -1097,6 +1119,7 @@ mod tests {
             probe: false,
             accept_encoding: None,
             te: false,
+            conditional: None,
             cookie: None,
             forwarded,
             headers: &headers,
@@ -1150,6 +1173,7 @@ mod tests {
             probe: false,
             accept_encoding: None,
             te: false,
+            conditional: None,
             cookie: None,
             forwarded: None,
             headers: &headers,
@@ -1199,6 +1223,7 @@ mod tests {
                 probe: false,
                 accept_encoding: None,
                 te: false,
+                conditional: None,
                 cookie: None,
                 forwarded: None,
 

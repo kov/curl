@@ -481,6 +481,7 @@ mod tests {
                 auth: Default::default(),
                 http_proxy: false,
                 forwarded: false,
+                time_condition: None,
             },
         };
         let mut head = HeadParser::new(exchange);

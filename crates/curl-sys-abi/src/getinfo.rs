@@ -251,6 +251,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         )),
         ffi::CURLINFO_RETRY_AFTER => Value::Off(off(r.retry_after().map_or(0, |d| d.as_secs()))),
         ffi::CURLINFO_FILETIME => Value::Long(r.filetime().map_or(-1, long_time)),
+        ffi::CURLINFO_CONDITION_UNMET => Value::Long(r.condition_unmet().into()),
         ffi::CURLINFO_FILETIME_T => Value::Off(r.filetime().unwrap_or(-1)),
         ffi::CURLINFO_PROTOCOL => Value::Long(r.protocol().map_or(0, proto_bit)),
         ffi::CURLINFO_TOTAL_TIME => Value::Double(secs(t.total())),

@@ -14,7 +14,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use super::fields;
 use super::response::{HttpVersion, Status};
 use crate::date::{self, BadDate};
-use crate::options::AuthMethods;
+use crate::options::{AuthMethods, TimeCondition, Unmet};
 use crate::proto::http::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
@@ -46,6 +46,9 @@ pub(crate) struct Asked {
     /// The connection goes through an HTTP proxy, whose
     /// `Proxy-Connection` then says whether it stays open.
     pub(crate) http_proxy: bool,
+    /// What the document's time must meet, unless the request asks for a
+    /// range (`state.range`).
+    pub(crate) time_condition: Option<TimeCondition>,
     /// The request went to an HTTP proxy that sends it on, whose 407
     /// alone is the proxy's to read (`origin_is_proxy`): through a
     /// tunnel, or to a host reached without one, it is the origin's.
@@ -91,6 +94,10 @@ pub(crate) enum Note {
     /// The connection closes rather than carry the rest of the body,
     /// this much or an unknown amount, for a request answered already.
     CloseInstead(Left),
+    /// The document fails the time condition.
+    Unmet(Unmet),
+    /// And the transfer ends as if the server had said 304.
+    Simulate304,
 }
 
 /// What C says of a line before it delivers it: at most four notes.
@@ -146,6 +153,8 @@ impl fmt::Display for Note {
             Note::CloseInstead(Left::Unknown | Left::Nothing) => {
                 "close instead of sending unknown amount of more bytes"
             }
+            Note::Unmet(unmet) => return write!(f, "{unmet}"),
+            Note::Simulate304 => "Simulate an HTTP 304 response",
             Note::Heard(_) => unreachable!("given out one by one by `Notes::iter`"),
         })
     }
@@ -272,6 +281,12 @@ pub(crate) struct Meta {
     /// The body is read again for the next request, and what is left of
     /// it now is sent to be dropped (`Curl_creader_will_rewind`).
     rewinds: bool,
+    /// The document's `Last-Modified`, read for a time condition; 0 for
+    /// none or one that cannot be read (`timeofdoc`).
+    doc_time: i64,
+    /// The document failed the time condition, and the transfer ends at
+    /// the head.
+    unmet: bool,
 }
 
 /// What of the request's body is still to go as its response is read:
@@ -396,6 +411,13 @@ impl Meta {
                 self.close = true;
                 self.length_void = true;
             }
+            return Ok(None);
+        }
+        if !self.bodyless
+            && asked.time_condition.is_some()
+            && let Some(v) = value_of(line, b"Last-Modified:")
+        {
+            self.doc_time = date::parse(v).unwrap_or(0);
             return Ok(None);
         }
         if value_of(line, b"Location:").is_some() {
@@ -590,6 +612,17 @@ impl Meta {
             note.push(Note::AlreadyDownloaded);
             return (note, Ok(Framing::Abandoned));
         }
+        // A document the condition rules out is not read, and the
+        // connection goes with what is left of it. A head that closes
+        // and asks for another request ended above, so at most two notes
+        // came before these.
+        if let Some(Err(unmet)) = asked.time_condition.map(|c| c.met_by(self.doc_time)) {
+            note.push(Note::Unmet(unmet));
+            note.push(Note::Simulate304);
+            self.close = true;
+            self.unmet = true;
+            return (note, Ok(Framing::Abandoned));
+        }
         // `http_size`.
         if let Some(size) = self.size {
             if self.ignore_body {
@@ -659,6 +692,11 @@ impl Meta {
     /// The body is read and dropped.
     pub(crate) fn ignore_body(&self) -> bool {
         self.ignore_body
+    }
+
+    /// The document failed the time condition: the transfer reports 304.
+    pub(crate) fn unmet(&self) -> bool {
+        self.unmet
     }
 
     /// The body's size as the head gives it.

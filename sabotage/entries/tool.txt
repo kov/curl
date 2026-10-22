@@ -5,7 +5,7 @@
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool an_empty_download_leaves_an_empty_file
 --- old
-    if result.is_ok() && !stream.create() {
+    if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
 --- new
     if false && !stream.create() {
 

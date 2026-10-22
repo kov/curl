@@ -8,6 +8,7 @@ use curl_alloc::{TryVec as _, try_box};
 use crate::coding::{AcceptEncoding, Coding, Decoder, Identity, Named, Unrecognized};
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{ConnLease, Peer, RecvFailed};
+use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{Expect, Pause, Pipeline, Reach};
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
@@ -24,7 +25,7 @@ use crate::url::{GetOptions, Part, SetOptions, Url};
 use super::http1::chunked::{ChunkDecoder, ChunkEncoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, Framing, Left, Sending};
 use super::http1::request::{
-    self, Accepted, Authorization, CredentialGate, Forwarding, RequestHead,
+    self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RequestHead,
 };
 use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
@@ -616,6 +617,22 @@ impl Request {
             // C's -1, which for a download names no range a server knows.
             Some(Resume::AtEnd) => return Err(ErrorKind::NotBuiltIn),
         };
+        // The time condition's header, if the application sends none of
+        // its own; a time C's `struct tm` cannot hold fails the request
+        // all the same (`Curl_add_timecondition`).
+        let conditional = match options.time_condition {
+            None => None,
+            Some(c) => match HttpDate::of(c.time) {
+                Ok(date) => (!http.headers.replaces(c.when.header())).then_some(Conditional {
+                    name: c.when.header(),
+                    date,
+                }),
+                Err(OutOfRange) => {
+                    let said = format_args!("Invalid TIMEVALUE");
+                    return Err(trace::fail(cx, ErrorKind::BadFunctionArgument, said));
+                }
+            },
+        };
         let port = self.peer.port();
         let shown_port = (port != DEFAULT_PORT).then_some(port);
         let gate = self.gate;
@@ -662,6 +679,7 @@ impl Request {
             te: http.transfer_encoding
                 && cx.easy().decoders().maker(Coding::Gzip).is_some()
                 && !http.headers.replaces(b"TE"),
+            conditional,
             cookie: cookie.as_deref(),
             forwarded: forwarded.then(|| Forwarding {
                 own_headers: (!options.proxy.unified_headers).then_some(&options.proxy.headers),
@@ -688,6 +706,7 @@ impl Request {
                 follow: http.follow != Follow::No,
                 auth: auth_asked,
                 http_proxy,
+                time_condition: options.time_condition.filter(|_| options.resume.is_none()),
                 forwarded,
             },
         };
@@ -1138,6 +1157,17 @@ impl Request {
                 self.release();
             } else if !interim && code >= 300 {
                 self.send_error(cx, code)?;
+            }
+            // A document the time condition ruled out ends the transfer
+            // as a 304 would have; a 304 itself says the same
+            // (`http_firstwrite`, `http_on_response`).
+            let unmet = !interim && self.head().meta().unmet();
+            let options = cx.easy().options();
+            if unmet || (!interim && code == 304 && options.time_condition.is_some()) {
+                cx.report_mut().set_condition_unmet();
+            }
+            if unmet && let Some(version) = cx.report_mut().response_version() {
+                cx.report_mut().set_response(304, version);
             }
             // What is left of a body read again for the next request
             // goes, to be dropped (`http_on_response`).

@@ -16,6 +16,7 @@ const ASKED: Asked = Asked {
     auth: crate::proto::http::auth::AuthAsked::DEFAULT,
     http_proxy: false,
     forwarded: false,
+    time_condition: None,
 };
 
 const PLAIN: Exchange = Exchange {

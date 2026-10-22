@@ -11,7 +11,7 @@
 use std::os::unix::ffi::OsStrExt as _;
 
 use curl_alloc::TryVec;
-use curl_core::options::{AuthMethods, Follow, PostRedir, ProxyType};
+use curl_core::options::{AuthMethods, Condition, Follow, PostRedir, ProxyType, TimeCondition};
 use curl_core::version::Protocol;
 
 use super::protocols::{self, Protocols};
@@ -211,6 +211,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) compressed: bool,
     /// `--tr-encoding`.
     pub(crate) tr_encoding: bool,
+    /// `--time-cond`, unless its time could not be read.
+    pub(crate) time_cond: Option<TimeCondition>,
     /// `--happy-eyeballs-timeout-ms`, if given.
     pub(crate) happy_eyeballs_ms: Option<u64>,
     /// `--ipv4` or `--ipv6`, whichever came last.
@@ -572,6 +574,43 @@ impl From<curl_alloc::OutOfMemory> for ParamError {
 }
 
 /// Apply option `spec` with `value` to `line`.
+/// `--time-cond`'s argument: `+` or nothing for modified since, `-` for
+/// not modified since, `=` for the `Last-Modified` header, then a date or
+/// a file whose modification time to take (`parse_time_cond`). Neither
+/// is a warning, and no condition.
+fn time_cond(arg: &[u8], msgs: &Messages) -> Option<TimeCondition> {
+    let (when, rest) = match arg.first() {
+        Some(b'-') => (Condition::UnmodifiedSince, &arg[1..]),
+        Some(b'=') => (Condition::LastModified, &arg[1..]),
+        Some(b'+') => (Condition::ModifiedSince, &arg[1..]),
+        _ => (Condition::ModifiedSince, arg),
+    };
+    // `curl_getdate`, which gives one second before 1970 as 0.
+    let time = match curl_core::date::parse(rest) {
+        Ok(-1) => Some(0),
+        Ok(t) => Some(t),
+        Err(_) => {
+            let name = rest.split(|&b| b == 0).next().unwrap_or_default();
+            match std::fs::metadata(std::ffi::OsStr::from_bytes(name)) {
+                Ok(meta) => Some(std::os::unix::fs::MetadataExt::mtime(&meta)),
+                Err(e) => {
+                    let why = crate::os_message(&e);
+                    msgs.warn(&[b"Failed to get filetime: ", why.as_bytes()]);
+                    None
+                }
+            }
+        }
+    };
+    let Some(time) = time else {
+        msgs.warn(&[
+            b"Illegal date format for -z, --time-cond (and not a filename). Disabling time \
+              condition. See curl_getdate(3) for valid date syntax.",
+        ]);
+        return None;
+    };
+    Some(TimeCondition { when, time })
+}
+
 pub(crate) fn apply<'a>(
     line: &mut CommandLine<'a>,
     msgs: &mut Messages,
@@ -874,6 +913,7 @@ pub(crate) fn apply<'a>(
         Opt::Raw => line.current().raw = value.toggle(),
         Opt::Compressed => line.current().compressed = value.toggle(),
         Opt::TrEncoding => line.current().tr_encoding = value.toggle(),
+        Opt::TimeCond => line.current().time_cond = time_cond(value.text(), msgs),
         Opt::HappyEyeballsTimeoutMs => line.current().happy_eyeballs_ms = Some(value.number()),
         Opt::Ipv4 => line.current().ip_version = Some(IpVersion::V4),
         Opt::Ipv6 => line.current().ip_version = Some(IpVersion::V6),
@@ -1201,7 +1241,6 @@ pub(crate) fn apply<'a>(
         | Opt::TelnetOption
         | Opt::TftpBlksize
         | Opt::TftpNoOptions
-        | Opt::TimeCond
         | Opt::TlsEarlydata
         | Opt::TlsMax
         | Opt::Tls13Ciphers

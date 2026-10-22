@@ -106,6 +106,10 @@ pub(crate) struct CSettings {
     pub(crate) in_file_size: i64,
     pub(crate) low_speed_limit: c_long,
     pub(crate) low_speed_time: c_long,
+    /// `CURLOPT_TIMECONDITION`, `CURL_TIMECOND_NONE` to `LASTMOD`.
+    pub(crate) time_condition: c_long,
+    /// `CURLOPT_TIMEVALUE_LARGE`.
+    pub(crate) time_value: i64,
     pub(crate) private: *mut c_void,
 }
 
@@ -116,6 +120,8 @@ impl CSettings {
             in_file_size: -1,
             low_speed_limit: 0,
             low_speed_time: 0,
+            time_condition: 0,
+            time_value: 0,
             private: ptr::null_mut(),
         }
     }

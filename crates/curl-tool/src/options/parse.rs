@@ -894,6 +894,39 @@ mod tests {
         assert!(line(&["x", "--tr-encoding"]).operations[0].tr_encoding);
     }
 
+    /// `-z`: a sign for the condition, then a date or a file's time;
+    /// neither leaves no condition.
+    #[test]
+    fn reads_time_conditions_as_c() {
+        use curl_core::options::{Condition, TimeCondition};
+        let cond = |arg: &'static str| line(&["x", "-z", arg]).operations[0].time_cond;
+        let at = |when, time| Some(TimeCondition { when, time });
+        let dec = "dec 12 12:00:00 1999 GMT";
+        let dec_1999 = 945_000_000;
+        assert_eq!(cond(dec), at(Condition::ModifiedSince, dec_1999));
+        assert_eq!(
+            cond("+dec 12 12:00:00 1999 GMT"),
+            at(Condition::ModifiedSince, dec_1999)
+        );
+        assert_eq!(
+            cond("-dec 12 12:00:00 1999 GMT"),
+            at(Condition::UnmodifiedSince, dec_1999)
+        );
+        assert_eq!(
+            cond("=dec 12 12:00:00 1999 GMT"),
+            at(Condition::LastModified, dec_1999)
+        );
+        // `curl_getdate` gives the second before 1970 as 0.
+        assert_eq!(
+            cond("31 dec 1969 23:59:59 GMT"),
+            at(Condition::ModifiedSince, 0)
+        );
+        let mtime =
+            std::os::unix::fs::MetadataExt::mtime(&std::fs::metadata("Cargo.toml").unwrap());
+        assert_eq!(cond("-Cargo.toml"), at(Condition::UnmodifiedSince, mtime));
+        assert_eq!(cond("no such date nor file"), None);
+    }
+
     #[test]
     fn reads_the_progress_meter_switch() {
         assert!(line(&["x", "--no-progress-meter"]).global.no_progress);

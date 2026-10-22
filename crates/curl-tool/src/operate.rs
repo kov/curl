@@ -1059,6 +1059,7 @@ fn configure(
     }
     http.ignore_content_length = op.ignore_content_length;
     o.filetime = op.remote_time;
+    o.time_condition = op.time_cond;
     if let Some(proxy) = op.proxy {
         o.proxy.url = Some(copy(proxy)?);
         o.proxy.kind = op.proxy_kind;
@@ -1213,8 +1214,9 @@ fn settle(
     }
     let mut stream = out.stream();
     // A successful transfer that wrote nothing still leaves its output
-    // file, empty.
-    if result.is_ok() && !stream.create() {
+    // file, empty, unless a time condition kept the file from coming:
+    // then the file is not even replaced.
+    if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
         result = Err(ErrorKind::WriteError);
     }
     if stream.flush().is_err() && result.is_ok() {

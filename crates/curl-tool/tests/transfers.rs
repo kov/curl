@@ -263,6 +263,21 @@ fn an_empty_download_leaves_an_empty_file() {
     assert!(!s.exists("none"));
 }
 
+/// A file a time condition rules out leaves the output file as it was,
+/// not even emptied (test 1424 over HTTP).
+#[test]
+fn an_unmet_time_condition_leaves_the_output_alone() {
+    let s = Scratch::new("timecond");
+    s.write("f", b"new");
+    s.write("out", b"original");
+    let r = curl(&s, &["-s", "-z", "1 jan 2100", "-o", "out", &s.url("f")]);
+    assert_eq!(r.code, 0);
+    assert_eq!(s.read("out"), b"original");
+    let r = curl(&s, &["-s", "-z", "1 jan 2000", "-o", "out", &s.url("f")]);
+    assert_eq!(r.code, 0);
+    assert_eq!(s.read("out"), b"new");
+}
+
 /// The result line, with the library's reason, muted by `--silent`
 /// unless `--show-error`.
 #[test]

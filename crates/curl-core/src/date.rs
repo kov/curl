@@ -8,6 +8,8 @@
 #[cfg(test)]
 mod c_tests;
 
+use std::fmt;
+
 /// A date that could not be read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BadDate;
@@ -348,6 +350,79 @@ fn to_epoch(year: u32, mon: u8, mday: u32, dsecs: u32) -> i64 {
         + i64::from(mday)
         - 1;
     days * 86_400 + i64::from(dsecs)
+}
+
+/// A moment as HTTP writes it, in UTC: `Tue, 15 Nov 1994 12:45:26 GMT`
+/// (C's `Curl_wkday` and `Curl_month` over `curlx_gmtime`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HttpDate {
+    /// From Sunday.
+    weekday: u8,
+    day: u8,
+    /// From January.
+    month: u8,
+    year: i64,
+    secs: u32,
+}
+
+/// A moment C's `struct tm` cannot hold: `gmtime_r` fails on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OutOfRange;
+
+impl HttpDate {
+    /// The moment `t` seconds after 1970-01-01 00:00:00 UTC.
+    pub(crate) fn of(t: i64) -> Result<HttpDate, OutOfRange> {
+        let days = t.div_euclid(86400);
+        // 1970-01-01 was a Thursday.
+        let weekday = (days + 4).rem_euclid(7);
+        let (year, month, day) = civil(days);
+        if i32::try_from(year - 1900).is_err() {
+            return Err(OutOfRange);
+        }
+        Ok(HttpDate {
+            weekday: weekday as u8,
+            day: day as u8,
+            month: (month - 1) as u8,
+            year,
+            secs: t.rem_euclid(86400) as u32,
+        })
+    }
+}
+
+impl fmt::Display for HttpDate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        let s = self.secs;
+        write!(
+            f,
+            "{}, {:02} {} {:4} {:02}:{:02}:{:02} GMT",
+            WEEKDAYS[usize::from(self.weekday)],
+            self.day,
+            MONTHS[usize::from(self.month)],
+            self.year,
+            s / 3600,
+            s / 60 % 60,
+            s % 60
+        )
+    }
+}
+
+/// The proleptic Gregorian year, month and day of `days` after
+/// 1970-01-01 (Howard Hinnant's `civil_from_days`).
+fn civil(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
 }
 
 #[cfg(test)]

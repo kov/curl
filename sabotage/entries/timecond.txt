@@ -1,0 +1,81 @@
+# Time conditions (`CURLOPT_TIMECONDITION`, `-z`).
+
+=== a condition at time 0 rules documents out
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::time_condition::a_document_that_meets_the_condition_is_read
+--- old
+        if doc == 0 || self.time == 0 {
+--- new
+        if doc == 0 {
+
+=== the Last-Modified condition is never checked
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::time_condition::an_older_document_ends_as_a_304
+--- old
+            Condition::ModifiedSince | Condition::LastModified if doc <= self.time => {
+--- new
+            Condition::ModifiedSince if doc <= self.time => {
+
+=== an HTTP range asked for is still ruled out by the condition
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::time_condition::a_document_that_meets_the_condition_is_read
+--- old
+                time_condition: options.time_condition.filter(|_| options.resume.is_none()),
+--- new
+                time_condition: options.time_condition,
+
+=== a file range asked for is still ruled out by the condition
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_file_the_time_condition_rules_out_is_not_read
+--- old
+        if let Some(condition) = options.time_condition.filter(|_| options.resume.is_none())
+--- new
+        if let Some(condition) = options.time_condition
+
+=== the application's own conditional header goes beside the library's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::time_condition::a_time_condition_is_sent_as_its_header
+--- old
+                Ok(date) => (!http.headers.replaces(c.when.header())).then_some(Conditional {
+--- new
+                Ok(date) => true.then_some(Conditional {
+
+=== a 304 from the server says nothing of the condition
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::time_condition::a_304_says_the_condition_was_unmet
+--- old
+            if unmet || (!interim && code == 304 && options.time_condition.is_some()) {
+--- new
+            if unmet {
+
+=== a document ruled out keeps its own status
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::time_condition::an_older_document_ends_as_a_304
+--- old
+                cx.report_mut().set_response(304, version);
+--- new
+                let _ = version;
+
+=== a document ruled out keeps its connection
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::time_condition::an_older_document_ends_as_a_304
+--- old
+            note.push(Note::Simulate304);
+            self.close = true;
+--- new
+            note.push(Note::Simulate304);
+
+=== the second before 1970 is taken as a time
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::reads_time_conditions_as_c
+--- old
+        Ok(-1) => Some(0),
+--- new
+
+=== an unmet condition empties the output file
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool an_unmet_time_condition_leaves_the_output_alone
+--- old
+    if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
+--- new
+    if result.is_ok() && !stream.create() {

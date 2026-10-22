@@ -55,6 +55,8 @@ pub struct TransferReport {
     speeds: Speeds,
     headers: HeaderStore,
     filetime: Option<i64>,
+    /// A time condition ruled the file out (`info.timecond`).
+    condition_unmet: bool,
     protocol: Option<Protocol>,
     /// The last status line's code and version (`info.httpcode`,
     /// `info.httpversion`).
@@ -150,6 +152,16 @@ impl TransferReport {
 
     pub(crate) fn set_filetime(&mut self, t: i64) {
         self.filetime = Some(t);
+    }
+
+    /// The time condition was not met: the file was not transferred, or
+    /// the server answered 304 (`CURLINFO_CONDITION_UNMET`).
+    pub fn condition_unmet(&self) -> bool {
+        self.condition_unmet
+    }
+
+    pub(crate) fn set_condition_unmet(&mut self) {
+        self.condition_unmet = true;
     }
 
     /// The protocol the transfer used, once it is known

@@ -450,10 +450,12 @@ cargo-mutants run on the milestone's diff.
     `curl-zlib` (`deflate`, `gzip`), `curl-brotli` (`br`) and `curl-zstd`. The 28 compression
     tests run on both legs and 27 pass; 3236 waits on C's `write` trace component
     (`curl_global_trace`), which nothing schedules yet.
-33. **http: the headers API, and time conditions.** **In progress.** Done: each request's
-    headers kept for `curl_easy_header` and `curl_easy_nextheader`, by origin and request
-    across redirects, and the tool's `%header{}` and `%{header_json}` reading them (421, 764,
-    765, 1670, 1671). To do: `-z` and `CURLOPT_TIMECONDITION` (1239).
+33. **http: the headers API, and time conditions.** **Done.** Each request's headers kept for
+    `curl_easy_header` and `curl_easy_nextheader`, by origin and request across redirects, and
+    the tool's `%header{}` and `%{header_json}` reading them (421, 764, 765, 1670, 1671). `-z`
+    and `CURLOPT_TIMECONDITION` over HTTP and FILE: the conditional header, a document ruled
+    out ending as a 304 would, and `CURLINFO_CONDITION_UNMET` (77, 78, 249, 1126–1128, 1239,
+    1424, 1511, 1593). FTP's waits on FTP.
 34. **core: read the response while the body goes.** **Done.** A step reads first, then sends
     what is left with at most one more buffer of the body, as C's `Curl_sendrecv` does
     (ENGINE.md 3.2), and a response asking for another request weighs what of the body is left

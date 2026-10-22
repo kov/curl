@@ -684,3 +684,34 @@ fn a_file_draws_its_meter_once() {
         "  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current\n                                 Dload  Upload  Total   Spent   Left   Speed\n\r  0      0   0      0   0      0      0      0                              0\n"
     );
 }
+
+/// A file the time condition rules out is not read, nor are its headers
+/// made, unless a range is asked for.
+#[test]
+fn a_file_the_time_condition_rules_out_is_not_read() {
+    use crate::options::{Condition, TimeCondition};
+    let s = Scratch::new("timecond");
+    s.file("f", b"hello", Y2K_NOON);
+    let fetch = |time: i64, resume: Option<Resume>| {
+        let (mut e, seen) = easy(&s.url("f"));
+        e.options_mut().time_condition = Some(TimeCondition {
+            when: Condition::ModifiedSince,
+            time,
+        });
+        e.options_mut().resume = resume;
+        let (r, e) = run(e);
+        assert_eq!(r, Ok(()));
+        (seen, e.report().condition_unmet())
+    };
+    let (seen, unmet) = fetch(Y2K_NOON as i64, None);
+    assert!(seen.headers().is_empty());
+    assert_eq!(seen.body(), b"");
+    assert!(unmet);
+    let (seen, unmet) = fetch(Y2K_NOON as i64 - 1, None);
+    assert_eq!(seen.headers(), SMALL_HEADERS);
+    assert_eq!(seen.body(), b"hello");
+    assert!(!unmet);
+    let (seen, unmet) = fetch(Y2K_NOON as i64, Some(at(2)));
+    assert_eq!(seen.body(), b"llo");
+    assert!(!unmet);
+}

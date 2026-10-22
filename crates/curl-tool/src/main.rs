@@ -154,7 +154,7 @@ fn run(
 
 /// An operating system error's message, as `strerror` gives it: without
 /// the number std adds.
-fn os_message(e: &std::io::Error) -> String {
+pub(crate) fn os_message(e: &std::io::Error) -> String {
     let Ok(shown) = curl_alloc::try_format(format_args!("{e}")) else {
         return String::new();
     };

@@ -81,9 +81,11 @@ witness: curl-core proto::http::tests::a_cookie_file_named_while_one_is_warned_o
             Err(said) => trace::info_line(cx, &said),
 --- new
             Err(said) => {
-                let files = std::mem::take(&mut cx.easy_mut().options_mut().http.cookies.files);
+                let cookies = &mut cx.easy_mut().options_mut().http.cookies;
+                let files = std::mem::take(&mut cookies.make_mut().expect("made").files);
                 trace::info_line(cx, &said);
-                cx.easy_mut().options_mut().http.cookies.files = files;
+                let cookies = &mut cx.easy_mut().options_mut().http.cookies;
+                cookies.make_mut().expect("made").files = files;
             }
 
 === the resolve list read is written back over what the debug handler set

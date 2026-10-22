@@ -870,3 +870,21 @@ witness: curl-tool write_out::tests::writes_json_as_c
             Value::Missing if json => out.write_all(b"null"),
 --- new
             Value::Missing if json => out.write_all(b"\"\""),
+
+=== a URL not taken for HTTP's is given HTTP's options
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool gives_http_s_options_only_to_http
+--- old
+    if config.http {
+        http_options(o, op)?;
+--- new
+    if true {
+        http_options(o, op)?;
+
+=== a cookie string too long fails a URL not taken for HTTP's
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool gives_http_s_options_only_to_http
+--- old
+    let cookies = match http.then(|| joined_cookies(&op.cookies, &run.msgs)) {
+--- new
+    let cookies = match Some(joined_cookies(&op.cookies, &run.msgs)) {

@@ -618,6 +618,11 @@ fn transfer(
         None => given,
     };
     let url = given.text;
+    // Only a URL taken for HTTP's is given HTTP's options.
+    let http = match url_proto(url, op.default_protocol) {
+        Ok(proto) => proto == UrlProto::Http,
+        Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+    };
     {
         let mut stream = out.stream();
         stream.show_headers = op.show_headers;
@@ -653,6 +658,7 @@ fn transfer(
     };
     let config = Config {
         url,
+        http,
         resume,
         upload: upload.is_some(),
         post,
@@ -660,9 +666,10 @@ fn transfer(
         terminal,
         bar: bar.as_ref(),
     };
-    let cookies = match joined_cookies(&op.cookies, &run.msgs) {
-        Ok(cookies) => cookies,
-        Err(e) => return failed(&easy, e),
+    let cookies = match http.then(|| joined_cookies(&op.cookies, &run.msgs)) {
+        Some(Ok(cookies)) => cookies,
+        None => None,
+        Some(Err(e)) => return failed(&easy, e),
     };
     if configure(&mut easy, op, run, &out, &config).is_err() {
         return failed(&easy, ErrorKind::OutOfMemory);
@@ -1025,6 +1032,8 @@ enum Ended {
 /// What one transfer is set up with, beyond its operation's options.
 struct Config<'a> {
     url: &'a [u8],
+    /// The URL is taken for HTTP's: HTTP's options are set.
+    http: bool,
     resume: Option<options::Resume>,
     upload: bool,
     /// What `--data` gives, unless `--get` put it in the query.
@@ -1099,7 +1108,7 @@ fn configure(
     }
     o.callbacks.write = Some(out.body_handler()?);
     o.callbacks.header = Some(out.header_handler()?);
-    // `credentials_and_headers_setopts` and `http_setopts`.
+    // `credentials_and_headers_setopts`.
     let http = &mut o.http;
     // `--json` types the request and accepts JSON, unless the headers
     // say otherwise (`get_args`).
@@ -1111,32 +1120,8 @@ fn configure(
     http.headers =
         options::UserHeaders::new(op.headers.iter().copied().chain(json.into_iter().flatten()))?;
     http.referer = op.referer.map(copy).transpose()?;
-    // The cookie options are made only where one is given, as C's
-    // library keeps none it is not given.
-    if !op.cookie_files.is_empty() || op.cookie_jar.is_some() || op.cookie_session {
-        let cookies = http.cookies.make_mut()?;
-        for file in &op.cookie_files {
-            cookies.files.push(file)?;
-        }
-        cookies.save_to = op.cookie_jar.map(copy).transpose()?;
-        cookies.new_session = op.cookie_session;
-    }
     http.custom_method = op.custom_request.map(copy).transpose()?;
     http.request_target = op.request_target.map(copy).transpose()?;
-    http.follow = op.follow;
-    http.unrestricted_auth = op.unrestricted_auth;
-    http.post_redirect = op.post_redirect;
-    http.auto_referer = op.auto_referer;
-    // As `CURLOPT_MAXREDIRS` takes it: -1 no limit, at most 32767.
-    http.max_redirects = options::MaxRedirects(match op.max_redirs.unwrap_or(50) {
-        -1 => None,
-        n => Some(u16::try_from(n.clamp(0, 0x7fff)).expect("clamped")),
-    });
-    if op.expect100_timeout_ms > 0 {
-        // As `CURLOPT_EXPECT_100_TIMEOUT_MS` takes it, at most 65535.
-        let ms = op.expect100_timeout_ms.min(0xffff);
-        http.continue_wait = options::ContinueWait(Duration::from_millis(ms));
-    }
     // `customrequest_helper`.
     if let Some(custom) = op.custom_request {
         let implied = config.method.implied();
@@ -1163,12 +1148,6 @@ fn configure(
             .as_bytes(),
         )?,
     });
-    if let Some(version) = op.http_version {
-        http.version = match version {
-            HttpVersion::Http10 => options::HttpVersion::Http10,
-            HttpVersion::Http11 => options::HttpVersion::Http11,
-        };
-    }
     // A user given without a password has had one asked for.
     if let Some(pair) = op.user.as_deref() {
         *o.login.make_mut()? = options::Login::from_pair(pair)?;
@@ -1191,13 +1170,8 @@ fn configure(
     if !op.auth.is_empty() {
         http.auth = options::HttpAuth(op.auth);
     }
-    http.allow_09 = op.http09;
     http.raw = op.raw;
     http.raw_content = op.raw;
-    http.transfer_encoding = op.tr_encoding;
-    if op.compressed {
-        http.accept_encoding = Some(curl_core::coding::AcceptEncoding::All);
-    }
     http.ignore_content_length = op.ignore_content_length;
     o.filetime = op.remote_time;
     o.time_condition = op.time_cond;
@@ -1221,7 +1195,6 @@ fn configure(
         || op.noproxy.is_some()
         || op.preproxy.is_some()
         || op.proxytunnel
-        || !op.proxy_headers.is_empty()
         || op.haproxy_protocol
         || op.haproxy_clientip.is_some()
         || suppress_connect_headers
@@ -1235,7 +1208,6 @@ fn configure(
         p.no_proxy = op.noproxy.map(copy).transpose()?;
         p.pre_proxy = op.preproxy.map(copy).transpose()?;
         p.tunnel = op.proxytunnel;
-        p.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
         // As C's library takes them: an address turns the protocol on.
         p.haproxy = op.haproxy_protocol || op.haproxy_clientip.is_some();
         p.haproxy_client_ip = op.haproxy_clientip.map(copy).transpose()?;
@@ -1261,6 +1233,55 @@ fn configure(
         Some(IpVersion::V4) => options::IpVersion::V4,
         Some(IpVersion::V6) => options::IpVersion::V6,
     };
+    if config.http {
+        http_options(o, op)?;
+    }
+    Ok(())
+}
+
+/// The options only a URL the tool takes for HTTP's is given
+/// (`http_setopts`).
+fn http_options(o: &mut options::Options, op: &Operation<'_>) -> Result<(), OutOfMemory> {
+    let http = &mut o.http;
+    http.follow = op.follow;
+    http.unrestricted_auth = op.unrestricted_auth;
+    http.auto_referer = op.auto_referer;
+    if !op.proxy_headers.is_empty() {
+        o.proxy.make_mut()?.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
+    }
+    // As `CURLOPT_MAXREDIRS` takes it: -1 no limit, at most 32767.
+    http.max_redirects = options::MaxRedirects(match op.max_redirs.unwrap_or(50) {
+        -1 => None,
+        n => Some(u16::try_from(n.clamp(0, 0x7fff)).expect("clamped")),
+    });
+    if let Some(version) = op.http_version {
+        http.version = match version {
+            HttpVersion::Http10 => options::HttpVersion::Http10,
+            HttpVersion::Http11 => options::HttpVersion::Http11,
+        };
+    }
+    http.post_redirect = op.post_redirect;
+    if op.compressed {
+        http.accept_encoding = Some(curl_core::coding::AcceptEncoding::All);
+    }
+    http.transfer_encoding = op.tr_encoding;
+    http.allow_09 = op.http09;
+    if op.expect100_timeout_ms > 0 {
+        // As `CURLOPT_EXPECT_100_TIMEOUT_MS` takes it, at most 65535.
+        let ms = op.expect100_timeout_ms.min(0xffff);
+        http.continue_wait = options::ContinueWait(Duration::from_millis(ms));
+    }
+    // `cookie_setopts`; the `--cookie` strings were joined already. The
+    // cookie options are made only where one is given, as C's library
+    // keeps none it is not given.
+    if !op.cookie_files.is_empty() || op.cookie_jar.is_some() || op.cookie_session {
+        let cookies = http.cookies.make_mut()?;
+        for file in &op.cookie_files {
+            cookies.files.push(file)?;
+        }
+        cookies.save_to = op.cookie_jar.map(copy).transpose()?;
+        cookies.new_session = op.cookie_session;
+    }
     Ok(())
 }
 
@@ -1540,6 +1561,58 @@ fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
     Ok(copy)
 }
 
+/// What the tool takes a URL's protocol for (`url_proto_and_rewrite`'s
+/// token).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UrlProto {
+    /// HTTP or HTTPS.
+    Http,
+    /// Another, or none it knows.
+    Other,
+}
+
+/// The protocol of `url`'s scheme, guessed from its host if it names
+/// none, or `default`'s (`--proto-default`) then; a URL that does not
+/// parse has none (`url_proto_and_rewrite`).
+fn url_proto(url: &[u8], default: Option<Protocol>) -> Result<UrlProto, OutOfMemory> {
+    let parse = ParseOptions {
+        guess_scheme: true,
+        non_support_scheme: true,
+        ..ParseOptions::NONE
+    };
+    let oom = |e| match e {
+        UrlErrorKind::OutOfMemory => Err(OutOfMemory),
+        _ => Ok(UrlProto::Other),
+    };
+    let url = match Url::parse(url, parse) {
+        Ok(url) => url,
+        Err(e) => return oom(e),
+    };
+    // With a default, a scheme only guessed counts as none.
+    let get = GetOptions {
+        no_guess_scheme: default.is_some(),
+        default_scheme: default.is_none(),
+        ..GetOptions::NONE
+    };
+    let scheme = match (url.get(Part::Scheme, get), default) {
+        (Ok(scheme), _) => scheme,
+        (Err(UrlErrorKind::NoScheme), Some(default)) => {
+            let mut name = Vec::new();
+            name.try_extend_from_slice(default.name().as_bytes())?;
+            name
+        }
+        (Err(e), _) => return oom(e),
+    };
+    let http = [&b"http"[..], b"https"]
+        .iter()
+        .any(|name| scheme.eq_ignore_ascii_case(name));
+    Ok(if http {
+        UrlProto::Http
+    } else {
+        UrlProto::Other
+    })
+}
+
 /// Why the query of `--get` or `--url-query` could not be added to a
 /// URL.
 #[derive(Debug, PartialEq, Eq)]
@@ -1770,6 +1843,24 @@ mod tests {
         assert_eq!(named("host/dir/", "f"), some("host/dir/f"));
         assert_eq!(named("nosuch://host/f", "a"), Ok(None));
         assert_eq!(named("http://[bad/", "a"), Err(ErrorKind::UrlMalformat));
+    }
+
+    /// `url_proto_and_rewrite`'s token: the scheme's, guessed if the URL
+    /// names none, `--proto-default`'s then, none if it does not parse.
+    #[test]
+    fn takes_a_url_s_protocol_as_c_does() {
+        let http =
+            |url: &str, default| url_proto(url.as_bytes(), default).unwrap() == UrlProto::Http;
+        assert!(http("http://h/", None));
+        assert!(http("HTTPS://h/", None));
+        assert!(http("h/p", None), "guessed");
+        assert!(!http("ftp.h/p", None), "guessed FTP");
+        assert!(http("ftp.h/p", Some(Protocol::Http)), "the default");
+        assert!(!http("h/p", Some(Protocol::File)), "the default");
+        assert!(http("http://h/", Some(Protocol::File)), "given");
+        assert!(!http("file:///f", None));
+        assert!(!http("ipfs://cid", None));
+        assert!(!http("http://[bad/", None), "does not parse");
     }
 
     /// `append2query`: the query added after any there, as given, and a

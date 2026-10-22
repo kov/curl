@@ -623,6 +623,30 @@ fn saves_the_cookie_jar() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// HTTP's options are for a URL the tool takes for HTTP's: a file read
+/// with `-c` and `-b` keeps no jar, sends nothing and warns of nothing,
+/// as C's `http_setopts` is not run for it.
+#[test]
+fn gives_http_s_options_only_to_http() {
+    let dir = scratch("not-http");
+    let jar = dir.join("jar");
+    let file = dir.join("f");
+    std::fs::write(&file, b"x").unwrap();
+    let url = format!("file://{}", file.to_str().unwrap());
+    let long = format!("a={}", "b".repeat(8200));
+    let run = curl(&["-sS", "-c", jar.to_str().unwrap(), "-b", &long, &url]);
+    assert_eq!(
+        (run.code, &run.stdout[..], &run.stderr[..]),
+        (0, &b"x"[..], "")
+    );
+    assert!(!jar.exists(), "no jar for a file");
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&["-sS", "-c", jar.to_str().unwrap(), &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    assert!(jar.exists(), "a jar for HTTP");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `-b` strings are joined by `;`, and a blank unless the next starts
 /// with one; together they may be 8199 bytes at most.
 #[test]

@@ -219,9 +219,9 @@ fn entry(text: &mut [u8], start: usize, end: usize, number: usize) -> Spans {
         .iter()
         .position(|&b| is_blank(b) || separator(b))
         .map_or(end, |at| start + at);
-    // The byte that ended the name is passed over, then blanks and
-    // separators.
-    let mut at = (name_end + 1).min(end);
+    // Blanks and separators are passed over, the byte that ended the
+    // name among them.
+    let mut at = name_end;
     while at < end && (is_blank(text[at]) || separator(text[at])) {
         at += 1;
     }
@@ -406,6 +406,27 @@ mod tests {
                 (8, "last".into(), None, &[]),
             ]
         );
+    }
+
+    /// A comment after blanks on any line, a quote left open, a carriage
+    /// return inside the line, and a zero on the last line, which C
+    /// reads the line up to.
+    #[test]
+    fn reads_odd_lines_as_c_does() {
+        use Warning::*;
+        let s = |t: &str| Some(t.to_string());
+        let text = "silent\n  # c\nurl \"abc\nfail\noutput y\rz\nurl x\0y";
+        assert_eq!(
+            read(text),
+            [
+                (1, "silent".into(), None, &[][..]),
+                (2, "url".into(), s("abc"), &[]),
+                (3, "fail".into(), None, &[]),
+                (4, "output".into(), s("y"), &[UnquotedWhitespace]),
+                (5, "url".into(), s("x"), &[]),
+            ]
+        );
+        assert_eq!(read("url \"abc"), [(1, "url".into(), s("abc"), &[][..])]);
     }
 
     /// A line, its newline and C's zero fit in 10 MiB, on any line.

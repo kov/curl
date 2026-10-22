@@ -242,4 +242,6 @@ exclude_re = [
     # Neither factor is ever below 1: the amount starts at 1, and a set or
     # range makes at least one URL.
     'curl-tool/src/glob\.rs:.*: replace \|\| with && in multiply$',
+    # At the text's end the line is empty and holds no entry.
+    'curl-tool/src/config\.rs:.*: replace < with <= in entries$',
 ]

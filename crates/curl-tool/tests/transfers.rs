@@ -655,3 +655,24 @@ fn draws_a_progress_bar() {
     assert_eq!(r.code, 37);
     assert!(r.stderr.starts_with("curl: (37) "), "{:?}", r.stderr);
 }
+
+/// A configuration file's argument that starts with a single quote, or
+/// is followed by more than a comment, is warned of.
+#[test]
+fn warns_of_a_config_argument_likely_wrong() {
+    let s = Scratch::new("cfgwarn");
+    s.write("f", b"x");
+    s.write("cfg", b"header: 'a b' c\n");
+    let r = curl_env(&s, &["-K", "cfg", &s.url("f")], &[("COLUMNS", "500")]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(
+        r.stderr.starts_with(
+            "Warning: cfg:1 Option 'header' uses argument with leading single quote. \
+             It is probably a mistake. Consider double quotes.\n\
+             Warning: cfg:1 Option 'header' uses argument with unquoted whitespace. \
+             This may cause side-effects. Consider double quotes.\n"
+        ),
+        "{}",
+        r.stderr
+    );
+}

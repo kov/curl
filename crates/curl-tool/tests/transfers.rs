@@ -938,6 +938,8 @@ fn data_from_the_start_is_no_resume() {
     let s = Scratch::new("data-resume");
     let r = curl(&s, &["-s", "-d", "x", "-C", "0", "http://127.0.0.1:1/"]);
     assert_eq!(r.code, 7);
+    let r = curl(&s, &["-s", "-d", "x", "-C", "5", "http://127.0.0.1:1/"]);
+    assert_eq!(r.code, 43);
 }
 
 /// `--no-clobber` saves to the first numbered name not taken, trying

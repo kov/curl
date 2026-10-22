@@ -259,7 +259,7 @@ exclude_re = [
     'curl-tool/src/operate\.rs:.*: replace \|\| with && in answered_resumably$',
     # A URL read with its scheme guessed always has one: the default is
     # never reached. Kept as C passes it.
-    'curl-tool/src/operate\.rs:.*: delete field default_scheme from struct GetOptions expression in with_file_name$',
+    'curl-tool/src/operate\.rs:.*delete field default_scheme from struct GetOptions expression in with_file_name$',
     # The tool installs no signal handler, so no read is interrupted.
     'curl-tool/src/operate\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in <impl ReadHandler for UploadFile>::read$',
     'curl-tool/src/slurp\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in read$',

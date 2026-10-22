@@ -257,4 +257,55 @@ mod tests {
             Err(ParamError::BadNumeric)
         );
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"0",
+        b"1",
+        b"9",
+        b"10",
+        b"9223372036854775807",
+        b"9223372036854775808",
+        b"99999999999999999999",
+        b"-",
+        b"+",
+        b".",
+        b"5",
+        b"000000000000000000001",
+        b"k",
+        b"M",
+        b"g",
+        b"T",
+        b"p",
+        b"b",
+        b"x",
+        b" ",
+        b"\0",
+    ];
+    const NUMBERS: &[&[u8]] = &[b"12", b"-3", b"1.5", b"2.25G", b"0.0000000001", b"7k"];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any argument is a number in range or is refused, by each way
+        /// of reading one.
+        #[test]
+        fn any_argument_is_a_number_or_refused(
+            s in crate::untrusted::input(WORDS, NUMBERS, 8),
+        ) {
+            const MAX: u64 = i64::MAX as u64;
+            if let Ok(n) = unsigned(&s) {
+                proptest::prop_assert!(n <= MAX);
+            }
+            signed(&s).ok();
+            if let Ok(n) = offset(&s) {
+                proptest::prop_assert!(n <= MAX);
+            }
+            if let Ok(n) = seconds_as_millis(&s) {
+                proptest::prop_assert!(n <= MAX);
+            }
+            if let Ok(n) = size(&s) {
+                proptest::prop_assert!(n <= MAX);
+            }
+        }
+    }
 }

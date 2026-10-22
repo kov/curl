@@ -507,4 +507,53 @@ mod tests {
         assert!(!reads_curlrc(&argv(&["curl", "--disable"])));
         assert!(reads_curlrc(&argv(&["curl", "--disable-eprt"])));
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"url",
+        b"--url",
+        b"-o",
+        b"output",
+        b"=",
+        b":",
+        b" ",
+        b"\t",
+        b"\"",
+        b"\\",
+        b"\\t",
+        b"\\n",
+        b"\\x",
+        b"'",
+        b"#",
+        b"\n",
+        b"\r\n",
+        b"\r",
+        b"\0",
+        b"x y",
+        b"http://h/",
+    ];
+    const FILES: &[&[u8]] = &[
+        b"url = \"http://x/\"\n# comment\n-o file\n",
+        b"--data \"a\\\"b\\tc\"\n  silent\n",
+        b"header: 'x y'\nverbose\n",
+        b"http://a/\n\n#http://b/\nhttp://c/\0d\n",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any file is read into entries, numbered in order, or refused;
+        /// any file of URLs gives its lines or refuses one.
+        #[test]
+        fn any_file_is_read_or_refused(text in crate::untrusted::input(WORDS, FILES, 40)) {
+            let mut text = text;
+            for url in url_lines(&text).flatten() {
+                proptest::prop_assert!(url.len() < URL_LINE_BUFFER);
+            }
+            if let Ok(entries) = entries(&mut text) {
+                for (i, e) in entries.iter().enumerate() {
+                    proptest::prop_assert_eq!(e.number, i + 1);
+                }
+            }
+        }
+    }
 }

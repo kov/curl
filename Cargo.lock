@@ -120,6 +120,7 @@ dependencies = [
  "curl-psl",
  "curl-zlib",
  "curl-zstd",
+ "proptest",
 ]
 
 [[package]]

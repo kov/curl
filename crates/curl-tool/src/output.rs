@@ -1075,4 +1075,70 @@ mod tests {
         );
         assert_eq!(shown(&lines, None, false), b"");
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"Content-Disposition:",
+        b"content-disposition: ",
+        b"attachment",
+        b"; ",
+        b";",
+        b"filename=",
+        b"filename*=",
+        b"name=",
+        b"\"",
+        b"'",
+        b"a.txt",
+        b"/",
+        b"\\",
+        b"..",
+        b".",
+        b"Location:",
+        b"location: ",
+        b"http://h/dir/f.html",
+        b"?q",
+        b"#f",
+        b"\r\n",
+        b"\n",
+        b"\0",
+        b" ",
+        b"\t",
+        b"HTTP/1.1 200 OK\r\n",
+        b"\r\n",
+    ];
+    const LINES: &[&[u8]] = &[
+        b"Content-Disposition: attachment; filename=\"a b.txt\"\r\n",
+        b"content-disposition: inline; name=x; filename='/etc/../passwd';\r\n",
+        b"Location: http://h/dir/name.html?x#y\r\n",
+        b"Content-Disposition: filename=\\\\server\\share\\f\r\n",
+    ];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any header lines are shown, held or refused as the output is
+        /// named from them, for any response code; a name taken from a
+        /// line names a file in the directory, never one above it.
+        #[test]
+        fn any_header_names_a_file_or_not(
+            lines in proptest::collection::vec(crate::untrusted::input(WORDS, LINES, 8), 1..6),
+            code in proptest::sample::select(&[200u16, 204, 301, 302, 404][..]),
+            show in proptest::prelude::any::<bool>(),
+        ) {
+            for line in &lines {
+                for stop in [Some(b';'), None] {
+                    if let Some(name) = file_name_in(line, stop) {
+                        proptest::prop_assert!(!name.is_empty() && name != b"." && name != b"..");
+                        proptest::prop_assert!(!name.iter().any(|b| matches!(b, b'/' | b'\\')));
+                    }
+                }
+            }
+            let out = Output::null(quiet()).unwrap();
+            let mut s = out.stream();
+            s.name_from_header = Some(FromHeader::new(Some(b"dir")).unwrap());
+            s.show_headers = show;
+            for line in &lines {
+                s.header(line, Some(Protocol::Http), Some(code));
+            }
+        }
+    }
 }

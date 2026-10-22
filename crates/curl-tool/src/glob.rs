@@ -743,4 +743,75 @@ mod tests {
         glob.next_url().unwrap();
         assert_eq!(name(&glob, "#1").unwrap(), "a");
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"http://h/",
+        b"{",
+        b"}",
+        b",",
+        b"[",
+        b"]",
+        b"-",
+        b":",
+        b"a",
+        b"z",
+        b"A",
+        b"0",
+        b"9",
+        b"10",
+        b"99999999999999999999",
+        b"\\",
+        b"<",
+        b">",
+        b"<n>",
+        b"#",
+        b"#1",
+        b"#2",
+        b"#<n>",
+        b"::1",
+        b"%",
+        b"\0",
+        b" ",
+    ];
+    const URLS: &[&[u8]] = &[
+        b"http://h/{a,b}/[1-3:2]/[a-z]",
+        b"http://[::1]/{<n>x,y}[<m>01-10]",
+        b"ftp://h/{a\\,b}[]",
+        b"h/[9-1][a-a:0]{}",
+    ];
+    const NAMES: &[&[u8]] = &[b"#1_#2", b"#<n>-#<m>", b"#0#9#<x>", b"#", b"file"];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any URL is a glob or is refused, and the refusal shown; a glob
+        /// makes at least one URL, and names any output file after its
+        /// patterns, or refuses the name.
+        #[test]
+        fn any_url_globs_or_is_refused(
+            url in crate::untrusted::input(WORDS, URLS, 16),
+            name in crate::untrusted::input(WORDS, NAMES, 6),
+            with_upload in proptest::prelude::any::<bool>(),
+        ) {
+            let mut msgs = Messages::new();
+            msgs.silent = true;
+            match Glob::parse(&url) {
+                Ok((mut glob, amount)) => {
+                    proptest::prop_assert!(amount >= 1);
+                    // The first few: a glob may make more than can be listed.
+                    for _ in 0..4 {
+                        if glob.next_url().unwrap().is_none() {
+                            break;
+                        }
+                    }
+                    let upload = Glob::parse(b"{<n>u,v}").unwrap().0;
+                    let upload = with_upload.then_some(&upload);
+                    if let Err(e) = glob.output_name(&name, upload) {
+                        e.show(&name, &msgs);
+                    }
+                }
+                Err(e) => e.show(&url, &msgs),
+            }
+        }
+    }
 }

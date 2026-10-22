@@ -21,6 +21,8 @@ mod output;
 mod slurp;
 mod stdout;
 mod trace;
+#[cfg(test)]
+mod untrusted;
 mod write_out;
 
 use msgs::Messages;

@@ -145,4 +145,36 @@ mod tests {
         );
         assert_eq!(parse(Protocols::all(), b",,", &msgs), Ok(Protocols::all()));
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"http",
+        b"https",
+        b"ftp",
+        b"file",
+        b"all",
+        b"ALL",
+        b"=",
+        b"-",
+        b"+",
+        b",",
+        b"",
+        b"unknownprotocolwithaverylongnamepastthirtytwo",
+        b"\0",
+        b" ",
+    ];
+    const LISTS: &[&[u8]] = &[b"-all,+https", b"=http,-ftp", b"all,-file"];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any list changes any set of protocols, or is refused.
+        #[test]
+        fn any_list_is_read_or_refused(
+            list in crate::untrusted::input(WORDS, LISTS, 10),
+            start in proptest::prelude::any::<bool>(),
+        ) {
+            let start = if start { Protocols::all() } else { Protocols::redirect_default() };
+            parse(start, &list, &quiet()).ok();
+        }
+    }
 }

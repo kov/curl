@@ -30,6 +30,7 @@ curl-zstd = { path = "../curl-zstd" }
 [dev-dependencies]
 # The tests build what the core reports.
 curl-core = { path = "../curl-core", features = ["test-util"] }
+proptest = { version = "1.12.0", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

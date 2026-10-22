@@ -1010,4 +1010,89 @@ mod tests {
         // The table is C's, sorted for its binary search.
         assert!(VARIABLES.windows(2).all(|w| w[0].name < w[1].name));
     }
+
+    const WORDS: &[&[u8]] = &[
+        b"%",
+        b"{",
+        b"}",
+        b"%{",
+        b"url",
+        b"http_code",
+        b"header_json",
+        b"onerror",
+        b"stdout",
+        b"stderr",
+        b"url.host",
+        b"url.port",
+        b"urle.query",
+        b"time_total",
+        b"num_headers",
+        b"%header{",
+        b"name",
+        b":all:",
+        b", ",
+        b"\\",
+        b"\\n",
+        b"\\}",
+        b"%output{",
+        b">>",
+        b"%time{",
+        b"%%",
+        b"x",
+        b"aaaaaaaaaaaaaaaaaaaaaaaaa",
+        b"\0",
+    ];
+    const FORMATS: &[&[u8]] = &[
+        b"%{http_code}\\n%{url_effective}",
+        b"%header{name:all:, \\}}%header{name}",
+        b"%{url.host}%{ %{url}%{url.fragment}",
+        b"%output{>>file}x%{onerror}%{stderr}e",
+    ];
+    const URLS: &[&[u8]] = &[b"http://u:p@example.com:8/a?q#f", b"[::1]", b"%zz", b""];
+
+    proptest::proptest! {
+        #![proptest_config(crate::untrusted::config(512))]
+
+        /// Any format is read, and what it asks for written, as
+        /// `write_to` writes it but for the files it would open, for any
+        /// URL and headers; or it is refused as not implemented.
+        #[test]
+        fn any_format_is_written(
+            format in crate::untrusted::input(WORDS, FORMATS, 16),
+            url in crate::untrusted::input(WORDS, URLS, 4),
+            failed in proptest::prelude::any::<bool>(),
+        ) {
+            unimplemented(&format);
+            let report = TransferReport::default();
+            let facts = Facts {
+                result: if failed { Err(ErrorKind::CouldntConnect) } else { Ok(()) },
+                url: &url,
+                urlnum: 0,
+                num_headers: 0,
+                num_retries: 0,
+                filename: None,
+                method: b"GET",
+                report: &report,
+            };
+            let store = HeaderStore::of_requests(&[
+                &[b"Name: one\r\n", b"name: two\r\n"],
+                &[b"NAME: three\r\n"],
+            ]);
+            let mut out = Vec::new();
+            pieces(&format, |piece| {
+                match piece {
+                    Piece::Variable(v) => match v.var {
+                        Some(Var::OnError | Var::Stdout | Var::Stderr) | None => {}
+                        Some(var) => value(var, &facts, &mut out).unwrap(),
+                    },
+                    Piece::Header { name, all } => {
+                        header_value(&store, name, all, &mut out).unwrap();
+                    }
+                    Piece::End => return false,
+                    _ => {}
+                }
+                true
+            });
+        }
+    }
 }

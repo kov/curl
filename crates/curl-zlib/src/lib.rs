@@ -90,6 +90,8 @@ unsafe extern "C" fn zalloc(_: *mut c_void, items: c_uint, size: c_uint) -> *mut
     // SAFETY: the block is at least HEADER bytes and aligned to HEADER,
     // so a usize fits at its start.
     unsafe { base.cast::<usize>().write(total) };
+    #[cfg(test)]
+    tests::ZLIB_BLOCKS.with(|n| n.set(n.get() + 1));
     // SAFETY: the block is at least HEADER bytes long.
     unsafe { base.add(HEADER).cast() }
 }
@@ -112,6 +114,8 @@ unsafe extern "C" fn zfree(_: *mut c_void, block: *mut c_void) {
     let layout = unsafe { Layout::from_size_align_unchecked(total, HEADER) };
     // SAFETY: zalloc made this block with this layout.
     unsafe { alloc::dealloc(base, layout) };
+    #[cfg(test)]
+    tests::ZLIB_BLOCKS.with(|n| n.set(n.get() - 1));
 }
 
 /// Where a stream is (C's `zlibInitState`).

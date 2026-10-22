@@ -1,6 +1,16 @@
+use std::cell::Cell;
 use std::fmt;
 
 use super::*;
+
+thread_local! {
+    /// The blocks zlib holds of what it allocated on this thread.
+    pub(super) static ZLIB_BLOCKS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn zlib_blocks() -> usize {
+    ZLIB_BLOCKS.with(Cell::get)
+}
 
 /// What a decoder made, in the pieces it made it, and what it said.
 #[derive(Default)]
@@ -211,4 +221,80 @@ fn a_transfer_out_of_time_stops_decoding() {
 #[test]
 fn the_version_is_the_library_s() {
     assert!(version().starts_with("1."), "{}", version());
+}
+
+/// zlib's memory goes as soon as a stream ends or fails, as `exit_zlib`
+/// frees it, not when the decoder goes; and a decoder dropped mid-stream
+/// frees it too.
+#[test]
+fn a_stream_frees_zlib_s_memory_when_it_ends() {
+    let mut five = RAW_HELLO.to_vec();
+    five.extend_from_slice(b"abcde");
+    let mut four = RAW_HELLO.to_vec();
+    four.extend_from_slice(b"abcd");
+    let two = [GZIP_HELLO, GZIP_HELLO].concat();
+    let cases: [(MakeDecoder, &[u8], Result<(), ErrorKind>); 6] = [
+        (gzip, GZIP_HELLO, Ok(())),
+        (deflate, ZLIB_HELLO, Ok(())),
+        (deflate, &four, Ok(())),
+        (deflate, &five, Err(ErrorKind::WriteError)),
+        (gzip, &two, Err(ErrorKind::WriteError)),
+        (
+            gzip,
+            b"this is not gzip",
+            Err(ErrorKind::BadContentEncoding),
+        ),
+    ];
+    for (i, (make, input, result)) in cases.into_iter().enumerate() {
+        let mut d = make().unwrap();
+        assert!(zlib_blocks() > 0, "case {i}: zlib's state is allocated");
+        assert_eq!(d.decode(input, &mut Collect::default()), result, "case {i}");
+        assert_eq!(zlib_blocks(), 0, "case {i}: freed as the stream ends");
+        drop(d);
+        assert_eq!(zlib_blocks(), 0, "case {i}: and only once");
+    }
+    for (make, input) in [(gzip as MakeDecoder, GZIP_HELLO), (deflate, ZLIB_HELLO)] {
+        let mut d = make().unwrap();
+        let half = &input[..input.len() / 2];
+        assert_eq!(d.decode(half, &mut Collect::default()), Ok(()));
+        assert!(zlib_blocks() > 0);
+        drop(d);
+        assert_eq!(zlib_blocks(), 0, "freed with the decoder");
+    }
+}
+
+/// The 4 bytes let by after a raw stream may come a piece at a time; the
+/// fifth fails.
+#[test]
+fn a_raw_stream_s_trailer_may_come_in_pieces() {
+    let mut out = Collect::default();
+    let mut d = deflate().unwrap();
+    let mut first = RAW_HELLO.to_vec();
+    first.extend_from_slice(b"ab");
+    assert_eq!(d.decode(&first, &mut out), Ok(()));
+    assert_eq!(d.decode(b"c", &mut out), Ok(()));
+    assert_eq!(d.decode(b"d", &mut out), Ok(()));
+    assert_eq!(d.decode(b"e", &mut out), Err(ErrorKind::WriteError));
+    assert_eq!(out.made(), HELLO);
+}
+
+/// What zlib made in a round that failed is not passed on, and no round
+/// passes on nothing.
+#[test]
+fn a_failing_round_passes_nothing_on() {
+    // gzip's framing around a fixed-code block of "hello" and a copy from
+    // further back than anything made: zlib makes the five bytes, then
+    // fails in the same round.
+    let mut far = b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff".to_vec();
+    far.extend_from_slice(b"\xcb\x48\xcd\xc9\xc9\x07\x0a\x00\x00");
+    let (r, out) = decode(gzip, &far);
+    assert_eq!(r, Err(ErrorKind::BadContentEncoding));
+    assert!(out.pieces.is_empty(), "{:?}", out.pieces);
+    assert_eq!(
+        out.said,
+        [(
+            ErrorKind::BadContentEncoding,
+            "Error while processing content unencoding: invalid distance too far back".to_string()
+        )]
+    );
 }

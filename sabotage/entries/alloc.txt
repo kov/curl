@@ -12,3 +12,12 @@ features: debug-hooks
     if false {
         state.limit = None;
     }
+
+=== the bytes a thread holds forget what it frees
+file: crates/curl-alloc/src/track.rs
+witness: curl-alloc track::tests::measures_the_bytes_this_thread_holds
+features: debug-hooks
+--- old
+        hold(-signed(layout.size()));
+--- new
+        hold(0);

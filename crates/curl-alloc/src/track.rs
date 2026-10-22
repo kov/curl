@@ -66,6 +66,9 @@ thread_local! {
     static EXCLUDED: Cell<u32> = const { Cell::new(0) };
     /// Allocations this thread made outside [`untracked`].
     static COUNT: Cell<u64> = const { Cell::new(0) };
+    /// Bytes this thread allocated outside [`untracked`], less those it
+    /// freed: what it holds, as far as it made what it frees.
+    static HELD: Cell<i64> = const { Cell::new(0) };
 }
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -162,6 +165,27 @@ pub fn count_allocations<R>(f: impl FnOnce() -> R) -> (R, u64) {
     let before = COUNT.with(Cell::get);
     let r = f();
     (r, COUNT.with(Cell::get) - before)
+}
+
+/// Run `f` and return how many bytes this thread holds after it beyond
+/// those it held before, and how many allocations it made: for the
+/// memory budget tests.
+pub fn measure<R>(f: impl FnOnce() -> R) -> (R, Measured) {
+    let (held, count) = (HELD.with(Cell::get), COUNT.with(Cell::get));
+    let r = f();
+    let measured = Measured {
+        bytes: HELD.with(Cell::get) - held,
+        allocations: COUNT.with(Cell::get) - count,
+    };
+    (r, measured)
+}
+
+/// What [`measure`] saw.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Measured {
+    /// Allocated less freed, in bytes, without the tracker's headers.
+    pub bytes: i64,
+    pub allocations: u64,
 }
 
 /// One memdump line, built on the stack. Longer lines are cut at 1023
@@ -296,6 +320,17 @@ fn count() {
     }
 }
 
+/// `bytes` more held by this thread, or fewer.
+fn hold(bytes: i64) {
+    if !excluded() {
+        HELD.with(|h| h.set(h.get() + bytes));
+    }
+}
+
+fn signed(size: usize) -> i64 {
+    i64::try_from(size).expect("a block smaller than i64::MAX")
+}
+
 /// The room before each block, holding its tag in the last 8 bytes; a
 /// multiple of the block's alignment.
 fn header(layout: Layout) -> usize {
@@ -339,6 +374,7 @@ impl Tracker {
         // SAFETY: the tag slot is in the header just written room for.
         unsafe { tag_slot(block).write(if tracked { TRACKED } else { PLAIN }) };
         count();
+        hold(signed(layout.size()));
         if tracked {
             LIVE.fetch_add(1, Ordering::Relaxed);
             let size = layout.size();
@@ -383,6 +419,7 @@ unsafe impl GlobalAlloc for Tracker {
     }
 
     unsafe fn dealloc(&self, block: *mut u8, layout: Layout) {
+        hold(-signed(layout.size()));
         // SAFETY: the caller passes a live block from this allocator.
         if unsafe { tag(block) } == TRACKED {
             LIVE.fetch_sub(1, Ordering::Relaxed);
@@ -418,6 +455,7 @@ unsafe impl GlobalAlloc for Tracker {
         // SAFETY: the new block keeps the header before the caller's bytes.
         let moved = unsafe { q.add(h) };
         count();
+        hold(signed(new_size) - signed(layout.size()));
         if was_tracked {
             log_rust(|l| write!(l, "realloc({}, {new_size}) = {}", Ptr(block), Ptr(moved)));
         } else if now {
@@ -449,6 +487,41 @@ mod tests {
         assert_eq!(n, 2, "one allocation and one growth");
         let ((), n) = count_allocations(|| drop(untracked(|| Vec::<u8>::with_capacity(8))));
         assert_eq!(n, 0, "exclusions are not counted");
+    }
+
+    #[test]
+    fn measures_the_bytes_this_thread_holds() {
+        let (v, m) = measure(|| {
+            let mut v: Vec<u64> = Vec::with_capacity(4);
+            v.extend_from_slice(&[1, 2, 3, 4, 5]);
+            drop(Box::new([0u8; 100]));
+            v
+        });
+        assert_eq!(v.capacity(), 8, "doubled");
+        assert_eq!(
+            m,
+            Measured {
+                bytes: 64,
+                allocations: 3
+            }
+        );
+        let ((), m) = measure(|| drop(v));
+        assert_eq!(
+            m,
+            Measured {
+                bytes: -64,
+                allocations: 0
+            }
+        );
+        let ((), m) = measure(|| untracked(|| drop(Vec::<u8>::with_capacity(8))));
+        assert_eq!(
+            m,
+            Measured {
+                bytes: 0,
+                allocations: 0
+            },
+            "exclusions are not counted"
+        );
     }
 
     #[test]

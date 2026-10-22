@@ -79,3 +79,17 @@ witness: curl-sys-abi handle_tests::headers_are_looked_up_and_walked_as_in_c
             origin: origin_bit(view.origin) | RESERVED_ORIGIN_BIT,
 --- new
             origin: origin_bit(view.origin),
+
+=== every handle carries 128 bytes more of options
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi handle_tests::a_handle_costs_no_more_than_cs
+features: debug-hooks
+--- old
+    /// Trace the transfer (`CURLOPT_VERBOSE`).
+    pub verbose: bool,
+}
+--- new
+    /// Trace the transfer (`CURLOPT_VERBOSE`).
+    pub verbose: bool,
+    pub pad: [u64; 16],
+}

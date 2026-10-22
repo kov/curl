@@ -4052,3 +4052,55 @@ fn a_lock_function_alone_locks_what_is_shared() {
     let calls = std::mem::take(&mut *seen.lock().unwrap());
     assert!(calls.iter().all(|&d| d == cookie), "{calls:?}");
 }
+
+/// What libtest 751 pays for each of its thousand handles, made, given a
+/// URL and VERBOSE, and added to a multi, stays within a budget: no more
+/// than C's 3,081 bytes (its `Curl_easy`, 3,056, and the URL), half the
+/// 6,000 the test allows. Each hot option every handle carries eats into
+/// it; an option most transfers never set belongs in a group made when it
+/// is set (`curl_core::options::Cold`).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_handle_costs_no_more_than_cs() {
+    use curl_alloc::track::measure;
+    const HANDLES: usize = 1000;
+    const URL: &CStr = c"https://www.example.com/";
+    let m = curl_multi_init();
+    let mut handles = Vec::with_capacity(HANDLES);
+    let ((), made) = measure(|| {
+        for _ in 0..HANDLES {
+            let c = curl_easy_init();
+            assert!(!c.is_null());
+            assert_eq!(
+                pointer(c, ffi::CURLOPT_URL, URL.as_ptr().cast_mut()),
+                CURLE_OK
+            );
+            assert_eq!(long(c, ffi::CURLOPT_VERBOSE, 1), CURLE_OK);
+            handles.push(c);
+        }
+    });
+    let ((), added) = measure(|| {
+        for &c in &handles {
+            // SAFETY: a live multi and handle.
+            assert_eq!(unsafe { curl_multi_add_handle(m, c) }, CURLM_OK);
+        }
+    });
+    let per = |bytes: i64| bytes / HANDLES as i64;
+    let (made_bytes, held) = (per(made.bytes), per(made.bytes + added.bytes));
+    assert!(made_bytes <= 2_112, "a new handle holds {made_bytes} bytes");
+    assert!(held <= 3_081, "an added handle holds {held} bytes");
+    // The `Easy`, the shim's handle, the write adapter and its count, the
+    // URL; then the slot, and the multi's tables as they grow.
+    assert_eq!(made.allocations, 5 * HANDLES as u64);
+    assert!(
+        added.allocations <= (HANDLES + HANDLES / 10) as u64,
+        "{} allocations",
+        added.allocations
+    );
+    for c in handles {
+        // SAFETY: a live handle, not used again.
+        unsafe { curl_easy_cleanup(c) };
+    }
+    // SAFETY: a live multi, not used again.
+    assert_eq!(unsafe { curl_multi_cleanup(m) }, CURLM_OK);
+}

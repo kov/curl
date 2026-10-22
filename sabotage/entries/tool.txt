@@ -630,3 +630,45 @@ witness: curl-tool an_upload_that_cannot_be_read_fails
                 Err(_) => return Read::Fail,
 --- new
                 Err(_) => return Read::Eof,
+
+=== a header for every request stops at the first
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_headers_as_c
+--- old
+            (request, index) = (next, 0);
+--- new
+            break;
+
+=== a header's end may follow a backslash
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_headers_as_c
+--- old
+    let end = (0..after.len()).find(|&i| after[i] == b'}' && (i == 0 || after[i - 1] != b'\\'));
+--- new
+    let end = (0..after.len()).find(|&i| after[i] == b'}');
+
+=== a separator's escaped brace keeps its backslash
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_headers_as_c
+--- old
+                b'}' => out.write_all(b"}")?,
+--- new
+                b'}' => out.write_all(b"\\}")?,
+
+=== header json keeps the names' case
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_header_json_as_c
+--- old
+            b'A'..=b'Z' if lowercase => out.write_all(&[b.to_ascii_lowercase()])?,
+--- new
+            b'A'..=b'Z' if false => out.write_all(&[b.to_ascii_lowercase()])?,
+
+=== header json writes a name for each of its values
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::writes_header_json_as_c
+--- old
+        if h.index > 0 {
+            // Written with the first of its name.
+            continue;
+        }
+--- new

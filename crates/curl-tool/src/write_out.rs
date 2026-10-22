@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use curl_alloc::TryVec;
 use curl_core::error::ErrorKind;
-use curl_core::report::{ResponseVersion, TransferReport};
+use curl_core::report::{HeaderStore, Origins, Request, ResponseVersion, TransferReport};
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 
 use crate::options::exit_code;
@@ -85,6 +85,8 @@ enum Var {
     SpeedDownload,
     SpeedUpload,
     Time(Time),
+    /// The last response's headers, as a JSON object of lists.
+    HeaderJson,
 }
 
 /// A moment of the transfer, as seconds since its start.
@@ -125,7 +127,7 @@ const VARIABLES: &[Variable] = &[
     written("exitcode", Var::ExitCode),
     written("filename_effective", Var::FilenameEffective),
     known("ftp_entry_path"),
-    known("header_json"),
+    written("header_json", Var::HeaderJson),
     written("http_code", Var::HttpCode),
     written("http_connect", Var::HttpConnect),
     written("http_version", Var::HttpVersion),
@@ -252,7 +254,13 @@ enum Piece<'f> {
         name: &'f [u8],
         append: bool,
     },
-    /// `%header{` or `%time{`, not implemented yet.
+    /// `%header{name}`, the last response's first header of that name,
+    /// or `%header{name:all:sep}`, every request's, `sep` between them.
+    Header {
+        name: &'f [u8],
+        all: Option<&'f [u8]>,
+    },
+    /// `%time{`, not implemented yet.
     Function(&'static str),
     /// A name too long for C's buffer: nothing more is written.
     End,
@@ -280,9 +288,7 @@ fn pieces<'f>(format: &'f [u8], mut each: impl FnMut(Piece<'f>) -> bool) {
                     (piece, end + 1)
                 }
             },
-            (b'%', Some(_)) if rest[1..].starts_with(b"header{") => {
-                (Piece::Function("--write-out %header{}"), rest.len())
-            }
+            (b'%', Some(_)) if rest[1..].starts_with(b"header{") => header(&rest[8..]),
             (b'%', Some(_)) if rest[1..].starts_with(b"time{") => {
                 (Piece::Function("--write-out %time{}"), rest.len())
             }
@@ -326,6 +332,30 @@ fn pieces<'f>(format: &'f [u8], mut each: impl FnMut(Piece<'f>) -> bool) {
             return;
         }
     }
+}
+
+/// `%header{`'s piece, from what follows it, and how much of the format
+/// it took (`output_header`): it ends at the first `}` not after a `\`;
+/// unended, `%header{` is written as it is.
+fn header(after: &[u8]) -> (Piece<'_>, usize) {
+    let end = (0..after.len()).find(|&i| after[i] == b'}' && (i == 0 || after[i - 1] != b'\\'));
+    let Some(end) = end else {
+        return (Piece::Text(b"%header{"), 8);
+    };
+    let inside = &after[..end];
+    let (name, all) = match inside.iter().position(|&b| b == b':') {
+        Some(colon) if inside[colon + 1..].starts_with(b"all:") => {
+            (&inside[..colon], Some(&inside[colon + 5..]))
+        }
+        _ => (inside, None),
+    };
+    // C's buffer holds 255 bytes of name: a longer one writes nothing.
+    let piece = if name.len() < 256 {
+        Piece::Header { name, all }
+    } else {
+        Piece::Text(b"")
+    };
+    (piece, 8 + end + 1)
 }
 
 /// What `format` uses that is not implemented yet, if anything: the
@@ -407,11 +437,146 @@ fn write_to(format: &[u8], facts: &Facts<'_>, stdout: &mut dyn Write, stderr: &m
                     to = To::File(file);
                 }
             }
+            Piece::Header { name, all } => {
+                let _ = header_value(facts.report.headers(), name, all, out);
+            }
             Piece::Function(_) => unreachable!("refused when the option was read"),
             Piece::End => return false,
         }
         true
     });
+}
+
+/// `%header{}`'s value: the last response's first `name`, or with a
+/// separator every request's, in order, until a request lacks it.
+fn header_value(
+    headers: &HeaderStore,
+    name: &[u8],
+    all: Option<&[u8]>,
+    out: &mut dyn Write,
+) -> std::io::Result<()> {
+    let Some(sep) = all else {
+        if let Ok(h) = headers.get(name, 0, ORIGIN, Request::Last) {
+            out.write_all(h.value)?;
+        }
+        return Ok(());
+    };
+    let (mut request, mut index) = (0u16, 0);
+    let mut written = false;
+    while let Ok(h) = headers.get(name, index, ORIGIN, Request::Nth(request)) {
+        if written {
+            separator(sep, out)?;
+        }
+        out.write_all(h.value)?;
+        written = true;
+        if h.index + 1 < h.amount {
+            index += 1;
+        } else {
+            let Some(next) = request.checked_add(1) else {
+                break;
+            };
+            (request, index) = (next, 0);
+        }
+    }
+    Ok(())
+}
+
+/// The headers `%header{}` and `%{header_json}` read: the responses',
+/// not trailers, interim heads nor a proxy's (`CURLH_HEADER`).
+const ORIGIN: Origins = Origins::HEADER;
+
+/// A separator, its `\r`, `\n`, `\t` and `\}` read (`separator`); any
+/// other `\` is written with what follows it.
+fn separator(sep: &[u8], out: &mut dyn Write) -> std::io::Result<()> {
+    let mut i = 0;
+    while i < sep.len() {
+        if sep[i] == b'\\'
+            && let Some(&next) = sep.get(i + 1)
+        {
+            match next {
+                b'r' => out.write_all(b"\r")?,
+                b'n' => out.write_all(b"\n")?,
+                b't' => out.write_all(b"\t")?,
+                b'}' => out.write_all(b"}")?,
+                0 => {}
+                _ => out.write_all(&[b'\\', next])?,
+            }
+            i += 2;
+        } else {
+            out.write_all(&sep[i..=i])?;
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
+/// The last response's headers as a JSON object, each name lowercase
+/// with a list of its values, in the order the names first came
+/// (`headerJSON`).
+fn header_json(headers: &HeaderStore, out: &mut dyn Write) -> std::io::Result<()> {
+    out.write_all(b"{")?;
+    let mut prev = None;
+    let mut first = true;
+    while let Some(h) = headers.next(ORIGIN, Request::Last, prev) {
+        prev = Some(h.cursor);
+        if h.index > 0 {
+            // Written with the first of its name.
+            continue;
+        }
+        if !first {
+            out.write_all(b",\n")?;
+        }
+        first = false;
+        json_string(out, h.name, true)?;
+        out.write_all(b":[")?;
+        for i in 0..h.amount {
+            let Ok(each) = headers.get(h.name, i, ORIGIN, Request::Last) else {
+                break;
+            };
+            if i > 0 {
+                out.write_all(b",")?;
+            }
+            json_string(out, each.value, false)?;
+        }
+        out.write_all(b"]")?;
+    }
+    out.write_all(b"\n}")
+}
+
+/// The longest JSON string C writes, its quotes not counted
+/// (`MAX_JSON_STRING`, with room for its terminating zero).
+const MAX_JSON_STRING: usize = 100_000 - 1;
+
+/// `s` as a quoted JSON string, its ASCII letters lowercase if asked; one
+/// longer quoted than C's buffer is not written at all
+/// (`jsonWriteString`).
+fn json_string(out: &mut dyn Write, s: &[u8], lowercase: bool) -> std::io::Result<()> {
+    let escaped = |b: u8| -> usize {
+        match b {
+            b'\\' | b'"' | 0x08 | 0x0c | b'\n' | b'\r' | b'\t' => 2,
+            0..0x20 => 6,
+            _ => 1,
+        }
+    };
+    if s.iter().map(|&b| escaped(b)).sum::<usize>() > MAX_JSON_STRING {
+        return Ok(());
+    }
+    out.write_all(b"\"")?;
+    for &b in s {
+        match b {
+            b'\\' => out.write_all(b"\\\\")?,
+            b'"' => out.write_all(b"\\\"")?,
+            0x08 => out.write_all(b"\\b")?,
+            0x0c => out.write_all(b"\\f")?,
+            b'\n' => out.write_all(b"\\n")?,
+            b'\r' => out.write_all(b"\\r")?,
+            b'\t' => out.write_all(b"\\t")?,
+            0..0x20 => write!(out, "\\u{b:04x}")?,
+            b'A'..=b'Z' if lowercase => out.write_all(&[b.to_ascii_lowercase()])?,
+            _ => out.write_all(&[b])?,
+        }
+    }
+    out.write_all(b"\"")
 }
 
 /// Write `var`'s value for `facts`; nothing for one the transfer has
@@ -420,6 +585,7 @@ fn value(var: Var, facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()
     let r = facts.report;
     match var {
         Var::OnError | Var::Stdout | Var::Stderr => unreachable!("not a value"),
+        Var::HeaderJson => header_json(r.headers(), out),
         Var::ExitCode => write!(out, "{}", facts.result.err().map_or(0, exit_code)),
         Var::ErrorMsg => match facts.result {
             Ok(()) => Ok(()),
@@ -569,6 +735,15 @@ mod tests {
                 Piece::Output { name, append } => {
                     out.extend_from_slice(if append { b"<>>" } else { b"<>" });
                     out.extend_from_slice(name);
+                    out.push(b'>');
+                }
+                Piece::Header { name, all } => {
+                    out.extend_from_slice(b"<h:");
+                    out.extend_from_slice(name);
+                    if let Some(sep) = all {
+                        out.extend_from_slice(b":all:");
+                        out.extend_from_slice(sep);
+                    }
                     out.push(b'>');
                 }
                 Piece::Function(f) => out.extend_from_slice(f.as_bytes()),
@@ -723,12 +898,66 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    fn written(f: impl FnOnce(&mut Vec<u8>) -> std::io::Result<()>) -> String {
+        let mut out = Vec::new();
+        f(&mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    /// `%header{}`: the last response's first of a name, or every
+    /// request's in turn with a separator, until a request lacks it
+    /// (tests 764, 765, 1670).
+    #[test]
+    fn writes_headers_as_c() {
+        let store = HeaderStore::of_requests(&[
+            &[b"This: one\r\n", b"This: two\r\n"],
+            &[b"this: three\r\n", b"Other: x\r\n"],
+            &[b"Other: y\r\n"],
+            &[b"This: four\r\n"],
+        ]);
+        let value =
+            |name: &[u8], all: Option<&[u8]>| written(|out| header_value(&store, name, all, out));
+        assert_eq!(value(b"this", Some(b"***")), "one***two***three");
+        assert_eq!(
+            value(b"this", Some(b"-{\\}-\\n\\q")),
+            "one-{}-\n\\qtwo-{}-\n\\qthree"
+        );
+        assert_eq!(value(b"this", None), "four");
+        assert_eq!(value(b"other", None), "");
+        let piece = |format: &[u8]| render(format);
+        assert_eq!(piece(b"%header{a:all:-\\}-}!"), b"<h:a:all:-\\}->!");
+        assert_eq!(piece(b"%header{a:b}"), b"<h:a:b>");
+        assert_eq!(piece(b"%header{a"), b"%header{a");
+    }
+
+    /// `%{header_json}`: each name once, lowercase, its values in a list
+    /// (tests 421, 1671).
+    #[test]
+    fn writes_header_json_as_c() {
+        let store = HeaderStore::of_requests(&[
+            &[b"Gone: before\r\n"],
+            &[
+                b"Set-Cookie: a=1\r\n",
+                b"Funny-Head: \"q\"\\\x01\r\n",
+                b"set-cookie: b=2\r\n",
+            ],
+        ]);
+        assert_eq!(
+            written(|out| header_json(&store, out)),
+            "{\"set-cookie\":[\"a=1\",\"b=2\"],\n\"funny-head\":[\"\\\"q\\\"\\\\\\u0001\"]\n}"
+        );
+        assert_eq!(
+            written(|out| header_json(&HeaderStore::default(), out)),
+            "{\n}"
+        );
+    }
+
     #[test]
     fn refuses_what_is_not_implemented() {
         assert_eq!(unimplemented(b"%{url} %{exitcode}\\n"), None);
         assert_eq!(unimplemented(b"%{nosuch}"), None);
         assert_eq!(unimplemented(b"x %{json}"), Some("json"));
-        assert_eq!(unimplemented(b"%header{a}"), Some("--write-out %header{}"));
+        assert_eq!(unimplemented(b"%header{a} %{header_json}"), None);
         assert_eq!(unimplemented(b"%time{%H}"), Some("--write-out %time{}"));
         assert_eq!(unimplemented(b"%output{f}"), None);
         let after_end = format!("%{{{}}}%{{http_code}}", "a".repeat(24));

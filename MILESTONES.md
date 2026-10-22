@@ -450,10 +450,10 @@ cargo-mutants run on the milestone's diff.
     `curl-zlib` (`deflate`, `gzip`), `curl-brotli` (`br`) and `curl-zstd`. The 28 compression
     tests run on both legs and 27 pass; 3236 waits on C's `write` trace component
     (`curl_global_trace`), which nothing schedules yet.
-33. **http: the headers API, and time conditions.** **To do.** Each request's headers kept
-    for `curl_easy_header` and `curl_easy_nextheader`, by origin and request across step 26's
-    redirects; the tool's `%header{}` and `%{header_json}` read from them (T1 tests 421, 764,
-    765, 1670, 1671). Then `-z` and `CURLOPT_TIMECONDITION` (T1 test 1239).
+33. **http: the headers API, and time conditions.** **In progress.** Done: each request's
+    headers kept for `curl_easy_header` and `curl_easy_nextheader`, by origin and request
+    across redirects, and the tool's `%header{}` and `%{header_json}` reading them (421, 764,
+    765, 1670, 1671). To do: `-z` and `CURLOPT_TIMECONDITION` (1239).
 34. **core: read the response while the body goes.** **Done.** A step reads first, then sends
     what is left with at most one more buffer of the body, as C's `Curl_sendrecv` does
     (ENGINE.md 3.2), and a response asking for another request weighs what of the body is left

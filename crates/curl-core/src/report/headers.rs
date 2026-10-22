@@ -39,6 +39,8 @@ pub struct Origins(u8);
 impl Origins {
     pub const NONE: Origins = Origins(0);
     pub const ALL: Origins = Origins(0b1111);
+    /// A response's own headers (`CURLH_HEADER`).
+    pub const HEADER: Origins = Origins(1);
 
     pub fn contains(self, origin: HeaderOrigin) -> bool {
         self.0 & Origins::from(origin).0 != 0
@@ -280,6 +282,26 @@ impl HeaderStore {
 
     fn text(&self, r: &Range<u32>) -> &[u8] {
         &self.bytes[r.start as usize..r.end as usize]
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl HeaderStore {
+    /// A store of each request's response header lines, in turn: for the
+    /// tests of what reads one.
+    pub fn of_requests(requests: &[&[&[u8]]]) -> HeaderStore {
+        let mut store = HeaderStore::default();
+        for (n, lines) in requests.iter().enumerate() {
+            if n > 0 {
+                store.next_request();
+            }
+            for line in *lines {
+                store
+                    .push(line, HeaderOrigin::Header)
+                    .expect("a header line");
+            }
+        }
+        store
     }
 }
 

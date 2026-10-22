@@ -27,5 +27,9 @@ curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }
 curl-zstd = { path = "../curl-zstd" }
 
+[dev-dependencies]
+# The tests build what the core reports.
+curl-core = { path = "../curl-core", features = ["test-util"] }
+
 [lints]
 workspace = true

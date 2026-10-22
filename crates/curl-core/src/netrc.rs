@@ -6,7 +6,6 @@
 //! passed over, as C passes it over.
 
 use std::ffi::{CStr, OsString};
-use std::io::Read as _;
 use std::os::unix::ffi::OsStringExt as _;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -82,10 +81,16 @@ pub(crate) fn load(path: &CStr) -> Result<Vec<u8>, NetrcError> {
     if file.metadata().is_ok_and(|m| m.is_dir()) {
         return Err(NetrcError::FileMissing);
     }
+    read_kept(&mut file)
+}
+
+/// What `input` holds, its comment lines left out; a read interrupted is
+/// tried again, one failing is malformed, as C's `Curl_get_line` says.
+fn read_kept(input: &mut impl std::io::Read) -> Result<Vec<u8>, NetrcError> {
     let mut kept = Kept::default();
     let mut chunk = [0u8; 4096];
     loop {
-        match file.read(&mut chunk) {
+        match input.read(&mut chunk) {
             Ok(0) => return kept.finish(),
             Ok(n) => kept.feed(&chunk[..n])?,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -539,5 +544,94 @@ mod tests {
             b"".to_vec(),
             "only what is kept counts"
         );
+    }
+
+    /// C's bounds (`MAX_NETRC_LINE`, `MAX_NETRC_FILE`, `MAX_NETRC_TOKEN`),
+    /// each a buffer of that size with room for its terminator.
+    #[test]
+    fn bounds_lines_files_and_tokens_as_c() {
+        let mut line = vec![b'x'; 16382];
+        line.push(b'\n');
+        assert!(without_comments(&line).is_ok());
+        line.insert(0, b'x');
+        assert_eq!(without_comments(&line), Err(NetrcError::Syntax));
+        // 131071 bytes kept, in lines.
+        let mut file = Vec::new();
+        for _ in 0..1310 {
+            file.extend_from_slice(&[b'x'; 99]);
+            file.push(b'\n');
+        }
+        file.extend_from_slice(&[b'x'; 70]);
+        assert_eq!(without_comments(&file).map(|t| t.len()), Ok(131071));
+        file.push(b'x');
+        assert_eq!(without_comments(&file), Err(NetrcError::Syntax));
+        let token = |n: usize| {
+            let text = format!("machine h login {}", "x".repeat(n));
+            scan(text.as_bytes(), b"h", None).map(|f| f.user.len())
+        };
+        assert_eq!(token(4095), Ok(4095));
+        assert_eq!(token(4096), Err(NetrcError::Syntax));
+    }
+
+    /// A macro ends only at an empty line, carriage returns allowed
+    /// before its newline.
+    #[test]
+    fn ends_a_macro_at_an_empty_line() {
+        let scan = |text: &str| scan(text.as_bytes(), b"h", None);
+        assert_eq!(
+            scan("macdef m\nbody\n\rmachine h login b"),
+            Err(NetrcError::NoMatch)
+        );
+        assert_eq!(
+            scan("macdef m\nbody\n\r\r\nmachine h login b"),
+            found("b", "")
+        );
+    }
+
+    /// A read interrupted is made again; one failing is a syntax error,
+    /// as C's `Curl_get_line` failing is.
+    #[test]
+    fn reads_again_when_interrupted() {
+        use std::io::{Error, ErrorKind};
+        struct Reads(Vec<Result<&'static [u8], ErrorKind>>);
+        impl std::io::Read for Reads {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                assert!(!self.0.is_empty(), "read after the end");
+                match self.0.remove(0) {
+                    Ok(bytes) => {
+                        buf[..bytes.len()].copy_from_slice(bytes);
+                        Ok(bytes.len())
+                    }
+                    Err(kind) => Err(Error::from(kind)),
+                }
+            }
+        }
+        let mut interrupted = Reads(vec![
+            Ok(b"machine h\n"),
+            Err(ErrorKind::Interrupted),
+            Ok(b"login u"),
+            Ok(b""),
+        ]);
+        assert_eq!(
+            read_kept(&mut interrupted),
+            Ok(b"machine h\nlogin u\n".to_vec())
+        );
+        let mut failing = Reads(vec![Ok(b"machine h\n"), Err(ErrorKind::Other)]);
+        assert_eq!(read_kept(&mut failing), Err(NetrcError::Syntax));
+    }
+
+    /// `$NETRC`, else `.netrc` in `$HOME`.
+    #[test]
+    fn finds_the_file_as_c() {
+        let path = default_path().unwrap();
+        if let Some(netrc) = std::env::var_os("NETRC") {
+            assert_eq!(path, Some(netrc.into_vec()));
+        } else if let Some(home) = std::env::var_os("HOME") {
+            let mut want = home.into_vec();
+            want.extend_from_slice(b"/.netrc");
+            assert_eq!(path, Some(want));
+        } else {
+            assert!(path.is_none_or(|p| p.ends_with(b"/.netrc")));
+        }
     }
 }

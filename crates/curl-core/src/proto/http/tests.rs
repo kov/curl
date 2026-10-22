@@ -2846,6 +2846,22 @@ fn a_tunnel_redials_when_the_proxy_closes_on_its_407() {
     );
 }
 
+/// A connection whose last response said HTTP/1.0 is sent HTTP/1.0 by
+/// the next transfer to use it, as test 1078's second URL is
+/// (`conn->httpversion_seen`).
+#[test]
+fn a_connection_that_answered_http10_is_asked_in_it() {
+    let http10 = b"HTTP/1.0 200 OK\r\nConnection: keep-alive\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[http10, OK], false);
+    assert_eq!(get(&mut m, "/a", talk.clone(), |_| {}).result, Ok(()));
+    let ran = get(&mut m, "/b", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let second = text.split_once("\r\n\r\n").map_or("", |(_, rest)| rest);
+    assert!(second.starts_with("GET /b HTTP/1.0\r\n"), "{text}");
+    assert_eq!(ran.easy.report().connects(), 0, "the connection was reused");
+}
+
 /// Through a proxy, the origin's Digest challenge is kept for the origin,
 /// not for the proxy the connection goes to, and answered.
 #[test]

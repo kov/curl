@@ -200,6 +200,8 @@ pub(crate) struct HeadParser {
     version_seen: bool,
     /// One of them said HTTP/1.0.
     http10: bool,
+    /// The version the last response said.
+    last_version: Option<HttpVersion>,
     /// Head bytes of this request's responses (C's `allheadercount`).
     request_bytes: u64,
     /// Of those, the interim heads' up to the last that ended (C's
@@ -225,6 +227,7 @@ impl HeadParser {
             status: None,
             version_seen: false,
             http10: false,
+            last_version: None,
             request_bytes: 0,
             interim_bytes: 0,
             meta: Meta::default(),
@@ -249,6 +252,11 @@ impl HeadParser {
     /// A response to the request said HTTP/1.0.
     pub(crate) fn saw_http10(&self) -> bool {
         self.http10
+    }
+
+    /// The version the last response said, if one came.
+    pub(crate) fn last_version(&self) -> Option<HttpVersion> {
+        self.last_version
     }
 
     /// How the body is framed, once the final head ended.
@@ -449,6 +457,7 @@ impl HeadParser {
                 self.status = Some(status);
                 self.version_seen = true;
                 self.http10 |= status.version == HttpVersion::Http10;
+                self.last_version = Some(status.version);
                 note = Notes::one(self.meta.on_status(status));
                 LineKind::Status(status)
             } else {

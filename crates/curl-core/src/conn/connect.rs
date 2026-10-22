@@ -503,6 +503,7 @@ impl ConnectMachine {
             use_: Use::Leased(NonZeroU32::MIN),
             rx,
             served: false,
+            seen_version: None,
             close: false,
         }
     }

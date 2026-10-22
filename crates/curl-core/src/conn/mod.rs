@@ -29,6 +29,7 @@ use std::num::NonZeroU32;
 use curl_alloc::{OutOfMemory, TryRc, TryVec as _};
 
 use crate::options::{IpVersion, ProxyType};
+use crate::report::ResponseVersion;
 
 pub(crate) use self::buf::RecvBuf;
 
@@ -367,6 +368,8 @@ pub(crate) struct Conn {
     /// It carried a request before the one leasing it (C's
     /// `bits.reuse`).
     served: bool,
+    /// The version its last HTTP response said (`httpversion_seen`).
+    seen_version: Option<ResponseVersion>,
     /// It is not to be kept for another request (C's `connclose`), or
     /// its peer closed it, which no request can use again.
     close: bool,
@@ -397,6 +400,15 @@ impl Conn {
     /// Whether it carried a request before this one.
     pub(crate) fn reused(&self) -> bool {
         self.served
+    }
+
+    /// The version its last HTTP response said.
+    pub(crate) fn seen_version(&self) -> Option<ResponseVersion> {
+        self.seen_version
+    }
+
+    pub(crate) fn saw_version(&mut self, version: ResponseVersion) {
+        self.seen_version = Some(version);
     }
 
     /// Keep it for no other request: it closes when its lease goes back.

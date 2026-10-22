@@ -430,7 +430,7 @@ cargo-mutants run on the milestone's diff.
     `CURLINFO_PROXYAUTH_*` and the tool's `-U`, `--proxy-anyauth`, `--proxy-basic` and
     `--proxy-digest`; tunnels with `CONNECT` (ENGINE.md 4.2), for `-p` or a connect-to
     peer, answering the proxy's 407 on the same connection or a new one, with
-    `CURLINFO_HTTP_CONNECTCODE` and `%{http_connect}`. 115 of the 158 proxy tests the Rust
+    `CURLINFO_HTTP_CONNECTCODE` and `%{http_connect}`. 116 of the 158 proxy tests the Rust
     leg runs pass. Next: SOCKS, then the proxy headers (`CURLOPT_PROXYHEADER`,
     `CURLOPT_HEADEROPT`) and the PROXY protocol.
 32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as

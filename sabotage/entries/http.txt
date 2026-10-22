@@ -1204,3 +1204,11 @@ witness: curl-core proto::http::tests::last_modified_gives_the_file_time_when_as
             && !bodyless
 --- new
             && cx.easy().options().filetime
+
+=== a connection that answered HTTP/1.0 is asked in HTTP/1.1
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_connection_that_answered_http10_is_asked_in_it
+--- old
+    if after_http10 || seen == Some(ResponseVersion::Http10) {
+--- new
+    if after_http10 {

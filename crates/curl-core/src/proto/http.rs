@@ -14,7 +14,7 @@ use crate::multi::Host;
 use crate::multi::TransferCx;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
 use crate::options::{Follow, Http, HttpVersion, Method, Resume, UploadSource};
-use crate::report::Timer;
+use crate::report::{ResponseVersion, Timer};
 use crate::time::Instant;
 use crate::trace;
 use crate::upload::{self, Upload};
@@ -100,8 +100,11 @@ pub(crate) struct Request {
     method: Method,
     /// The application's custom method is sent in its place.
     custom: bool,
-    /// The HTTP version sent.
+    /// The HTTP version sent, once the connection is known.
     version: HttpVersion,
+    /// An earlier response to the transfer said HTTP/1.0
+    /// (`state.http_neg.rcvd_min`).
+    after_http10: bool,
     /// The library adds no `Expect: 100-continue`.
     no_expect: bool,
     /// A 417 refused the `Expect: 100-continue` sent.
@@ -311,11 +314,8 @@ impl Request {
             no_expect: inherited.no_expect,
             expect_refused: false,
             closing: false,
-            version: if inherited.http10 {
-                HttpVersion::Http10
-            } else {
-                cx.easy().options().http.version
-            },
+            version: cx.easy().options().http.version,
+            after_http10: inherited.http10,
             out: Vec::new(),
             filled: 0,
             sent: 0,
@@ -462,6 +462,11 @@ impl Request {
     ) -> Result<(), ErrorKind> {
         let reused = cx.conn(lease).reused();
         let http_proxy = cx.conn(lease).http_proxy();
+        self.version = version(
+            cx.easy().options().http.version,
+            self.after_http10,
+            cx.conn(lease).seen_version(),
+        );
         // The proxy the request goes to whole, and what it is given.
         let forwarding = cx
             .conn(lease)
@@ -1286,6 +1291,9 @@ impl Request {
             }
         }
         let head = self.head.as_ref().expect("made at DO");
+        if let Some(seen) = head.last_version() {
+            cx.conn(lease).saw_version(seen);
+        }
         if head.meta().close() || self.pipeline.body_closes() || self.closing {
             cx.conn(lease).mark_close();
         }
@@ -1368,6 +1376,17 @@ fn head_failed<H: Host>(cx: &mut StepCx<'_, H>, e: &HeadError) -> ErrorKind {
         trace::fail(cx, e.kind(), format_args!("{e}"))
     } else {
         e.kind()
+    }
+}
+
+/// The version a request goes in, `wanted` the application's: HTTP/1.0
+/// after a response in it to the transfer, or on a connection whose last
+/// response was in it (`http_may_use_1_1`).
+fn version(wanted: HttpVersion, after_http10: bool, seen: Option<ResponseVersion>) -> HttpVersion {
+    if after_http10 || seen == Some(ResponseVersion::Http10) {
+        HttpVersion::Http10
+    } else {
+        wanted
     }
 }
 

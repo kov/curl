@@ -258,6 +258,7 @@ impl Pool {
                 use_: Use::Leased(NonZeroU32::MIN),
                 rx: RecvBuf::default(),
                 served: false,
+                seen_version: None,
                 close: false,
             }),
             Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(number, tcp, now)),

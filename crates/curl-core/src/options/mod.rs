@@ -45,6 +45,9 @@ pub struct Options {
     /// Which of a name's addresses a connection may use
     /// (`CURLOPT_IPRESOLVE`).
     pub ip_version: IpVersion,
+    /// The IPv6 scope connections are made in, in place of the URL's
+    /// zone (`CURLOPT_ADDRESS_SCOPE`).
+    pub address_scope: Option<NonZeroU32>,
     /// The port the first URL is reached on, whatever it says, and any a
     /// relative redirect leads to (`CURLOPT_PORT`).
     pub port: Option<NonZeroU16>,
@@ -350,6 +353,7 @@ impl Options {
             time_condition: self.time_condition,
             limits: self.limits,
             ip_version: self.ip_version,
+            address_scope: self.address_scope,
             port: self.port,
             resolve: self.resolve.try_clone()?,
             connect_to: self.connect_to.try_clone()?,

@@ -9,7 +9,7 @@
 //! pool holding it is borrowed.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 use std::time::Duration;
 
 use std::num::NonZeroU32;
@@ -137,6 +137,9 @@ pub(crate) struct Setup<'a> {
     pub(crate) max_age: Option<Duration>,
     /// The happy eyeballs delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`).
     pub(crate) delay: Duration,
+    /// The IPv6 scope connections are made in, whatever the peer's
+    /// (`CURLOPT_ADDRESS_SCOPE`).
+    pub(crate) scope: Option<NonZeroU32>,
 }
 
 /// Where a name's answer came from.
@@ -231,8 +234,12 @@ pub(crate) enum Drove {
 pub(crate) enum Progress {
     /// The name resolved: its answer is the machine's.
     Resolved(Found),
-    /// An attempt started on `0`.
-    Trying(SocketAddr),
+    /// An attempt started on `remote`, in the scope `scope_found` took
+    /// from a local interface if it has one.
+    Trying {
+        remote: SocketAddr,
+        scope_found: Option<NonZeroU32>,
+    },
     /// An attempt failed, and the setup goes on.
     Failed(Failure),
     /// Nothing until a socket is ready, or until `until`, when the next
@@ -246,10 +253,12 @@ pub(crate) enum Progress {
 /// How an attempt failed.
 #[derive(Debug)]
 pub(crate) enum Failure {
-    /// Connecting to `remote` failed at once, before any socket was
-    /// polled.
+    /// Connecting to `remote`, in the scope `scope_found` took from a
+    /// local interface if it has one, failed at once, before any socket
+    /// was polled.
     Immediate {
         remote: SocketAddr,
+        scope_found: Option<NonZeroU32>,
         error: io::Error,
     },
     /// The attempt to `remote` from `local` failed.
@@ -453,20 +462,28 @@ impl ConnectMachine {
                 return Err(ConnectError::OutOfMemory);
             }
             let ip = r.eyeballs.next().expect("an address is left");
-            let remote = SocketAddr::new(ip, self.route.destination().port());
+            let (remote, scope_found) = address(ip, self.route.destination(), setup.scope, net);
             r.last_start = Some(now);
             return match net.connect(remote) {
                 Ok((socket, Connect::InProgress | Connect::Done)) => {
                     r.attempts
                         .try_push(Attempt { remote, socket })
                         .expect("reserved");
-                    Ok(Drove::Connecting(self, Progress::Trying(remote)))
+                    let tried = Progress::Trying {
+                        remote,
+                        scope_found,
+                    };
+                    Ok(Drove::Connecting(self, tried))
                 }
                 Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
                     Err(ConnectError::OutOfMemory)
                 }
                 Err(error) => {
-                    let failure = Failure::Immediate { remote, error };
+                    let failure = Failure::Immediate {
+                        remote,
+                        scope_found,
+                        error,
+                    };
                     r.failed(failure).map(|p| Drove::Connecting(self, p))
                 }
             };
@@ -585,6 +602,31 @@ impl Attempt {
             error,
         })
     }
+}
+
+/// The address an attempt to `ip` on `peer` connects to, and the scope
+/// taken from a local interface for it, if one was. An IPv6 address is in
+/// the application's scope, or else the peer's (`conn->scope_id`); a
+/// link-local one with neither is in the first local interface's that
+/// has a link-local address, as it is unreachable without one
+/// (cf-socket.c's `get_scope_id`).
+fn address(
+    ip: IpAddr,
+    peer: &Peer,
+    given: Option<NonZeroU32>,
+    net: &mut dyn Net,
+) -> (SocketAddr, Option<NonZeroU32>) {
+    let port = peer.port();
+    let IpAddr::V6(v6) = ip else {
+        return (SocketAddr::new(ip, port), None);
+    };
+    let scope = given.or(peer.scope());
+    let found = match scope {
+        None if v6.is_unicast_link_local() => net.link_local_scope(),
+        _ => None,
+    };
+    let scope = scope.or(found).map_or(0, NonZeroU32::get);
+    (SocketAddr::V6(SocketAddrV6::new(v6, port, 0, scope)), found)
 }
 
 /// The addresses `peer`'s name stands for, in the families `ip` allows:
@@ -738,14 +780,21 @@ mod tests {
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
+                scope: None,
             };
             match m.drive(&mut net, clock.now(), setup) {
                 Ok(Drove::Connecting(next, progress)) => {
                     m = next;
                     raced.most_running = raced.most_running.max(m.sockets().count());
                     match progress {
-                        Progress::Trying(SocketAddr::V4(_)) => raced.v4_starts.push(ms),
-                        Progress::Trying(SocketAddr::V6(_)) => raced.v6_starts.push(ms),
+                        Progress::Trying {
+                            remote: SocketAddr::V4(_),
+                            ..
+                        } => raced.v4_starts.push(ms),
+                        Progress::Trying {
+                            remote: SocketAddr::V6(_),
+                            ..
+                        } => raced.v6_starts.push(ms),
                         Progress::Failed(_) => {}
                         Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
                         Progress::Resolved(_) => unreachable!("resolved already"),
@@ -792,6 +841,7 @@ mod tests {
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
+                scope: None,
             };
             match m.drive(&mut net, clock.now(), setup).unwrap() {
                 Drove::Connecting(next, progress) => {

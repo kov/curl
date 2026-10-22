@@ -96,19 +96,12 @@ fn connect_to<'a>(origin: &Peer, to: &'a [u8]) -> Result<Peer, BadVia<'a>> {
             .ok_or_else(|| syntax(ErrorKind::SetoptOptionSyntax, "No valid port number", to))?,
         None => origin.port(),
     };
+    if host.is_empty() {
+        // The origin's host, its zone and scope with it.
+        return Ok(origin.at_port(port)?);
+    }
     let mut name = Vec::new();
-    let zone = if host.is_empty() {
-        // The origin's host, its zone with it.
-        name.try_extend_from_slice(origin.shown())?;
-        match origin.zone() {
-            Some(zone) => {
-                let mut copy = Vec::new();
-                copy.try_extend_from_slice(zone)?;
-                Some(copy)
-            }
-            None => None,
-        }
-    } else if let Some(inner) = host.strip_prefix(b"[") {
+    let zone = if let Some(inner) = host.strip_prefix(b"[") {
         let inner = &inner[..inner.len() - 1];
         let Some((address, zone)) = ipv6(inner) else {
             let why = "Invalid IPv6 address format";
@@ -306,6 +299,13 @@ mod tests {
         assert_eq!(zone_of(&foo, "::[fe80::1%]:2"), None);
         let v6 = Peer::new(HTTP, b"[fe80::1]".to_vec(), 1, Some(b"eth1".to_vec()));
         assert_eq!(zone_of(&v6, ":1::7"), Some(b"eth1".to_vec()));
+        // A scope the application set, in place of a zone, is kept too.
+        let five = std::num::NonZeroU32::new(5).unwrap();
+        let scoped = Peer::scoped(HTTP, b"[fe80::1]".to_vec(), 1, five);
+        let kept = via(&scoped, [b":1::7".as_slice()].into_iter())
+            .unwrap()
+            .unwrap();
+        assert_eq!((kept.scope(), kept.port()), (Some(five), 7));
     }
 
     const WORDS: &[&[u8]] = &[

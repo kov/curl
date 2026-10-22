@@ -4,6 +4,7 @@
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::time::Duration;
 
@@ -110,6 +111,10 @@ pub trait Net {
     /// The addresses of `name`, of `family`, as the system's resolver
     /// finds them, waiting for its answer (C's synchronous resolver).
     fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure>;
+
+    /// The scope of the first local interface that is up, is not
+    /// loopback and has a link-local IPv6 address, if any.
+    fn link_local_scope(&mut self) -> Option<NonZeroU32>;
 }
 
 impl Socket for curl_os::net::TcpSocket {
@@ -164,6 +169,10 @@ impl Net for SystemNet {
 
     fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
         curl_os::resolve::lookup(name, family)
+    }
+
+    fn link_local_scope(&mut self) -> Option<NonZeroU32> {
+        curl_os::net::link_local_scope()
     }
 }
 
@@ -454,6 +463,8 @@ pub struct FakeNet {
     /// The conversations to come, each for the next connection to its
     /// address.
     conversations: Vec<(SocketAddr, Conversation)>,
+    /// The scope of its interface with a link-local address, if it has one.
+    link_local: Option<NonZeroU32>,
     /// The sockets open, by number from `FIRST_FAKE`, each with its
     /// conversation: a closed number is handed out again, lowest first, as
     /// the kernel does.
@@ -485,8 +496,15 @@ impl FakeNet {
             peers: Vec::new(),
             names: Vec::new(),
             conversations: Vec::new(),
+            link_local: None,
             open,
         }
+    }
+
+    /// An interface with a link-local address, in `scope`.
+    pub fn with_link_local_scope(mut self, scope: NonZeroU32) -> FakeNet {
+        self.link_local = Some(scope);
+        self
     }
 
     /// The next connection to `addr` has `conversation`.
@@ -647,6 +665,10 @@ impl Net for FakeNet {
             return Err(ResolveFailure::NoData);
         }
         Ok(found)
+    }
+
+    fn link_local_scope(&mut self) -> Option<NonZeroU32> {
+        self.link_local
     }
 }
 

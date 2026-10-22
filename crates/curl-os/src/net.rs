@@ -7,7 +7,7 @@
 
 use std::io::{self, Read as _, Write as _};
 use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
 
 /// How a connect started.
@@ -124,6 +124,69 @@ impl From<SocketAddr> for SockAddr {
             len: libc::socklen_t::try_from(len).expect("a socket address length fits"),
         }
     }
+}
+
+/// The index of the network interface named `name` (`if_nametoindex`),
+/// or `None` if no interface has that name.
+pub fn interface_index(name: &[u8]) -> Option<NonZeroU32> {
+    // A name with a zero byte names no interface; one that does not fit
+    // the kernel's limit, with its terminator, names none either.
+    if name.contains(&0) || name.len() >= libc::IF_NAMESIZE {
+        return None;
+    }
+    let mut c_name = [0u8; libc::IF_NAMESIZE];
+    c_name[..name.len()].copy_from_slice(name);
+    // SAFETY: `c_name` holds `name` and at least one zero after it, so it
+    // is a C string, and it lives through the call.
+    let index = unsafe { libc::if_nametoindex(c_name.as_ptr().cast()) };
+    NonZeroU32::new(index)
+}
+
+/// The scope of the first interface that is up, is not loopback, and has
+/// a link-local IPv6 address, for a link-local address given without one
+/// (cf-socket.c's `get_scope_id`); `None` if there is none, or the list
+/// cannot be had.
+pub fn link_local_scope() -> Option<NonZeroU32> {
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `list` is a valid place for the list's head, which is freed
+    // below with `freeifaddrs` and nowhere else.
+    if unsafe { libc::getifaddrs(&raw mut list) } != 0 {
+        return None;
+    }
+    let mut found = None;
+    let mut at = list;
+    while !at.is_null() {
+        // SAFETY: `at` is an entry of the list `getifaddrs` returned, not
+        // yet freed.
+        let entry = unsafe { &*at };
+        at = entry.ifa_next;
+        let flags = entry.ifa_flags;
+        let up = flags & libc::IFF_UP as libc::c_uint != 0;
+        let loopback = flags & libc::IFF_LOOPBACK as libc::c_uint != 0;
+        if entry.ifa_addr.is_null() || !up || loopback {
+            continue;
+        }
+        // SAFETY: a non-null `ifa_addr` points at a socket address, which
+        // starts with its family.
+        let family = unsafe { (*entry.ifa_addr).sa_family };
+        if i32::from(family) != libc::AF_INET6 {
+            continue;
+        }
+        // SAFETY: the family says the address is a `sockaddr_in6`, which
+        // may be unaligned in the list.
+        let sin6 = unsafe { entry.ifa_addr.cast::<libc::sockaddr_in6>().read_unaligned() };
+        let ip = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+        if ip.is_unicast_link_local()
+            && let Some(scope) = NonZeroU32::new(sin6.sin6_scope_id)
+        {
+            found = Some(scope);
+            break;
+        }
+    }
+    // SAFETY: `list` is what `getifaddrs` returned, freed once, and no
+    // entry of it is used after.
+    unsafe { libc::freeifaddrs(list) };
+    found
 }
 
 impl TcpSocket {
@@ -359,6 +422,40 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    /// An IPv6 address's scope reaches the kernel's socket address.
+    #[test]
+    fn the_scope_reaches_the_socket_address() {
+        let ip = "fe80::1".parse().unwrap();
+        let addr = SockAddr::from(SocketAddr::V6(std::net::SocketAddrV6::new(ip, 80, 0, 7)));
+        assert_eq!(addr.len as usize, size_of::<libc::sockaddr_in6>());
+        // SAFETY: an IPv6 address was written as a `sockaddr_in6`.
+        let sin6 = unsafe { (&raw const addr.raw).cast::<libc::sockaddr_in6>().read() };
+        assert_eq!(sin6.sin6_scope_id, 7);
+        assert_eq!(u16::from_be(sin6.sin6_port), 80);
+    }
+
+    /// Interfaces are found by name; a name no interface has, or no
+    /// interface could have, finds none.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot call if_nametoindex")]
+    fn interfaces_are_found_by_name() {
+        assert!(interface_index(b"lo").is_some(), "Linux has a loopback");
+        assert_eq!(interface_index(b"nosuch-if0"), None);
+        assert_eq!(interface_index(b""), None);
+        assert_eq!(interface_index(b"lo\0"), None);
+        assert_eq!(interface_index(&[b'a'; 64]), None);
+        assert_eq!(interface_index(&[b'a'; libc::IF_NAMESIZE]), None);
+    }
+
+    /// The link-local fallback never picks the loopback interface.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot call getifaddrs")]
+    fn the_link_local_scope_is_not_loopback_s() {
+        if let Some(scope) = link_local_scope() {
+            assert_ne!(Some(scope), interface_index(b"lo"));
+        }
     }
 
     /// Set in the child process `descriptors_run_from_zero_to_the_limit`

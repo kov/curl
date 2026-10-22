@@ -782,6 +782,10 @@ impl Net for BrokenNet {
         let _ = (name, family);
         Err(crate::conn::io::ResolveFailure::Failed)
     }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        None
+    }
 }
 
 #[test]
@@ -1247,6 +1251,10 @@ impl Net for Patient {
     ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
         self.net.resolve(name, family)
     }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.net.link_local_scope()
+    }
 }
 
 /// With nothing due, a transfer driven by events waits for its socket for
@@ -1490,7 +1498,9 @@ fn unresolved_and_immediate_failures() {
     assert_eq!(
         trace_of(&nobody_lines),
         [
+            "  Trying [::1]:9...\n",
             "Immediate connect fail for ::1: Connection refused\n",
+            "connect to ::1 port 9 from :: port 0 failed: Connection refused\n",
             "Failed to connect to ::1:9 after 0 ms: Could not connect to server\n",
             "closing connection #1\n",
         ]
@@ -1630,6 +1640,10 @@ impl Net for Closes {
     ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
         self.0.resolve(name, family)
     }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.link_local_scope()
+    }
 }
 
 /// One network behind several owners: a share and the multis whose
@@ -1663,6 +1677,10 @@ impl Net for OneNet {
         family: crate::conn::io::Family,
     ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
         self.0.lock().unwrap().resolve(name, family)
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.lock().unwrap().link_local_scope()
     }
 }
 
@@ -2530,6 +2548,10 @@ impl Net for SharedNet {
     ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
         self.0.lock().unwrap().resolve(name, family)
     }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.lock().unwrap().link_local_scope()
+    }
 }
 
 /// Connections are numbered in the order they are made, and one found
@@ -2619,4 +2641,130 @@ fn a_wake_ends_a_wait_on_a_transfer_s_socket() {
         );
     });
     assert_eq!(took, Duration::ZERO, "woken");
+}
+
+/// A network for the IPv6 scope tests: `::1` port 5 accepts in scopes 9,
+/// 10 and the loopback's, `fe80::1` port 6 in scope 3, and the one
+/// interface with a link-local address is in scope 3.
+fn scoped_net() -> (Multi, std::num::NonZeroU32) {
+    use crate::conn::io::Peer;
+    use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
+    let clock = ManualClock::new().unwrap();
+    let lo = curl_os::net::interface_index(b"lo").expect("Linux has a loopback");
+    let at = |ip: Ipv6Addr, port, scope| SocketAddr::V6(SocketAddrV6::new(ip, port, 0, scope));
+    let link_local = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+    let three = std::num::NonZeroU32::new(3).unwrap();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at(Ipv6Addr::LOCALHOST, 5, 9), Peer::Accepts)
+        .with_peer(at(Ipv6Addr::LOCALHOST, 5, 10), Peer::Accepts)
+        .with_peer(at(Ipv6Addr::LOCALHOST, 5, lo.get()), Peer::Accepts)
+        .with_peer(at(link_local, 6, 3), Peer::Accepts)
+        .with_link_local_scope(three);
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env).unwrap(), lo)
+}
+
+/// Run `e` alone on `m` to its end; its result and trace, without the
+/// line saying a name was in the cache, as the address after the first
+/// transfer is.
+fn run_traced(m: &mut Multi, e: Easy, lines: &TextLines) -> (Result<(), ErrorKind>, Vec<String>) {
+    let h = m.add(e, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let done = messages(m);
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0].0, h.index());
+    let mut trace = trace_of(lines);
+    trace.retain(|l| !l.ends_with("was found in DNS cache\n"));
+    (done[0].1, trace)
+}
+
+/// The URL's zone is the socket address's scope, a number as it is and a
+/// name as its interface's index (`get_scope_id`, `peer_create`).
+#[test]
+fn a_zone_is_the_socket_address_s_scope() {
+    let (mut m, lo) = scoped_net();
+    let (e, lines) = traced("tcp://[::1%259]:5/");
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Ok(()));
+    assert_eq!(trace[0], "  Trying [::1]:5 scope_id=9...\n");
+    let (e, lines) = traced("tcp://[::1%25lo]:5/");
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Ok(()));
+    assert_eq!(trace[0], format!("  Trying [::1]:5 scope_id={lo}...\n"));
+    // An interface no one has leaves no scope, without an error.
+    let (e, lines) = traced("tcp://[::1%25nosuch0]:5/");
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(trace[0], "  Trying [::1]:5...\n");
+}
+
+/// A link-local address with no scope takes a local interface's; one
+/// with a scope keeps it (`get_scope_id`).
+#[test]
+fn a_link_local_address_without_a_scope_takes_an_interface_s() {
+    let (mut m, _) = scoped_net();
+    for url in ["tcp://[fe80::1]:6/", "tcp://[fe80::1%25nosuch0]:6/"] {
+        let (e, lines) = traced(url);
+        let (result, trace) = run_traced(&mut m, e, &lines);
+        assert_eq!(result, Ok(()), "{url}");
+        assert_eq!(
+            trace[..2],
+            [
+                "determined scope_id=3 for link-local address from local interface\n",
+                "  Trying [fe80::1]:6 scope_id=3...\n",
+            ],
+            "{url}"
+        );
+    }
+    let (e, lines) = traced("tcp://[fe80::1%254]:6/");
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(trace[0], "  Trying [fe80::1]:6 scope_id=4...\n");
+}
+
+/// The application's scope takes the place of the URL's zone
+/// (`CURLOPT_ADDRESS_SCOPE`).
+#[test]
+fn the_application_s_scope_overrides_the_zone() {
+    let (mut m, _) = scoped_net();
+    let (mut e, lines) = traced("tcp://[::1%2510]:5/");
+    e.options_mut().address_scope = std::num::NonZeroU32::new(9);
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Ok(()));
+    assert_eq!(trace[0], "  Trying [::1]:5 scope_id=9...\n");
+    // A connection in scope 9 serves a URL that names it.
+    let (e, lines) = traced("tcp://[::1%259]:5/");
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Ok(()));
+    assert_eq!(trace[0], "Reusing existing tcp: connection with host ::1\n");
+}
+
+/// A connection serves a transfer in the same scope, however its zone
+/// spells it, and none in another (`Curl_peer_equal`).
+#[test]
+fn connections_are_reused_within_a_scope() {
+    let (mut m, lo) = scoped_net();
+    let reused = "Reusing existing tcp: connection with host ::1\n";
+    let index = format!("tcp://[::1%25{lo}]:5/");
+    let steps = [
+        ("tcp://[::1%259]:5/", "  Trying [::1]:5 scope_id=9...\n"),
+        ("tcp://[::1%2510]:5/", "  Trying [::1]:5 scope_id=10...\n"),
+        ("tcp://[::1%25009]:5/", reused),
+        (
+            "tcp://[::1%25lo]:5/",
+            &format!("  Trying [::1]:5 scope_id={lo}...\n"),
+        ),
+        (&index, reused),
+    ];
+    for (url, first) in steps {
+        let (e, lines) = traced(url);
+        let (result, trace) = run_traced(&mut m, e, &lines);
+        assert_eq!(result, Ok(()), "{url}");
+        assert_eq!(trace[0], first, "{url}");
+    }
 }

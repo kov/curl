@@ -106,6 +106,10 @@ impl Net for Counting {
     ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
         self.0.resolve(name, family)
     }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.link_local_scope()
+    }
 }
 
 /// A multi over peers that refuse (port 2), stay silent (3) and accept

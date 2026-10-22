@@ -704,6 +704,23 @@ fn limits_are_checked_as_in_c() {
         CURLE_OK
     );
     assert_eq!(ip(c), curl_core::options::IpVersion::Any);
+    let scope = |c| options(c, |o| o.address_scope.map(std::num::NonZeroU32::get));
+    assert_eq!(long(c, ffi::CURLOPT_ADDRESS_SCOPE, 7), CURLE_OK);
+    assert_eq!(scope(c), Some(7));
+    for bad in [-1, c_long::from(u32::MAX) + 1] {
+        assert_eq!(
+            long(c, ffi::CURLOPT_ADDRESS_SCOPE, bad),
+            CURLE_BAD_FUNCTION_ARGUMENT
+        );
+    }
+    assert_eq!(scope(c), Some(7));
+    assert_eq!(
+        long(c, ffi::CURLOPT_ADDRESS_SCOPE, c_long::from(u32::MAX)),
+        CURLE_OK
+    );
+    assert_eq!(scope(c), Some(u32::MAX));
+    assert_eq!(long(c, ffi::CURLOPT_ADDRESS_SCOPE, 0), CURLE_OK);
+    assert_eq!(scope(c), None);
     let he = |c| options(c, |o| o.limits.eyeballs.0);
     assert_eq!(he(c), std::time::Duration::from_millis(200), "C's default");
     assert_eq!(long(c, ffi::CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS, 0), CURLE_OK);

@@ -52,9 +52,9 @@ witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
 file: crates/curl-core/src/conn/connect_to.rs
 witness: curl-core conn::connect_to::tests::entries_match_as_c_matches_them
 --- old
-        name.try_extend_from_slice(origin.shown())?;
+        return Ok(origin.at_port(port)?);
 --- new
-        name.try_extend_from_slice(b"localhost")?;
+        return Ok(Peer::new(origin.scheme(), b"localhost".to_vec(), port, None));
 
 === a long port overflows
 file: crates/curl-core/src/conn/connect_to.rs

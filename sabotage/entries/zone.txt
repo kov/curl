@@ -1,0 +1,83 @@
+# IPv6 zones and scopes: the URL's zone, or the application's scope,
+# reaches the socket address and decides which connections are reused.
+
+=== the scope is left out of the socket address
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_zone_is_the_socket_address_s_scope
+--- old
+    let scope = scope.or(found).map_or(0, NonZeroU32::get);
+--- new
+    let scope = found.map_or(0, NonZeroU32::get);
+
+=== a zone that names an interface is not looked up
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core multi::tests::connections_are_reused_within_a_scope
+--- old
+                number.or_else(|| curl_os::net::interface_index(z).map(NonZeroU32::get))
+--- new
+                number
+
+=== a link-local address with no scope gets none
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_link_local_address_without_a_scope_takes_an_interface_s
+--- old
+        None if v6.is_unicast_link_local() => net.link_local_scope(),
+--- new
+        None if false => net.link_local_scope(),
+
+=== a link-local address with a scope still takes an interface's
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_link_local_address_without_a_scope_takes_an_interface_s
+--- old
+    let scope = given.or(peer.scope());
+    let found = match scope {
+--- new
+    let scope = given.or(peer.scope());
+    let found = match None::<NonZeroU32> {
+
+=== the application's scope does not replace the URL's zone
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core multi::tests::the_application_s_scope_overrides_the_zone
+--- old
+    if let Some(scope) = scope {
+        return Ok(Peer::scoped(scheme, host, port, scope));
+    }
+--- new
+    let _ = scope;
+
+=== a connect-to entry naming only a port drops the origin's scope
+file: crates/curl-core/src/conn/connect_to.rs
+witness: curl-core conn::connect_to::tests::zones_are_kept
+--- old
+        return Ok(origin.at_port(port)?);
+--- new
+        let host = origin.shown().to_vec();
+        return Ok(Peer::new(origin.scheme(), host, port, origin.zone.clone()));
+
+=== CURLOPT_ADDRESS_SCOPE takes a negative value
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::limits_are_checked_as_in_c
+--- old
+            let n = u32::try_from(n as core::ffi::c_ulong).map_err(|_| Refused::Bad)?;
+            options.address_scope = NonZeroU32::new(n);
+--- new
+            let n = n as u32;
+            options.address_scope = NonZeroU32::new(n);
+
+=== an attempt that fails at once is not traced as tried
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::unresolved_and_immediate_failures
+--- old
+            // it never got a local address (`cf_tcp_connect`).
+            trace_trying(cx, remote, scope_found);
+--- new
+            // it never got a local address (`cf_tcp_connect`).
+            let _ = scope_found;
+
+=== an interface name too long for the kernel is looked up
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::interfaces_are_found_by_name
+--- old
+    if name.contains(&0) || name.len() >= libc::IF_NAMESIZE {
+--- new
+    if name.contains(&0) {

@@ -382,18 +382,27 @@ pub(crate) struct Peer {
     host: Vec<u8>,
     port: u16,
     zone: Option<Vec<u8>>,
-    /// The zone as a number, if it is one; 0 if not (`scopeid`).
+    /// The IPv6 scope: the zone as a number, or the index of the
+    /// interface it names; 0 if neither (`scopeid`).
     scope: u32,
 }
 
 impl Peer {
     pub(crate) fn new(scheme: Scheme, host: Vec<u8>, port: u16, zone: Option<Vec<u8>>) -> Peer {
-        // A zone that is a plain number is the scope; a name's would be
-        // its interface's index, which is not looked up yet.
+        // A zone that is a plain number is the scope, and a name is its
+        // interface's index; one naming no interface leaves none, without
+        // an error (`peer_create`).
         let scope = zone
             .as_deref()
-            .filter(|z| !z.is_empty() && z.iter().all(u8::is_ascii_digit))
-            .and_then(|z| std::str::from_utf8(z).ok()?.parse().ok())
+            .filter(|z| !z.is_empty())
+            .and_then(|z| {
+                let number = z
+                    .iter()
+                    .all(u8::is_ascii_digit)
+                    .then(|| std::str::from_utf8(z).ok()?.parse().ok())
+                    .flatten();
+                number.or_else(|| curl_os::net::interface_index(z).map(NonZeroU32::get))
+            })
             .unwrap_or(0);
         Peer {
             scheme,
@@ -402,6 +411,23 @@ impl Peer {
             zone,
             scope,
         }
+    }
+
+    /// A peer in the IPv6 scope `scope`, which takes the place of any
+    /// zone the URL names (`CURLOPT_ADDRESS_SCOPE`, `Curl_peer_from_url`).
+    pub(crate) fn scoped(scheme: Scheme, host: Vec<u8>, port: u16, scope: NonZeroU32) -> Peer {
+        Peer {
+            scheme,
+            host,
+            port,
+            zone: None,
+            scope: scope.get(),
+        }
+    }
+
+    /// The IPv6 scope a connection to the peer is made in, if it has one.
+    pub(crate) fn scope(&self) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.scope)
     }
 
     pub(crate) fn try_clone(&self) -> Result<Peer, OutOfMemory> {
@@ -416,6 +442,14 @@ impl Peer {
             zone: self.zone.as_deref().map(copy).transpose()?,
             scope: self.scope,
         })
+    }
+
+    /// The same peer at port `port`: a connect-to entry that names only
+    /// a port keeps the origin's zone and scope (`Curl_peer_from_connect_to`).
+    pub(crate) fn at_port(&self, port: u16) -> Result<Peer, OutOfMemory> {
+        let mut peer = self.try_clone()?;
+        peer.port = port;
+        Ok(peer)
     }
 
     pub(crate) fn scheme(&self) -> Scheme {
@@ -445,6 +479,7 @@ impl Peer {
     }
 
     /// The IPv6 zone, as given.
+    #[cfg(test)]
     pub(crate) fn zone(&self) -> Option<&[u8]> {
         self.zone.as_deref()
     }
@@ -645,7 +680,8 @@ mod tests {
     }
 
     /// Peers are the same as `Curl_peer_equal` finds them: the host in
-    /// any case, the port, the scheme, and the zone by number or name.
+    /// any case, the port, the scheme, and the zone by its scope, a
+    /// number or an interface's index, or else by name.
     #[test]
     fn peers_compare_as_c_compares_them() {
         assert_eq!(
@@ -669,9 +705,22 @@ mod tests {
         let v6 = |zone| peer(b"[fe80::1]", 80, zone);
         assert_eq!(v6(Some(b"2")), v6(Some(b"02")), "one scope by number");
         assert_ne!(v6(Some(b"2")), v6(Some(b"3")));
-        assert_eq!(v6(Some(b"eth0")), v6(Some(b"eth0")));
-        assert_ne!(v6(Some(b"eth0")), v6(Some(b"eth1")), "unnumbered: by name");
-        assert_ne!(v6(Some(b"eth0")), v6(None));
+        assert_eq!(v6(Some(b"nosuch0")), v6(Some(b"nosuch0")));
+        assert_ne!(
+            v6(Some(b"nosuch0")),
+            v6(Some(b"nosuch1")),
+            "no index: by name"
+        );
+        assert_ne!(v6(Some(b"nosuch0")), v6(None));
+        // A name is its interface's index, the same scope as the number.
+        let lo = curl_os::net::interface_index(b"lo").expect("Linux has a loopback");
+        let index = lo.to_string();
+        assert_eq!(v6(Some(b"lo")), v6(Some(index.as_bytes())));
+        assert_eq!(v6(Some(b"lo")).scope(), Some(lo));
+        assert_eq!(v6(Some(b"nosuch0")).scope(), None);
+        // The application's scope, in place of a zone, is a number's.
+        let scoped = Peer::scoped(HTTP, b"[fe80::1]".to_vec(), 80, lo);
+        assert_eq!(scoped, v6(Some(b"lo")));
         assert_eq!(v6(None).name(), b"fe80::1");
         assert_eq!(v6(None).shown(), b"[fe80::1]");
         assert!(v6(None).ipv6() && !peer(b"fe80", 80, None).ipv6());
@@ -686,8 +735,10 @@ mod tests {
         let v6 = |zone| peer(b"[fe80::1]", 80, zone);
         assert!(same(&v6(Some(b"2")), &v6(Some(b"02"))));
         assert!(!same(&v6(Some(b"2")), &v6(Some(b"3"))));
-        assert!(same(&v6(Some(b"eth0")), &v6(Some(b"eth0"))));
-        assert!(!same(&v6(Some(b"eth0")), &v6(Some(b"eth1"))));
+        assert!(same(&v6(Some(b"nosuch0")), &v6(Some(b"nosuch0"))));
+        assert!(!same(&v6(Some(b"nosuch0")), &v6(Some(b"nosuch1"))));
+        let lo = curl_os::net::interface_index(b"lo").expect("Linux has a loopback");
+        assert!(same(&v6(Some(b"lo")), &v6(Some(lo.to_string().as_bytes()))));
         assert!(same(
             &peer(b"P.example", 80, None),
             &peer(b"p.example", 80, None)

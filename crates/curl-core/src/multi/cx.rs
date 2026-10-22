@@ -214,6 +214,10 @@ impl Net for CloseLater<'_> {
     fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
         self.net.resolve(name, family)
     }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.net.link_local_scope()
+    }
 }
 
 /// The multi's network as its pool uses it: a socket a transfer waits on
@@ -248,6 +252,10 @@ impl<H: Host> Net for Announcing<'_, H> {
 
     fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
         self.net.resolve(name, family)
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.net.link_local_scope()
     }
 }
 

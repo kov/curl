@@ -6,6 +6,7 @@
 
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
@@ -921,6 +922,7 @@ fn connecting<H: Host>(
     }
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
+    let scope = cx.easy().options().address_scope;
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.lease.answer().is_some();
@@ -930,6 +932,7 @@ fn connecting<H: Host>(
         wildcard,
         max_age,
         delay,
+        scope,
     };
     let connected = c.lease.connect(&mut net, now, setup);
     if answered && c.lease.answer().is_none() {
@@ -961,15 +964,11 @@ fn connecting<H: Host>(
             trace_failure(cx, failure);
             (TransferState::Connecting(c), Wake::Again)
         }
-        Ok(Connected::Connecting(Progress::Trying(to))) => {
-            match to {
-                SocketAddr::V4(_) => trace::info(cx, format_args!("  Trying {to}...")),
-                // No address carries a zone yet, which C would show as
-                // `scope_id=N` after the port.
-                SocketAddr::V6(v6) => {
-                    trace::info(cx, format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
-                }
-            }
+        Ok(Connected::Connecting(Progress::Trying {
+            remote,
+            scope_found,
+        })) => {
+            trace_trying(cx, remote, scope_found);
             (TransferState::Connecting(c), Wake::Again)
         }
         Ok(Connected::Connecting(Progress::Dialed)) => dialed(c, cx),
@@ -1152,11 +1151,30 @@ impl std::fmt::Display for Via<'_> {
 /// How an attempt failed, as C traces it.
 fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
     match failure {
-        Failure::Immediate { remote, error } => {
+        Failure::Immediate {
+            remote,
+            scope_found,
+            error,
+        } => {
+            // The socket was opened, and traced, before its connect failed;
+            // it never got a local address (`cf_tcp_connect`).
+            trace_trying(cx, remote, scope_found);
             let why = OsError(&error);
             trace::info(
                 cx,
                 format_args!("Immediate connect fail for {}: {why}", remote.ip()),
+            );
+            let unbound = match remote {
+                SocketAddr::V4(_) => IpAddr::from(std::net::Ipv4Addr::UNSPECIFIED),
+                SocketAddr::V6(_) => IpAddr::from(std::net::Ipv6Addr::UNSPECIFIED),
+            };
+            trace::info(
+                cx,
+                format_args!(
+                    "connect to {} port {} from {unbound} port 0 failed: {why}",
+                    remote.ip(),
+                    remote.port()
+                ),
             );
         }
         Failure::Attempt {
@@ -1175,6 +1193,34 @@ fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
                     remote.port()
                 ),
             );
+        }
+    }
+}
+
+/// An attempt to `remote` starts (`cf_socket_open`): after the scope it
+/// took from a local interface, if it did, and with the scope it has.
+fn trace_trying<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    remote: SocketAddr,
+    scope_found: Option<NonZeroU32>,
+) {
+    if let Some(scope) = scope_found {
+        trace::info(
+            cx,
+            format_args!("determined scope_id={scope} for link-local address from local interface"),
+        );
+    }
+    match remote {
+        SocketAddr::V4(_) => trace::info(cx, format_args!("  Trying {remote}...")),
+        SocketAddr::V6(v6) if v6.scope_id() != 0 => {
+            let (ip, port, scope) = (v6.ip(), v6.port(), v6.scope_id());
+            trace::info(
+                cx,
+                format_args!("  Trying [{ip}]:{port} scope_id={scope}..."),
+            );
+        }
+        SocketAddr::V6(v6) => {
+            trace::info(cx, format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
         }
     }
 }
@@ -1872,7 +1918,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         let kind = trace::fail_with(cx, kind, &[b"Too long hostname (maximum is 65535)"]);
         return TransferState::Init.fail(kind);
     }
-    let target = proto.network(&url);
+    let target = proto.network(&url, cx.easy().options().address_scope);
     let target = match target {
         Ok(Some(target)) => target,
         Ok(None) => {

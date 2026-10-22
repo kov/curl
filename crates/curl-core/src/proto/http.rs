@@ -356,7 +356,8 @@ impl Request {
             Err(UrlErrorKind::NoQuery) => {}
             Err(e) => return Err(url_error(e)),
         }
-        let peer = Peer::new(super::HTTP, host, port, super::zone(url)?);
+        let scope = cx.easy().options().address_scope;
+        let peer = super::url_peer(super::HTTP, host, port, url, scope)?;
         let gate = match inherited.first.as_deref() {
             None => CredentialGate::FIRST,
             Some(first) => {

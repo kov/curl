@@ -13,6 +13,8 @@ pub(crate) mod http1;
 #[cfg(any(test, feature = "test-util"))]
 mod script;
 
+use std::num::NonZeroU32;
+
 use curl_alloc::TryArc;
 
 use crate::conn::io::Events;
@@ -25,13 +27,25 @@ use crate::multi::state::{AfterRequest, StepCx};
 use crate::options::{Method, Options};
 use crate::url::{GetOptions, Part, Url};
 
-/// The URL's IPv6 zone, if it has one.
-pub(super) fn zone(url: &Url) -> Result<Option<Vec<u8>>, ErrorKind> {
-    match url.get(Part::ZoneId, GetOptions::NONE) {
-        Ok(zone) => Ok(Some(zone)),
-        Err(UrlErrorKind::NoZoneid) => Ok(None),
-        Err(e) => Err(crate::multi::state::url_error(e)),
+/// The peer `url` names, at `host` and `port`: in the IPv6 scope
+/// `scope` if the application sets one (`CURLOPT_ADDRESS_SCOPE`), the
+/// URL's zone then not read, or else in the zone's (`Curl_peer_from_url`).
+pub(super) fn url_peer(
+    scheme: Scheme,
+    host: Vec<u8>,
+    port: u16,
+    url: &Url,
+    scope: Option<NonZeroU32>,
+) -> Result<Peer, ErrorKind> {
+    if let Some(scope) = scope {
+        return Ok(Peer::scoped(scheme, host, port, scope));
     }
+    let zone = match url.get(Part::ZoneId, GetOptions::NONE) {
+        Ok(zone) => Some(zone),
+        Err(UrlErrorKind::NoZoneid) => None,
+        Err(e) => return Err(crate::multi::state::url_error(e)),
+    };
+    Ok(Peer::new(scheme, host, port, zone))
 }
 
 /// What a transfer's request takes from the ones before it.
@@ -137,12 +151,16 @@ impl ProtoState {
 
     /// The peer the request connects to, or none for a protocol that
     /// does its own I/O (C's `PROTOPT_NONETWORK`).
-    pub(crate) fn network(&self, url: &Url) -> Result<Option<Peer>, ErrorKind> {
+    pub(crate) fn network(
+        &self,
+        url: &Url,
+        scope: Option<NonZeroU32>,
+    ) -> Result<Option<Peer>, ErrorKind> {
         match *self {
             ProtoState::File(_) => Ok(None),
             ProtoState::Http(ref r) => {
                 let (host, port) = r.origin()?;
-                Ok(Some(Peer::new(HTTP, host, port, zone(url)?)))
+                Ok(Some(url_peer(HTTP, host, port, url, scope)?))
             }
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
@@ -159,7 +177,7 @@ impl ProtoState {
                     name: "tcp",
                     reuse: true,
                 };
-                Ok(Some(Peer::new(scheme, host, port, zone(url)?)))
+                Ok(Some(url_peer(scheme, host, port, url, scope)?))
             }
         }
     }
@@ -418,7 +436,7 @@ mod tests {
                 ..ParseOptions::NONE
             };
             let url = Url::parse(url, opts).unwrap();
-            let peer = ProtoState::Tcp.network(&url).unwrap().unwrap();
+            let peer = ProtoState::Tcp.network(&url, None).unwrap().unwrap();
             peer.zone().map(<[u8]>::to_vec)
         };
         assert_eq!(

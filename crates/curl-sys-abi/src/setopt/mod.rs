@@ -517,6 +517,12 @@ fn apply(
                 _ => return Err(Refused::Bad),
             }
         }
+        (ffi::CURLOPT_ADDRESS_SCOPE, Long(n)) => {
+            // Read as an `unsigned long`: past `UINT_MAX` refused, a
+            // negative among them; 0 none.
+            let n = u32::try_from(n as core::ffi::c_ulong).map_err(|_| Refused::Bad)?;
+            options.address_scope = NonZeroU32::new(n);
+        }
         (ffi::CURLOPT_CONNECTTIMEOUT_MS, Long(n)) => options.limits.connect = time_limit(n, 1)?,
         (ffi::CURLOPT_TIMECONDITION, Long(n)) => {
             if !(ffi::CURL_TIMECOND_NONE..ffi::CURL_TIMECOND_LAST.0.into()).contains(&n) {

@@ -29,6 +29,7 @@ fn connect(
         wildcard: false,
         max_age: Some(Duration::from_secs(60)),
         delay: Duration::from_millis(200),
+        scope: None,
     };
     lease.connect(net, now, setup)
 }
@@ -358,7 +359,9 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     resolved(&mut lease, &mut net, now);
     let tried = connect(&mut lease, &mut net, now).unwrap();
     let to = SocketAddr::from(([127, 0, 0, 1], 1));
-    assert!(matches!(tried, Connected::Connecting(Progress::Trying(a)) if a == to));
+    assert!(
+        matches!(tried, Connected::Connecting(Progress::Trying { remote, .. }) if remote == to)
+    );
     assert_eq!(socket(&lease), Some(1000), "the attempt's");
     assert!(pool.get_conn(id).is_none(), "leased");
     let up = connect(&mut lease, &mut net, now).unwrap();

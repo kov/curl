@@ -897,7 +897,12 @@ with a zero timeout right after its connect starts, so an answer already there i
 same pass. A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
 connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
 reports it ("Host H:P was resolved.", then each family's addresses), read back from the
-machine through the pool, and NAMELOOKUP is marked when it resolves.
+machine through the pool, and NAMELOOKUP is marked when it resolves. An IPv6 attempt's address
+carries C's `conn->scope_id`: `CURLOPT_ADDRESS_SCOPE`, else the destination peer's scope, else,
+for a link-local address, the first non-loopback interface's with a link-local address
+(`Net::link_local_scope`, cf-socket.c's `get_scope_id`), which `Progress::Trying` carries for
+its trace; an attempt that fails at once is traced as tried first, as C opens and traces the
+socket before its connect.
 
 - Each stage owns what the previous stage produced: `Resolving` yields `DnsAnswer`, which
   builds `Eyeballs`; the winning `Attempt`'s `Transport` builds the next stage; each handshake
@@ -1011,13 +1016,15 @@ pub struct Route {
 
 Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip, proxy }`. `Peer` is C's
 `struct Curl_peer`: the `Scheme` (the protocol's name and whether it keeps connections,
-`PROTOPT_CONN_REUSE`), the host as the URL names it, the port and the IPv6 zone, made once per
+`PROTOPT_CONN_REUSE`), the host as the URL names it, the port, the IPv6 zone and its scope (a
+numeric zone as it is, a name as its interface's index by `if_nametoindex`, one naming no
+interface none; `CURLOPT_ADDRESS_SCOPE` replaces the zone on the URL's peer), made once per
 leg and shared by the transfer, as its origin, and the connection it sets up. `via` is the
 peer a connect-to entry names in the origin's place (C's `via_peer`, `conn/connect_to.rs`),
 none when it names the origin itself; the setup resolves and connects to `via` if there is
 one, and the traces name it where C's do. Matching is `Route::serves`: the same origin by
-`Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its number
-when it is one), the same `via` or none on both, and the same `IpVersion` unless the
+`Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its scope,
+or by its text when it has none), the same `via` or none on both, and the same `IpVersion` unless the
 transfer takes any (`url_match_conn`, `url_match_destination`). It, `ProxyRoute`'s key and
 `Peer`'s `Eq` destructure every field without `..`, so a field added later does not compile until
 it is compared; the exceptions are named where they are made (the transfer's `IpVersion::Any`;

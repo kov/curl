@@ -889,7 +889,7 @@ impl Request {
                 .upload
                 .as_ref()
                 .and_then(Upload::size)
-                .is_some_and(|n| n > 0);
+                .is_some_and(|n| n != 0);
             let said = if sized {
                 "We are completely uploaded and fine"
             } else {

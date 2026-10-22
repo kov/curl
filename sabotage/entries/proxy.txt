@@ -119,3 +119,13 @@ witness: curl-sys-abi handle_tests::proxy_credentials_are_decoded_as_in_c
                     login.user.as_deref().map(decoded).transpose()?,
 --- new
                     login.user.as_deref().map(|u| Ok(u.to_vec())).transpose()?,
+
+=== the application's Proxy-Authorization replaces the proxy's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_custom_proxy_authorization_goes_beside_the_proxy_s
+--- old
+            proxy_secret,
+            false,
+--- new
+            proxy_secret,
+            http.headers.replaces(b"Proxy-Authorization"),

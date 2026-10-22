@@ -2730,6 +2730,29 @@ fn a_proxy_is_answered_with_its_own_credentials() {
     );
 }
 
+/// The application's own `Proxy-Authorization` is one of its headers, not
+/// of the proxy's, and goes beside the one made for the proxy, as C sends
+/// both.
+#[test]
+fn a_custom_proxy_authorization_goes_beside_the_proxy_s() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.user = Some(b"u".to_vec());
+        o.proxy.password = Some(b"p".to_vec());
+        o.proxy.auth = crate::options::HttpAuth(AuthMethods::BASIC);
+        o.http.headers = UserHeaders::new([&b"Proxy-Authorization: Mine"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(
+        text.contains("\r\nProxy-Authorization: Basic dTpw\r\n"),
+        "{text}"
+    );
+    assert!(text.contains("\r\nProxy-Authorization: Mine\r\n"), "{text}");
+}
+
 /// Through a proxy, the origin's Digest challenge is kept for the origin,
 /// not for the proxy the connection goes to, and answered.
 #[test]

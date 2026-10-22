@@ -489,10 +489,12 @@ impl Request {
             uri: &self.target,
             get_or_head,
         };
-        let custom = http.headers.replaces(b"Proxy-Authorization");
+        // The application's proxy headers, which would replace it, are
+        // none: its own headers are kept apart from them, and go beside
+        // (`Curl_checkProxyheaders`, with `sep_headers`).
         let proxy_auth = made(auth_state.side(Side::Proxy).output(
             proxy_secret,
-            custom,
+            false,
             &request,
             random,
         ))?;

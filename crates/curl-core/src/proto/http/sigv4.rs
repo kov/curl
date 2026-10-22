@@ -314,7 +314,7 @@ fn date_key(provider1: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
 /// (`get_timestamp`).
 fn timestamp(now: i64) -> Result<Vec<u8>, SignError> {
     #[cfg(feature = "debug-hooks")]
-    let now = if std::env::var_os("CURL_FORCETIME").is_some() {
+    let now = if curl_os::env::is_set(b"CURL_FORCETIME") {
         0
     } else {
         now

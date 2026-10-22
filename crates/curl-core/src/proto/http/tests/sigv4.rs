@@ -10,7 +10,7 @@ const OK: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
 
 fn signing(params: &'static [u8]) -> impl FnOnce(&mut Options) {
     move |o: &mut Options| {
-        o.login = crate::options::Login::from_pair(b"u:p").unwrap();
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.aws_sigv4 = Some(params.to_vec());
         o.http.auth = crate::options::HttpAuth(AuthMethods::AWS_SIGV4);
     }
@@ -80,7 +80,7 @@ fn an_own_authorization_is_not_signed() {
 fn nothing_is_signed_without_credentials() {
     let ran = run("/", OK, false, |o| {
         signing(b"aws:amz:r1:s1")(o);
-        o.login = crate::options::Login::default();
+        o.login = Default::default();
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.request, request_of("/"));

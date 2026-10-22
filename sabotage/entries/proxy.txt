@@ -312,3 +312,39 @@ witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_repla
         if self.unified_headers {
 --- new
         if false {
+
+=== a new connection sends no PROXY line
+file: crates/curl-core/src/multi/state/haproxy.rs
+witness: curl-core proto::http::tests::a_new_connection_sends_the_proxy_protocol_s_line_first
+--- old
+    if !proxy.haproxy {
+--- new
+    if proxy.haproxy {
+
+=== the PROXY line's family ignores the address given
+file: crates/curl-core/src/multi/state/haproxy.rs
+witness: curl-core proto::http::tests::the_proxy_protocol_s_line_says_the_address_given
+--- old
+            (ip, ip, !v4)
+--- new
+            (ip, ip, false)
+
+=== the PROXY line's family is not the socket's
+file: crates/curl-core/src/multi/state/haproxy.rs
+witness: curl-core proto::http::tests::a_new_connection_sends_the_proxy_protocol_s_line_first
+--- old
+            (&src[..s], &dst[..d], remote.is_ipv6())
+--- new
+            (&src[..s], &dst[..d], !remote.is_ipv6())
+
+=== the PROXY line's ports are swapped
+file: crates/curl-core/src/multi/state/haproxy.rs
+witness: curl-core proto::http::tests::a_new_connection_sends_the_proxy_protocol_s_line_first
+--- old
+        lport,
+        b" ",
+        rport,
+--- new
+        rport,
+        b" ",
+        lport,

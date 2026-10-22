@@ -178,6 +178,10 @@ pub(crate) struct Operation<'a> {
     pub(crate) noproxy: Option<&'a [u8]>,
     /// `--proxytunnel`.
     pub(crate) proxytunnel: bool,
+    /// `--haproxy-protocol`.
+    pub(crate) haproxy_protocol: bool,
+    /// `--haproxy-clientip`.
+    pub(crate) haproxy_clientip: Option<&'a [u8]>,
     /// `--suppress-connect-headers`.
     pub(crate) suppress_connect_headers: bool,
     /// `--path-as-is`.
@@ -746,6 +750,14 @@ pub(crate) fn apply<'a>(
         }
         Opt::Noproxy => line.current().noproxy = Some(value.text()),
         Opt::Proxytunnel => line.current().proxytunnel = value.toggle(),
+        Opt::HaproxyProtocol => line.current().haproxy_protocol = value.toggle(),
+        Opt::HaproxyClientip => {
+            let ip = value.text();
+            if ip.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().haproxy_clientip = Some(ip);
+        }
         Opt::SuppressConnectHeaders => line.current().suppress_connect_headers = value.toggle(),
         Opt::PathAsIs => line.current().path_as_is = value.toggle(),
         Opt::ProxyUser => line.current().proxy_user = Some(value.text()),
@@ -1074,8 +1086,6 @@ pub(crate) fn apply<'a>(
         | Opt::FtpSslControl
         | Opt::FtpSslReqd
         | Opt::Get
-        | Opt::HaproxyClientip
-        | Opt::HaproxyProtocol
         | Opt::Hostpubmd5
         | Opt::Hostpubsha256
         | Opt::Hsts

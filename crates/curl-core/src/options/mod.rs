@@ -120,6 +120,12 @@ pub struct Proxy {
     /// The proxy is sent the application's headers for the origin in
     /// their place (`CURLHEADER_UNIFIED` in `CURLOPT_HEADEROPT`).
     pub unified_headers: bool,
+    /// A new connection says first where it comes from, in the PROXY
+    /// protocol's line (`CURLOPT_HAPROXYPROTOCOL`).
+    pub haproxy: bool,
+    /// The address it says, as source and destination both, in place of
+    /// the connection's (`CURLOPT_HAPROXY_CLIENT_IP`).
+    pub haproxy_client_ip: Option<Vec<u8>>,
 }
 
 /// The methods a SOCKS5 proxy may authenticate with
@@ -166,6 +172,8 @@ impl Proxy {
             socks5_auth: self.socks5_auth,
             headers: self.headers.try_clone()?,
             unified_headers: self.unified_headers,
+            haproxy: self.haproxy,
+            haproxy_client_ip: self.haproxy_client_ip.as_deref().map(copy).transpose()?,
         })
     }
 

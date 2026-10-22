@@ -136,8 +136,9 @@ curl-core/src/
   multi/
     mod.rs                   Multi<H>, Host, Slot, the public API
     state.rs                 Run, TransferState and its variant structs, StepCx, the steps;
-                             state/tunnel.rs, state/socks.rs: the CONNECT and SOCKS
-                             handshakes a transfer makes
+                             state/tunnel.rs, state/socks.rs, state/haproxy.rs: the
+                             CONNECT and SOCKS handshakes and the PROXY line a transfer
+                             makes
     sched.rs                 RowSet (the dirty set), Counts, Tally
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
     sockets.rs               SocketTable, pollset diff, announce
@@ -870,6 +871,10 @@ machine through the pool, and NAMELOOKUP is marked when it resolves.
   the same cache, and the `Dialed` stage carries the answer. A failure is `ErrorKind::Proxy` with
   the `ProxyError` kept for `CURLINFO_PROXY_ERROR`; a SOCKS5 proxy that authenticated the user
   marks the `Conn`, which alone serves a transfer insisting on it (`CURLAUTH_ONLY`).
+- A new connection, once up whichever way, sends the PROXY protocol's line first if the transfer
+  asks (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the socket to the first
+  hop, before it is traced as established. A reused one sends none, and reuse does not ask, as in
+  C.
 - A proxy that closes the connection on its 407 starts the setup over from resolving
   (`Pool::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
   the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.

@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
 
-use curl_alloc::{OutOfMemory, TryRc, TryVec};
+use curl_alloc::{OutOfMemory, TryRc, TryVec, try_box};
 
 use crate::conn::io::{Events, ResolveFailure};
 use crate::conn::proxy::{self, Refused};
@@ -23,6 +23,7 @@ use crate::options::{Follow, Lines, Method, Options, ResolveList};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
 
+mod haproxy;
 mod socks;
 mod tunnel;
 use crate::proto::http1::follow;
@@ -153,6 +154,8 @@ enum Handshake {
     Socks(socks::Socks),
     /// An HTTP proxy's tunnel, with `CONNECT`.
     Connect(tunnel::Tunnel),
+    /// The PROXY protocol's line, once the connection is up.
+    Haproxy(haproxy::Preface),
 }
 
 impl Handshake {
@@ -161,6 +164,7 @@ impl Handshake {
         match self {
             Handshake::Socks(s) => s.interest(),
             Handshake::Connect(t) => t.interest(),
+            Handshake::Haproxy(p) => p.interest(),
         }
     }
 }
@@ -880,7 +884,7 @@ fn connecting<H: Host>(
                 kind,
                 format_args!("Proxy CONNECT aborted due to timeout"),
             ),
-            Some(Handshake::Socks(_)) | None => trace::fail(
+            Some(Handshake::Socks(_) | Handshake::Haproxy(_)) | None => trace::fail(
                 cx,
                 kind,
                 format_args!("Connection timed out after {ms} milliseconds"),
@@ -894,6 +898,7 @@ fn connecting<H: Host>(
     match c.handshake.as_deref() {
         Some(Handshake::Socks(_)) => return socks::step(c, cx),
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
+        Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
         None => {}
     }
     let delay = cx.easy().options().limits.eyeballs.0;
@@ -979,10 +984,38 @@ fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wak
     }
 }
 
-/// The connection is up, from `local` to `remote`, connected at `at`
-/// (`conn_connect_trace`): timed and traced, and counted unless through
-/// a tunnel, whose connections were counted as each was made.
+/// A new connection is up, from `local` to `remote`, connected at `at`:
+/// counted unless through a proxy's handshake, whose connections were
+/// counted as each was made, then its PROXY line sent if the transfer
+/// asks for one.
 fn established<H: Host>(
+    mut c: Connecting,
+    cx: &mut StepCx<'_, H>,
+    remote: SocketAddr,
+    local: Option<SocketAddr>,
+    at: Instant,
+) -> (TransferState, Wake) {
+    if c.handshake.is_none() {
+        cx.report_mut().count_connect();
+    }
+    match haproxy::wanted(cx, remote, local, at) {
+        Ok(None) => up(c, cx, remote, local, at),
+        Ok(Some(preface)) => match try_box(Handshake::Haproxy(preface)) {
+            Ok(h) => {
+                c.handshake = Some(h);
+                (TransferState::Connecting(c), Wake::Again)
+            }
+            Err(_) => (
+                TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
+                Wake::Again,
+            ),
+        },
+        Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
+    }
+}
+
+/// The connection is set up (`conn_connect_trace`): timed and traced.
+fn up<H: Host>(
     c: Connecting,
     cx: &mut StepCx<'_, H>,
     remote: SocketAddr,
@@ -990,9 +1023,6 @@ fn established<H: Host>(
     at: Instant,
 ) -> (TransferState, Wake) {
     cx.report_mut().timings_mut().mark(Timer::Connect, at);
-    if c.handshake.is_none() {
-        cx.report_mut().count_connect();
-    }
     cx.report_mut().set_primary(Ends { remote, local });
     // `CURL_CONN_HOST_DISPNAME`.
     let host = Bytes(c.destination().shown());

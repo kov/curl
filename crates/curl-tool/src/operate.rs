@@ -1060,6 +1060,9 @@ fn configure(
     o.proxy.no_proxy = op.noproxy.map(copy).transpose()?;
     o.proxy.tunnel = op.proxytunnel;
     o.proxy.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
+    // As C's library takes them: an address turns the protocol on.
+    o.proxy.haproxy = op.haproxy_protocol || op.haproxy_clientip.is_some();
+    o.proxy.haproxy_client_ip = op.haproxy_clientip.map(copy).transpose()?;
     // The debug test build suppresses them on request as well, as C's
     // library does.
     o.proxy.suppress_connect_headers = op.suppress_connect_headers

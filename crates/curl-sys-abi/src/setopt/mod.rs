@@ -565,6 +565,13 @@ fn apply(
             };
         }
         (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => options.proxy.tunnel = n != 0,
+        (ffi::CURLOPT_HAPROXYPROTOCOL, Long(n)) => options.proxy.haproxy = n != 0,
+        (ffi::CURLOPT_HAPROXY_CLIENT_IP, Ptr(p)) => {
+            // SAFETY: as above.
+            options.proxy.haproxy_client_ip = unsafe { owned(p) }?;
+            // Setting one turns the protocol on, clearing it off.
+            options.proxy.haproxy = options.proxy.haproxy_client_ip.is_some();
+        }
         (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, Long(n)) => {
             options.proxy.suppress_connect_headers = n != 0;
         }

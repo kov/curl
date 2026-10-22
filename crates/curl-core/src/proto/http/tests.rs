@@ -2927,6 +2927,86 @@ fn an_unauthenticated_socks5_connection_serves_no_transfer_insisting() {
     assert_eq!(ran.easy.report().connects(), 0, "reused");
 }
 
+/// The first line of `bytes`, and what follows it.
+fn first_line(bytes: &[u8]) -> (String, &[u8]) {
+    let end = bytes.windows(2).position(|w| w == b"\r\n").expect("a line") + 2;
+    (
+        String::from_utf8_lossy(&bytes[..end]).into_owned(),
+        &bytes[end..],
+    )
+}
+
+/// A new connection says where it comes from before its first request,
+/// with the socket's addresses and ports (test 1455); one reused does
+/// not again, and the connection is counted once.
+#[test]
+fn a_new_connection_sends_the_proxy_protocol_s_line_first() {
+    let (mut m, talk, _) = server(&[OK, OK], false);
+    let haproxy = |o: &mut Options| o.proxy.haproxy = true;
+    let ran = get(&mut m, "/a", talk.clone(), haproxy);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().connects(), 1);
+    let (line, rest) = first_line(&ran.request);
+    let words: Vec<&str> = line.trim_end().split(' ').collect();
+    assert_eq!(
+        words[..4],
+        ["PROXY", "TCP4", "127.0.0.1", "127.0.0.1"],
+        "{line}"
+    );
+    assert!(words[4].parse::<u16>().is_ok());
+    assert_eq!(words[5], PORT.to_string());
+    assert_eq!(rest, request_of("/a"));
+    assert!(
+        !ran.seen.of("out").concat().starts_with(b"PROXY"),
+        "not traced as sent"
+    );
+    let ran = get_with(&mut m, ran.easy, "/b", talk.clone(), haproxy);
+    assert_eq!(ran.easy.report().connects(), 0, "reused");
+    let mut want = request_of("/a");
+    want.extend_from_slice(&request_of("/b"));
+    assert_eq!(first_line(&ran.request).1, want, "no line again");
+}
+
+/// An address the application gives is said as both ends, its family
+/// IPv6 unless it is an IPv4 address (test 3220); the ports stay the
+/// socket's.
+#[test]
+fn the_proxy_protocol_s_line_says_the_address_given() {
+    for (ip, family) in [("2a04:4e42::347", "TCP6"), ("192.168.1.1", "TCP4")] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get(&mut m, "/", talk, |o| {
+            o.proxy.haproxy = true;
+            o.proxy.haproxy_client_ip = Some(ip.as_bytes().to_vec());
+        });
+        let (line, _) = first_line(&ran.request);
+        let want = format!("PROXY {family} {ip} {ip} ");
+        assert!(line.starts_with(&want), "{line}");
+        assert!(line.ends_with(&format!(" {PORT}\r\n")), "{line}");
+    }
+}
+
+/// Through a tunnel, the line goes once it is up, ahead of the origin's
+/// request, with the addresses of the socket to the proxy (test 3028).
+#[test]
+fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
+    let (mut m, talk, _) = server(&[TUNNEL_UP, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.tunnel = true;
+        o.proxy.haproxy = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let connect = connect_of("");
+    assert!(ran.request.starts_with(connect.as_bytes()));
+    let (line, rest) = first_line(&ran.request[connect.len()..]);
+    assert!(
+        line.starts_with("PROXY TCP4 127.0.0.1 127.0.0.1 "),
+        "{line}"
+    );
+    assert!(rest.starts_with(b"GET /a HTTP/1.1\r\n"));
+}
+
 /// A tunnel's `CONNECT`, as test 1287's proxy sees it: the origin's
 /// authority, and only what the proxy is given.
 fn connect_of(proxy_authorization: &str) -> String {

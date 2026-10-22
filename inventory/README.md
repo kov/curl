@@ -44,6 +44,13 @@ Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.
 | `baseline` | Measured, not derived: what the C reference build in `build/c` does on the test suite, per test (ok, failed, or skipped with its reason) for both `runtests.pl` and pytest, with the build flags, `curl -V` and the built library's exported symbols. |
 | `perf` | Measured, not derived: a release build of the reference configuration in `build/c-release`, timed with the `tests/perf` benchmarks and the local parts of `tests/http/scorecard.py`. Medians and interquartile ranges, with the machine it ran on. |
 
+## References
+
+`references/` holds real applications of libcurl, copied unchanged with their licences and
+never built: evidence of what applications rely on, to check before choosing to differ from C.
+`references/webkit-curl/` is WebKit's curl network backend; its README records the commit it
+came from and what it relies on.
+
 ## Reading the data
 
 - **Layouts are per target.** `abi.json` records the `target` it was probed on. Struct layouts

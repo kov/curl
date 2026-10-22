@@ -408,7 +408,9 @@ cargo-mutants run on the milestone's diff.
     second request, FAILONERROR's 401 exception, `CURLINFO_HTTPAUTH_AVAIL` and `_USED`; Basic,
     Bearer and Digest (`--digest`; MD5, SHA-256 and SHA-512/256) with its body-less probe. T1
     tests 1876 and 1877 pass; the 44 Digest tests pass on both legs, though `runtests.pl` skips
-    them on the Rust leg, which claims no NTLM, Kerberos or SPNEGO and so no `crypto`.
+    them on the Rust leg, which claims no NTLM, Kerberos or SPNEGO and so no `crypto`. They
+    are run with the gate forced open by `inventory/measure/gated.py`, a regression net kept
+    out of the score; delete it when the Rust build claims one of the three.
     Waiting: the tool's password prompt for `-u` without one; 407, with the proxies (step 31);
     `http_perhapsrewind`'s early close of a large body, and its "Need to rewind" line on an
     auth reload, with step 34.
@@ -432,7 +434,8 @@ cargo-mutants run on the milestone's diff.
     peer, answering the proxy's 407 on the same connection or a new one, with
     `CURLINFO_HTTP_CONNECTCODE`, `%{http_connect}`, `CURLOPT_SUPPRESS_CONNECT_HEADERS` and
     `--suppress-connect-headers`. 118 of the 158 proxy tests the Rust leg runs pass. Next:
-    SOCKS, then the proxy headers (`CURLOPT_PROXYHEADER`, `CURLOPT_HEADEROPT`) and the PROXY
+    the proxy Digest tests behind the `crypto` gate, 1001 (no request sent) and 1616 (a
+    tunneled origin's 407 sets the proxy's Digest state); SOCKS, then the proxy headers (`CURLOPT_PROXYHEADER`, `CURLOPT_HEADEROPT`) and the PROXY
     protocol.
 32. **http: decompress.** **To do.** Opening commit: the pause gate holding encoded bytes, as
     C's does, and an empty decoder slot, pinned to change no trace or piece size. Then a

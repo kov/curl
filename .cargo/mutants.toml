@@ -247,4 +247,6 @@ exclude_re = [
     # A format never holds a zero: an argument cannot, and a file's is
     # read without them.
     'curl-tool/src/write_out\.rs:.*: delete match arm 0 in separator$',
+    # The ball's tick is only ever read modulo 200.
+    'curl-tool/src/bar\.rs:.*: replace % with \+ in State::fly$',
 ]

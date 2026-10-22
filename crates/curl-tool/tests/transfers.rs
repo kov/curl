@@ -653,7 +653,8 @@ fn draws_a_progress_bar() {
     assert_eq!(bar("500"), line(393));
     let r = curl_env(&s, &["-#", &s.url("missing")], &[("COLUMNS", "30")]);
     assert_eq!(r.code, 37);
-    assert!(r.stderr.starts_with("curl: (37) "), "{:?}", r.stderr);
+    let want = format!("curl: (37) Could not open file {}\n", s.path("missing"));
+    assert_eq!(r.stderr, want);
 }
 
 /// A configuration file's argument that starts with a single quote, or

@@ -13,9 +13,11 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 use crate::cookie::{Jar, Source, Suffixes};
 use crate::easy::Easy;
 use crate::error::ErrorKind;
+use crate::handler::Handler;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::proto::http1::request::{SameOrigin, UserHeaders};
+use crate::share::{Kind, ShareLock};
 use crate::trace;
 
 /// The longest `Cookie:` line a request sends (`MAX_COOKIE_HEADER_LEN`).
@@ -80,29 +82,18 @@ pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     if easy.options().http.cookies.wanted() {
         easy.enable_cookies();
     }
-    // A file named has turned the jar on.
-    let mut texts = Vec::new();
-    let named = easy.options().http.cookies.files.iter().next().is_some();
-    let read = match named {
-        true => read_files(cx, &mut texts).map(Some),
-        false => Ok(None),
+    // Files named are read as one use of the share's cookies, told
+    // around the whole walk, warnings and all, as C locks them once
+    // around it.
+    let told = match easy.options().http.cookies.files.iter().next() {
+        Some(_) => tell_jar_used(easy),
+        None => None,
     };
-    // Those read before one failed are kept, and the jar not started.
-    if !texts.is_empty() || matches!(read, Ok(Some(()))) {
-        let new_session = cx.easy().options().http.cookies.new_session;
-        let now = cx.unix_time();
-        let easy = cx.easy_mut();
-        let suffixes = easy.public_suffixes().map_err(oom)?;
-        let list = suffixes.as_ref().map(Suffixes::list);
-        let mut set = easy.set_cookies;
-        let loaded = jar_section(easy, |jar| {
-            texts
-                .iter()
-                .try_for_each(|text| jar.load(text, new_session, false, list, now, &mut set))
-        });
-        easy.set_cookies = set;
-        loaded.expect("on, checked above").map_err(oom)?;
+    let read = read_files(cx);
+    if let Some(watch) = told {
+        watch.unlock(Kind::Cookies);
     }
+    // One that could not be read leaves the jar not started.
     read?;
     // Started, a use of the share's cookies whether or not the handle's
     // jar is on.
@@ -113,27 +104,19 @@ pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     Ok(())
 }
 
-/// Run `f` on the jar the handle uses, if its jar is on: its share's, if
-/// that keeps the cookies, as one use of it, else its own.
-fn jar_section<R>(easy: &mut Easy, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
-    easy.cookies.as_ref()?;
-    match easy.with_shared_jar(f) {
-        Ok(r) => r,
-        Err(f) => easy.cookies.as_mut().map(f),
-    }
-}
-
-/// Read the cookie files the options name onto `texts`, tracing those
-/// that cannot be. They are taken by their place in the list, which stays
-/// in the options while a file is traced: the debug handler may add one,
-/// and C, walking the list it appends to, reads that one too.
-fn read_files<H: Host>(cx: &mut StepCx<'_, H>, texts: &mut Vec<Vec<u8>>) -> Result<(), ErrorKind> {
+/// Read the cookie files the options name into the jar, each as it is
+/// reached and what its lines say traced before the next is opened;
+/// those that cannot be opened are warned of. They are taken by their
+/// place in the list, which stays in the options while a file is traced:
+/// the debug handler may add one, and C, walking the list it appends to,
+/// reads that one too. One that cannot be read stops the walk.
+fn read_files<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     let mut at = 0;
     loop {
-        let said = {
+        let opened = {
             let files = &cx.easy().options().http.cookies.files;
             let Some(name) = files.iter().nth(at) else {
-                break;
+                return Ok(());
             };
             at += 1;
             // An empty name reads nothing, and turns the jar on all the
@@ -142,23 +125,70 @@ fn read_files<H: Host>(cx: &mut StepCx<'_, H>, texts: &mut Vec<Vec<u8>>) -> Resu
                 continue;
             }
             match open(name)? {
-                Opened::File(mut file) => {
-                    texts.try_push(read_all(&mut file)?).map_err(oom)?;
-                    continue;
-                }
-                Opened::Missing => {
-                    trace::line_with(&[b"WARNING: failed to open cookie file \"", name, b"\""])
-                }
-                Opened::Directory => trace::line_with(&[
+                Opened::File(mut file) => Ok(read_all(&mut file)?),
+                Opened::Missing => Err(trace::line_with(&[
+                    b"WARNING: failed to open cookie file \"",
+                    name,
+                    b"\"",
+                ])),
+                Opened::Directory => Err(trace::line_with(&[
                     b"WARNING: cookie filename points to a directory: \"",
                     name,
                     b"\"",
-                ]),
+                ])),
             }
         };
-        trace::info_line(cx, &said);
+        match opened {
+            Ok(text) => load_text(cx, &text)?,
+            Err(said) => trace::info_line(cx, &said),
+        }
     }
-    Ok(())
+}
+
+/// Read a cookie file's `text` into the jar, counted with the request's
+/// cookies, and trace what its lines say (`cookie_load`). The share's jar
+/// is used untold: the walk of the files is told.
+fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKind> {
+    let new_session = cx.easy().options().http.cookies.new_session;
+    let now = cx.unix_time();
+    let mut held = Held::new(cx);
+    let easy = cx.easy_mut();
+    let suffixes = easy.public_suffixes().map_err(oom)?;
+    let list = suffixes.as_ref().map(Suffixes::list);
+    let mut set = easy.set_cookies;
+    let read = |jar: &mut Jar| {
+        jar.load(text, new_session, false, list, now, &mut set, |said| {
+            said.lines(|parts| held.hold(parts));
+        })
+    };
+    let loaded = match easy.share().filter(|s| s.keeps(Kind::Cookies)) {
+        Some(share) => share.cookies().as_mut().map(read),
+        None => easy.cookies.as_mut().map(read),
+    };
+    easy.set_cookies = set;
+    held.trace(cx)?;
+    // The jar is off only if the debug handler turned it off while an
+    // earlier file was traced: there is nothing to read into.
+    loaded.unwrap_or(Ok(())).map_err(oom)
+}
+
+/// Tell the application its share's cookies are in use, if the share
+/// keeps them: what is to be told when the use ends.
+fn tell_jar_used(easy: &Easy) -> Option<Handler<dyn ShareLock>> {
+    easy.share().filter(|s| s.keeps(Kind::Cookies))?;
+    let watch = easy.share_watch.clone()?;
+    watch.lock(Kind::Cookies);
+    Some(watch)
+}
+
+/// Run `f` on the jar the handle uses, if its jar is on: its share's, if
+/// that keeps the cookies, as one use of it, else its own.
+fn jar_section<R>(easy: &mut Easy, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
+    easy.cookies.as_ref()?;
+    match easy.with_shared_jar(f) {
+        Ok(r) => r,
+        Err(f) => easy.cookies.as_mut().map(f),
+    }
 }
 
 /// Trace lines said while the jar was in use, traced once it is not; held
@@ -401,7 +431,8 @@ mod tests {
     /// whether the line is full, and what was said.
     fn cookie_line(file: &[u8]) -> (String, bool, Vec<String>) {
         let mut jar = Jar::default();
-        jar.load(file, false, false, None, 0, &mut 0).unwrap();
+        jar.load(file, false, false, None, 0, &mut 0, |_| {})
+            .unwrap();
         let site = Site {
             host: b"example.com",
             path: b"/",

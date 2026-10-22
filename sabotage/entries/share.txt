@@ -61,9 +61,9 @@ witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_the
 file: crates/curl-core/src/proto/http/cookies.rs
 witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_them
 --- old
-    if !texts.is_empty() || matches!(read, Ok(Some(()))) {
+    let told = match easy.options().http.cookies.files.iter().next() {
 --- new
-    if !texts.is_empty() {
+    let told = match easy.options().http.cookies.files.iter().nth(1) {
 
 === a held share takes options
 file: crates/curl-sys-abi/src/share.rs

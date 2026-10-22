@@ -413,6 +413,8 @@ impl Jar {
     /// suffixes, as on a reload the application asks for. The jar is
     /// swept after, and then started. `set` counts the `Set-Cookie:`
     /// lines stored since the request started, the file's with them.
+    /// `said` hears what each line says, in turn.
+    #[expect(clippy::too_many_arguments, reason = "`Curl_cookie_add`'s own")]
     pub(crate) fn load(
         &mut self,
         text: &[u8],
@@ -421,6 +423,7 @@ impl Jar {
         suffixes: Option<&dyn PublicSuffixes>,
         now: i64,
         set: &mut u8,
+        mut said: impl FnMut(&Said<'_>),
     ) -> Result<(), OutOfMemory> {
         self.new_session = new_session;
         self.running = false;
@@ -429,7 +432,9 @@ impl Jar {
                 Some(rest) => Line::Header(trim_start(rest)),
                 None => Line::Netscape(line),
             };
-            self.add(line, Source::File { trusted }, suffixes, now, set)?;
+            if let Some(told) = self.add(line, Source::File { trusted }, suffixes, now, set)? {
+                said(&told);
+            }
         }
         self.sweep(now);
         self.running = true;

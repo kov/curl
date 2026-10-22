@@ -1151,7 +1151,9 @@ holds them as a watch with its share (`Easy::set_share_watched`, a `ShareLock`),
 called outside the share's own mutex, so they can neither guard nor break it. Some of C's
 lock points do nothing here and are told all the same: a transfer joining its multi, a setup
 letting go of its answer (`Curl_dns_entry_unlink`), the jar's start and a flush with no file.
-The share's cleanup tells CONNECT around closing its connections with no handle, where C gives
+The cookie files a transfer starts with are told as one use around the whole walk, warnings
+and what each file's lines say traced inside it, as C locks once around it; each file is read
+under the mutex in a section of its own. The share's cleanup tells CONNECT around closing its connections with no handle, where C gives
 its internal one. A share's idle connections close when its last clone drops.
 
 ### 4.7 No admin easy

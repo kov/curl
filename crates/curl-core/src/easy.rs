@@ -288,9 +288,9 @@ impl Easy {
         let mut set = self.set_cookies;
         let loaded = self
             .with_jar(true, |jar| {
-                texts
-                    .iter()
-                    .try_for_each(|text| jar.load(text, new_session, true, list, now, &mut set))
+                texts.iter().try_for_each(|text| {
+                    jar.load(text, new_session, true, list, now, &mut set, |_| {})
+                })
             })
             .expect("made if missing")
             .map_err(oom);

@@ -168,6 +168,16 @@ witness: curl-core proto::http::tests::cookies_are_counted_with_the_request_s_as
 file: crates/curl-core/src/proto/http/cookies.rs
 witness: curl-core proto::http::tests::cookies_are_counted_with_the_request_s_as_c_counts_them
 --- old
-        let mut set = easy.set_cookies;
+    let mut set = easy.set_cookies;
 --- new
-        let mut set = 0;
+    let mut set = 0;
+
+=== a cookie file's lines say nothing as it is read
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::cookie_files_are_read_in_turn_with_their_lines_traced
+--- old
+            said.lines(|parts| held.hold(parts));
+        })
+--- new
+            let _ = said;
+        })

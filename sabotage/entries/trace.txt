@@ -78,11 +78,13 @@ witness: curl-core proto::http::tests::a_custom_method_set_while_a_redirect_is_t
 file: crates/curl-core/src/proto/http/cookies.rs
 witness: curl-core proto::http::tests::a_cookie_file_named_while_one_is_warned_of_is_read
 --- old
-        trace::info_line(cx, &said);
+            Err(said) => trace::info_line(cx, &said),
 --- new
-        let files = std::mem::take(&mut cx.easy_mut().options_mut().http.cookies.files);
-        trace::info_line(cx, &said);
-        cx.easy_mut().options_mut().http.cookies.files = files;
+            Err(said) => {
+                let files = std::mem::take(&mut cx.easy_mut().options_mut().http.cookies.files);
+                trace::info_line(cx, &said);
+                cx.easy_mut().options_mut().http.cookies.files = files;
+            }
 
 === the resolve list read is written back over what the debug handler set
 file: crates/curl-core/src/multi/state.rs

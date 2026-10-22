@@ -3122,6 +3122,46 @@ fn cookie_files_are_read_as_a_transfer_starts() {
     }
 }
 
+/// Each cookie file is read into the jar as it is reached: what its
+/// lines say is traced before the next file is opened, between the
+/// warnings of those that cannot be, as C's `cookie_load` traces them.
+#[test]
+fn cookie_files_are_read_in_turn_with_their_lines_traced() {
+    let dir = std::env::temp_dir().join(format!("curl-cookie-turn-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let first = dir.join("first");
+    std::fs::write(
+        &first,
+        b"Set-Cookie: =\n127.0.0.1\tFALSE\t/\tFALSE\t0\tok\t1\n",
+    )
+    .unwrap();
+    let second = dir.join("second");
+    std::fs::write(&second, b"Set-Cookie: two=2\nSet-Cookie: c\x01=1\n").unwrap();
+    let missing = dir.join("missing");
+    let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
+    let ran = run("/", OK, false, |o| {
+        for p in [&first, &missing, &second] {
+            o.http.cookies.files.push(&name(p)).unwrap();
+        }
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text().concat();
+    let said: Vec<&str> = text.lines().filter(|l| l.contains("cookie")).collect();
+    let warning = format!(
+        "WARNING: failed to open cookie file \"{}\"",
+        missing.display()
+    );
+    assert_eq!(
+        said,
+        [
+            "invalid cookie, dropped",
+            &warning,
+            "invalid octets in name, cookie dropped"
+        ]
+    );
+}
+
 /// A cookie file the debug handler names while a missing one is warned
 /// of is read for the same transfer, as C walks the list it appends to.
 #[test]

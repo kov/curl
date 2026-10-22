@@ -4,17 +4,16 @@
 #![allow(unsafe_code)]
 
 use core::ffi::{c_char, c_int, c_long, c_void};
-use std::cell::RefCell;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use curl_core::conn::ProxyError;
 use curl_core::options::AuthMethods;
 use curl_core::report::{ResponseVersion, TransferReport};
 use curl_core::version::Protocol;
 
-use crate::easy::{self, EasyRef, ShimEasy};
+use crate::easy::{self, EasyRef, ShimEasy, StringInfos};
 use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_OK, CURLE_RECURSIVE_API_CALL,
     CURLE_UNKNOWN_OPTION, CURLINFO, CURLcode, curl_off_t,
@@ -122,9 +121,18 @@ fn c_string(text: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     Ok(copy)
 }
 
-/// `text` as C reads it, kept in `kept` with a zero byte after it.
-fn kept(kept: &RefCell<Vec<u8>>, text: &[u8]) -> Result<*const c_char, OutOfMemory> {
-    let mut kept = kept.borrow_mut();
+/// `text` as C reads it, kept in the handle's string infos where `which`
+/// says, with a zero byte after it; the infos are made the first time.
+fn kept(
+    easy: &ShimEasy,
+    which: fn(&mut StringInfos) -> &mut Vec<u8>,
+    text: &[u8],
+) -> Result<*const c_char, OutOfMemory> {
+    let mut infos = easy.string_infos.borrow_mut();
+    if infos.is_none() {
+        *infos = Some(try_box(StringInfos::default())?);
+    }
+    let kept = which(infos.as_deref_mut().expect("made above"));
     if kept.strip_suffix(b"\0") != Some(text) {
         *kept = c_string(text)?;
     }
@@ -153,11 +161,13 @@ fn string(p: Result<*const c_char, OutOfMemory>) -> Value {
 fn effective_method(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
     let custom = easy.with_options(|o| {
         let custom = o.http.custom_method.as_deref();
-        custom.map(|c| string(kept(&easy.method, c)))
+        custom.map(|c| string(kept(easy, |i| &mut i.method, c)))
     })?;
     match custom {
         Some(v) => Ok(Some(v)),
-        None => easy.with_report(|r| Some(string(kept(&easy.method, r.method().name())))),
+        None => {
+            easy.with_report(|r| Some(string(kept(easy, |i| &mut i.method, r.method().name()))))
+        }
     }
 }
 
@@ -197,34 +207,38 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
     Some(match info {
         ffi::CURLINFO_PRIVATE => Value::Ptr(easy.set.get().private),
         // Empty before any transfer.
-        ffi::CURLINFO_EFFECTIVE_URL => {
-            string(kept(&easy.effective_url, r.url().unwrap_or_default()))
-        }
+        ffi::CURLINFO_EFFECTIVE_URL => string(kept(
+            easy,
+            |i| &mut i.effective_url,
+            r.url().unwrap_or_default(),
+        )),
         // None when no response gave one.
         ffi::CURLINFO_CONTENT_TYPE => match r.content_type() {
-            Some(media) => string(kept(&easy.content_type, media)),
+            Some(media) => string(kept(easy, |i| &mut i.content_type, media)),
             None => Value::Ptr(core::ptr::null_mut()),
         },
         // None when no request sent one.
         ffi::CURLINFO_REFERER => match r.referer() {
-            Some(referer) => string(kept(&easy.referer, referer)),
+            Some(referer) => string(kept(easy, |i| &mut i.referer, referer)),
             None => Value::Ptr(core::ptr::null_mut()),
         },
         // None when no response pointed elsewhere, or one was followed.
         ffi::CURLINFO_REDIRECT_URL => match r.redirect_url() {
-            Some(url) => string(kept(&easy.redirect_url, url)),
+            Some(url) => string(kept(easy, |i| &mut i.redirect_url, url)),
             None => Value::Ptr(core::ptr::null_mut()),
         },
         // Empty, and ports of -1, before any connection.
         ffi::CURLINFO_PRIMARY_IP => match r.primary() {
-            Some(ends) => {
-                string(ip_text(ends.remote.ip()).and_then(|t| kept(&easy.primary_ip, &t)))
-            }
-            None => string(kept(&easy.primary_ip, b"")),
+            Some(ends) => string(
+                ip_text(ends.remote.ip()).and_then(|t| kept(easy, |i| &mut i.primary_ip, &t)),
+            ),
+            None => string(kept(easy, |i| &mut i.primary_ip, b"")),
         },
         ffi::CURLINFO_LOCAL_IP => match r.primary().and_then(|ends| ends.local) {
-            Some(local) => string(ip_text(local.ip()).and_then(|t| kept(&easy.local_ip, &t))),
-            None => string(kept(&easy.local_ip, b"")),
+            Some(local) => {
+                string(ip_text(local.ip()).and_then(|t| kept(easy, |i| &mut i.local_ip, &t)))
+            }
+            None => string(kept(easy, |i| &mut i.local_ip, b"")),
         },
         ffi::CURLINFO_PRIMARY_PORT => Value::Long(
             r.primary()

@@ -55,18 +55,25 @@ pub(crate) struct ShimEasy {
     private: Cell<Option<NonNull<ShimMulti>>>,
     /// What `curl_multi_info_read` points to.
     pub(crate) msg: UnsafeCell<ffi::CURLMsg>,
-    /// What the string infos point to, each ended by a zero byte:
-    /// replaced only by a different text, so a pointer handed out lives
-    /// until a later transfer's differs, or the handle goes.
-    pub(crate) effective_url: RefCell<Vec<u8>>,
-    pub(crate) content_type: RefCell<Vec<u8>>,
-    pub(crate) redirect_url: RefCell<Vec<u8>>,
-    pub(crate) method: RefCell<Vec<u8>>,
-    pub(crate) referer: RefCell<Vec<u8>>,
-    pub(crate) primary_ip: RefCell<Vec<u8>>,
-    pub(crate) local_ip: RefCell<Vec<u8>>,
+    /// What the string infos point to, made the first time one is asked
+    /// for, which few applications do; kept until the handle goes.
+    pub(crate) string_infos: RefCell<Option<Box<StringInfos>>>,
     /// What `curl_easy_header` and `curl_easy_nextheader` hand out.
     pub(crate) headers_out: [crate::headers::HeaderOut; 2],
+}
+
+/// What the string infos point to, each ended by a zero byte: replaced
+/// only by a different text, so a pointer handed out lives until a later
+/// transfer's differs, or the handle goes.
+#[derive(Default)]
+pub(crate) struct StringInfos {
+    pub(crate) effective_url: Vec<u8>,
+    pub(crate) content_type: Vec<u8>,
+    pub(crate) redirect_url: Vec<u8>,
+    pub(crate) method: Vec<u8>,
+    pub(crate) referer: Vec<u8>,
+    pub(crate) primary_ip: Vec<u8>,
+    pub(crate) local_ip: Vec<u8>,
 }
 
 /// Where the handle's transfer is.
@@ -126,13 +133,7 @@ impl ShimEasy {
             private: Cell::new(None),
             // SAFETY: a `CURLMsg` of zeroes is its empty value.
             msg: UnsafeCell::new(unsafe { core::mem::zeroed() }),
-            effective_url: RefCell::new(Vec::new()),
-            content_type: RefCell::new(Vec::new()),
-            redirect_url: RefCell::new(Vec::new()),
-            method: RefCell::new(Vec::new()),
-            referer: RefCell::new(Vec::new()),
-            primary_ip: RefCell::new(Vec::new()),
-            local_ip: RefCell::new(Vec::new()),
+            string_infos: RefCell::new(None),
             headers_out: crate::headers::slots(),
         }
     }

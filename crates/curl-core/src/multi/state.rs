@@ -632,7 +632,11 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             (next, Wake::Again)
         }
         TransferState::Pending(plan) => pending(run, plan, cx),
-        TransferState::Setup(plan) => {
+        TransferState::Setup(mut plan) => {
+            // The rest of the plan is kept, but C makes its connection
+            // anew as a waiting transfer looks again, reading the IP
+            // version then (`allocate_conn`, `url_match_conn`).
+            plan.route.ip = cx.easy().options().ip_version;
             let now = cx.rest.now;
             let next = match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
                 TimeLeft::Expired(_) => {

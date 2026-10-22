@@ -379,3 +379,10 @@ witness: curl-core conn::tests::routes_compare_every_field
                 **origin == **want_origin
 --- new
                 **origin == **origin
+
+=== a waiting transfer keeps the IP version it started with
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_waiting_transfer_reads_its_ip_version_as_it_looks_again
+--- old
+            plan.route.ip = cx.easy().options().ip_version;
+--- new

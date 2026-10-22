@@ -2216,6 +2216,44 @@ fn a_transfer_waits_for_room_under_the_host_limit() {
     );
 }
 
+/// A waiting transfer reads its IP version as it looks again: changed to
+/// IPv4 while it waits, it no longer takes the connection made for any
+/// family and makes its own, as the C build does (`allocate_conn` reads
+/// `set.ipver` for each look, `url_match_conn` compares it).
+#[test]
+fn a_waiting_transfer_reads_its_ip_version_as_it_looks_again() {
+    let (mut m, clock) = networked();
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    let (a, _) = traced("tcp://127.0.0.1:4/");
+    let (b, b_lines) = traced("tcp://127.0.0.1:4/");
+    let a = m.add(a, (), &mut NoEvents).unwrap();
+    let b = m.add(b, (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        trace_of(&b_lines),
+        ["No more connections allowed to host\n"]
+    );
+    m.easy_mut(b).unwrap().options_mut().ip_version = IpVersion::V4;
+    clock.advance(Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    let b_lines = trace_of(&b_lines);
+    assert!(
+        !b_lines.iter().any(|l| l.starts_with("Reusing")),
+        "{b_lines:?}"
+    );
+    assert_eq!(
+        b_lines.last().unwrap(),
+        "Connection #1 to host 127.0.0.1:4 left intact\n"
+    );
+    assert_eq!(
+        messages(&mut m),
+        [(a.index(), Ok(()), 1), (b.index(), Ok(()), 0)]
+    );
+    assert_eq!(m.easy(b).unwrap().report().connects(), 1);
+}
+
 /// A waiting transfer that finds room lets the next one waiting look
 /// too, while it is still connecting, and one that finds none lets no
 /// one (`multistate_connect`'s `multi_schedule_pending`).

@@ -425,7 +425,8 @@ pub(crate) enum Message { Unread, Read }
 
 `Pending` and `Setup` hold what the setup made before it looked for a connection, so that only
 the search is made again: the route, built once per leg, which `Connecting` keeps and reads its
-destination and target from. Planned for milestone 2, with the leg loop: the `Plan` grown into
+destination and target from. Its IP version alone is read again as a waiting transfer looks
+again, as C, which makes its connection anew then, reads `set.ipver`. Planned for milestone 2, with the leg loop: the `Plan` grown into
 `Plan { target, leg }`, carried by every state from `Connecting` to `Exchanging`, a throttle
 instant in `Exchanging` (C's
 RATELIMITING), and `AfterRequest::Follow(FollowKind, Target)`, which the protocol's `done`

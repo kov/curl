@@ -1,9 +1,7 @@
 //! `ipfs://` and `ipns://` URLs, rewritten to an HTTP gateway's
 //! (`src/tool_ipfs.c`).
 
-use std::ffi::OsStr;
-use std::io::Read as _;
-use std::os::unix::ffi::OsStrExt as _;
+use core::ffi::CStr;
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 use curl_core::error::{ErrorKind, UrlErrorKind};
@@ -187,27 +185,41 @@ fn found_gateway() -> Result<Option<Vec<u8>>, OutOfMemory> {
     if file.last() != Some(&b'/') {
         file.try_push(b'/')?;
     }
-    file.try_extend_from_slice(b"gateway")?;
-    let Ok(opened) = std::fs::File::open(OsStr::from_bytes(&file)) else {
+    file.try_extend_from_slice(b"gateway\0")?;
+    let Ok(path) = CStr::from_bytes_with_nul(&file) else {
+        return Ok(None);
+    };
+    let Ok(opened) = curl_os::fs::open_read(path) else {
         return Ok(None);
     };
     first_line(opened)
 }
 
 /// The first line `from` reads, to a line feed, a carriage return or
-/// the end; none if empty, or longer than C's buffer holds.
-fn first_line(from: impl std::io::Read) -> Result<Option<Vec<u8>>, OutOfMemory> {
+/// the end; none if empty, or longer than C's buffer holds. It is read
+/// through a buffer on the stack, as C's `getc` reads through stdio's:
+/// the line is the one allocation.
+fn first_line(mut from: impl std::io::Read) -> Result<Option<Vec<u8>>, OutOfMemory> {
     let mut line = Vec::new();
-    for byte in std::io::BufReader::new(from).bytes() {
-        // A read that fails ends the line, as C's `getc` does.
-        let Ok(byte) = byte else { break };
-        if byte == b'\n' || byte == b'\r' {
-            break;
-        }
-        if line.len() + 1 >= MAX_GATEWAY_LEN {
+    let mut chunk = [0u8; 256];
+    loop {
+        let read = match from.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            // A read that fails ends the line, as C's `getc` does.
+            Err(_) => break,
+        };
+        let got = &chunk[..read];
+        let end = got.iter().position(|&b| b == b'\n' || b == b'\r');
+        let part = &got[..end.unwrap_or(read)];
+        if line.len() + part.len() >= MAX_GATEWAY_LEN {
             return Ok(None);
         }
-        line.try_push(byte)?;
+        line.try_extend_from_slice(part)?;
+        if end.is_some() {
+            break;
+        }
     }
     Ok((!line.is_empty()).then_some(line))
 }
@@ -279,5 +291,16 @@ mod tests {
         assert_eq!(line(b"\nhttp://b"), None);
         assert_eq!(line(&[b'a'; 9_999]).map(|l| l.len()), Some(9_999));
         assert_eq!(line(&[b'a'; 10_000]), None);
+    }
+
+    /// Reading the gateway file allocates the line and nothing else, as
+    /// C's `getc` loop allocates only its dynbuf: an allocation the tool
+    /// could not refuse would abort the torture run (test 724).
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn reads_the_gateway_file_allocating_only_the_line() {
+        let (line, cost) = curl_alloc::track::measure(|| first_line(&b"http://a\nrest"[..]));
+        assert_eq!(line.unwrap(), Some(b"http://a".to_vec()));
+        assert_eq!(cost.allocations, 1, "more than the line allocated");
     }
 }

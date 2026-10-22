@@ -917,9 +917,20 @@ witness: curl-tool ipfs::tests::rewrites_as_c_does
 file: crates/curl-tool/src/ipfs.rs
 witness: curl-tool ipfs::tests::reads_the_first_line_of_the_gateway_file
 --- old
-        if line.len() + 1 >= MAX_GATEWAY_LEN {
+        if line.len() + part.len() >= MAX_GATEWAY_LEN {
 --- new
-        if line.len() + 1 > MAX_GATEWAY_LEN {
+        if line.len() + part.len() > MAX_GATEWAY_LEN {
+
+=== the gateway file is read through a buffer the tool cannot refuse
+file: crates/curl-tool/src/ipfs.rs
+witness: curl-tool ipfs::tests::reads_the_gateway_file_allocating_only_the_line
+features: debug-hooks
+--- old
+    let mut chunk = [0u8; 256];
+--- new
+    let mut chunk = [0u8; 256];
+    use std::io::Read as _;
+    let mut from = std::io::BufReader::new(from);
 
 === an IPFS URL is given HTTP's options
 file: crates/curl-tool/src/operate.rs

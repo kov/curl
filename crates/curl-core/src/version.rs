@@ -130,9 +130,7 @@ impl fmt::Display for Components<'_> {
         // The debug test build says what `CURL_DEBUG_VERSION` says, as
         // much of it as C's buffer of 300 holds.
         #[cfg(feature = "debug-hooks")]
-        if let Some(given) = std::env::var_os("CURL_DEBUG_VERSION") {
-            let given = given.as_encoded_bytes();
-            let given = &given[..given.len().min(299)];
+        if let Some(given) = curl_os::env::var_into(b"CURL_DEBUG_VERSION", &mut [0u8; 299]) {
             return f.write_str(&String::from_utf8_lossy(given));
         }
         write!(f, "libcurl/{}", self.0.version)

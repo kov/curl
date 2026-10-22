@@ -169,22 +169,21 @@ pub(crate) fn rewrite(url: &mut Url, kind: Kind, given: Option<&[u8]>) -> Result
 /// else in `~/.ipfs`; none if that line is empty, too long or the file
 /// is not there.
 fn found_gateway() -> Result<Option<Vec<u8>>, OutOfMemory> {
-    if let Some(gateway) = std::env::var_os("IPFS_GATEWAY") {
-        let mut copy = Vec::new();
-        copy.try_extend_from_slice(gateway.as_bytes())?;
-        return Ok(Some(copy));
+    if let Some(gateway) = curl_os::env::var(b"IPFS_GATEWAY")? {
+        return Ok(Some(gateway));
     }
     // An empty one is as none (`curl_getenv`).
-    let set = |name| std::env::var_os(name).filter(|v| !v.is_empty());
-    let mut file = Vec::new();
-    match (set("IPFS_PATH"), set("HOME")) {
-        (Some(path), _) => file.try_extend_from_slice(path.as_bytes())?,
-        (None, Some(home)) => {
-            file.try_extend_from_slice(home.as_bytes())?;
-            file.try_extend_from_slice(b"/.ipfs/")?;
-        }
-        (None, None) => return Ok(None),
-    }
+    let set = |name| Ok::<_, OutOfMemory>(curl_os::env::var(name)?.filter(|v| !v.is_empty()));
+    let mut file = match set(b"IPFS_PATH")? {
+        Some(path) => path,
+        None => match set(b"HOME")? {
+            Some(mut home) => {
+                home.try_extend_from_slice(b"/.ipfs/")?;
+                home
+            }
+            None => return Ok(None),
+        },
+    };
     if file.last() != Some(&b'/') {
         file.try_push(b'/')?;
     }

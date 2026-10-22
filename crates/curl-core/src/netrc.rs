@@ -56,19 +56,31 @@ pub(crate) struct Found {
 }
 
 /// Where the file is when the application names none: `$NETRC`, else
-/// `.netrc` in `$HOME`, else in the user's home directory.
+/// `.netrc` in `$HOME`, else in the user's home directory; a variable set
+/// empty is as unset (`curl_getenv`).
 pub(crate) fn default_path() -> Result<Option<Vec<u8>>, OutOfMemory> {
-    if let Some(path) = std::env::var_os("NETRC") {
-        return Ok(Some(path.into_vec()));
+    path_from(curl_os::env::var, || {
+        Ok(curl_os::users::home_directory()?.map(OsString::into_vec))
+    })
+}
+
+/// [`default_path`], from the environment `var` reads and the user's
+/// home directory `home` finds.
+fn path_from(
+    var: impl Fn(&[u8]) -> Result<Option<Vec<u8>>, OutOfMemory>,
+    home: impl FnOnce() -> Result<Option<Vec<u8>>, OutOfMemory>,
+) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    let set = |name| Ok::<_, OutOfMemory>(var(name)?.filter(|v| !v.is_empty()));
+    if let Some(path) = set(b"NETRC")? {
+        return Ok(Some(path));
     }
-    let home = match std::env::var_os("HOME") {
+    let mut path = match set(b"HOME")? {
         Some(home) => home,
-        None => match curl_os::users::home_directory()? {
+        None => match home()? {
             Some(home) => home,
             None => return Ok(None),
         },
     };
-    let mut path = OsString::into_vec(home);
     path.try_extend_from_slice(b"/.netrc")?;
     Ok(Some(path))
 }
@@ -620,19 +632,32 @@ mod tests {
         assert_eq!(read_kept(&mut failing), Err(NetrcError::Syntax));
     }
 
-    /// `$NETRC`, else `.netrc` in `$HOME`.
+    /// `$NETRC`, else `.netrc` in `$HOME`, else in the user's home
+    /// directory; one set empty is as unset, as `curl_getenv` returns
+    /// none for it; a refused copy is out of memory.
     #[test]
     fn finds_the_file_as_c() {
-        let path = default_path().unwrap();
-        if let Some(netrc) = std::env::var_os("NETRC") {
-            assert_eq!(path, Some(netrc.into_vec()));
-        } else if let Some(home) = std::env::var_os("HOME") {
-            let mut want = home.into_vec();
-            want.extend_from_slice(b"/.netrc");
-            assert_eq!(path, Some(want));
-        } else {
-            assert!(path.is_none_or(|p| p.ends_with(b"/.netrc")));
-        }
+        type Env<'a> = &'a [(&'a [u8], &'a [u8])];
+        let path = |env: Env<'_>, home: Option<&[u8]>| {
+            path_from(
+                |name| {
+                    Ok(env
+                        .iter()
+                        .find(|(n, _)| *n == name)
+                        .map(|(_, v)| v.to_vec()))
+                },
+                || Ok(home.map(<[u8]>::to_vec)),
+            )
+        };
+        let netrc: Env<'_> = &[(b"NETRC", b"/n/rc"), (b"HOME", b"/h")];
+        assert_eq!(path(netrc, Some(b"/pw")), Ok(Some(b"/n/rc".to_vec())));
+        let home: Env<'_> = &[(b"NETRC", b""), (b"HOME", b"/h")];
+        assert_eq!(path(home, Some(b"/pw")), Ok(Some(b"/h/.netrc".to_vec())));
+        let none: Env<'_> = &[(b"NETRC", b""), (b"HOME", b"")];
+        assert_eq!(path(none, Some(b"/pw")), Ok(Some(b"/pw/.netrc".to_vec())));
+        assert_eq!(path(none, None), Ok(None));
+        let refused = path_from(|_| Err(OutOfMemory), || Ok(None));
+        assert_eq!(refused, Err(OutOfMemory));
     }
 
     const WORDS: &[&[u8]] = &[

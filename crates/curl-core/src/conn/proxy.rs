@@ -154,6 +154,9 @@ fn cidr6(ip: &[u8], net: &[u8], bits: Option<u32>) -> bool {
     rest == 0 || (ip[bytes] ^ net[bytes]) & (0xff << (8 - rest)) == 0
 }
 
+/// What reads an environment variable: its value, if set.
+pub(crate) type Env<'a> = dyn FnMut(&[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> + 'a;
+
 /// An environment variable that names a proxy, and what it says.
 #[derive(Debug)]
 pub(crate) struct Variable {
@@ -175,10 +178,7 @@ impl Variable {
 /// and `ws`, then `all_proxy`; each in lower case, then upper, but for
 /// `http_proxy`, which a CGI program's `Proxy:` header could set as
 /// `HTTP_PROXY`.
-pub(crate) fn detect(
-    scheme: &[u8],
-    env: &mut dyn FnMut(&[u8]) -> Option<Vec<u8>>,
-) -> Option<Variable> {
+pub(crate) fn detect(scheme: &[u8], env: &mut Env<'_>) -> Result<Option<Variable>, OutOfMemory> {
     let http = matches!(scheme, b"http" | b"ws");
     let https = matches!(scheme, b"https" | b"wss");
     let mut found = None;
@@ -189,17 +189,17 @@ pub(crate) fn detect(
         name[..len].copy_from_slice(&scheme[..len]);
         let suffix = &b"_proxy"[..6.min(19 - len)];
         name[len..len + suffix.len()].copy_from_slice(suffix);
-        found = lower_then_upper(name, len + suffix.len(), env);
+        found = lower_then_upper(name, len + suffix.len(), env)?;
     }
     if found.is_none() && https {
-        found = lower_then_upper(named(b"https_proxy"), 11, env);
+        found = lower_then_upper(named(b"https_proxy"), 11, env)?;
     } else if found.is_none() && http {
-        found = looked_up(named(b"http_proxy"), 10, env);
+        found = looked_up(named(b"http_proxy"), 10, env)?;
     }
     if found.is_none() {
-        found = lower_then_upper(named(b"all_proxy"), 9, env);
+        found = lower_then_upper(named(b"all_proxy"), 9, env)?;
     }
-    found
+    Ok(found)
 }
 
 fn named(name: &[u8]) -> [u8; 20] {
@@ -211,23 +211,26 @@ fn named(name: &[u8]) -> [u8; 20] {
 fn looked_up(
     name: [u8; 20],
     len: usize,
-    env: &mut dyn FnMut(&[u8]) -> Option<Vec<u8>>,
-) -> Option<Variable> {
-    let value = env(&name[..len])?;
-    Some(Variable { name, len, value })
+    env: &mut Env<'_>,
+) -> Result<Option<Variable>, OutOfMemory> {
+    let Some(value) = env(&name[..len])? else {
+        return Ok(None);
+    };
+    Ok(Some(Variable { name, len, value }))
 }
 
 /// The variable `name`, or else the one named in upper case.
 fn lower_then_upper(
     name: [u8; 20],
     len: usize,
-    env: &mut dyn FnMut(&[u8]) -> Option<Vec<u8>>,
-) -> Option<Variable> {
-    looked_up(name, len, env).or_else(|| {
-        let mut upper = name;
-        upper.make_ascii_uppercase();
-        looked_up(upper, len, env)
-    })
+    env: &mut Env<'_>,
+) -> Result<Option<Variable>, OutOfMemory> {
+    if let Some(found) = looked_up(name, len, env)? {
+        return Ok(Some(found));
+    }
+    let mut upper = name;
+    upper.make_ascii_uppercase();
+    looked_up(upper, len, env)
 }
 
 /// A proxy, as its URL names it.

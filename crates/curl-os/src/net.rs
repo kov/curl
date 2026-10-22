@@ -244,6 +244,8 @@ impl TcpSocket {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_methods)]
+
     use std::net::{Ipv6Addr, TcpListener};
     use std::os::fd::AsRawFd;
     use std::time::Duration;

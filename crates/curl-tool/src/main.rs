@@ -4,6 +4,8 @@
 // Tests may allocate infallibly; the non-test build is still checked.
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt as _;
 use std::process::ExitCode;
 
 use curl_alloc::OutOfMemory;
@@ -49,15 +51,19 @@ fn memory_tracking_init() {
     track::untracked(|| {
         let _ = std::io::stdout();
     });
-    if let Some(path) = std::env::var_os("CURL_MEMDEBUG") {
+    // Read before tracking starts, so std's infallible copies are not
+    // counted, as C reads them before its memory debugging starts.
+    #[allow(clippy::disallowed_methods)]
+    let (memdebug, memlimit_value) = (
+        std::env::var_os("CURL_MEMDEBUG"),
+        std::env::var_os("CURL_MEMLIMIT"),
+    );
+    if let Some(path) = memdebug {
         // A memdump that cannot be created leaves the test to fail on its
         // absence, as in C.
         let _ = track::start_log(std::path::Path::new(&path));
     }
-    if let Some(limit) = std::env::var_os("CURL_MEMLIMIT")
-        .as_deref()
-        .and_then(memlimit)
-    {
+    if let Some(limit) = memlimit_value.as_deref().and_then(memlimit) {
         track::set_limit(limit);
     }
 }
@@ -82,7 +88,7 @@ fn main() -> ExitCode {
     let mut msgs = Messages::new();
     let curlrc = if config::reads_curlrc(&argv) {
         match config::find_curlrc(
-            |var| std::env::var_os(var),
+            |var| Ok(curl_os::env::var(var.as_bytes())?.map(OsString::from_vec)),
             curl_os::users::home_directory,
             config::readable,
         ) {

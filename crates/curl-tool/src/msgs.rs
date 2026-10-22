@@ -134,11 +134,9 @@ impl Messages {
 /// The terminal's width: `COLUMNS` when it holds a width over 20, else
 /// the terminal's own, else 79 columns (`get_terminal_columns`).
 pub(crate) fn terminal_columns() -> usize {
-    let env = std::env::var_os("COLUMNS");
-    columns(
-        env.as_deref().map(std::ffi::OsStr::as_encoded_bytes),
-        curl_os::terminal::columns,
-    )
+    // A copy refused is as unset, as `curl_getenv`'s is.
+    let env = curl_os::env::var(b"COLUMNS").ok().flatten();
+    columns(env.as_deref(), curl_os::terminal::columns)
 }
 
 /// The width `COLUMNS` holding `env` gives, or else the `terminal`'s.

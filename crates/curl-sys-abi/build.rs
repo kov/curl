@@ -1,6 +1,9 @@
 //! Give the library the soname of the C build it replaces, and build the
 //! C helper that reads `long double` arguments on stable Rust.
 
+// A build script is no library: aborting on a failed allocation is fine.
+#![allow(clippy::disallowed_methods)]
+
 fn main() {
     let soname = if std::env::var_os("CARGO_FEATURE_DEBUG_HOOKS").is_some() {
         "libcurl-d.so.4"

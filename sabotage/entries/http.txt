@@ -1314,3 +1314,11 @@ features: test-util
             uri: &self.target,
 --- new
             uri: http.request_target.as_deref().unwrap_or(&self.target),
+
+=== a NETRC or HOME set empty names the file
+file: crates/curl-core/src/netrc.rs
+witness: curl-core netrc::tests::finds_the_file_as_c
+--- old
+    let set = |name| Ok::<_, OutOfMemory>(var(name)?.filter(|v| !v.is_empty()));
+--- new
+    let set = |name| Ok::<_, OutOfMemory>(var(name)?);

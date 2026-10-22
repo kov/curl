@@ -168,3 +168,13 @@ witness: curl-os random::tests::fills_with_different_bytes
         }
         let end = out.len().min(filled + 32);
         match read(&mut out[filled..end]) {
+
+=== an environment value is copied with an allocation that cannot fail
+file: crates/curl-os/src/env.rs
+witness: curl-os a_refused_copy_is_out_of_memory
+--- old
+                let mut copy = Vec::new();
+                copy.try_extend_from_slice(v)?;
+                Ok(copy)
+--- new
+                Ok(v.to_vec())

@@ -2008,7 +2008,7 @@ fn choose_proxy<H: Host>(
     let text = match given(options.url.as_deref())? {
         Some(text) => Some(text),
         None if pre.is_some() || !detect => None,
-        None => match proxy::detect(scheme, &mut |name| getenv(name)) {
+        None => match proxy::detect(scheme, &mut getenv).map_err(|_| ErrorKind::OutOfMemory)? {
             Some(found) => {
                 let name = found.name();
                 let said: [&[u8]; 5] = [
@@ -2141,7 +2141,7 @@ fn env_named<H: Host>(
     names: &[&[u8]],
 ) -> Result<Option<Vec<u8>>, ErrorKind> {
     for name in names {
-        if let Some(value) = getenv(name) {
+        if let Some(value) = getenv(name).map_err(|_| ErrorKind::OutOfMemory)? {
             trace::info_with(
                 cx,
                 &[b"Uses proxy env variable ", name, b" == '", &value, b"'"],
@@ -2153,11 +2153,10 @@ fn env_named<H: Host>(
 }
 
 /// The environment variable `name`, unless unset or empty
-/// (`curl_getenv`).
-fn getenv(name: &[u8]) -> Option<Vec<u8>> {
-    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
-    let value = std::env::var_os(std::ffi::OsStr::from_bytes(name))?.into_vec();
-    (!value.is_empty()).then_some(value)
+/// (`curl_getenv`); `Err` when its copy cannot be allocated, where C's
+/// reads as unset.
+fn getenv(name: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
+    Ok(curl_os::env::var(name)?.filter(|value| !value.is_empty()))
 }
 
 fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {

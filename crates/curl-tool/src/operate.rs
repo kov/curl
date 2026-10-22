@@ -1212,7 +1212,7 @@ fn configure(
     // library does.
     let suppress_connect_headers = op.suppress_connect_headers
         || (cfg!(feature = "debug-hooks")
-            && std::env::var_os("CURL_DBG_SUPPRESS_CONNECT_HDS").is_some());
+            && curl_os::env::is_set(b"CURL_DBG_SUPPRESS_CONNECT_HDS"));
     // The proxy options are made only where one is given.
     if op.proxy.is_some()
         || op.noproxy.is_some()
@@ -1504,7 +1504,7 @@ fn output_expected(url: &[u8], upload: bool) -> bool {
 /// `CURL_ISATTY` to say it is (`stream_isatty`).
 fn stdout_is_terminal() -> bool {
     #[cfg(feature = "debug-hooks")]
-    if std::env::var_os("CURL_ISATTY").is_some() {
+    if curl_os::env::is_set(b"CURL_ISATTY") {
         return true;
     }
     std::io::stdout().is_terminal()
@@ -1709,8 +1709,8 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
         // The debug test build takes the size from `CURL_UPLOAD_SIZE`,
         // as if the file had grown since (`pre_transfer`).
         #[cfg(feature = "debug-hooks")]
-        if let Some(n) = std::env::var_os("CURL_UPLOAD_SIZE")
-            .as_deref()
+        if let Some(n) = curl_os::env::var_into(b"CURL_UPLOAD_SIZE", &mut [0u8; 32])
+            .map(std::ffi::OsStr::from_bytes)
             .and_then(crate::memlimit)
         {
             size = Some(n);

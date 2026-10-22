@@ -258,8 +258,8 @@ fn open_unclobbered(name: &mut Vec<u8>, tried: &mut Option<Vec<u8>>) -> std::io:
     let mut max = MAX_CLOBBER;
     // The debug test build takes the limit from `CURL_MAX_CLOBBER`.
     #[cfg(feature = "debug-hooks")]
-    if let Some(n) = std::env::var_os("CURL_MAX_CLOBBER")
-        .as_deref()
+    if let Some(n) = curl_os::env::var_into(b"CURL_MAX_CLOBBER", &mut [0u8; 32])
+        .map(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes)
         .and_then(crate::memlimit)
         .filter(|&n| n <= 100_000)
     {
@@ -456,8 +456,7 @@ impl Stream {
                 .note(&[b"Throwing away ", n.as_bytes(), b" bytes"]);
         }
         // The debug test build fails it on request.
-        let fail =
-            cfg!(feature = "debug-hooks") && std::env::var_os("CURL_DBG_TRUNCATE_FAIL").is_some();
+        let fail = cfg!(feature = "debug-hooks") && curl_os::env::is_set(b"CURL_DBG_TRUNCATE_FAIL");
         if fail || file.get_ref().set_len(self.init).is_err() {
             self.msgs.error(&[b"Failed to truncate file"]);
             return false;

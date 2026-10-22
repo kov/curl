@@ -730,8 +730,11 @@ pub mod debug_info {
     /// The variable `name`'s leading digits, if it is set: 0 if it has
     /// none or they overflow (`curlx_str_number`).
     fn number(name: &str) -> Option<u64> {
-        let value = std::env::var_os(name)?;
-        Some(leading_number(value.as_encoded_bytes()))
+        // Read without allocating, as C's `getenv`: past 19 digits a
+        // number overflows, so a value cut at 32 reads the same.
+        let mut buf = [0u8; 32];
+        let value = curl_os::env::var_into(name.as_bytes(), &mut buf)?;
+        Some(leading_number(value))
     }
 
     pub(super) fn leading_number(text: &[u8]) -> u64 {

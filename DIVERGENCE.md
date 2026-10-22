@@ -21,6 +21,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   Pinned by `a_file_that_cannot_be_read_fails`, `a_read_failing_partway_fails` and
   `a_listing_failing_partway_fails` (`crates/curl-core/src/proto/file/tests.rs`).
 
+- **An environment variable whose copy cannot be allocated is out of memory.** The proxy
+  variables (`http_proxy`, `NO_PROXY` and the rest), `NETRC` and `HOME` for the `.netrc` file,
+  and the tool's `CURL_HOME`, `XDG_CONFIG_HOME` and `IPFS_PATH` are copied as they are read; a
+  copy refused fails the transfer or the command with `CURLE_OUT_OF_MEMORY`. C's `curl_getenv` returns NULL then, which reads as unset: a proxy the
+  environment names is passed over and the transfer goes direct. Pinned by
+  `a_refused_copy_is_out_of_memory` (`crates/curl-os/tests/env_oom.rs`) and
+  `finds_the_file_as_c` (`crates/curl-core/src/netrc.rs`).
+
 ## Input C misreads
 
 - **A zero byte in a config file line ends that line, and nothing else.** C's `get_line`

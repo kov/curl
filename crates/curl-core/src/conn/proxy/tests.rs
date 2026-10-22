@@ -175,16 +175,19 @@ fn the_no_proxy_list_names_hosts_as_c() {
     }
 }
 
-fn env_of<'a>(vars: &'a [(&str, &str)]) -> impl FnMut(&[u8]) -> Option<Vec<u8>> + 'a {
+fn env_of<'a>(
+    vars: &'a [(&str, &str)],
+) -> impl FnMut(&[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> + 'a {
     move |name| {
-        vars.iter()
+        Ok(vars
+            .iter()
             .find(|(n, _)| n.as_bytes() == name)
-            .map(|(_, v)| v.as_bytes().to_vec())
+            .map(|(_, v)| v.as_bytes().to_vec()))
     }
 }
 
 fn detected(scheme: &str, vars: &[(&str, &str)]) -> Option<(String, String)> {
-    let found = detect(scheme.as_bytes(), &mut env_of(vars));
+    let found = detect(scheme.as_bytes(), &mut env_of(vars)).unwrap();
     found.map(|v| {
         let name = String::from_utf8(v.name().to_vec()).unwrap();
         (name, String::from_utf8(v.value).unwrap())

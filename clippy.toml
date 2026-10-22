@@ -39,6 +39,9 @@ disallowed-methods = [
     # may read them, or a read could race the wipe.
     { path = "std::env::args", reason = "use curl_os::args::command_line" },
     { path = "std::env::args_os", reason = "use curl_os::args::command_line" },
+    # They copy a value found with an allocation that cannot fail.
+    { path = "std::env::var", reason = "use curl_os::env" },
+    { path = "std::env::var_os", reason = "use curl_os::env" },
 ]
 disallowed-macros = [
     { path = "std::format", reason = "use curl_alloc::try_format" },

@@ -14,9 +14,9 @@ witness: curl-core conn::tests::proxied_routes_match_as_c
 file: crates/curl-core/src/conn/proxy.rs
 witness: curl-core conn::proxy::tests::the_environment_names_proxies_as_c
 --- old
-        found = looked_up(named(b"http_proxy"), 10, env);
+        found = looked_up(named(b"http_proxy"), 10, env)?;
 --- new
-        found = lower_then_upper(named(b"http_proxy"), 10, env);
+        found = lower_then_upper(named(b"http_proxy"), 10, env)?;
 
 === a no-proxy name matches a host it only ends
 file: crates/curl-core/src/conn/proxy.rs

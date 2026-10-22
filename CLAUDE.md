@@ -37,6 +37,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-zstd/src/lib.rs`: zstd's decoder, undoing the `zstd` coding.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place.
+- `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly.
 - `crates/curl-os/src/fs.rs`: opening and closing files, listing directories, reading standard
   input unbuffered, and pointing standard error at a file.
 - `crates/curl-os/src/net.rs`: opening and connecting sockets.

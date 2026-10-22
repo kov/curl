@@ -35,13 +35,13 @@ const PLACES: &[(&str, &str, bool)] = &[
 /// user database names. `env` reads a variable, `home` asks the user
 /// database, `readable` checks a file can be opened.
 pub(crate) fn find_curlrc(
-    env: impl Fn(&str) -> Option<OsString>,
+    env: impl Fn(&str) -> Result<Option<OsString>, OutOfMemory>,
     home: impl FnOnce() -> Result<Option<OsString>, OutOfMemory>,
     readable: impl Fn(&Path) -> bool,
 ) -> Result<Option<PathBuf>, OutOfMemory> {
     let mut without_dot_tried = false;
     for &(var, append, without_dot) in PLACES {
-        let Some(dir) = env(var).filter(|d| !d.is_empty()) else {
+        let Some(dir) = env(var)?.filter(|d| !d.is_empty()) else {
             continue;
         };
         if without_dot {
@@ -295,9 +295,10 @@ mod tests {
 
     fn find_with_home(vars: &[(&str, &str)], home: Option<&str>, files: &[&str]) -> Option<String> {
         let env = |v: &str| {
-            vars.iter()
+            Ok(vars
+                .iter()
                 .find(|(k, _)| *k == v)
-                .map(|(_, d)| OsString::from(d))
+                .map(|(_, d)| OsString::from(d)))
         };
         let readable = |p: &Path| files.iter().any(|f| Path::new(f) == p);
         find_curlrc(env, || Ok(home.map(OsString::from)), readable)

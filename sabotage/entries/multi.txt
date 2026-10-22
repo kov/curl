@@ -574,9 +574,20 @@ witness: curl-sys-abi handle_tests::connect_to_and_resolve_entries_appended_afte
     // As it was set.
 
 === a copy of the handle reads the lines it was copied with, not the list
-file: crates/curl-core/src/proto/http1/request.rs
+file: crates/curl-core/src/options/mod.rs
 witness: curl-sys-abi handle_tests::header_lines_appended_after_the_option_are_sent
 --- old
-        copy.source.clone_from(&self.source);
+        Ok(match self.source() {
 --- new
-        let _ = &self.source;
+        Ok(match self.source().filter(|_| false) {
+
+=== a list option grows every handle by its source
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::a_listed_option_is_as_large_as_its_lines
+--- old
+#[derive(Debug)]
+pub(crate) enum Listed<T> {
+--- new
+#[derive(Debug)]
+#[repr(C)]
+pub(crate) enum Listed<T> {

@@ -8,6 +8,7 @@ use crate::conn::Peer;
 use crate::date::HttpDate;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, LineSource};
+use crate::options::Listed;
 use crate::text::Text;
 use std::fmt::Write as _;
 
@@ -17,11 +18,11 @@ use super::fields;
 /// for itself taken off (`DYN_HTTP_REQUEST`).
 const MAX_HEAD: usize = 1024 * 1024 - 1;
 
-/// A copy of `bytes`.
-fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
+/// The application's header line `line`, copied and classified.
+fn header(line: &[u8]) -> Result<UserHeader, OutOfMemory> {
     let mut copy = Vec::new();
-    copy.try_extend_from_slice(bytes)?;
-    Ok(copy)
+    copy.try_extend_from_slice(line)?;
+    Ok(classify(copy))
 }
 
 /// The version an HTTP request is made in (`CURLOPT_HTTP_VERSION`).
@@ -177,52 +178,43 @@ impl UserHeader {
 /// given: fixed, or read from a source again as each request starts.
 #[derive(Debug, Default)]
 pub struct UserHeaders {
-    /// As last read from the source, if there is one.
-    lines: Vec<UserHeader>,
-    source: Option<Handler<dyn LineSource>>,
+    lines: Listed<UserHeader>,
 }
 
 impl UserHeaders {
     /// The headers of `lines`, each as the application gave it.
     pub fn new<'a>(lines: impl IntoIterator<Item = &'a [u8]>) -> Result<UserHeaders, OutOfMemory> {
-        let mut headers = UserHeaders::default();
+        let mut headers = Vec::new();
         for line in lines {
-            headers.lines.try_push(classify(copy(line)?))?;
+            headers.try_push(header(line)?)?;
         }
-        Ok(headers)
+        Ok(UserHeaders {
+            lines: Listed::Given(headers),
+        })
     }
 
     /// The headers `source` gives, read now and as each request starts.
     pub fn from_source(source: Handler<dyn LineSource>) -> Result<UserHeaders, OutOfMemory> {
-        let mut headers = UserHeaders {
-            lines: Vec::new(),
-            source: Some(source),
-        };
-        headers.refill()?;
-        Ok(headers)
+        Ok(UserHeaders {
+            lines: Listed::from_source(source, header)?,
+        })
     }
 
     /// The source's lines read again, in place of those read before.
     pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
-        let Some(source) = &self.source else {
-            return Ok(());
-        };
-        let mut lines = Vec::new();
-        source.lines(&mut |line| lines.try_push(classify(copy(line)?)))?;
-        self.lines = lines;
-        Ok(())
+        self.lines.refill(header)
     }
 
     /// The lines, as the application gave them.
     pub fn lines(&self) -> impl Iterator<Item = &[u8]> {
-        self.lines.iter().map(|h| &h.line[..])
+        self.lines.items().iter().map(|h| &h.line[..])
     }
 
     /// A copy (`curl_easy_duphandle`), reading the same source.
     pub fn try_clone(&self) -> Result<UserHeaders, OutOfMemory> {
-        let mut copy = UserHeaders::new(self.lines())?;
-        copy.source.clone_from(&self.source);
-        Ok(copy)
+        Ok(UserHeaders {
+            lines: self.lines.try_clone(|h| header(&h.line))?,
+        })
     }
 
     /// Whether a line replaces the library's header `name`
@@ -233,7 +225,7 @@ impl UserHeaders {
 
     /// The first line that replaces the library's header `name`.
     fn replacing(&self, name: &[u8]) -> Option<&UserHeader> {
-        self.lines.iter().find(|h| h.replaces(name))
+        self.lines.items().iter().find(|h| h.replaces(name))
     }
 
     /// Whether the application's `Expect` asks for `100-continue`; none
@@ -280,7 +272,7 @@ impl UserHeaders {
         &self,
         trusted: Option<Trusted>,
     ) -> impl Iterator<Item = (&[u8], &[u8])> {
-        self.lines.iter().filter_map(move |h| {
+        self.lines.items().iter().filter_map(move |h| {
             let line = &h.line[..];
             let at = line.iter().position(|&b| b == b':' || b == b';')?;
             let rest = &line[at + 1..];
@@ -302,6 +294,7 @@ impl UserHeaders {
 
     fn sendable(&self, trusted: Option<Trusted>) -> impl Iterator<Item = &UserHeader> {
         self.lines
+            .items()
             .iter()
             .filter(move |h| trusted.is_some() || !(h.is(b"Authorization") || h.is(b"Cookie")))
     }
@@ -762,6 +755,7 @@ fn custom(
 fn connection(headers: &UserHeaders, te: bool, out: &mut Out<'_>) -> Result<(), ErrorKind> {
     let mut given = headers
         .lines
+        .items()
         .iter()
         .filter(|h| h.replaces(b"Connection") && h.value().is_some_and(|v| !v.is_empty()));
     // The application's first, then the library's tokens after it

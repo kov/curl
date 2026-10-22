@@ -6,7 +6,7 @@
 #[cfg(any(test, feature = "test-util"))]
 pub mod script;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec};
+use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
 use std::fmt;
 use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
@@ -558,18 +558,104 @@ impl ResolveList {
     }
 }
 
+/// The items of a list the application gives: kept as given, or as last
+/// read from its source. As large as the `Vec` alone, so a handle pays
+/// for a source only when it has one.
+#[derive(Debug)]
+pub(crate) enum Listed<T> {
+    Given(Vec<T>),
+    Read(Box<FromSource<T>>),
+}
+
+#[derive(Debug)]
+pub(crate) struct FromSource<T> {
+    source: Handler<dyn LineSource>,
+    items: Vec<T>,
+}
+
+impl<T> Default for Listed<T> {
+    fn default() -> Self {
+        Listed::Given(Vec::new())
+    }
+}
+
+impl<T> Listed<T> {
+    pub(crate) fn items(&self) -> &[T] {
+        match self {
+            Listed::Given(items) => items,
+            Listed::Read(read) => &read.items,
+        }
+    }
+
+    pub(crate) fn items_mut(&mut self) -> &mut Vec<T> {
+        match self {
+            Listed::Given(items) => items,
+            Listed::Read(read) => &mut read.items,
+        }
+    }
+
+    pub(crate) fn source(&self) -> Option<&Handler<dyn LineSource>> {
+        match self {
+            Listed::Given(_) => None,
+            Listed::Read(read) => Some(&read.source),
+        }
+    }
+
+    /// What `source` gives, each line made an item by `item`.
+    pub(crate) fn from_source(
+        source: Handler<dyn LineSource>,
+        item: impl Fn(&[u8]) -> Result<T, OutOfMemory>,
+    ) -> Result<Listed<T>, OutOfMemory> {
+        let mut listed = Listed::Read(try_box(FromSource {
+            source,
+            items: Vec::new(),
+        })?);
+        listed.refill(item)?;
+        Ok(listed)
+    }
+
+    /// The source's lines read again, in place of those read before; a
+    /// list kept as given stays as it is.
+    pub(crate) fn refill(
+        &mut self,
+        item: impl Fn(&[u8]) -> Result<T, OutOfMemory>,
+    ) -> Result<(), OutOfMemory> {
+        let Listed::Read(read) = self else {
+            return Ok(());
+        };
+        let mut items = Vec::new();
+        read.source.lines(&mut |line| items.try_push(item(line)?))?;
+        read.items = items;
+        Ok(())
+    }
+
+    /// A copy whose items `item` copies, reading the same source.
+    pub(crate) fn try_clone(
+        &self,
+        item: impl Fn(&T) -> Result<T, OutOfMemory>,
+    ) -> Result<Listed<T>, OutOfMemory> {
+        let mut items = Vec::new();
+        for i in self.items() {
+            items.try_push(item(i)?)?;
+        }
+        Ok(match self.source() {
+            None => Listed::Given(items),
+            Some(source) => Listed::Read(try_box(FromSource {
+                source: source.clone(),
+                items,
+            })?),
+        })
+    }
+}
+
 /// A list of lines, each as the application gave it: fixed, or read
 /// from a source again each time it is used.
 #[derive(Debug, Default)]
-pub struct Lines {
-    /// As last read from the source, if there is one.
-    lines: Vec<Vec<u8>>,
-    source: Option<Handler<dyn LineSource>>,
-}
+pub struct Lines(Listed<Vec<u8>>);
 
 impl Lines {
     pub fn iter(&self) -> impl Iterator<Item = &[u8]> {
-        self.lines.iter().map(|e| &e[..])
+        self.0.items().iter().map(|e| &e[..])
     }
 
     /// The lines given, in place of those before.
@@ -581,45 +667,29 @@ impl Lines {
         for line in lines {
             owned.try_push(copy(line)?)?;
         }
-        *self = Lines {
-            lines: owned,
-            source: None,
-        };
+        self.0 = Listed::Given(owned);
         Ok(())
     }
 
     /// The lines `source` gives, in place of those before: read now, and
     /// again each time they are used.
     pub fn set_source(&mut self, source: Handler<dyn LineSource>) -> Result<(), OutOfMemory> {
-        self.source = Some(source);
-        self.refill()
+        self.0 = Listed::from_source(source, copy)?;
+        Ok(())
     }
 
     /// The source's lines read again, in place of those read before.
     pub(crate) fn refill(&mut self) -> Result<(), OutOfMemory> {
-        let Some(source) = &self.source else {
-            return Ok(());
-        };
-        let mut lines = Vec::new();
-        source.lines(&mut |line| lines.try_push(copy(line)?))?;
-        self.lines = lines;
-        Ok(())
+        self.0.refill(copy)
     }
 
     /// `line` after those given before.
     pub fn push(&mut self, line: &[u8]) -> Result<(), OutOfMemory> {
-        self.lines.try_push(copy(line)?)
+        self.0.items_mut().try_push(copy(line)?)
     }
 
     fn try_clone(&self) -> Result<Lines, OutOfMemory> {
-        let mut owned = Vec::new();
-        for line in self.iter() {
-            owned.try_push(copy(line)?)?;
-        }
-        Ok(Lines {
-            lines: owned,
-            source: self.source.clone(),
-        })
+        Ok(Lines(self.0.try_clone(|line| copy(line))?))
     }
 }
 
@@ -1112,6 +1182,14 @@ mod tests {
         );
         p.set_user_password(None).unwrap();
         assert_eq!((p.user, p.password), (None, None));
+    }
+
+    /// A list that may have a source costs a handle no more than its
+    /// lines: test 751 counts the bytes of a thousand handles.
+    #[test]
+    fn a_listed_option_is_as_large_as_its_lines() {
+        assert_eq!(size_of::<Lines>(), size_of::<Vec<Vec<u8>>>());
+        assert_eq!(size_of::<UserHeaders>(), size_of::<Vec<Vec<u8>>>());
     }
 
     /// Methods combine as sets; a set of one method is that method, of

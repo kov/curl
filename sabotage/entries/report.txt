@@ -233,3 +233,11 @@ features: debug-hooks
                 .filter(|&n| n <= i64::MAX as u64)
 --- new
                 .filter(|_| true)
+
+=== the version string runs the libraries into libcurl's version
+file: crates/curl-core/src/version.rs
+witness: curl-core version::tests::version_matches_its_parts
+--- old
+            write!(f, " {library}")?;
+--- new
+            write!(f, "{library}")?;

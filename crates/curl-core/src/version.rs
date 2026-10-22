@@ -115,15 +115,26 @@ pub struct VersionInfo {
 }
 
 impl VersionInfo {
-    /// The library and the components it was built with, as in
-    /// `libcurl/8.23.1-DEV`.
-    pub fn components(&self) -> Components<'_> {
-        Components(self)
+    /// The library and the libraries it is linked with, as `curl_version`
+    /// lists them: `libcurl/8.23.1-DEV zlib/1.3.1`. The core links none of
+    /// them itself: what links it names them, in C's order (TLS, zlib,
+    /// brotli, zstd, c-ares, IDN, libpsl, ...).
+    pub fn components<'a>(&'a self, libraries: &'a [&'a dyn fmt::Display]) -> Components<'a> {
+        Components(self, libraries)
+    }
+}
+
+/// A library linked in, as the version string names it: `zlib/1.3.1`.
+pub struct Library<V>(pub &'static str, pub V);
+
+impl<V: fmt::Display> fmt::Display for Library<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.0, self.1)
     }
 }
 
 /// See [`VersionInfo::components`].
-pub struct Components<'a>(&'a VersionInfo);
+pub struct Components<'a>(&'a VersionInfo, &'a [&'a dyn fmt::Display]);
 
 impl fmt::Display for Components<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -133,7 +144,11 @@ impl fmt::Display for Components<'_> {
         if let Some(given) = curl_os::env::var_into(b"CURL_DEBUG_VERSION", &mut [0u8; 299]) {
             return f.write_str(&String::from_utf8_lossy(given));
         }
-        write!(f, "libcurl/{}", self.0.version)
+        write!(f, "libcurl/{}", self.0.version)?;
+        for library in self.1 {
+            write!(f, " {library}")?;
+        }
+        Ok(())
     }
 }
 
@@ -189,6 +204,15 @@ mod tests {
                 .starts_with(&format!("{}.{}.{}", r.major, r.minor, r.patch)),
             "{v:?}"
         );
-        assert_eq!(v.components().to_string(), format!("libcurl/{}", v.version));
+        assert_eq!(
+            v.components(&[]).to_string(),
+            format!("libcurl/{}", v.version)
+        );
+        let zlib = Library("zlib", "1.3.1");
+        let psl = Library("libpsl", "0.21.5");
+        assert_eq!(
+            v.components(&[&zlib, &psl]).to_string(),
+            format!("libcurl/{} zlib/1.3.1 libpsl/0.21.5", v.version)
+        );
     }
 }

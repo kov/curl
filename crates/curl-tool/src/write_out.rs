@@ -787,8 +787,7 @@ fn json(facts: &Facts<'_>, out: &mut dyn Write) -> std::io::Result<()> {
         out.write_all(b",")?;
     }
     out.write_all(b"\"curl_version\":")?;
-    let version = curl_core::version::version().components();
-    if let Ok(version) = try_format(format_args!("{version}")) {
+    if let Ok(version) = try_format(format_args!("{}", crate::CurlVersion)) {
         json_string(out, version.as_bytes(), false)?;
     }
     out.write_all(b"}")
@@ -941,7 +940,7 @@ mod tests {
     #[test]
     fn writes_json_as_c() {
         let json = json_for(b"http://u:p@example.com/a?q#f", Ok(()));
-        let version = curl_core::version::version().components().to_string();
+        let version = crate::CurlVersion.to_string();
         let times: String = [
             "appconnect",
             "connect",

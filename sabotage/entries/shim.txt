@@ -121,3 +121,11 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
             options.login.set(|g| &mut g.password, pair.password)?;
 --- new
             *options.login.make_mut()? = pair;
+
+=== curl_version lists brotli after zstd
+file: crates/curl-sys-abi/src/version.rs
+witness: curl-sys-abi version::tests::names_the_libraries_as_c
+--- old
+            let libraries: [&dyn fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
+--- new
+            let libraries: [&dyn fmt::Display; 4] = [&zlib, &zstd, &brotli, &psl];

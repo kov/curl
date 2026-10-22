@@ -955,3 +955,12 @@ witness: curl-tool options::parse::tests::a_range_is_taken_as_c_takes_it
 --- old
                 text.try_push(b'-').map_err(|_| ParamError::NoMem)?;
 --- new
+
+=== curl -V leaves libpsl out
+file: crates/curl-tool/src/main.rs
+witness: curl-tool tests::names_the_libraries_as_c
+--- old
+        let libraries: [&dyn std::fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
+--- new
+        let libraries: [&dyn std::fmt::Display; 3] = [&zlib, &brotli, &zstd];
+        let _ = psl;

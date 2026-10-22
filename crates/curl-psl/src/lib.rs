@@ -19,6 +19,22 @@ pub fn suffixes() -> Result<Suffixes, OutOfMemory> {
     Suffixes::new(try_box(List::new())?)
 }
 
+/// The library's version, as `curl -V` names it (`psl_version`).
+pub fn version() -> impl core::fmt::Display {
+    // SAFETY: with 0, `psl_check_version_number` only returns the
+    // library's version number.
+    let n = unsafe { psl_check_version_number(0) };
+    Version(n >> 16, (n >> 8) & 0xff, n & 0xff)
+}
+
+struct Version(c_int, c_int, c_int);
+
+impl core::fmt::Display for Version {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+    }
+}
+
 /// libpsl's opaque context.
 #[repr(C)]
 struct PslCtx {
@@ -29,6 +45,7 @@ unsafe extern "C" {
     fn psl_latest(fname: *const c_char) -> *mut PslCtx;
     fn psl_builtin() -> *const PslCtx;
     fn psl_free(psl: *mut PslCtx);
+    fn psl_check_version_number(version: c_int) -> c_int;
     fn psl_is_public_suffix(psl: *const PslCtx, domain: *const c_char) -> c_int;
     fn psl_is_cookie_domain_acceptable(
         psl: *const PslCtx,
@@ -144,7 +161,25 @@ impl PublicSuffixes for List {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::disallowed_macros)]
+
     use super::*;
+
+    unsafe extern "C" {
+        fn psl_get_version() -> *const c_char;
+    }
+
+    /// The version is the one libpsl says in words, before what it says
+    /// of the libraries it uses: `0.21.5 (+libidn2/2.3.8)`.
+    #[test]
+    fn names_the_version_as_libpsl() {
+        // SAFETY: no preconditions.
+        let words = unsafe { psl_get_version() };
+        // SAFETY: libpsl returns a static C string.
+        let words = unsafe { core::ffi::CStr::from_ptr(words) }.to_bytes();
+        let number = words.split(|&b| b == b' ').next().unwrap();
+        assert_eq!(format!("{}", version()).as_bytes(), number);
+    }
 
     #[test]
     fn answers_as_libpsl() {

@@ -11,7 +11,7 @@ use core::fmt::{self, Write};
 use core::ptr;
 use std::sync::OnceLock;
 
-use curl_core::version::{Feature, Protocol, version};
+use curl_core::version::{Feature, Library, Protocol, version};
 
 use crate::ffi::{self, CURLVERSION_NOW, CURLversion, curl_version_info_data};
 
@@ -176,7 +176,15 @@ fn info() -> &'static curl_version_info_data {
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_version() -> *mut c_char {
     COMPONENTS
-        .get_or_init(|| cbuf(format_args!("{}", version().components())))
+        .get_or_init(|| {
+            // The libraries linked in, in C's order.
+            let zlib = Library("zlib", curl_zlib::version());
+            let brotli = Library("brotli", curl_brotli::version());
+            let zstd = Library("zstd", curl_zstd::version());
+            let psl = Library("libpsl", curl_psl::version());
+            let libraries: [&dyn fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
+            cbuf(format_args!("{}", version().components(&libraries)))
+        })
         .as_ptr()
         .cast_mut()
 }
@@ -208,6 +216,28 @@ mod tests {
             names.push(unsafe { CStr::from_ptr(p) }.to_str().unwrap());
         }
         names
+    }
+
+    /// `curl_version` lists the libraries linked in after libcurl, in
+    /// C's order and words, each version as the library says it.
+    #[test]
+    fn names_the_libraries_as_c() {
+        // SAFETY: a static C string.
+        let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
+        let want = format!(
+            "libcurl/{} zlib/{} brotli/{} zstd/{} libpsl/{}",
+            version().version,
+            curl_zlib::version(),
+            curl_brotli::version(),
+            curl_zstd::version(),
+            curl_psl::version()
+        );
+        assert_eq!(said, want);
+        // SAFETY: as above.
+        let info = unsafe { CStr::from_ptr(info().libz_version) }
+            .to_str()
+            .unwrap();
+        assert!(said.contains(&format!(" zlib/{info} ")), "{said}");
     }
 
     /// The protocols the core reports reach the C struct as names.

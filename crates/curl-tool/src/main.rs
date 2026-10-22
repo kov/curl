@@ -190,6 +190,22 @@ fn command_line() -> Vec<std::ffi::OsString> {
     curl_os::args::command_line()
 }
 
+/// What `curl_version` says of the library the tool runs: it and the
+/// libraries it links, in C's order.
+pub(crate) struct CurlVersion;
+
+impl std::fmt::Display for CurlVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use curl_core::version::Library;
+        let zlib = Library("zlib", curl_zlib::version());
+        let brotli = Library("brotli", curl_brotli::version());
+        let zstd = Library("zstd", curl_zstd::version());
+        let psl = Library("libpsl", curl_psl::version());
+        let libraries: [&dyn std::fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
+        version().components(&libraries).fmt(f)
+    }
+}
+
 /// `curl --version`.
 fn version_info() {
     let v = version();
@@ -199,7 +215,7 @@ fn version_info() {
     {
         eprintln!("WARNING: this libcurl is Debug-enabled, do not use in production\n");
     }
-    println!("curl {} ({}) {}", v.version, v.host, v.components());
+    println!("curl {} ({}) {CurlVersion}", v.version, v.host);
     println!("Release-Date: {}", v.timestamp);
     if !v.protocols.is_empty() {
         // IPFS and IPNS are served over HTTP: they are listed when it is,
@@ -258,5 +274,20 @@ mod tests {
         assert_eq!(read("-3"), None);
         assert_eq!(read("9223372036854775807"), Some(9223372036854775807));
         assert_eq!(read("9223372036854775808"), None);
+    }
+
+    /// `curl -V` lists the libraries after libcurl as C's does: in its
+    /// order, each named as it names it, without those not linked.
+    #[test]
+    fn names_the_libraries_as_c() {
+        let want = format!(
+            "libcurl/{} zlib/{} brotli/{} zstd/{} libpsl/{}",
+            version().version,
+            curl_zlib::version(),
+            curl_brotli::version(),
+            curl_zstd::version(),
+            curl_psl::version()
+        );
+        assert_eq!(CurlVersion.to_string(), want);
     }
 }

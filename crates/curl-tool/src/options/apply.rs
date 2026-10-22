@@ -22,6 +22,9 @@ use crate::msgs::Messages;
 use crate::slurp::{As, ReadFailed};
 use crate::write_out;
 
+/// The longest `--url-query` joined, less one (`MAX_QUERY_LEN`).
+const MAX_QUERY_LEN: usize = 100_000;
+
 /// An option's argument, read according to its kind.
 #[allow(
     dead_code,
@@ -264,6 +267,9 @@ pub(crate) struct Operation<'a> {
     /// `--get`: what `--data` gives goes in the URL's query, asked for
     /// with a GET (C's `use_httpget`).
     pub(crate) get: bool,
+    /// What `--url-query` gives, joined by `&`: added to each URL's query
+    /// unless `--get` adds the data there.
+    pub(crate) url_query: Option<Vec<u8>>,
 }
 
 /// The addresses `--ipv4` and `--ipv6` limit a name to.
@@ -960,6 +966,31 @@ pub(crate) fn apply<'a>(
         }
         Opt::Globoff => line.current().globoff = value.toggle(),
         Opt::Get => line.current().get = value.toggle(),
+        Opt::UrlQuery => {
+            // `+` takes the rest as it is; anything else is encoded as
+            // `--data-urlencode` encodes (`url_query`).
+            let text = value.text();
+            let query = match text.strip_prefix(b"+") {
+                Some(raw) => {
+                    let mut query = Vec::new();
+                    query.try_extend_from_slice(raw)?;
+                    query
+                }
+                None => url_encoded(text, msgs)?,
+            };
+            match &mut line.current().url_query {
+                // C joins them in a buffer of at most 100000 bytes, its
+                // terminating zero counted (`MAX_QUERY_LEN`).
+                Some(joined) if joined.len() + 1 + query.len() >= MAX_QUERY_LEN => {
+                    return Err(ParamError::NoMem);
+                }
+                Some(joined) => {
+                    joined.try_push(b'&')?;
+                    joined.try_extend_from_slice(&query)?;
+                }
+                none => *none = Some(query),
+            }
+        }
         Opt::Fail | Opt::FailWithBody => {
             let (this, other, deselects) = if spec.opt == Opt::Fail {
                 (
@@ -1258,7 +1289,6 @@ pub(crate) fn apply<'a>(
         | Opt::TraceIds
         | Opt::UnixSocket
         | Opt::UploadFlags
-        | Opt::UrlQuery
         | Opt::UseAscii
         | Opt::Variable
         | Opt::VlanPriority

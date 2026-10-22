@@ -421,11 +421,11 @@ fn transfer(
     // With `--get` the data goes in the URL's query instead, asked for
     // with a GET, or a HEAD after `--head`.
     let mut method = op.method;
-    let (post, query) = match op.post.as_deref() {
+    let (post, fields) = match op.post.as_deref() {
         Some(fields) if op.get => (None, Some(fields)),
         post => (post, None),
     };
-    let wanted = match (post, query) {
+    let wanted = match (post, fields) {
         (Some(_), _) => Some(tool::Method::Post),
         (None, Some(_)) if op.no_body => Some(tool::Method::Head),
         (None, Some(_)) => Some(tool::Method::Get),
@@ -434,6 +434,8 @@ fn transfer(
     if wanted.is_some_and(|wanted| method.choose(wanted, &msgs).is_err()) {
         return Step::Failed(ErrorKind::FailedInit);
     }
+    // `--url-query` gives the query otherwise.
+    let query = fields.or(op.url_query.as_deref());
     if upload.is_some() && method.choose(tool::Method::Put, &msgs).is_err() {
         return Step::Failed(ErrorKind::FailedInit);
     }
@@ -592,8 +594,8 @@ fn transfer(
     };
     // Output to a terminal: no progress meter, and no binary output.
     let terminal = to_stdout && output_expected(url, upload.is_some()) && stdout_is_terminal();
-    // The query `--get` makes is added once the output and the upload are
-    // named (`append2query`).
+    // The query `--get` or `--url-query` makes is added once the output
+    // and the upload are named (`append2query`).
     let queried;
     let given = match query.map(|query| with_query(url, query)) {
         Some(Ok(url)) => {
@@ -1537,7 +1539,8 @@ fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
     Ok(copy)
 }
 
-/// Why `--get`'s query could not be added to a URL.
+/// Why the query of `--get` or `--url-query` could not be added to a
+/// URL.
 #[derive(Debug, PartialEq, Eq)]
 enum QueryFailed {
     /// The URL does not parse: the tool says so itself.

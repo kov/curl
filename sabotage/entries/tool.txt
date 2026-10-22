@@ -821,3 +821,27 @@ witness: curl-tool gets_the_data_in_the_query
         && !said
 --- new
         && (!said || true)
+
+=== --url-query replaces the data --get puts in the query
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool adds_the_url_query
+--- old
+    let query = fields.or(op.url_query.as_deref());
+--- new
+    let query = op.url_query.as_deref().or(fields);
+
+=== --url-query encodes what follows a +
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool adds_the_url_query
+--- old
+            let query = match text.strip_prefix(b"+") {
+--- new
+            let query = match text.strip_prefix(b"+").filter(|_| false) {
+
+=== --url-query joins past C's buffer
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool adds_the_url_query
+--- old
+                Some(joined) if joined.len() + 1 + query.len() >= MAX_QUERY_LEN => {
+--- new
+                Some(joined) if joined.len() + 1 + query.len() > MAX_QUERY_LEN => {

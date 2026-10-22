@@ -327,6 +327,62 @@ fn gets_the_data_in_the_query() {
     );
 }
 
+/// `--url-query` adds to the query, encoded unless it starts with `+`,
+/// whatever the method; `-G` with data puts the data there instead.
+#[test]
+fn adds_the_url_query() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&[
+        "-sS",
+        "--url-query",
+        "a b",
+        "--url-query",
+        "+%3d",
+        "-d",
+        "x",
+        &s.url(),
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(
+        request.starts_with("POST /?a+b&%3D HTTP/1.1\r\n"),
+        "{request}"
+    );
+    assert!(request.ends_with("\r\n\r\nx"), "{request}");
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let run = curl(&["-sS", "--url-query", "q", "-G", "-d", "x", &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(request.starts_with("GET /?x HTTP/1.1\r\n"), "{request}");
+    // Joined, they must fit in C's buffer of 100000 bytes, its
+    // terminating zero counted.
+    let half = format!("+{}", "a".repeat(49_999));
+    let more = format!("+{}", "a".repeat(50_000));
+    let run = curl(&[
+        "-s",
+        "--url-query",
+        &half,
+        "--url-query",
+        &half,
+        "http://127.0.0.1:1/",
+    ]);
+    assert_eq!(run.code, 7);
+    let run = curl(&[
+        "--url-query",
+        &more,
+        "--url-query",
+        &half,
+        "http://127.0.0.1:1/",
+    ]);
+    assert_eq!(run.code, 2);
+    assert!(
+        run.stderr
+            .starts_with("curl: option --url-query: out of memory\n"),
+        "{}",
+        run.stderr
+    );
+}
+
 /// `-T -` sends standard input, chunked as its size is not known.
 #[test]
 fn uploads_standard_input() {

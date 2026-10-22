@@ -272,7 +272,8 @@ impl Answer {
                 Body::HeadEnded => unreachable!("applied first"),
                 Body::Done => return Ok((used, Read::Done)),
                 Body::Ignore(left) => {
-                    let n = (input.len() - used).min(usize::try_from(*left).unwrap_or(usize::MAX));
+                    let rest = &input[used..];
+                    let n = rest.len().min(usize::try_from(*left).unwrap_or(usize::MAX));
                     *left -= n as u64;
                     used += n;
                     if *left == 0 {
@@ -293,10 +294,9 @@ impl Answer {
                         self.chunks_read = true;
                         return Ok((used, Read::Done));
                     }
-                    if n == 0 {
-                        break;
-                    }
-                    continue;
+                    // Short of its end the decoder takes all it is given;
+                    // what it might leave is offered again.
+                    break;
                 }
             }
             let byte = input[used];
@@ -354,17 +354,15 @@ impl Answer {
 
     /// The line goes on: its end and trailing blanks go (`Curl_http_to_fold`).
     fn fold(&mut self) {
-        let mut len = self.line.len();
-        if len > 0 && self.line[len - 1] == b'\n' {
-            len -= 1;
+        if self.line.last() == Some(&b'\n') {
+            self.line.pop();
         }
-        if len > 0 && self.line[len - 1] == b'\r' {
-            len -= 1;
+        if self.line.last() == Some(&b'\r') {
+            self.line.pop();
         }
-        while len > 0 && matches!(self.line[len - 1], b' ' | b'\t') {
-            len -= 1;
+        while self.line.last().is_some_and(|b| matches!(b, b' ' | b'\t')) {
+            self.line.pop();
         }
-        self.line.truncate(len);
     }
 
     /// Whether the line given out may be delivered: C checks it as a

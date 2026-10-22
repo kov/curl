@@ -297,3 +297,102 @@ fn a_close_gives_out_the_line_read() {
     assert_eq!(a.closed(), Read::Done);
     assert!(!a.done());
 }
+
+/// What reading an answer notes, in C's words.
+#[test]
+fn notes_are_said_as_c() {
+    for (note, want) in [
+        (
+            Note::IgnoringLength(200),
+            "Ignoring Content-Length in CONNECT 200 response",
+        ),
+        (
+            Note::IgnoringEncoding(99),
+            "Ignoring Transfer-Encoding in CONNECT 099 response",
+        ),
+        (Note::IgnoreBytes(13), "Ignore 13 bytes of response-body"),
+        (Note::IgnoreChunked, "Ignore chunked response-body"),
+    ] {
+        assert_eq!(note.to_string(), want);
+    }
+    let said = |e: AnswerError| e.said().map(|s| s.to_string());
+    assert_eq!(said(AnswerError::BadChunks(ChunkError::Malformed)), None);
+    assert_eq!(
+        said(AnswerError::BadChunks(ChunkError::NotHex(b'x'))).as_deref(),
+        Some("chunk hex-length char not a hex digit: 0x78")
+    );
+}
+
+/// A line is held to C's buffer, a byte short of `MAX_LINE` with its
+/// terminating NUL.
+#[test]
+fn a_line_is_held_to_c_s_buffer() {
+    let answer = |line_len: usize| {
+        let mut input = b"HTTP/1.1 200 OK\r\nX: ".to_vec();
+        input.resize(input.len() + line_len - 5, b'a');
+        input.extend_from_slice(b"\r\n\r\n");
+        let mut a = Answer::new();
+        let mut at = 0;
+        loop {
+            let (used, read) = a.read(&input[at..])?;
+            at += used;
+            match read {
+                Read::Line if a.apply()? == Applied::End => return Ok(a.line().len()),
+                Read::Line => {}
+                Read::More | Read::Done => unreachable!("the head ends"),
+            }
+        }
+    };
+    assert_eq!(answer(MAX_LINE - 1), Ok(2));
+    assert_eq!(answer(MAX_LINE), Err(AnswerError::TooLarge));
+}
+
+/// A first line of blanks alone that goes on folds to nothing before
+/// the next part.
+#[test]
+fn a_blank_line_that_goes_on_folds_to_nothing() {
+    let mut a = Answer::new();
+    let (used, read) = a.read(b" \t \r\n x\r\n\r\n").unwrap();
+    assert_eq!((used, read), (9, Read::Line));
+    assert_eq!(a.line(), b" x\r\n");
+}
+
+/// Only a 2xx's length and coding are ignored; 3xx and later are read,
+/// and a 407's tell what of its body is dropped. Its status is read from
+/// all three digits.
+#[test]
+fn a_3xx_s_length_and_coding_are_read() {
+    let mut a = Answer::new();
+    let input = b"HTTP/1.1 300 Moved\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let (_, applied, _) = lines(&mut a, input, false);
+    assert_eq!(
+        applied[1..],
+        [Applied::Nothing, Applied::Nothing, Applied::End]
+    );
+    assert_eq!(a.code(), Some(300));
+    let ended = |head: &str| {
+        let mut a = Answer::new();
+        let input = format!("HTTP/1.1 407 Who\r\n{head}\r\n");
+        let mut at = 0;
+        loop {
+            let (used, read) = a.read(&input.as_bytes()[at..]).unwrap();
+            at += used;
+            assert_eq!(read, Read::Line);
+            if a.apply().unwrap() == Applied::End {
+                return a.end_head(false);
+            }
+        }
+    };
+    assert_eq!(ended(""), None);
+    assert_eq!(
+        ended("Transfer-Encoding: chunked\r\n"),
+        Some(Note::IgnoreChunked)
+    );
+    assert_eq!(ended("Content-Length: 7\r\n"), Some(Note::IgnoreBytes(7)));
+    for (line, code) in [("HTTP/1.1 299 Fine", 299), ("HTTP/1.0 417 No", 417)] {
+        let mut a = Answer::new();
+        let input = format!("{line}\r\n\r\n");
+        lines(&mut a, input.as_bytes(), false);
+        assert_eq!(a.code(), Some(code), "{line}");
+    }
+}

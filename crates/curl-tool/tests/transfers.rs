@@ -944,6 +944,7 @@ fn data_from_the_start_is_no_resume() {
 
 /// `--no-clobber` saves to the first numbered name not taken, trying
 /// as many as the debug build's `CURL_MAX_CLOBBER` allows.
+#[cfg(feature = "debug-hooks")]
 #[test]
 fn numbers_a_file_not_to_clobber() {
     let s = Scratch::new("clobber");

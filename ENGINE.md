@@ -343,7 +343,10 @@ as it is let.
 with what it asked for and what it came to. Planned (step 40, through the drive's context,
 §3.6): the socket's opening (`cf_socket_open() -> 0, fd=N`), its local address, `connected on
 fd=N`, a failed connect (`poll/select error on fd=N`), its pollset while it connects
-(`adjust_pollset, !connected, POLLOUT fd=N`) and `destroy` as it closes. Not traced: the receive
+(`adjust_pollset, !connected, POLLOUT fd=N`) and `destroy` as a transfer closes it during the
+setup: after `Curl_multi_will_close` for a failed attempt, before it when a 407 redials. A
+connection that leaves the pool traces no `destroy`, as C closes it on its internal handle.
+Not traced: the receive
 C tries before its first poll in PERFORMING, which the engine does not make; a tunnel's and
 SOCKS handshake's reads and writes, as C reads a proxy's answer to `CONNECT` a byte at a time
 from the socket, where the engine reads what is there; and `query ALPN`, which comes with TLS.
@@ -1150,8 +1153,8 @@ socket before its connect.
   HTTP-PROXY, HAPROXY) exist in C only until the chain connects and are then removed
   (`Curl_conn_remove_setup_filters`, cfilters.c:434–450); here the typed machine stands for
   them, and `conn/chain.rs` renders the chain C would have at each point for the trace
-  (`cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]`, `connected [0][DNS][SETUP][HAPPY-
-  EYEBALLS][TCP]`, `reduced to [0][TCP]`), allocating nothing. The stream's kinds and layers are
+  (`cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]`,
+  `connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]`, `reduced to [0][TCP]`), allocating nothing. The stream's kinds and layers are
   C's reduced chain: `[TCP]`, `[SOCKS][TCP]`, `[H1-PROXY][TCP]`, `[H1-PROXY][SOCKS][TCP]` behind
   a pre-proxy. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
   for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a

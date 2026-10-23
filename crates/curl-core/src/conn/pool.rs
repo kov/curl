@@ -56,10 +56,8 @@ impl Home {
 }
 
 impl ConnLease {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the shim's last connection, from step 10")
-    )]
+    /// Its place in its pool, for the tests to tell leases apart.
+    #[cfg(test)]
     pub(crate) fn id(&self) -> ConnId {
         self.id
     }
@@ -614,15 +612,6 @@ impl Pool {
                 close(&mut self.conns, id, net);
             }
         }
-    }
-
-    /// The connection `id` names, if it is still in the pool and idle.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the shim's last connection, from step 10")
-    )]
-    pub(crate) fn get_conn(&self, id: ConnId) -> Option<&Conn> {
-        self.conns.get(id)?.idle()
     }
 
     /// Take a lease back and decide the connection's fate as

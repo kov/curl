@@ -1407,8 +1407,6 @@ pub(crate) struct Sock { socket: Box<dyn Socket>, closer: Closer }   // closed o
 pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
 ```
 
-`Pool::get_conn` is dead code.
-
 - A transfer searches before it adds (`find`, `Curl_cpool_find`), unless the transfer wants a fresh
   connection (`CURLOPT_FRESH_CONNECT`, but for a redirect's request): at most once a second it first prunes
   the idle connections that are not healthy, silently, as C's prune traces to its internal

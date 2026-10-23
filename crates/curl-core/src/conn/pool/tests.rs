@@ -113,6 +113,11 @@ fn up(lease: &mut ConnLease, net: &mut FakeNet, now: Instant) {
     assert!(matches!(established, Connected::Established { .. }));
 }
 
+/// The connection `id` names, if it is still in the pool and idle.
+fn idle_conn(pool: &Pool, id: ConnId) -> Option<&Conn> {
+    pool.conns.get(id)?.idle()
+}
+
 fn socket(lease: &ConnLease) -> Option<i32> {
     lease.sockets().next().map(|s| s.key().get())
 }
@@ -133,9 +138,9 @@ fn local_connections_are_numbered_and_closed_when_released() {
         pool.release(&Home::Multi, a, Finish::default(), UNLIMITED, &mut net, now),
         Released::Closed(ConnNumber(0))
     );
-    assert!(pool.get_conn(a_id).is_none());
+    assert!(idle_conn(&pool, a_id).is_none());
     // A leased connection is its lease's, not the pool's to show.
-    assert!(pool.get_conn(b.id()).is_none());
+    assert!(idle_conn(&pool, b.id()).is_none());
     assert_eq!(b.conn().number, ConnNumber(1));
     let premature = Finish {
         premature: true,
@@ -206,7 +211,7 @@ fn a_full_pool_closes_its_oldest_idle_connection() {
         }
     );
     assert_eq!(
-        pool.get_conn(b_id).map(|c| c.number),
+        idle_conn(&pool, b_id).map(|c| c.number),
         Some(ConnNumber(1)),
         "idle, the pool's to show"
     );
@@ -505,7 +510,7 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
         matches!(tried, Connected::Connecting(Progress::Trying { remote, .. }) if remote == to)
     );
     assert_eq!(socket(&lease), Some(1000), "the attempt's");
-    assert!(pool.get_conn(id).is_none(), "leased");
+    assert!(idle_conn(&pool, id).is_none(), "leased");
     let up = connect(&mut lease, &mut net, now).unwrap();
     let Connected::Established {
         remote, local, at, ..

@@ -535,9 +535,11 @@ mod tests {
             assert!(ready(&s, Events::OUT).contains(Events::OUT));
         }
         assert_eq!(s.peer_addr().unwrap(), addr);
+        let (mut peer, _) = listener.accept().unwrap();
         drop(s);
-        // SAFETY: `F_GETFD` on a number, which must no longer be open.
-        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1, "closed");
+        // Not by its number, which another test may be given meanwhile:
+        // the peer sees the end.
+        assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0, "closed");
     }
 
     /// Multipath TCP is the protocol asked for, where the kernel has it.

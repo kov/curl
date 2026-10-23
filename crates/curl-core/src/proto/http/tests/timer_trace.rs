@@ -184,3 +184,57 @@ fn the_speed_timers_are_armed_with_their_waits() {
     }
     assert_eq!(m.timeout(), Some(Duration::from_millis(996)));
 }
+
+/// A receive limit's decisions are traced in the multi's state, each
+/// after the state it changes to and the timer it arms: the wait, and,
+/// once it is over, when the next tokens come and the way back to
+/// PERFORMING (`mspeed_check`'s `[RLIMIT]` lines).
+#[test]
+fn a_receive_limit_s_waits_are_traced_as_c() {
+    let (mut m, _talks, clock) = endless_clocked(1);
+    let seen = Seen::default();
+    let (mut e, drops) = endless_get(|o| {
+        o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE);
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    });
+    let c = Components::new().unwrap();
+    c.configure(b"timer,multi");
+    e.set_components(Some(c));
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    until_body(&mut m, &drops);
+    clock.advance(m.timeout().unwrap());
+    m.perform(&mut NoEvents).unwrap();
+    let text: Vec<_> = seen
+        .text()
+        .into_iter()
+        .filter(|l| l.contains("TOOFAST] set") || l.contains("RLIMIT") || l.contains("] -> ["))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let at = text
+        .iter()
+        .position(|l| l == "[MULTI] [PERFORMING] -> [RATELIMITING]")
+        .unwrap_or_else(|| panic!("{text:?}"));
+    // The wait is the pass's, from its start; the timer's is what is left
+    // of it once the pass's four reads have moved the clock 4 ms on.
+    assert_eq!(
+        text[at..at + 7],
+        [
+            "[MULTI] [PERFORMING] -> [RATELIMITING]",
+            "[TIMER] [TOOFAST] set for 996000us",
+            "[MULTI] [RATELIMITING] [RLIMIT] waiting 1000ms",
+            "[TIMER] [TOOFAST] set for 1000000us",
+            "[MULTI] [RATELIMITING] [RLIMIT] next token update in 1000ms",
+            "[MULTI] [RATELIMITING] [RLIMIT] wait over, continue",
+            "[MULTI] [RATELIMITING] -> [PERFORMING]",
+        ],
+        "{text:?}"
+    );
+    // A pass that was not waiting has no wait to be over.
+    assert!(
+        !text
+            .iter()
+            .any(|l| l.starts_with("[MULTI] [PERFORMING] [RLIMIT] wait over")),
+        "{text:?}"
+    );
+}

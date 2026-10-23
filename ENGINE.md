@@ -347,7 +347,7 @@ collect them, and for the transfer event handling assesses, after each run and a
 out; then `wait`'s `multi_wait(fds=N, timeout=T) tinternal=I` on the last of them, after the
 multi's own timeout is read, the waker counted in `fds` as it is watched (§3.6). A socket
 action traces `multi_run_dirty` as it comes to each dirty transfer. Not traced: the credentials
-line (`Curl_creds_trace`), `xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; event mode's socket-hash
+line (`Curl_creds_trace`), `xfer_setup` and `[TIMEOUT]`; event mode's socket-hash
 lines (`ev new entry`, `ev entry … added transfer`, `ev update`, `ev update call`, `ev last user
 gone`), which count the readers, writers and owners of C's socket hash entries, a bookkeeping the
 engine's `SocketTable` does not keep in that form; a transfer let out of PENDING by another is
@@ -655,7 +655,8 @@ leaves the request going: over either, it moves to `RateLimiting`, its `TooFast`
 the wait and its run in the next pass called off; under them, the timer is armed for the next
 tokens. `RateLimiting` waits on nothing but that timer (no pollset), and at each wake fails at
 the time limit, takes the progress and low-speed check, and goes back to `Exchanging` at once
-once the limits allow.
+once the limits allow. C's state changes inside `mspeed_check`, so the move to RATELIMITING and
+back is traced there, before the timer is armed, among its `[RLIMIT]` lines.
 
 **A transfer runs as legs.** Init runs C's pretransfer once (the report restarted, `Starts::op`,
 the option's URL parsed) and `start_leg` for the first request: `Starts::single`, the limits

@@ -662,3 +662,25 @@ witness: curl-core proto::http::tests::a_transfer_out_of_time_reads_no_more
         TransferState::Exchanging(x) if expired(run, cx) => {
 --- new
         TransferState::Exchanging(x) if false && expired(run, cx) => {
+
+=== a transfer over its limit is said to wait before it changes state
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::timer_trace::a_receive_limit_s_waits_are_traced_as_c
+features: test-util
+--- old
+            mstate::enter(cx, MState::RateLimiting);
+            arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
+--- new
+            arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
+            mstate::enter(cx, MState::RateLimiting);
+
+=== a transfer under its limit is said to be done waiting in every pass
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::timer_trace::a_receive_limit_s_waits_are_traced_as_c
+features: test-util
+--- old
+            if cx.mstate() != MState::Performing {
+                mstate::trace(cx, format_args!("[RLIMIT] wait over, continue"));
+--- new
+            {
+                mstate::trace(cx, format_args!("[RLIMIT] wait over, continue"));

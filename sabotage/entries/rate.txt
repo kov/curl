@@ -61,12 +61,10 @@ witness: curl-core proto::http::tests::an_unpause_starts_the_receive_limit_over
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_each_second
 --- old
-            arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
-            cx.rest.dirty.remove(cx.me.index());
+            mstate::trace(cx, format_args!("[RLIMIT] waiting {ms}ms"));
             true
 --- new
-            arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
-            cx.rest.dirty.remove(cx.me.index());
+            mstate::trace(cx, format_args!("[RLIMIT] waiting {ms}ms"));
             false
 
 === a transfer waiting out its limit runs past its time limit

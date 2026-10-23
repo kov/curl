@@ -1249,17 +1249,27 @@ fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
 /// Whether the speed limits make the transfer wait now, its timer armed
 /// for the wait and its run in the next pass called off; if not, the
 /// timer is armed for when a limit next earns tokens, as the transfer
-/// may need them to go on (`mspeed_check`, `EXPIRE_TOOFAST`).
+/// may need them to go on (`mspeed_check`, `EXPIRE_TOOFAST`). C's state
+/// changes here, before the timer is armed, and each is traced.
 fn over_limit<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> bool {
     match cx.rate_verdict() {
         Verdict::Wait(wait) => {
+            mstate::enter(cx, MState::RateLimiting);
             arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
             cx.rest.dirty.remove(cx.me.index());
+            let ms = wait.as_millis();
+            mstate::trace(cx, format_args!("[RLIMIT] waiting {ms}ms"));
             true
         }
         Verdict::Go(next) => {
             if let Some(next) = next {
                 arm(&mut run.deadlines, cx, TimerKind::TooFast, next);
+                let ms = next.as_millis();
+                mstate::trace(cx, format_args!("[RLIMIT] next token update in {ms}ms"));
+            }
+            if cx.mstate() != MState::Performing {
+                mstate::trace(cx, format_args!("[RLIMIT] wait over, continue"));
+                mstate::enter(cx, MState::Performing);
             }
             false
         }

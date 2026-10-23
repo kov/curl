@@ -222,11 +222,15 @@ fn a_header_file_that_does_not_open_fails() {
     let dir = scratch("header-file-missing");
     let missing = dir.join("missing");
     for option in ["-H", "--proxy-header"] {
-        let run = curl(&[
-            option,
-            &format!("@{}", missing.display()),
-            "http://127.0.0.1:1/",
-        ]);
+        // Wide enough that a long scratch path is not wrapped.
+        let run = curl_columns(
+            &[
+                option,
+                &format!("@{}", missing.display()),
+                "http://127.0.0.1:1/",
+            ],
+            Some("500"),
+        );
         assert_eq!(run.code, 26);
         let said = format!(
             "curl: Failed to open {}\ncurl: option {option}: error encountered when reading a file\n",

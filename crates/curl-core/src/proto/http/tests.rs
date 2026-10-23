@@ -42,10 +42,12 @@ impl Seen {
             .collect()
     }
 
-    /// The trace's text lines, without the debug build's warning.
+    /// The trace's text lines, without the debug build's warning and
+    /// the lines only it writes.
     fn text(&self) -> Vec<String> {
         self.of("text")
             .into_iter()
+            .filter(|l| !crate::trace::debug_only(l))
             .map(|l| String::from_utf8(l).unwrap())
             .filter(|l| !l.starts_with("!!! WARNING") && !l.starts_with("This is a debug build"))
             .collect()
@@ -392,7 +394,7 @@ fn a_held_line_is_delivered_at_the_end() {
         .lock()
         .unwrap()
         .iter()
-        .filter(|(w, _)| matches!(*w, "text" | "header"))
+        .filter(|(w, b)| matches!(*w, "text" | "header") && !crate::trace::debug_only(b))
         .map(|(w, b)| (*w, String::from_utf8_lossy(b).into_owned()))
         .collect();
     let failed = order
@@ -4873,6 +4875,8 @@ fn an_origin_s_digest_is_answered_through_a_proxy() {
 }
 
 mod coding;
+#[cfg(feature = "debug-hooks")]
+mod debug_lines;
 mod multi_trace;
 mod os_errno;
 mod range;
@@ -5713,6 +5717,31 @@ fn a_transfer_out_of_time_reads_no_more() {
             .any(|l| l.starts_with("Operation timed out after 1000 milliseconds")),
         "{text:?}"
     );
+}
+
+/// Only the debug build says what C's debug build alone traces: a
+/// plain build's request, body, end and failure say none of it.
+#[cfg(not(feature = "debug-hooks"))]
+#[test]
+fn the_plain_build_says_no_debug_lines() {
+    let (mut m, talk, _) = server(&[UNTIL_CLOSE], true);
+    let ran = get(&mut m, "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let cut = b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nFunny-head: swsclose\r\n";
+    let ran_cut = run("/", cut, true, |_| {});
+    assert_eq!(ran_cut.result, Err(ErrorKind::PartialFile));
+    for ran in [&ran, &ran_cut] {
+        let text = ran.seen.of("text");
+        assert!(text.iter().any(|l| l.starts_with(b"using HTTP/1.x")));
+        assert!(
+            !text.iter().any(|l| crate::trace::debug_only(l)),
+            "{text:?}"
+        );
+    }
 }
 
 /// A transfer waiting out its limit still ends at its time limit.

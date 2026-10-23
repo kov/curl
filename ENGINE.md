@@ -298,7 +298,10 @@ copies it into ERRORBUFFER. `trace::info` (`infof`) traces a line only for a ver
 cut at 2048 bytes and marked `...` as `trc_end_buf` does, so a quiet transfer formats nothing.
 Text goes to the debug handler, or without one to the STDERR sink after `* `. The debug build's
 "!!! WARNING !!!" lines go to the first transfer added to a multi, at its first step rather than
-inside `add`, which has no transfer context.
+inside `add`, which has no transfer context. `trace::debug_info` is C's `DEBUGF(infof(...))`: a
+line only the debug-hooks build traces, under plain verbose, at the point C's debug build does
+(HTTP's sends and their end, the 100-continue reader's states, the end of the connection, a
+failed read pass and a failed pass, `file:`'s range).
 
 Which components trace is a `Components` handle (`components.rs`): a `Level` per `Component`,
 C's trace features and filter types (its DNS feature and DNS filter share a name, so they are one
@@ -321,7 +324,7 @@ header store (`header_collect`), the download writer (`download_write`), the gat
 the content decoders (`[PAUSE]`) and the handlers (`[OUT]`), with C's numeric write types and
 results. A `Transfer-Encoding` list is read by the head parser, which has no context to trace
 in; the line it hands out carries a `CodingTale` the protocol retells, before the line, as C
-traces while it reads. Not traced: the C debug build's `DEBUGF` lines.
+traces while it reads.
 
 `MULTI` follows C's state machine (`multi/mstate.rs`): each slot keeps the `MState` C would be
 in, which every multi line names, and a change is traced in the state left. The engine's states

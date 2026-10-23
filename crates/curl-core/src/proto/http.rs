@@ -238,6 +238,18 @@ enum AfterHead {
     Body(Reading),
 }
 
+/// Why a body announced with `Expect: 100-continue` is held back as its
+/// readers are asked (`cr_exp100_read`'s states).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Held {
+    /// The head has not all gone.
+    Unsent,
+    /// The head has gone: the wait starts.
+    Starts,
+    /// The wait has not run out.
+    Waits,
+}
+
 /// A body being read and sent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Reading {
@@ -1176,7 +1188,7 @@ impl Request {
             }) if self.filled < self.out.len() && !paused => {
                 self.fill(cx)?;
             }
-            AfterHead::Continue => self.held_back(cx),
+            AfterHead::Continue => self.held_back(cx, Held::Unsent),
             AfterHead::Body(_) => {}
         }
         // The engine takes the request as sent at DID if it went now;
@@ -1189,6 +1201,7 @@ impl Request {
     fn fill<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
         self.start_reading(cx);
         let pausable = self.pipeline.pausable();
+        let announced = self.outgoing.announced();
         let body = self.body.as_mut().expect("a body to read");
         let dest = &mut self.out[self.filled..];
         // Under a send limit, no more than it allows, and nothing once it
@@ -1208,6 +1221,10 @@ impl Request {
             None => dest,
         };
         let len = dest.len();
+        // The 100's wait over, its reader passes every read on.
+        if announced {
+            trace::debug_info(cx, format_args!("cr_exp100_read, pass through"));
+        }
         let got = body.read(cx, dest, pausable, trailer_block);
         upload::client_read(cx, len, &got);
         let got = got?;
@@ -1220,13 +1237,30 @@ impl Request {
     }
 
     /// The body is asked for, unless its sending is paused, and held back
-    /// for a 100: C's readers give nothing (`Curl_client_read`,
-    /// `cr_exp100_read`).
-    fn held_back<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
+    /// for a 100, `held` saying why: C's readers give nothing
+    /// (`Curl_client_read`, `cr_exp100_read`).
+    fn held_back<H: Host>(&mut self, cx: &mut StepCx<'_, H>, held: Held) {
         if cx.pause().send_paused() {
             return;
         }
         self.start_reading(cx);
+        match held {
+            Held::Unsent => trace::debug_info(
+                cx,
+                format_args!("cr_exp100_read, request not full sent yet"),
+            ),
+            Held::Starts => {
+                let ms = cx.easy().options().http.continue_wait.0.as_millis();
+                trace::debug_info(
+                    cx,
+                    format_args!("cr_exp100_read, start AWAITING_CONTINUE, timeout {ms}ms"),
+                );
+            }
+            Held::Waits => trace::debug_info(
+                cx,
+                format_args!("cr_exp100_read, AWAITING_CONTINUE, not expired"),
+            ),
+        }
         let nothing = Ok(upload::Readout { n: 0, eos: false });
         upload::client_read(cx, self.out.len() - self.filled, &nothing);
     }
@@ -1261,7 +1295,7 @@ impl Request {
                 // the 100, or until the wait runs out (`cr_exp100_read`).
                 match self.outgoing {
                     Sending::AwaitingContinue(until) if cx.now() < until => {
-                        self.held_back(cx);
+                        self.held_back(cx, Held::Waits);
                         return Ok(false);
                     }
                     Sending::AwaitingContinue(_) => {
@@ -1294,18 +1328,55 @@ impl Request {
                 }
                 _ => self.filled,
             };
+            // All that is left of the request, read to its end
+            // (`xfer_send`'s `eos`).
+            let len = end - self.sent;
+            let eos = end == self.filled
+                && matches!(
+                    self.outgoing,
+                    Sending::Head {
+                        then: AfterHead::Body(Reading { eos_read: true, .. }),
+                        ..
+                    } | Sending::Body(Reading { eos_read: true, .. })
+                );
+            if eos {
+                trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
+            }
             let sent = lease.get().send(cx, &self.out[self.sent..end]);
-            trace::sent(cx, end - self.sent, &sent);
-            let n = match sent {
-                Ok(Sent::Bytes(n)) => n.get(),
-                Ok(Sent::WouldBlock) => return Ok(false),
+            // The failure is said before the send is traced
+            // (`cf_socket_send`).
+            let failed = match &sent {
                 Err(e) => {
-                    let why = OsError(&e);
-                    return Err(trace::fail(
+                    let why = OsError(e);
+                    Some(trace::fail(
                         cx,
                         ErrorKind::SendError,
                         format_args!("Send failure: {why}"),
-                    ));
+                    ))
+                }
+                Ok(_) => None,
+            };
+            trace::sent(cx, len, &sent);
+            let (code, n) = match (&sent, failed) {
+                (Ok(Sent::Bytes(n)), _) => (0, n.get()),
+                (_, Some(kind)) => (kind.number(), 0),
+                _ => (0, 0),
+            };
+            trace::debug_info(
+                cx,
+                format_args!(
+                    "Curl_xfer_send(len={len}, eos={}) -> {code}, {n}",
+                    u8::from(eos)
+                ),
+            );
+            let n = match (sent, failed) {
+                (_, Some(kind)) => return Err(kind),
+                (Ok(Sent::Bytes(n)), _) => n.get(),
+                _ => {
+                    // Nothing went: what is left waits (`req_flush`).
+                    let left = self.filled - self.sent;
+                    trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+                    return Ok(false);
                 }
             };
             // The head's part and the body's are traced apart
@@ -1337,12 +1408,16 @@ impl Request {
                         let until = cx.now().after(wait);
                         self.outgoing = Sending::AwaitingContinue(until);
                         state::trace_set(cx, TimerKind::Proto, until);
-                        self.held_back(cx);
+                        self.held_back(cx, Held::Starts);
                         return Ok(false);
                     }
                 };
             }
             if self.sent == end && end < self.filled {
+                // Cut short by the send limit, the rest waits
+                // (`req_flush`).
+                let left = self.filled - self.sent;
+                trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
                 return Ok(false);
             }
         }
@@ -1404,7 +1479,18 @@ impl Request {
         lease: &mut ConnLease,
     ) -> Result<ProtoStep, ErrorKind> {
         self.pipeline.flush(cx)?;
-        let read = self.receive(cx, lease)?;
+        let read = match self.receive(cx, lease) {
+            Ok(read) => read,
+            Err(e) => {
+                // A response cut short in its head is `Curl_sendrecv`'s
+                // own finding, after the reads.
+                if !(e == ErrorKind::PartialFile && matches!(self.stage, Stage::Head)) {
+                    let code = e.number();
+                    trace::debug_info(cx, format_args!("sendrecv_dl() -> {code}"));
+                }
+                return Err(e);
+            }
+        };
         // The request is over once its response is and nothing more of it
         // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
         if self.sending() {
@@ -1483,6 +1569,7 @@ impl Request {
                 Ok(Recv::WouldBlock) if lease.get().data_pending() => return Ok(Read::Stopped),
                 Ok(Recv::WouldBlock) => return Ok(Read::Waits),
                 Ok(Recv::Eof) => {
+                    trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
                     // The connection's end stops the sending too
                     // (`Curl_req_stop_send_recv`).
                     if self.sending() {

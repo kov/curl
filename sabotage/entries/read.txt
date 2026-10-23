@@ -47,7 +47,7 @@ witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_is_aske
 features: test-util
 --- old
                     Sending::AwaitingContinue(until) if cx.now() < until => {
-                        self.held_back(cx);
+                        self.held_back(cx, Held::Waits);
 --- new
                     Sending::AwaitingContinue(until) if cx.now() < until => {
 
@@ -56,7 +56,7 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_gives_nothing_until_it_comes
 features: test-util
 --- old
-            AfterHead::Continue => self.held_back(cx),
+            AfterHead::Continue => self.held_back(cx, Held::Unsent),
 --- new
             AfterHead::Continue => {}
 

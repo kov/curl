@@ -457,8 +457,9 @@ impl crate::handler::DebugHandler for Trace {
     fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
         // Without the debug build's warning, which its first transfer
         // traces.
-        let warning =
-            data.starts_with(b"!!! WARNING") || data.starts_with(b"This is a debug build");
+        let warning = data.starts_with(b"!!! WARNING")
+            || data.starts_with(b"This is a debug build")
+            || crate::trace::debug_only(data);
         if kind == crate::handler::DebugKind::Text && !warning {
             self.0.lock().unwrap().push(data.to_vec());
         }

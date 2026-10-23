@@ -307,7 +307,7 @@ witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_trace
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_traced_as_c
 --- old
-            trace::sent(cx, end - self.sent, &sent);
+            trace::sent(cx, len, &sent);
 --- new
 
 === a debug build ignores CURL_DEBUG
@@ -555,3 +555,89 @@ witness: curl-sys-abi handle_tests::a_custom_method_set_from_the_debug_function_
             c.method = custom;
         }
     }
+
+=== the last send of a request is not said
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_get_is_said_as_its_last_send
+features: debug-hooks
+--- old
+            if eos {
+                trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
+            }
+--- new
+
+=== a send is the request's last whenever it empties the buffer
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_body_held_for_a_100_is_said_at_each_read
+features: debug-hooks
+--- old
+            let eos = end == self.filled
+                && matches!(
+--- new
+            let eos = end == self.filled
+                || matches!(
+
+=== a failed send is said as one that took nothing
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_failed_send_is_said_after_its_failure
+features: debug-hooks
+--- old
+                (_, Some(kind)) => (kind.number(), 0),
+--- new
+                (_, Some(_)) => (0, 0),
+
+=== a blocked send says nothing of what is left
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_blocked_send_leaves_the_rest_buffered
+features: debug-hooks
+--- old
+                    // Nothing went: what is left waits (`req_flush`).
+                    let left = self.filled - self.sent;
+                    trace::debug_info(cx, format_args!("Curl_req_flush(len={left}) -> EAGAIN"));
+--- new
+
+=== a body passed on after the 100 is not said
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_body_held_for_a_100_is_said_at_each_read
+features: debug-hooks
+--- old
+        if announced {
+            trace::debug_info(cx, format_args!("cr_exp100_read, pass through"));
+        }
+--- new
+
+=== the connection's end is not said
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::the_connection_s_end_is_said_as_reading_is_done
+features: debug-hooks
+--- old
+                    trace::debug_info(cx, format_args!("sendrecv_dl: we are done"));
+--- new
+
+=== a head cut short fails the reads too
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::debug_lines::a_head_cut_short_fails_the_pass_alone
+features: debug-hooks
+--- old
+                if !(e == ErrorKind::PartialFile && matches!(self.stage, Stage::Head)) {
+--- new
+                if true {
+
+=== a failed pass is not said
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::debug_lines::a_refused_write_fails_the_reads_and_the_pass
+features: debug-hooks
+--- old
+    trace::debug_info(cx, format_args!("Curl_sendrecv() -> {code}"));
+--- new
+    let _ = code;
+
+=== a plain build says the debug build's lines
+file: crates/curl-core/src/trace.rs
+witness: curl-core proto::http::tests::the_plain_build_says_no_debug_lines
+--- old
+    if cfg!(feature = "debug-hooks") {
+        info(cx, args);
+--- new
+    if true {
+        info(cx, args);

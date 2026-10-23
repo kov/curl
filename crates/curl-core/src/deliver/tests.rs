@@ -207,9 +207,12 @@ impl WriteHandler for Explains {
 #[derive(Clone, Default)]
 struct Trace(std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>);
 
-/// The debug build's warning, which its first transfer traces.
+/// The debug build's warning, which its first transfer traces, and the
+/// lines only that build writes.
 fn debug_build_warning(line: &[u8]) -> bool {
-    line.starts_with(b"!!! WARNING") || line.starts_with(b"This is a debug build")
+    line.starts_with(b"!!! WARNING")
+        || line.starts_with(b"This is a debug build")
+        || crate::trace::debug_only(line)
 }
 
 impl DebugHandler for Trace {

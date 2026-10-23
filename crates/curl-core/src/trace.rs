@@ -34,6 +34,30 @@ pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
     text(cx, line.bytes());
 }
 
+/// A line only C's debug build traces (`DEBUGF(infof(...))`): `info`
+/// in the debug-hooks build, nothing in any other.
+pub(crate) fn debug_info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
+    if cfg!(feature = "debug-hooks") {
+        info(cx, args);
+    }
+}
+
+/// Whether `line` is one `debug_info` writes for C's debug build, for
+/// the tests that read a trace whole, whichever build runs them.
+#[cfg(test)]
+pub(crate) fn debug_only(line: &[u8]) -> bool {
+    [
+        &b"sending last upload chunk of "[..],
+        b"Curl_xfer_send(",
+        b"Curl_req_flush(",
+        b"cr_exp100_read, ",
+        b"sendrecv_dl",
+        b"Curl_sendrecv() -> ",
+    ]
+    .iter()
+    .any(|p| line.starts_with(p))
+}
+
 /// `info` with a line made of `parts`, which need not be text.
 pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
     if !cx.easy().options().output.verbose {

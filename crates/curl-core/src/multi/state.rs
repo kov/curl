@@ -1055,6 +1055,9 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         }
         TransferState::Exchanging(mut x) => {
             let stepped = x.proto.step(cx, &mut x.lease);
+            if let Err(e) = stepped {
+                sendrecv_failed(cx, e);
+            }
             match stepped {
                 // Received nothing, perhaps over a reused connection that
                 // closed as it was reused (`multistate_performing`).
@@ -1080,7 +1083,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     let ended = stepped == ProtoStep::Done;
                     let done = ended && !x.proto.holds_output();
                     match progress::check(cx, done) {
-                        Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
+                        Err(e) => {
+                            sendrecv_failed(cx, e);
+                            (TransferState::Exchanging(x).fail(e), Wake::Again)
+                        }
                         Ok(look_again) => {
                             if let Some(wait) = look_again {
                                 arm(&mut run.deadlines, cx, TimerKind::SpeedCheck, wait);
@@ -1222,6 +1228,13 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     }
     run.state = next;
     wake
+}
+
+/// A pass over the transfer's connection failed with `kind`
+/// (`Curl_sendrecv`'s `DEBUGF`).
+fn sendrecv_failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind) {
+    let code = kind.number();
+    trace::debug_info(cx, format_args!("Curl_sendrecv() -> {code}"));
 }
 
 /// Whether the transfer's time is up, as of the pass's start.

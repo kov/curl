@@ -234,18 +234,14 @@ witness: curl-core proto::http::tests::a_pass_sends_one_buffer_of_the_body
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_redirect_mid_body_closes_rather_than_send_the_rest
 --- old
-        let read = self.receive(cx, lease)?;
-        // The request is over once its response is and nothing more of it
-        // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
-        if self.sending() {
-            self.send(cx, lease, true)?;
-        }
+        self.pipeline.flush(cx)?;
+        let read = match self.receive(cx, lease) {
 --- new
+        self.pipeline.flush(cx)?;
         if self.sending() {
             self.send(cx, lease, true)?;
         }
-        let read = Read::Waits;
-        self.receive(cx, lease)?;
+        let read = match self.receive(cx, lease) {
 
 === an abandoned head lets the body go on
 file: crates/curl-core/src/proto/http.rs

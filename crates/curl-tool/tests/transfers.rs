@@ -411,8 +411,7 @@ fn reports_an_output_it_cannot_open() {
 }
 
 /// Run the tool with `args`, in `dir`, its standard output going to
-/// `stdout`; `None` is a pipe whose reader is gone before the tool starts
-/// writing.
+/// `stdout`; `None` is a pipe whose reader is gone before the tool starts.
 fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
@@ -432,12 +431,14 @@ fn curl_to(dir: &Scratch, args: &[&str], stdout: Option<&str>) -> Run {
             cmd.stdout(file);
         }
         None => {
-            cmd.stdout(std::process::Stdio::piped());
+            // Closed here, not after the spawn, where the tool may already
+            // have written into the pipe.
+            let (reader, writer) = std::io::pipe().unwrap();
+            drop(reader);
+            cmd.stdout(writer);
         }
     }
-    let mut child = cmd.spawn().unwrap();
-    drop(child.stdout.take());
-    let out = child.wait_with_output().unwrap();
+    let out = cmd.spawn().unwrap().wait_with_output().unwrap();
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,

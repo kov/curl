@@ -677,6 +677,34 @@ fn room_closes_only_as_many_closing_connections_as_it_needs() {
     }
 }
 
+/// Past a limit that the busy connections alone reach, every closing
+/// connection goes, though fewer than the count over it, and the new
+/// transfer still waits (`cpool_check_limits`).
+#[test]
+fn busy_connections_past_the_limit_close_every_closing_one() {
+    let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
+    let mut ev = Rec::default();
+    let a = m.add(closing(1), (), &mut ev).unwrap();
+    by_events(&mut m, a, 1000, &mut ev);
+    m.remove(a, &mut ev).unwrap();
+    let busy = m.add(closing(3), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(m.shutdowns.len(), 1);
+    m.conn_limits_mut().max_total = NonZeroU32::new(1);
+    let waiting = m.add(closing(2), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(wire.closed(), [1000]);
+    assert_eq!(m.shutdowns.len(), 0);
+    // Its close lets the new one look again, to find the limit still
+    // reached.
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert!(matches!(
+        m.state_of(waiting),
+        state::TransferState::Pending(_)
+    ));
+    assert!(!m.state_of(busy).is_completed());
+}
+
 /// The set's deadline is the least time left of its connections
 /// (`cshutdn_perform`), each counted in whole milliseconds since its
 /// connection was made, as C's `start_ms` is: of three released at 1.0,

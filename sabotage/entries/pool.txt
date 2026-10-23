@@ -406,6 +406,14 @@ witness: curl-core conn::pool::tests::a_lease_goes_back_only_to_its_home
 --- new
             true,
 
+=== a share's lease is taken back by another share's pool
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_share_s_lease_goes_back_only_to_that_share
+--- old
+            (Home::Share(a), Home::Share(b)) => a.is(b),
+--- new
+            (Home::Share(_), Home::Share(_)) => true,
+
 === a socket closes by the system though its connection has a closer
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer

@@ -1090,6 +1090,32 @@ fn a_lease_goes_back_only_to_its_home() {
     );
 }
 
+/// Nor is a share's lease taken back by another share's pool: shares are
+/// told apart by identity, not by being shares.
+#[test]
+#[should_panic = "given back to Share"]
+fn a_share_s_lease_goes_back_only_to_that_share() {
+    let (mut net, clock) = net();
+    let mine = crate::share::Share::new().unwrap();
+    let other = crate::share::Share::new().unwrap();
+    let lease = new(
+        &mut mine.pool(),
+        &Home::Share(mine.clone()),
+        Route::Local,
+        &mut net,
+        clock.now(),
+    );
+    // A pool of the other share's, outside its lock, which the panic
+    // would poison; its table hands out the same id first.
+    let there = Home::Share(other);
+    let mut pool = Pool::new().unwrap();
+    let theirs = new(&mut pool, &there, Route::Local, &mut net, clock.now());
+    assert_eq!(lease.id(), theirs.id());
+    let now = clock.now();
+    pool.release(&there, theirs, Finish::default(), UNLIMITED, &mut net, now);
+    pool.release(&there, lease, Finish::default(), UNLIMITED, &mut net, now);
+}
+
 /// A connection closed cleanly first reads up to 1 KB of what its peer
 /// sent, as C's socket shutdown does: given back to be closed, and idle
 /// when the pool closes; one whose transfer was aborted is closed

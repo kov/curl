@@ -57,6 +57,7 @@ exclude_re = [
     'curl-psl/src/lib\.rs:.*: replace <impl Drop for Ctx>::drop with \(\)$',
     # A debug format nothing reads.
     'easy\.rs:.*: replace <impl fmt::Debug for Private>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    'conn/io\.rs:.*: replace <impl fmt::Debug for Sock>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
     'curl-zlib/src/lib\.rs:.*: replace <impl std::fmt::Debug for Inflater>::fmt -> std::fmt::Result with Ok\(Default::default\(\)\)$',
     # Seeking a file just opened to its start changes nothing.
     'proto/file\.rs:.*: replace > with >= in Request::download$',

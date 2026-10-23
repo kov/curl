@@ -239,6 +239,26 @@ pub(crate) fn is_known_scheme(scheme: &[u8]) -> bool {
         .is_ok()
 }
 
+/// The place of `scheme`, lowercase, among the schemes libcurl knows,
+/// if it knows it: the bit it has in a `Protocols` set.
+pub(crate) const fn known_index(scheme: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i < schemes::KNOWN.len() {
+        let name = schemes::KNOWN[i].name.as_bytes();
+        if name.len() == scheme.len() {
+            let mut at = 0;
+            while at < name.len() && name[at] == scheme[at] {
+                at += 1;
+            }
+            if at == name.len() {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Whether `url` starts with a scheme and `:` (`Curl_is_absolute_url`,
 /// not guessing).
 pub(crate) fn is_absolute(url: &[u8]) -> bool {

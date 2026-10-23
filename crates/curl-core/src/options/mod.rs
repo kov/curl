@@ -1226,6 +1226,7 @@ pub struct Http {
     /// Which redirects are followed (`CURLOPT_FOLLOWLOCATION`).
     pub follow: Follow,
     pub max_redirects: MaxRedirects,
+    pub redirect_protocols: RedirectProtocols,
     /// Which redirects keep a POST a POST (`CURLOPT_POSTREDIR`).
     pub post_redirect: PostRedir,
     /// A followed redirect sends the URL it came from as its referer
@@ -1513,6 +1514,51 @@ impl Default for MaxRedirects {
     }
 }
 
+/// Some of the schemes libcurl knows, built in or not: C's `curl_prot_t`,
+/// a mask of `CURLPROTO_*`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Protocols(u64);
+
+impl Protocols {
+    /// HTTP, HTTPS, FTP and FTPS: where a redirect may lead unless the
+    /// application says otherwise (`CURLPROTO_REDIR`).
+    pub const REDIRECT: Protocols = match Protocols::of(&["http", "https", "ftp", "ftps"]) {
+        Some(set) => set,
+        None => panic!("libcurl knows these schemes"),
+    };
+
+    /// The schemes `names`, each lowercase; none if libcurl does not know
+    /// one of them.
+    pub const fn of(names: &[&str]) -> Option<Protocols> {
+        let mut set = 0u64;
+        let mut i = 0;
+        while i < names.len() {
+            match crate::url::known_index(names[i].as_bytes()) {
+                Some(bit) => set |= 1 << bit,
+                None => return None,
+            }
+            i += 1;
+        }
+        Some(Protocols(set))
+    }
+
+    /// Whether `scheme`, lowercase, is one of them.
+    pub fn contains(self, scheme: &[u8]) -> bool {
+        crate::url::known_index(scheme).is_some_and(|bit| self.0 & 1 << bit != 0)
+    }
+}
+
+/// Where a redirect may lead (`CURLOPT_REDIR_PROTOCOLS_STR`): unless set,
+/// HTTP, HTTPS, FTP and FTPS (`CURLPROTO_REDIR`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RedirectProtocols(pub Protocols);
+
+impl Default for RedirectProtocols {
+    fn default() -> Self {
+        RedirectProtocols(Protocols::REDIRECT)
+    }
+}
+
 /// Which redirects a transfer follows, and how its method changes along
 /// them (`CURLFOLLOW_*`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1555,6 +1601,7 @@ impl Http {
             keep_sending_on_error: self.keep_sending_on_error,
             follow: self.follow,
             max_redirects: self.max_redirects,
+            redirect_protocols: self.redirect_protocols,
             post_redirect: self.post_redirect,
             auto_referer: self.auto_referer,
             unrestricted_auth: self.unrestricted_auth,

@@ -13,8 +13,8 @@ use crate::handler::{
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx, drive_to_completion};
 use crate::options::{
-    AuthMethods, BufferSize, Follow, MaxRedirects, Method, Options, PostRedir, Resume,
-    UploadSource, UserHeaders,
+    AuthMethods, BufferSize, Follow, MaxRedirects, Method, Options, PostRedir, Protocols,
+    RedirectProtocols, Resume, UploadSource, UserHeaders,
 };
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
@@ -1905,6 +1905,28 @@ fn a_redirect_to_a_file_is_refused() {
         "{text:?}"
     );
     assert_eq!(ran.seen.body(), b"");
+}
+
+/// A redirect reaches only the schemes the application lets it, HTTP's
+/// among them only if it says so.
+#[test]
+fn a_redirect_goes_only_where_the_option_lets_it() {
+    let defaults = RedirectProtocols::default().0;
+    for scheme in [&b"http"[..], b"https", b"ftp", b"ftps"] {
+        assert!(defaults.contains(scheme));
+    }
+    assert!(!defaults.contains(b"file") && !defaults.contains(b"nonsense"));
+    assert_eq!(Protocols::of(&["http", "nonsense"]), None);
+    let ran = run("/a", &moved("/b", false), false, |o| {
+        o.http.follow = Follow::All;
+        o.http.redirect_protocols = RedirectProtocols(Protocols::of(&["ftp"]).unwrap());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    let text = ran.seen.text();
+    assert!(
+        text.contains(&"Protocol \"http\" is disabled (in redirect)\n".to_string()),
+        "{text:?}"
+    );
 }
 
 /// The application's Authorization and Cookie go only to the origin the

@@ -2533,10 +2533,11 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     };
     // Known before the protocol opens anything, as C records it.
     cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
-    // A redirect goes only where C's `CURLPROTO_REDIR` lets it
+    // A redirect goes only where the application lets it
     // (`url_set_conn_scheme`).
     let redirected = cx.report_mut().redirects() > 0;
-    let refused = redirected && !matches!(&scheme[..], b"http" | b"https" | b"ftp" | b"ftps");
+    let allowed = cx.easy().options().http.redirect_protocols.0;
+    let refused = redirected && !allowed.contains(&scheme);
     let started = if refused {
         Ok(None)
     } else {

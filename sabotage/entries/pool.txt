@@ -29,9 +29,9 @@ witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-        Transport::Tcp(stream) => net.close(stream.into_socket()),
+            net.close(stream.into_socket());
 --- new
-        Transport::Tcp(stream) => drop(stream),
+            std::mem::forget(stream);
 
 === a setup given back keeps its attempt's socket open
 file: crates/curl-core/src/conn/pool.rs
@@ -437,3 +437,27 @@ witness: curl-core conn::io::tests::a_dropped_socket_is_caught
             self.socket.is_none() || std::thread::panicking(),
 --- new
             true,
+
+=== a clean close leaves the peer's bytes unread
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
+--- old
+            if how == Closing::Clean {
+--- new
+            if false {
+
+=== an aborted transfer's connection is drained as it closes
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
+--- old
+                let how = if finish.premature {
+--- new
+                let how = if false {
+
+=== an idle connection the pool closes is not drained
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
+--- old
+            ConnSlot::Open(conn) => close_transport(conn.transport, Closing::Clean, net),
+--- new
+            ConnSlot::Open(conn) => close_transport(conn.transport, Closing::Abort, net),

@@ -58,6 +58,14 @@ impl Stream {
         &mut self.rx
     }
 
+    /// Read and drop up to 1 KB of what the peer sent, before a clean
+    /// close, whatever the read says, as C does (`cf_socket_shutdown`).
+    pub(crate) fn drain(&self) {
+        let mut buf = [0u8; 1024];
+        // A failure, or nothing to read, leaves the close as it was.
+        let _ = self.socket().recv(&mut buf);
+    }
+
     /// The connection's end here, if the system says.
     pub(crate) fn local_addr(&self) -> Option<SocketAddr> {
         self.socket.socket().local_addr().ok()

@@ -406,6 +406,9 @@ struct Wire {
     endless: Option<Duration>,
     /// The reads of the endless part so far.
     endless_reads: usize,
+    /// The reads so far, and how much room the last one had.
+    reads: usize,
+    last_read_room: usize,
 }
 
 /// The most reads of an endless reply before the test fails: a transfer
@@ -527,6 +530,13 @@ impl Conversation {
             .expect("no test panics holding the wire")
             .endless = Some(per_read);
         self
+    }
+
+    /// How many reads the connection had, and how much room the last
+    /// one had.
+    pub fn reads(&self) -> (usize, usize) {
+        let wire = self.0.lock().expect("no test panics holding the wire");
+        (wire.reads, wire.last_read_room)
     }
 
     /// How many reads the endless part of the reply has had.
@@ -859,6 +869,8 @@ impl Socket for FakeSocket {
     fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
         assert!(!buf.is_empty(), "a receive needs room");
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
+        wire.reads += 1;
+        wire.last_read_room = buf.len();
         if wire.hung_up {
             return Ok(Recv::Eof);
         }

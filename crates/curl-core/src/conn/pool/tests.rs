@@ -1090,6 +1090,67 @@ fn a_lease_goes_back_only_to_its_home() {
     );
 }
 
+/// A connection closed cleanly first reads up to 1 KB of what its peer
+/// sent, as C's socket shutdown does: given back to be closed, and idle
+/// when the pool closes; one whose transfer was aborted is closed
+/// without a read.
+#[test]
+fn a_clean_close_drains_the_socket_first() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 1));
+    let talks = [(); 3].map(|()| Conversation::new(b"x", false));
+    let mut net = FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts);
+    for talk in &talks {
+        net = net.with_conversation(at, talk.clone());
+    }
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let mut leases = [(); 3].map(|()| {
+        let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+        up(&mut lease, &mut net, now);
+        lease
+    });
+    assert_eq!(talks.each_ref().map(Conversation::reads), [(0, 0); 3]);
+    leases[0].get().mark_close();
+    let [closed, aborted, idle] = leases;
+    let premature = Finish {
+        premature: true,
+        ..Finish::default()
+    };
+    let released = [
+        pool.release(
+            &Home::Multi,
+            closed,
+            Finish::default(),
+            UNLIMITED,
+            &mut net,
+            now,
+        ),
+        pool.release(&Home::Multi, aborted, premature, UNLIMITED, &mut net, now),
+        pool.release(
+            &Home::Multi,
+            idle,
+            Finish::default(),
+            UNLIMITED,
+            &mut net,
+            now,
+        ),
+    ];
+    assert!(matches!(
+        released,
+        [
+            Released::Closed(_),
+            Released::Terminated(_),
+            Released::Idle { .. }
+        ]
+    ));
+    let reads = || talks.each_ref().map(Conversation::reads);
+    assert_eq!(reads(), [(1, 1024), (0, 0), (0, 0)]);
+    pool.close_idle(&mut net);
+    assert_eq!(reads(), [(1, 1024), (0, 0), (1, 1024)]);
+    assert_eq!(net.open_sockets(), 0);
+}
+
 /// A connection sends and reads behind what waits; its
 /// peer replies to a request's head, then closes.
 #[test]

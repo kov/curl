@@ -1405,9 +1405,13 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   transfer joining its multi is one more with nothing done (`Curl_cpool_xfer_init`). Test 1554
   pins this sequence (SHARE, CONNECT ×3 on first perform; CONNECT on return), so these four
   never merge or split.
-- Leaving the pool, a connection is closed at once. A clean close (`Released::Closed`,
-  `Evicted`) first drains up to 1 KB from the socket (cf-socket.c:1102–1110); a terminated one
-  does not (planned, step 40). From step 43 a connection that shuts down gracefully (TLS
+- Leaving the pool, a connection is closed at once. Every close of an established TCP connection
+  but a terminated one (`Released::Terminated`, an aborted transfer's) first reads up to 1 KB
+  from the socket and drops it, as C's `cf_socket_shutdown` does (cf-socket.c:1102–1110) on
+  each non-aborted close (`cpool_discard_conn`): given back to close (`Released::Closed`),
+  evicted, found dead or too old, pruned, closed for room, or closed at a multi's or share's
+  cleanup. A setup's sockets are closed without it, as C's socket filter is not connected yet.
+  From step 43 a connection that shuts down gracefully (TLS
   close_notify, the scheme's disconnect handler once) becomes `Closing` in the multi's
   `ShutdownSet` instead, or is terminated at once (aborted, CONNECT_ONLY, share-owned pool), and
   closing connections count toward host and total limits, as in C.

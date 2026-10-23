@@ -648,7 +648,14 @@ impl Pool {
                 number
             }
             ConnSlot::Open(conn) => {
-                close_transport(conn.transport, net);
+                // An aborted transfer's connection is not shut down
+                // (`cpool_discard_conn`).
+                let how = if finish.premature {
+                    Closing::Abort
+                } else {
+                    Closing::Clean
+                };
+                close_transport(conn.transport, how, net);
                 conn.number
             }
             ConnSlot::Failed(number) => number,
@@ -843,7 +850,7 @@ fn prune(conns: &mut Arena<Place, ConnSlot>, rules: ReuseRules, net: &mut dyn Ne
 fn close(conns: &mut Arena<Place, ConnSlot>, id: ConnId, net: &mut dyn Net) {
     match conns.remove(id) {
         Some(Place::Idle(slot)) => match slot {
-            ConnSlot::Open(conn) => close_transport(conn.transport, net),
+            ConnSlot::Open(conn) => close_transport(conn.transport, Closing::Clean, net),
             _ => unreachable!("an idle connection is open"),
         },
         Some(Place::Leased(_)) => panic!("{id:?} is leased"),
@@ -898,10 +905,27 @@ fn whole_ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn close_transport(transport: Transport, net: &mut dyn Net) {
+/// How a connection leaves the pool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Closing {
+    /// Shut down first, as every connection the pool closes is unless
+    /// its transfer was aborted.
+    Clean,
+    Abort,
+}
+
+/// Close an established connection's transport. A clean close of a TCP
+/// socket first reads up to 1 KB of what the peer sent, so the kernel
+/// does not answer it with a reset (`cf_socket_shutdown`).
+fn close_transport(transport: Transport, how: Closing, net: &mut dyn Net) {
     match transport {
         Transport::Local => {}
-        Transport::Tcp(stream) => net.close(stream.into_socket()),
+        Transport::Tcp(stream) => {
+            if how == Closing::Clean {
+                stream.drain();
+            }
+            net.close(stream.into_socket());
+        }
     }
 }
 

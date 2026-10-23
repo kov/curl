@@ -558,7 +558,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       over its room an error; the sizes of `ConnSlot` and `Slot` pinned.
     - **c. A lease's home.** **Done.** `Home` stamped by `find` and `add` inside the pool section,
       checked by `release`; `set_home` goes.
-    - **d. The closer.** `Sock` and `Closer`, captured at `Pool::add` and carried by every
+    - **d. The closer.** **Done.** `Sock` and `Closer`, captured at `Pool::add` and carried by every
       socket the connection opens; a share's and a multi's idle connections close through it
       at cleanup. Then the 1 KB drain before a clean close.
     - **e. The layer stack.** `Layer`, `Below`, `LayerStack` and `LayerCx`; the stream reads

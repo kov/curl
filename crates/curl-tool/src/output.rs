@@ -150,14 +150,13 @@ impl EtagSave {
         let Some((&b'\n', _)) = value.split_last() else {
             return true;
         };
-        let last = value.len() - 1;
-        let start = value[..last].iter().take_while(|&&b| is_blank(b)).count();
+        // The newline ends the blanks skipped.
+        let start = value.iter().take_while(|&&b| is_blank(b)).count();
+        // A byte that is no space is no blank either: it is at `start`
+        // or after it.
         let Some(end) = value.iter().rposition(|&b| !is_space(b)) else {
             return true;
         };
-        if end < start {
-            return true;
-        }
         let etag = &value[start..=end];
         // C does not check these writes.
         match self {
@@ -1290,6 +1289,35 @@ mod tests {
         assert_eq!(s.body(b"abc"), Write::Accepted);
         assert!(s.throw_away());
         assert_eq!(s.written(), 3);
+    }
+
+    /// An ETag is saved without the blanks before it and the spaces
+    /// after it, a newline added, the file emptied of the last one; a
+    /// value of spaces alone, or a line without its newline, saves
+    /// nothing and leaves the file as it is (`save_etag`).
+    #[test]
+    fn saves_an_etag_as_c_does() {
+        let path = scratch("etag-save");
+        std::fs::write(&path, b"old\n").unwrap();
+        let mut save = EtagSave::File(File::options().append(true).open(&path).unwrap());
+        for (value, want) in [
+            (&b" \t\"abc\" \t\r\n"[..], &b"\"abc\"\n"[..]),
+            (b"x\n", b"x\n"),
+            (b"a b\n", b"a b\n"),
+            (b" \t \r\n", b"a b\n"),
+            (b"\n", b"a b\n"),
+            (b" y", b"a b\n"),
+            (b"\x0bz\x0c\n", b"\x0bz\n"),
+        ] {
+            assert!(save.save(value), "{}", value.escape_ascii());
+            assert_eq!(
+                std::fs::read(&path).unwrap().escape_ascii().to_string(),
+                want.escape_ascii().to_string(),
+                "{}",
+                value.escape_ascii()
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

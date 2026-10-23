@@ -539,16 +539,49 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     bringing its own. The debug handler reachable outside a transfer, so `COOKIELIST`'s cookie
     lines are traced where C traces them. Closes 3236, 3235, 1515 and 19. Waiting: the
     connection setup filter's and the pollset's lines (step 40), and 758 (step 43).
-40. **The engine rewrite in ENGINE.md:** who owns a connection (exclusive leases; pool places
-    for multiplexed, reserved and closing connections; the socket's closer carried from its
-    creation; a lease checked against its home pool) and the layer stack as a pull chain like
-    C's filters, one `Stream` owned by a dialed socket and a connection alike. With the
-    filters, the trace lines that describe them: SETUP, `cf_setup_connect`, `connected` and
-    `reduced to`, the pollset and `multi_wait`, a timer's `expires in` and the `gives multi
-    timeout` line, the DNS and happy eyeballs filters' own lines, and the SHUTDOWN timer.
+40. **The engine rewrite:** who owns a connection (exclusive leases checked against their home
+    pool; the socket's closer carried from its creation) and the layer stack as a pull chain
+    like C's filters, one `Stream` owned by a dialed socket and a connection alike (ENGINE.md
+    4.1–4.3, 4.6). With them, the trace lines C makes from inside a connect and from `wait`:
+    SETUP, `cf_setup_connect`, `connected` and `reduced to`, the TCP socket's lines, the
+    pollset and `multi_wait`, a timer's `expires in` and the `gives multi timeout` line. The
+    DNS and happy eyeballs filters' own lines stay untraced (ENGINE.md 2.5). Each trace
+    sub-step is proved by goldens taken from C captures, and one `tests/data` case for the
+    lines that carry no descriptor, time or port, on both legs.
+    - **a. Captures and design.** **Done.** The C build's traces of each case the step
+      reproduces (direct, refused, connect timeout, reuse, `Connection: close`, SOCKS5 and
+      5h, CONNECT, a 407 that redials, HAPROXY, a pre-proxy, IPv6 refused beside IPv4, event
+      mode), and a C program showing a share's cleanup closes through the creating transfer's
+      CLOSESOCKETFUNCTION; ENGINE.md rewritten for the design.
+    - **b. `Stream`.** TCP_NODELAY set by default, as C does, first. Then one `Stream` (socket
+      and receive buffer) owned by `Dialed` and `Conn`, one read path, `RecvBuf::fill`, a read
+      over its room an error; the sizes of `ConnSlot` and `Slot` pinned.
+    - **c. A lease's home.** `Home` stamped by `find` and `add` inside the pool section,
+      checked by `release`; `set_home` goes.
+    - **d. The closer.** `Sock` and `Closer`, captured at `Pool::add` and carried by every
+      socket the connection opens; a share's and a multi's idle connections close through it
+      at cleanup. Then the 1 KB drain before a clean close.
+    - **e. The layer stack.** `Layer`, `Below`, `LayerStack` and `LayerCx`; the stream reads
+      and writes through it, the pollset passes through it, the health check asks `is_alive`,
+      and data pending runs the transfer again.
+    - **f. A drive's context.** `ConnCx`, over the step's context, given to each drive; the
+      lines step 39 traces still reported through `Progress`.
+    - **g. Handshakes in C's order** over the `Dialed` stream: the PROXY line before the
+      connection is open, SOCKS and the tunnel recorded as kinds on the stream.
+    - **h. The chain's trace:** SETUP's lines and `cf_setup_connect`, `connected`, `reduced
+      to` and `failed to connect`, rendered from the machine's stage.
+    - **i. The TCP socket's trace** (`cf_socket_open`, local address, `connected`,
+      `adjust_pollset`, `poll/select error`, `destroy`) and `Curl_multi_will_close`.
+    - **j. The trace of `wait`:** pollsets, `expires in`, `gives multi timeout` and
+      `multi_wait`, from a traced internal `multi_timeout`.
+    - **k. The shim's socket hooks:** OPENSOCKETFUNCTION, SOCKOPTFUNCTION and
+      CLOSESOCKETFUNCTION (585, 1522, 1530, 1960).
+    - **l. Closing the step:** the sabotage sweep over conn, multi and share, and
+      cargo-mutants on the step's diff.
 41. **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
 42. **HTTP's decisions after an exchange** moved from the engine into `proto/http`.
-43. **TLS**, its first sub-step the layer stack; Ed25519 HTTP signatures on the OpenSSL
+43. **TLS**, its first sub-step the pool's `Closing` place, with the multi's `ShutdownSet`,
+    the SHUTDOWN timer and sockets owned by a connection (ENGINE.md 4.6); Ed25519 HTTP signatures on the OpenSSL
     binding it creates (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025). With it the trace
     of ALPN: the ALPN_EYEBALLS timer, `query ALPN`, and 758.
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
@@ -577,7 +610,9 @@ connect and DO states and connection-scoped protocol state, with the first stage
 STARTTLS; the request renderer writing each part through a field sink, when HTTP/2 starts;
 HTTP/2 delivering a sibling stream's data to its transfer at once, as C does, rather than
 buffering it per stream; FTP's data connection as a second chain beside the control
-connection's, and its FTP_ACCEPT and SERVER_RESPONSE timers traced; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
+connection's, and its FTP_ACCEPT and SERVER_RESPONSE timers traced; `CURLOPT_CONNECT_ONLY`
+with the pool's `Reserved` place (3231, 3232, 3234); the pool's `Attached` place for a
+connection several transfers lease, before stage 5; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
 
 The tool's `--libcurl` (`tool_easysrc.c`: the C program a command line amounts to; 1404 and the
 `--libcurl` tests) and `--manual` (the built-in manual, `tool_hugehelp.c`: 1708, and the hint

@@ -10,7 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
+use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use crate::conn::io::{Closer, Events, ResolveFailure};
 use crate::conn::layer::LayerCx;
@@ -18,7 +18,7 @@ use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
     Acquired, Answer, Asked, BadEntry, BadVia, ConnLease, ConnectError, Connected, Failure, Finish,
-    Found, Full, Home, Limit, ListEntry, Peer, PoolNote, PreProxy, Progress, ProxyCreds,
+    Found, Full, Home, Limit, ListEntry, Made, Peer, PoolNote, PreProxy, Progress, ProxyCreds,
     ProxyRoute, Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
     queries,
 };
@@ -1196,6 +1196,7 @@ fn connecting<H: Host>(
     let wildcard = cx.easy().wildcard_resolve;
     let scope = cx.easy().options().address_scope;
     let socket = cx.easy().options().socket;
+    let haproxy = cx.easy().options().proxy.haproxy;
     #[cfg(test)]
     let layer = cx.easy().options().layer;
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
@@ -1207,6 +1208,7 @@ fn connecting<H: Host>(
         delay,
         scope,
         socket,
+        haproxy,
         #[cfg(test)]
         layer,
     };
@@ -1221,7 +1223,17 @@ fn connecting<H: Host>(
         // Connected, or failed: the answer is let go.
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
     }
-    if !matches!(connected, Ok(Connected::Connecting(_))) {
+    // The race is over once an attempt connects, a proxy's or not
+    // (`cf_ip_happy_connect`).
+    if !matches!(
+        connected,
+        Ok(Connected::Connecting(
+            Progress::Resolved(_)
+                | Progress::Trying { .. }
+                | Progress::Failed(_)
+                | Progress::Waiting { .. }
+        ))
+    ) {
         run.deadlines.clear(TimerKind::Eyeballs);
     }
     match connected {
@@ -1249,7 +1261,7 @@ fn connecting<H: Host>(
         Ok(Connected::Connecting(Progress::Dialed { attempt })) => {
             let (remote, _) = c.lease.dialed().ends();
             eyeballs_won(cx, &c.route, attempt, remote);
-            dialed(c, cx)
+            handshake_next(c, cx)
         }
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
             match until {
@@ -1267,7 +1279,7 @@ fn connecting<H: Host>(
         }) => {
             let attempt = attempt.expect("a race's connection");
             eyeballs_won(cx, &c.route, attempt, remote);
-            established(c, cx, remote, local, at)
+            up(c, cx, remote, local, at)
         }
         // A reused connection is up: nothing to trace or time
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
@@ -1288,12 +1300,32 @@ fn connecting<H: Host>(
     }
 }
 
-/// Connected to the proxy: its handshake starts, SOCKS's or an HTTP
-/// proxy's tunnel's. Each connection to the proxy counts as it is made.
-fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    match c.route.socks().map(|leg| leg.version) {
-        Some(version) => socks::dialed(c, cx, version),
-        None => tunnel::dialed(c, cx),
+/// Connected to the first hop, or a handshake over it made: the next
+/// handshake starts, in cf-setup.c's order, which is decided here alone:
+/// the SOCKS proxy's, (the HTTP proxy's TLS, with stage 4), the HTTP
+/// proxy's tunnel, the PROXY protocol's line, (the origin's TLS). With
+/// none left, the connection is open.
+pub(super) fn handshake_next<H: Host>(
+    mut c: Connecting,
+    cx: &mut StepCx<'_, H>,
+) -> (TransferState, Wake) {
+    let made = c.lease.dialed().made();
+    if let Some(version) = c.route.socks().map(|leg| leg.version)
+        && !made.has(Made::SOCKS)
+    {
+        return socks::dialed(c, cx, version);
+    }
+    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
+        return tunnel::dialed(c, cx);
+    }
+    if cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
+        return haproxy::start(c, cx);
+    }
+    match c.lease.handshaken() {
+        Connected::Established {
+            remote, local, at, ..
+        } => up(c, cx, remote, local, at),
+        _ => unreachable!("the handshakes make the connection"),
     }
 }
 
@@ -1448,32 +1480,6 @@ pub(crate) fn trace_timer<H: Host>(
 ) {
     let name = kind.name();
     trace::of(cx, Component::Timer, format_args!("[{name}] {args}"));
-}
-
-/// A new connection is up, from `local` to `remote`, connected at `at`,
-/// its race won or its proxy's handshake done: its PROXY line sent if
-/// the transfer asks for one.
-fn established<H: Host>(
-    mut c: Connecting,
-    cx: &mut StepCx<'_, H>,
-    remote: SocketAddr,
-    local: Option<SocketAddr>,
-    at: Instant,
-) -> (TransferState, Wake) {
-    match haproxy::wanted(cx, remote, local, at) {
-        Ok(None) => up(c, cx, remote, local, at),
-        Ok(Some(preface)) => match try_box(Handshake::Haproxy(preface)) {
-            Ok(h) => {
-                c.handshake = Some(h);
-                (TransferState::Connecting(c), Wake::Again)
-            }
-            Err(_) => (
-                TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
-                Wake::Again,
-            ),
-        },
-        Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
-    }
 }
 
 /// The connection is set up (`conn_connect_trace`): timed and traced.

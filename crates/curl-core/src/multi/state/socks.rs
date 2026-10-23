@@ -6,11 +6,11 @@
 use curl_alloc::try_box;
 
 use super::{
-    Bytes, Connecting, Handshake, Ip, StepCx, TransferState, Wake, established, report_resolved,
+    Bytes, Connecting, Handshake, Ip, StepCx, TransferState, Wake, handshake_next, report_resolved,
 };
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::socks::{Creds, Dest, Handshake as Exchange, Resolved, SocksError, Took, Version};
-use crate::conn::{Connected, Found, RecvFailed};
+use crate::conn::{Found, Made, RecvFailed};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::trace;
@@ -166,14 +166,15 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
 
 /// The proxy connected where it was asked, traced as C traces it
 /// (`socks_proxy_cf_connect`), and the connection kept for transfers
-/// that insist on the user being authenticated if it was: the HTTP
-/// proxy behind it tunnels next, or the connection is up.
+/// that insist on the user being authenticated if it was: the next
+/// handshake follows.
 fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let authenticated = socks(&mut c.handshake).authenticated();
     let dialed = c.lease.dialed();
     if authenticated {
         dialed.socks5_authenticated();
     }
+    dialed.mark_made(Made::SOCKS);
     let (remote, local) = dialed.ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
     let proxy = c.route.proxy.as_ref().expect("dialed through a proxy");
@@ -191,15 +192,7 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
             remote.port()
         ),
     );
-    if proxy.tunnels() {
-        return super::tunnel::dialed(c, cx);
-    }
-    match c.lease.tunneled() {
-        Connected::Established {
-            remote, local, at, ..
-        } => established(c, cx, remote, local, at),
-        _ => unreachable!("the handshake makes the connection"),
-    }
+    handshake_next(c, cx)
 }
 
 /// The handshake failed, as the proxy's error (`CURLE_PROXY`).

@@ -186,10 +186,10 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
             eyeballs_won(cx, &c.route, attempt, remote);
-            dialed(c, cx)
+            handshake_next(c, cx)
 --- new
             let _ = (attempt, remote);
-            dialed(c, cx)
+            handshake_next(c, cx)
 
 === the answer to CONNECT is delivered though suppressed
 file: crates/curl-core/src/deliver/mod.rs
@@ -315,12 +315,12 @@ witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_repla
         if false {
 
 === a new connection sends no PROXY line
-file: crates/curl-core/src/multi/state/haproxy.rs
+file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_new_connection_sends_the_proxy_protocol_s_line_first
 --- old
-    if !proxy.haproxy {
+    if cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
 --- new
-    if proxy.haproxy {
+    if !cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
 
 === the PROXY line's family ignores the address given
 file: crates/curl-core/src/multi/state/haproxy.rs
@@ -377,12 +377,12 @@ witness: curl-core conn::tests::proxied_routes_match_as_c
             }),
 
 === an HTTP proxy behind a pre-proxy does not tunnel
-file: crates/curl-core/src/multi/state/socks.rs
+file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_tunnels
 --- old
-    if proxy.tunnels() {
+    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
 --- new
-    if !proxy.http() {
+    if c.route.proxy.as_ref().is_some_and(|p| !p.http()) && !made.has(Made::TUNNEL) {
 
 === an HTTP pre-proxy is taken
 file: crates/curl-core/src/multi/state.rs
@@ -514,3 +514,85 @@ witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
     let via = Via(Some(first).filter(|&f| f != origin && Some(f) != proxy));
 --- new
     let via = Via(route.via.as_deref());
+
+=== a new connection that sends the PROXY line is open before it is sent
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_line_is_sent
+--- old
+                        if self.route.handshakes() || setup.haproxy {
+                            // The connection is the first hop's; the
+--- new
+                        if self.route.handshakes() {
+                            // The connection is the first hop's; the
+
+=== the PROXY line goes before the tunnel it is to go through
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::the_proxy_protocol_s_line_goes_through_a_tunnel
+--- old
+    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
+--- new
+    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels())
+        && !made.has(Made::TUNNEL)
+        && (!cx.easy().options().proxy.haproxy || made.has(Made::PREFACE))
+    {
+
+=== a transfer removed mid-connect gives back its connection as open
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_connection_to_reuse
+--- old
+        let (lease, origin, past_do, rewinding) = match self {
+            TransferState::Init
+            | TransferState::Pending(_)
+            | TransferState::Setup(_)
+            | TransferState::Completed(_) => return,
+            TransferState::Connecting(c) => (c.lease, Some(c.route.origin), false, false),
+            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
+                let rewinding = x.proto.rewinds_upload();
+                (x.lease, x.origin, false, rewinding)
+            }
+            TransferState::Did(x)
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => {
+                let rewinding = x.proto.rewinds_upload();
+                (x.lease, x.origin, true, rewinding)
+            }
+            TransferState::Done(d) => {
+                let rewinding = d.rewinding();
+                (d.lease, d.origin, true, rewinding)
+            }
+        };
+        mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
+        upload::trace_reset(cx, rewinding);
+        release(cx, lease, true, past_do, origin.as_ref());
+--- new
+        let mut promoted = false;
+        let (lease, origin, past_do, rewinding) = match self {
+            TransferState::Init
+            | TransferState::Pending(_)
+            | TransferState::Setup(_)
+            | TransferState::Completed(_) => return,
+            TransferState::Connecting(mut c) => {
+                promoted = c.handshake.is_some();
+                if promoted {
+                    c.lease.handshaken();
+                }
+                (c.lease, Some(c.route.origin), false, false)
+            }
+            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
+                let rewinding = x.proto.rewinds_upload();
+                (x.lease, x.origin, false, rewinding)
+            }
+            TransferState::Did(x)
+            | TransferState::Exchanging(x)
+            | TransferState::RateLimiting(x) => {
+                let rewinding = x.proto.rewinds_upload();
+                (x.lease, x.origin, true, rewinding)
+            }
+            TransferState::Done(d) => {
+                let rewinding = d.rewinding();
+                (d.lease, d.origin, true, rewinding)
+            }
+        };
+        mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
+        upload::trace_reset(cx, rewinding);
+        release(cx, lease, !promoted, past_do, origin.as_ref());

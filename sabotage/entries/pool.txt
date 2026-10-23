@@ -213,9 +213,9 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 --- old
                         r.close_all(cx.net());
-                        if self.route.handshakes() {
+                        if self.route.handshakes() || setup.haproxy {
 --- new
-                        if self.route.handshakes() {
+                        if self.route.handshakes() || setup.haproxy {
 
 === a transfer is not woken for its next attempt
 file: crates/curl-core/src/multi/state.rs

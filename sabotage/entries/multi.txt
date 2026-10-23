@@ -510,7 +510,17 @@ witness: curl-core multi::tests::localhost_names_are_the_loopback_addresses
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::an_established_connection_forgets_the_next_attempt
 --- old
-    if !matches!(connected, Ok(Connected::Connecting(_))) {
+    // The race is over once an attempt connects, a proxy's or not
+    // (`cf_ip_happy_connect`).
+    if !matches!(
+        connected,
+        Ok(Connected::Connecting(
+            Progress::Resolved(_)
+                | Progress::Trying { .. }
+                | Progress::Failed(_)
+                | Progress::Waiting { .. }
+        ))
+    ) {
         run.deadlines.clear(TimerKind::Eyeballs);
     }
 --- new

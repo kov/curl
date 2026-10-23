@@ -1,7 +1,8 @@
 //! Setting a connection up: the name resolved, then attempts raced to its
 //! addresses until one connects (`lib/connect.c`, `cf-ip-happy.c`,
-//! `cf-socket.c`), then, through a proxy that tunnels, the tunnel's
-//! handshake over what connected (`cf-h1-proxy.c`).
+//! `cf-socket.c`), then the handshakes the route and the transfer ask for
+//! over what connected (SOCKS's, an HTTP proxy's tunnel, the PROXY
+//! protocol's line), which the transfer makes.
 //!
 //! Each stage owns what the one before produced. A drive moves the machine
 //! on by at most one event, which it returns for the transfer to trace,
@@ -49,16 +50,17 @@ enum Stage {
     Resolving,
     /// Attempts are made to the addresses it resolved to.
     Racing(Racing),
-    /// Connected to the proxy, the tunnel's handshake is made.
-    Tunnel(Dialed),
+    /// Connected to the first hop, the handshakes over it are made.
+    Dialed(Dialed),
 }
 
 /// The most times a setup is started over (cf-setup.c's arbitrary 5).
 const MAX_REDIALS: u8 = 5;
 
-/// A connection to a proxy, over which a tunnel is being set up (the
-/// chain below C's tunnel filter). The handshake's own bytes go through
-/// it; what comes after them is kept for the tunnel's first reader.
+/// A connection to its first hop, over which its handshakes are being
+/// made (the chain below C's SOCKS, tunnel and HAPROXY filters). The
+/// handshakes' own bytes go through its stream; what comes after them is
+/// kept for the connection's first reader.
 #[derive(Debug)]
 pub(crate) struct Dialed {
     remote: SocketAddr,
@@ -71,9 +73,38 @@ pub(crate) struct Dialed {
     target: Option<Result<(TryArc<Answer>, Found), Unresolved>>,
     /// A SOCKS5 proxy on the way authenticated the user.
     socks5_authenticated: bool,
+    /// The handshakes made over it so far.
+    made: Made,
+}
+
+/// The handshakes made over a dialed connection, each once, in
+/// cf-setup.c's order: SOCKS's and the tunnel's stay in C's chain as
+/// filters that pass the bytes (`[H1-PROXY][SOCKS][TCP]`); the PROXY
+/// line's filter goes once the chain is connected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Made(u8);
+
+impl Made {
+    pub(crate) const SOCKS: Made = Made(1);
+    pub(crate) const TUNNEL: Made = Made(2);
+    pub(crate) const PREFACE: Made = Made(4);
+
+    pub(crate) fn has(self, which: Made) -> bool {
+        self.0 & which.0 != 0
+    }
 }
 
 impl Dialed {
+    /// The handshakes made over it so far.
+    pub(crate) fn made(&self) -> Made {
+        self.made
+    }
+
+    /// The handshake `which` is made.
+    pub(crate) fn mark_made(&mut self, which: Made) {
+        self.made.0 |= which.0;
+    }
+
     /// A SOCKS5 proxy on the way authenticated the user, which the
     /// connection keeps (`bits.socks5_authenticated`).
     pub(crate) fn socks5_authenticated(&mut self) {
@@ -172,6 +203,10 @@ pub(crate) struct Setup {
     pub(crate) scope: Option<NonZeroU32>,
     /// What each socket is set to before it connects.
     pub(crate) socket: SocketOptions,
+    /// The transfer sends the PROXY protocol's line over a connection it
+    /// makes (`CURLOPT_HAPROXYPROTOCOL`): the connection is open only
+    /// once it is sent.
+    pub(crate) haproxy: bool,
     /// A layer of the tests' to put on the connection once it is up.
     #[cfg(test)]
     pub(crate) layer: Option<fn() -> Box<dyn super::layer::Layer>>,
@@ -291,9 +326,9 @@ pub(crate) enum Progress {
     /// Nothing until a socket is ready, or until `until`, when the next
     /// attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
     Waiting { until: Option<Instant> },
-    /// Connected to a proxy, through which a tunnel is to be made: its
-    /// handshake goes over `Pool::dialed`. The race's attempt `attempt`
-    /// won, as `Drove::Established` counts them.
+    /// Connected to the first hop, over which handshakes are to be made
+    /// (`ConnLease::dialed`). The race's attempt `attempt` won, as
+    /// `Drove::Established` counts them.
     Dialed { attempt: usize },
 }
 
@@ -372,7 +407,7 @@ impl ConnectMachine {
         let (running, dialed) = match &self.stage {
             Stage::Resolving => (&[][..], None),
             Stage::Racing(r) => (&r.attempts[..], None),
-            Stage::Tunnel(d) => (&[][..], Some(d.stream.socket())),
+            Stage::Dialed(d) => (&[][..], Some(d.stream.socket())),
         };
         running.iter().map(|a| a.socket.socket()).chain(dialed)
     }
@@ -380,23 +415,23 @@ impl ConnectMachine {
     /// The addresses the name resolved to, once it has.
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         match &self.stage {
-            Stage::Resolving | Stage::Tunnel(_) => None,
+            Stage::Resolving | Stage::Dialed(_) => None,
             Stage::Racing(r) => Some(&r.eyeballs.answer),
         }
     }
 
-    /// The connection to the proxy, while the tunnel is set up.
+    /// The connection to the first hop, while its handshakes are made.
     pub(crate) fn dialed(&mut self) -> &mut Dialed {
         match &mut self.stage {
-            Stage::Tunnel(d) => d,
-            Stage::Resolving | Stage::Racing(_) => panic!("no tunnel is set up"),
+            Stage::Dialed(d) => d,
+            Stage::Resolving | Stage::Racing(_) => panic!("no handshake is made"),
         }
     }
 
-    /// The tunnel is up: the connection is.
-    pub(crate) fn tunneled(self) -> Conn {
-        let Stage::Tunnel(d) = self.stage else {
-            panic!("no tunnel is set up");
+    /// The handshakes are made: the connection is up.
+    pub(crate) fn handshaken(self) -> Conn {
+        let Stage::Dialed(d) = self.stage else {
+            panic!("no handshake is made");
         };
         let at = d.connected_at;
         let mut conn = Self::conn(
@@ -421,8 +456,8 @@ impl ConnectMachine {
             return false;
         }
         self.redials += 1;
-        let Stage::Tunnel(d) = std::mem::replace(&mut self.stage, Stage::Resolving) else {
-            panic!("only a tunnel's setup is redialed");
+        let Stage::Dialed(d) = std::mem::replace(&mut self.stage, Stage::Resolving) else {
+            panic!("only a dialed setup is redialed");
         };
         net.close(d.stream.into_socket());
         self.stage = Stage::Racing(Racing {
@@ -456,7 +491,7 @@ impl ConnectMachine {
                 return Ok(Drove::Connecting(self, Progress::Resolved(found)));
             }
             Stage::Racing(r) => r,
-            Stage::Tunnel(_) => unreachable!("a tunnel is driven by its handshake"),
+            Stage::Dialed(_) => unreachable!("a dialed setup is driven by its handshakes"),
         };
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
@@ -471,9 +506,9 @@ impl ConnectMachine {
                     Ok(None) => {
                         let won = r.attempts.remove(i);
                         r.close_all(cx.net());
-                        if self.route.handshakes() {
-                            // The connection is the proxy's; the way
-                            // through it is still to be made.
+                        if self.route.handshakes() || setup.haproxy {
+                            // The connection is the first hop's; the
+                            // handshakes over it are still to be made.
                             let answer = r.eyeballs.answer.clone();
                             let target = self.socks_target(cx, setup);
                             let target = match target {
@@ -483,13 +518,14 @@ impl ConnectMachine {
                                     return Err(e);
                                 }
                             };
-                            self.stage = Stage::Tunnel(Dialed {
+                            self.stage = Stage::Dialed(Dialed {
                                 remote: won.remote,
                                 stream: Stream::new(won.socket),
                                 connected_at: now,
                                 answer,
                                 target,
                                 socks5_authenticated: false,
+                                made: Made::default(),
                             });
                             let dialed = Progress::Dialed { attempt: i };
                             return Ok(Drove::Connecting(self, dialed));
@@ -623,7 +659,7 @@ impl ConnectMachine {
         match self.stage {
             Stage::Resolving => {}
             Stage::Racing(mut r) => r.close_all(net),
-            Stage::Tunnel(d) => net.close(d.stream.into_socket()),
+            Stage::Dialed(d) => net.close(d.stream.into_socket()),
         }
     }
 }
@@ -862,6 +898,7 @@ mod tests {
                 delay: he,
                 scope: None,
                 socket: SocketOptions::default(),
+                haproxy: false,
                 layer: None,
             };
             let mut cx = Plain {
@@ -929,6 +966,7 @@ mod tests {
                 delay: he,
                 scope: None,
                 socket: SocketOptions::default(),
+                haproxy: false,
                 layer: None,
             };
             let mut cx = Plain {

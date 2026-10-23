@@ -1106,15 +1106,18 @@ socket before its connect.
   builds `Eyeballs`; the winning attempt's socket becomes the `Stream` of the next stage, and
   every handshake runs over that `Stream`. A handshake whose layer goes on working once it is
   done (TLS) pushes it on the stream; SOCKS and the HTTP proxy's tunnel, which only pass bytes
-  once connected, are recorded as kinds in a small inline list on the stream, not as boxed
-  layers that do nothing. Happy eyeballs never reads DNS sideways (C's
+  once connected, are recorded as made on the `Dialed` connection that owns the stream
+  (`Made`, a few bits in its padding, so no byte more for any transfer), not as boxed layers
+  that do nothing. Happy eyeballs never reads DNS sideways (C's
   `Curl_conn_dns_get_ai`), and the resolve record lives with the machine that started it, not
   on whichever transfer happens to call.
-- A route through a proxy that makes a handshake (`Tcp::handshakes`: SOCKS, or an HTTP proxy
-  that tunnels) does not end at the winning attempt: the machine keeps its socket as `Stage::Tunnel(Dialed)`, with a receive buffer, and
-  returns `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
+- A setup that makes a handshake does not end at the winning attempt: a route through SOCKS
+  or an HTTP proxy that tunnels (`Tcp::handshakes`), or a transfer that sends the PROXY line
+  (`Setup::haproxy`, the creating transfer's, as the line is not part of the route), has the
+  machine keep its socket as `Stage::Dialed(Dialed)`, with a receive buffer, and return
+  `Progress::Dialed`. The machine does only the I/O of the handshake; the transfer
   (`multi/state/tunnel.rs`) makes it. It renders the `CONNECT` with the proxy's side of its
-  `Auth`, sends it and reads the answer through `Pool::dialed`, parses it with
+  `Auth`, sends it and reads the answer through `ConnLease::dialed`, parses it with
   `proto::http1::tunnel::Answer`, and delivers each line through its own pipeline as
   `HeaderOrigin::Connect`, so the report, header handler and auth state are the transfer's to
   write. It reads until the socket would block or the answer is whole, as C does, and takes
@@ -1122,8 +1125,9 @@ socket before its connect.
   byte of the answer, the byte after a header line counted before the line is taken in, once
   for the connection's end, and once each time it returns for more or has the answer. The
   SOCKS handshake, like C's, takes none. A 407 is answered with another `CONNECT` on the same connection, its body dropped;
-  a 2xx makes the `Conn` (`Pool::tunneled`), keeping what came after the answer, and is
-  traced as established only then.
+  a 2xx records the tunnel made, and the next handshake follows; the last makes the `Conn`
+  (`ConnLease::handshaken`), keeping what came after the answer, and it is traced as
+  established only then.
 - SOCKS likewise (`multi/state/socks.rs`, over the sans-IO `conn::socks::Handshake`). For SOCKS4
   and SOCKS5, which resolve the destination here, the machine resolves it as it dials, through
   the same cache, and the `Dialed` stage carries the answer. A failure is `ErrorKind::Proxy` with
@@ -1135,29 +1139,31 @@ socket before its connect.
   for the HTTP proxy (`Tcp::socks` gives the leg), and a tunnelling HTTP proxy's `CONNECT`
   follows over the same `Dialed` stage; a SOCKS5 authentication is kept on `Dialed` and carried
   to the `Conn`. Reuse compares the pre-proxy too.
-- A new connection, once up whichever way, sends the PROXY protocol's line first if the transfer
-  asks (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the socket to the first
-  hop, before it is traced as established. A reused one sends none, and reuse does not ask, as in
-  C.
+- A new connection sends the PROXY protocol's line over `Dialed`, after any proxy's handshake,
+  if the transfer asks (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the
+  socket to the first hop, before it is open and traced as established. A reused one sends
+  none, and reuse does not ask, as in C.
 - A proxy that closes the connection on its 407 starts the setup over from resolving
-  (`Pool::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
+  (`ConnLease::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
   the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.
-- **Handshake order** is derived once from the `Route`, in cf-setup.c's order (299–359): the
-  eyeballs race, then SOCKS, then the proxy's TLS (stage 4), then the HTTP proxy's `CONNECT`,
-  then the PROXY line, then the origin's TLS. The transfer drives each handshake; the drivers
-  are functions over the `Dialed` stream and the step's context, not over
-  `TransferState::Connecting`, so another stream (FTP's data connection) can be set up the same
-  way. The PROXY line goes over `Dialed` before the connection is `Open`, so no `Open`
-  connection exists with it unsent. Planned (step 40): today the order is spread over `Stage`,
-  `Handshake` and the move from `Connecting` to `Open`, and the PROXY line is sent on the
-  `Open` connection while the transfer is still connecting.
+- **Handshake order** is decided in one place, `handshake_next` (`multi/state.rs`), from the
+  route, the transfer's PROXY line and what `Dialed::made` records, in cf-setup.c's order
+  (299–359): the eyeballs race, then SOCKS, then the proxy's TLS (stage 4), then the HTTP
+  proxy's `CONNECT`, then the PROXY line, then the origin's TLS. Each handshake, once made,
+  hands on to it; with none left the connection is open. A redial starts a new `Dialed`, with
+  nothing made. The PROXY line goes over `Dialed` before the connection is `Open`, so no `Open`
+  connection exists with it unsent, and a transfer taken out mid-setup gives back a
+  connection that is not open, which closes. The transfer drives each handshake, its I/O over
+  the `Dialed` stream; the drivers take the transfer's `Connecting` for its route, its
+  pipeline (the CONNECT answer's lines) and its lease (a redial), so another stream (FTP's data
+  connection) needs them split from it first (open, with FTP).
 - **C's filter chain is rendered, not built.** The setup filters (SETUP, DNS, HAPPY-EYEBALLS,
   HTTP-PROXY, HAPROXY) exist in C only until the chain connects and are then removed
   (`Curl_conn_remove_setup_filters`, cfilters.c:434–450); here the typed machine stands for
   them, and `conn/chain.rs` renders the chain C would have at each point for the trace
   (`cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]`,
-  `connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]`, `reduced to [0][TCP]`), allocating nothing. The stream's kinds and layers are
-  C's reduced chain: `[TCP]`, `[SOCKS][TCP]`, `[H1-PROXY][TCP]`, `[H1-PROXY][SOCKS][TCP]` behind
+  `connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]`, `reduced to [0][TCP]`), allocating nothing. The handshakes made and the stream's layers
+  are C's reduced chain: `[TCP]`, `[SOCKS][TCP]`, `[H1-PROXY][TCP]`, `[H1-PROXY][SOCKS][TCP]` behind
   a pre-proxy. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
   for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a
   SOCKS5 pre-proxy; `--socks5-hostname` has one).

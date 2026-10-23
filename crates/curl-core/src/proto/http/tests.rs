@@ -3961,6 +3961,53 @@ fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
     assert!(rest.starts_with(b"GET /a HTTP/1.1\r\n"));
 }
 
+/// The PROXY line goes over the connection as it is dialed: until the
+/// line is sent the connection is not open, so nothing can take it for
+/// one that is (cf-haproxy.c's filter is part of the connect).
+#[test]
+fn a_connection_is_not_open_until_its_proxy_line_is_sent() {
+    let talk = Conversation::replies(&[OK], false).stalling_sends(1);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().proxy.make_mut().unwrap().haproxy = true;
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let lease = m.state_of(id).lease().expect("a connection held");
+    assert!(!lease.is_up(), "open with its line unsent");
+    assert_eq!(talk.received(), b"");
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    let sent = talk.received();
+    let (line, rest) = first_line(&sent);
+    assert!(
+        line.starts_with("PROXY TCP4 127.0.0.1 127.0.0.1 "),
+        "{line}"
+    );
+    assert!(rest.starts_with(b"GET / HTTP/1.1\r\n"));
+}
+
+/// A transfer taken out while its tunnel is set up leaves nothing for
+/// the next to reuse: the connection to the proxy closes with it, and
+/// the next makes its own.
+#[test]
+fn a_transfer_removed_mid_connect_leaves_no_connection_to_reuse() {
+    let silent = Conversation::replies(&[], false);
+    let fresh = Conversation::replies(&[TUNNEL_UP, OK], false);
+    let mut m = serving(Peer::Accepts, &[&silent, &fresh]);
+    let mut e = Easy::new();
+    tunneled(e.options_mut());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert!(silent.received().starts_with(b"CONNECT origin.example:80 "));
+    m.remove(id, &mut NoEvents).unwrap();
+    let ran = get(&mut m, "/", fresh.clone(), tunneled);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    assert!(fresh.received().starts_with(b"CONNECT origin.example:80 "));
+}
+
 /// Behind a SOCKS5 pre-proxy at `PORT`, the HTTP proxy is asked for by
 /// name, then given the request whole, over the one connection, traced
 /// as C traces it (test 2055). The proxy's user is the HTTP proxy's

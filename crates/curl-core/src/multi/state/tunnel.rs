@@ -4,14 +4,11 @@
 //! challenges, and what it leads to: the tunnel, another `CONNECT` over
 //! the same connection or a new one, or the transfer's failure.
 
-use std::net::SocketAddr;
-
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
-use super::{Connecting, Handshake, StepCx, TransferState, Wake, established};
-use crate::conn::Connected;
+use super::{Connecting, Handshake, StepCx, TransferState, Wake, handshake_next};
 use crate::conn::io::{Events, Recv, Sent};
-use crate::conn::{Peer, RecvFailed};
+use crate::conn::{Made, Peer, RecvFailed};
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
@@ -25,7 +22,6 @@ use crate::proto::http1::fields::{self, MAX_HEADERS};
 use crate::proto::http1::framing::Note as HeadNote;
 use crate::proto::http1::request::{CredentialGate, decimal};
 use crate::proto::http1::tunnel::{Answer, AnswerError, Applied, ConnectRequest, Read};
-use crate::time::Instant;
 use crate::trace;
 
 /// The most one read takes.
@@ -191,7 +187,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Ran::Again) => (TransferState::Connecting(c), Wake::Again),
-        Ok(Ran::Up(remote, local, at)) => established(c, cx, remote, local, at),
+        Ok(Ran::Through) => handshake_next(c, cx),
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
     }
 }
@@ -201,7 +197,8 @@ enum Ran {
     Idle,
     /// The setup goes on at once: another `CONNECT`, or a new connection.
     Again,
-    Up(SocketAddr, Option<SocketAddr>, Instant),
+    /// The tunnel is through: the next handshake follows.
+    Through,
 }
 
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, ErrorKind> {
@@ -383,12 +380,8 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             cx,
             format_args!("CONNECT tunnel established, response {code}"),
         );
-        return match c.lease.tunneled() {
-            Connected::Established {
-                remote, local, at, ..
-            } => Ok(Ran::Up(remote, local, at)),
-            _ => unreachable!("a tunnel makes the connection"),
-        };
+        c.lease.dialed().mark_made(Made::TUNNEL);
+        return Ok(Ran::Through);
     }
     // What the challenges lead to (`Curl_http_auth_act`).
     let asked = {

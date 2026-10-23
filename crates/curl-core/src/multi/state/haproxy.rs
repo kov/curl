@@ -1,28 +1,29 @@
 //! The PROXY protocol's line a new connection sends before anything else
 //! (`lib/cf-haproxy.c`): the addresses and ports it comes from and goes
-//! to, as the server behind a load balancer would be told them.
+//! to, as the server behind a load balancer would be told them. It goes
+//! over the dialed connection, after any proxy's handshake and before the
+//! connection is open.
 
 use std::io::Write as _;
 use std::net::{Ipv4Addr, SocketAddr};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use super::{Connecting, Handshake, OsError, StepCx, TransferState, Wake, up};
+use curl_alloc::try_box;
+
+use super::{Connecting, Handshake, OsError, StepCx, TransferState, Wake, handshake_next};
+use crate::conn::Made;
 use crate::conn::io::{Events, Sent};
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::proto::http1::request::decimal;
-use crate::time::Instant;
 use crate::trace;
 
-/// The line being sent, and the connection it is sent over.
+/// The line being sent.
 #[derive(Debug)]
 pub(crate) struct Preface {
     line: Vec<u8>,
     sent: usize,
-    remote: SocketAddr,
-    local: Option<SocketAddr>,
-    at: Instant,
 }
 
 impl Preface {
@@ -87,27 +88,24 @@ fn line(
     Ok(out)
 }
 
-/// The connection is up: its line is sent next, if the transfer asks
-/// for one; otherwise none is made.
-pub(super) fn wanted<H: Host>(
-    cx: &StepCx<'_, H>,
-    remote: SocketAddr,
-    local: Option<SocketAddr>,
-    at: Instant,
-) -> Result<Option<Preface>, ErrorKind> {
-    let proxy = &cx.easy().options().proxy;
-    if !proxy.haproxy {
-        return Ok(None);
+/// The handshakes before it are made: the line is made, for the dialed
+/// connection's socket to the first hop, saying the client the transfer
+/// names if it does.
+pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    let (remote, local) = c.lease.dialed().ends();
+    let client = cx.easy().options().proxy.haproxy_client_ip.as_deref();
+    let preface = line(remote, local, client)
+        .and_then(|line| try_box(Handshake::Haproxy(Preface { line, sent: 0 })));
+    match preface {
+        Ok(h) => {
+            c.handshake = Some(h);
+            (TransferState::Connecting(c), Wake::Again)
+        }
+        Err(_) => (
+            TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
+            Wake::Again,
+        ),
     }
-    let line = line(remote, local, proxy.haproxy_client_ip.as_deref())
-        .map_err(|_| ErrorKind::OutOfMemory)?;
-    Ok(Some(Preface {
-        line,
-        sent: 0,
-        remote,
-        local,
-        at,
-    }))
 }
 
 /// Send the line as far as the socket takes it, then the connection is
@@ -118,7 +116,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         _ => unreachable!("the PROXY line is being sent"),
     };
     while p.sent < p.line.len() {
-        let sent = c.lease.get().send(cx, &p.line[p.sent..]);
+        let sent = c.lease.dialed().stream().send(cx, &p.line[p.sent..]);
         trace::sent(cx, p.line.len() - p.sent, &sent);
         match sent {
             Ok(Sent::Bytes(n)) => p.sent += n.get(),
@@ -134,6 +132,6 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
             }
         }
     }
-    let (remote, local, at) = (p.remote, p.local, p.at);
-    up(c, cx, remote, local, at)
+    c.lease.dialed().mark_made(Made::PREFACE);
+    handshake_next(c, cx)
 }

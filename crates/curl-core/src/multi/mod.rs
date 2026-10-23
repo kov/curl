@@ -619,6 +619,12 @@ impl<H: Host> Multi<H> {
         run_in(&self.slots, id)
     }
 
+    /// Where transfer `id` is, for the tests of what it holds.
+    #[cfg(test)]
+    pub(crate) fn state_of(&self, id: TransferId) -> &state::TransferState {
+        &self.run_of(id).state
+    }
+
     /// Every socket the transfers wait on, and for what, in id order
     /// (`curl_multi_fdset`, `curl_multi_waitfds`).
     pub fn sockets(&self, f: impl FnMut(&dyn Socket, Events)) {

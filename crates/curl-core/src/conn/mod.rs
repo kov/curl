@@ -18,7 +18,7 @@ pub(crate) mod socks;
 mod stream;
 
 pub(crate) use connect::{
-    Asked, ConnCx, ConnectError, Failure, Found, Progress, Setup, Unresolved, queries,
+    Asked, ConnCx, ConnectError, Failure, Found, Made, Progress, Setup, Unresolved, queries,
 };
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, Names, parse_entry};

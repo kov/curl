@@ -100,7 +100,7 @@ impl ConnLease {
         connected
     }
 
-    /// The connection to the proxy the setup tunnels through.
+    /// The connection to the first hop, while its handshakes are made.
     pub(crate) fn dialed(&mut self) -> &mut Dialed {
         let id = self.id;
         match self.slot_mut() {
@@ -109,15 +109,15 @@ impl ConnLease {
         }
     }
 
-    /// The setup's tunnel is up, and so the connection.
-    pub(crate) fn tunneled(&mut self) -> Connected {
+    /// The setup's handshakes are made: the connection is up.
+    pub(crate) fn handshaken(&mut self) -> Connected {
         let number = self.number();
         let ConnSlot::Connecting(machine) =
             std::mem::replace(self.slot_mut(), ConnSlot::Failed(number))
         else {
             panic!("{:?} is not setting up", self.id);
         };
-        let conn = machine.tunneled();
+        let conn = machine.handshaken();
         let up = Connected::Established {
             remote: conn.remote.expect("set up over the network"),
             local: conn.local(),

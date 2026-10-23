@@ -32,6 +32,7 @@ fn connect(
         delay: Duration::from_millis(200),
         scope: None,
         socket: crate::conn::io::SocketOptions::default(),
+        haproxy: false,
         layer: None,
     };
     let mut cx = Plain {

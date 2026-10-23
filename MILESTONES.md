@@ -596,7 +596,10 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       survivors on h–j are tested.
 41. **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
     **Done.**
-42. **HTTP's decisions after an exchange** moved from the engine into `proto/http`.
+42. **HTTP's decisions after an exchange** moved from the engine into `proto/http`. **Done.**
+    The protocol decides what follows an exchange as it ends (`ProtoState::exchanged`), and
+    what a redirect changes of the next request (`redirected`); the engine keeps C's generic
+    follow mechanics. The redirect schemes come from an option with C's default list.
 43. **TLS**, its first sub-step the pool's `Closing` place, with the multi's `ShutdownSet`,
     the SHUTDOWN timer and sockets owned by a connection (ENGINE.md 4.6); Ed25519 HTTP signatures on the OpenSSL
     binding it creates (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025). With it the trace

@@ -1738,7 +1738,8 @@ fn finds_the_ipfs_gateway_as_c_does() {
 /// and 1981 set them: `CURL_TIME` for the time now and every time, both
 /// speeds and the local port, `CURL_DEBUG_SIZE` for the header and
 /// request sizes; a status code, three digits as text and a number in
-/// JSON; and a value missing, nothing as text and `null` in JSON.
+/// JSON; a value missing, nothing as text and `null` in JSON; and a
+/// part of the URL, as it is in text and quoted in JSON.
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn writes_out_the_debug_build_s_times_and_sizes() {
@@ -1769,8 +1770,12 @@ fn writes_out_the_debug_build_s_times_and_sizes() {
         ),
         "0.000013 4019 4019 13 13"
     );
-    let json = run(&[], "%{http_connect} [%{redirect_url}] %{json}");
-    assert!(json.starts_with("000 [] {"), "{json}");
+    let json = run(
+        &[],
+        "%{http_connect} [%{redirect_url}] [%{url.path}] %{json}",
+    );
+    assert!(json.starts_with("000 [] [/] {"), "{json}");
+    assert!(json.contains(",\"url.path\":\"/\","), "{json}");
     assert!(json.contains(",\"http_connect\":0,"), "{json}");
     assert!(json.contains(",\"redirect_url\":null,"), "{json}");
 }
@@ -1861,8 +1866,8 @@ fn signs_the_request_as_told() {
 
 /// `-x` alone sends the request to the proxy, with the `--proxy-header`
 /// lines; `-p` alone tunnels through the proxy the environment names,
-/// and `--noproxy` alone goes around it; `-b` naming a file sends the
-/// cookies it holds.
+/// `--noproxy` alone goes around it and `--proxy-digest` alone is its
+/// method; `-b` naming a file sends the cookies it holds.
 #[test]
 fn proxies_and_cookie_files_reach_the_request() {
     let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
@@ -1905,6 +1910,22 @@ fn proxies_and_cookie_files_reach_the_request() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{out:?}");
     assert!(s.request().starts_with("GET / HTTP/1.1\r\n"));
+    // A proxy method alone is the environment's proxy's: Digest sends
+    // nothing before it is asked, as Basic would.
+    let s = Server::new(ok);
+    let out = Command::new(&tool)
+        .args(["-q", "-sS", "--proxy-digest", "--proxy-user", "u:p"])
+        .arg("http://example.test/d")
+        .env("http_proxy", s.url())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    let request = s.request();
+    assert!(
+        request.starts_with("GET http://example.test/d HTTP/1.1\r\n"),
+        "{request}"
+    );
+    assert!(!request.contains("Proxy-Authorization"), "{request}");
     let dir = scratch("cookie-file");
     let jar = dir.join("jar");
     std::fs::write(&jar, "127.0.0.1\tFALSE\t/\tFALSE\t0\tname\tvalue\n").unwrap();

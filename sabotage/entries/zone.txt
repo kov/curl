@@ -69,10 +69,10 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::unresolved_and_immediate_failures
 --- old
             // it never got a local address (`cf_tcp_connect`).
-            trace_trying(cx, remote, scope_found);
+            trace_trying(cx, remote, scope_found, first);
 --- new
             // it never got a local address (`cf_tcp_connect`).
-            let _ = scope_found;
+            let _ = (scope_found, first);
 
 === an interface name too long for the kernel is looked up
 file: crates/curl-os/src/net.rs

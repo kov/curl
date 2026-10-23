@@ -185,10 +185,11 @@ witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
-    eyeballs_won(cx);
-    match c.route.socks().map(|leg| leg.version) {
+            eyeballs_won(cx, &c.route, attempt, remote);
+            dialed(c, cx)
 --- new
-    match c.route.socks().map(|leg| leg.version) {
+            let _ = (attempt, remote);
+            dialed(c, cx)
 
 === the answer to CONNECT is delivered though suppressed
 file: crates/curl-core/src/deliver/mod.rs

@@ -2140,6 +2140,87 @@ fn a_silent_address_gives_way_after_the_eyeballs_delay() {
     );
 }
 
+/// `e` tracing `components`.
+fn tracing(mut e: Easy, components: &[u8]) -> Easy {
+    let c = crate::components::Components::new().unwrap();
+    c.configure(components);
+    e.set_components(Some(c));
+    e
+}
+
+/// The race traced as C's happy eyeballs filter traces it: each attempt
+/// as it starts, the first or the next, the delay armed for the next
+/// while an address is left, and the winner by its place among those
+/// running. The C build traces the same lines connecting to a silent
+/// IPv6 address and a listening IPv4 one.
+#[test]
+fn the_race_is_traced_as_c_s_happy_eyeballs() {
+    let (mut m, clock) = networked();
+    let (e, lines) = traced("tcp://localhost:4/");
+    let e = tracing(e, b"happy-eyeballs,timer");
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(Duration::from_millis(200));
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(Duration::from_millis(5));
+    m.perform(&mut NoEvents).unwrap();
+    let raced: Vec<_> = trace_of(&lines)
+        .into_iter()
+        .filter(|l| {
+            l.starts_with("[HAPPY-EYEBALLS]")
+                || l.starts_with("[TIMER] [HAPPY")
+                || l.contains("Trying")
+        })
+        .collect();
+    assert_eq!(
+        raced,
+        [
+            "[HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0\n",
+            "  Trying [::1]:4...\n",
+            "[HAPPY-EYEBALLS] next HAPPY_EYEBALLS timeout in 200ms\n",
+            "[TIMER] [HAPPY_EYEBALLS] set for 200000us\n",
+            "[HAPPY-EYEBALLS] happy eyeballs timeout expired, start next attempt\n",
+            "[HAPPY-EYEBALLS] starting next attempt for ipv4 -> 0\n",
+            "  Trying 127.0.0.1:4...\n",
+            "[HAPPY-EYEBALLS] connect attempt #1 successful\n",
+            "[HAPPY-EYEBALLS] Connected to localhost (127.0.0.1) port 4\n",
+            "[TIMER] [HAPPY_EYEBALLS] cleared\n",
+        ]
+    );
+}
+
+/// The last attempt failing ends the race, said between the attempt's
+/// failure and the transfer's.
+#[test]
+fn a_race_with_no_attempt_left_says_so() {
+    let (mut m, _clock) = networked();
+    let (e, lines) = traced("tcp://127.0.0.1:2/");
+    let e = tracing(e, b"happy-eyeballs");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(
+        messages(&mut m),
+        [(id.index(), Err(ErrorKind::CouldntConnect), 0)]
+    );
+    let lines = trace_of(&lines);
+    let at = lines
+        .iter()
+        .position(|l| l == "[HAPPY-EYEBALLS] no more attempts to try\n")
+        .unwrap();
+    assert!(
+        lines[at - 1].starts_with("connect to 127.0.0.1 port 2 from "),
+        "{lines:?}"
+    );
+    assert!(
+        lines[at + 1].starts_with("Failed to connect to 127.0.0.1:2 after "),
+        "{lines:?}"
+    );
+    assert_eq!(
+        lines[0],
+        "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0\n"
+    );
+}
+
 /// A resolve list is read into the multi's cache when the transfer
 /// starts, once for each time it is set: the name then answers from the
 /// cache, under the entry's name. Set again, it replaces what it gave.

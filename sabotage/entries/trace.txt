@@ -406,3 +406,51 @@ witness: curl-core proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_
             cx.mark(Timer::PostTransfer);
         }
         // The wait
+
+=== an attempt's start is not traced
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+        format_args!("starting {which} attempt for ipv{v} -> 0"),
+--- new
+        format_args!("starting attempt for ipv{v} -> 0"),
+
+=== every attempt is the first
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+            let first = r.attempts.is_empty();
+--- new
+            let first = true;
+
+=== the winner is not named by its place among the attempts
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+                        return Ok(Drove::Established(conn, i));
+--- new
+                        return Ok(Drove::Established(conn, 0));
+
+=== the next attempt's delay is armed unsaid
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+        format_args!("next HAPPY_EYEBALLS timeout in {ms}ms"),
+--- new
+        format_args!(""),
+
+=== the race's winner is not said
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
+--- old
+        format_args!("Connected to {name} ({ip}) port {port}"),
+--- new
+        format_args!("Connected to {name}"),
+
+=== a race with no attempt left ends unsaid
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_race_with_no_attempt_left_says_so
+--- old
+                format_args!("no more attempts to try"),
+--- new
+                format_args!(""),

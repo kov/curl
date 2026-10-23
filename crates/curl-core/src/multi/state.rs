@@ -1183,25 +1183,34 @@ fn connecting<H: Host>(
         Ok(Connected::Connecting(Progress::Trying {
             remote,
             scope_found,
+            first,
         })) => {
-            trace_trying(cx, remote, scope_found);
+            trace_trying(cx, remote, scope_found, first);
             (TransferState::Connecting(c), Wake::Again)
         }
-        Ok(Connected::Connecting(Progress::Dialed)) => dialed(c, cx),
+        Ok(Connected::Connecting(Progress::Dialed { attempt })) => {
+            let (remote, _) = c.lease.dialed().ends();
+            eyeballs_won(cx, &c.route, attempt, remote);
+            dialed(c, cx)
+        }
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
             match until {
-                Some(at) => arm(
-                    &mut run.deadlines,
-                    cx,
-                    TimerKind::Eyeballs,
-                    wait_ms(now, at),
-                ),
+                Some(at) => eyeballs_due(run, cx, at),
                 // Nothing left to start: C never armed it.
                 None => run.deadlines.clear(TimerKind::Eyeballs),
             }
             (TransferState::Connecting(c), Wake::Idle)
         }
-        Ok(Connected::Established { remote, local, at }) => established(c, cx, remote, local, at),
+        Ok(Connected::Established {
+            remote,
+            local,
+            at,
+            attempt,
+        }) => {
+            let attempt = attempt.expect("a race's connection");
+            eyeballs_won(cx, &c.route, attempt, remote);
+            established(c, cx, remote, local, at)
+        }
         // A reused connection is up: nothing to trace or time
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
         Ok(Connected::AlreadyUp { remote, local }) => {
@@ -1224,16 +1233,51 @@ fn connecting<H: Host>(
 /// Connected to the proxy: its handshake starts, SOCKS's or an HTTP
 /// proxy's tunnel's. Each connection to the proxy counts as it is made.
 fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    eyeballs_won(cx);
     match c.route.socks().map(|leg| leg.version) {
         Some(version) => socks::dialed(c, cx, version),
         None => tunnel::dialed(c, cx),
     }
 }
 
-/// An attempt connected, to the peer or to the proxy a handshake goes
-/// through: the race is over, and counted (`cf_ip_happy_connect`).
-fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>) {
+/// The race's next attempt is due at `at`: its timer armed for then, or
+/// for the end of the time left to connect if that comes first, as C
+/// arms it.
+fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
+    let now = cx.now();
+    let mut wait = wait_ms(now, at);
+    if let TimeLeft::Remaining(left) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
+        wait = wait.min(left);
+    }
+    let ms = wait.as_millis();
+    let he = Component::HappyEyeballs;
+    trace::of(
+        cx,
+        he,
+        format_args!("next HAPPY_EYEBALLS timeout in {ms}ms"),
+    );
+    arm(&mut run.deadlines, cx, TimerKind::Eyeballs, wait);
+}
+
+/// The race's attempt `attempt` connected to `remote`, the peer `route`
+/// connects to first or the proxy a handshake goes through: the race is
+/// over, and counted (`cf_ip_ballers_run`, `cf_ip_happy_connect`).
+fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, attempt: usize, remote: SocketAddr) {
+    let he = Component::HappyEyeballs;
+    trace::of(
+        cx,
+        he,
+        format_args!("connect attempt #{attempt} successful"),
+    );
+    let (name, ip, port) = (
+        Bytes(route.destination().name()),
+        remote.ip(),
+        remote.port(),
+    );
+    trace::of(
+        cx,
+        he,
+        format_args!("Connected to {name} ({ip}) port {port}"),
+    );
     trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
     cx.report_mut().count_connect();
 }
@@ -1269,10 +1313,9 @@ pub(crate) fn trace_timer<H: Host>(
     trace::of(cx, Component::Timer, format_args!("[{name}] {args}"));
 }
 
-/// A new connection is up, from `local` to `remote`, connected at `at`:
-/// counted unless through a proxy's handshake, whose connections were
-/// counted as each was made, then its PROXY line sent if the transfer
-/// asks for one.
+/// A new connection is up, from `local` to `remote`, connected at `at`,
+/// its race won or its proxy's handshake done: its PROXY line sent if
+/// the transfer asks for one.
 fn established<H: Host>(
     mut c: Connecting,
     cx: &mut StepCx<'_, H>,
@@ -1280,9 +1323,6 @@ fn established<H: Host>(
     local: Option<SocketAddr>,
     at: Instant,
 ) -> (TransferState, Wake) {
-    if c.handshake.is_none() {
-        eyeballs_won(cx);
-    }
     match haproxy::wanted(cx, remote, local, at) {
         Ok(None) => up(c, cx, remote, local, at),
         Ok(Some(preface)) => match try_box(Handshake::Haproxy(preface)) {
@@ -1371,7 +1411,15 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             }
             return kind;
         }
-        ConnectError::Failed(failure) => trace_failure(cx, failure),
+        ConnectError::Failed(failure) => {
+            trace_failure(cx, failure);
+            // No attempt running, and no address left.
+            trace::of(
+                cx,
+                Component::HappyEyeballs,
+                format_args!("no more attempts to try"),
+            );
+        }
     }
     let origin = &*route.origin;
     let (host, port) = (Bytes(origin.name()), origin.port());
@@ -1418,11 +1466,12 @@ fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
         Failure::Immediate {
             remote,
             scope_found,
+            first,
             error,
         } => {
             // The socket was opened, and traced, before its connect failed;
             // it never got a local address (`cf_tcp_connect`).
-            trace_trying(cx, remote, scope_found);
+            trace_trying(cx, remote, scope_found, first);
             let why = OsError(&error);
             trace::info(
                 cx,
@@ -1467,7 +1516,26 @@ fn trace_trying<H: Host>(
     cx: &mut StepCx<'_, H>,
     remote: SocketAddr,
     scope_found: Option<NonZeroU32>,
+    first: bool,
 ) {
+    let he = Component::HappyEyeballs;
+    if !first {
+        // Another attempt runs: this one starts as the delay ran out.
+        trace::of(
+            cx,
+            he,
+            format_args!("happy eyeballs timeout expired, start next attempt"),
+        );
+    }
+    let (which, v) = (
+        if first { "first" } else { "next" },
+        if remote.is_ipv4() { 4 } else { 6 },
+    );
+    trace::of(
+        cx,
+        Component::HappyEyeballs,
+        format_args!("starting {which} attempt for ipv{v} -> 0"),
+    );
     if let Some(scope) = scope_found {
         trace::info(
             cx,

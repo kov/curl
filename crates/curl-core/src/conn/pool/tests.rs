@@ -365,7 +365,10 @@ fn a_tcp_connection_is_set_up_in_its_slot() {
     assert_eq!(socket(&lease), Some(1000), "the attempt's");
     assert!(pool.get_conn(id).is_none(), "leased");
     let up = connect(&mut lease, &mut net, now).unwrap();
-    let Connected::Established { remote, local, at } = up else {
+    let Connected::Established {
+        remote, local, at, ..
+    } = up
+    else {
         panic!("{up:?}");
     };
     assert_eq!((remote, at), (to, now));

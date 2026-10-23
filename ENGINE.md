@@ -339,6 +339,14 @@ its attempt connects and the 100's as it comes, runs out or the body ends. The f
 is named as a socket action fires it; a perform fires it silently, as C's does. Not traced: the
 pending timers and the multi's timeout, which C lists with its pollset and in `multi_wait`.
 
+`HAPPY-EYEBALLS` traces the connect machine's race (C's `cf_ip_ballers_run`) from what a drive
+reports: each attempt as it starts, the first or the next and its family, the start of the next
+as the delay runs out, the delay armed while an address is left, the winner by its place among
+the attempts running, the peer it connected to, and the end of a race with no attempt left. Not
+traced: the filter's own life (its creation, `adjust_pollset`, its removal and destruction) and
+the walk over the addresses (`want to do more`, `check for next`, `checked connect attempts`),
+which describe C's structures rather than a step the machine takes.
+
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
 they are set) is handed to a `notes` closure the caller passes, line by line in the transfer's

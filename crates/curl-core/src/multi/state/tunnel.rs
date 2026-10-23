@@ -384,7 +384,9 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             format_args!("CONNECT tunnel established, response {code}"),
         );
         return match c.lease.tunneled() {
-            Connected::Established { remote, local, at } => Ok(Ran::Up(remote, local, at)),
+            Connected::Established {
+                remote, local, at, ..
+            } => Ok(Ran::Up(remote, local, at)),
             _ => unreachable!("a tunnel makes the connection"),
         };
     }

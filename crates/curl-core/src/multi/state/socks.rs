@@ -195,7 +195,9 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
         return super::tunnel::dialed(c, cx);
     }
     match c.lease.tunneled() {
-        Connected::Established { remote, local, at } => established(c, cx, remote, local, at),
+        Connected::Established {
+            remote, local, at, ..
+        } => established(c, cx, remote, local, at),
         _ => unreachable!("the handshake makes the connection"),
     }
 }

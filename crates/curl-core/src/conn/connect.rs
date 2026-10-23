@@ -225,8 +225,9 @@ struct Attempt {
 pub(crate) enum Drove {
     /// Still setting up: drive it again when `wants` comes.
     Connecting(ConnectMachine, Progress),
-    /// The connection is up.
-    Established(Conn),
+    /// The connection is up: the race's attempt `.1`, counted among
+    /// those running, oldest first, won it.
+    Established(Conn, usize),
 }
 
 /// Something a setup said, or nothing new.
@@ -235,10 +236,12 @@ pub(crate) enum Progress {
     /// The name resolved: its answer is the machine's.
     Resolved(Found),
     /// An attempt started on `remote`, in the scope `scope_found` took
-    /// from a local interface if it has one.
+    /// from a local interface if it has one; `first` if no other was
+    /// running.
     Trying {
         remote: SocketAddr,
         scope_found: Option<NonZeroU32>,
+        first: bool,
     },
     /// An attempt failed, and the setup goes on.
     Failed(Failure),
@@ -246,8 +249,9 @@ pub(crate) enum Progress {
     /// attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
     Waiting { until: Option<Instant> },
     /// Connected to a proxy, through which a tunnel is to be made: its
-    /// handshake goes over `Pool::dialed`.
-    Dialed,
+    /// handshake goes over `Pool::dialed`. The race's attempt `attempt`
+    /// won, as `Drove::Established` counts them.
+    Dialed { attempt: usize },
 }
 
 /// How an attempt failed.
@@ -255,10 +259,11 @@ pub(crate) enum Progress {
 pub(crate) enum Failure {
     /// Connecting to `remote`, in the scope `scope_found` took from a
     /// local interface if it has one, failed at once, before any socket
-    /// was polled.
+    /// was polled; `first` if no other attempt was running.
     Immediate {
         remote: SocketAddr,
         scope_found: Option<NonZeroU32>,
+        first: bool,
         error: io::Error,
     },
     /// The attempt to `remote` from `local` failed.
@@ -436,13 +441,14 @@ impl ConnectMachine {
                                 target,
                                 socks5_authenticated: false,
                             });
-                            return Ok(Drove::Connecting(self, Progress::Dialed));
+                            let dialed = Progress::Dialed { attempt: i };
+                            return Ok(Drove::Connecting(self, dialed));
                         }
                         let rx = RecvBuf::default();
                         let (number, route, created) = (self.number, self.route, self.created);
                         let conn =
                             Self::conn(number, route, created, won.socket, won.remote, now, rx);
-                        return Ok(Drove::Established(conn));
+                        return Ok(Drove::Established(conn, i));
                     }
                     Ok(Some(error)) | Err(error) => error,
                 },
@@ -461,6 +467,7 @@ impl ConnectMachine {
             if r.attempts.try_reserve(1).is_err() {
                 return Err(ConnectError::OutOfMemory);
             }
+            let first = r.attempts.is_empty();
             let ip = r.eyeballs.next().expect("an address is left");
             let (remote, scope_found) = address(ip, self.route.destination(), setup.scope, net);
             r.last_start = Some(now);
@@ -472,6 +479,7 @@ impl ConnectMachine {
                     let tried = Progress::Trying {
                         remote,
                         scope_found,
+                        first,
                     };
                     Ok(Drove::Connecting(self, tried))
                 }
@@ -482,6 +490,7 @@ impl ConnectMachine {
                     let failure = Failure::Immediate {
                         remote,
                         scope_found,
+                        first,
                         error,
                     };
                     r.failed(failure).map(|p| Drove::Connecting(self, p))
@@ -798,10 +807,10 @@ mod tests {
                         Progress::Failed(_) => {}
                         Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
                         Progress::Resolved(_) => unreachable!("resolved already"),
-                        Progress::Dialed => unreachable!("no proxy"),
+                        Progress::Dialed { .. } => unreachable!("no proxy"),
                     }
                 }
-                Ok(Drove::Established(conn)) => panic!("{conn:?}"),
+                Ok(Drove::Established(conn, _)) => panic!("{conn:?}"),
                 Err(ConnectError::Failed(_)) => {
                     raced.failed_at = ms;
                     assert_eq!(net.open_sockets(), 0, "every attempt closed");
@@ -850,7 +859,7 @@ mod tests {
                         clock.advance(Duration::from_millis(1));
                     }
                 }
-                Drove::Established(conn) => break conn,
+                Drove::Established(conn, _) => break conn,
             }
         };
         assert_eq!(conn.remote, Some(up));

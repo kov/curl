@@ -82,6 +82,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   download at 20000 bytes a second takes 3 s on a handle and none on its copy. Pinned by
   `speed_limits_are_kept_and_copied` (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## Reads C makes smaller
+
+- **A proxy's answer to `CONNECT` is read in bulk.** The tunnel reads what the socket holds, up
+  to 16384 bytes, and keeps what follows the answer in the connection's receive buffer, where
+  the transfer through the tunnel reads it first. C's `recv_CONNECT_resp`
+  (`lib/cf-h1-proxy.c:520`) reads the answer one byte at a time "to avoid a race condition": its
+  filter has no way to hand bytes past the answer back up the chain. The bytes on the wire and
+  their order are the same; here there are fewer `recv` calls, and fewer `recv` lines in the
+  TCP component's trace: C traces a `recv(len=1)` for each byte of the answer (measured against
+  the C build: 19 for `HTTP/1.1 200 OK` and its blank line). To be looked at again against the
+  command-line corpus. Pinned by `bytes_after_a_tunnel_s_answer_are_read_first`
+  (`crates/curl-core/src/proto/http/tests.rs`).
+
 ## Input C misreads
 
 - **A zero byte in a config file line ends that line, and nothing else.** C's `get_line`

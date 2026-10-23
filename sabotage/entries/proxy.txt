@@ -596,3 +596,12 @@ witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
         upload::trace_reset(cx, rewinding);
         release(cx, lease, !promoted, past_do, origin.as_ref());
+
+=== the tunnel reads the proxy's answer a byte at a time, as C does
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::bytes_after_a_tunnel_s_answer_are_read_first
+features: test-util
+--- old
+const READ_SIZE: usize = 16384;
+--- new
+const READ_SIZE: usize = 1;

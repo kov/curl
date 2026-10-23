@@ -4337,16 +4337,21 @@ fn a_tunnel_s_connect_is_traced_and_its_answer_counted() {
 
 /// Bytes the proxy sent after its answer to `CONNECT`, read with it, are
 /// the tunnel's first: the transfer reads them without waiting for its
-/// socket, which has nothing more to say.
+/// socket, which has nothing more to say. The answer is read in bulk, the
+/// response behind it in the same read. C reads the answer a byte at a
+/// time (`recv_CONNECT_resp`), its filter having no way to hand bytes
+/// past it back up the chain, so it makes a read for each byte of the
+/// answer and traces each (`DIVERGENCE.md`).
 #[test]
 fn bytes_after_a_tunnel_s_answer_are_read_first() {
     let up_and_answered = [TUNNEL_UP, OK].concat();
     let (mut m, talk, clock) = server(&[&up_and_answered], false);
     let start = clock.now();
-    let ran = get(&mut m, "/", talk, tunneled);
+    let ran = get(&mut m, "/", talk.clone(), tunneled);
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.body(), b"ok\n");
     assert_eq!(clock.now(), start, "the transfer waited on its socket");
+    assert_eq!(talk.reads().0, 1, "the answer and the response in one read");
 }
 
 /// An answer to `CONNECT` of `total` head bytes, of lines as long as C's

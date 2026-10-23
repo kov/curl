@@ -46,6 +46,30 @@ pub(crate) enum TimerKind {
 impl TimerKind {
     const COUNT: usize = 6;
 
+    /// The name C's trace gives it (`Curl_trc_timer_name`). The
+    /// protocol's own wait is HTTP's for a 100, the only one there is.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            TimerKind::Total => "TIMEOUT",
+            TimerKind::Connect => "CONNECTTIMEOUT",
+            TimerKind::SpeedCheck => "SPEEDCHECK",
+            TimerKind::Eyeballs => "HAPPY_EYEBALLS",
+            TimerKind::Proto => "100_TIMEOUT",
+            TimerKind::TooFast => "TOOFAST",
+        }
+    }
+
+    /// Every kind, in the order C's `expire_id` has them, which breaks a
+    /// tie between two timers due at once.
+    const ALL: [TimerKind; TimerKind::COUNT] = [
+        TimerKind::Total,
+        TimerKind::Connect,
+        TimerKind::SpeedCheck,
+        TimerKind::Eyeballs,
+        TimerKind::Proto,
+        TimerKind::TooFast,
+    ];
+
     fn slot(self) -> usize {
         self as usize
     }
@@ -95,21 +119,41 @@ impl Deadlines {
     /// A new leg starts at `now` (C's SETUP state): both limits are armed
     /// from it. The total limit is still judged from the transfer's start,
     /// so it wakes the transfer later than it is due; C does the same.
-    pub(crate) fn start_leg(&mut self, now: Instant) {
-        if let Some(total) = self.total {
-            self.arm_in(TimerKind::Total, now, total.duration());
-        }
-        if let Some(connect) = self.connect {
-            self.arm_in(TimerKind::Connect, now, connect.duration());
-        }
+    /// Returns the timers armed, and when each fires, in the order C
+    /// arms them (`multistate_setup`).
+    pub(crate) fn start_leg(&mut self, now: Instant) -> [Option<(TimerKind, Instant)>; 2] {
+        let total = self.total.map(|total| {
+            (
+                TimerKind::Total,
+                self.arm_in(TimerKind::Total, now, total.duration()),
+            )
+        });
+        let connect = self.connect.map(|connect| {
+            let at = self.arm_in(TimerKind::Connect, now, connect.duration());
+            (TimerKind::Connect, at)
+        });
+        [total, connect]
     }
 
     /// Arm `kind` to fire `wait` after `now`, replacing its last arming.
-    pub(crate) fn arm_in(&mut self, kind: TimerKind, now: Instant, wait: Duration) {
+    /// Returns when it fires.
+    pub(crate) fn arm_in(&mut self, kind: TimerKind, now: Instant, wait: Duration) -> Instant {
         // C counts in whole milliseconds.
         let ms =
             Duration::from_millis(u64::try_from(wait.min(MAX_WAIT).as_millis()).expect("capped"));
-        self.armed[kind.slot()] = Some(now.after(ms));
+        let at = now.after(ms);
+        self.armed[kind.slot()] = Some(at);
+        at
+    }
+
+    /// The timer that fires first, the earliest armed of a tie
+    /// (`timeouts.first`).
+    pub(crate) fn first(&self) -> Option<TimerKind> {
+        TimerKind::ALL
+            .into_iter()
+            .filter_map(|k| self.armed[k.slot()].map(|at| (at, k)))
+            .min_by_key(|&(at, _)| at)
+            .map(|(_, k)| k)
     }
 
     pub(crate) fn clear(&mut self, kind: TimerKind) {

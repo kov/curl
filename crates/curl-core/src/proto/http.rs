@@ -16,7 +16,10 @@ use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::mime::read::MakeError;
 use crate::multi::Host;
 use crate::multi::TransferCx;
+use crate::multi::mstate::MState;
+use crate::multi::state;
 use crate::multi::state::{AfterRequest, OsError, StepCx, url_error};
+use crate::multi::timers::TimerKind;
 use crate::options::{Follow, Http, HttpVersion, Method, Ranged, UploadSource};
 use crate::progress::rate::Way;
 use crate::report::{ResponseVersion, Timer};
@@ -1158,10 +1161,7 @@ impl Request {
                 match self.outgoing {
                     Sending::AwaitingContinue(until) if cx.now() < until => return Ok(false),
                     Sending::AwaitingContinue(_) => {
-                        self.outgoing = Sending::Body(Reading {
-                            eos_read: false,
-                            announced: true,
-                        });
+                        self.release(cx);
                         trace::info(cx, format_args!("Done waiting for 100-continue"));
                     }
                     Sending::Body(_) => {}
@@ -1230,7 +1230,9 @@ impl Request {
                         self.sent = 0;
                         self.filled = 0;
                         let wait = cx.easy().options().http.continue_wait.0;
-                        self.outgoing = Sending::AwaitingContinue(cx.now().after(wait));
+                        let until = cx.now().after(wait);
+                        self.outgoing = Sending::AwaitingContinue(until);
+                        state::trace_set(cx, TimerKind::Proto, until);
                         return Ok(false);
                     }
                 };
@@ -1246,6 +1248,16 @@ impl Request {
     /// Nothing more of the request goes, all of it sent or, `aborted`,
     /// not (`req_set_upload_done`).
     fn upload_done<H: Host>(&mut self, cx: &mut StepCx<'_, H>, aborted: bool) {
+        // Past DID the request is complete from here; before, DID marks
+        // it.
+        if cx.mstate() >= MState::Did {
+            cx.mark(Timer::PostTransfer);
+        }
+        // The wait for a 100 is over, whether it came or not
+        // (`cr_exp100_done`).
+        if self.outgoing.announced() {
+            state::trace_timer(cx, TimerKind::Proto, format_args!("cleared"));
+        }
         self.outgoing = if aborted {
             Sending::Aborted
         } else {
@@ -1290,9 +1302,8 @@ impl Request {
         let read = self.receive(cx, lease)?;
         // The request is over once its response is and nothing more of it
         // is to send (`KEEP_RECV` and `KEEP_SEND` both off).
-        if self.sending() && self.send(cx, lease, true)? {
-            // Sent after DID: the request is complete from here.
-            cx.mark(Timer::PostTransfer);
+        if self.sending() {
+            self.send(cx, lease, true)?;
         }
         Ok(if matches!(self.stage, Stage::Done) && !self.sending() {
             ProtoStep::Done
@@ -1321,7 +1332,6 @@ impl Request {
                 format_args!("we are done reading and this is set to close, stop send"),
             );
             self.upload_done(cx, true);
-            cx.mark(Timer::PostTransfer);
         }
         Ok(read)
     }
@@ -1369,7 +1379,6 @@ impl Request {
                     // (`Curl_req_stop_send_recv`).
                     if self.sending() {
                         self.upload_done(cx, true);
-                        cx.mark(Timer::PostTransfer);
                     }
                     let ended = self.end(cx);
                     deliver::write_resp(cx, 0, true, ended);
@@ -1605,7 +1614,7 @@ impl Request {
             let code = cx.report_mut().response_code().unwrap_or(0);
             if interim && code == 100 {
                 // The server is ready for the body (`http_exp100_got100`).
-                self.release();
+                self.release(cx);
             } else if !interim && code >= 300 {
                 self.send_error(cx, code)?;
             }
@@ -1646,7 +1655,7 @@ impl Request {
     }
 
     /// A body held for a 100 goes now (`http_exp100_continue`).
-    fn release(&mut self) {
+    fn release<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
         let open = Reading {
             eos_read: false,
             announced: true,
@@ -1656,8 +1665,9 @@ impl Request {
                 *then = AfterHead::Body(open);
             }
             Sending::AwaitingContinue(_) => self.outgoing = Sending::Body(open),
-            _ => {}
+            _ => return,
         }
+        state::trace_timer(cx, TimerKind::Proto, format_args!("cleared"));
     }
 
     /// An error response came before the body was all sent: it goes on if
@@ -1689,7 +1699,6 @@ impl Request {
             }
             self.expect_refused = true;
             self.upload_done(cx, true);
-            cx.mark(Timer::PostTransfer);
             return Ok(());
         }
         if cx.easy().options().http.keep_sending_on_error {
@@ -1697,7 +1706,7 @@ impl Request {
                 cx,
                 format_args!("HTTP error before end of send, keep sending"),
             );
-            self.release();
+            self.release(cx);
         } else {
             trace::info(
                 cx,
@@ -1705,7 +1714,6 @@ impl Request {
             );
             self.closing = true;
             self.upload_done(cx, true);
-            cx.mark(Timer::PostTransfer);
         }
         Ok(())
     }

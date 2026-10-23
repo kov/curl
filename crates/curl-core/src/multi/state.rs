@@ -4,9 +4,11 @@
 //! the moment a transfer has a connection until `Done` gives it back, and
 //! only `Done` gives it back.
 
+use std::fmt;
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU32;
+use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
@@ -30,6 +32,7 @@ use crate::share::Kind;
 mod haproxy;
 mod socks;
 mod tunnel;
+use crate::components::Component;
 use crate::proto::http1::follow;
 use crate::proto::{Inherited, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
@@ -840,7 +843,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     Err(e) => (TransferState::RateLimiting(x).fail(e), Wake::Again),
                     Ok(look_again) => {
                         if let Some(wait) = look_again {
-                            run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
+                            arm(&mut run.deadlines, cx, TimerKind::SpeedCheck, wait);
                         }
                         if over_limit(run, cx) {
                             (TransferState::RateLimiting(x), Wake::Idle)
@@ -885,7 +888,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                         Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
                         Ok(look_again) => {
                             if let Some(wait) = look_again {
-                                run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
+                                arm(&mut run.deadlines, cx, TimerKind::SpeedCheck, wait);
                             }
                             let retry = if ended {
                                 retry_request(run, &mut x, cx)
@@ -1030,13 +1033,13 @@ fn expired<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> bool {
 fn over_limit<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> bool {
     match cx.rate_verdict() {
         Verdict::Wait(wait) => {
-            run.deadlines.arm_in(TimerKind::TooFast, cx.now(), wait);
+            arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
             cx.rest.dirty.remove(cx.me.index());
             true
         }
         Verdict::Go(next) => {
             if let Some(next) = next {
-                run.deadlines.arm_in(TimerKind::TooFast, cx.now(), next);
+                arm(&mut run.deadlines, cx, TimerKind::TooFast, next);
             }
             false
         }
@@ -1187,9 +1190,13 @@ fn connecting<H: Host>(
         Ok(Connected::Connecting(Progress::Dialed)) => dialed(c, cx),
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
             match until {
-                Some(at) => run
-                    .deadlines
-                    .arm_in(TimerKind::Eyeballs, now, wait_ms(now, at)),
+                Some(at) => arm(
+                    &mut run.deadlines,
+                    cx,
+                    TimerKind::Eyeballs,
+                    wait_ms(now, at),
+                ),
+                // Nothing left to start: C never armed it.
                 None => run.deadlines.clear(TimerKind::Eyeballs),
             }
             (TransferState::Connecting(c), Wake::Idle)
@@ -1217,11 +1224,49 @@ fn connecting<H: Host>(
 /// Connected to the proxy: its handshake starts, SOCKS's or an HTTP
 /// proxy's tunnel's. Each connection to the proxy counts as it is made.
 fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    cx.report_mut().count_connect();
+    eyeballs_won(cx);
     match c.route.socks().map(|leg| leg.version) {
         Some(version) => socks::dialed(c, cx, version),
         None => tunnel::dialed(c, cx),
     }
+}
+
+/// An attempt connected, to the peer or to the proxy a handshake goes
+/// through: the race is over, and counted (`cf_ip_happy_connect`).
+fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>) {
+    trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
+    cx.report_mut().count_connect();
+}
+
+/// Arm `kind` to fire `wait` after the pass's start, traced as C's
+/// `Curl_expire_set` traces it.
+fn arm<H: Host>(
+    deadlines: &mut Deadlines,
+    cx: &mut StepCx<'_, H>,
+    kind: TimerKind,
+    wait: Duration,
+) {
+    let at = deadlines.arm_in(kind, cx.now(), wait);
+    trace_set(cx, kind, at);
+}
+
+/// `kind` was armed to fire at `at`: what is left of its wait as it is
+/// traced, read from the clock again as C reads it (`multi_set_timeout`).
+pub(crate) fn trace_set<H: Host>(cx: &mut StepCx<'_, H>, kind: TimerKind, at: Instant) {
+    if trace::traces(cx, Component::Timer) {
+        let left = at.since(cx.rest.clock.now()).as_micros();
+        trace_timer(cx, kind, format_args!("set for {left}us"));
+    }
+}
+
+/// A line of the timer component's about `kind` (`CURL_TRC_TIMER`).
+pub(crate) fn trace_timer<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    kind: TimerKind,
+    args: fmt::Arguments<'_>,
+) {
+    let name = kind.name();
+    trace::of(cx, Component::Timer, format_args!("[{name}] {args}"));
 }
 
 /// A new connection is up, from `local` to `remote`, connected at `at`:
@@ -1236,7 +1281,7 @@ fn established<H: Host>(
     at: Instant,
 ) -> (TransferState, Wake) {
     if c.handshake.is_none() {
-        cx.report_mut().count_connect();
+        eyeballs_won(cx);
     }
     match haproxy::wanted(cx, remote, local, at) {
         Ok(None) => up(c, cx, remote, local, at),
@@ -2078,7 +2123,6 @@ fn retry_request<H: Host>(
 /// of a transfer: the leg's timers, the protocol and a connection for
 /// `url`, then the protocol connects over it.
 fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> TransferState {
-    run.deadlines.start_leg(cx.rest.now);
     // Cookies are counted from nothing for each request
     // (`Curl_req_hard_reset`).
     cx.easy_mut().set_cookies = 0;
@@ -2090,6 +2134,9 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     }
     cx.report_mut().set_method(run.inherited.method);
     cx.mark(Timer::StartSingle);
+    for (kind, at) in run.deadlines.start_leg(cx.rest.now).into_iter().flatten() {
+        trace_set(cx, kind, at);
+    }
     mstate::enter(cx, MState::Connect);
     cx.mark(Timer::PostQueue);
     // Counted from nothing for each request (`Curl_init_do`).

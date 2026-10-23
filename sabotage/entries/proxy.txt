@@ -185,7 +185,7 @@ witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
-    cx.report_mut().count_connect();
+    eyeballs_won(cx);
     match c.route.socks().map(|leg| leg.version) {
 --- new
     match c.route.socks().map(|leg| leg.version) {

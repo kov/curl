@@ -504,7 +504,7 @@ witness: curl-core proto::http::tests::a_body_waits_for_a_100
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-                        self.outgoing = Sending::AwaitingContinue(cx.now().after(wait));
+                        self.outgoing = Sending::AwaitingContinue(until);
 --- new
                         self.outgoing = Sending::Body(Reading { eos_read: false, announced: true });
 
@@ -576,9 +576,10 @@ witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-            Some(at) => run.deadlines.arm_in(TimerKind::Proto, now, at.since(now)),
+                run.deadlines.arm_in(TimerKind::Proto, now, at.since(now));
 --- new
-            Some(_) => run.deadlines.clear(TimerKind::Proto),
+                let _ = at;
+                run.deadlines.clear(TimerKind::Proto);
 
 === a trailer without a space after its colon is sent
 file: crates/curl-core/src/proto/http.rs

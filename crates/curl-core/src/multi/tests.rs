@@ -302,6 +302,40 @@ fn socket_action_runs_nothing_late_when_nothing_ran() {
     );
 }
 
+/// The timer component: each limit armed as a leg starts, with what is
+/// left of it, and the first due named as it fires on a socket action
+/// (`multi_mark_expired_as_dirty`); a perform fires it silently, as C's
+/// does.
+#[test]
+fn timers_are_traced_as_c_arms_and_fires_them() {
+    let (mut m, clock) = multi();
+    let ev = &mut NoEvents;
+    let (mut e, lines) = traced("stall://a");
+    e.options_mut().limits.total = TimeLimit::from_millis(1500);
+    e.options_mut().limits.connect = TimeLimit::from_millis(1000);
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"timer");
+    e.set_components(Some(components));
+    m.add(Box::new(e), (), ev).unwrap();
+    m.perform(ev).unwrap();
+    clock.advance(Duration::from_millis(1000));
+    m.socket_action(SocketEvent::Timeout, ev).unwrap();
+    clock.advance(Duration::from_millis(500));
+    m.perform(ev).unwrap();
+    let timers: Vec<_> = trace_of(&lines)
+        .into_iter()
+        .filter(|l| l.starts_with("[TIMER]"))
+        .collect();
+    assert_eq!(
+        timers,
+        [
+            "[TIMER] [TIMEOUT] set for 1500000us\n",
+            "[TIMER] [CONNECTTIMEOUT] set for 1000000us\n",
+            "[TIMER] [CONNECTTIMEOUT] has expired\n",
+        ]
+    );
+}
+
 #[test]
 fn a_fired_timer_queues_the_next_one() {
     let (mut m, clock) = multi();

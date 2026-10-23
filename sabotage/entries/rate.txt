@@ -61,11 +61,11 @@ witness: curl-core proto::http::tests::an_unpause_starts_the_receive_limit_over
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_each_second
 --- old
-            run.deadlines.arm_in(TimerKind::TooFast, cx.now(), wait);
+            arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
             cx.rest.dirty.remove(cx.me.index());
             true
 --- new
-            run.deadlines.arm_in(TimerKind::TooFast, cx.now(), wait);
+            arm(&mut run.deadlines, cx, TimerKind::TooFast, wait);
             cx.rest.dirty.remove(cx.me.index());
             false
 

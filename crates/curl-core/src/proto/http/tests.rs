@@ -4623,6 +4623,7 @@ mod multi_trace;
 mod range;
 mod sigv4;
 mod time_condition;
+mod timer_trace;
 mod write_trace;
 
 /// `Proxy-Connection:` counts only on a connection through an HTTP

@@ -331,6 +331,14 @@ before its first poll in PERFORMING, which the engine does not make; and a tunne
 handshake's reads and writes: C reads a proxy's answer to `CONNECT` a byte at a time from the
 socket, where the engine reads what is there.
 
+`TIMER` names each of a transfer's timers by C's `expire_id` (`TimerKind::name`; the protocol's
+own wait is HTTP's for a 100, the only one there is) where C arms or clears it: the leg's limits
+as it starts, the low-speed check, the rate limits, the next connect attempt and the wait for a
+100, each with what is left of its wait read from the clock as it is traced; the race's timer as
+its attempt connects and the 100's as it comes, runs out or the body ends. The first timer due
+is named as a socket action fires it; a perform fires it silently, as C's does. Not traced: the
+pending timers and the multi's timeout, which C lists with its pollset and in `multi_wait`.
+
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
 they are set) is handed to a `notes` closure the caller passes, line by line in the transfer's

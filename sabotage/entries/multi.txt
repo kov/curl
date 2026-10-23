@@ -134,7 +134,7 @@ file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- old
         let now = self.clock.now();
-        self.mark_expired_dirty(now);
+        self.mark_expired_dirty(now, ev);
         // A socket callback's abort
 --- new
         let now = self.clock.now();

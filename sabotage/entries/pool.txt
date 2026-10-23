@@ -219,9 +219,12 @@ witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_delay
 --- old
-                Some(at) => run
-                    .deadlines
-                    .arm_in(TimerKind::Eyeballs, now, wait_ms(now, at)),
+                Some(at) => arm(
+                    &mut run.deadlines,
+                    cx,
+                    TimerKind::Eyeballs,
+                    wait_ms(now, at),
+                ),
 --- new
                 Some(_) => run.deadlines.clear(TimerKind::Eyeballs),
 

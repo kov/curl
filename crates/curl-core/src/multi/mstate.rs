@@ -10,7 +10,7 @@ use crate::multi::state::StepCx;
 use crate::report::{Marked, Timer};
 use crate::trace;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum MState {
     #[default]
     Init,

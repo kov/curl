@@ -15,7 +15,7 @@ mod notify;
 mod sched;
 mod sockets;
 pub(crate) mod state;
-mod timers;
+pub(crate) mod timers;
 mod wait;
 
 use std::num::NonZeroU32;
@@ -504,13 +504,13 @@ impl<H: Host> Multi<H> {
             }
         }
         let now = self.clock.now();
-        self.mark_expired_dirty(now);
+        self.mark_expired_dirty(now, ev);
         // A socket callback's abort ends the call before notifications and
         // the timer (`multi_socket`'s `goto out`).
         if self.run_dirty(now, ev)? > 0 {
             // Running took time: catch what came due meanwhile, once.
             let now = self.clock.now();
-            self.mark_expired_dirty(now);
+            self.mark_expired_dirty(now, ev);
             self.run_dirty(now, ev)?;
         }
         self.dispatch(ev);
@@ -762,7 +762,9 @@ impl<H: Host> Multi<H> {
         // The protocol's own wait is derived from its state, never stored
         // apart from it.
         match run.state.wake_at() {
-            Some(at) => run.deadlines.arm_in(TimerKind::Proto, now, at.since(now)),
+            Some(at) => {
+                run.deadlines.arm_in(TimerKind::Proto, now, at.since(now));
+            }
             None => run.deadlines.clear(TimerKind::Proto),
         }
         let completed = run.state.is_completed();
@@ -859,8 +861,15 @@ impl<H: Host> Multi<H> {
 
     /// Mark every transfer with a timer due by `now` dirty
     /// (`multi_mark_expired_as_dirty`).
-    fn mark_expired_dirty(&mut self, now: Instant) {
+    fn mark_expired_dirty(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) {
         while let Some(id) = self.timers.pop_due(now) {
+            if let Some(kind) = self.run_of(id).deadlines.first() {
+                let mut cx = StepCx {
+                    me: id,
+                    rest: self.rest(now, ev),
+                };
+                state::trace_timer(&mut cx, kind, format_args!("has expired"));
+            }
             self.requeue_after_expiry(id, now);
             self.dirty.insert(id.index());
         }

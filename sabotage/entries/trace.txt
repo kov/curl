@@ -320,3 +320,89 @@ features: debug-hooks
         let _ = value;
     }
 }
+
+=== a leg's limits are armed untraced
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer
+--- old
+    for (kind, at) in run.deadlines.start_leg(cx.rest.now).into_iter().flatten() {
+        trace_set(cx, kind, at);
+    }
+--- new
+    for (_kind, _at) in run.deadlines.start_leg(cx.rest.now).into_iter().flatten() {}
+
+=== a timer's wait is traced from the pass's start, not the clock
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::timer_trace::the_speed_timers_are_armed_with_their_waits
+--- old
+        let left = at.since(cx.rest.clock.now()).as_micros();
+--- new
+        let left = at.since(cx.now()).as_micros();
+
+=== the race's timer is not cleared as its attempt connects
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer
+--- old
+    trace_timer(cx, TimerKind::Eyeballs, format_args!("cleared"));
+    cx.report_mut().count_connect();
+--- new
+    cx.report_mut().count_connect();
+
+=== the first timer due is not named as it fires
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::timers_are_traced_as_c_arms_and_fires_them
+--- old
+                state::trace_timer(&mut cx, kind, format_args!("has expired"));
+--- new
+                let _ = (&mut cx, kind);
+
+=== the latest timer is named as the first due
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::tests::timers_are_traced_as_c_arms_and_fires_them
+--- old
+            .min_by_key(|&(at, _)| at)
+--- new
+            .max_by_key(|&(at, _)| at)
+
+=== the 100's wait is armed untraced
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_and_cleared_as_c_does
+--- old
+                        state::trace_set(cx, TimerKind::Proto, until);
+--- new
+                        let _ = until;
+
+=== the 100's wait is not cleared as the 100 comes
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_and_cleared_as_c_does
+--- old
+            _ => return,
+        }
+        state::trace_timer(cx, TimerKind::Proto, format_args!("cleared"));
+--- new
+            _ => return,
+        }
+
+=== the 100's wait is not cleared as the body ends
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_and_cleared_as_c_does
+--- old
+        if self.outgoing.announced() {
+            state::trace_timer(cx, TimerKind::Proto, format_args!("cleared"));
+--- new
+        if false {
+            state::trace_timer(cx, TimerKind::Proto, format_args!("cleared"));
+
+=== a body ending after DID does not end the request's time
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_and_cleared_as_c_does
+--- old
+        if cx.mstate() >= MState::Did {
+            cx.mark(Timer::PostTransfer);
+        }
+        // The wait
+--- new
+        if cx.mstate() < MState::Did {
+            cx.mark(Timer::PostTransfer);
+        }
+        // The wait

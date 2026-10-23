@@ -41,7 +41,7 @@ witness: curl-core progress::tests::a_paused_transfer_is_not_too_slow
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::a_transfer_too_slow_for_too_long_times_out
 --- old
-                                run.deadlines.arm_in(TimerKind::SpeedCheck, cx.now(), wait);
+                                arm(&mut run.deadlines, cx, TimerKind::SpeedCheck, wait);
 --- new
                                 let _ = wait;
 

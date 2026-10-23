@@ -411,7 +411,7 @@ cargo-mutants run on the milestone's diff.
     are run with the gate forced open by `inventory/measure/gated.py`, a regression net kept
     out of the score; delete it when the Rust build claims one of the three.
     Waiting: NTLM and Negotiate, refused as not built until their own steps, as a C build
-    without them refuses; HTTP signatures with Ed25519, with TLS; 407, with the proxies
+    without them refuses; 407, with the proxies
     (step 31);
     `http_perhapsrewind`'s early close of a large body, and its "Need to rewind" line on an
     auth reload, with step 34.
@@ -483,14 +483,13 @@ cargo-mutants run on the milestone's diff.
     connections) comes with it, as C does. Tested by two threads through the C ABI with no
     lock functions, under Miri where it reaches.
 
-36. **tool: the remaining HTTP/1.1 options.** **Done**, but for Ed25519 signatures. `-G`/
+36. **tool: the remaining HTTP/1.1 options.** **Done.** `-G`/
     `--get` and `--url-query` (2008); `-r`/`CURLOPT_RANGE`, with the 206 and 416 answers
     (gated 1001), and `CURLOPT_RESUME_FROM` -1 on a GET sending C's `Range: bytes=-N-`;
     `--limit-rate` (729, `MAX_RECV_SPEED_LARGE`, `MAX_SEND_SPEED_LARGE`), reading at most
     `CURLOPT_BUFFERSIZE` at a time; `--request-target` (1613); every `-w` variable and
     `%{json}` (970, 972), and `%time{}`; `--aws-sigv4`; HTTP message signatures
-    (`CURLAUTH_HTTPSIG`) with HMAC-SHA256, Ed25519 refused as by a C build whose TLS backend
-    lacks it; `--ipfs-gateway` (1851); the linked libraries in `curl_version` and `-V`; the
+    (`CURLAUTH_HTTPSIG`) with HMAC-SHA256, and Ed25519 on the OpenSSL binding (step 43b); `--ipfs-gateway` (1851); the linked libraries in `curl_version` and `-V`; the
     tool's locale taken from the environment for all but numbers, as C's `LC_ALL` is.
 37. **http: multipart/MIME.** **Done**, but for what waits on other protocols. The upload
     source is a source plus a chain of reader stages (ENGINE.md 5.4); the MIME tree a value in

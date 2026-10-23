@@ -1336,7 +1336,7 @@ pub(crate) trait Layer: Send + Debug {           // conn/layer.rs; C's Curl_cfty
     fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind>;
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // ALPN, certificates, the SSL *
 }
-pub(crate) enum Handshake { Done, Waiting }
+pub enum Handshake { Done, Waiting }                         // public: a TLS session returns it
 pub(crate) enum Alive { Dead, Alive { input_pending: bool } }
 pub(crate) struct Below<'a> { layers: &'a mut [Box<dyn Layer>], socket: &'a dyn Socket }
 pub(crate) struct LayerStack { layers: Option<Box<Vec<Box<dyn Layer>>>> }   // bottom first

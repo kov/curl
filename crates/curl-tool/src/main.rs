@@ -153,6 +153,22 @@ fn run(
         None => {}
     }
     msgs.tracing = line.global.trace != Trace::None;
+    // The debug build's `CURL_DEBUG` has the last word on the library's
+    // components, as C applies it after each `curl_global_trace`.
+    #[cfg(feature = "debug-hooks")]
+    {
+        let given = curl_os::env::var(b"CURL_DEBUG");
+        let applied = given.and_then(|config| {
+            if let Some(config) = config {
+                line.global.components()?.configure(&config);
+            }
+            Ok(())
+        });
+        if applied.is_err() {
+            msgs.error(&[b"out of memory"]);
+            return ExitCode::from(exit_code(ErrorKind::OutOfMemory));
+        }
+    }
     // Noted once the verbosity is known.
     if line.read_curlrc
         && let Some(name) = curlrc

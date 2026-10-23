@@ -52,6 +52,7 @@ fn state() -> State {
     State {
         kind: Trace::Plain,
         time: false,
+        ids: false,
         sink: Sink::Stderr,
         mid_line: false,
         noted_data: false,
@@ -123,4 +124,20 @@ fn stamps_the_time_of_day() {
         (b':', b':', b'.', b' '),
         "{stamp:?}"
     );
+}
+
+/// `--trace-ids`: the transfer's number and its connection's, `x` for no
+/// connection, nothing without a transfer (`tool_debug_cb`).
+#[test]
+fn ids_name_the_transfer_and_its_connection() {
+    let text = |transfer, conn| {
+        TransferIds { transfer, conn }
+            .text()
+            .map(|t| String::from_utf8(t.bytes().to_vec()).unwrap())
+    };
+    assert_eq!(text(Some(3), Some(7)).as_deref(), Some("[3-7] "));
+    assert_eq!(text(Some(0), None).as_deref(), Some("[0-x] "));
+    assert_eq!(text(None, Some(1)), None);
+    let max = text(Some(u64::MAX), Some(u64::MAX)).unwrap();
+    assert_eq!(max.len(), 2 * 20 + 4);
 }

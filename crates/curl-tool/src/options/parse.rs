@@ -964,9 +964,9 @@ mod tests {
         assert_eq!(g(&["x", "-v"]), (Trace::Plain, Some(&b"%"[..]), false));
         assert_eq!(run(&["x", "-v", "-v"]), Ok((1, None, None)));
         assert_eq!(run(&["x", "--verbose", "--verbose"]), Ok((1, None, None)));
-        assert_eq!(run(&["x", "-vv"]), Ok((1, Some("-vv"), None)));
+        assert_eq!(run(&["x", "-vv"]), Ok((1, None, None)));
         assert_eq!(run(&["x", "-sv"]), Ok((1, None, None)));
-        assert_eq!(run(&["x", "-vsv"]), Ok((1, Some("-vv"), None)));
+        assert_eq!(run(&["x", "-vsv"]), Ok((1, None, None)));
         assert!(!g(&["x", "--trace-time", "-v"]).2);
         assert!(g(&["x", "-v", "--trace-time"]).2);
         assert_eq!(
@@ -980,6 +980,74 @@ mod tests {
         );
         assert_eq!(g(&["x", "-v", "--no-verbose"]).0, Trace::None);
         assert_eq!(run(&["x", "--trace", ""]), Err(ParamError::BlankString));
+    }
+
+    /// `--trace-config` and each `v` past the first (`set_trace_config`,
+    /// `parse_verbose`): `ids` and `time` are the tool's, `all` turns them
+    /// with every component but the library's ids, and the first `-v` of
+    /// a word turns everything off unless `--trace-config` was given.
+    #[test]
+    fn reads_the_trace_components_as_c() {
+        use curl_core::components::Component;
+        let on = |args: &[&str]| {
+            let l = line(args);
+            let c = l.global.components.clone();
+            let names: Vec<&str> = Component::ALL
+                .into_iter()
+                .filter(|&x| c.as_ref().is_some_and(|c| c.traces(x)))
+                .map(Component::name)
+                .collect();
+            (l.global.trace_ids, l.global.trace_time, names)
+        };
+        let none: Vec<&str> = Vec::new();
+        assert_eq!(
+            on(&["x", "--trace-config", "ids,time"]),
+            (true, true, none.clone())
+        );
+        let all = on(&["x", "--trace-config", "all"]);
+        assert_eq!(
+            (all.0, all.1, all.2.len()),
+            (true, true, Component::ALL.len() - 1)
+        );
+        assert!(!all.2.contains(&"LIB-IDS"));
+        // One space after a comma is passed over; the library's ids stay
+        // off even when named.
+        assert_eq!(
+            on(&["x", "--trace-config", "write, +read,-write,lib-ids"]),
+            (false, false, vec!["READ"])
+        );
+        assert_eq!(
+            on(&["x", "--trace-config", "all", "--trace-config", "-all,dns"]),
+            (false, false, vec!["DNS"])
+        );
+        // `-v` keeps what `--trace-config` chose, and resets the tool's
+        // own without it.
+        assert_eq!(on(&["x", "--trace-config", "write", "-v"]).2, ["WRITE"]);
+        assert!(!on(&["x", "--trace-ids", "-v"]).0);
+        assert!(on(&["x", "-v", "--trace-ids"]).0);
+        let protocol = [
+            "FTP",
+            "SMTP",
+            "SSH",
+            "WS",
+            "RECVBUF",
+            "SETUP",
+            "HTTP/2",
+            "HTTP/3",
+            "HTTPS-CONNECT",
+        ];
+        assert_eq!(on(&["x", "-vv"]), (true, true, protocol.to_vec()));
+        assert_eq!(on(&["x", "-vv", "-v"]), (false, false, none.clone()));
+        let three = line(&["x", "-vvv"]);
+        assert_eq!(three.global.trace, Trace::Ascii);
+        let mut more = protocol.to_vec();
+        more.extend(["READ", "WRITE", "SSL"]);
+        more.sort();
+        let mut got = on(&["x", "-vvv"]).2;
+        got.sort();
+        assert_eq!(got, more);
+        assert!(on(&["x", "-vvvv"]).2.contains(&"TCP"));
+        assert_eq!(on(&["x", "-vvvv", "--no-verbose"]), (false, false, none));
     }
 
     /// `--proxy` makes the proxy HTTP; `--proxy1.0` and the SOCKS options

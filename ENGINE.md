@@ -295,7 +295,8 @@ each after an optional `+` or `-`). Copies share one setting, read at each line,
 shows in transfers already running. `Easy` holds it outside its options, kept through `reset` and
 by a copy of the handle; without one, only lines of no component are traced. The shim gives every
 handle the process's, a static `Levels` beside its root that `curl_global_trace` sets (and the
-debug build's `CURL_DEBUG` after it). A
+debug build's `CURL_DEBUG` after it); the tool owns one, set by `--trace-config` and each `v`
+past the first of `-vv`. A
 component's line is traced when the transfer is verbose and the component is on,
 after `[NAME] `. With `LIB-IDS` on, every line but a failure's reason starts with `[T-C] ` (`x` for
 a number the transfer has none of), and so does what `trace::bytes` (`Curl_debug`) gives the

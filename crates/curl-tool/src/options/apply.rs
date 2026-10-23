@@ -11,6 +11,7 @@
 use std::borrow::Cow;
 
 use curl_alloc::TryVec;
+use curl_core::components::Components;
 use curl_core::options::{AuthMethods, Condition, Follow, PostRedir, ProxyType, TimeCondition};
 use curl_core::version::Protocol;
 
@@ -486,6 +487,14 @@ pub(crate) struct Global<'a> {
     pub(crate) trace_dump: Option<&'a [u8]>,
     /// `--trace-time`.
     pub(crate) trace_time: bool,
+    /// `--trace-ids`: the transfer's and connection's numbers before
+    /// each line.
+    pub(crate) trace_ids: bool,
+    /// `--trace-config` was given, so `-v` keeps the components it chose.
+    trace_set: bool,
+    /// Which of the library's components trace, once a trace option or
+    /// `-v` sets any (C's `curl_global_trace`, process-wide there).
+    pub(crate) components: Option<Components>,
     /// How many `-v` in one word.
     verbosity: u8,
     /// `--no-progress-meter`.
@@ -1229,7 +1238,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::ProgressMeter => line.global.no_progress = !value.toggle(),
         Opt::ProgressBar => line.global.progress_bar = value.toggle(),
-        Opt::Verbose => verbose(line, msgs, value.toggle()),
+        Opt::Verbose => verbose(line, msgs, value.toggle())?,
         Opt::Trace | Opt::TraceAscii => {
             let file = value.text();
             if file.is_empty() {
@@ -1254,6 +1263,11 @@ pub(crate) fn apply<'a>(
             g.trace = trace;
         }
         Opt::TraceTime => line.global.trace_time = value.toggle(),
+        Opt::TraceIds => line.global.trace_ids = value.toggle(),
+        Opt::TraceConfig => {
+            line.global.trace_set = true;
+            line.global.trace_config(value.text())?;
+        }
         Opt::Next => return Ok(Flow::NextOperation),
         Opt::Silent => msgs.silent = value.toggle(),
         Opt::ShowError => msgs.show_error = value.toggle(),
@@ -1422,8 +1436,6 @@ pub(crate) fn apply<'a>(
         | Opt::Tlsv11
         | Opt::Tlsv12
         | Opt::Tlsv13
-        | Opt::TraceConfig
-        | Opt::TraceIds
         | Opt::UnixSocket
         | Opt::UploadFlags
         | Opt::UseAscii
@@ -1435,33 +1447,103 @@ pub(crate) fn apply<'a>(
 }
 
 /// `--verbose`, which counts: `-vv` in one word is more than `-v`, while
-/// `-v -v` is `-v` (`parse_verbose`).
-fn verbose(line: &mut CommandLine<'_>, msgs: &Messages, on: bool) {
+/// `-v -v` is `-v` (`parse_verbose`). Each `v` past the first turns on
+/// more of the library's components.
+fn verbose(line: &mut CommandLine<'_>, msgs: &Messages, on: bool) -> Result<(), ParamError> {
     let first_in_word = line.options_in_word == 0;
     let g = &mut line.global;
     if !on {
         g.verbosity = 0;
-        // As `set_trace_config("-all")`, which `--trace-config` (not
-        // implemented) would otherwise have to come after.
-        g.trace_time = false;
+        g.trace_config(b"-all")?;
         g.trace = Trace::None;
-        return;
+        return Ok(());
     }
     if first_in_word {
+        // The first `-v` of a word starts again from nothing, unless
+        // `--trace-config` chose the components.
         g.verbosity = 0;
-        g.trace_time = false;
+        if !g.trace_set {
+            g.trace_config(b"-all")?;
+        }
     }
-    if g.verbosity > 0 {
-        // Each further `-v` turns on more of libcurl's trace categories.
-        line.feature_not_implemented("-vv");
-        return;
+    match g.verbosity {
+        0 => {
+            g.verbosity = 1;
+            g.trace_dump = Some(b"%");
+            if g.trace != Trace::None && g.trace != Trace::Plain {
+                msgs.warn(&[b"-v, --verbose overrides an earlier trace option"]);
+            }
+            g.trace = Trace::Plain;
+        }
+        1 => {
+            g.verbosity = 2;
+            g.trace_config(b"ids,time,protocol")?;
+        }
+        2 => {
+            g.verbosity = 3;
+            g.trace = Trace::Ascii;
+            g.trace_config(b"ssl,read,write")?;
+        }
+        3 => {
+            g.verbosity = 4;
+            g.trace_config(b"network")?;
+        }
+        _ => {}
     }
-    g.verbosity = 1;
-    g.trace_dump = Some(b"%");
-    if g.trace != Trace::None && g.trace != Trace::Plain {
-        msgs.warn(&[b"-v, --verbose overrides an earlier trace option"]);
+    Ok(())
+}
+
+impl Global<'_> {
+    /// Apply a `--trace-config` list (`set_trace_config`): `ids` and
+    /// `time` are the tool's own, `all` turns them with every component
+    /// but the library's ids, as the tool writes its own; each other
+    /// name goes to the library alone, with the library's ids kept off.
+    /// One space after a comma is passed over.
+    pub(crate) fn trace_config(&mut self, list: &[u8]) -> Result<(), ParamError> {
+        let mut rest = Some(list);
+        while let Some(token) = rest {
+            let (word, next) = match token.iter().position(|&b| b == b',') {
+                Some(at) => (&token[..at], Some(&token[at + 1..])),
+                None => (token, None),
+            };
+            let (on, name) = match word {
+                [b'-', name @ ..] => (false, name),
+                [b'+', name @ ..] => (true, name),
+                name => (true, name),
+            };
+            if name.eq_ignore_ascii_case(b"all") {
+                self.trace_ids = on;
+                self.trace_time = on;
+                // Turned off, the rest of the list goes to the library
+                // with it, as C passes it on from there.
+                let config: &[u8] = if on { b"all,-lib-ids" } else { token };
+                self.components()?.configure(config);
+            } else if name.eq_ignore_ascii_case(b"ids") {
+                self.trace_ids = on;
+            } else if name.eq_ignore_ascii_case(b"time") {
+                self.trace_time = on;
+            } else {
+                // C's 64-byte buffer: what does not fit is cut.
+                let mut buffer = [0u8; 63];
+                let mut w = &mut buffer[..];
+                let _ = std::io::Write::write_all(&mut w, if on { b"+" } else { b"-" })
+                    .and_then(|()| std::io::Write::write_all(&mut w, name))
+                    .and_then(|()| std::io::Write::write_all(&mut w, b",-lib-ids"));
+                let len = 63 - w.len();
+                self.components()?.configure(&buffer[..len]);
+            }
+            rest = next.map(|n| n.strip_prefix(b" ").unwrap_or(n));
+        }
+        Ok(())
     }
-    g.trace = Trace::Plain;
+
+    /// The tool's trace setting, made the first time it is changed.
+    pub(crate) fn components(&mut self) -> Result<&Components, curl_alloc::OutOfMemory> {
+        if self.components.is_none() {
+            self.components = Some(Components::new()?);
+        }
+        Ok(self.components.as_ref().expect("made above"))
+    }
 }
 
 /// What one of the `--data` options gives (`set_data`): its text, or the

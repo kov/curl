@@ -1095,3 +1095,29 @@ features: debug-hooks
 --- new
                 let _ = std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(name));
                 if let Ok(file) = fs::with_c_name(name, |c| fs::open_write(c, keep, 0o666)) {
+
+=== `-v` turns off the components `--trace-config` chose
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::reads_the_trace_components_as_c
+--- old
+        if !g.trace_set {
+            g.trace_config(b"-all")?;
+        }
+--- new
+        g.trace_config(b"-all")?;
+
+=== `--trace-config all` turns the library's ids on
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::reads_the_trace_components_as_c
+--- old
+                let config: &[u8] = if on { b"all,-lib-ids" } else { token };
+--- new
+                let config: &[u8] = if on { b"all" } else { token };
+
+=== `--trace-ids` names a transfer with no connection as connection 0
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::ids_name_the_transfer_and_its_connection
+--- old
+            None => write!(text, "[{transfer}-x] "),
+--- new
+            None => write!(text, "[{transfer}-0] "),

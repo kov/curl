@@ -514,6 +514,7 @@ fn transfer(
     easy.set_share(Some(run.share.clone()));
     easy.set_public_suffixes(Some(run.suffixes.clone()));
     easy.set_decoders(decoders());
+    easy.set_components(run.global.components.clone());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
     let failed = |easy: &Easy, e| {

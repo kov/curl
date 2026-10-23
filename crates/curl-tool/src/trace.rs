@@ -29,6 +29,8 @@ pub(crate) struct Tracer(TryArc<Mutex<State>>);
 struct State {
     kind: Trace,
     time: bool,
+    /// `--trace-ids`.
+    ids: bool,
     sink: Sink,
     /// `--verbose`'s last line is not ended yet.
     mid_line: bool,
@@ -72,6 +74,7 @@ impl Tracer {
         let state = State {
             kind: global.trace,
             time: global.trace_time,
+            ids: global.trace_ids,
             sink,
             mid_line: false,
             noted_data: false,
@@ -96,7 +99,8 @@ struct Entry {
 }
 
 impl Tracer {
-    fn entry(&self, kind: DebugKind, data: &[u8], terminal: bool) {
+    /// Trace an entry of the transfer `ids` names, if `--trace-ids` asks.
+    fn entry(&self, kind: DebugKind, data: &[u8], terminal: bool, ids: TransferIds) {
         let mut state = self.0.lock().expect("no panic holds it");
         // Opened first: where the entry goes decides what `--verbose` says.
         state.sink.open();
@@ -104,6 +108,12 @@ impl Tracer {
         out.clear();
         let stamp = state.time.then(timestamp);
         let stamp = stamp.as_ref().map_or(&b""[..], Stamp::bytes);
+        let ids = state.ids.then(|| ids.text()).flatten();
+        let ids = ids.as_ref().map_or(&b""[..], Stamp::bytes);
+        let mut start = Stamp::empty();
+        start.push(stamp);
+        start.push(ids);
+        let stamp = start.bytes();
         let written = match state.kind {
             Trace::Plain => plain(&mut state, &mut out, stamp, kind, data, terminal),
             Trace::Ascii | Trace::Binary => dump(&mut out, stamp, kind, data, state.kind),
@@ -117,8 +127,35 @@ impl Tracer {
 }
 
 impl DebugHandler for Entry {
-    fn debug(&self, _: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
-        self.tracer.entry(kind, data, self.terminal);
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        let report = cx.info(cx.me());
+        let ids = TransferIds {
+            transfer: report.and_then(|r| r.transfer_number()),
+            conn: report.and_then(|r| r.conn_number()),
+        };
+        self.tracer.entry(kind, data, self.terminal, ids);
+    }
+}
+
+/// The numbers of the transfer an entry is of, and of its connection.
+#[derive(Clone, Copy, Default)]
+struct TransferIds {
+    transfer: Option<u64>,
+    conn: Option<u64>,
+}
+
+impl TransferIds {
+    /// `[T-C] `, or `[T-x] ` without a connection; nothing without a
+    /// transfer (`TRC_IDS_FORMAT_IDS_*`).
+    fn text(self) -> Option<Stamp> {
+        let transfer = self.transfer?;
+        let mut text = Stamp::empty();
+        // Two numbers of at most 20 digits fit.
+        let _ = match self.conn {
+            Some(conn) => write!(text, "[{transfer}-{conn}] "),
+            None => write!(text, "[{transfer}-x] "),
+        };
+        Some(text)
     }
 }
 
@@ -168,10 +205,7 @@ fn timestamp() -> Stamp {
         minute: 0,
         second: 0,
     });
-    let mut stamp = Stamp {
-        bytes: [0; Stamp::LEN],
-        len: 0,
-    };
+    let mut stamp = Stamp::empty();
     // Every field is in range, so the stamp fits.
     let _ = write!(
         stamp,
@@ -184,14 +218,26 @@ fn timestamp() -> Stamp {
     stamp
 }
 
-/// A timestamp, on the stack.
+/// A timestamp or the ids, or both, on the stack.
 struct Stamp {
     bytes: [u8; Stamp::LEN],
     len: usize,
 }
 
 impl Stamp {
-    const LEN: usize = b"HH:MM:SS.uuuuuu ".len();
+    /// A timestamp, then two numbers of up to 20 digits in brackets.
+    const LEN: usize = b"HH:MM:SS.uuuuuu ".len() + 2 * 20 + b"[-] ".len();
+
+    fn empty() -> Stamp {
+        Stamp {
+            bytes: [0; Stamp::LEN],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let _ = std::io::Write::write_all(self, bytes);
+    }
 
     fn bytes(&self) -> &[u8] {
         &self.bytes[..self.len]

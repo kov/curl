@@ -1017,6 +1017,30 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
             return failed(easy, ErrorKind::WriteError);
         }
     }
+    // An upload of standard input is warned of with more than one way to
+    // authenticate, which may need it sent again (`check_stdin_upload`).
+    if upload.is_some_and(|file| file == b"-" || file == b".")
+        && (op.proxy_anyauth || easysrc::auth_mask(op.auth).count_ones() > 1)
+    {
+        msgs.warn(&[
+            b"Using --anyauth or --proxy-anyauth with upload from stdin involves a big risk \
+              of it not working. Use a temporary file or a fixed auth type instead",
+        ]);
+    }
+    // `-T .` reads it without waiting.
+    let stdin = match upload.filter(|&file| file == b".") {
+        Some(_) => match nonblocking::Stdin::open(&msgs) {
+            Ok(stdin) => Some(stdin),
+            Err(nonblocking::Unopened::OutOfMemory) => {
+                return failed(easy, ErrorKind::OutOfMemory);
+            }
+            Err(nonblocking::Unopened::Io) => {
+                msgs.help(&[b"cannot open '.'"]);
+                return said(easy, ErrorKind::ReadError);
+            }
+        },
+        None => None,
+    };
     // An upload to a path without a name gives it the file's; standard
     // input names none (`setup_transfer_upload`, `stdin_upload`).
     let named;
@@ -1139,20 +1163,6 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
             Err(e) => return failed(easy, e),
         },
         _ => None,
-    };
-    // `-T .` reads standard input without waiting (`check_stdin_upload`).
-    let stdin = match upload.filter(|&file| file == b".") {
-        Some(_) => match nonblocking::Stdin::open(&msgs) {
-            Ok(stdin) => Some(stdin),
-            Err(nonblocking::Unopened::OutOfMemory) => {
-                return failed(easy, ErrorKind::OutOfMemory);
-            }
-            Err(nonblocking::Unopened::Io) => {
-                msgs.help(&[b"cannot open '.'"]);
-                return said(easy, ErrorKind::ReadError);
-            }
-        },
-        None => None,
     };
     let config = Config {
         url,

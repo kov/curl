@@ -1511,3 +1511,27 @@ fn sets_the_socks5_methods_asked_for() {
     assert_eq!(set(&["--no-socks5-gssapi"]), None);
     assert_eq!(set(&[]), None);
 }
+
+/// An upload of standard input, `-T -` or `-T .`, is warned of when more
+/// than one way to authenticate may need it sent again; a file's is not.
+#[test]
+fn warns_of_more_than_one_auth_with_standard_input() {
+    let s = Scratch::new("stdin-auth");
+    s.write("f", b"x");
+    let warning = "Warning: Using --anyauth or --proxy-anyauth with upload from stdin \
+                   involves a \nWarning: big risk of it not working. Use a temporary file \
+                   or a fixed auth type \nWarning: instead\n";
+    let dst = s.url("dst");
+    let warned = |args: &[&str]| {
+        let r = curl(&s, &[&["--no-progress-meter"], args, &[&dst]].concat());
+        assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+        assert!(r.stderr.is_empty() || r.stderr == warning, "{}", r.stderr);
+        r.stderr == warning
+    };
+    assert!(warned(&["--anyauth", "-T", "-"]));
+    assert!(warned(&["--anyauth", "-T", "."]));
+    assert!(warned(&["--basic", "--digest", "-T", "-"]));
+    assert!(warned(&["--proxy-anyauth", "-T", "."]));
+    assert!(!warned(&["--digest", "-T", "-"]));
+    assert!(!warned(&["--anyauth", "-T", "f"]));
+}

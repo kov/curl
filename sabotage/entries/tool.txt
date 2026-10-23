@@ -174,12 +174,12 @@ witness: curl-tool reports_an_output_it_cannot_open
             return failed(easy, ErrorKind::WriteError);
         }
     }
-    // An upload to a path without a name gives it the file's; standard
+    // An upload of standard input is warned of with more than one way to
 --- new
             return Made::Failed(ErrorKind::WriteError);
         }
     }
-    // An upload to a path without a name gives it the file's; standard
+    // An upload of standard input is warned of with more than one way to
 
 === a line buffer is written only when full
 file: crates/curl-tool/src/stdio.rs
@@ -1369,3 +1369,19 @@ witness: curl-tool bar::tests::draws_the_share_done
 --- new
             len: 0,
             whole: true,
+
+=== an upload of standard input with two ways to authenticate is not warned of
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool warns_of_more_than_one_auth_with_standard_input
+--- old
+        && (op.proxy_anyauth || easysrc::auth_mask(op.auth).count_ones() > 1)
+--- new
+        && (op.proxy_anyauth || easysrc::auth_mask(op.auth).count_ones() > 2)
+
+=== `-T .` is not warned of as an upload of standard input
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool warns_of_more_than_one_auth_with_standard_input
+--- old
+    if upload.is_some_and(|file| file == b"-" || file == b".")
+--- new
+    if upload.is_some_and(|file| file == b"-")

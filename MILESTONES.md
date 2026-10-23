@@ -553,6 +553,15 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     of ALPN: the ALPN_EYEBALLS timer, `query ALPN`, and 758.
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
     claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
+45. **The tool's options that need no new engine work,** built alongside step 40: `--variable`
+    and the `--expand-` prefix (`tool_vars.c`), `--styled-output`, `--fail-early`, `--rate`;
+    `--disallow-username-in-url`, `--speed-limit`, `--speed-time` and `--create-file-mode`
+    wired to what the core has; `TCP_NODELAY` set by default as C does, with `--tcp-nodelay`,
+    `--tcp-fastopen`, `--keepalive*`, `--ip-tos`, `--vlan-priority` and `--mptcp`;
+    `--retry-connrefused`; the deprecated `--random-file` and `--egd-file` as C's no-ops.
+    Waiting: `--interface` and `--local-port` (a bind before the connect) and `--unix-socket`
+    and `--abstract-unix-socket` (a connect that is not TCP), on step 40's layers;
+    `--parallel` (the tool driving a multi handle), `--libcurl`, `--xattr` and `--doh-url`.
 
 After this milestone: **a corpus of real command lines**, as compatibility guidance. Some
 thousands of curl invocations sampled from public shell scripts, Dockerfiles, CI configurations

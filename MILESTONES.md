@@ -531,20 +531,26 @@ cargo-mutants run on the milestone's diff.
 
 Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's review.
 
-39. **Component tracing.** **In progress.** `curl_global_trace` and `--trace-config`: one
-    process-wide setting in the shim's root, read live through a shared handle the core is
-    given; C's components, syntax and `ids`/`time` prefixes; the `CURL_TRC_*` lines of the
-    components built so far, each later protocol bringing its own. Closes 3236, 3235, 1515, 758
-    and 19. With it, the debug handler reachable outside a transfer, so `COOKIELIST`'s cookie
-    lines are traced where C traces them.
+39. **Component tracing.** **Done**, but for what waits on later steps. `curl_global_trace`
+    and `--trace-config`: one process-wide setting in the shim's root, read live through a
+    shared handle the core is given; C's components, syntax and `ids`/`time` prefixes;
+    `CURL_DEBUG` in the debug build. The lines of the components built so far, as ENGINE.md
+    describes them: MULTI, TCP, WRITE, READ, TIMER, HAPPY-EYEBALLS and DNS, each later protocol
+    bringing its own. The debug handler reachable outside a transfer, so `COOKIELIST`'s cookie
+    lines are traced where C traces them. Closes 3236, 3235, 1515 and 19. Waiting: the
+    connection setup filter's and the pollset's lines (step 40), and 758 (step 43).
 40. **The engine rewrite in ENGINE.md:** who owns a connection (exclusive leases; pool places
     for multiplexed, reserved and closing connections; the socket's closer carried from its
     creation; a lease checked against its home pool) and the layer stack as a pull chain like
-    C's filters, one `Stream` owned by a dialed socket and a connection alike.
+    C's filters, one `Stream` owned by a dialed socket and a connection alike. With the
+    filters, the trace lines that describe them: SETUP, `cf_setup_connect`, `connected` and
+    `reduced to`, the pollset and `multi_wait`, a timer's `expires in` and the `gives multi
+    timeout` line, the DNS and happy eyeballs filters' own lines, and the SHUTDOWN timer.
 41. **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
 42. **HTTP's decisions after an exchange** moved from the engine into `proto/http`.
 43. **TLS**, its first sub-step the layer stack; Ed25519 HTTP signatures on the OpenSSL
-    binding it creates (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025).
+    binding it creates (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025). With it the trace
+    of ALPN: the ALPN_EYEBALLS timer, `query ALPN`, and 758.
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
     claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
 
@@ -562,7 +568,7 @@ connect and DO states and connection-scoped protocol state, with the first stage
 STARTTLS; the request renderer writing each part through a field sink, when HTTP/2 starts;
 HTTP/2 delivering a sibling stream's data to its transfer at once, as C does, rather than
 buffering it per stream; FTP's data connection as a second chain beside the control
-connection's; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
+connection's, and its FTP_ACCEPT and SERVER_RESPONSE timers traced; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
 
 The tool's `--libcurl` (`tool_easysrc.c`: the C program a command line amounts to; 1404 and the
 `--libcurl` tests) and `--manual` (the built-in manual, `tool_hugehelp.c`: 1708, and the hint

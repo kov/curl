@@ -35,6 +35,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-zlib/src/lib.rs`: zlib's inflate, undoing the `deflate` and `gzip` codings.
 - `crates/curl-brotli/src/lib.rs`: brotli's decoder, undoing the `br` coding.
 - `crates/curl-zstd/src/lib.rs`: zstd's decoder, undoing the `zstd` coding.
+- `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
+  loaded.
+- `crates/curl-openssl/src/sign.rs`: OpenSSL's Ed25519, signing HTTP message signatures.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place.
 - `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly.

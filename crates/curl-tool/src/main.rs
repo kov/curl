@@ -93,6 +93,8 @@ fn main() -> ExitCode {
     let argv = command_line();
     #[cfg(feature = "debug-hooks")]
     memory_tracking_init();
+    // C's `curl_global_init`: OpenSSL's configuration is read now.
+    curl_openssl::init();
     // C takes the environment's locale but for numbers (`operate`).
     curl_os::locale::from_environment_but_numbers();
     let mut msgs = Messages::new();

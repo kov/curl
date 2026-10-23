@@ -606,7 +606,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       names, mTLS, pinning, reuse, a resumed session, close_notify, CONNECT and HTTPS proxies,
       engines), each also with `--http1.1`, and lib758's callback sequence; the red list below;
       ENGINE.md and DESIGN.md written for the design.
-    - **b. curl-openssl and Ed25519 signatures.** openssl-sys 0.9.117, declarations only, never
+    - **b. curl-openssl and Ed25519 signatures.** **Done.** openssl-sys 0.9.117, declarations only, never
       `vendored`; OpenSSL 3.0 or later, checked at build and at init; httpsig signs Ed25519
       through the handle's `Libraries` (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025).
     - **c. `Closing`.** The multi's `ShutdownSet`, its SHUTDOWN row, sockets owned by a

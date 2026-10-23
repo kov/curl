@@ -269,6 +269,12 @@ impl Allocator {
     }
 }
 
+/// Initialise the libraries linked in, as C's global init does
+/// (`Curl_ssl_init`): OpenSSL's configuration is read now.
+fn libraries_init() {
+    curl_openssl::init();
+}
+
 fn global_init() -> CURLcode {
     let mut root = root();
     if root.initialized == 0 {
@@ -276,6 +282,7 @@ fn global_init() -> CURLcode {
         root.allocator = SYSTEM;
         // `Curl_trc_init`.
         trace_from_env();
+        libraries_init();
     }
     root.initialized += 1;
     CURLE_OK
@@ -313,6 +320,7 @@ pub extern "C" fn curl_global_init_mem(
             calloc,
         };
         trace_from_env();
+        libraries_init();
     }
     root.initialized += 1;
     CURLE_OK

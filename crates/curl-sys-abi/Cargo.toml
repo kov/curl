@@ -21,6 +21,7 @@ nightly = []
 [dependencies]
 curl-alloc = { version = "0.1.0", path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
+curl-openssl = { path = "../curl-openssl" }
 curl-psl = { path = "../curl-psl" }
 curl-brotli = { path = "../curl-brotli" }
 curl-zlib = { path = "../curl-zlib" }

@@ -2892,7 +2892,7 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Gzip, curl_zlib::gzip)
             .with(Coding::Brotli, curl_brotli::decoder)
             .with(Coding::Zstd, curl_zstd::decoder),
-        ed25519: None,
+        ed25519: Some(&curl_openssl::ED25519),
     }
 };
 

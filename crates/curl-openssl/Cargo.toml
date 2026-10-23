@@ -1,0 +1,15 @@
+[package]
+name = "curl-openssl"
+description = "OpenSSL for the curl rewrite: Ed25519 signatures for HTTP message signing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+curl-core = { path = "../curl-core" }
+# Declarations only: the system's library, never the `vendored` copy.
+openssl-sys = "0.9.117"
+
+[lints]
+workspace = true

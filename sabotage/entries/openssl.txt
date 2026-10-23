@@ -1,0 +1,17 @@
+=== OpenSSL's Ed25519 key is made from the key's first 31 bytes
+file: crates/curl-openssl/src/sign.rs
+witness: curl-openssl tests::signs_test_5001_s_base_with_the_test_key
+--- old
+                key.as_ptr(),
+                key.len(),
+--- new
+                key.as_ptr(),
+                key.len() - 1,
+
+=== OpenSSL 3.0.0 itself is refused as too old
+file: crates/curl-openssl/src/sys.rs
+witness: curl-openssl sys::tests::three_or_later_is_supported
+--- old
+    if number < OLDEST { Err(TooOld) } else { Ok(()) }
+--- new
+    if number <= OLDEST { Err(TooOld) } else { Ok(()) }

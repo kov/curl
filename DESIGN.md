@@ -17,7 +17,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-zlib` | zlib's inflate, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-zstd` | zstd's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
-| `curl-openssl` | Planned (step 43): OpenSSL, behind `curl_core::tls`, and Ed25519 for HTTP signatures. | yes: it is a binding |
+| `curl-openssl` | OpenSSL: Ed25519 for HTTP signatures, behind `curl_core::libraries::Ed25519`; planned (step 43), the TLS backend behind `curl_core::tls`. | yes: it is a binding |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);

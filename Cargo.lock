@@ -79,6 +79,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "curl-openssl"
+version = "0.1.0"
+dependencies = [
+ "curl-core",
+ "openssl-sys",
+]
+
+[[package]]
 name = "curl-os"
 version = "0.1.0"
 dependencies = [
@@ -103,6 +111,7 @@ dependencies = [
  "curl-alloc",
  "curl-brotli",
  "curl-core",
+ "curl-openssl",
  "curl-psl",
  "curl-zlib",
  "curl-zstd",
@@ -116,6 +125,7 @@ dependencies = [
  "curl-alloc",
  "curl-brotli",
  "curl-core",
+ "curl-openssl",
  "curl-os",
  "curl-psl",
  "curl-zlib",
@@ -171,6 +181,24 @@ checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
 ]
+
+[[package]]
+name = "openssl-sys"
+version = "0.9.117"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "proptest"
@@ -236,3 +264,9 @@ name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
+name = "vcpkg"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"

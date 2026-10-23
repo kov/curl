@@ -120,17 +120,22 @@ curl-core     #![forbid(unsafe_code)]; depends on curl-alloc and curl-os ("net",
 curl-psl      libpsl, the public suffixes cookies are checked against
 curl-zlib     zlib's inflate, curl-brotli brotli's decoder, curl-zstd zstd's decoder: the
               content codings, behind `curl_core::coding::Decoder`
-curl-openssl  OpenSSL through openssl-sys's declarations: the TLS backend behind
-              `curl_core::tls`, and Ed25519 for HTTP signatures (planned, step 43; §4.9)
+curl-openssl  OpenSSL 3.0 or later through openssl-sys's declarations: Ed25519 for HTTP
+              signatures, behind `curl_core::libraries::Ed25519`; the TLS backend behind
+              `curl_core::tls` (planned, step 43; §4.9)
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```
 
 `curl-os` exposes safe functions; it does not implement `curl-core` traits (that would be a
 dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net` trait in safe
-code. The libraries the core does not depend on (libpsl and the decoders, and from step 43 the
-TLS backend and the Ed25519 signer) are handed to a handle by whoever builds it: the shim and
-the tool.
+code. The libraries the core does not depend on (libpsl, the decoders, the Ed25519 signer, and
+from step 43 the TLS backend) are handed to a handle by whoever builds it: the shim and the
+tool. The decoders and the signer come as one `&'static Libraries` (`curl_core::libraries`), a
+static of each; a handle given none has `Libraries::NONE`. Each initialises OpenSSL as C's
+global init does (`OPENSSL_init_ssl` with the configuration and the built-in engines): the shim
+at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
+program that never called `curl_global_init` signs the same.
 
 ### 2.2 `curl-core` modules
 
@@ -155,6 +160,7 @@ curl-core/src/
   cookie.rs                  Jar, Cookie, Suffixes: the cookie jar (cookie.c)
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
+  libraries.rs               Libraries, Ed25519: what the bound C libraries do for a handle
   hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
   save.rs                    a file written whole under a name of its own, then renamed
   multi/
@@ -1712,8 +1718,8 @@ its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ### 4.9 TLS
 
-Planned (step 43): none of this section is built. MILESTONES.md step 43 lists the sub-steps that
-build it.
+Planned (step 43): none of this section is built but `Libraries`, which holds the decoders and
+the Ed25519 signer. MILESTONES.md step 43 lists the sub-steps that build it.
 
 ```rust
 // curl_core::tls, public: the seam a TLS library implements (curl-openssl)
@@ -1753,8 +1759,9 @@ is the session's, and `query` answers ALPN and the native object. A handle reach
 through one `&'static Libraries` (the decoders, the Ed25519 signer, the TLS backend), the
 shim's and the tool's statics, so a handle carries one pointer for all of them; `Easy: Default`
 takes `Libraries::NONE`, with which `https` is `NotBuiltIn`. One backend is built, OpenSSL 3.0
-or later, checked at build (openssl-sys's `ossl300` cfg) and at init (`OpenSSL_version_num`):
-an older library is a backend that is not there. `curl_global_sslset` answers OK for
+or later, checked at build (curl-openssl's build script reads the version openssl-sys found,
+`DEP_OPENSSL_VERSION_NUMBER`, and refuses LibreSSL) and at init (`OpenSSL_version_num`): an
+older library is a backend that is not there. `curl_global_sslset` answers OK for
 `CURLSSLBACKEND_OPENSSL` or `"openssl"`, also after init, and `CURLSSLSET_UNKNOWN_BACKEND` for
 any other, with only OpenSSL available.
 
@@ -1933,7 +1940,7 @@ pub(crate) struct HeldOutput { bytes: Vec<u8>, entries: Vec<Entry>, first: usize
   name stacks one: `identity` and `none` a decoder passing the body by, a name the handle has no
   decoder for one that fails at the first body byte ("Unrecognized content encoding type"); a
   sixth is BadContentEncoding at once. The last stacked undoes first. The decoders are the
-  handle's (`Easy::set_decoders`, kept through `reset`), given by the tool and the shim from the
+  handle's (`Easy::set_libraries`, kept through `reset`), given by the tool and the shim from the
   binding crates, as the public suffixes are; `Accept-Encoding` lists them for
   `AcceptEncoding::All`. Transfer codings other than chunked, asked for with `TE: gzip` (only
   where the handle undoes gzip), are stacked the same way when the body starts, and undone
@@ -2437,8 +2444,11 @@ message signature (RFC 9421, `proto::http::httpsig`) is the same, but signs with
 (`Options::http.signing.message`, in the `Cold` group that holds SigV4's parameters too), so it
 is used without credentials as well, and only for an origin the request's gate trusts; its
 `Signature-Input` and `Signature` go where `Authorization` goes, unless the application sends
-either. HMAC-SHA256 only: Ed25519 is not built in, as in a C build without a TLS library that
-has it. Digest is in use from the start and done only once it answers a challenge, so a request
+either. HMAC-SHA256 is the core's; Ed25519 is the handle's `Libraries`' signer, which gets the
+key's 32 bytes and the signature base and gives the 64 bytes sent (curl-openssl's, as C's
+`Curl_ed25519_sign`: a key or signing OpenSSL refuses is `AuthError`, untraced; one too old for
+this build, or a handle with no signer, is not built in, as in a C build whose TLS library lacks
+it). Digest is in use from the start and done only once it answers a challenge, so a request
 with a body sent before that is a probe: `Content-Length: 0` in place of the application's, no
 body read (`authneg`). The request hands its response's head parser an `AuthAsked`, and the
 parser reads a 401's `WWW-Authenticate:` and a 407's `Proxy-Authenticate:` lines into each

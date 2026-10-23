@@ -617,12 +617,16 @@ fn formadd_check(
                 return CURL_FORMADD_MEMORY;
             }
         }
-        if !name.is_null() && form.namelength != 0 {
-            // SAFETY: a name given a length holds that many bytes.
-            let named = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), form.namelength) };
-            if named.contains(&0) {
-                return CURL_FORMADD_NULL;
-            }
+        // Searched as C searches it, to its first zero byte: a length
+        // past the name's end, a negative one made huge among them, finds
+        // the zero that ends it.
+        let zeroed = !name.is_null() && form.namelength != 0 && {
+            // SAFETY: a name given a length holds that many bytes, or a
+            // zero byte before their end.
+            !unsafe { libc::memchr(name.cast(), 0, form.namelength) }.is_null()
+        };
+        if zeroed {
+            return CURL_FORMADD_NULL;
         }
         if flags & PTRNAME == 0 && !copy_field(&mut form.name, form.namelength) {
             return CURL_FORMADD_MEMORY;
@@ -1254,7 +1258,8 @@ mod tests {
 
     /// Each part is checked as C's `formadd_check` checks it: a file with
     /// a length, or with contents a pointer names, is incomplete; a name
-    /// holding a zero byte is refused; contents with a length are cut to
+    /// holding a zero byte within its length is refused, and so is one
+    /// whose length is negative, which C reads as huge; contents with a length are cut to
     /// it, and a name without one has its own.
     #[test]
     fn formadd_checks_parts_as_c_does() {
@@ -1286,6 +1291,16 @@ mod tests {
             entry(ffi::CURLFORM_COPYCONTENTS, c"v".as_ptr()),
         ]);
         assert_eq!(named, (CURL_FORMADD_NULL, ptr::null_mut()));
+        let negative = add(&[
+            entry(ffi::CURLFORM_NAMELENGTH, number(-1)),
+            entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+            entry(ffi::CURLFORM_COPYCONTENTS, c"v".as_ptr()),
+        ]);
+        assert_eq!(
+            negative,
+            (CURL_FORMADD_NULL, ptr::null_mut()),
+            "the zero ending it"
+        );
 
         // Contents with a length: a copy that long, no type.
         let (code, first) = add(&[

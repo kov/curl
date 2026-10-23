@@ -236,8 +236,10 @@ pub(crate) struct ProxyRoute {
     /// in `CURLOPT_SOCKS5_AUTH`): what the transfer asks of a connection,
     /// not what the connection shares with it.
     pub(crate) auth_only: bool,
-    /// The SOCKS proxy in front of it, which only an HTTP proxy has.
-    pre: Option<PreProxy>,
+    /// The SOCKS proxy in front of it, which only an HTTP proxy has:
+    /// shared, as few routes have one and every connection's slot holds
+    /// its route inline.
+    pre: Option<TryArc<PreProxy>>,
 }
 
 /// The user and password a proxy is given, each empty for none.
@@ -277,16 +279,16 @@ impl ProxyRoute {
     }
 
     /// The same HTTP proxy, reached through the SOCKS proxy `pre`.
-    pub(crate) fn behind(self, pre: PreProxy) -> ProxyRoute {
+    pub(crate) fn behind(self, pre: PreProxy) -> Result<ProxyRoute, OutOfMemory> {
         assert!(self.http(), "only an HTTP proxy has a SOCKS proxy in front");
         assert!(
             socks::Version::of(pre.kind).is_some(),
             "a pre-proxy is SOCKS"
         );
-        ProxyRoute {
-            pre: Some(pre),
+        Ok(ProxyRoute {
+            pre: Some(TryArc::try_new(pre)?),
             ..self
-        }
+        })
     }
 
     /// The peer connected to first.
@@ -343,7 +345,7 @@ impl ProxyRoute {
             creds: creds.as_deref(),
             forward: *forward,
             pre: pre.as_ref().map(|pre| {
-                let PreProxy { kind, peer, creds } = pre;
+                let PreProxy { kind, peer, creds } = &**pre;
                 (*kind, Destination(peer), creds.as_deref())
             }),
         }
@@ -916,7 +918,7 @@ mod tests {
                     peer: TryArc::try_new(peer(host, 1080, None)).unwrap(),
                     creds: None,
                 };
-                tcp.proxy = tcp.proxy.map(|p| p.behind(pre));
+                tcp.proxy = tcp.proxy.map(|p| p.behind(pre).unwrap());
                 Route::Tcp(tcp)
             }
             Route::Local => unreachable!(),

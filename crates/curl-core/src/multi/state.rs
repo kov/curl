@@ -2696,7 +2696,9 @@ fn choose_proxy<H: Host>(
     let tunnel = cx.easy().options().proxy.tunnel || via;
     let route = ProxyRoute::new(kind, peer, creds, !tunnel, auth_only);
     Ok(Some(match pre {
-        Some((kind, peer, creds)) => route.behind(PreProxy { kind, peer, creds }),
+        Some((kind, peer, creds)) => route
+            .behind(PreProxy { kind, peer, creds })
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         None => route,
     }))
 }

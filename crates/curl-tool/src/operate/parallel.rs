@@ -301,6 +301,15 @@ impl Parallel<'_, '_, '_> {
     /// (`parallel_transfers`). The first failure.
     fn drive(&mut self) -> Ending {
         let (mut more, _) = self.add_more()?;
+        // Driven by events, C's runs on libuv, which this build has not:
+        // it says so, and runs none of those it added.
+        #[cfg(feature = "debug-hooks")]
+        if self.run.global.test_event {
+            self.run
+                .msgs
+                .error(&[b"Testing --parallel event-based requires libuv"]);
+            return Ok(());
+        }
         if self.all_added == 0 {
             return Ok(());
         }

@@ -1154,6 +1154,30 @@ fn parallel_transfers_keep_the_first_failure() {
     assert_eq!(r.code, 37);
 }
 
+/// The debug build's `--test-event` with `--parallel` wants libuv, which
+/// this build has not: C's tool says so, runs none of the transfers it
+/// added and ends each as if it succeeded, its output file made empty,
+/// and `--silent` mutes the message (`parallel_transfers`).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn parallel_test_event_runs_nothing() {
+    let s = Scratch::new("paralleltestevent");
+    s.write("a", b"A");
+    let w = "%{urlnum} %{http_code} %{exitcode}\n";
+    let a = s.url("a");
+    let args = ["-Z", "--test-event", "-w", w, "-o", "out", &a, &a];
+    let r = curl(&s, &args);
+    assert_eq!(r.stdout, b"0 000 0\n1 000 0\n");
+    assert_eq!(
+        r.stderr,
+        "curl: Testing --parallel event-based requires libuv\n"
+    );
+    assert_eq!(r.code, 0);
+    assert_eq!(s.read("out"), b"");
+    let r = curl(&s, &["-s", "-Z", "--test-event", &a]);
+    assert_eq!((r.code, &r.stdout[..], &r.stderr[..]), (0, &b""[..], ""));
+}
+
 /// With `--fail-early`, the first failure stops the transfers running,
 /// each reporting why.
 #[test]

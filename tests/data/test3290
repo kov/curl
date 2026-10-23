@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+FILE
+parallel
+--test-event
+</keywords>
+</info>
+
+# Client-side
+<client>
+<server>
+file
+</server>
+<features>
+Debug
+</features>
+<name>
+--parallel with --test-event says it needs libuv and runs nothing
+</name>
+<command option="no-output no-include">
+file://localhost%FILE_PWD/%LOGDIR/nonexistent%TESTNUMBER -Z --test-event -w "%{http_code}\n" -o %LOGDIR/out%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<stdout>
+000
+</stdout>
+<stderr mode="text">
+curl: Testing --parallel event-based requires libuv
+</stderr>
+<file name="%LOGDIR/out%TESTNUMBER">
+</file>
+<errorcode>
+0
+</errorcode>
+</verify>
+</testcase>

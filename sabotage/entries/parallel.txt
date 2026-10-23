@@ -48,3 +48,14 @@ witness: curl-tool options::parse::tests::parallel_caps_are_clamped_as_c_clamps_
     NonZeroU16::new(u16::try_from(given).unwrap_or(u16::MAX))
 --- new
     NonZeroU16::new(given as u16)
+
+=== `--parallel --test-event` runs the transfers instead of saying it needs libuv
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool parallel_test_event_runs_nothing
+features: debug-hooks
+--- old
+        if self.run.global.test_event {
+            self.run
+--- new
+        if false {
+            self.run

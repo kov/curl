@@ -1992,6 +1992,9 @@ fn built_schemes_are_named_in_any_case() {
         assert_eq!(Protocols::built(name), None, "{name:?}");
     }
     assert_eq!(http.union(Protocols::NONE), http);
+    let ftp = Protocols::of(&["ftp"]).unwrap();
+    assert_eq!(http.union(http), http, "a scheme in both is in either");
+    assert!(http.union(ftp).contains(b"http") && http.union(ftp).contains(b"ftp"));
     assert!(Protocols::ALL.contains(b"gopher") && !Protocols::ALL.contains(b"nonsense"));
 }
 
@@ -4054,6 +4057,67 @@ fn the_proxy_protocol_s_line_goes_through_a_tunnel() {
     let connect = connect_of("");
     assert!(ran.request.starts_with(connect.as_bytes()));
     let (line, rest) = first_line(&ran.request[connect.len()..]);
+    assert!(
+        line.starts_with("PROXY TCP4 127.0.0.1 127.0.0.1 "),
+        "{line}"
+    );
+    assert!(rest.starts_with(b"GET /a HTTP/1.1\r\n"));
+}
+
+/// Behind a SOCKS proxy the line goes once its handshake is made, and
+/// behind a SOCKS pre-proxy and a tunnel only once the tunnel is up too,
+/// ahead of the origin's request (`cf_setup_connect`: SOCKS, then the
+/// HTTP proxy, then the PROXY protocol). Whether it goes is read then:
+/// turned on as the tunnel's answer comes, it goes.
+#[test]
+fn the_proxy_protocol_s_line_follows_every_proxy_s_handshake() {
+    struct OnInTheTunnel;
+    impl HeaderHandler for OnInTheTunnel {
+        fn header(&self, cx: &mut TransferCx<'_>, _: &[u8], origin: HeaderOrigin) -> Write {
+            if origin == HeaderOrigin::Connect {
+                let me = cx.me();
+                let o = cx.options_mut(me).unwrap();
+                o.proxy.make_mut().unwrap().haproxy = true;
+            }
+            Write::Accepted
+        }
+    }
+    let socks = b"\x05\x01\x00\x05\x01\x00\x03\x0eorigin.example\x00\x50";
+    let talk = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().haproxy = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = &ran.request;
+    assert!(sent.starts_with(socks), "{}", sent.escape_ascii());
+    let (line, rest) = first_line(&sent[socks.len()..]);
+    assert!(
+        line.starts_with("PROXY TCP4 127.0.0.1 127.0.0.1 "),
+        "{line}"
+    );
+    assert!(rest.starts_with(b"GET /a HTTP/1.1\r\n"));
+
+    let replies: [&[u8]; 4] = [b"\x05\x00", SOCKS5_GRANTED, TUNNEL_UP, OK];
+    let talk = Conversation::replies(&replies, false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(b"http://proxy.example:3128".to_vec());
+        o.proxy.make_mut().unwrap().tunnel = true;
+        o.proxy.make_mut().unwrap().pre_proxy =
+            Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+        o.callbacks.header = Some(Handler::header(OnInTheTunnel).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let socks = b"\x05\x01\x00\x05\x01\x00\x03\x0dproxy.example\x0c\x38";
+    let mut want = socks.to_vec();
+    want.extend_from_slice(connect_of("").as_bytes());
+    let sent = &ran.request;
+    assert!(sent.starts_with(&want), "{}", sent.escape_ascii());
+    let (line, rest) = first_line(&sent[want.len()..]);
     assert!(
         line.starts_with("PROXY TCP4 127.0.0.1 127.0.0.1 "),
         "{line}"
@@ -6329,6 +6393,53 @@ fn a_link_local_address_takes_the_interface_s_scope() {
     assert!(talk.received().starts_with(b"GET / HTTP/1.1\r\n"));
 }
 
+/// Set in the child process `the_system_s_ipv6_probe_is_the_system_s`
+/// runs itself in.
+const PROBE_CHILD: &str = "CURL_CORE_PROBE_CHILD";
+
+/// The system's network asks the system whether IPv6 works: yes here,
+/// and no once no descriptor is left to open a socket with (run in a
+/// child process, as it uses them all up). A fake network says yes
+/// unless it is made without IPv6.
+#[test]
+#[cfg_attr(miri, ignore = "Miri cannot start a process")]
+fn the_system_s_ipv6_probe_is_the_system_s() {
+    use crate::conn::io::Net as _;
+    if std::env::var_os(PROBE_CHILD).is_some() {
+        let mut held = Vec::new();
+        let err = loop {
+            match std::fs::File::open("/dev/null") {
+                Ok(f) => held.push(f),
+                Err(e) => break e,
+            }
+        };
+        assert_eq!(err.raw_os_error(), Some(24), "EMFILE: {err}");
+        assert_eq!(crate::conn::io::SystemNet.probe_ipv6(), Ok(false));
+        return;
+    }
+    assert_eq!(
+        crate::conn::io::SystemNet.probe_ipv6(),
+        curl_os::net::probe_ipv6().map_err(|_| curl_alloc::OutOfMemory)
+    );
+    assert_eq!(crate::conn::io::SystemNet.probe_ipv6(), Ok(true));
+    let clock = ManualClock::new().unwrap();
+    assert_eq!(FakeNet::new(clock.clone()).probe_ipv6(), Ok(true));
+    assert_eq!(FakeNet::new(clock).without_ipv6().probe_ipv6(), Ok(false));
+    // Few descriptors, so they run out at once.
+    let name = "proto::http::tests::the_system_s_ipv6_probe_is_the_system_s";
+    let out = std::process::Command::new("sh")
+        .args(["-c", "ulimit -n 64 && exec \"$0\" \"$@\""])
+        .arg(std::env::current_exe().unwrap())
+        .args([name, "--exact", "--test-threads=1"])
+        .env(PROBE_CHILD, "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stdout}{stderr}");
+    assert!(stdout.contains("1 passed"), "the child ran it: {stdout}");
+}
+
 /// The system's network asks the system for the scope.
 #[test]
 fn the_system_s_scope_is_the_system_s() {
@@ -6380,6 +6491,51 @@ fn a_100_that_pauses_waits_for_the_application() {
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()));
     assert!(talk.received().ends_with(b"\r\n\r\nabc"));
+}
+
+/// A body held for a 100 whose sending is paused as the head goes is
+/// not asked for, so its wait starts only once the application lets it
+/// go on, not while it is paused (`cr_exp100_read` is not called under
+/// `KEEP_SEND_PAUSE`).
+#[test]
+fn the_wait_for_a_100_starts_once_a_pause_ends() {
+    struct PausesOnHead;
+    impl DebugHandler for PausesOnHead {
+        fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, _: &[u8]) {
+            if matches!(kind, DebugKind::HeaderOut) {
+                let me = cx.me();
+                cx.pause(me, PauseRequest::SEND).unwrap();
+            }
+        }
+    }
+    // A peer that never answers.
+    let (mut m, talk, clock) = server(&[], false);
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"abc".to_vec()).unwrap());
+    o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(PausesOnHead).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..4 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(talk.received().ends_with(b"\r\n\r\n"), "the head went");
+    // Paused for longer than the wait.
+    clock.advance(Duration::from_secs(5));
+    m.perform(&mut NoEvents).unwrap();
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(after_head(&talk.received()), 0, "the wait starts now");
+    clock.advance(Duration::from_millis(999));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(after_head(&talk.received()), 0, "and is a second long");
+    clock.advance(Duration::from_millis(1));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(after_head(&talk.received()), 3, "then the body goes");
 }
 
 /// The answer to `CONNECT` is read a byte at a time, the transfer taken

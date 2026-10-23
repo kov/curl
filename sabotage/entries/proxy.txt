@@ -610,3 +610,11 @@ witness: curl-core multi::tests::the_proxy_protocol_is_read_once_its_stage_is_re
             d.preface = Some(haproxy());
 --- new
             d.preface = Some(false);
+
+=== the PROXY line is decided once SOCKS is made, before the tunnel behind it
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::the_proxy_protocol_s_line_follows_every_proxy_s_handshake
+--- old
+        if !socks && !tunnel {
+--- new
+        if !socks {

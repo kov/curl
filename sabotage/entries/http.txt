@@ -1412,3 +1412,13 @@ witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_d
         if let Some((location, code)) = self.follow() {
 --- new
         if let Some((location, code)) = self.follow().filter(|_| false) {
+
+=== the wait for a 100 starts while the body's sending is paused
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_wait_for_a_100_starts_once_a_pause_ends
+--- old
+                    Sending::HeadSent => {
+                        if !read || cx.pause().send_paused() {
+--- new
+                    Sending::HeadSent => {
+                        if !read {

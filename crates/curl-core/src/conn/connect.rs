@@ -507,7 +507,8 @@ impl ConnectMachine {
         let route = &self.route;
         let socks = route.socks().is_some() && !d.made.has(Made::SOCKS);
         let tunnel = route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !d.made.has(Made::TUNNEL);
-        if !socks && !tunnel && d.preface.is_none() {
+        if !socks && !tunnel {
+            assert!(d.preface.is_none(), "the PROXY line is decided once");
             d.preface = Some(haproxy());
         }
     }

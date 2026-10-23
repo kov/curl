@@ -247,3 +247,76 @@ fn a_blocked_send_leaves_the_rest_buffered() {
         ]
     );
 }
+
+/// Any other failure in the head fails the reads, and then the pass:
+/// here a line without a colon (`sendrecv_dl`, `Curl_sendrecv`).
+#[test]
+fn a_bad_head_fails_the_reads_and_the_pass() {
+    let ran = run("/", b"HTTP/1.1 200 OK\r\nfoo\r\n\r\n", true, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply));
+    let said: Vec<_> = ran
+        .seen
+        .of("text")
+        .into_iter()
+        .filter(|l| crate::trace::debug_only(l))
+        .map(|l| String::from_utf8(l).unwrap())
+        .collect();
+    assert_eq!(
+        said[said.len() - 2..],
+        ["sendrecv_dl() -> 8\n", "Curl_sendrecv() -> 8\n"],
+        "{said:?}"
+    );
+}
+
+/// What a send limit cuts short, and what a send that would block
+/// leaves, is said as what is left behind what went (`req_flush`): the
+/// body earned over the wait for a 100 goes a second's worth a pass.
+#[test]
+fn what_a_send_leaves_is_said_after_what_went() {
+    const RATE: usize = 10_000;
+    let (mut m, talk, clock) = server(&[], false);
+    let seen = Seen::default();
+    let mut e = tracing_tcp();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
+    o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(3));
+    o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(RATE as u64);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    clock.advance(Duration::from_secs(3));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(after_head(&talk.received()), RATE);
+    // The next send would block, a second's worth past the first.
+    talk.clone().stalling_sends(1);
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(after_head(&talk.received()), RATE);
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let flushes: Vec<String> = seen
+        .of("text")
+        .into_iter()
+        .map(|l| String::from_utf8(l).unwrap())
+        .filter(|l| l.starts_with("Curl_req_flush("))
+        .collect();
+    let sends: Vec<usize> = seen.of("dataout").iter().map(Vec::len).collect();
+    let filled: usize = sends.iter().sum();
+    assert_eq!(sends, [RATE, RATE, RATE, filled - 3 * RATE]);
+    let left = |n: usize| format!("Curl_req_flush(len={n}) -> EAGAIN\n");
+    assert_eq!(
+        flushes,
+        [
+            left(filled - RATE),
+            left(filled - RATE),
+            left(filled - 2 * RATE),
+            left(filled - 3 * RATE),
+        ]
+    );
+}

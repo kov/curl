@@ -565,8 +565,8 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       stream reads and writes through it, the pollset passes through it, the health check asks
       `is_alive`, and data pending runs the transfer again; bytes read past a tunnel's answer
       are given first.
-    - **f. A drive's context.** `ConnCx`, over the step's context, given to each drive; the
-      lines step 39 traces still reported through `Progress`.
+    - **f. A drive's context.** **Done.** `ConnCx`, over the step's context, given to each
+      drive; the lines step 39 traces still reported through `Progress`.
     - **g. Handshakes in C's order** over the `Dialed` stream: the PROXY line before the
       connection is open, SOCKS and the tunnel recorded as kinds on the stream.
     - **h. The chain's trace:** SETUP's lines and `cf_setup_connect`, `connected`, `reduced

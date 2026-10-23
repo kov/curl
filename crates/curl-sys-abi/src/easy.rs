@@ -345,16 +345,19 @@ pub(crate) unsafe fn handle<'a>(curl: *mut CURL) -> Option<&'a ShimEasy> {
     (easy.magic.get() == MAGIC && !easy.internal).then_some(easy)
 }
 
-/// The content codings libcurl undoes: those of the libraries it is
-/// linked with.
-fn decoders() -> curl_core::coding::Decoders {
+/// What the libraries libcurl is linked with do for a handle: the content
+/// codings they undo, the signatures they make.
+static LIBRARIES: curl_core::libraries::Libraries = {
     use curl_core::coding::{Coding, Decoders};
-    Decoders::none()
-        .with(Coding::Deflate, curl_zlib::deflate)
-        .with(Coding::Gzip, curl_zlib::gzip)
-        .with(Coding::Brotli, curl_brotli::decoder)
-        .with(Coding::Zstd, curl_zstd::decoder)
-}
+    curl_core::libraries::Libraries {
+        decoders: Decoders::none()
+            .with(Coding::Deflate, curl_zlib::deflate)
+            .with(Coding::Gzip, curl_zlib::gzip)
+            .with(Coding::Brotli, curl_brotli::decoder)
+            .with(Coding::Zstd, curl_zstd::decoder),
+        ed25519: None,
+    }
+};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_easy_init() -> *mut CURL {
@@ -362,7 +365,7 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
     // the first time a cookie asks, as C loads it in the handle's multi.
     let mut handle = Easy::new();
     handle.set_public_suffixes_from(curl_psl::suffixes);
-    handle.set_decoders(decoders());
+    handle.set_libraries(&LIBRARIES);
     handle.set_components(Some(crate::root::components()));
     // C initialises the library for a program that did not.
     match ShimEasy::boxed(

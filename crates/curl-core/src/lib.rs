@@ -18,6 +18,7 @@ pub mod error;
 pub mod handler;
 mod hash;
 pub mod id;
+pub mod libraries;
 pub mod mime;
 pub mod multi;
 mod netrc;

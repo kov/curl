@@ -13,6 +13,7 @@ use crate::cookie::{Jar, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
 use crate::id::ArenaPolicy;
+use crate::libraries::Libraries;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::{Lines, Options};
 use crate::proto::http1::auth::Auth;
@@ -63,8 +64,9 @@ pub struct Easy {
     /// The public suffixes cookies are checked against: without them, a
     /// domain needs a dot, as in C built without libpsl.
     suffixes: SuffixList,
-    /// The content codings the handle can undo.
-    decoders: Decoders,
+    /// What the libraries bound beside the core do for it: the content
+    /// codings it undoes, the signatures it makes.
+    libraries: &'static Libraries,
     /// Which components trace, read at each line: shared with whoever
     /// gave it, kept through `reset` and by a copy of the handle. Without
     /// one, only the lines of a verbose transfer that belong to no
@@ -155,7 +157,7 @@ impl Easy {
                 SuffixList::Made(make) => SuffixList::Made(*make),
                 SuffixList::None => SuffixList::None,
             },
-            decoders: self.decoders,
+            libraries: self.libraries,
             components: self.components.clone(),
         })
     }
@@ -208,14 +210,19 @@ impl Easy {
         self.share_watch.as_deref()
     }
 
-    /// The content codings the handle's responses can be undone from,
-    /// kept through `reset` (those of the libraries C's build has).
-    pub fn set_decoders(&mut self, decoders: Decoders) {
-        self.decoders = decoders;
+    /// The libraries the handle's transfers use, kept through `reset`
+    /// (those C's build has): the content codings its responses can be
+    /// undone from, what signs its requests.
+    pub fn set_libraries(&mut self, libraries: &'static Libraries) {
+        self.libraries = libraries;
+    }
+
+    pub(crate) fn libraries(&self) -> &'static Libraries {
+        self.libraries
     }
 
     pub(crate) fn decoders(&self) -> Decoders {
-        self.decoders
+        self.libraries.decoders
     }
 
     /// The public suffixes cookies' domains are checked against, kept

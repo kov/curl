@@ -13,6 +13,7 @@ use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
+use crate::libraries::Ed25519;
 use crate::mime::read::MakeError;
 use crate::multi::Host;
 use crate::multi::TransferCx;
@@ -721,6 +722,7 @@ impl Request {
         options: &crate::options::Options,
         method: &[u8],
         now: i64,
+        ed25519: Option<&'static dyn Ed25519>,
     ) -> httpsig::Signing {
         let (path, query) = match self.target.iter().position(|&b| b == b'?') {
             Some(q) => (&self.target[..q], Some(&self.target[q + 1..])),
@@ -763,6 +765,7 @@ impl Request {
             query,
             headers: &options.http.headers,
             now,
+            ed25519,
         })
     }
 
@@ -818,6 +821,7 @@ impl Request {
             None => (&self.peer, None),
         };
         let now = cx.unix_time();
+        let ed25519 = cx.easy().libraries().ed25519;
         let (auth_state, options) = cx.easy_mut().auth_with_options();
         let http = &options.http;
         let method = self.method_line(http);
@@ -869,7 +873,7 @@ impl Request {
             None
         };
         let signed = if auth.used == AuthMethods::HTTPSIG {
-            let signing = self.sign_httpsig(options, method, now);
+            let signing = self.sign_httpsig(options, method, now, ed25519);
             match signing.result {
                 Ok(lines) => Some((signing.notes, lines.unwrap_or_default())),
                 Err(e) => {

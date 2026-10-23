@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::coding::{AcceptEncoding, Coding, Decoder, Decoders, Sink};
+use crate::libraries::Libraries;
 
 /// Each byte it is given, twice.
 #[derive(Debug)]
@@ -22,12 +23,14 @@ fn twice() -> Result<Box<dyn Decoder>, ErrorKind> {
 
 /// A handle that undoes `gzip` and `br` twice over.
 fn decoding() -> Easy {
-    let mut e = Easy::new();
-    e.set_decoders(
-        Decoders::none()
+    static DECODING: Libraries = Libraries {
+        decoders: Decoders::none()
             .with(Coding::Brotli, twice)
             .with(Coding::Gzip, twice),
-    );
+        ..Libraries::NONE
+    };
+    let mut e = Easy::new();
+    e.set_libraries(&DECODING);
     e
 }
 

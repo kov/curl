@@ -3,14 +3,16 @@
 //! application names, signed under a key the server shares and sent as
 //! `Signature-Input` and `Signature`.
 //!
-//! HMAC-SHA256 only. Ed25519 is refused as a C build without a TLS
-//! library that has it refuses it (`curl_ed25519.c`); it comes with the
-//! OpenSSL binding of the TLS milestone.
+//! HMAC-SHA256 is the core's own; Ed25519 is what the handle's
+//! `Libraries` signs with (`curl_ed25519.c`), and is refused as a C
+//! build without a TLS library that has it refuses it when they have
+//! nothing to sign with.
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use crate::error::ErrorKind;
 use crate::hash::hmac_sha256;
+use crate::libraries::{ED25519_KEY_LEN, ED25519_SIGNATURE_LEN, Ed25519, Ed25519Error};
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::{MessageSignature, SignatureAlgorithm};
@@ -46,6 +48,8 @@ pub(crate) struct Request<'a> {
     pub(crate) headers: &'a UserHeaders,
     /// The time it is signed at, in seconds since the epoch.
     pub(crate) now: i64,
+    /// What signs under Ed25519, if the handle has anything.
+    pub(crate) ed25519: Option<&'static dyn Ed25519>,
 }
 
 /// A signing: what it notes on the way, in order, and the lines it adds
@@ -84,6 +88,8 @@ pub(crate) enum SignError {
     Unquotable,
     /// Ed25519, which this build cannot sign with.
     NotBuiltIn,
+    /// The library refused to sign; C says nothing of it.
+    Ed25519Failed,
     TooLarge,
     OutOfMemory,
 }
@@ -98,6 +104,7 @@ impl SignError {
     pub(crate) fn kind(&self) -> ErrorKind {
         match self {
             SignError::NotBuiltIn => ErrorKind::NotBuiltIn,
+            SignError::Ed25519Failed => ErrorKind::AuthError,
             SignError::TooLarge => ErrorKind::TooLarge,
             SignError::OutOfMemory => ErrorKind::OutOfMemory,
             _ => ErrorKind::BadFunctionArgument,
@@ -159,7 +166,10 @@ impl SignError {
                 cx,
                 &[b"httpsig: algorithm 'ed25519' not supported by TLS backend"],
             ),
-            SignError::Unquotable | SignError::TooLarge | SignError::OutOfMemory => kind,
+            SignError::Unquotable
+            | SignError::Ed25519Failed
+            | SignError::TooLarge
+            | SignError::OutOfMemory => kind,
         }
     }
 }
@@ -187,12 +197,27 @@ impl Drop for Secret {
 }
 
 /// The signature made, zeroed when dropped.
-struct Mac([u8; 32]);
+enum Mac {
+    HmacSha256([u8; 32]),
+    Ed25519([u8; ED25519_SIGNATURE_LEN]),
+}
+
+impl Mac {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Mac::HmacSha256(bytes) => bytes,
+            Mac::Ed25519(bytes) => bytes,
+        }
+    }
+}
 
 impl Drop for Mac {
     fn drop(&mut self) {
-        self.0.fill(0);
-        std::hint::black_box(&self.0);
+        match self {
+            Mac::HmacSha256(bytes) => bytes.fill(0),
+            Mac::Ed25519(bytes) => bytes.fill(0),
+        }
+        std::hint::black_box(&*self);
     }
 }
 
@@ -249,7 +274,7 @@ fn signed(request: &Request<'_>, notes: &mut Vec<Vec<u8>>) -> Result<Option<Vec<
         return Ok(None);
     }
     let key = decode_hex_key(key)?;
-    if algorithm == SignatureAlgorithm::Ed25519 && key.0.len() != 32 {
+    if algorithm == SignatureAlgorithm::Ed25519 && key.0.len() != ED25519_KEY_LEN {
         return Err(SignError::Ed25519KeyLength(key.0.len()));
     }
     let mut authority = Part::new();
@@ -299,15 +324,15 @@ fn signed(request: &Request<'_>, notes: &mut Vec<Vec<u8>>) -> Result<Option<Vec<
     base.put(&[b"\"@signature-params\": ", &params.0])?;
     notes.try_push(joined(&[b"httpsig: Signature base: [", &base.0, b"]"])?)?;
     let mac = match algorithm {
-        // Ed25519 comes with the OpenSSL binding the TLS step of
-        // milestone 3 makes; until then, refused as C refuses it built
-        // without a TLS library that has it.
-        SignatureAlgorithm::Ed25519 => return Err(SignError::NotBuiltIn),
-        SignatureAlgorithm::HmacSha256 => Mac(hmac_sha256(&key.0, &[&base.0])),
+        SignatureAlgorithm::Ed25519 => {
+            Mac::Ed25519(signed_ed25519(request.ed25519, &key, &base.0)?)
+        }
+        SignatureAlgorithm::HmacSha256 => Mac::HmacSha256(hmac_sha256(&key.0, &[&base.0])),
     };
     let mut signature = Part::new();
     let mut encoded = Vec::new();
-    base64(mac.0.iter().copied(), mac.0.len(), &mut encoded)?;
+    let mac = mac.bytes();
+    base64(mac.iter().copied(), mac.len(), &mut encoded)?;
     signature.put(&[LABEL, b"=:", &encoded, b":"])?;
     let mut input = Part::new();
     input.put(&[LABEL, b"=", &params.0])?;
@@ -321,6 +346,26 @@ fn signed(request: &Request<'_>, notes: &mut Vec<Vec<u8>>) -> Result<Option<Vec<
     notes.try_push(joined(&[b"httpsig: Signature-Input: ", &input.0])?)?;
     notes.try_push(joined(&[b"httpsig: Signature: ", &signature.0])?)?;
     Ok(Some(lines))
+}
+
+/// `base` signed under Ed25519 with `key`, by `signer` if there is one
+/// (`Curl_ed25519_sign`).
+fn signed_ed25519(
+    signer: Option<&dyn Ed25519>,
+    key: &Secret,
+    base: &[u8],
+) -> Result<[u8; ED25519_SIGNATURE_LEN], SignError> {
+    let key: &[u8; ED25519_KEY_LEN] = key
+        .0
+        .as_slice()
+        .try_into()
+        .expect("the key's length is checked as it is decoded");
+    let signer = signer.ok_or(SignError::NotBuiltIn)?;
+    signer.sign(key, base).map_err(|e| match e {
+        Ed25519Error::Unavailable => SignError::NotBuiltIn,
+        Ed25519Error::OutOfMemory => SignError::OutOfMemory,
+        Ed25519Error::Failed => SignError::Ed25519Failed,
+    })
 }
 
 fn joined(parts: &[&[u8]]) -> Result<Vec<u8>, OutOfMemory> {

@@ -28,6 +28,7 @@ fn request<'a>(
         query,
         headers,
         now: 0,
+        ed25519: None,
     }
 }
 
@@ -322,4 +323,61 @@ fn the_signature_is_made_now() {
     now.now = 1_700_000_000;
     let signing = sign(&now);
     assert!(text(&signing.notes[0]).contains(";created=1700000000;"));
+}
+
+/// Ed25519 hands the signer the key's 32 bytes and the whole base, and
+/// sends its 64 bytes as the signature.
+#[test]
+fn ed25519_signs_the_base_with_the_handle_s_signer() {
+    use crate::libraries::testing::Keyed;
+    let none = headers(&[]);
+    let mut sig = hmac(None);
+    sig.algorithm = Some(SignatureAlgorithm::Ed25519);
+    let mut req = request(&sig, &none, None);
+    req.ed25519 = Some(&Keyed);
+    let Signing { notes, result } = sign(&req);
+    let params = "(\"@method\" \"@authority\" \"@path\");created=0;\
+                  keyid=\"shared-key-1\";alg=\"ed25519\"";
+    let base = format!(
+        "\"@method\": GET\n\"@authority\": example.com:7000\n\
+         \"@path\": /5002/resource\n\"@signature-params\": {params}"
+    );
+    let key = decode_hex_key(KEY).unwrap();
+    let mut want = key.0.clone();
+    want.extend_from_slice(&hmac_sha256(&key.0, &[base.as_bytes()]));
+    let mut encoded = Vec::new();
+    base64(want.iter().copied(), want.len(), &mut encoded).unwrap();
+    let signature = format!("sig1=:{}:", text(&encoded));
+    assert_eq!(
+        text(&result.unwrap().unwrap()),
+        format!("Signature-Input: sig1={params}\r\nSignature: {signature}\r\n")
+    );
+    assert_eq!(
+        text(&notes[1]),
+        format!("httpsig: Signature base: [{base}]")
+    );
+    assert_eq!(text(&notes[3]), format!("httpsig: Signature: {signature}"));
+}
+
+/// Without a signer, or with one that cannot sign in this process,
+/// Ed25519 is not built in; a signer's own failure is an authentication
+/// error C says nothing of, and its memory running out is that.
+#[test]
+fn ed25519_fails_as_its_signer_does() {
+    use crate::libraries::testing::Failing;
+    let none = headers(&[]);
+    let mut sig = hmac(None);
+    sig.algorithm = Some(SignatureAlgorithm::Ed25519);
+    let mut req = request(&sig, &none, None);
+    assert_eq!(sign(&req).result, Err(SignError::NotBuiltIn));
+    for (failure, want) in [
+        (Ed25519Error::Unavailable, SignError::NotBuiltIn),
+        (Ed25519Error::OutOfMemory, SignError::OutOfMemory),
+        (Ed25519Error::Failed, SignError::Ed25519Failed),
+    ] {
+        let failing: &'static Failing = Box::leak(Box::new(Failing(failure)));
+        req.ed25519 = Some(failing);
+        assert_eq!(sign(&req).result, Err(want));
+    }
+    assert_eq!(SignError::Ed25519Failed.kind(), ErrorKind::AuthError);
 }

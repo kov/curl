@@ -39,7 +39,7 @@ impl Coding {
             .find(|c| name.eq_ignore_ascii_case(c.name().as_bytes()))
     }
 
-    fn index(self) -> usize {
+    const fn index(self) -> usize {
         self as usize
     }
 }
@@ -135,12 +135,14 @@ pub struct Decoders {
 
 impl Decoders {
     /// None: a coded body is delivered as it came, as if not asked for.
-    pub fn none() -> Decoders {
-        Decoders::default()
+    pub const fn none() -> Decoders {
+        Decoders {
+            makers: [None; Coding::ALL.len()],
+        }
     }
 
     /// These, and `coding` undone by what `make` makes.
-    pub fn with(mut self, coding: Coding, make: MakeDecoder) -> Decoders {
+    pub const fn with(mut self, coding: Coding, make: MakeDecoder) -> Decoders {
         self.makers[coding.index()] = Some(make);
         self
     }

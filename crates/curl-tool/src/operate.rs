@@ -941,7 +941,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()));
     easy.set_public_suffixes(Some(run.suffixes.clone()));
-    easy.set_decoders(decoders());
+    easy.set_libraries(&LIBRARIES);
     easy.set_components(run.global.components.clone());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
@@ -2882,16 +2882,19 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
     })
 }
 
-/// The content codings this build undoes: those of the libraries it is
-/// linked with, as C's.
-fn decoders() -> curl_core::coding::Decoders {
+/// What the libraries this build is linked with do for a handle, as C's:
+/// the content codings they undo, the signatures they make.
+static LIBRARIES: curl_core::libraries::Libraries = {
     use curl_core::coding::{Coding, Decoders};
-    Decoders::none()
-        .with(Coding::Deflate, curl_zlib::deflate)
-        .with(Coding::Gzip, curl_zlib::gzip)
-        .with(Coding::Brotli, curl_brotli::decoder)
-        .with(Coding::Zstd, curl_zstd::decoder)
-}
+    curl_core::libraries::Libraries {
+        decoders: Decoders::none()
+            .with(Coding::Deflate, curl_zlib::deflate)
+            .with(Coding::Gzip, curl_zlib::gzip)
+            .with(Coding::Brotli, curl_brotli::decoder)
+            .with(Coding::Zstd, curl_zstd::decoder),
+        ed25519: None,
+    }
+};
 
 #[cfg(test)]
 mod tests {

@@ -109,3 +109,19 @@ witness: curl-sys-abi handle_tests::a_message_signature_is_the_one_method
         AuthMethods(!self.0 & Self::ALL.0)
 --- new
         AuthMethods(!self.0 & Self::ANY.0)
+
+=== Ed25519 signs a base cut short
+file: crates/curl-core/src/proto/http/httpsig.rs
+witness: curl-core proto::http::httpsig::tests::ed25519_signs_the_base_with_the_handle_s_signer
+--- old
+    signer.sign(key, base).map_err(|e| match e {
+--- new
+    signer.sign(key, &base[1..]).map_err(|e| match e {
+
+=== a request is signed without the handle's Ed25519 signer
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::sigv4::an_ed25519_message_signature_is_the_handle_s_libraries_own
+--- old
+            let signing = self.sign_httpsig(options, method, now, ed25519);
+--- new
+            let signing = self.sign_httpsig(options, method, now, None);

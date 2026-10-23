@@ -209,6 +209,7 @@ fn a_message_signature_signs_the_request_sent() {
             query,
             headers: &headers,
             now,
+            ed25519: None,
         })
         .result
         .unwrap()
@@ -217,4 +218,57 @@ fn a_message_signature_signs_the_request_sent() {
         let want = String::from_utf8(want).unwrap();
         assert!(request.contains(&want), "{target}: {request}\n{want}");
     }
+}
+
+/// An Ed25519 message signature is made by the handle's libraries: their
+/// signer signs the request sent, and without one the transfer fails as
+/// not built in.
+#[test]
+fn an_ed25519_message_signature_is_the_handle_s_libraries_own() {
+    use crate::libraries::{Libraries, testing::Keyed};
+    static SIGNING: Libraries = Libraries {
+        ed25519: Some(&Keyed),
+        ..Libraries::NONE
+    };
+    let key = b"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff".to_vec();
+    let set = |o: &mut Options| {
+        let message = &mut o.http.signing.make_mut().unwrap().message;
+        message.algorithm = Some(crate::options::SignatureAlgorithm::Ed25519);
+        message.key = Some(key.clone());
+        message.key_id = Some(b"k".to_vec());
+        o.http.auth = crate::options::HttpAuth(AuthMethods::HTTPSIG);
+    };
+    let (mut m, talk, clock) = server(&[OK], false);
+    let now = clock.unix_time();
+    let mut e = Easy::new();
+    e.set_libraries(&SIGNING);
+    let ran = get_with(&mut m, e, "/p", talk, set);
+    assert_eq!(ran.result, Ok(()));
+    let signature = crate::options::MessageSignature {
+        algorithm: Some(crate::options::SignatureAlgorithm::Ed25519),
+        key: Some(key.clone()),
+        key_id: Some(b"k".to_vec()),
+        components: None,
+    };
+    let authority = format!("127.0.0.1:{PORT}");
+    let want = crate::proto::http::httpsig::sign(&crate::proto::http::httpsig::Request {
+        signature: &signature,
+        method: b"GET",
+        authority: authority.as_bytes(),
+        path: b"/p",
+        query: None,
+        headers: &UserHeaders::NONE,
+        now,
+        ed25519: Some(&Keyed),
+    })
+    .result
+    .unwrap()
+    .unwrap();
+    let request = String::from_utf8(ran.request).unwrap();
+    let want = String::from_utf8(want).unwrap();
+    assert!(request.contains(&want), "{request}\n{want}");
+    // A handle given no libraries has nothing to sign with.
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get(&mut m, "/p", talk, set);
+    assert_eq!(ran.result, Err(ErrorKind::NotBuiltIn));
 }

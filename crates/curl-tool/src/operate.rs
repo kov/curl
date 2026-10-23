@@ -693,7 +693,6 @@ fn transfer(
         _ => given,
     };
     let url = given.text;
-    let http = proto == UrlProto::Http;
     {
         let mut stream = out.stream();
         stream.show_headers = op.show_headers;
@@ -741,7 +740,7 @@ fn transfer(
     };
     let config = Config {
         url,
-        http,
+        proto,
         resume,
         upload: upload.is_some(),
         post,
@@ -1127,8 +1126,8 @@ enum Ended {
 /// What one transfer is set up with, beyond its operation's options.
 struct Config<'a> {
     url: &'a [u8],
-    /// The URL is taken for HTTP's: HTTP's options are set.
-    http: bool,
+    /// What the URL is taken for: HTTP's options are set for HTTP's.
+    proto: UrlProto,
     resume: Option<options::Resume>,
     upload: bool,
     /// What `--data` gives, unless `--get` put it in the query.
@@ -1249,8 +1248,8 @@ fn setopts(
     proxy_setopts(s, op)?;
     credentials_and_headers(s, op)?;
     transfer_setopts(s, op, run, config)?;
-    if config.http {
-        http_setopts(s, op, &run.msgs)?;
+    if let UrlProto::Http { tls } = config.proto {
+        http_setopts(s, op, tls, &run.msgs)?;
     }
     // `dns_and_network_setopts`.
     s.long(
@@ -1702,7 +1701,12 @@ fn buffer_size(limit_rate: u64) -> u64 {
 
 /// The options only a URL the tool takes for HTTP's is given
 /// (`http_setopts`, `cookie_setopts`).
-fn http_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Result<(), ErrorKind> {
+fn http_setopts(
+    s: &mut Setopt<'_>,
+    op: &Operation<'_>,
+    tls: bool,
+    msgs: &Messages,
+) -> Result<(), ErrorKind> {
     let follow = match op.follow {
         options::Follow::No => 0,
         options::Follow::All => 1,
@@ -1830,9 +1834,9 @@ fn http_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Resu
         }
         Ok(())
     })?;
-    // The headers for the origin are kept from a tunnel's proxy, as the
-    // library does unless told otherwise.
-    if (op.proxy.is_some() || !op.proxy_headers.is_empty()) && op.proxytunnel {
+    // The headers for the origin are kept from a proxy that tunnels, as
+    // the library does unless told otherwise.
+    if (op.proxy.is_some() || !op.proxy_headers.is_empty()) && (tls || op.proxytunnel) {
         s.long("CURLOPT_HEADEROPT", 1, nothing)?;
     }
     Ok(())
@@ -2202,8 +2206,8 @@ fn url_file_name(url: &[u8], msgs: &Messages) -> Result<Vec<u8>, ErrorKind> {
 /// token).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UrlProto {
-    /// HTTP or HTTPS.
-    Http,
+    /// HTTP, or with `tls` HTTPS.
+    Http { tls: bool },
     /// IPFS or IPNS, which go to a gateway.
     Ipfs(crate::ipfs::Kind),
     /// Another, or none it knows.
@@ -2254,17 +2258,14 @@ fn url_proto(
     if let Some(kind) = crate::ipfs::Kind::of_scheme(&scheme) {
         return Ok((UrlProto::Ipfs(kind), Some(url)));
     }
-    let http = [&b"http"[..], b"https"]
-        .iter()
-        .any(|name| scheme.eq_ignore_ascii_case(name));
-    Ok((
-        if http {
-            UrlProto::Http
-        } else {
-            UrlProto::Other
-        },
-        None,
-    ))
+    let proto = if scheme.eq_ignore_ascii_case(b"http") {
+        UrlProto::Http { tls: false }
+    } else if scheme.eq_ignore_ascii_case(b"https") {
+        UrlProto::Http { tls: true }
+    } else {
+        UrlProto::Other
+    };
+    Ok((proto, None))
 }
 
 /// Why the query of `--get` or `--url-query` could not be added to a
@@ -2608,9 +2609,9 @@ mod tests {
     #[test]
     fn takes_a_url_s_protocol_as_c_does() {
         let proto = |url: &str, default| url_proto(url.as_bytes(), default).unwrap().0;
-        let http = |url: &str, default| proto(url, default) == UrlProto::Http;
-        assert!(http("http://h/", None));
-        assert!(http("HTTPS://h/", None));
+        let http = |url: &str, default| matches!(proto(url, default), UrlProto::Http { .. });
+        assert_eq!(proto("http://h/", None), UrlProto::Http { tls: false });
+        assert_eq!(proto("HTTPS://h/", None), UrlProto::Http { tls: true });
         assert!(http("h/p", None), "guessed");
         assert!(!http("ftp.h/p", None), "guessed FTP");
         assert!(http("ftp.h/p", Some(Protocol::Http)), "the default");
@@ -2655,9 +2656,14 @@ mod tests {
     /// What `--libcurl` writes for the transfer `args` set up, as
     /// `config2setopts` sets it, and the options it was set up with.
     fn set_up(args: &[&str]) -> Option<(String, String)> {
+        set_up_url(args, "http://h/")
+    }
+
+    /// What `--libcurl` writes for `args` and `url`, as `set_up`.
+    fn set_up_url(args: &[&str], url: &str) -> Option<(String, String)> {
         let argv: Vec<std::ffi::OsString> = std::iter::once("curl")
             .chain(args.iter().copied())
-            .chain(std::iter::once("http://h/"))
+            .chain(std::iter::once(url))
             .map(std::ffi::OsString::from)
             .collect();
         let mut msgs = Messages::new();
@@ -2690,14 +2696,19 @@ mod tests {
             }
             _ => None,
         };
+        let upload = op.nodes.first().and_then(|n| match n.upload {
+            Upload::File(file) => Some(file),
+            _ => None,
+        });
         let config = Config {
-            url: b"http://h/",
-            http: true,
+            url: url.as_bytes(),
+            proto: url_proto(url.as_bytes(), None).unwrap().0,
             resume: match op.resume {
                 Some(Resume::At(n)) => NonZeroU64::new(n).map(options::Resume::At),
+                Some(Resume::FromOutput) if upload.is_some() => Some(options::Resume::AtEnd),
                 _ => None,
             },
-            upload: false,
+            upload: upload.is_some(),
             post,
             form,
             method: op.method,
@@ -2710,12 +2721,86 @@ mod tests {
             let mut s = Setopt::new(&mut easy, Some(&mut source));
             setopts(&mut s, op, &run, &out, &config).ok()?;
         }
+        if let Some(file) = upload {
+            upload_setopts(&mut easy, &run, open_upload(file).ok()?).ok()?;
+        }
         let mut text = Vec::new();
         program.into_inner().finish_into(&mut text);
         Some((
             String::from_utf8(text).unwrap(),
             format!("{:?}", easy.options()),
         ))
+    }
+
+    /// What `--libcurl` writes for options set only in some cases, as
+    /// `config2setopts.c` and `pre_transfer` set them.
+    #[test]
+    fn writes_what_c_writes() {
+        let dir = std::env::temp_dir().join(format!("curl-tool-setopts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("up");
+        std::fs::write(&file, b"0123456789").unwrap();
+        let file = file.to_str().unwrap();
+        let line = |l: &str| format!("  curl_easy_setopt(curl, {l});\n");
+        let headeropt = line("CURLOPT_HEADEROPT, 1L");
+        let filetime = line("CURLOPT_FILETIME, 1L");
+        let eyeballs = "HAPPY_EYEBALLS";
+        for (args, has, lacks) in [
+            (
+                &["--connect-to", "a:1:b:2"][..],
+                vec![
+                    line("CURLOPT_CONNECT_TO, slist1"),
+                    "  slist1 = curl_slist_append(slist1, \"a:1:b:2\");\n".to_owned(),
+                ],
+                vec![],
+            ),
+            (
+                &["--happy-eyeballs-timeout-ms", "300"],
+                vec![line("CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS, 300L")],
+                vec![],
+            ),
+            // C's default is not set.
+            (
+                &["--happy-eyeballs-timeout-ms", "200"],
+                vec![],
+                vec![eyeballs.to_owned()],
+            ),
+            (&["-I"], vec![filetime.clone()], vec![]),
+            (&["-R"], vec![filetime.clone()], vec![]),
+            (&[], vec![], vec![filetime.clone(), headeropt.clone()]),
+            // The origin's headers are kept from a tunnel's proxy.
+            (&["-x", "http://p:3", "-p"], vec![headeropt.clone()], vec![]),
+            (
+                &["--proxy-header", "P: q", "-p"],
+                vec![headeropt.clone()],
+                vec![],
+            ),
+            (&["-x", "http://p:3"], vec![], vec![headeropt.clone()]),
+            (&["-p"], vec![], vec![headeropt.clone()]),
+            (
+                &["-T", file, "-C", "-"],
+                vec![
+                    line("CURLOPT_UPLOAD, 1L"),
+                    line("CURLOPT_RESUME_FROM_LARGE, (curl_off_t)-1"),
+                    line("CURLOPT_INFILESIZE_LARGE, (curl_off_t)10"),
+                ],
+                vec![],
+            ),
+        ] {
+            let (text, _) = set_up(args).unwrap();
+            for want in has {
+                assert!(text.contains(&want), "{args:?} lacks {want}\n{text}");
+            }
+            for unwanted in lacks {
+                assert!(!text.contains(&unwanted), "{args:?} has {unwanted}\n{text}");
+            }
+        }
+        // For HTTPS, a proxy keeps them without being told to tunnel.
+        let (text, _) = set_up_url(&["-x", "http://p:3"], "https://h/").unwrap();
+        assert!(text.contains(&headeropt), "{text}");
+        let (text, _) = set_up_url(&[], "https://h/").unwrap();
+        assert!(!text.contains(&headeropt), "{text}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Each option that changes what a transfer is set up with changes

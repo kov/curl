@@ -875,11 +875,11 @@ witness: curl-tool write_out::tests::writes_json_as_c
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool gives_http_s_options_only_to_http
 --- old
-    if config.http {
-        http_setopts(s, op, &run.msgs)?;
+    if let UrlProto::Http { tls } = config.proto {
+        http_setopts(s, op, tls, &run.msgs)?;
 --- new
-    if true {
-        http_setopts(s, op, &run.msgs)?;
+    if let Some(tls) = Some(config.proto == (UrlProto::Http { tls: true })) {
+        http_setopts(s, op, tls, &run.msgs)?;
 
 === an IPFS path is decoded, so an encoded slash climbs out
 file: crates/curl-tool/src/ipfs.rs
@@ -928,9 +928,16 @@ features: debug-hooks
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool goes_to_the_ipfs_gateway
 --- old
-    let http = proto == UrlProto::Http;
+    let config = Config {
+        url,
+        proto,
 --- new
-    let http = proto != UrlProto::Other;
+    let config = Config {
+        url,
+        proto: match proto {
+            UrlProto::Ipfs(_) => UrlProto::Http { tls: false },
+            other => other,
+        },
 
 === --continue-at after --range is taken
 file: crates/curl-tool/src/options/apply.rs

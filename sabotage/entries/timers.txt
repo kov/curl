@@ -116,3 +116,19 @@ witness: curl-core multi::timers::tests::unit3230_timer_updates
 --- old
         self.last_due = None;
 --- new
+
+=== the total limit is judged from each request's start, not the transfer's
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core proto::http::tests::the_time_limit_is_the_whole_transfer_s
+--- old
+        let total = self.total.map_or(0, |t| left(t.duration(), starts.op));
+--- new
+        let total = self.total.map_or(0, |t| left(t.duration(), starts.single));
+
+=== a transfer out of time says the time since its last request's start
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::the_time_limit_is_the_whole_transfer_s
+--- old
+        Phase::Transferring => timings.since_op_ms(cx.rest.now),
+--- new
+        Phase::Transferring => timings.since_single_ms(cx.rest.now),

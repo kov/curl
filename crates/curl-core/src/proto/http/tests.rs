@@ -5742,6 +5742,63 @@ fn an_unpause_starts_the_receive_limit_over() {
     assert_eq!(m.timeout(), Some(Duration::from_millis(1000 - 4)));
 }
 
+/// The total time limit is the whole transfer's, every request it is
+/// redirected to counted, and the time said is the transfer's
+/// (`Curl_timeleft_ms` and `multi_handle_timeout` from `TIMER_STARTOP`):
+/// a second request that would end within the limit of its own fails as
+/// the transfer's runs out. The timer that wakes the transfer is armed
+/// from each request's start (`multistate_setup`), so a peer that stays
+/// silent is given up on that much after the second request starts, as
+/// the C build does: 1600 ms into a transfer limited to 1000 whose first
+/// request took 600.
+#[test]
+fn the_time_limit_is_the_whole_transfer_s() {
+    for silent in [false, true] {
+        let first = moved("/b", false);
+        let replies: &[&[u8]] = if silent { &[&first] } else { &[&first, OK] };
+        let (mut m, talk, clock) = server(replies, false);
+        let talk = talk.held();
+        let start = clock.now();
+        let seen = Seen::default();
+        let mut e = Easy::new();
+        let o = e.options_mut();
+        o.set_url(Some(format!("http://127.0.0.1:{PORT}/a").as_bytes()))
+            .unwrap();
+        o.http.follow = Follow::All;
+        o.limits.total = crate::time::TimeLimit::from_millis(1000);
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        for _ in 0..4 {
+            m.perform(&mut NoEvents).unwrap();
+        }
+        assert!(talk.received().starts_with(b"GET /a "));
+        // The redirect comes 600 ms in; the second request goes.
+        clock.advance(Duration::from_millis(600));
+        talk.allow(1);
+        m.perform(&mut NoEvents).unwrap();
+        let sent = talk.received();
+        assert!(
+            sent.windows(7).any(|w| w == b"GET /b "),
+            "{}",
+            sent.escape_ascii()
+        );
+        let ms = if silent {
+            1600
+        } else {
+            // Its answer comes 600 ms later, 1200 ms into the transfer.
+            clock.advance(Duration::from_millis(600));
+            talk.allow(2);
+            1200
+        };
+        let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        assert_eq!(result, Err(ErrorKind::OperationTimedout), "{silent}");
+        assert_eq!(clock.now().since(start), Duration::from_millis(ms));
+        let said = format!("Operation timed out after {ms} milliseconds with 0 bytes received\n");
+        assert!(seen.text().contains(&said), "{:?}", seen.text());
+    }
+}
+
 /// A transfer whose time runs out as it waits for the response fails as
 /// the next pass starts, reading nothing more (`multi_handle_timeout`
 /// ahead of `Curl_sendrecv`): its one receive is the one before it first

@@ -653,6 +653,14 @@ impl Timings {
             / 1000
     }
 
+    /// Milliseconds from the transfer's first request's start to `now`
+    /// (`Curl_pgrs_since_ms` from `TIMER_STARTOP`): every request it
+    /// made again or was redirected to counted.
+    pub(crate) fn since_op_ms(&self, now: Instant) -> u64 {
+        let op = self.starts.map_or(0, |s| self.since_start(s.op));
+        self.since_start(now).saturating_sub(op) / 1000
+    }
+
     /// Microseconds from the transfer's start to its last request's.
     fn since_single_start(&self) -> u64 {
         self.starts.map_or(0, |s| self.since_start(s.single))
@@ -959,8 +967,10 @@ mod tests {
         t.mark(Timer::StartTransfer, at(now + 1_000_000));
         assert_eq!(phases(&t), [Duration::from_micros(3_750_000); 5]);
         assert_eq!(t.redirect(), Duration::from_micros(3_250_000));
-        // The second request's time, for the timeout texts, is its own.
+        // The second request's time, for the connect timeout's texts, is
+        // its own; the transfer's, for the others', is all of it.
         assert_eq!(t.since_single_ms(at(now)), 1_500);
+        assert_eq!(t.since_op_ms(at(now)), 4_750);
         let starts = t.starts().unwrap();
         assert_eq!((starts.op, starts.single), (at(start), at(now - 1_500_000)));
     }

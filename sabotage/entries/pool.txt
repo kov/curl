@@ -133,9 +133,10 @@ witness: curl-core conn::pool::tests::a_limit_is_passed_a_whole_millisecond_afte
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 --- old
-        self.answered < self.replies.len() && asked > self.answered
+            && asked > self.answered
+            && self.allowed
 --- new
-        self.answered < self.replies.len()
+            && self.allowed
 
 === a read that got nothing keeps its room
 file: crates/curl-core/src/conn/buf.rs
@@ -336,7 +337,7 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_waiting_transfer_runs_out_of_time
 --- old
         TimeLeft::Expired(_) => {
-            timed_out(cx);
+            timed_out(cx, Phase::Connecting);
             trace::info(cx, format_args!("PENDING handle timeout"));
             (TransferState::Setup(plan), Wake::Again)
         }

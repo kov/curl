@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+followlocation
+timeout
+</keywords>
+</info>
+
+# Server-side
+<reply>
+# Written 20 bytes at a time, 200 ms after each: the redirect is read
+# by 400 ms and the server answers the second request from 600 ms, its
+# last bytes at 1200 ms. Each request alone takes less than the second
+# the transfer is given, the two together more.
+<data crlf="headers" nocheck="yes">
+HTTP/1.1 301 x
+Location: /%TESTNUMBER0002
+Content-Length: 0
+
+</data>
+<data2 crlf="headers" nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 30
+
+012345678901234567890123456789
+</data2>
+<servercmd>
+writedelay: 200
+</servercmd>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+--max-time limits the whole transfer, its redirects counted
+</name>
+<command>
+http://%HOSTIP:%HTTPPORT/%TESTNUMBER -L -m 1
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<protocol crlf="headers">
+GET /%TESTNUMBER HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+GET /%TESTNUMBER0002 HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+</protocol>
+<errorcode>
+28
+</errorcode>
+</verify>
+</testcase>

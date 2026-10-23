@@ -969,7 +969,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let now = cx.rest.now;
             let next = match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
                 TimeLeft::Expired(_) => {
-                    let kind = timed_out(cx);
+                    let kind = timed_out(cx, Phase::Connecting);
                     // Its failure may make room for another
                     // (`multi_runsingle`).
                     schedule_pending(&mut cx.rest);
@@ -1023,7 +1023,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         // Out of time as the pass starts: nothing more is read or sent
         // (`multi_handle_timeout`, ahead of the state's work).
         TransferState::Exchanging(x) if expired(run, cx) => {
-            let kind = timed_out(cx);
+            let kind = timed_out(cx, Phase::Transferring);
             (TransferState::Exchanging(x).fail(kind), Wake::Again)
         }
         // Over a speed limit: nothing moves until it says
@@ -1033,7 +1033,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         }
         TransferState::RateLimiting(x) => {
             if expired(run, cx) {
-                let kind = timed_out(cx);
+                let kind = timed_out(cx, Phase::Transferring);
                 (TransferState::RateLimiting(x).fail(kind), Wake::Again)
             } else {
                 // The progress and the low-speed check, then the limits
@@ -1323,7 +1323,7 @@ fn pending<H: Host>(run: &mut Run, plan: Plan, cx: &mut StepCx<'_, H>) -> (Trans
     let now = cx.rest.now;
     match run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
         TimeLeft::Expired(_) => {
-            timed_out(cx);
+            timed_out(cx, Phase::Connecting);
             trace::info(cx, format_args!("PENDING handle timeout"));
             (TransferState::Setup(plan), Wake::Again)
         }
@@ -2000,10 +2000,17 @@ impl std::fmt::Display for Family<'_> {
     }
 }
 
-/// The request ran out of time, with what it received of how much.
-fn timed_out<H: Host>(cx: &mut StepCx<'_, H>) -> ErrorKind {
+/// The request ran out of time, with what it received of how much, and
+/// the time since its own start while it was `Connecting`, since the
+/// transfer's first request's after (`multi_handle_timeout`: from
+/// `TIMER_STARTSINGLE` while `Curl_is_connecting`, else `TIMER_STARTOP`).
+fn timed_out<H: Host>(cx: &mut StepCx<'_, H>, phase: Phase) -> ErrorKind {
+    let timings = cx.easy().report().timings();
+    let ms = match phase {
+        Phase::Connecting => timings.since_single_ms(cx.rest.now),
+        Phase::Transferring => timings.since_op_ms(cx.rest.now),
+    };
     let report = cx.easy().report();
-    let ms = report.timings().since_single_ms(cx.rest.now);
     let sizes = report.sizes();
     let got = sizes.download();
     let kind = ErrorKind::OperationTimedout;

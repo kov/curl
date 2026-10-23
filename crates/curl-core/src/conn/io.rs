@@ -450,6 +450,9 @@ struct Wire {
     /// The reads so far, and how much room the last one had.
     reads: usize,
     last_read_room: usize,
+    /// How many of its replies the peer may give so far, if it waits
+    /// for the test to let them go.
+    allowed: Option<usize>,
 }
 
 /// The most reads of an endless reply before the test fails: a transfer
@@ -466,7 +469,9 @@ impl Wire {
         } else {
             self.heads()
         };
-        self.answered < self.replies.len() && asked > self.answered
+        self.answered < self.replies.len()
+            && asked > self.answered
+            && self.allowed.is_none_or(|n| self.answered < n)
     }
 
     /// The request heads the peer was sent.
@@ -549,6 +554,24 @@ impl Conversation {
     pub fn late_replies(self) -> Conversation {
         self.0.lock().expect("no test panics holding the wire").late = true;
         self
+    }
+
+    /// The same peer, giving no reply until the test lets it with
+    /// `allow`: a peer that takes as long to answer as the test says.
+    pub fn held(self) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .allowed = Some(0);
+        self
+    }
+
+    /// Let a `held` peer give its first `n` replies.
+    pub fn allow(&self, n: usize) {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .allowed = Some(n);
     }
 
     /// The same peer, gone after its first `n` sends: those past them

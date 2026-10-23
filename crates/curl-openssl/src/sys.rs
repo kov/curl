@@ -57,8 +57,155 @@ fn supported(number: c_ulong) -> Result<(), TooOld> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    use core::ffi::{CStr, c_char};
+
+    use curl_core::libraries::{Ed25519, Ed25519Error};
+
+    /// An `ENGINE`, only ever pointed to.
+    enum Engine {}
+
+    // SAFETY: the declarations are `engine.h`'s; the library exports them.
+    unsafe extern "C" {
+        fn ENGINE_get_first() -> *mut Engine;
+        fn ENGINE_get_next(engine: *mut Engine) -> *mut Engine;
+        fn ENGINE_get_id(engine: *const Engine) -> *const c_char;
+    }
+
+    /// The ids of the engines the library has loaded.
+    pub(crate) fn engines() -> Vec<String> {
+        let mut ids = Vec::new();
+        // SAFETY: the list is walked as `engine.h` says, each engine
+        // passed on to `ENGINE_get_next`, which releases it, and its id
+        // read while it is held.
+        let mut engine = unsafe { ENGINE_get_first() };
+        while !engine.is_null() {
+            // SAFETY: as above; an engine's id is a C string it keeps.
+            let id = unsafe { ENGINE_get_id(engine) };
+            // SAFETY: as above.
+            let id = unsafe { CStr::from_ptr(id) };
+            ids.push(id.to_string_lossy().into_owned());
+            // SAFETY: as above.
+            engine = unsafe { ENGINE_get_next(engine) };
+        }
+        ids
+    }
+
+    /// Runs the ignored test `name` in a process of its own, with
+    /// `OPENSSL_CONF` naming `conf`, and checks it passed.
+    pub(crate) fn in_a_child(name: &str, conf: &std::path::Path) {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--ignored"])
+            .env("OPENSSL_CONF", conf)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{out:?}");
+        assert!(stdout.contains("1 passed"), "the test ran: {stdout}");
+    }
+
+    /// As C's `ossl_init`, `init` loads the built-in engines: checked
+    /// with an empty configuration, which loads none of its own. Only
+    /// the dynamic engine is there on every machine; rdrand is when the
+    /// processor has the instruction.
+    #[test]
+    fn init_loads_the_built_in_engines() {
+        in_a_child("sys::tests::engines_after_init", "/dev/null".as_ref());
+    }
+
+    #[test]
+    #[ignore = "run by init_loads_the_built_in_engines, OPENSSL_CONF empty"]
+    fn engines_after_init() {
+        assert_eq!(engines(), Vec::<String>::new(), "none before");
+        init();
+        assert!(engines().contains(&"dynamic".into()), "{:?}", engines());
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("rdrand") {
+            assert!(engines().contains(&"rdrand".into()), "{:?}", engines());
+        }
+    }
+
+    /// Signing without `init` first initialises the library as `init`
+    /// does, its built-in engines loaded.
+    #[test]
+    fn signing_initialises_the_library() {
+        in_a_child("sys::tests::engines_after_signing", "/dev/null".as_ref());
+    }
+
+    #[test]
+    #[ignore = "run by signing_initialises_the_library, OPENSSL_CONF empty"]
+    fn engines_after_signing() {
+        assert_eq!(engines(), Vec::<String>::new(), "none before");
+        crate::ED25519.sign(&[1; 32], b"message").unwrap();
+        assert!(engines().contains(&"dynamic".into()), "{:?}", engines());
+    }
+
+    /// A configuration under which no algorithm is fetched, Ed25519's
+    /// included.
+    pub(crate) const NO_ALGORITHM: &str = "openssl_conf = init\n\
+                                           [init]\n\
+                                           alg_section = algorithms\n\
+                                           [algorithms]\n\
+                                           default_properties = \"provider=none\"\n";
+
+    /// A fresh file named for `test` in the temporary directory, holding
+    /// `NO_ALGORITHM`.
+    pub(crate) fn no_algorithm_file(test: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("curl-openssl-{test}-{}.cnf", std::process::id()));
+        std::fs::write(&path, NO_ALGORITHM).unwrap();
+        path
+    }
+
+    /// `init` reads the configuration `OPENSSL_CONF` names then, not when
+    /// the library is first used: the file is emptied after `init`, and
+    /// what it said still holds.
+    #[test]
+    fn init_reads_the_configuration() {
+        let path = no_algorithm_file("init");
+        in_a_child("sys::tests::configured_at_init", &path);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "run by init_reads_the_configuration, OPENSSL_CONF set"]
+    fn configured_at_init() {
+        let path = std::env::var_os("OPENSSL_CONF").unwrap();
+        init();
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(
+            crate::ED25519.sign(&[1; 32], b"message"),
+            Err(Ed25519Error::Failed)
+        );
+    }
+
+    /// Without `init`, the configuration is read at the first signing:
+    /// the same file, emptied first, refuses nothing.
+    #[test]
+    fn without_init_the_configuration_is_read_later() {
+        let path = no_algorithm_file("later");
+        in_a_child("sys::tests::configured_later", &path);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "run by without_init_the_configuration_is_read_later, OPENSSL_CONF set"]
+    fn configured_later() {
+        let path = std::env::var_os("OPENSSL_CONF").unwrap();
+        std::fs::write(&path, "").unwrap();
+        assert!(crate::ED25519.sign(&[1; 32], b"message").is_ok());
+    }
+
+    /// The flags are those C passes, as `crypto.h` defines them: the
+    /// configuration read, and every built-in engine, including those
+    /// this platform's library has none of (cryptodev, capi, padlock).
+    #[test]
+    fn the_flags_are_c_s() {
+        assert_eq!(LOAD_CONFIG, 0x40);
+        assert_eq!(ENGINE_ALL_BUILTIN, 0x7600);
+    }
 
     #[test]
     fn three_or_later_is_supported() {

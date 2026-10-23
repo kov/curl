@@ -55,6 +55,9 @@ exclude_re = [
     # A successful `getaddrinfo` never leaves the list null.
     'curl-os/src/resolve\.rs:.*: (replace <impl Drop for List>::drop with \(\)|delete ! in <impl Drop for List>::drop)$',
     'curl-psl/src/lib\.rs:.*: replace <impl Drop for Ctx>::drop with \(\)$',
+    # OpenSSL's init flags are disjoint bits, as `crypto.h` defines them:
+    # xor of them is their or, the same value.
+    'curl-openssl/src/sys\.rs:.*: replace \| with \^( in init_ssl)?$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

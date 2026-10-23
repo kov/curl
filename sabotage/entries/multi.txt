@@ -651,6 +651,6 @@ witness: curl-core multi::tests::a_connection_closed_as_it_comes_back_is_no_one_
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
 --- old
-            if matches!(self.run_of(id).state, TransferState::Pending(_)) {
+            TransferState::Pending(_) => pending += 1,
 --- new
-            if false {
+            TransferState::Pending(_) => {}

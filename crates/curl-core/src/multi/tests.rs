@@ -1170,7 +1170,7 @@ fn callbacks_read_reports_and_the_multi_counts_messages() {
         )
         .unwrap();
     let other = m.add(Box::new(easy("null://b")), (), &mut ev).unwrap();
-    assert_eq!(m.unread(), 0);
+    assert_eq!(m.census().unread, 0);
     let walked: Vec<_> =
         std::iter::successors(m.next_transfer(None), |&id| m.next_transfer(Some(id))).collect();
     assert_eq!(walked, [missing, other]);
@@ -1181,13 +1181,13 @@ fn callbacks_read_reports_and_the_multi_counts_messages() {
     assert_eq!(ev.notify_failure.as_ref(), Some(&why));
     assert!(ev.owner_seen);
     assert_eq!(ev.pause, Some(Err(ErrorKind::BadFunctionArgument)));
-    assert_eq!(m.unread(), 2);
+    assert_eq!(m.census().unread, 2);
     m.info_read().unwrap();
-    assert_eq!(m.unread(), 1);
+    assert_eq!(m.census().unread, 1);
     // The timer hears of the remove, and reads the transfer left.
     m.remove(other, &mut ev).unwrap();
     assert_eq!(ev.timer_failure, Some(why));
-    assert_eq!(m.unread(), 0);
+    assert_eq!(m.census().unread, 0);
     assert_eq!(m.next_transfer(Some(missing)), None);
     assert!(m.owner(other).is_none());
 }
@@ -2883,14 +2883,15 @@ fn a_transfer_waits_for_room_under_the_host_limit() {
         "it does not run while it waits"
     );
     assert_eq!(m.counts().running, 2);
-    assert_eq!(m.pending(), 1, "the one waiting");
+    assert_eq!(m.census().pending, 1, "the one waiting");
+    assert_eq!(m.census().working(), 1);
     clock.advance(Duration::from_millis(5));
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         trace_of(&a_lines).last().unwrap(),
         "Connection #0 to host 127.0.0.1:4 left intact\n"
     );
-    assert_eq!(m.pending(), 0);
+    assert_eq!(m.census().pending, 0);
     assert_eq!(
         trace_of(&b_lines)[1..],
         [

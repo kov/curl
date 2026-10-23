@@ -76,6 +76,26 @@ pub struct Counts {
     pub added_ever: u64,
 }
 
+/// What a multi's transfers are doing at one moment: its counts, and
+/// how many of them wait or have completed unread.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Census {
+    pub counts: Counts,
+    /// Of those `counts` says run, the ones waiting for a connection the
+    /// multi's limits allow none of yet (`CURLMINFO_XFERS_PENDING`).
+    pub pending: u32,
+    /// Completed, their message not read yet (`CURLMINFO_XFERS_DONE`).
+    pub unread: u32,
+}
+
+impl Census {
+    /// Of those `counts` says run, the ones worked on: not waiting for a
+    /// connection (`CURLMINFO_XFERS_RUNNING`).
+    pub fn working(&self) -> u32 {
+        self.counts.running - self.pending
+    }
+}
+
 /// The multi's counts, changed only as transfers come, complete and go.
 /// The debug build checks them against a recount after every call.
 #[derive(Debug, Default)]

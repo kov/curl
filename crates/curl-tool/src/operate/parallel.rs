@@ -477,8 +477,8 @@ impl Parallel<'_, '_, '_> {
         if self.run.global.no_progress || self.terminal || self.run.msgs.silent {
             return;
         }
-        let counts = self.multi.counts();
-        let live = counts.running - self.multi.pending();
+        let census = self.multi.census();
+        let (counts, live) = (census.counts, census.working());
         let counted = self.list.iter_mut().map(|e| &mut e.counted);
         let mut err = std::io::stderr().lock();
         let now = Instant::now();

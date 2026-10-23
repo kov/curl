@@ -2338,8 +2338,11 @@ adapters are its own, installed in place of the ones it was cloned with.
 - Timer callback: `TimerChange::Set(d)` → `long` ms capped at INT_MAX; `Clear` → -1.
 - `curl_multi_info_read` writes `CURLMSG_DONE`, the `CURL *` and the mapped code into
   `ShimEasy.msg` and returns a pointer to it: valid until that easy is removed or cleaned up.
-- `CURLMINFO_XFERS_*` from `counts()`: RUNNING is process transfers (no "minus admin" because
-  there is no admin row in the counts), DONE is unread messages (2453).
+- `CURLMINFO_XFERS_*` from `census()`, which every context has, so they read the same from any
+  callback as from outside: RUNNING is the transfers worked on, those `counts().running` gives
+  `curl_multi_perform` less the ones in `Pending` (C's process set; no "minus admin" because
+  there is no admin row in the counts), PENDING is the ones in `Pending`, DONE is unread
+  messages (2453). A run out of its slot, being stepped, is neither.
 - `curl_multi_wait`: negative timeout → BAD_FUNCTION_ARGUMENT; capped at `timeout()`; no fds →
   returns at once (`wait`) or sleeps (`poll`); the waker is polled only when waiting and is not
   counted; extra revents use the CURL_WAIT_POLL* bits. Up to ten sockets and ten descriptors

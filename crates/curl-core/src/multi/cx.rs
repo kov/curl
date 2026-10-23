@@ -27,8 +27,8 @@ use super::sched::{RowSet, Tally};
 use super::sockets::{Change, SocketTable, SocketWhat, UnknownSocket};
 use super::state::StepCx;
 use super::{
-    Abort, AddError, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed, Slots,
-    TransferId, read_message,
+    Abort, AddError, Census, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed,
+    Slots, TransferId, census_of, read_message,
 };
 
 /// The multi minus the transfer being stepped, whose `Run` is out of its
@@ -507,6 +507,11 @@ impl<'a> TransferCx<'a> {
         self.calls.me()
     }
 
+    /// As `Multi::census`, this transfer counted as running.
+    pub fn census(&self) -> Census {
+        self.calls.census()
+    }
+
     pub fn options(&self, id: TransferId) -> Option<&Options> {
         self.calls.easy(id).map(Easy::options)
     }
@@ -547,6 +552,7 @@ impl<'a> TransferCx<'a> {
 /// What a `TransferCx` reaches, whatever the multi's `Host`.
 pub(crate) trait TransferCalls {
     fn me(&self) -> TransferId;
+    fn census(&self) -> Census;
     fn easy(&self, id: TransferId) -> Option<&Easy>;
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy>;
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind>;
@@ -570,6 +576,11 @@ impl<H: Host> EventCx<'_, H> {
 
     pub fn counts(&self) -> Counts {
         self.counts
+    }
+
+    /// As `Multi::census`.
+    pub fn census(&self) -> Census {
+        census_of(self.slots, self.counts)
     }
 
     pub fn set_notify(&mut self, kind: NotifyKind, on: bool) {
@@ -640,6 +651,11 @@ impl<H: Host> NotifyCx<'_, H> {
 
     pub fn counts(&self) -> Counts {
         self.multi.counts()
+    }
+
+    /// As `Multi::census`.
+    pub fn census(&self) -> Census {
+        self.multi.census()
     }
 
     pub fn set_notify(&mut self, kind: NotifyKind, on: bool) {

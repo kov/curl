@@ -129,3 +129,31 @@ witness: curl-sys-abi version::tests::names_the_libraries_as_c
             let libraries: [&dyn fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
 --- new
             let libraries: [&dyn fmt::Display; 4] = [&zlib, &zstd, &brotli, &psl];
+
+=== the multi's running count takes in the transfers waiting for a connection
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_multi_counts_running_and_waiting_transfers_apart
+--- old
+        ffi::CURLMINFO_XFERS_RUNNING => off(census.working().into()),
+--- new
+        ffi::CURLMINFO_XFERS_RUNNING => off(census.counts.running.into()),
+
+=== the multi's counts are refused to a transfer's own callback
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::the_multi_counts_running_and_waiting_transfers_apart
+--- old
+        Reach::Frame(Frame::Transfer(cx)) => unsafe { &*cx.as_ptr() }.census(),
+--- new
+        Reach::Frame(Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
+
+=== counting the transfers expects every run in its slot, and aborts in a write callback
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-sys-abi handle_tests::the_multi_counts_running_and_waiting_transfers_apart
+--- old
+        let Some(run) = &slots.get(id).expect("just found").run else {
+            continue;
+        };
+--- new
+        let Some(run) = &slots.get(id).expect("just found").run else {
+            unreachable!("every run is in its slot");
+        };

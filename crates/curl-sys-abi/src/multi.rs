@@ -719,29 +719,23 @@ pub unsafe extern "C" fn curl_multi_get_offt(
     }
     // SAFETY: admitted on `m`.
     let multi = unsafe { multi(m) };
-    let (counts, unread) = match entry.reach {
-        Reach::Direct => {
-            // SAFETY: the reach is direct.
-            let core = unsafe { multi.core_mut() };
-            (core.counts(), Some(core.unread()))
-        }
+    let census = match entry.reach {
+        // SAFETY: the reach is direct.
+        Reach::Direct => unsafe { multi.core_mut() }.census(),
         // SAFETY: as in `curl_multi_info_read`.
-        Reach::Frame(Frame::Event(cx)) => (unsafe { &*cx.as_ptr() }.counts(), None),
+        Reach::Frame(Frame::Event(cx)) => unsafe { &*cx.as_ptr() }.census(),
         // SAFETY: as above.
-        Reach::Frame(Frame::Notify(cx)) => (unsafe { &*cx.as_ptr() }.counts(), None),
-        Reach::Frame(Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
+        Reach::Frame(Frame::Notify(cx)) => unsafe { &*cx.as_ptr() }.census(),
+        // SAFETY: as above.
+        Reach::Frame(Frame::Transfer(cx)) => unsafe { &*cx.as_ptr() }.census(),
     };
     let off = |n: u64| curl_off_t::try_from(n).unwrap_or(curl_off_t::MAX);
     let value = match info {
-        ffi::CURLMINFO_XFERS_CURRENT => off(counts.current.into()),
-        ffi::CURLMINFO_XFERS_RUNNING => off(counts.running.into()),
-        // Nothing waits for a connection before there are any.
-        ffi::CURLMINFO_XFERS_PENDING => 0,
-        ffi::CURLMINFO_XFERS_DONE => match unread {
-            Some(n) => off(n.into()),
-            None => return CURLM_RECURSIVE_API_CALL,
-        },
-        ffi::CURLMINFO_XFERS_ADDED => off(counts.added_ever),
+        ffi::CURLMINFO_XFERS_CURRENT => off(census.counts.current.into()),
+        ffi::CURLMINFO_XFERS_RUNNING => off(census.working().into()),
+        ffi::CURLMINFO_XFERS_PENDING => off(census.pending.into()),
+        ffi::CURLMINFO_XFERS_DONE => off(census.unread.into()),
+        ffi::CURLMINFO_XFERS_ADDED => off(census.counts.added_ever),
         _ => {
             // SAFETY: checked non-NULL above.
             unsafe { pvalue.write(-1) };

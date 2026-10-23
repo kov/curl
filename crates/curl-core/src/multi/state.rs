@@ -47,7 +47,7 @@ use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
-use super::{Host, Slots, TransferId};
+use super::{Census, Host, Slots, TransferId};
 
 /// The longest host name a URL may name (`MAX_URL_LEN`).
 const MAX_HOST: usize = 0xffff;
@@ -880,6 +880,11 @@ impl<H: Host> StepCx<'_, H> {
 impl<H: Host> TransferCalls for StepCx<'_, H> {
     fn me(&self) -> TransferId {
         self.me
+    }
+
+    fn census(&self) -> Census {
+        let tell = &self.rest.tell;
+        super::census_of(tell.slots, tell.counts.get())
     }
 
     fn easy(&self, id: TransferId) -> Option<&Easy> {

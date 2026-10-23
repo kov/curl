@@ -4061,6 +4061,158 @@ fn header_lines_appended_after_the_option_are_sent() {
     }
 }
 
+/// `CURLMINFO_XFERS_CURRENT`, `RUNNING`, `PENDING`, `DONE` and `ADDED`
+/// of multi `m`, each with its code.
+fn census_of(m: *mut CURLM) -> [(ffi::CURLMcode, curl_off_t); 5] {
+    [
+        ffi::CURLMINFO_XFERS_CURRENT,
+        ffi::CURLMINFO_XFERS_RUNNING,
+        ffi::CURLMINFO_XFERS_PENDING,
+        ffi::CURLMINFO_XFERS_DONE,
+        ffi::CURLMINFO_XFERS_ADDED,
+    ]
+    .map(|info| {
+        let mut value = -2;
+        // SAFETY: the test's live multi, and a value to write.
+        let code = unsafe { curl_multi_get_offt(m, info, &raw mut value) };
+        (code, value)
+    })
+}
+
+/// What `census_of` gives when every call succeeds.
+fn census(values: [curl_off_t; 5]) -> [(ffi::CURLMcode, curl_off_t); 5] {
+    values.map(|v| (CURLM_OK, v))
+}
+
+/// The multi a write or timer callback samples, and what it saw.
+#[derive(Default)]
+struct Sampled {
+    multi: usize,
+    seen: Vec<[(ffi::CURLMcode, curl_off_t); 5]>,
+}
+
+/// Samples the multi's counts from inside a transfer's write callback.
+unsafe extern "C" fn sample_write(
+    _: *mut c_char,
+    size: usize,
+    n: usize,
+    data: *mut c_void,
+) -> usize {
+    // SAFETY: `data` is the test's `Sampled`, which outlives the transfers.
+    let s = unsafe { &mut *data.cast::<Sampled>() };
+    s.seen.push(census_of(s.multi as *mut CURLM));
+    size * n
+}
+
+/// Samples the multi's counts from inside its timer callback.
+unsafe extern "C" fn sample_timer(m: *mut CURLM, _: c_long, data: *mut c_void) -> c_int {
+    // SAFETY: as above.
+    let s = unsafe { &mut *data.cast::<Sampled>() };
+    s.seen.push(census_of(m));
+    0
+}
+
+/// Under a host limit of one, of three transfers to one host one runs
+/// and two wait: `CURLMINFO_XFERS_RUNNING` counts the one and
+/// `CURLMINFO_XFERS_PENDING` the two, while `curl_multi_perform` reports
+/// all three running. The counts read the same from a write callback and
+/// the timer callback, as C's `curl_multi_get_offt` may recurse.
+#[test]
+fn the_multi_counts_running_and_waiting_transfers_apart() {
+    const HELLO: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello";
+    let (port, server) = serve(vec![HELLO, HELLO, HELLO]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let m = curl_multi_init();
+    let mut writes = Sampled {
+        multi: m as usize,
+        ..Sampled::default()
+    };
+    let mut timers = Sampled::default();
+    // SAFETY: the live multi, and data that outlives it.
+    unsafe {
+        let limit = ffi::CURLMOPT_MAX_HOST_CONNECTIONS;
+        assert_eq!(curl_multi_setopt(m, limit, 1 as c_long), CURLM_OK);
+        let t = sample_timer as TimerFn as *const ();
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_TIMERFUNCTION, t),
+            CURLM_OK
+        );
+        let data = (&raw mut timers).cast::<c_void>();
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_TIMERDATA, data),
+            CURLM_OK
+        );
+    }
+    let handles = [(); 3].map(|()| {
+        let c = curl_easy_init();
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+        function(
+            c,
+            ffi::CURLOPT_WRITEFUNCTION,
+            sample_write as WriteFn as *const (),
+        );
+        pointer(c, ffi::CURLOPT_WRITEDATA, &raw mut writes);
+        long(c, ffi::CURLOPT_TIMEOUT, 10);
+        // SAFETY: live handles.
+        assert_eq!(unsafe { curl_multi_add_handle(m, c) }, CURLM_OK);
+        c
+    });
+    assert_eq!(
+        census_of(m),
+        census([3, 3, 0, 0, 3]),
+        "none waits before a perform"
+    );
+    let mut running = 0;
+    // SAFETY: the live multi.
+    assert_eq!(unsafe { curl_multi_perform(m, &raw mut running) }, CURLM_OK);
+    assert_eq!(running, 3, "the waiting ones run, to perform");
+    assert_eq!(census_of(m), census([3, 1, 2, 0, 3]));
+    while running > 0 {
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(
+                curl_multi_wait(m, ptr::null_mut(), 0, 1000, ptr::null_mut()),
+                CURLM_OK
+            );
+            assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
+        }
+    }
+    assert_eq!(census_of(m), census([3, 0, 0, 3, 3]));
+    // How many of the rest wait while one writes depends on when the
+    // server answers; each writer runs and those before it are done.
+    assert_eq!(writes.seen.len(), 3);
+    for (i, seen) in (0..).zip(&writes.seen) {
+        let [current, working, pending, done, added] = seen.map(|(code, v)| {
+            assert_eq!(code, CURLM_OK, "{seen:?}");
+            v
+        });
+        assert_eq!((current, done, added), (3, i, 3), "{seen:?}");
+        assert!(working >= 1, "{seen:?}");
+        assert_eq!(working + pending, 3 - i, "{seen:?}");
+    }
+    assert!(!timers.seen.is_empty());
+    let last = timers.seen.last().unwrap();
+    assert_eq!(*last, census([3, 0, 0, 3, 3]), "{:?}", timers.seen);
+    assert!(
+        timers
+            .seen
+            .iter()
+            .flatten()
+            .all(|&(code, _)| code == CURLM_OK),
+        "{:?}",
+        timers.seen
+    );
+    assert_eq!(server.join().unwrap().len(), 3);
+    // SAFETY: live handles, not used again.
+    unsafe {
+        for c in handles {
+            assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+            curl_easy_cleanup(c);
+        }
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+    }
+}
+
 /// Appends a line to the list at `data` when a redirect's or a proxy's
 /// demand for credentials comes, between the two requests it leads to.
 unsafe extern "C" fn append_on_redirect(

@@ -38,7 +38,7 @@ pub use crate::deliver::PauseRequest;
 use cx::{EngineRest, Telling};
 pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
-pub use sched::Counts;
+pub use sched::{Census, Counts};
 pub use sockets::{SocketWhat, UnknownSocket};
 pub use timers::TimerChange;
 pub use wait::{WaitMode, drive_by_events, drive_to_completion};
@@ -531,36 +531,9 @@ impl<H: Host> Multi<H> {
         read_message(&mut self.slots)
     }
 
-    /// How many completed transfers' messages are unread
-    /// (`CURLMINFO_XFERS_DONE`).
-    pub fn unread(&self) -> u32 {
-        let mut unread = 0;
-        let mut cursor = None;
-        while let Some(id) = self.slots.next_after(cursor) {
-            cursor = Some(id);
-            if let Some(run) = &self.slots.get(id).expect("just found").run
-                && let TransferState::Completed(c) = &run.state
-                && c.message == MessageState::Unread
-            {
-                unread += 1;
-            }
-        }
-        unread
-    }
-
-    /// How many transfers wait for a connection the multi's limits allow
-    /// none of yet (`CURLMINFO_XFERS_PENDING`): of those `counts` says
-    /// run, the ones that do not.
-    pub fn pending(&self) -> u32 {
-        let mut pending = 0;
-        let mut cursor = None;
-        while let Some(id) = self.slots.next_after(cursor) {
-            cursor = Some(id);
-            if matches!(self.run_of(id).state, TransferState::Pending(_)) {
-                pending += 1;
-            }
-        }
-        pending
+    /// What the transfers are doing now (`curl_multi_get_offt`).
+    pub fn census(&self) -> Census {
+        census_of(&self.slots, self.counts.get())
     }
 
     /// Turn a kind of notification on or off
@@ -1068,6 +1041,30 @@ fn pollsets<'a, H: Host>(slots: &'a Slots<H>, mut f: impl FnMut(&'a dyn Socket, 
 }
 
 /// The lowest-id unread completion, marked read (`curl_multi_info_read`).
+/// What the transfers in `slots` are doing, `counts` being the multi's.
+/// A transfer whose run is out of its slot is being stepped or replayed:
+/// it neither waits for a connection nor has completed, and is skipped.
+fn census_of<H: Host>(slots: &Slots<H>, counts: Counts) -> Census {
+    let (mut pending, mut unread) = (0, 0);
+    let mut cursor = None;
+    while let Some(id) = slots.next_after(cursor) {
+        cursor = Some(id);
+        let Some(run) = &slots.get(id).expect("just found").run else {
+            continue;
+        };
+        match &run.state {
+            TransferState::Pending(_) => pending += 1,
+            TransferState::Completed(c) if c.message == MessageState::Unread => unread += 1,
+            _ => {}
+        }
+    }
+    Census {
+        counts,
+        pending,
+        unread,
+    }
+}
+
 fn read_message<H: Host>(slots: &mut Slots<H>) -> Option<Message<'_, H>> {
     let mut found = None;
     let mut remaining = 0;

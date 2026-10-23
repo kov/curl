@@ -5199,6 +5199,47 @@ fn curl_debug_applied() {
     crate::root::curl_global_cleanup();
 }
 
+/// `curl_global_init` initialises OpenSSL as C's does (`ossl_init`),
+/// reading the configuration `OPENSSL_CONF` names then: the file, which
+/// lets the library fetch no algorithm, is emptied after the call, and
+/// signing still fails. Checked in a process of its own.
+#[test]
+fn the_global_init_reads_openssl_s_configuration() {
+    let path = std::env::temp_dir().join(format!("curl-sys-abi-{}.cnf", std::process::id()));
+    std::fs::write(
+        &path,
+        "openssl_conf = init\n\
+         [init]\n\
+         alg_section = algorithms\n\
+         [algorithms]\n\
+         default_properties = \"provider=none\"\n",
+    )
+    .unwrap();
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "handle_tests::openssl_configured", "--ignored"])
+        .env("OPENSSL_CONF", &path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("1 passed"), "the test ran: {stdout}");
+}
+
+#[test]
+#[ignore = "run by the_global_init_reads_openssl_s_configuration, OPENSSL_CONF set"]
+fn openssl_configured() {
+    use curl_core::libraries::{Ed25519, Ed25519Error};
+    let path = std::env::var_os("OPENSSL_CONF").unwrap();
+    assert_eq!(crate::root::curl_global_init(0), CURLE_OK);
+    std::fs::write(&path, "").unwrap();
+    assert_eq!(
+        curl_openssl::ED25519.sign(&[1; 32], b"message"),
+        Err(Ed25519Error::Failed)
+    );
+    crate::root::curl_global_cleanup();
+}
+
 #[test]
 fn the_global_trace_reaches_every_handle() {
     use curl_core::components::Component;

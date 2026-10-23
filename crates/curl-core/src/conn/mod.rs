@@ -11,6 +11,7 @@ mod connect;
 mod connect_to;
 mod dns;
 pub mod io;
+pub(crate) mod layer;
 pub(crate) mod pool;
 pub(crate) mod proxy;
 pub(crate) mod socks;
@@ -57,6 +58,7 @@ impl Caches {
 }
 use self::connect::ConnectMachine;
 use self::io::{Recv, Sent};
+use self::layer::LayerCx;
 use crate::id::Key;
 use crate::time::Instant;
 
@@ -539,9 +541,9 @@ pub(crate) struct Conn {
     number: ConnNumber,
     route: Route,
     transport: Transport,
-    /// The address connected to, and from; none without a network.
+    /// The address connected to; none without a network. Its end here
+    /// is its socket's to say (`local`).
     remote: Option<SocketAddr>,
-    local: Option<SocketAddr>,
     /// When its setup started (C's `conn->created`), and when it was
     /// found connected (TIMER_CONNECT's `connected_at`).
     created: Instant,
@@ -612,6 +614,15 @@ impl Conn {
         self.seen_version = Some(version);
     }
 
+    /// The connection's end here, as its socket says; none without a
+    /// network, or if the system does not say.
+    pub(crate) fn local(&self) -> Option<SocketAddr> {
+        match &self.transport {
+            Transport::Tcp(stream) => stream.local_addr(),
+            Transport::Local => None,
+        }
+    }
+
     /// Keep it for no other request: it closes when its lease goes back.
     pub(crate) fn mark_close(&mut self) {
         self.close = true;
@@ -624,8 +635,8 @@ impl Conn {
 
     /// Read once from the network, up to `max` bytes, behind what was
     /// received and not used.
-    pub(crate) fn recv(&mut self, max: usize) -> Result<Recv, RecvFailed> {
-        let got = self.stream().recv(max);
+    pub(crate) fn recv(&mut self, cx: &mut dyn LayerCx, max: usize) -> Result<Recv, RecvFailed> {
+        let got = self.stream().recv(cx, max);
         if let Ok(Recv::Eof) = got {
             // Shut down by the server, not reused (`multi_done`).
             self.close = true;
@@ -634,8 +645,17 @@ impl Conn {
     }
 
     /// Send from `bytes`, which is not empty, what the network takes now.
-    pub(crate) fn send(&mut self, bytes: &[u8]) -> std::io::Result<Sent> {
-        self.stream().send(bytes)
+    pub(crate) fn send(&mut self, cx: &mut dyn LayerCx, bytes: &[u8]) -> std::io::Result<Sent> {
+        self.stream().send(cx, bytes)
+    }
+
+    /// Whether bytes wait where a poll of its socket cannot see them, so
+    /// a read that would block is to be tried again at once.
+    pub(crate) fn data_pending(&mut self) -> bool {
+        match &mut self.transport {
+            Transport::Tcp(stream) => stream.data_pending(),
+            Transport::Local => false,
+        }
     }
 }
 

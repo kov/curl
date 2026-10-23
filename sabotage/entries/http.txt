@@ -70,7 +70,7 @@ witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::an_exchange_waits_to_read_its_socket
 --- old
-                let events = x.proto.interest(pause);
+                let events = x.lease.adjust_pollset(x.proto.interest(pause));
 --- new
                 let events = Events::NONE;
 

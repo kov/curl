@@ -13,6 +13,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
 use crate::conn::io::{Closer, Events, ResolveFailure};
+use crate::conn::layer::LayerCx;
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
@@ -504,7 +505,9 @@ impl TransferState {
     /// one over its speed limit waits on nothing but its timer (C's
     /// RATELIMITING has no pollset). An exchange is never over a limit,
     /// so C's taking a limited direction out (`multi_adjust_pollset`)
-    /// leaves only the pause's, which the protocol applies.
+    /// leaves only the pause's, which the protocol applies. The
+    /// connection's layers adjust what an exchange waits for, if it waits
+    /// for anything (`Curl_conn_adjust_pollset`).
     pub(crate) fn pollset(&self, pause: Pause) -> Pollset<'_> {
         let mut set = Pollset::new();
         match self {
@@ -516,7 +519,7 @@ impl TransferState {
                 }
             }
             TransferState::Exchanging(x) => {
-                let events = x.proto.interest(pause);
+                let events = x.lease.adjust_pollset(x.proto.interest(pause));
                 for s in x.lease.sockets() {
                     set.add(s, events);
                 }
@@ -563,6 +566,21 @@ impl Attached {
             next: AfterRequest::Retry,
             ..self.done(result, false, reached)
         }
+    }
+}
+
+/// A layer working for the stepping transfer traces as it does.
+impl<H: Host> LayerCx for StepCx<'_, H> {
+    fn now(&self) -> Instant {
+        self.rest.now
+    }
+
+    fn traces(&self, component: Component) -> bool {
+        trace::traces(self, component)
+    }
+
+    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
+        trace::of(self, component, line);
     }
 }
 
@@ -1178,6 +1196,8 @@ fn connecting<H: Host>(
     let wildcard = cx.easy().wildcard_resolve;
     let scope = cx.easy().options().address_scope;
     let socket = cx.easy().options().socket;
+    #[cfg(test)]
+    let layer = cx.easy().options().layer;
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.lease.answer().is_some();
@@ -1189,6 +1209,8 @@ fn connecting<H: Host>(
         delay,
         scope,
         socket,
+        #[cfg(test)]
+        layer,
     };
     let connected = c.lease.connect(&mut net, now, setup);
     if answered && c.lease.answer().is_none() {

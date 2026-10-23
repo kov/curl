@@ -118,7 +118,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         _ => unreachable!("the PROXY line is being sent"),
     };
     while p.sent < p.line.len() {
-        let sent = c.lease.get().send(&p.line[p.sent..]);
+        let sent = c.lease.get().send(cx, &p.line[p.sent..]);
         trace::sent(cx, p.line.len() - p.sent, &sent);
         match sent {
             Ok(Sent::Bytes(n)) => p.sent += n.get(),

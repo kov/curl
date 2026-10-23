@@ -1,17 +1,19 @@
-//! The bytes of one connection: its socket, and what was received over it
-//! and not used yet. A connection being set up through a proxy owns one,
-//! and the connection it becomes takes it over, so both read and write the
-//! same way.
+//! The bytes of one connection: its socket, the layers they pass through
+//! and what was received over it and not used yet. A connection being set
+//! up through a proxy owns one, and the connection it becomes takes it
+//! over, so both read and write the same way.
 
 use std::io;
 use std::net::SocketAddr;
 
-use super::io::{Recv, Sent, Sock, Socket};
+use super::io::{Events, Recv, Sent, Sock, Socket};
+use super::layer::{Alive, LayerCx, LayerStack};
 use super::{RecvBuf, RecvFailed};
 
 #[derive(Debug)]
 pub(crate) struct Stream {
     socket: Sock,
+    layers: LayerStack,
     rx: RecvBuf,
 }
 
@@ -19,8 +21,18 @@ impl Stream {
     pub(crate) fn new(socket: Sock) -> Stream {
         Stream {
             socket,
+            layers: LayerStack::default(),
             rx: RecvBuf::default(),
         }
+    }
+
+    /// Its layers, to push one on.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "TLS pushes its layer, step 43; tests push theirs")
+    )]
+    pub(crate) fn layers_mut(&mut self) -> &mut LayerStack {
+        &mut self.layers
     }
 
     pub(crate) fn socket(&self) -> &dyn Socket {
@@ -32,16 +44,36 @@ impl Stream {
         self.socket
     }
 
-    /// Read once, up to `max` bytes, behind what was received and not
-    /// used.
-    pub(crate) fn recv(&mut self, max: usize) -> Result<Recv, RecvFailed> {
-        let socket = self.socket.socket();
-        self.rx.fill(max, |room| socket.recv(room))
+    /// Read once through the layers, up to `max` bytes, behind what was
+    /// received and not used.
+    pub(crate) fn recv(&mut self, cx: &mut dyn LayerCx, max: usize) -> Result<Recv, RecvFailed> {
+        let below = self.layers.over(self.socket.socket());
+        self.rx.fill(max, |room| below.recv(cx, room))
     }
 
-    /// Send from `bytes`, which is not empty, what the network takes now.
-    pub(crate) fn send(&mut self, bytes: &[u8]) -> io::Result<Sent> {
-        self.socket.socket().send(bytes)
+    /// Send from `bytes`, which is not empty, what the layers and the
+    /// network take now.
+    pub(crate) fn send(&mut self, cx: &mut dyn LayerCx, bytes: &[u8]) -> io::Result<Sent> {
+        self.layers.over(self.socket.socket()).send(cx, bytes)
+    }
+
+    /// Whether bytes wait in a layer, where a poll of the socket cannot
+    /// see them (`Curl_conn_data_pending`).
+    pub(crate) fn data_pending(&mut self) -> bool {
+        self.layers.over(self.socket.socket()).data_pending()
+    }
+
+    /// What the transfer is to wait for on the socket, given what it
+    /// wants, as the layers adjust it.
+    pub(crate) fn adjust_pollset(&self, wanted: Events) -> Events {
+        self.layers.adjust_pollset(wanted)
+    }
+
+    /// Whether the connection seems usable, as its layers and its socket
+    /// say. Nothing received waits unused on one that is idle: its last
+    /// request used everything it read.
+    pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx) -> Alive {
+        self.layers.over(self.socket.socket()).alive(cx)
     }
 
     /// What was received and not used.

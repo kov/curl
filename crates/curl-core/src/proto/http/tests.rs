@@ -751,6 +751,93 @@ fn an_exchange_waits_to_read_its_socket() {
     assert_eq!(waits(&m), []);
 }
 
+/// What an exchange waits for passes through its connection's layers: one
+/// that writes while it reads (TLS) has the transfer wait to write too,
+/// unless the transfer waits for nothing (`Curl_conn_adjust_pollset`).
+#[test]
+fn an_exchange_waits_for_what_its_layers_want() {
+    use crate::conn::io::Events;
+    use crate::conn::layer::testing::wants_out;
+    use crate::deliver::PauseRequest;
+    let (mut m, _talk, _clock) = server(&[], false);
+    let mut e = Easy::new();
+    let url = format!("http://127.0.0.1:{PORT}/");
+    e.options_mut().set_url(Some(url.as_bytes())).unwrap();
+    e.options_mut().layer = Some(wants_out);
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let waits = |m: &Multi| {
+        let mut seen = Vec::new();
+        m.sockets(|_, events| seen.push(events));
+        seen
+    };
+    assert_eq!(waits(&m), [Events::IN | Events::OUT]);
+    m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
+    assert_eq!(waits(&m), []);
+}
+
+/// A connection's bytes go through its layers both ways: what a layer
+/// makes of them is what the server is sent and the transfer reads.
+#[test]
+fn bytes_pass_through_the_connection_s_layers() {
+    use crate::conn::layer::testing::upper;
+    let ran = run(
+        "/a",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc",
+        false,
+        |o| {
+            o.layer = Some(upper);
+        },
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.request, request_of("/A").to_ascii_uppercase());
+    assert_eq!(ran.seen.body(), b"ABC");
+}
+
+/// A read that would block while a layer holds bytes a poll cannot see
+/// runs the transfer again at once, which then reads them
+/// (`sendrecv_dl`'s `data_pending`): it does not wait on its socket.
+#[test]
+fn bytes_a_layer_holds_are_read_without_waiting() {
+    use crate::conn::layer::testing::holdback;
+    let ran = run(
+        "/",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc",
+        false,
+        |o| {
+            o.layer = Some(holdback);
+        },
+    );
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"abc");
+}
+
+/// An idle connection is asked down its layers whether it is alive before
+/// it is reused (`Curl_conn_is_alive`): one a layer says is dead is
+/// closed, and the request goes over a new one.
+#[test]
+fn an_idle_connection_a_layer_finds_dead_is_not_reused() {
+    use crate::conn::layer::testing::dying;
+    let first = Conversation::new(OK, false);
+    let fresh = Conversation::new(OK, false);
+    let mut m = serving(Peer::Accepts, &[&first, &fresh]);
+    let one = get(&mut m, "/a", first.clone(), |o| o.layer = Some(dying));
+    assert_eq!(one.result, Ok(()));
+    let two = get(&mut m, "/b", fresh.clone(), |_| {});
+    assert_eq!(two.result, Ok(()));
+    assert_eq!(fresh.received(), request_of("/b"));
+    let text = two.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l.ends_with("seems to be dead, terminating\n")),
+        "{text:?}"
+    );
+    assert_eq!(
+        text.last().unwrap(),
+        &format!("Connection #1 to host 127.0.0.1:{PORT} left intact\n")
+    );
+}
+
 /// A resumed GET asks for the rest with `Range`, and takes a response that
 /// starts where it asked, or the whole document when the server says so
 /// (`Content-Range: */total`) or the stored part is all of it; anything

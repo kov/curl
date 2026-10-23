@@ -1,0 +1,57 @@
+=== an exchange waits only for what its protocol wants, its layers not asked
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_want
+--- old
+                let events = x.lease.adjust_pollset(x.proto.interest(pause));
+--- new
+                let events = x.proto.interest(pause);
+
+=== a transfer that waits for nothing has its layers add to its wait
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_want
+--- old
+            }) if !wanted.is_empty() => stream.adjust_pollset(wanted),
+--- new
+            }) => stream.adjust_pollset(wanted),
+
+=== a read goes to the socket past the layers
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layers
+--- old
+        let below = self.layers.over(self.socket.socket());
+        self.rx.fill(max, |room| below.recv(cx, room))
+--- new
+        let socket = self.socket.socket();
+        self.rx.fill(max, |room| socket.recv(room))
+
+=== a send goes to the socket past the layers
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layers
+--- old
+        self.layers.over(self.socket.socket()).send(cx, bytes)
+--- new
+        self.socket.socket().send(bytes)
+
+=== a read that would block waits on the socket though a layer holds bytes
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::bytes_a_layer_holds_are_read_without_waiting
+--- old
+                Ok(Recv::WouldBlock) if lease.get().data_pending() => return Ok(Read::Stopped),
+--- new
+                Ok(Recv::WouldBlock) if false => return Ok(Read::Stopped),
+
+=== whether bytes are pending is not asked of the layers
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core proto::http::tests::bytes_a_layer_holds_are_read_without_waiting
+--- old
+            Some((top, layers)) => top.data_pending(Below { layers, ..self }),
+--- new
+            Some(_) => false,
+
+=== an idle connection's health is asked of its socket alone
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core proto::http::tests::an_idle_connection_a_layer_finds_dead_is_not_reused
+--- old
+            Some((top, layers)) => top.is_alive(cx, Below { layers, ..self }),
+--- new
+            Some((_, layers)) => Below { layers, ..self }.alive(cx),

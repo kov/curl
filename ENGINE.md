@@ -181,7 +181,7 @@ curl-core/src/
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
     stream.rs                Stream: a socket, its layers and its receive buffer
-    layer.rs                 Layer, Below, LayerStack, LayerCx (step 40)
+    layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
     chain.rs                 Chain: C's filter chain rendered for the trace from the
                              machine's stage and the route (step 40)
   deliver/                   BodyAccountant, ClientOut; held.rs: HeldOutput;
@@ -205,7 +205,7 @@ curl-core/src/
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: the three files marked step 40 above; `conn/mux.rs`; `conn/shutdown.rs`
+Planned, not built: the file marked step 40 above; `conn/mux.rs`; `conn/shutdown.rs`
 (ShutdownSet, with TLS); a `Resolver` for names the cache and the shortcuts do not answer; and
 `DebugNet`.
 
@@ -676,8 +676,7 @@ A peer that sends faster than it is read thus cannot keep a pass from ending, so
 the progress handler and the other transfers get their turn as in C. C's other exits from that
 loop: a receive limit spent ends the step without a dirty mark, the engine then waiting for
 the limit's timer (§5.3), and bytes held where a poll cannot see them, which run the transfer
-again (`data_pending`, §4.3: a stream's `rx` after a tunnel's answer, and TLS's decrypted bytes;
-planned, step 40). One that asks for another request, by a location to
+again (`data_pending`, §4.3: what a layer holds, as TLS holds decrypted bytes). One that asks for another request, by a location to
 follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
 parser, fed an `Unsent` with each piece): 2000 bytes or more, or an unknown amount, and the
 connection closes rather than carry it, the response ending at its head; less, and it goes to be
@@ -1017,7 +1016,7 @@ pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNu
 pub(crate) struct Conn {
     number: ConnNumber, route: Route,
     transport: Transport,              // Tcp(Stream) | Local; later Unix, Udp
-    remote: Option<SocketAddr>, local: Option<SocketAddr>,   // none without a network
+    remote: Option<SocketAddr>,        // none without a network; the local end is the socket's
     created: Instant, connected_at: Instant,
     use_: Use,                         // Leased(n) | Idle { since }
     served: bool,                      // carried a request before (C's bits.reuse)
@@ -1028,16 +1027,16 @@ pub(crate) struct Conn {
 }
 pub(crate) struct Stream {             // conn/stream.rs
     socket: Sock,                      // the socket and the closer it was opened with (§4.6)
-    layers: LayerStack,                // empty for plain TCP (§4.3)
+    layers: LayerStack,                // empty for plain TCP, one pointer (§4.3)
     rx: RecvBuf,                       // received, not yet used; grown fallibly before a read
 }
 ```
 
 One `Stream` type, owned by `Dialed` and then by the `Conn` it becomes, gives one read path:
-`recv(max)` fills `rx` (`RecvBuf::fill`, where a read that reports more than the room it had is
-an error from the socket, `InvalidData`, not an assertion), `send` writes; `Conn::recv` adds
-only that the end of input marks the connection `close`. Planned (step 40): the stream's
-layers; today it holds its `Sock` and `rx`. A connection's multiplexing (`Session`,
+`recv(cx, max)` fills `rx` through the layers (`RecvBuf::fill`, where a read that reports more
+than the room it had is an error from the socket, `InvalidData`, not an assertion), `send`
+writes through them; `Conn::recv` adds only that the end of input marks the connection
+`close`. A connection's multiplexing (`Session`,
 `Mux`, §4.4) comes with stage 5, and until then `Use::Leased(n)` is asserted to be 1.
 `Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
 
@@ -1173,21 +1172,20 @@ socket before its connect.
 
 ```rust
 pub(crate) trait Layer: Send + Debug {           // conn/layer.rs; C's Curl_cftype
-    fn kind(&self) -> LayerKind;
-    fn connect(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, Error>;
+    fn connect(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind>;
     fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8])
-        -> Result<Recv, Error>;
-    fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8])
-        -> Result<Sent, Error>;
-    fn adjust_pollset(&self, poll: &mut LayerPoll);           // TLS wants OUT while reading
+        -> io::Result<Recv>;
+    fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent>;
+    fn adjust_pollset(&self, wanted: Events) -> Events;      // TLS wants OUT while reading
     fn data_pending(&self, below: Below<'_>) -> bool;         // bytes a poll cannot see
     fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Alive;
-    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, Error>;
+    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind>;
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // ALPN, certificates, the SSL *
 }
+pub(crate) enum Handshake { Done, Waiting }
 pub(crate) enum Alive { Dead, Alive { input_pending: bool } }
-pub(crate) struct Below<'a> { /* the layers under this one, then the socket: a split slice */ }
-pub(crate) struct LayerStack { pass: InlineKinds, layers: Vec<Box<dyn Layer>> }
+pub(crate) struct Below<'a> { layers: &'a mut [Box<dyn Layer>], socket: &'a dyn Socket }
+pub(crate) struct LayerStack { layers: Option<Box<Vec<Box<dyn Layer>>>> }   // bottom first
 pub(crate) trait LayerCx {
     fn now(&self) -> Instant;
     fn traces(&self, c: Component) -> bool;
@@ -1204,23 +1202,30 @@ buffer between layers would not keep them. `Below` is the stack split at the lay
 called, ending at the socket, so a TLS layer's BIO reads and writes the layer below without
 aliasing its own state.
 
-`LayerStack` holds the pass-through kinds (SOCKS, H1-PROXY) inline and the layers that work on
-the bytes boxed; for TCP, a SOCKS proxy or a tunnel both are empty of boxes and allocate
-nothing. Only TLS pushes a layer, and pushing one allocates. The stack answers for the stream:
-`data_pending` is true while a layer holds bytes or the stream's `rx` is not empty (bytes that
-came after a tunnel's or a SOCKS proxy's answer); a read that would block while data is pending
-runs the transfer again (`sendrecv_dl` and `Curl_conn_data_pending`), and the transfer's pollset
-passes through each layer's `adjust_pollset`. The pool's health check asks `is_alive` down the
-chain, as `Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068); input
-pending on an idle HTTP/1 connection makes it unhealthy (1701).
+`LayerStack` holds the layers that work on the bytes, boxed, behind one pointer, as every
+transfer's state holds its connection inline (§8.2); for TCP, a SOCKS proxy or a tunnel it is
+empty and allocates nothing. Only TLS pushes a layer, and pushing one allocates.
+The stack answers for the stream: `data_pending` is true while a layer holds bytes; a read that
+would block while data is pending runs the transfer again (`sendrecv_dl` and
+`Curl_conn_data_pending`, through the step's `AtReadLimit` without its trace line). The pollset
+of an exchanging transfer passes through each layer's `adjust_pollset`, top down, unless the
+transfer waits for nothing, as `Curl_conn_adjust_pollset` gates a connected chain; C's other
+run-again, from the pollset (`multi_adjust_pollset`'s "still buffered input"), comes with the
+pollset's trace. The pool's health check asks `is_alive` down the chain, as
+`Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068), the socket at the
+bottom polled at once: an error or a hang-up is dead, anything to read is input pending, and
+input pending on an idle HTTP/1 connection makes it unhealthy (1701).
 
 `LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE` and its
 dangling-easy class. Inside a step it is the transfer's (`ConnCx`, §4.7, extends it); a pool
 section has a silent one. A layer asks another layer something only through `query`. Only
 `conn::*` and `multi::wait` call `Net`.
 
-Planned (step 40): none of this is built. `Stream::recv` reads the socket into `rx` directly,
-and the pool's health check polls the raw socket.
+No layer is pushed outside the tests until TLS: a test's transfer names one
+(`Options::layer`, `cfg(test)`) that each connection it makes puts on its stream once up, and
+`conn::layer::testing` holds those that arm each call (`Upper`, `Holdback`, `WantsOut`,
+`Dying`). `connect`, `shutdown` and `query` have no caller until TLS, and `LayerCx`'s trace
+none until a layer traces.
 
 Open, to be settled with TLS (step 43): what `LayerCx` carries for TLS: the SSL_CTX callback,
 the SSL_DATA debug lines and the key log. That much fixes `LayerCx` as a trait object whose

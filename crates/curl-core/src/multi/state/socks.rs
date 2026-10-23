@@ -118,7 +118,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
         let h = socks(&mut c.handshake);
         let dialed = c.lease.dialed().stream();
         if !h.to_send().is_empty() {
-            match dialed.send(h.to_send()) {
+            match dialed.send(cx, h.to_send()) {
                 Ok(Sent::Bytes(n)) => h.sent(n.get()),
                 Ok(Sent::WouldBlock) => return Ok(false),
                 Err(_) => {
@@ -142,7 +142,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
             Ok(Took::Need(_)) => {}
             Err(e) => return Err(refused(cx, &e)),
         }
-        match dialed.recv(READ_SIZE) {
+        match dialed.recv(cx, READ_SIZE) {
             Ok(Recv::Data(_)) => {}
             Ok(Recv::WouldBlock) => return Ok(false),
             Ok(Recv::Eof) => {

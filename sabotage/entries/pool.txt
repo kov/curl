@@ -70,7 +70,7 @@ witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_search_closes_what_it_must_not_reuse
 --- old
-                health(conn, since, rules, net, now).map_err(Some)
+                health(conn, since, rules, now).map_err(Some)
 --- new
                 Ok(())
 

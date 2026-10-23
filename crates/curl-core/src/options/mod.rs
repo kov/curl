@@ -91,6 +91,10 @@ pub struct Options {
     /// does then.
     #[cfg(test)]
     pub(crate) file_faults: crate::proto::file::Faults,
+    /// A layer each connection the transfer makes puts on its stream once
+    /// up, for the tests of what the layers are asked.
+    #[cfg(test)]
+    pub(crate) layer: Option<fn() -> Box<dyn crate::conn::layer::Layer>>,
 }
 
 /// The user, password and token the application gives
@@ -419,6 +423,8 @@ impl Options {
             script: self.script.clone(),
             #[cfg(test)]
             file_faults: self.file_faults,
+            #[cfg(test)]
+            layer: self.layer,
         })
     }
 }

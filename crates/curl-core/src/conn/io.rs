@@ -266,7 +266,7 @@ pub(crate) const ON_STACK: usize = 10;
 
 /// Poll `fds` and the sockets with descriptors in one call; sockets that
 /// know their readiness count without one, and end the wait at once.
-fn poll_together(
+pub(crate) fn poll_together(
     sockets: &mut [SocketPoll<'_>],
     fds: &mut [PollFd<'_>],
     timeout: Duration,

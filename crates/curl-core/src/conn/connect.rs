@@ -124,6 +124,9 @@ pub(crate) struct Setup<'a> {
     pub(crate) scope: Option<NonZeroU32>,
     /// What each socket is set to before it connects.
     pub(crate) socket: SocketOptions,
+    /// A layer of the tests' to put on the connection once it is up.
+    #[cfg(test)]
+    pub(crate) layer: Option<fn() -> Box<dyn super::layer::Layer>>,
 }
 
 /// Where a name's answer came from.
@@ -444,7 +447,12 @@ impl ConnectMachine {
                             return Ok(Drove::Connecting(self, dialed));
                         }
                         let (number, route, created) = (self.number, self.route, self.created);
-                        let stream = Stream::new(won.socket);
+                        #[cfg_attr(not(test), expect(unused_mut, reason = "tests push a layer"))]
+                        let mut stream = Stream::new(won.socket);
+                        #[cfg(test)]
+                        if let Some(layer) = setup.layer {
+                            stream.layers_mut().push(layer()).expect("a test's memory");
+                        }
                         let conn = Self::conn(number, route, created, stream, won.remote, now);
                         return Ok(Drove::Established(conn, i));
                     }
@@ -548,13 +556,11 @@ impl ConnectMachine {
         remote: SocketAddr,
         at: Instant,
     ) -> Conn {
-        let local = stream.local_addr();
         Conn {
             number,
             route: Route::Tcp(route),
             transport: Transport::Tcp(stream),
             remote: Some(remote),
-            local,
             created,
             connected_at: at,
             use_: Use::Leased(NonZeroU32::MIN),
@@ -812,6 +818,7 @@ mod tests {
                 delay: he,
                 scope: None,
                 socket: SocketOptions::default(),
+                layer: None,
             };
             match m.drive(&mut net, clock.now(), setup) {
                 Ok(Drove::Connecting(next, progress)) => {
@@ -874,6 +881,7 @@ mod tests {
                 delay: he,
                 scope: None,
                 socket: SocketOptions::default(),
+                layer: None,
             };
             match m.drive(&mut net, clock.now(), setup).unwrap() {
                 Drove::Connecting(next, progress) => {

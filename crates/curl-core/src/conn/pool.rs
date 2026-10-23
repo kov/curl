@@ -12,7 +12,8 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use super::connect::{ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
 use super::dns::Answer;
-use super::io::{Closer, Events, Net, Socket, SocketPoll};
+use super::io::{Closer, Events, Net, Socket};
+use super::layer::{Alive, Silent};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::share::Share;
@@ -79,7 +80,7 @@ impl ConnLease {
                 Ok(Drove::Established(conn, won)) => {
                     let up = Connected::Established {
                         remote: conn.remote.expect("set up over the network"),
-                        local: conn.local,
+                        local: conn.local(),
                         at: conn.connected_at,
                         attempt: Some(won),
                     };
@@ -90,7 +91,7 @@ impl ConnLease {
             ConnSlot::Open(conn) => {
                 let up = Connected::AlreadyUp {
                     remote: conn.remote,
-                    local: conn.local,
+                    local: conn.local(),
                 };
                 (ConnSlot::Open(conn), Ok(up))
             }
@@ -120,7 +121,7 @@ impl ConnLease {
         let conn = machine.tunneled();
         let up = Connected::Established {
             remote: conn.remote.expect("set up over the network"),
-            local: conn.local,
+            local: conn.local(),
             at: conn.connected_at,
             attempt: None,
         };
@@ -190,6 +191,20 @@ impl ConnLease {
             .into_iter()
             .flat_map(ConnectMachine::sockets)
             .chain(open)
+    }
+
+    /// What a transfer is to wait for on the connection, given what it
+    /// wants: its layers' say, once it is up. A transfer wanting nothing
+    /// is not asked about, as its layers' sockets would then be ready
+    /// forever (`Curl_conn_adjust_pollset`).
+    pub(crate) fn adjust_pollset(&self, wanted: Events) -> Events {
+        match self.slot() {
+            ConnSlot::Open(Conn {
+                transport: Transport::Tcp(stream),
+                ..
+            }) if !wanted.is_empty() => stream.adjust_pollset(wanted),
+            ConnSlot::Open(_) | ConnSlot::Connecting(_) | ConnSlot::Failed(_) => wanted,
+        }
     }
 
     pub(crate) fn number(&self) -> ConnNumber {
@@ -375,6 +390,16 @@ impl Place {
         }
     }
 
+    fn idle_mut(&mut self) -> Option<&mut Conn> {
+        match self {
+            Place::Idle(slot) => match slot {
+                ConnSlot::Open(conn) => Some(conn),
+                _ => unreachable!("an idle connection is open"),
+            },
+            Place::Leased(_) => None,
+        }
+    }
+
     /// The peer the connection goes to, if over a network.
     fn destination(&self) -> Option<&Peer> {
         match self {
@@ -477,7 +502,6 @@ impl Pool {
                 route,
                 transport: Transport::Local,
                 remote: None,
-                local: None,
                 created: now,
                 connected_at: now,
                 use_: Use::Leased(NonZeroU32::MIN),
@@ -521,7 +545,7 @@ impl Pool {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            let Some(conn) = self.conns.get(id).and_then(Place::idle) else {
+            let Some(conn) = self.conns.get_mut(id).and_then(Place::idle_mut) else {
                 continue;
             };
             let Use::Idle { since } = conn.use_ else {
@@ -539,7 +563,7 @@ impl Pool {
             {
                 Err(None)
             } else {
-                health(conn, since, rules, net, now).map_err(Some)
+                health(conn, since, rules, now).map_err(Some)
             };
             match verdict {
                 Ok(()) => {
@@ -837,9 +861,9 @@ fn prune(conns: &mut Arena<Place, ConnSlot>, rules: ReuseRules, net: &mut dyn Ne
     let mut cursor = None;
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
-        if let Some(conn) = conns.get(id).and_then(Place::idle)
+        if let Some(conn) = conns.get_mut(id).and_then(Place::idle_mut)
             && let Use::Idle { since } = conn.use_
-            && health(conn, since, rules, net, now).is_err()
+            && health(conn, since, rules, now).is_err()
         {
             close(conns, id, net);
         }
@@ -863,10 +887,9 @@ fn close(conns: &mut Arena<Place, ConnSlot>, id: ConnId, net: &mut dyn Net) {
 /// nothing to read, as an idle HTTP/1 connection must not have (RFC 9112,
 /// section 9.2) and a closed one has.
 fn health(
-    conn: &Conn,
+    conn: &mut Conn,
     idle_since: Instant,
     rules: ReuseRules,
-    net: &mut dyn Net,
     now: Instant,
 ) -> Result<(), Option<PoolNote>> {
     let idle = now.since(idle_since);
@@ -885,13 +908,19 @@ fn health(
     {
         return Err(None);
     }
-    let Transport::Tcp(stream) = &conn.transport else {
+    let Transport::Tcp(stream) = &mut conn.transport else {
         return Ok(());
     };
-    let mut watch = [SocketPoll::new(stream.socket(), Events::IN)];
-    match net.poll(&mut watch, &mut [], Duration::ZERO) {
-        Ok(_) if watch[0].revents().is_empty() => Ok(()),
-        Ok(_) | Err(_) => Err(None),
+    // Input waiting is unhealthy too: the connection is idle, and it is
+    // HTTP/1's.
+    match stream.is_alive(&mut Silent(now)) {
+        Alive::Alive {
+            input_pending: false,
+        } => Ok(()),
+        Alive::Alive {
+            input_pending: true,
+        }
+        | Alive::Dead => Err(None),
     }
 }
 

@@ -281,7 +281,8 @@ enum Read {
     /// the receive limit spent: the step is not run again before its
     /// socket or its timer says.
     Waits,
-    /// The step read its most: more may be there already.
+    /// The step read its most, or a read would block with bytes held
+    /// where a poll cannot see them: more is there, or may be already.
     Stopped,
 }
 
@@ -1220,7 +1221,7 @@ impl Request {
                 }
                 _ => self.filled,
             };
-            let sent = lease.get().send(&self.out[self.sent..end]);
+            let sent = lease.get().send(cx, &self.out[self.sent..end]);
             trace::sent(cx, end - self.sent, &sent);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
@@ -1401,9 +1402,12 @@ impl Request {
                 None => max,
             };
             reads += 1;
-            let got = lease.get().recv(max);
+            let got = lease.get().recv(cx, max);
             trace::received(cx, max, &got);
             match got {
+                // Bytes a layer holds wake no poll: the step runs again
+                // (`sendrecv_dl`'s `data_pending`).
+                Ok(Recv::WouldBlock) if lease.get().data_pending() => return Ok(Read::Stopped),
                 Ok(Recv::WouldBlock) => return Ok(Read::Waits),
                 Ok(Recv::Eof) => {
                     // The connection's end stops the sending too

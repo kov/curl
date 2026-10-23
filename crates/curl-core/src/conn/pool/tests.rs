@@ -1,5 +1,6 @@
 use super::*;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
+use crate::conn::layer::Silent;
 use crate::conn::{DnsCache, Failure, Limit, Names, Scheme, Setup, Tcp};
 
 use crate::options::IpVersion;
@@ -31,6 +32,7 @@ fn connect(
         delay: Duration::from_millis(200),
         scope: None,
         socket: crate::conn::io::SocketOptions::default(),
+        layer: None,
     };
     lease.connect(net, now, setup)
 }
@@ -1198,18 +1200,23 @@ fn a_connection_moves_bytes_both_ways() {
     assert!(!readable(&lease), "no request yet");
     let conn = lease.get();
     assert!(
-        matches!(conn.recv(64).unwrap(), Recv::WouldBlock),
+        matches!(conn.recv(&mut Silent(now), 64).unwrap(), Recv::WouldBlock),
         "no request yet"
     );
-    let sent = conn.send(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+    let sent = conn
+        .send(&mut Silent(now), b"GET / HTTP/1.1\r\n\r\n")
+        .unwrap();
     assert!(matches!(sent, Sent::Bytes(n) if n.get() == 18));
     assert_eq!(talk.received(), b"GET / HTTP/1.1\r\n\r\n");
     assert!(readable(&lease), "a reply waits");
     let conn = lease.get();
-    assert!(matches!(conn.recv(10).unwrap(), Recv::Data(n) if n.get() == 10));
-    assert!(matches!(conn.recv(64).unwrap(), Recv::Data(n) if n.get() == 11));
+    assert!(matches!(conn.recv(&mut Silent(now), 10).unwrap(), Recv::Data(n) if n.get() == 10));
+    assert!(matches!(conn.recv(&mut Silent(now), 64).unwrap(), Recv::Data(n) if n.get() == 11));
     assert_eq!(conn.rx_mut().filled(), b"HTTP/1.1 200 OK\r\n\r\nhi");
-    assert!(matches!(conn.recv(64).unwrap(), Recv::Eof));
+    assert!(matches!(
+        conn.recv(&mut Silent(now), 64).unwrap(),
+        Recv::Eof
+    ));
     assert_eq!(conn.rx_mut().filled().len(), 21, "the end adds nothing");
     pool.release(
         &Home::Multi,
@@ -1230,9 +1237,14 @@ fn a_silent_peer_takes_what_it_is_sent() {
     let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
     up(&mut lease, &mut net, now);
     let conn = lease.get();
-    let sent = conn.send(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+    let sent = conn
+        .send(&mut Silent(now), b"GET / HTTP/1.1\r\n\r\n")
+        .unwrap();
     assert!(matches!(sent, Sent::Bytes(n) if n.get() == 18));
-    assert!(matches!(conn.recv(64).unwrap(), Recv::WouldBlock));
+    assert!(matches!(
+        conn.recv(&mut Silent(now), 64).unwrap(),
+        Recv::WouldBlock
+    ));
     assert_eq!(conn.rx_mut().filled(), b"");
     pool.release(
         &Home::Multi,

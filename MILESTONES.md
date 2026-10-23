@@ -575,7 +575,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       the setup for as long as one call of C's connect goes on; a connect under way is polled
       at the next run.
     - **i. The TCP socket's trace** (`cf_socket_open`, local address, `connected`,
-      `adjust_pollset`, `poll/select error`, `destroy`) and `Curl_multi_will_close`.
+      `adjust_pollset`, `poll/select error`, `destroy`) and `Curl_multi_will_close`. **Done.**
+      The drive traces its attempts itself, in C's order; `adjust_pollset` goes with j's
+      pollset line.
     - **j. The trace of `wait`:** pollsets, `expires in`, `gives multi timeout` and
       `multi_wait`, from a traced internal `multi_timeout`.
     - **k. The shim's socket hooks:** OPENSOCKETFUNCTION, SOCKOPTFUNCTION and

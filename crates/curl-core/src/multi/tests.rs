@@ -3255,3 +3255,15 @@ fn connections_are_reused_within_a_scope() {
         assert_eq!(trace[0], first, "{url}");
     }
 }
+
+/// A connection's slot is held inline by the lease, in the transfer's
+/// state, in its slot, which every handle added to a multi pays for: a
+/// field that grows them grows every handle (`a_handle_costs_no_more_than_cs`
+/// in the shim holds the whole). Their sizes, as they are.
+#[test]
+fn a_connection_s_slot_and_a_transfer_s_stay_their_size() {
+    let conn = size_of::<crate::conn::ConnSlot>();
+    let slot = size_of::<super::Slot<super::NoHost>>();
+    assert!(conn <= 224, "a connection's slot takes {conn} bytes");
+    assert!(slot <= 968, "a transfer's slot takes {slot} bytes");
+}

@@ -19,10 +19,8 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 #[cfg(test)]
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
-use super::io::{
-    Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketOptions, SocketPoll,
-};
-use super::{Conn, ConnNumber, Peer, RecvBuf, RecvFailed, Route, Tcp, Transport, Use};
+use super::io::{Connect, Events, Family, Net, ResolveFailure, Socket, SocketOptions, SocketPoll};
+use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
 
@@ -58,9 +56,8 @@ const MAX_REDIALS: u8 = 5;
 #[derive(Debug)]
 pub(crate) struct Dialed {
     remote: SocketAddr,
-    socket: Box<dyn Socket>,
+    stream: Stream,
     connected_at: Instant,
-    rx: RecvBuf,
     /// The addresses raced to reach the proxy, raced again on a redial.
     answer: TryArc<Answer>,
     /// The destination's addresses, for a SOCKS proxy that is not to
@@ -77,30 +74,9 @@ impl Dialed {
         self.socks5_authenticated = true;
     }
 
-    pub(crate) fn send(&self, bytes: &[u8]) -> io::Result<Sent> {
-        self.socket.send(bytes)
-    }
-
-    /// Read up to `max` bytes behind what was received and not used.
-    pub(crate) fn recv(&mut self, max: usize) -> Result<Recv, RecvFailed> {
-        let room = self.rx.room(max).map_err(|_| RecvFailed::OutOfMemory)?;
-        let got = self.socket.recv(room).map_err(RecvFailed::Os);
-        let n = match got {
-            Ok(Recv::Data(n)) => n.get(),
-            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
-        };
-        self.rx.commit(max, n);
-        got
-    }
-
-    /// What was received and not used.
-    pub(crate) fn received(&self) -> &[u8] {
-        self.rx.filled()
-    }
-
-    /// The first `n` bytes received were used.
-    pub(crate) fn consume(&mut self, n: usize) {
-        self.rx.consume(n);
+    /// The connection to the proxy, which the handshake's bytes go over.
+    pub(crate) fn stream(&mut self) -> &mut Stream {
+        &mut self.stream
     }
 
     /// The addresses of the destination, resolved here.
@@ -110,7 +86,7 @@ impl Dialed {
 
     /// The proxy's address, and the connection's end here.
     pub(crate) fn ends(&self) -> (SocketAddr, Option<SocketAddr>) {
-        (self.remote, self.socket.local_addr().ok())
+        (self.remote, self.stream.local_addr())
     }
 }
 
@@ -333,7 +309,7 @@ impl ConnectMachine {
         let (running, dialed) = match &self.stage {
             Stage::Resolving => (&[][..], None),
             Stage::Racing(r) => (&r.attempts[..], None),
-            Stage::Tunnel(d) => (&[][..], Some(&*d.socket)),
+            Stage::Tunnel(d) => (&[][..], Some(d.stream.socket())),
         };
         running.iter().map(|a| &*a.socket).chain(dialed)
     }
@@ -364,10 +340,9 @@ impl ConnectMachine {
             self.number,
             self.route,
             self.created,
-            d.socket,
+            d.stream,
             d.remote,
             at,
-            d.rx,
         );
         conn.socks5_authenticated = d.socks5_authenticated;
         conn
@@ -386,7 +361,7 @@ impl ConnectMachine {
         let Stage::Tunnel(d) = std::mem::replace(&mut self.stage, Stage::Resolving) else {
             panic!("only a tunnel's setup is redialed");
         };
-        net.close(d.socket);
+        net.close(d.stream.into_socket());
         self.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
@@ -447,9 +422,8 @@ impl ConnectMachine {
                             };
                             self.stage = Stage::Tunnel(Dialed {
                                 remote: won.remote,
-                                socket: won.socket,
+                                stream: Stream::new(won.socket),
                                 connected_at: now,
-                                rx: RecvBuf::default(),
                                 answer,
                                 target,
                                 socks5_authenticated: false,
@@ -457,10 +431,9 @@ impl ConnectMachine {
                             let dialed = Progress::Dialed { attempt: i };
                             return Ok(Drove::Connecting(self, dialed));
                         }
-                        let rx = RecvBuf::default();
                         let (number, route, created) = (self.number, self.route, self.created);
-                        let conn =
-                            Self::conn(number, route, created, won.socket, won.remote, now, rx);
+                        let stream = Stream::new(won.socket);
+                        let conn = Self::conn(number, route, created, stream, won.remote, now);
                         return Ok(Drove::Established(conn, i));
                     }
                     Ok(Some(error)) | Err(error) => error,
@@ -552,28 +525,26 @@ impl ConnectMachine {
             Err(e) => Err(e),
         }
     }
-    /// The connection set up over `socket` to `remote`, found connected
-    /// at `at`, with what was received over it and not used.
+    /// The connection set up over `stream` to `remote`, found connected
+    /// at `at`.
     fn conn(
         number: ConnNumber,
         route: Tcp,
         created: Instant,
-        socket: Box<dyn Socket>,
+        stream: Stream,
         remote: SocketAddr,
         at: Instant,
-        rx: RecvBuf,
     ) -> Conn {
-        let local = socket.local_addr().ok();
+        let local = stream.local_addr();
         Conn {
             number,
             route: Route::Tcp(route),
-            transport: Transport::Tcp(socket),
+            transport: Transport::Tcp(stream),
             remote: Some(remote),
             local,
             created,
             connected_at: at,
             use_: Use::Leased(NonZeroU32::MIN),
-            rx,
             served: false,
             socks5_authenticated: false,
             seen_version: None,
@@ -586,7 +557,7 @@ impl ConnectMachine {
         match self.stage {
             Stage::Resolving => {}
             Stage::Racing(mut r) => r.close_all(net),
-            Stage::Tunnel(d) => net.close(d.socket),
+            Stage::Tunnel(d) => net.close(d.stream.into_socket()),
         }
     }
 }
@@ -903,10 +874,10 @@ mod tests {
         };
         assert_eq!(conn.remote, Some(up));
         assert_eq!(net.open_sockets(), 1, "the winner's alone");
-        let Transport::Tcp(socket) = conn.transport else {
+        let Transport::Tcp(stream) = conn.transport else {
             panic!("over the network");
         };
-        net.close(socket);
+        net.close(stream.into_socket());
     }
 
     /// Unit 2600's cases: how many attempts of each family start, and

@@ -14,6 +14,7 @@ pub mod io;
 pub(crate) mod pool;
 pub(crate) mod proxy;
 pub(crate) mod socks;
+mod stream;
 
 pub(crate) use connect::{
     Asked, ConnectError, Failure, Found, Progress, Setup, Unresolved, queries,
@@ -36,6 +37,7 @@ use crate::report::ResponseVersion;
 
 pub(crate) use self::buf::RecvBuf;
 pub use self::socks::ProxyError;
+pub(crate) use self::stream::Stream;
 
 /// What transfers keep for those after them: the connections and the
 /// names resolved. A multi holds its own; a share will hold them in its
@@ -54,7 +56,7 @@ impl Caches {
     }
 }
 use self::connect::ConnectMachine;
-use self::io::{Recv, Sent, Socket};
+use self::io::{Recv, Sent};
 use crate::id::Key;
 use crate::time::Instant;
 
@@ -528,7 +530,7 @@ impl Peer {
 #[derive(Debug)]
 pub(crate) enum Transport {
     Local,
-    Tcp(Box<dyn Socket>),
+    Tcp(Stream),
 }
 
 /// An established connection.
@@ -545,7 +547,6 @@ pub(crate) struct Conn {
     created: Instant,
     connected_at: Instant,
     use_: Use,
-    rx: RecvBuf,
     /// It carried a request before the one leasing it (C's
     /// `bits.reuse`).
     served: bool,
@@ -560,9 +561,9 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
-    fn socket(&self) -> &dyn Socket {
-        match &self.transport {
-            Transport::Tcp(socket) => &**socket,
+    fn stream(&mut self) -> &mut Stream {
+        match &mut self.transport {
+            Transport::Tcp(stream) => stream,
             Transport::Local => unreachable!("a local connection moves no bytes"),
         }
     }
@@ -618,35 +619,23 @@ impl Conn {
 
     /// Received bytes no request has used yet.
     pub(crate) fn rx_mut(&mut self) -> &mut RecvBuf {
-        &mut self.rx
+        self.stream().rx_mut()
     }
 
-    /// Read once from the network, up to `max` bytes, behind what `rx`
-    /// holds.
+    /// Read once from the network, up to `max` bytes, behind what was
+    /// received and not used.
     pub(crate) fn recv(&mut self, max: usize) -> Result<Recv, RecvFailed> {
-        let socket = match &self.transport {
-            Transport::Tcp(socket) => &**socket,
-            Transport::Local => unreachable!("a local connection moves no bytes"),
-        };
-        // Borrowed apart from `rx`, which the read fills.
-        let room = self.rx.room(max).map_err(|_| RecvFailed::OutOfMemory)?;
-        let got = socket.recv(room).map_err(RecvFailed::Os);
-        let n = match got {
-            Ok(Recv::Data(n)) => n.get(),
-            Ok(Recv::Eof) => {
-                // Shut down by the server, not reused (`multi_done`).
-                self.close = true;
-                0
-            }
-            Ok(Recv::WouldBlock) | Err(_) => 0,
-        };
-        self.rx.commit(max, n);
+        let got = self.stream().recv(max);
+        if let Ok(Recv::Eof) = got {
+            // Shut down by the server, not reused (`multi_done`).
+            self.close = true;
+        }
         got
     }
 
     /// Send from `bytes`, which is not empty, what the network takes now.
     pub(crate) fn send(&mut self, bytes: &[u8]) -> std::io::Result<Sent> {
-        self.socket().send(bytes)
+        self.stream().send(bytes)
     }
 }
 

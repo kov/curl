@@ -180,7 +180,7 @@ curl-core/src/
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
-    stream.rs                Stream: a socket, its layers and its receive buffer (step 40)
+    stream.rs                Stream: a socket, its layers and its receive buffer
     layer.rs                 Layer, Below, LayerStack, LayerCx (step 40)
     chain.rs                 Chain: C's filter chain rendered for the trace from the
                              machine's stage and the route (step 40)
@@ -1033,11 +1033,11 @@ pub(crate) struct Stream {             // conn/stream.rs
 }
 ```
 
-Planned (step 40): `Stream`. Today `Transport::Tcp` holds the socket, `Conn` holds `rx`, and
-`Dialed` repeats both with its own read code. One `Stream` type, owned by `Dialed` and then by
-the `Conn` it becomes, gives one read path: `recv(max)` fills `rx` through the layers
-(`RecvBuf::fill`, where a read that reports more than the room it had is an error from the
-socket, not an assertion), `send` writes through them. A connection's multiplexing (`Session`,
+One `Stream` type, owned by `Dialed` and then by the `Conn` it becomes, gives one read path:
+`recv(max)` fills `rx` (`RecvBuf::fill`, where a read that reports more than the room it had is
+an error from the socket, `InvalidData`, not an assertion), `send` writes; `Conn::recv` adds
+only that the end of input marks the connection `close`. Planned (step 40): the stream's
+`Sock` and layers; today it holds the socket and `rx`. A connection's multiplexing (`Session`,
 `Mux`, §4.4) comes with stage 5, and until then `Use::Leased(n)` is asserted to be 1.
 `Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
 
@@ -1219,8 +1219,8 @@ dangling-easy class. Inside a step it is the transfer's (`ConnCx`, §4.7, extend
 section has a silent one. A layer asks another layer something only through `query`. Only
 `conn::*` and `multi::wait` call `Net`.
 
-Planned (step 40): none of this is built. `Conn::recv` and `Dialed::recv` each read the socket
-into their own `rx`, and the pool's health check polls the raw socket.
+Planned (step 40): none of this is built. `Stream::recv` reads the socket into `rx` directly,
+and the pool's health check polls the raw socket.
 
 Open, to be settled with TLS (step 43): what `LayerCx` carries for TLS: the SSL_CTX callback,
 the SSL_DATA debug lines and the key log. That much fixes `LayerCx` as a trait object whose

@@ -553,7 +553,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       5h, CONNECT, a 407 that redials, HAPROXY, a pre-proxy, IPv6 refused beside IPv4, event
       mode), and a C program showing a share's cleanup closes through the creating transfer's
       CLOSESOCKETFUNCTION; ENGINE.md rewritten for the design.
-    - **b. `Stream`.** TCP_NODELAY set by default, as C does, first. Then one `Stream` (socket
+    - **b. `Stream`.** **Done.** TCP_NODELAY set by default, as C does, first. Then one `Stream` (socket
       and receive buffer) owned by `Dialed` and `Conn`, one read path, `RecvBuf::fill`, a read
       over its room an error; the sizes of `ConnSlot` and `Slot` pinned.
     - **c. A lease's home.** `Home` stamped by `find` and `add` inside the pool section,

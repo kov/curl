@@ -13,7 +13,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use super::connect::{ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
 use super::dns::Answer;
 use super::io::{Events, Net, Socket, SocketPoll};
-use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, RecvBuf, Route, Transport, Use};
+use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::share::Share;
 use crate::time::Instant;
@@ -160,9 +160,9 @@ impl ConnLease {
         let (setup, open) = match self.slot() {
             ConnSlot::Connecting(m) => (Some(m), None),
             ConnSlot::Open(Conn {
-                transport: Transport::Tcp(socket),
+                transport: Transport::Tcp(stream),
                 ..
-            }) => (None, Some(&**socket)),
+            }) => (None, Some(stream.socket())),
             ConnSlot::Open(_) | ConnSlot::Failed(_) => (None, None),
         };
         setup
@@ -462,7 +462,6 @@ impl Pool {
                 created: now,
                 connected_at: now,
                 use_: Use::Leased(NonZeroU32::MIN),
-                rx: RecvBuf::default(),
                 served: false,
                 socks5_authenticated: false,
                 seen_version: None,
@@ -852,10 +851,10 @@ fn health(
     {
         return Err(None);
     }
-    let Transport::Tcp(socket) = &conn.transport else {
+    let Transport::Tcp(stream) = &conn.transport else {
         return Ok(());
     };
-    let mut watch = [SocketPoll::new(&**socket, Events::IN)];
+    let mut watch = [SocketPoll::new(stream.socket(), Events::IN)];
     match net.poll(&mut watch, &mut [], Duration::ZERO) {
         Ok(_) if watch[0].revents().is_empty() => Ok(()),
         Ok(_) | Err(_) => Err(None),
@@ -875,7 +874,7 @@ fn whole_ms(d: Duration) -> u64 {
 fn close_transport(transport: Transport, net: &mut dyn Net) {
     match transport {
         Transport::Local => {}
-        Transport::Tcp(socket) => net.close(socket),
+        Transport::Tcp(stream) => net.close(stream.into_socket()),
     }
 }
 

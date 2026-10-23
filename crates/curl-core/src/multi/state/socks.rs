@@ -116,7 +116,7 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
 fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, ErrorKind> {
     loop {
         let h = socks(&mut c.handshake);
-        let dialed = c.lease.dialed();
+        let dialed = c.lease.dialed().stream();
         if !h.to_send().is_empty() {
             match dialed.send(h.to_send()) {
                 Ok(Sent::Bytes(n)) => h.sent(n.get()),

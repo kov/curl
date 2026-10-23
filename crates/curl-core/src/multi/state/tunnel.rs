@@ -208,7 +208,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
     loop {
         let t = tunnel(&mut c.handshake);
         if t.sent < t.request.len() {
-            let sent = c.lease.dialed().send(&t.request[t.sent..]);
+            let sent = c.lease.dialed().stream().send(&t.request[t.sent..]);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(Ran::Idle),
@@ -234,7 +234,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
         // transfer after each read, the end of the connection's too, and
         // once more as it returns for more or with the answer whole
         // (`recv_CONNECT_resp`, `H1_CONNECT`).
-        let dialed = c.lease.dialed();
+        let dialed = c.lease.dialed().stream();
         if dialed.received().is_empty() {
             match dialed.recv(READ_SIZE) {
                 Ok(Recv::Data(_)) => {}

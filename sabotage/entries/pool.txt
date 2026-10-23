@@ -29,9 +29,9 @@ witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-        Transport::Tcp(socket) => net.close(socket),
+        Transport::Tcp(stream) => net.close(stream.into_socket()),
 --- new
-        Transport::Tcp(socket) => drop(socket),
+        Transport::Tcp(stream) => drop(stream),
 
 === a setup given back keeps its attempt's socket open
 file: crates/curl-core/src/conn/pool.rs
@@ -138,23 +138,25 @@ witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
         self.answered < self.replies.len()
 
 === a read that got nothing keeps its room
-file: crates/curl-core/src/conn/mod.rs
-witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::received_bytes_wait_until_used
 --- old
-            Ok(Recv::WouldBlock) | Err(_) => 0,
+            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => 0,
 --- new
-            Ok(Recv::WouldBlock) | Err(_) => max,
+            Ok(Recv::Eof | Recv::WouldBlock) | Err(_) => max,
 
 === received bytes are replaced, not added to
 file: crates/curl-core/src/conn/buf.rs
 witness: curl-core conn::buf::tests::received_bytes_wait_until_used
 --- old
         let len = self.bytes.len();
-        self.bytes.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
+        self.bytes
+            .try_reserve_exact(max)
 --- new
         self.bytes.clear();
         let len = self.bytes.len();
-        self.bytes.try_reserve_exact(n).map_err(|_| OutOfMemory)?;
+        self.bytes
+            .try_reserve_exact(max)
 
 === a peer's host is told apart by case
 file: crates/curl-core/src/conn/mod.rs
@@ -387,3 +389,11 @@ witness: curl-core multi::tests::a_waiting_transfer_reads_its_ip_version_as_it_l
 --- old
             plan.route.ip = cx.easy().options().ip_version;
 --- new
+
+=== a socket that says it read more than its room is believed
+file: crates/curl-core/src/conn/buf.rs
+witness: curl-core conn::buf::tests::a_read_past_its_room_is_an_error
+--- old
+        if n > max {
+--- new
+        if false {

@@ -5,11 +5,18 @@
 # fault can allocate without bound faster than the timeout fires):
 #   git worktree add --detach build/mutants-tree <commit>
 #   git diff <base> <commit> > build/mutants.diff
-#   cd build/mutants-tree && systemd-run --user --scope -p MemoryMax=6G \
+#   cd build/mutants-tree && TMPDIR=<a directory on disk> \
+#     systemd-run --user --scope -p MemoryMax=6G \
 #     -p MemorySwapMax=0 -p OOMPolicy=continue \
-#     cargo mutants -o .. --in-diff ../mutants.diff -p <crate>
-# (with `--features debug-hooks` for curl-tool: its terminal tests need the
-# debug build's `CURL_ISATTY`, and without them those mutants survive)
+#     cargo mutants -o .. --in-diff ../mutants.diff -p <crate> --features <f>
+# (the features each crate's tests need: `debug-hooks` for curl-alloc, whose
+# tracker is built only with it, for curl-sys-abi, and for curl-tool, whose
+# terminal tests need the debug build's `CURL_ISATTY`; `test-util,debug-hooks`
+# for curl-core. Without them those mutants survive or are never built.)
+# (The copy is made in `TMPDIR`: where `/tmp` is a small tmpfs it fills, and
+# its memory is the machine's. The worktree must hold no build output of its
+# own, such as a sabotage sweep's `build/target`: it is copied too, without
+# its execute bits, and every build script then fails "Permission denied".)
 # (`OOMPolicy=continue` kills only the runaway test, which then counts as
 # caught; the default stops the whole run.)
 #   git worktree remove build/mutants-tree

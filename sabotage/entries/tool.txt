@@ -195,21 +195,21 @@ witness: curl-tool stdio::tests::a_line_buffer_writes_each_line
 file: crates/curl-tool/src/stdio.rs
 witness: curl-tool stdio::tests::counts_what_was_taken_as_glibc_does
 --- old
-                if wrote < direct {
-                    return n - to_do;
-                }
+            if wrote < direct {
+                return n - to_do;
+            }
 --- new
-                if wrote < direct {
-                    return n;
-                }
+            if wrote < direct {
+                return n;
+            }
 
 === the buffer is BUFSIZ whatever the file's block size
 file: crates/curl-tool/src/stdio.rs
 witness: curl-tool stdio::tests::sizes_the_buffer_by_the_block
 --- old
-            if block > 0 && block < BUFSIZ as u64 {
+        Ok(size @ 1..BUFSIZ) => size,
 --- new
-            if false {
+        Ok(size @ 1..BUFSIZ) if false => size,
 
 === an output file that cannot be closed succeeds
 file: crates/curl-tool/src/operate.rs

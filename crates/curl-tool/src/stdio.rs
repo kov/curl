@@ -24,6 +24,11 @@ pub(crate) trait Sink {
     /// How glibc buffers it (`_IO_file_doallocate`): `BUFSIZ`, or the
     /// file's block size when smaller; a line at a time on a terminal.
     fn layout(&self) -> Layout;
+}
+
+/// A sink the stream may be closed with (`fclose`); standard output is
+/// written to the end and never closed.
+pub(crate) trait Close: Sink {
     /// Let go of it (`close(2)`): whether that went.
     fn close(self) -> io::Result<()>;
 }
@@ -49,19 +54,28 @@ impl Sink for File {
     }
 
     fn layout(&self) -> Layout {
-        let mut layout = Layout::UNKNOWN;
-        if let Ok(meta) = self.metadata() {
-            layout.line = meta.file_type().is_char_device() && self.is_terminal();
-            let block = meta.blksize();
-            if block > 0 && block < BUFSIZ as u64 {
-                layout.size = block as usize;
-            }
+        match self.metadata() {
+            Ok(meta) => Layout {
+                size: buffer_size(meta.blksize()),
+                line: meta.file_type().is_char_device() && self.is_terminal(),
+            },
+            Err(_) => Layout::UNKNOWN,
         }
-        layout
     }
+}
 
+impl Close for File {
     fn close(self) -> io::Result<()> {
         curl_os::fs::close(self)
+    }
+}
+
+/// The buffer for a file of block size `block`: the block, when it is
+/// smaller than `BUFSIZ` and not 0.
+fn buffer_size(block: u64) -> usize {
+    match usize::try_from(block) {
+        Ok(size @ 1..BUFSIZ) => size,
+        _ => BUFSIZ,
     }
 }
 
@@ -163,26 +177,23 @@ impl<S: Sink> Stdio<S> {
             } else {
                 to_do
             };
-            if direct > 0 {
-                let wrote = self.write_out(&data[at..at + direct]);
-                to_do -= wrote;
-                if wrote < direct {
-                    return n - to_do;
-                }
-                at += direct;
+            // Each writes nothing when it has nothing to write.
+            let wrote = self.write_out(&data[at..at + direct]);
+            to_do -= wrote;
+            if wrote < direct {
+                return n - to_do;
             }
-            if to_do > 0 {
-                to_do -= self.put(&data[at..]);
-            }
+            at += direct;
+            to_do -= self.put(&data[at..]);
         }
         n - to_do
     }
 
-    /// Write what is held (`fflush`).
+    /// Write what is held (`fflush`); nothing held writes nothing.
     pub(crate) fn flush(&mut self) -> Result<(), Failed> {
         match &self.buf {
-            Some(buf) if !buf.held.is_empty() => self.write_held(),
-            _ => Ok(()),
+            Some(_) => self.write_held(),
+            None => Ok(()),
         }
     }
 
@@ -268,7 +279,7 @@ impl<S: Sink> Drop for Stdio<S> {
 
 /// Close `stream` (`fclose`): what is held written, then the sink let
 /// go of, whichever fails; whether both went.
-pub(crate) fn close<S: Sink>(mut stream: Stdio<S>) -> Result<(), Failed> {
+pub(crate) fn close<S: Close>(mut stream: Stdio<S>) -> Result<(), Failed> {
     let flushed = stream.flush();
     let sink = stream.sink.take().expect("open until closed");
     let closed = sink.close().map_err(|_| Failed);
@@ -301,6 +312,9 @@ mod tests {
         fn layout(&self) -> Layout {
             self.layout
         }
+    }
+
+    impl Close for Script {
         fn close(self) -> io::Result<()> {
             match self.close_fails {
                 true => Err(io::Error::from_raw_os_error(5)),
@@ -400,11 +414,21 @@ mod tests {
         assert_eq!(s.fwrite(b"x"), 1);
         assert_eq!(s.fwrite(b"y\n"), 2);
         assert!(s.failed());
+        // The first write, put a byte at a time: up to the line end.
+        let mut s = stream(4096, true, 0);
+        assert_eq!(s.fwrite(b"a\nb"), 1);
     }
 
-    /// The buffer is `BUFSIZ`, or the file's block size when smaller.
+    /// The buffer is `BUFSIZ`, or the file's block size when smaller and
+    /// not 0.
     #[test]
     fn sizes_the_buffer_by_the_block() {
+        for (block, size) in [(0, BUFSIZ), (1, 1), (4096, 4096), (8191, 8191)] {
+            assert_eq!(buffer_size(block), size, "{block}");
+        }
+        for block in [8192, 65536, u64::MAX] {
+            assert_eq!(buffer_size(block), BUFSIZ, "{block}");
+        }
         let file = File::open("/dev/null").unwrap();
         let layout = Sink::layout(&file);
         let block = file.metadata().unwrap().blksize() as usize;

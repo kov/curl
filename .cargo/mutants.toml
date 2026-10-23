@@ -380,4 +380,9 @@ exclude_re = [
     # A header line ends with its line end, so the 9 bytes left at its
     # very end are never `filename=`, nor can one follow them.
     'curl-tool/src/output\.rs:.*: replace > with >= in Stream::disposition$',
+    # `put` is reached with the buffer just written out or made, so empty,
+    # and with less than a block left, so less than the buffer: on the one
+    # turn a stream that is not line buffered takes, the room is the whole
+    # buffer and `at` is 0, and the rest fits whatever the arithmetic.
+    'curl-tool/src/stdio\.rs:.*: replace - with \+ in Stdio<S>::put$',
 ]

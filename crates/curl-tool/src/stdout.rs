@@ -31,10 +31,6 @@ impl Sink for Descriptor {
     fn layout(&self) -> Layout {
         self.0.as_ref().map_or(Layout::UNKNOWN, File::layout)
     }
-
-    fn close(self) -> io::Result<()> {
-        self.0.map_or(Ok(()), Sink::close)
-    }
 }
 
 impl Stdout {
@@ -67,5 +63,26 @@ impl Stdout {
     /// Write what is held (`fflush`).
     pub(crate) fn flush(&self) -> Result<(), Failed> {
         self.0.lock().expect("no panic holds it").flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Standard output with descriptor 1 not open.
+    fn closed() -> Stdout {
+        Stdout(TryArc::try_new(Mutex::new(Stdio::new(Descriptor(None)))).unwrap())
+    }
+
+    /// What fits the buffer is all taken, and fails only when written; a
+    /// write past it fails at once, short.
+    #[test]
+    fn a_write_not_all_taken_fails() {
+        let out = closed();
+        assert!(out.write_all(b"held").is_ok());
+        assert_eq!(out.flush(), Err(Failed));
+        let err = out.write_all(&[b'x'; 16384]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::WriteZero);
     }
 }

@@ -45,7 +45,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   buffer on the stack.
 - `crates/curl-os/src/fs.rs`: opening and closing files, a file's status, removing, renaming
   and setting the times of files by name, making and listing directories, reading standard
-  input unbuffered, and pointing standard error at a file.
+  input unbuffered, making a file's reads nonblocking, and pointing standard error at a file.
 - `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, and adopting one the
   application opened.
 - `crates/curl-os/src/poll.rs`: `poll(2)`.

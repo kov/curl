@@ -359,9 +359,9 @@ race's losers and its oldest attempt pruned, and a 407's redial). A connection t
 pool traces no `destroy`, as C closes it on its internal handle. With a pollset made while the
 connection is set up, the socket's part in it: `adjust_pollset, !connected, POLLOUT fd=N` for
 each attempt, and `adjust_pollset, !active, POLLIN fd=N` for the socket a handshake runs over,
-which waits to read throughout as C's filter, connected but not in use, adds. Planned (step
-40k): the opening, the local address and the close of a socket whose connect fails at once, which
-the engine's network opens and connects in one call. Not traced: the health check's `is_alive`
+which waits to read throughout as C's filter, connected but not in use, adds. A socket whose
+connect fails at once traces its opening, `Immediate connect fail`, its close and the failure,
+as C does. Not traced: the health check's `is_alive`
 lines, which the pool's check makes with a silent context where C traces them on the transfer
 looking for a connection. Not traced: the receive
 C tries before its first poll in PERFORMING, which the engine does not make; a tunnel's and

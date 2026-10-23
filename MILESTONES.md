@@ -539,7 +539,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     bringing its own. The debug handler reachable outside a transfer, so `COOKIELIST`'s cookie
     lines are traced where C traces them. Closes 3236, 3235, 1515 and 19. Waiting: the
     connection setup filter's and the pollset's lines (step 40), and 758 (step 43).
-40. **The engine rewrite:** who owns a connection (exclusive leases checked against their home
+40. **The engine rewrite:** **Done.** Who owns a connection (exclusive leases checked against their home
     pool; the socket's closer carried from its creation) and the layer stack as a pull chain
     like C's filters, one `Stream` owned by a dialed socket and a connection alike (ENGINE.md
     4.1–4.3, 4.6). With them, the trace lines C makes from inside a connect and from `wait`:
@@ -585,9 +585,15 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **k. The shim's socket hooks:** OPENSOCKETFUNCTION, SOCKOPTFUNCTION and
       CLOSESOCKETFUNCTION (585, 1522, 1530, 1960); the socket options as C sets them (TCP keepalive on
       by default in the tool, `--tcp-nodelay`, `--tcp-fastopen`, `--keepalive*`, `--ip-tos`,
-      `--vlan-priority`, `--mptcp`) and their setopts.
+      `--vlan-priority`, `--mptcp`) and their setopts. **Done.** Each socket is opened,
+      set and connected in `cf_socket_open`'s order, through the application's opener,
+      configurer and closer; the tool sets its flags as `tcp_setopts` does, with its own
+      opener for `--mptcp` and configurer for `--ip-tos` and `--vlan-priority`. The waker is
+      an eventfd, as C's.
     - **l. Closing the step:** the sabotage sweep over conn, multi and share, and
-      cargo-mutants on the step's diff.
+      cargo-mutants on the step's diff. **Done.** The sweep over the connection, multi,
+      share, layer, chain, TCP, wait, socket and pool entries has no hole; cargo-mutants'
+      survivors on h–j are tested.
 41. **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
     **Done.**
 42. **HTTP's decisions after an exchange** moved from the engine into `proto/http`.

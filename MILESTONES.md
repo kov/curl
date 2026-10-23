@@ -577,7 +577,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **j. The trace of `wait`:** pollsets, `expires in`, `gives multi timeout` and
       `multi_wait`, from a traced internal `multi_timeout`.
     - **k. The shim's socket hooks:** OPENSOCKETFUNCTION, SOCKOPTFUNCTION and
-      CLOSESOCKETFUNCTION (585, 1522, 1530, 1960).
+      CLOSESOCKETFUNCTION (585, 1522, 1530, 1960); the socket options as C sets them (TCP keepalive on
+      by default in the tool, `--tcp-nodelay`, `--tcp-fastopen`, `--keepalive*`, `--ip-tos`,
+      `--vlan-priority`, `--mptcp`) and their setopts.
     - **l. Closing the step:** the sabotage sweep over conn, multi and share, and
       cargo-mutants on the step's diff.
 41. **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
@@ -589,15 +591,18 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     of ALPN: the ALPN_EYEBALLS timer, `query ALPN`, and 758.
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
     claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
-45. **The tool's options that need no new engine work,** built alongside step 40: `--variable`
-    and the `--expand-` prefix (`tool_vars.c`), `--styled-output`, `--fail-early`, `--rate`;
-    `--disallow-username-in-url`, `--speed-limit`, `--speed-time` and `--create-file-mode`
-    wired to what the core has; `TCP_NODELAY` set by default as C does, with `--tcp-nodelay`,
-    `--tcp-fastopen`, `--keepalive*`, `--ip-tos`, `--vlan-priority` and `--mptcp`;
-    `--retry-connrefused`; the deprecated `--random-file` and `--egd-file` as C's no-ops.
-    Waiting: `--interface` and `--local-port` (a bind before the connect) and `--unix-socket`
-    and `--abstract-unix-socket` (a connect that is not TCP), on step 40's layers;
-    `--parallel` (the tool driving a multi handle), `--libcurl`, `--xattr` and `--doh-url`.
+45. **The tool's options that need no new engine work,** built alongside step 40. **Done.**
+    `--variable` and the `--expand-` prefix (`tool_vars.c`), `--styled-output`,
+    `--fail-early`, `--rate`; `--disallow-username-in-url`, `--speed-limit`, `--speed-time`
+    and `--create-file-mode` wired to what the core has; `--retry-connrefused`; the deprecated
+    `--random-file` and `--egd-file` as C's no-ops. The socket options are step 40k's.
+46. **The tool's larger pieces:** `--libcurl` (`tool_easysrc.c`: the C program a command line
+    amounts to; 1400–1404, 1465, 1687 and the other `--libcurl` tests), `--manual` (the
+    built-in manual, `tool_hugehelp.c`: 1708, and the hint C's error messages end with),
+    `--xattr` (644, 687, 688), and `--parallel` (the tool driving a multi handle; 496). After
+    step 40: `--interface` and `--local-port` (a bind before the connect: 1045, 1046,
+    1082–1085) and `--unix-socket` and `--abstract-unix-socket` (a connect that is not TCP:
+    1268, 1435, 1436). `--doh-url` waits for TLS.
 
 After this milestone: **a corpus of real command lines**, as compatibility guidance. Some
 thousands of curl invocations sampled from public shell scripts, Dockerfiles, CI configurations
@@ -616,7 +621,3 @@ buffering it per stream; FTP's data connection as a second chain beside the cont
 connection's, and its FTP_ACCEPT and SERVER_RESPONSE timers traced; `CURLOPT_CONNECT_ONLY`
 with the pool's `Reserved` place (3231, 3232, 3234); the pool's `Attached` place for a
 connection several transfers lease, before stage 5; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
-
-The tool's `--libcurl` (`tool_easysrc.c`: the C program a command line amounts to; 1404 and the
-`--libcurl` tests) and `--manual` (the built-in manual, `tool_hugehelp.c`: 1708, and the hint
-C's error messages end with) are not yet placed in a milestone.

@@ -1,8 +1,8 @@
 //! Nonblocking TCP sockets (`lib/cf-socket.c`). Opening, setting and
 //! connecting are system calls of their own, in C's order; everything
 //! after goes through a std `TcpStream`, which already sends with
-//! `MSG_NOSIGNAL`. A nonblocking receive or send never sleeps, so no
-//! signal interrupts it.
+//! `MSG_NOSIGNAL`. A receive or send a signal interrupts would block, as
+//! C reads `EINTR` there; a connect it interrupts failed.
 
 #![allow(unsafe_code)]
 
@@ -330,14 +330,7 @@ impl TcpSocket {
         if rc == 0 {
             return Ok(Connect::Done);
         }
-        let err = io::Error::last_os_error();
-        match err.raw_os_error() {
-            // A nonblocking connect interrupted by a signal goes on in the
-            // background, as one in progress does; C takes EAGAIN so too
-            // (`socket_connect_result`).
-            Some(libc::EINPROGRESS | libc::EINTR | libc::EAGAIN) => Ok(Connect::InProgress),
-            _ => Err(err),
-        }
+        connect_failed(io::Error::last_os_error())
     }
 
     /// The error that ended a connect in progress, once the socket polls
@@ -350,24 +343,13 @@ impl TcpSocket {
     /// look like the peer closing.
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
         assert!(!buf.is_empty(), "a receive needs room");
-        match (&self.0).read(buf) {
-            Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Recv::WouldBlock),
-            Err(e) => Err(e),
-        }
+        received((&self.0).read(buf))
     }
 
     /// Send from `buf`, which must not be empty.
     pub fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         assert!(!buf.is_empty(), "a send needs bytes");
-        match (&self.0).write(buf) {
-            Ok(n) => {
-                let n = NonZeroUsize::new(n).expect("a send of some bytes takes some");
-                Ok(Sent::Bytes(n))
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Sent::WouldBlock),
-            Err(e) => Err(e),
-        }
+        sent((&self.0).write(buf))
     }
 
     /// Send nothing more; the peer reads the end of the stream.
@@ -387,6 +369,48 @@ impl TcpSocket {
 
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
+    }
+}
+
+/// What a connect that did not connect at once means: in progress, or,
+/// for any other error, failed (`socket_connect_result`). An `EINTR`
+/// fails it, as C takes only `EINPROGRESS` and `EAGAIN` for under way.
+fn connect_failed(err: io::Error) -> io::Result<Connect> {
+    match err.raw_os_error() {
+        Some(libc::EINPROGRESS | libc::EAGAIN) => Ok(Connect::InProgress),
+        _ => Err(err),
+    }
+}
+
+/// What a receive's result means: an `EAGAIN` or an `EINTR` would block
+/// (`cf_socket_recv`).
+fn received(got: io::Result<usize>) -> io::Result<Recv> {
+    match got {
+        Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) => {
+            Ok(Recv::WouldBlock)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// What a send's result means: an `EAGAIN`, an `EINTR` or an
+/// `EINPROGRESS` would block (`cf_socket_send`).
+fn sent(took: io::Result<usize>) -> io::Result<Sent> {
+    match took {
+        Ok(n) => {
+            let n = NonZeroUsize::new(n).expect("a send of some bytes takes some");
+            Ok(Sent::Bytes(n))
+        }
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::EAGAIN | libc::EINTR | libc::EINPROGRESS)
+            ) =>
+        {
+            Ok(Sent::WouldBlock)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -452,6 +476,60 @@ mod tests {
         assert_eq!(from, s.local_addr().unwrap());
         assert_eq!(s.peer_addr().unwrap(), listener.local_addr().unwrap());
         (s, peer)
+    }
+
+    /// A system call's failure `errno`, as std reports it.
+    fn os(errno: libc::c_int) -> io::Error {
+        io::Error::from_raw_os_error(errno)
+    }
+
+    /// A signal interrupting a receive or a send would block, as C reads
+    /// `EINTR` there, and so does a send's `EINPROGRESS`; a connect it
+    /// interrupts failed, as C takes only `EINPROGRESS` and `EAGAIN` for
+    /// under way (`cf_socket_recv`, `cf_socket_send`,
+    /// `socket_connect_result`).
+    #[test]
+    fn an_interrupted_call_reads_as_c_reads_it() {
+        fn errno<T>(r: io::Result<T>) -> Result<T, Option<i32>> {
+            r.map_err(|e| e.raw_os_error())
+        }
+        assert_eq!(errno(received(Err(os(libc::EINTR)))), Ok(Recv::WouldBlock));
+        assert_eq!(errno(received(Err(os(libc::EAGAIN)))), Ok(Recv::WouldBlock));
+        assert_eq!(
+            errno(received(Err(os(libc::EINPROGRESS)))),
+            Err(Some(libc::EINPROGRESS))
+        );
+        assert_eq!(
+            errno(received(Err(os(libc::ECONNRESET)))),
+            Err(Some(libc::ECONNRESET))
+        );
+        assert_eq!(errno(received(Ok(0))), Ok(Recv::Eof));
+        assert_eq!(
+            errno(received(Ok(3))),
+            Ok(Recv::Data(NonZeroUsize::new(3).unwrap()))
+        );
+        for would_block in [libc::EINTR, libc::EAGAIN, libc::EINPROGRESS] {
+            assert_eq!(errno(sent(Err(os(would_block)))), Ok(Sent::WouldBlock));
+        }
+        assert_eq!(errno(sent(Err(os(libc::EPIPE)))), Err(Some(libc::EPIPE)));
+        assert_eq!(
+            errno(sent(Ok(2))),
+            Ok(Sent::Bytes(NonZeroUsize::new(2).unwrap()))
+        );
+        for under_way in [libc::EINPROGRESS, libc::EAGAIN] {
+            assert_eq!(
+                errno(connect_failed(os(under_way))),
+                Ok(Connect::InProgress)
+            );
+        }
+        assert_eq!(
+            errno(connect_failed(os(libc::EINTR))),
+            Err(Some(libc::EINTR))
+        );
+        assert_eq!(
+            errno(connect_failed(os(libc::ECONNREFUSED))),
+            Err(Some(libc::ECONNREFUSED))
+        );
     }
 
     /// Each option reaches the kernel's socket as C sets it: Nagle's

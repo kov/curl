@@ -47,9 +47,9 @@ one.as_ptr().cast(), 4)
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_refused_connect_reports_why
 --- old
-            Some(libc::EINPROGRESS | libc::EINTR | libc::EAGAIN) => Ok(Connect::InProgress),
+        Some(libc::EINPROGRESS | libc::EAGAIN) => Ok(Connect::InProgress),
 --- new
-            Some(libc::EINTR | libc::EAGAIN) => Ok(Connect::InProgress),
+        Some(libc::EAGAIN) => Ok(Connect::InProgress),
 
 === the port is sent in host byte order
 file: crates/curl-os/src/net.rs
@@ -63,32 +63,37 @@ witness: curl-os net::tests::connects_over_ipv4_and_ipv6
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::receives_data_then_the_end_of_the_stream
 --- old
-            Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
+        Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::Eof, Recv::Data)),
 --- new
-            Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::WouldBlock, Recv::Data)),
+        Ok(n) => Ok(NonZeroUsize::new(n).map_or(Recv::WouldBlock, Recv::Data)),
 
 === a receive with nothing to read is an error
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::receives_data_then_the_end_of_the_stream
 --- old
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Recv::WouldBlock),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) => {
 --- new
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EINTR)) => {
 
 === a send into full buffers is an error
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_send_into_full_buffers_would_block
 --- old
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Sent::WouldBlock),
+                Some(libc::EAGAIN | libc::EINTR | libc::EINPROGRESS)
 --- new
+                Some(libc::EINTR | libc::EINPROGRESS)
 
 === a reset connection reads as would-block
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_reset_connection_fails_both_ways
 --- old
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(Recv::WouldBlock),
-            Err(e) => Err(e),
+            Ok(Recv::WouldBlock)
+        }
+        Err(e) => Err(e),
 --- new
-            Err(_) => Ok(Recv::WouldBlock),
+            Ok(Recv::WouldBlock)
+        }
+        Err(_) => Ok(Recv::WouldBlock),
 
 === a socket opened as descriptor 0 is taken for a failure
 file: crates/curl-os/src/net.rs
@@ -266,3 +271,27 @@ witness: curl-core multi::tests::sockets_are_set_as_the_options_say
     let socket = crate::conn::SocketSetup::of(&cx.easy().options().sockets);
 --- new
     let socket = crate::conn::SocketSetup::of(<crate::options::Sockets as crate::options::ColdGroup>::UNSET);
+
+=== an interrupted receive is an error
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::an_interrupted_call_reads_as_c_reads_it
+--- old
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EAGAIN | libc::EINTR)) => {
+--- new
+        Err(e) if matches!(e.raw_os_error(), Some(libc::EAGAIN)) => {
+
+=== an interrupted send is an error
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::an_interrupted_call_reads_as_c_reads_it
+--- old
+                Some(libc::EAGAIN | libc::EINTR | libc::EINPROGRESS)
+--- new
+                Some(libc::EAGAIN | libc::EINPROGRESS)
+
+=== an interrupted connect is taken for one under way
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::an_interrupted_call_reads_as_c_reads_it
+--- old
+        Some(libc::EINPROGRESS | libc::EAGAIN) => Ok(Connect::InProgress),
+--- new
+        Some(libc::EINPROGRESS | libc::EAGAIN | libc::EINTR) => Ok(Connect::InProgress),

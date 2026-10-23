@@ -586,10 +586,14 @@ fn formadd_check(
     for form in forms {
         let name = form.name.ptr();
         let flags = form.flags;
-        if ((name.is_null() || !form.value.is_set()) && post.is_null())
+        // C's checks. The first and the last are never true: the option
+        // that sets the buffer flags refuses NULL, and a file to read
+        // and contents a pointer names refuse each other. They are kept
+        // apart, so that an `||` between them made `&&` would be seen.
+        if buffer_missing(form)
+            || ((name.is_null() || !form.value.is_set()) && post.is_null())
             || (form.contentslength != 0 && flags & FILENAME != 0)
             || (flags & FILENAME != 0 && flags & PTRCONTENTS != 0)
-            || buffer_missing(form)
             || (flags & READFILE != 0 && flags & PTRCONTENTS != 0)
         {
             return CURL_FORMADD_INCOMPLETE;
@@ -1576,8 +1580,9 @@ mod tests {
     }
 
     /// A call refused for want of memory at any of its allocations frees
-    /// what it made before: the copies, then the nodes; one that succeeds
-    /// makes a chain `curl_formfree` frees whole.
+    /// what it made before: the copies, then the nodes; one that succeeds,
+    /// allocating as often as C's, makes a chain `curl_formfree` frees
+    /// whole.
     #[test]
     fn formadd_frees_what_it_made_when_refused() {
         counting();
@@ -1593,7 +1598,9 @@ mod tests {
             ]);
             LEFT.with(|l| l.set(None));
             if code == CURL_FORMADD_OK {
-                assert!(limit > 6, "{limit} allocations sufficed");
+                // As many as C's: two file names, their types, the
+                // name, two nodes.
+                assert_eq!(limit, 7, "{limit} allocations sufficed");
                 // SAFETY: the chain just made, not used again.
                 unsafe { curl_formfree(first) };
                 assert_eq!(HELD.with(core::cell::Cell::get), before, "all freed");
@@ -1608,5 +1615,45 @@ mod tests {
         }
         std::fs::remove_file(txt).unwrap();
         std::fs::remove_file(bare).unwrap();
+    }
+
+    /// With `CURL_ENTROPY` set, a debug build draws each tree's boundary
+    /// from it, the numbers going on from one tree to the next, as C's
+    /// debug build gives them to the same calls. Checked in a process of
+    /// its own, the variable set there.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn a_debug_build_draws_boundaries_from_curl_entropy() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "formdata::tests::boundaries_drawn_from_curl_entropy",
+                "--ignored",
+            ])
+            .env("CURL_ENTROPY", "12345678")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "the test ran: {stdout}");
+    }
+
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    #[ignore = "run by a_debug_build_draws_boundaries_from_curl_entropy, CURL_ENTROPY set"]
+    fn boundaries_drawn_from_curl_entropy() {
+        let (code, first) = add(&[
+            entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+            entry(ffi::CURLFORM_COPYCONTENTS, c"v".as_ptr()),
+        ]);
+        assert_eq!(code, CURL_FORMADD_OK);
+        for want in ["qrstuvwxyz0123456789AB", "CDEFGHIJKLMNOPQRSTUVWX"] {
+            let (got, bytes) = formget(first);
+            assert_eq!(got, 0);
+            let line = format!("\r\n--------------------------{want}\r\n");
+            assert!(holds(&bytes, line.as_bytes()), "{}", bytes.escape_ascii());
+        }
+        // SAFETY: the chain, not used again.
+        unsafe { curl_formfree(first) };
     }
 }

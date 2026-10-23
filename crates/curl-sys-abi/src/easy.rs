@@ -344,6 +344,7 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
     let mut handle = Easy::new();
     handle.set_public_suffixes_from(curl_psl::suffixes);
     handle.set_decoders(decoders());
+    handle.set_components(Some(crate::root::components()));
     // C initialises the library for a program that did not.
     match ShimEasy::boxed(
         handle,

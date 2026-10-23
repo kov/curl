@@ -1456,6 +1456,31 @@ fn a_refused_connect_fails_as_c_says() {
     assert_eq!(t.connect(), Duration::ZERO);
 }
 
+/// With the ids on, each line a transfer traces starts with its number
+/// and its connection's, `x` for one it has none of; a failure's reason
+/// does not (`trc_infof`, `Curl_failf`).
+#[test]
+fn the_ids_start_each_line_but_a_failure() {
+    let (mut m, _clock) = networked();
+    let (mut e, lines) = traced("tcp://127.0.0.1:2/");
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"lib-ids");
+    e.set_components(Some(components.clone()));
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let why = "Failed to connect to 127.0.0.1:2 after 0 ms: Could not connect to server";
+    assert_eq!(
+        trace_of(&lines),
+        [
+            "[0-0]   Trying 127.0.0.1:2...\n".to_owned(),
+            "[0-0] connect to 127.0.0.1 port 2 from 127.0.0.1 port 40000 failed: Connection refused\n"
+                .to_owned(),
+            format!("{why}\n"),
+            "[0-0] closing connection #0\n".to_owned(),
+        ]
+    );
+}
+
 /// An accepted connect is traced, timed, and the request goes on.
 #[test]
 fn an_accepted_connect_goes_on_to_the_request() {

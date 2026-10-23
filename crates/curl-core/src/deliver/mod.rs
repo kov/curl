@@ -436,13 +436,7 @@ fn handler_paused<H: Host>(cx: &StepCx<'_, H>) -> bool {
 /// The body as received, before any decoding, to the debug handler of a
 /// verbose transfer (`cw_raw_write`).
 fn raw_trace<H: Host>(cx: &mut StepCx<'_, H>, bytes: &[u8]) {
-    let options = cx.easy().options();
-    if !options.output.verbose {
-        return;
-    }
-    if let Some(handler) = options.callbacks.debug.clone() {
-        handler.debug(&mut TransferCx::new(cx), DebugKind::DataIn, bytes);
-    }
+    trace::bytes(cx, DebugKind::DataIn, bytes);
 }
 
 /// What a response's head says its body comes to (C's `req.size`,

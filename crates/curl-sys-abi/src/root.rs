@@ -10,6 +10,8 @@
 use core::ffi::{c_char, c_long, c_void};
 use std::sync::Mutex;
 
+use curl_core::components::{Components, Levels};
+
 use crate::ffi::{
     self, CURLE_FAILED_INIT, CURLE_OK, CURLcode, curl_calloc_callback, curl_free_callback,
     curl_malloc_callback, curl_realloc_callback, curl_strdup_callback,
@@ -97,6 +99,51 @@ pub(crate) fn forced_entropy() -> Option<u32> {
     root.entropy = Some(next);
     Some(next)
 }
+
+/// Which components trace, for every handle of the process
+/// (`curl_global_trace`): part of the root, beside it only because the
+/// handles read it without the root's lock. It outlives
+/// `curl_global_cleanup`, as C's levels do.
+static TRACE: Levels = Levels::new();
+
+/// The process's trace setting, as every handle is given it.
+pub(crate) fn components() -> Components {
+    Components::of_static(&TRACE)
+}
+
+/// What the debug build's `CURL_DEBUG` asks, applied after any other
+/// setting (`Curl_trc_opt`).
+#[cfg(feature = "debug-hooks")]
+fn trace_from_env() {
+    // SAFETY: the name is a C string.
+    let value = unsafe { libc::getenv(c"CURL_DEBUG".as_ptr()) };
+    if !value.is_null() {
+        // SAFETY: `getenv` gives a C string, read at once.
+        components().configure(unsafe { core::ffi::CStr::from_ptr(value) }.to_bytes());
+    }
+}
+
+#[cfg(not(feature = "debug-hooks"))]
+fn trace_from_env() {}
+
+/// Turn the components `config` names on or off for every handle, those
+/// running included (`curl_global_trace`). NULL changes nothing.
+///
+/// # Safety
+///
+/// `config` is NULL or a C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_global_trace(config: *const c_char) -> CURLcode {
+    // As C holds its init lock around the change.
+    let _root = root();
+    if !config.is_null() {
+        // SAFETY: as the caller guarantees.
+        components().configure(unsafe { core::ffi::CStr::from_ptr(config) }.to_bytes());
+    }
+    trace_from_env();
+    CURLE_OK
+}
+const _: ffi::proto::curl_global_trace = curl_global_trace;
 
 fn root() -> std::sync::MutexGuard<'static, Root> {
     // Panics abort, so the lock is never poisoned.
@@ -227,6 +274,8 @@ fn global_init() -> CURLcode {
     if root.initialized == 0 {
         // The defaults are installed again, as in C.
         root.allocator = SYSTEM;
+        // `Curl_trc_init`.
+        trace_from_env();
     }
     root.initialized += 1;
     CURLE_OK
@@ -263,6 +312,7 @@ pub extern "C" fn curl_global_init_mem(
             strdup,
             calloc,
         };
+        trace_from_env();
     }
     root.initialized += 1;
     CURLE_OK

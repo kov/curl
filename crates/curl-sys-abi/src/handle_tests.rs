@@ -4640,3 +4640,47 @@ fn flushes_a_jar_named_long_without_copying_the_name() {
     assert!(short_len < 384 && long_len >= 400);
     assert_eq!(long, short, "a long name cost more allocations");
 }
+
+/// `curl_global_trace` changes what every handle traces, those made
+/// before it, their copies and those reset among them, as C's process-wide
+/// levels do. Tried on a component nothing traces yet, as the setting is
+/// the process's and other tests run beside this one.
+#[test]
+fn the_global_trace_reaches_every_handle() {
+    use curl_core::components::Component;
+    let threads = |c: *mut CURL| {
+        // SAFETY: a live handle.
+        let easy = unsafe { easy::handle(c) }.expect("a live handle");
+        easy.with_easy(|e| match e {
+            easy::EasyRef::Easy(e) => e.components().is_some_and(|c| c.traces(Component::Threads)),
+            easy::EasyRef::Frame(..) => unreachable!("in no multi"),
+        })
+        .unwrap()
+    };
+    let c = curl_easy_init();
+    assert!(!threads(c));
+    // SAFETY: a C string.
+    let set = unsafe { crate::root::curl_global_trace(c"THREADS".as_ptr()) };
+    assert_eq!(set, CURLE_OK);
+    assert!(threads(c));
+    // SAFETY: a live handle.
+    let d = unsafe { easy::curl_easy_duphandle(c) };
+    // SAFETY: a live handle.
+    unsafe { easy::curl_easy_reset(c) };
+    assert!(threads(c) && threads(d));
+    // NULL changes nothing.
+    // SAFETY: NULL is allowed.
+    let set = unsafe { crate::root::curl_global_trace(ptr::null()) };
+    assert_eq!(set, CURLE_OK);
+    let e = curl_easy_init();
+    assert!(threads(e));
+    // SAFETY: a C string.
+    unsafe { crate::root::curl_global_trace(c"-threads".as_ptr()) };
+    assert!(!threads(c) && !threads(d) && !threads(e));
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(c);
+        curl_easy_cleanup(d);
+        curl_easy_cleanup(e);
+    }
+}

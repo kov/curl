@@ -202,7 +202,7 @@ witness: curl-sys-abi handle_tests::a_cookie_list_is_traced_as_it_is_set
 file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::cookie_commands_note_what_c_traces
 --- old
-                                notes(warning.bytes());
+                                notes(warning.ended().bytes());
 --- new
                                 drop(warning);
 
@@ -211,7 +211,7 @@ file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::cookie_commands_note_what_c_traces
 --- old
                     jar.load(&text, new_session, true, list, now, &mut set, |said| {
-                        said.lines(|parts| notes(trace::line_with(parts).bytes()));
+                        said.lines(|parts| notes(trace::line_with(parts).ended().bytes()));
                     })
 --- new
                     jar.load(&text, new_session, true, list, now, &mut set, |_| {})

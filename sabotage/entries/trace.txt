@@ -117,3 +117,27 @@ witness: curl-core a_refused_connect_survives_every_allocation_failing
         Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
 --- new
         std::fmt::Display::fmt(self.0, f)
+
+=== a name past 32 bytes is read as a component's
+file: crates/curl-core/src/components.rs
+witness: curl-core components::tests::a_bad_name_ends_the_configuration
+--- old
+            if len == 0 || len > NAME_MAX {
+--- new
+            if len == 0 || len > NAME_MAX + 1 {
+
+=== `all` leaves the library's ids off
+file: crates/curl-core/src/components.rs
+witness: curl-core components::tests::categories_name_their_components
+--- old
+                    Some(None) => true,
+--- new
+                    Some(None) => c != Component::Ids,
+
+=== lines do not start with the ids
+file: crates/curl-core/src/trace.rs
+witness: curl-core multi::tests::the_ids_start_each_line_but_a_failure
+--- old
+    push_ids(cx, &mut line);
+--- new
+    let _ = &mut line;

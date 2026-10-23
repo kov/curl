@@ -140,6 +140,9 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
 - **Typestate is used where C keeps flags.** Examples are a connection before and after its
   handshake, and a response before and after its headers. An operation that is valid in only
   one state exists only on that state's type.
+- **Trace settings are a handle, not a global.** Which components trace (C's process-wide
+  `curl_global_trace` levels) is a `Components` value the application gives each `Easy`; copies
+  share it and it is read at each line. The shim's root keeps the process's one, the tool its own.
 - **Shared caches live in one owner, behind their own locks.** The share keeps each kind it is
   asked for (idle connections, names, cookies) behind a mutex of its own, held for one use at a
   time and never across a callback, so the share is `Send + Sync` and its safety never rests on

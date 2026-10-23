@@ -5,6 +5,7 @@
 
 use std::fmt;
 
+use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::handler::DebugKind;
 use crate::multi::state::StepCx;
@@ -25,7 +26,10 @@ pub(crate) fn info<H: Host>(cx: &mut StepCx<'_, H>, args: fmt::Arguments<'_>) {
     if !cx.easy().options().output.verbose {
         return;
     }
-    text(cx, line(args).0.bytes());
+    let mut line = start_line(cx);
+    line.push_fmt(args);
+    end_line(&mut line);
+    text(cx, line.bytes());
 }
 
 /// `info` with a line made of `parts`, which need not be text.
@@ -33,25 +37,64 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
     if !cx.easy().options().output.verbose {
         return;
     }
-    text(cx, line_with(parts).0.bytes());
+    let mut line = start_line(cx);
+    for part in parts {
+        line.push_clipped(part);
+    }
+    end_line(&mut line);
+    text(cx, line.bytes());
+}
+
+/// What every line starts with: the transfer's and its connection's
+/// numbers, when the ids are on (`trc_print_ids`).
+fn start_line<H: Host>(cx: &StepCx<'_, H>) -> Text<LINE_MAX> {
+    let mut line = Text::<LINE_MAX>::new();
+    push_ids(cx, &mut line);
+    line
+}
+
+fn push_ids<H: Host, const N: usize>(cx: &StepCx<'_, H>, line: &mut Text<N>) {
+    let easy = cx.easy();
+    if !easy.components().is_some_and(|c| c.traces(Component::Ids)) {
+        return;
+    }
+    let report = easy.report();
+    line.push_fmt(format_args!(
+        "[{}-{}] ",
+        Ids(report.transfer_number()),
+        Ids(report.conn_number())
+    ));
+}
+
+/// A number in the ids, or `x` without one.
+struct Ids(Option<u64>);
+
+impl fmt::Display for Ids {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(n) => write!(f, "{n}"),
+            None => f.write_str("x"),
+        }
+    }
 }
 
 /// A line for `info`, formatted while what it names is borrowed from the
 /// transfer, to be traced with `info_line` once nothing is: the debug
-/// handler may change the options it came from.
+/// handler may change the options it came from. It is ended as it is
+/// traced, after what starts every line.
 pub(crate) struct Line(Text<LINE_MAX>);
 
 impl Line {
-    /// The line, its end included.
-    pub(crate) fn bytes(&self) -> &[u8] {
-        self.0.bytes()
+    /// The line as traced without ids, its end included.
+    pub(crate) fn ended(&self) -> Text<LINE_MAX> {
+        let mut line = self.0.clone();
+        end_line(&mut line);
+        line
     }
 }
 
 pub(crate) fn line(args: fmt::Arguments<'_>) -> Line {
-    let (mut line, _) = Text::<LINE_MAX>::clipped(args);
-    end_line(&mut line);
-    Line(line)
+    Line(Text::<LINE_MAX>::clipped(args).0)
 }
 
 /// `line` made of `parts`, which need not be text.
@@ -60,15 +103,12 @@ pub(crate) fn line_with(parts: &[&[u8]]) -> Line {
     for part in parts {
         line.push_clipped(part);
     }
-    end_line(&mut line);
     Line(line)
 }
 
 /// Trace a line `line` formatted, as `info` would have.
 pub(crate) fn info_line<H: Host>(cx: &mut StepCx<'_, H>, line: &Line) {
-    if cx.easy().options().output.verbose {
-        text(cx, line.0.bytes());
-    }
+    info_with(cx, &[line.0.bytes()]);
 }
 
 /// End a trace line (`trc_end_buf`): with a newline where it leaves room
@@ -137,22 +177,46 @@ fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_
     kind
 }
 
-/// Bytes a verbose transfer traces (`Curl_debug`).
+/// Bytes a verbose transfer traces (`Curl_debug`), after the ids when
+/// they are on: to the debug handler with them, when what it is given
+/// fits a trace line, or before the mark on standard error.
 pub(crate) fn bytes<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
-    if cx.easy().options().output.verbose {
-        out(cx, kind, bytes);
+    let easy = cx.easy();
+    if !easy.options().output.verbose {
+        return;
+    }
+    let ids = easy.components().is_some_and(|c| c.traces(Component::Ids));
+    if !ids {
+        out(cx, kind, bytes, &[]);
+        return;
+    }
+    let mut prefixed = Text::<LINE_MAX>::new();
+    push_ids(cx, &mut prefixed);
+    if easy.options().callbacks.debug.is_none() {
+        out(cx, kind, bytes, prefixed.bytes());
+    } else if bytes.len() < LINE_MAX {
+        // As C ends a buffer it does not add a newline to: cut, and
+        // marked `...`, where it leaves no room for a zero byte.
+        prefixed.push_clipped(bytes);
+        if prefixed.bytes().len() >= LINE_MAX - 1 {
+            prefixed.truncate(LINE_MAX - 5);
+            prefixed.push_clipped(b"...\n");
+        }
+        out(cx, kind, prefixed.bytes(), &[]);
+    } else {
+        out(cx, kind, bytes, &[]);
     }
 }
 
 /// Text to the debug handler, or without one to standard error after
-/// `* `.
+/// `* `: a line, already started with the ids (`trc_write`).
 fn text<H: Host>(cx: &mut StepCx<'_, H>, line: &[u8]) {
-    out(cx, DebugKind::Text, line);
+    out(cx, DebugKind::Text, line, &[]);
 }
 
 /// To the debug handler, or without one, text and headers to standard
-/// error after their mark (`Curl_debug`).
-fn out<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
+/// error after `ids` and their mark.
+fn out<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8], ids: &[u8]) {
     let options = cx.easy().options();
     match options.callbacks.debug.clone() {
         Some(handler) => handler.debug(&mut TransferCx::new(cx), kind, bytes),
@@ -167,6 +231,7 @@ fn out<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8]) {
                 | DebugKind::SslDataOut => return,
             };
             let sink = options.callbacks.stderr.as_ref();
+            progress::to_stderr(sink, ids);
             progress::to_stderr(sink, mark);
             progress::to_stderr(sink, bytes);
         }

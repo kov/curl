@@ -141,6 +141,7 @@ curl-core/src/
   report.rs, report/         TransferReport, Timings, Starts, Sizes; HeaderStore, HeaderCursor
   handler.rs                 handler traits, their verdict enums, Handler
   trace.rs, text.rs          failf/infof: a failure's reason and text lines, on a stack buffer
+  components.rs              Components, Component, Level: which components trace
   share.rs                   Share, Kind, ShareLock: what transfers of several handles keep
   cookie.rs                  Jar, Cookie, Suffixes: the cookie jar (cookie.c)
   netrc.rs                   .netrc files: the file's path, its entries for a host
@@ -286,6 +287,20 @@ cut at 2048 bytes and marked `...` as `trc_end_buf` does, so a quiet transfer fo
 Text goes to the debug handler, or without one to the STDERR sink after `* `. The debug build's
 "!!! WARNING !!!" lines go to the first transfer added to a multi, at its first step rather than
 inside `add`, which has no transfer context.
+
+Which components trace is a `Components` handle (`components.rs`): a `Level` per `Component`,
+C's trace features and filter types (its DNS feature and DNS filter share a name, so they are one
+component), parsed from C's configuration syntax (`all`, `protocol`, `network`, `proxy`, a name,
+each after an optional `+` or `-`). Copies share one setting, read at each line, so a change
+shows in transfers already running. `Easy` holds it outside its options, kept through `reset` and
+by a copy of the handle; without one, only lines of no component are traced. The shim gives every
+handle the process's, a static `Levels` beside its root that `curl_global_trace` sets (and the
+debug build's `CURL_DEBUG` after it). A
+component's line is traced when the transfer is verbose and the component is on,
+after `[NAME] `. With `LIB-IDS` on, every line but a failure's reason starts with `[T-C] ` (`x` for
+a number the transfer has none of), and so does what `trace::bytes` (`Curl_debug`) gives the
+debug handler, when it fits a trace line. Not traced: what C traces on the multi's internal handle,
+verbose only under `CURL_DEBUG`, and the source line number C's debug build adds to a state change.
 
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as

@@ -334,12 +334,7 @@ pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, body: &[u8]) {
     if body.is_empty() {
         return;
     }
-    let options = cx.easy().options();
-    if options.output.verbose
-        && let Some(handler) = options.callbacks.debug.clone()
-    {
-        handler.debug(&mut TransferCx::new(cx), DebugKind::DataOut, body);
-    }
+    crate::trace::bytes(cx, DebugKind::DataOut, body);
     // The request's size counts them where the protocol sends them, with
     // the head and any framing (`Curl_xfer_send`).
     cx.report_mut().sizes_mut().upload += body.len() as u64;

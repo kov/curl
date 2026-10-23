@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 pub mod coding;
+pub mod components;
 pub mod conn;
 pub mod cookie;
 pub mod date;

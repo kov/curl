@@ -99,13 +99,15 @@ witness: curl-core deliver::tests::included_headers_count_against_the_size_limit
 --- new
 
 === the body is traced without verbose
-file: crates/curl-core/src/deliver/mod.rs
+file: crates/curl-core/src/trace.rs
 witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
 --- old
-    if !options.output.verbose {
+    if !easy.options().output.verbose {
         return;
     }
+    let ids =
 --- new
+    let ids =
 
 === the body is traced after it was delivered
 file: crates/curl-core/src/deliver/mod.rs

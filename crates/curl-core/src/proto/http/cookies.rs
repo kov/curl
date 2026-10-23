@@ -545,7 +545,7 @@ mod tests {
         let name = |p: &std::path::Path| p.as_os_str().as_encoded_bytes().to_vec();
         let read = |p: &std::path::Path| match read_named(&name(p)).unwrap() {
             Ok(text) => Ok(text),
-            Err(line) => Err(String::from_utf8(line.bytes().to_vec()).unwrap()),
+            Err(line) => Err(String::from_utf8(line.ended().bytes().to_vec()).unwrap()),
         };
         assert_eq!(read(&file), Ok(text.into_bytes()));
         let dir_name = dir.display();

@@ -3,6 +3,7 @@
 use std::fmt;
 
 /// Up to `N` bytes of text; a write past them fails.
+#[derive(Clone)]
 pub(crate) struct Text<const N: usize> {
     buf: [u8; N],
     len: usize,
@@ -23,13 +24,20 @@ impl<const N: usize> Text<N> {
     /// Up to `N` bytes of `args`, as C's `snprintf` keeps them; whether
     /// any were cut.
     pub(crate) fn clipped(args: fmt::Arguments<'_>) -> (Text<N>, bool) {
+        let mut text = Text::new();
+        let cut = text.push_fmt(args);
+        (text, cut)
+    }
+
+    /// Add as much of `args` as fits; whether any was cut.
+    pub(crate) fn push_fmt(&mut self, args: fmt::Arguments<'_>) -> bool {
         let mut clip = Clip {
-            text: Text::new(),
+            text: self,
             cut: false,
         };
         let written = fmt::write(&mut clip, args);
         assert!(written.is_ok() || clip.cut, "only a cut fails the write");
-        (clip.text, clip.cut)
+        clip.cut
     }
 
     /// Add `bytes`, as many as fit.
@@ -46,12 +54,12 @@ impl<const N: usize> Text<N> {
 }
 
 /// What fits of a formatting.
-struct Clip<const N: usize> {
-    text: Text<N>,
+struct Clip<'a, const N: usize> {
+    text: &'a mut Text<N>,
     cut: bool,
 }
 
-impl<const N: usize> fmt::Write for Clip<N> {
+impl<const N: usize> fmt::Write for Clip<'_, N> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let before = self.text.len;
         self.text.push_clipped(s.as_bytes());

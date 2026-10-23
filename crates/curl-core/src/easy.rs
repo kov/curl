@@ -7,6 +7,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use crate::coding::Decoders;
+use crate::components::Components;
 use crate::conn::io::SystemNet;
 use crate::cookie::{Jar, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
@@ -64,6 +65,11 @@ pub struct Easy {
     suffixes: SuffixList,
     /// The content codings the handle can undo.
     decoders: Decoders,
+    /// Which components trace, read at each line: shared with whoever
+    /// gave it, kept through `reset` and by a copy of the handle. Without
+    /// one, only the lines of a verbose transfer that belong to no
+    /// component are traced.
+    components: Option<Components>,
 }
 
 /// Where a handle's public suffixes come from.
@@ -150,6 +156,7 @@ impl Easy {
                 SuffixList::None => SuffixList::None,
             },
             decoders: self.decoders,
+            components: self.components.clone(),
         })
     }
 
@@ -163,6 +170,18 @@ impl Easy {
         self.wildcard_resolve = false;
         self.auth = Auth::default();
         self.set_cookies = 0;
+    }
+
+    /// Which components trace, as the application set it.
+    pub fn components(&self) -> Option<&Components> {
+        self.components.as_ref()
+    }
+
+    /// Trace the components `components` turns on, from now on: it is
+    /// read at each line, so a change to it shows in a running transfer
+    /// (`curl_global_trace`).
+    pub fn set_components(&mut self, components: Option<Components>) {
+        self.components = components;
     }
 
     /// The share the handle's transfers use.
@@ -266,7 +285,7 @@ impl Easy {
             .with_jar(true, |jar| {
                 let said = jar.add_line(line, list, now, &mut set)?;
                 if let Some(said) = said {
-                    said.lines(|parts| notes(trace::line_with(parts).bytes()));
+                    said.lines(|parts| notes(trace::line_with(parts).ended().bytes()));
                 }
                 Ok(())
             })
@@ -318,7 +337,7 @@ impl Easy {
                         false => match crate::proto::http::cookies::read_named(name)? {
                             Ok(text) => Some(text),
                             Err(warning) => {
-                                notes(warning.bytes());
+                                notes(warning.ended().bytes());
                                 None
                             }
                         },
@@ -328,7 +347,7 @@ impl Easy {
                         continue;
                     };
                     jar.load(&text, new_session, true, list, now, &mut set, |said| {
-                        said.lines(|parts| notes(trace::line_with(parts).bytes()));
+                        said.lines(|parts| notes(trace::line_with(parts).ended().bytes()));
                     })
                     .map_err(oom)?;
                 }

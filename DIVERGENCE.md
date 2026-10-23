@@ -135,6 +135,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   after it are not fetched. Measured against the C build. Pinned by
   `a_zero_byte_ends_its_url_line_alone` (`crates/curl-tool/src/config.rs`).
 
+- **A zero byte in a line of a `-H @file` ends that line, and nothing else.** The file of
+  headers `-H @file` and `--proxy-header @file` name is read with the same `get_line`
+  (`parse_header`, `src/tool_getparam.c`), and the rewrite reads it as it reads a file of URLs:
+  the rest of a line after a zero is dropped, and the next line is a header of its own. In C, a
+  file holding `X-Z: a` NUL `zz`, then `X-After: z`, sends one header `X-Z: aX-After: z`, and a
+  line starting with a zero ends the file: the headers after it are not sent. Measured against
+  the C build. Pinned by `a_zero_byte_ends_a_header_file_line_alone`
+  (`crates/curl-tool/src/config.rs`).
+
 - **Blanks after the last signed component are blanks.** `--httpsig-headers "method  "`
   (`CURLOPT_HTTPSIG_HEADERS`), with more than one blank after its last component, fails in C
   with `httpsig: too many signature components (max 16)`: `parse_components`

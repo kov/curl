@@ -146,6 +146,113 @@ fn options_shape_the_request() {
     );
 }
 
+/// `-H @file` adds each line of the file as a header as it is, a carriage
+/// return before its newline kept, and leaves out blank lines and
+/// comments; `--proxy-header @-` reads standard input, for the proxy
+/// alone. A line that does not look like a header is not warned about.
+#[test]
+fn reads_headers_from_a_file() {
+    let dir = scratch("header-file");
+    let file = dir.join("heads");
+    std::fs::write(
+        &file,
+        "One: 1\r\n\r\n \t\n# c\n  # c2\nno-colon\n\tTab: t\nUser-Agent:\nLast: x",
+    )
+    .unwrap();
+    let s = Server::new(OK);
+    let url = s.url();
+    let at = format!("@{}", file.display());
+    let run = curl(&[
+        "--no-progress-meter",
+        "-H",
+        "First: 0",
+        "-H",
+        &at,
+        "-H",
+        "After: 2",
+        &url,
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    assert_eq!(
+        s.request(),
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nAccept: */*\r\nFirst: 0\r\n\
+         One: 1\r\r\n\tTab: t\r\nLast: x\r\nAfter: 2\r\n\r\n"
+    );
+
+    let s = Server::new(OK);
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let out = Command::new(tool)
+        .args([
+            "-q",
+            "-sS",
+            "-A",
+            "",
+            "--proxy-header",
+            "@-",
+            "-x",
+            &s.url(),
+        ])
+        .arg("http://example.invalid/")
+        .stdin(std::fs::File::open(&file).unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{:?}", out);
+    assert_eq!(
+        s.request(),
+        "GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nAccept: */*\r\n\
+         Proxy-Connection: Keep-Alive\r\nOne: 1\r\r\n\tTab: t\r\nLast: x\r\n\r\n"
+    );
+
+    // Proxy headers are not sent to a server.
+    let s = Server::new(OK);
+    let run = curl(&["-s", "-A", "", "--proxy-header", &at, &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    assert_eq!(
+        s.request(),
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nAccept: */*\r\n\r\n"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A file of headers that does not open is said, and is an error reading
+/// a file; an empty one adds no header.
+#[test]
+fn a_header_file_that_does_not_open_fails() {
+    let dir = scratch("header-file-missing");
+    let missing = dir.join("missing");
+    for option in ["-H", "--proxy-header"] {
+        let run = curl(&[
+            option,
+            &format!("@{}", missing.display()),
+            "http://127.0.0.1:1/",
+        ]);
+        assert_eq!(run.code, 26);
+        let said = format!(
+            "curl: Failed to open {}\ncurl: option {option}: error encountered when reading a file\n",
+            missing.display()
+        );
+        assert!(run.stderr.starts_with(&said), "{}", run.stderr);
+    }
+    let empty = dir.join("empty");
+    std::fs::write(&empty, "").unwrap();
+    let s = Server::new(OK);
+    let run = curl(&[
+        "-s",
+        "-A",
+        "",
+        "-H",
+        &format!("@{}", empty.display()),
+        &s.url(),
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    assert_eq!(
+        s.request(),
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nAccept: */*\r\n\r\n"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// `-i` shows the header lines before the body, and `-I` them alone.
 #[test]
 fn shows_the_headers_of_http() {

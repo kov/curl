@@ -190,19 +190,36 @@ pub(crate) fn entries(text: &mut [u8]) -> Result<Vec<Entry<'_>>, Unread> {
 /// and a zero byte fit in it.
 const URL_LINE_BUFFER: usize = 8092;
 
-/// The URLs of `text`, a file of them one a line, as `parse_url` reads it:
-/// blank lines and comments are passed over, and a line is taken up to a
-/// zero byte. `Err` for a line longer than C's buffer holds.
+/// The buffer `parse_header` reads a file of headers with.
+const HEADER_LINE_BUFFER: usize = 1024 * 100;
+
+/// The URLs of `text`, a file of them one a line, as `parse_url` reads it.
 pub(crate) fn url_lines(text: &[u8]) -> impl Iterator<Item = Result<&[u8], Unread>> {
-    text.split_inclusive(|&b| b == b'\n').filter_map(|line| {
-        if line.len() + 1 > URL_LINE_BUFFER {
-            return Some(Err(Unread::TooLong));
-        }
-        let line = line.strip_suffix(b"\n").unwrap_or(line);
-        let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
-        let first = line.iter().position(|b| !is_blank(*b))?;
-        (line[first] != b'#').then_some(Ok(line))
-    })
+    lines(text, URL_LINE_BUFFER)
+}
+
+/// The headers of `text`, a file of them one a line, as `parse_header`
+/// reads it for `-H @file` and `--proxy-header @file`.
+pub(crate) fn header_lines(text: &[u8]) -> impl Iterator<Item = Result<&[u8], Unread>> {
+    lines(text, HEADER_LINE_BUFFER)
+}
+
+/// The lines of `text` as `my_get_line` reads them into a buffer of
+/// `buffer` bytes: blank lines and comments are passed over, the newline
+/// is dropped and a carriage return before it kept, and a line is taken
+/// up to a zero byte. `Err` for a line longer than the buffer holds with
+/// its newline and a zero byte.
+fn lines(text: &[u8], buffer: usize) -> impl Iterator<Item = Result<&[u8], Unread>> {
+    text.split_inclusive(|&b| b == b'\n')
+        .filter_map(move |line| {
+            if line.len() + 1 > buffer {
+                return Some(Err(Unread::TooLong));
+            }
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
+            let first = line.iter().position(|b| !is_blank(*b))?;
+            (line[first] != b'#').then_some(Ok(line))
+        })
 }
 
 fn is_blank(b: u8) -> bool {
@@ -526,6 +543,47 @@ mod tests {
         assert_eq!(
             urls(b"http://h/a\n\0\nhttp://h/b\n"),
             [b"http://h/a".to_vec(), b"http://h/b".to_vec()]
+        );
+    }
+
+    /// One header a line, as `-H @file` reads them: comments and blank
+    /// lines left out, a carriage return and leading blanks kept, a line
+    /// as long as C's buffer of 100 KiB holds and no longer.
+    #[test]
+    fn reads_headers_a_line_each() {
+        let headers = |text: &[u8]| -> Vec<Result<Vec<u8>, Unread>> {
+            header_lines(text).map(|h| h.map(<[u8]>::to_vec)).collect()
+        };
+        assert_eq!(
+            headers(b"One: 1\r\n\r\n \t\n# c\n  # c2\nno-colon\n\tTab: t\nLast: x"),
+            [
+                Ok(b"One: 1\r".to_vec()),
+                Ok(b"\r".to_vec()),
+                Ok(b"no-colon".to_vec()),
+                Ok(b"\tTab: t".to_vec()),
+                Ok(b"Last: x".to_vec()),
+            ]
+        );
+        assert_eq!(headers(b""), []);
+        let mut long = vec![b'a'; 102_398];
+        long.push(b'\n');
+        assert_eq!(headers(&long), [Ok(vec![b'a'; 102_398])]);
+        long.insert(0, b'a');
+        assert_eq!(headers(&long), [Err(Unread::TooLong)]);
+    }
+
+    /// A zero byte ends its header line and nothing more, as it ends a URL
+    /// line: in C, `X-A: 1` NUL `zz`, then `X-B: 2`, is one header `X-A:
+    /// 1X-B: 2`, and a line starting with a zero ends the file
+    /// (DIVERGENCE.md).
+    #[test]
+    fn a_zero_byte_ends_a_header_file_line_alone() {
+        let headers = |text: &[u8]| -> Vec<Vec<u8>> {
+            header_lines(text).map(|h| h.unwrap().to_vec()).collect()
+        };
+        assert_eq!(
+            headers(b"X-A: 1\0zz\nX-B: 2\n\0\nX-C: 3\n"),
+            [b"X-A: 1".to_vec(), b"X-B: 2".to_vec(), b"X-C: 3".to_vec()]
         );
     }
 

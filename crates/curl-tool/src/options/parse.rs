@@ -73,7 +73,7 @@ pub(crate) fn parse_args<'a>(
 ) -> Result<Parsed<'a>, ParamError> {
     match Parser::new(argv)?.drive(msgs, wipe) {
         Step::Done(parsed) => parsed,
-        Step::Read(..) | Step::ReadUrls(..) | Step::Grow(..) => {
+        Step::Read(..) | Step::ReadUrls(..) | Step::ReadHeaders(..) | Step::Grow(..) => {
             panic!("a file to read was named, or an argument expanded")
         }
     }
@@ -86,6 +86,9 @@ enum Step<'a> {
     Read(Parser<'a>, Wanted<'a>),
     /// It goes on once the URLs in this file are read (`parse_url`).
     ReadUrls(Parser<'a>, &'a [u8]),
+    /// It goes on once the headers in this file are read (`parse_header`),
+    /// for the proxy or not.
+    ReadHeaders(Parser<'a>, &'a [u8], bool),
     /// It goes on once there is room for the argument it expanded.
     Grow(Parser<'a>),
 }
@@ -146,6 +149,41 @@ fn go_on<'a, R>(
                 let op = parser.line.current();
                 op.add_url(url, true, msgs)
                     .map_err(|_| ParamError::ReadError)
+            });
+            let step = match added {
+                Ok(()) => parser.drive(msgs, wipe),
+                Err(e) => parser.fail(e, msgs),
+            };
+            return go_on(step, msgs, wipe, then);
+        }
+        Step::ReadHeaders(parser, name, proxy) => {
+            let text = match crate::slurp::read(name, As::Binary) {
+                Ok(text) => text,
+                Err(e) => {
+                    let e = match e {
+                        ReadFailed::Open => {
+                            msgs.error(&[b"Failed to open ", name]);
+                            ParamError::ReadError
+                        }
+                        ReadFailed::Read => ParamError::ReadError,
+                        ReadFailed::OutOfMemory => ParamError::NoMem,
+                    };
+                    let step = parser.fail(e, msgs);
+                    return go_on(step, msgs, wipe, then);
+                }
+            };
+            // What is parsed from here borrows the file's text; each line
+            // is a header as it is, unchecked.
+            let mut parser: Parser<'_> = parser;
+            let added = config::header_lines(&text).try_for_each(|header| {
+                let header = header.map_err(|_| ParamError::ReadError)?;
+                let op = parser.line.current();
+                let list = if proxy {
+                    &mut op.proxy_headers
+                } else {
+                    &mut op.headers
+                };
+                list.try_push(header).map_err(ParamError::from)
             });
             let step = match added {
                 Ok(()) => parser.drive(msgs, wipe),
@@ -421,6 +459,9 @@ impl<'a> Parser<'a> {
                 Ok((Flow::NextOperation, _)) => unreachable!("started above"),
                 Ok((Flow::Request(r), _)) => return Step::Done(Ok(Parsed::Request(r))),
                 Ok((Flow::Urls(name), _)) => return Step::ReadUrls(self, name),
+                Ok((Flow::Headers { name, proxy }, _)) => {
+                    return Step::ReadHeaders(self, name, proxy);
+                }
                 Ok((Flow::Grow, _)) => return Step::Grow(self),
                 Ok((Flow::Config(name), levels)) => {
                     // Each file read uses up a level (`C_CONFIG`).
@@ -1027,10 +1068,6 @@ mod tests {
         assert!(op.no_body && op.show_headers);
         assert_eq!(op.method, crate::options::Method::Head);
         assert!(!line(&["x", "-N", "--buffer"]).operations[0].no_buffer);
-        assert_eq!(
-            run(&["x", "-H", "@file"]),
-            Ok((1, Some("reading headers from a file"), None))
-        );
         assert!(line(&["x", "--tr-encoding"]).operations[0].tr_encoding);
     }
 

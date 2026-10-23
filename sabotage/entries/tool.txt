@@ -657,9 +657,9 @@ witness: curl-tool config::tests::reads_urls_a_line_each
 file: crates/curl-tool/src/config.rs
 witness: curl-tool config::tests::reads_urls_a_line_each
 --- old
-        if line.len() + 1 > URL_LINE_BUFFER {
+        if line.len() + 1 > buffer {
 --- new
-        if line.len() > URL_LINE_BUFFER {
+        if line.len() > buffer {
 
 === an upload whose read fails succeeds with what was read
 file: crates/curl-tool/src/operate.rs
@@ -1192,3 +1192,36 @@ witness: curl-tool options::parse::tests::socket_options_are_read_as_c_reads_the
 .filter(|&n| n <= 7);
 --- new
 .filter(|&n| n <= 8);
+
+=== a header file line is held to a URL line's length
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::reads_headers_a_line_each
+--- old
+const HEADER_LINE_BUFFER: usize = 1024 * 100;
+--- new
+const HEADER_LINE_BUFFER: usize = URL_LINE_BUFFER;
+
+=== a header file line's zero byte does not end it
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::a_zero_byte_ends_a_header_file_line_alone
+--- old
+        let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
+--- new
+        let line = &line[..line.iter().position(|&b| b == 0xff).unwrap_or(line.len())];
+
+=== a proxy header file's lines go to the server's headers
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool reads_headers_from_a_file
+--- old
+                let list = if proxy {
+--- new
+                let list = if !proxy {
+
+=== a header file that does not open goes unsaid
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool a_header_file_that_does_not_open_fails
+--- old
+                            msgs.error(&[b"Failed to open ", name]);
+                            ParamError::ReadError
+--- new
+                            ParamError::ReadError

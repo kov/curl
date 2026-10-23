@@ -86,6 +86,12 @@ pub(crate) enum Flow<'a> {
     Config(&'a [u8]),
     /// `--url @file`: read URLs from this file next, one a line.
     Urls(&'a [u8]),
+    /// `-H @file` or `--proxy-header @file`: read headers from this file
+    /// next, one a line.
+    Headers {
+        name: &'a [u8],
+        proxy: bool,
+    },
     /// An expanded argument needs more room than the parse has: the word
     /// is read again once there is (never from `apply`).
     Grow,
@@ -927,9 +933,10 @@ pub(crate) fn apply<'a>(
         Opt::Header | Opt::ProxyHeader => {
             let header = value.text();
             let proxy = spec.opt == Opt::ProxyHeader;
-            if header.first() == Some(&b'@') {
-                line.feature_not_implemented("reading headers from a file");
-            } else if !header.iter().any(|&b| b == b':' || b == b';') {
+            if let Some(name) = header.strip_prefix(b"@") {
+                return Ok(Flow::Headers { name, proxy });
+            }
+            if !header.iter().any(|&b| b == b':' || b == b';') {
                 let kind: &[u8] = if proxy { b"proxy" } else { b"HTTP" };
                 msgs.warn(&[
                     b"The provided ",

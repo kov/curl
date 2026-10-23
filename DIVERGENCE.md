@@ -126,6 +126,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   sent. Measured against the C build. Pinned by `a_zero_byte_ends_its_header_line_alone`
   (`crates/curl-tool/src/form.rs`).
 
+- **A zero byte in a line of a `--url @file` ends that line, and nothing else.** The file of
+  URLs is read with the same `get_line` as a config file (`parse_url`, `src/tool_getparam.c`),
+  and the rewrite reads it as it reads a config file: the rest of a line after a zero is
+  dropped, and the next line is a URL of its own. In C, a file holding
+  `http://127.0.0.1:PORT/a` NUL `zz`, then `http://127.0.0.1:PORT/b`, makes one request,
+  `GET /ahttp://127.0.0.1:PORT/b`, and a line starting with a zero ends the file: the URLs
+  after it are not fetched. Measured against the C build. Pinned by
+  `a_zero_byte_ends_its_url_line_alone` (`crates/curl-tool/src/config.rs`).
+
 - **Blanks after the last signed component are blanks.** `--httpsig-headers "method  "`
   (`CURLOPT_HTTPSIG_HEADERS`), with more than one blank after its last component, fails in C
   with `httpsig: too many signature components (max 16)`: `parse_components`

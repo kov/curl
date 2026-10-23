@@ -509,6 +509,26 @@ mod tests {
         assert_eq!(urls(&long), [Ok(vec![b'a'; 8091])]);
     }
 
+    /// A zero byte ends its URL line and nothing more: the next line is a
+    /// URL of its own, and so is a line after one starting with a zero.
+    /// C reads a file of URLs as it reads a config file: `a` NUL `zz`, then
+    /// `b`, is one URL `ab`, and a line starting with a zero ends the file
+    /// (DIVERGENCE.md).
+    #[test]
+    fn a_zero_byte_ends_its_url_line_alone() {
+        let urls = |text: &[u8]| -> Vec<Vec<u8>> {
+            url_lines(text).map(|u| u.unwrap().to_vec()).collect()
+        };
+        assert_eq!(
+            urls(b"http://h/a\0zz\nhttp://h/b\n"),
+            [b"http://h/a".to_vec(), b"http://h/b".to_vec()]
+        );
+        assert_eq!(
+            urls(b"http://h/a\n\0\nhttp://h/b\n"),
+            [b"http://h/a".to_vec(), b"http://h/b".to_vec()]
+        );
+    }
+
     #[test]
     fn q_or_disable_first_skips_it() {
         let argv = |a: &[&str]| -> Vec<OsString> { a.iter().map(OsString::from).collect() };

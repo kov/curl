@@ -739,6 +739,14 @@ witness: curl-tool config::tests::a_zero_byte_ends_its_line_alone
             .iter()
             .position(|&b| b == 0xff)
 
+=== a URL line's zero byte does not end it
+file: crates/curl-tool/src/config.rs
+witness: curl-tool config::tests::a_zero_byte_ends_its_url_line_alone
+--- old
+        let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
+--- new
+        let line = &line[..line.iter().position(|&b| b == 0xff).unwrap_or(line.len())];
+
 === an included header line is not written
 file: crates/curl-tool/src/output.rs
 witness: curl-tool an_included_header_that_cannot_be_written_fails

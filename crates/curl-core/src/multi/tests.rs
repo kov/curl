@@ -1386,14 +1386,21 @@ fn traced(url: &str) -> (Easy, TextLines) {
     (e, lines)
 }
 
-/// Lines of the trace without the debug build's warning.
+/// Lines of the trace without the debug build's warning, which carries the
+/// ids too when they are on.
 fn trace_of(lines: &TextLines) -> Vec<String> {
     lines
         .0
         .lock()
         .unwrap()
         .iter()
-        .filter(|l| !l.starts_with("!!!") && !l.starts_with("This is a debug build"))
+        .filter(|l| {
+            let text = l
+                .strip_prefix('[')
+                .and_then(|l| l.split_once("] "))
+                .map_or(l.as_str(), |(_, text)| text);
+            !text.starts_with("!!!") && !text.starts_with("This is a debug build")
+        })
         .cloned()
         .collect()
 }

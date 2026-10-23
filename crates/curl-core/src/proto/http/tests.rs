@@ -5825,12 +5825,13 @@ fn a_handler_is_given_no_room_past_the_size() {
 
 /// Under a send limit, a body held for a 100 earns its tokens from when
 /// the head went, as C's readers are asked for it then: after a wait of
-/// two seconds, three seconds' worth go at once, a second's in each
-/// send, and no more than that.
+/// three seconds, the burst of 32 KiB goes at once, a second's worth in
+/// each send and each pass (`xfer_send`).
 #[test]
 fn a_body_held_for_a_100_earns_from_the_head() {
     const RATE: u64 = 10_000;
     let (mut m, talk, clock) = server(&[], false);
+    let seen = Seen::default();
     let mut e = Easy::new();
     let o = e.options_mut();
     o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
@@ -5838,16 +5839,55 @@ fn a_body_held_for_a_100_earns_from_the_head() {
     o.method = Method::Post;
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
     o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-    o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(2));
+    o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(3));
     o.limits.max_send_speed = NonZeroU64::new(RATE);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(after_head(&talk.received()), 0, "held for the 100");
-    clock.advance(Duration::from_secs(2));
+    clock.advance(Duration::from_secs(3));
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(after_head(&talk.received()) as u64, RATE, "a send a pass");
     for _ in 0..20 {
         m.perform(&mut NoEvents).unwrap();
     }
-    assert_eq!(after_head(&talk.received()) as u64, 3 * RATE);
+    let sends: Vec<usize> = seen.of("dataout").iter().map(Vec::len).collect();
+    assert_eq!(sends, [10_000, 10_000, 10_000, 2768]);
+}
+
+/// The head does not count against a send's second's worth of the body:
+/// a pass sends the head beside as much of the body as the limit lets
+/// go, from as many fills as that takes.
+#[test]
+fn a_head_goes_beside_a_second_s_worth_of_the_body() {
+    for (rate, sends_want) in [
+        (50_000, &[50_000][..]),
+        (65_409, &[65_409]),
+        (65_500, &[65_409, 91]),
+    ] {
+        let (mut m, talk, _clock) = server(&[], false);
+        let seen = Seen::default();
+        let mut e = Easy::new();
+        let o = e.options_mut();
+        o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+            .unwrap();
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
+        o.limits.max_send_speed = NonZeroU64::new(rate);
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        let head: Vec<usize> = seen.of("out").iter().map(Vec::len).collect();
+        let sends: Vec<usize> = seen.of("dataout").iter().map(Vec::len).collect();
+        assert_eq!((&head[..], &sends[..]), (&[127][..], sends_want), "{rate}");
+        assert_eq!(
+            talk.received().len() as u64,
+            127 + rate.min(65_500),
+            "{rate}"
+        );
+    }
 }
 
 /// A 417 to a request that announced nothing is an error like any: the
@@ -5935,4 +5975,122 @@ fn the_system_s_scope_is_the_system_s() {
         crate::conn::io::SystemNet.link_local_scope(),
         curl_os::net::link_local_scope()
     );
+}
+
+/// The 100 that pauses the sending as it comes does not start it: the
+/// body's handler is not called until the application lets it go on.
+#[test]
+fn a_100_that_pauses_waits_for_the_application() {
+    struct PausesOn100;
+    impl HeaderHandler for PausesOn100 {
+        fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], _: HeaderOrigin) -> Write {
+            if line.starts_with(b"HTTP/1.1 100") {
+                let me = cx.me();
+                cx.pause(me, PauseRequest::SEND).unwrap();
+            }
+            Write::Accepted
+        }
+    }
+    let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK_EMPTY].concat();
+    let (mut m, talk, _) = server(&[&continued], false);
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    let stream = Stream::new(b"abc");
+    let at = stream.at.clone();
+    o.upload = UploadSource::Read {
+        handler: Handler::read(stream).unwrap(),
+        rewind: None,
+        size: Some(3),
+    };
+    o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    o.callbacks.header = Some(Handler::header(PausesOn100).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let sent = talk.received();
+    assert!(sent.ends_with(b"\r\n\r\n"), "{}", sent.escape_ascii());
+    assert_eq!(at.get(), 0, "the handler is not called while paused");
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert!(talk.received().ends_with(b"\r\n\r\nabc"));
+}
+
+/// The answer to `CONNECT` is read a byte at a time, the transfer taken
+/// stock of after each (`recv_CONNECT_resp`): a header line more in the
+/// answer is as many more calls of the progress handler as it has bytes.
+#[test]
+fn a_tunnel_s_answer_takes_stock_after_each_byte() {
+    let calls = |answer: &[u8]| {
+        let (mut m, talk, _) = server(&[answer, OK], false);
+        let progress = AbortsAt::default();
+        let ran = get(&mut m, "/", talk, |o| {
+            tunneled(o);
+            o.progress =
+                crate::options::Progress::Handler(Handler::progress(progress.clone()).unwrap());
+        });
+        assert_eq!(ran.result, Ok(()));
+        progress.calls.get()
+    };
+    let plain = calls(TUNNEL_UP);
+    let more = calls(b"HTTP/1.1 200 Fine\r\nX: abc\r\nY: z\r\n\r\n");
+    assert_eq!(more - plain, 14);
+}
+
+/// A signature asked of a proxy is as a method not implemented, and the
+/// rest of what was asked still picks among what the proxy offers: Basic
+/// over the Digest it was not asked for (`output_auth_headers`,
+/// `pickoneauth`).
+#[test]
+fn a_proxy_asked_for_a_signature_picks_from_the_rest() {
+    let challenge = b"HTTP/1.1 407 Who\r\n\
+        Proxy-Authenticate: Digest realm=\"p\", nonce=\"1\"\r\n\
+        Proxy-Authenticate: Basic realm=\"p\"\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[challenge, OK], false);
+    let ran = get(&mut m, "/", talk, |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        o.proxy.make_mut().unwrap().url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+        o.proxy.make_mut().unwrap().user = Some(b"u".to_vec());
+        o.proxy.make_mut().unwrap().password = Some(b"p".to_vec());
+        o.proxy.make_mut().unwrap().auth =
+            crate::options::HttpAuth(AuthMethods::BASIC | AuthMethods::AWS_SIGV4);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert!(
+        text.contains("\r\nProxy-Authorization: Basic dTpw\r\n"),
+        "{text}"
+    );
+    assert_eq!(ran.easy.report().proxy_auth_used(), AuthMethods::BASIC);
+}
+
+/// A tree not read yet, its request answered while it waits for a 100,
+/// needs no rewind to be sent to where the answer redirects
+/// (`cr_mime_needs_rewind`).
+#[test]
+fn a_tree_not_read_needs_no_rewind() {
+    let stream = Stream::new(b"abc");
+    let first = Conversation::new(&redirect(307, "/b"), true);
+    let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK].concat();
+    let second = Conversation::new(&continued, true);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/a", first.clone(), |o| {
+        o.method = Method::Post;
+        o.upload = streamed_tree(&stream, true);
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let said = ran.seen.text();
+    assert!(
+        !said.contains(&"Need to rewind upload for next request\n".to_string()),
+        "{said:?}"
+    );
+    assert_eq!(stream.rewinds.get(), 0);
+    let sent = String::from_utf8_lossy(&second.received()).into_owned();
+    assert!(sent.contains("\r\n\r\nabc\r\n--"), "{sent}");
 }

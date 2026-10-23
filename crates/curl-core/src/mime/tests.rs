@@ -1344,3 +1344,62 @@ fn a_tree_read_whole_starts_over_with_its_headers() {
     assert!(r.restart_for_test(&mut Script::default()));
     assert_eq!(all(&mut r, &mut Script::default()), first);
 }
+
+/// A handler pausing on its second call, its first made by a fill that
+/// it filled: the fill makes one call at most, so the pause is the next
+/// fill's, at its start (`read_part_content`'s `hasread`). The pieces are
+/// the reference build's for these rooms.
+#[test]
+fn a_pause_after_a_full_fill_is_the_next_fill_s() {
+    struct PausesSecond(Fed, usize);
+    impl Calls for PausesSecond {
+        fn read(&mut self, h: &Handler<dyn ReadHandler>, buf: &mut [u8]) -> Read {
+            self.1 += 1;
+            if self.1 == 2 {
+                return Read::Pause;
+            }
+            self.0.read(h, buf)
+        }
+
+        fn rewind(&mut self, _: &Handler<dyn Rewind>) -> Result<(), RewindFailed> {
+            unreachable!("not started over")
+        }
+    }
+    for (room, want) in [(135, "135 pause 10x19 54"), (136, "135 pause 10x19 54")] {
+        let part = Part {
+            encoder: Some(Encoder::Binary),
+            content: callback(None, false),
+            headers: vec![b"X: y".to_vec()],
+            ..Part::default()
+        };
+        let mut r = reader(tree([part]));
+        let fed = Fed {
+            data: oracle_data("bin200"),
+            at: 0,
+            chunk: 10,
+        };
+        let mut calls = PausesSecond(fed, 0);
+        let mut buf = vec![0u8; room];
+        let mut got = Vec::new();
+        loop {
+            match r.next_for_test(&mut buf, &mut calls) {
+                Got::Bytes(0) => break,
+                Got::Bytes(n) => got.push(n.to_string()),
+                Got::Pause => got.push("pause".to_string()),
+                other => panic!("{other:?}"),
+            }
+        }
+        let mut runs: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < got.len() {
+            let n = got[i..].iter().take_while(|g| **g == got[i]).count();
+            runs.push(if n > 1 {
+                format!("{}x{n}", got[i])
+            } else {
+                got[i].clone()
+            });
+            i += n;
+        }
+        assert_eq!(runs.join(" "), want, "room {room}");
+    }
+}

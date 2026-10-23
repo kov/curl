@@ -886,6 +886,33 @@ mod tests {
         SystemNet.close(socket);
     }
 
+    /// More sockets and descriptors than fit on the stack are polled all
+    /// the same, each getting its own events back.
+    #[test]
+    fn more_than_fit_on_the_stack_are_polled() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let (one, _) = SystemNet.connect(listener.local_addr().unwrap()).unwrap();
+        let (two, _) = SystemNet.connect(listener.local_addr().unwrap()).unwrap();
+        let pairs: Vec<_> = (0..9).map(|_| UnixStream::pair().unwrap()).collect();
+        (&pairs[8].0).write_all(b"x").unwrap();
+        let mut sockets = [
+            SocketPoll::new(&*one, Events::IN),
+            SocketPoll::new(&*two, Events::IN),
+        ];
+        let mut fds: Vec<PollFd<'_>> = pairs
+            .iter()
+            .map(|(_, b)| PollFd::new(b.as_fd(), Events::IN))
+            .collect();
+        let ready = SystemNet
+            .poll(&mut sockets, &mut fds, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(ready, 1);
+        assert!(fds[8].revents().contains(Events::IN));
+        assert!(fds[..8].iter().all(|f| f.revents().is_empty()));
+        SystemNet.close(one);
+        SystemNet.close(two);
+    }
+
     /// Fake sockets get the lowest free number, and a fake peer's answer
     /// shows once the socket is polled.
     #[test]

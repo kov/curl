@@ -1073,3 +1073,33 @@ fn the_debug_build_traces_the_range() {
         assert_eq!(got, want, "{range:?}");
     }
 }
+
+/// A handler is given no more room than is left of the upload's size, so
+/// the file is written no further than it.
+#[test]
+fn an_upload_is_written_no_further_than_its_size() {
+    struct OneThenAll(crate::test_cell::Cell<usize>);
+    impl ReadHandler for OneThenAll {
+        fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
+            let data = b"abcdefghij";
+            let at = self.0.get();
+            let n = if at == 0 {
+                1
+            } else {
+                buf.len().min(data.len() - at)
+            };
+            buf[..n].copy_from_slice(&data[at..at + n]);
+            self.0.set(at + n);
+            NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
+        }
+    }
+    let s = Scratch::new("upsize");
+    let source = UploadSource::Read {
+        handler: Handler::read(OneThenAll(crate::test_cell::Cell::new(0))).unwrap(),
+        rewind: None,
+        size: Some(5),
+    };
+    let (e, _) = upload(&s.url("f"), source);
+    assert_eq!(run(e).0, Ok(()));
+    assert_eq!(s.read("f"), b"abcde");
+}

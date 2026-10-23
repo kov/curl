@@ -418,4 +418,16 @@ exclude_re = [
     # The extra turn writes nothing: an empty write returns `Ok(0)`, which
     # ends the loop with the same count.
     'curl-tool/src/output\.rs:.*: replace < with <= in unbuffered$',
+    # `left_ms` never gives 0: none left reads as -1, as C's
+    # `Curl_cshutdn_timeleft_ms` gives it.
+    'curl-core/src/conn/shutdown\.rs:.*: replace < with <= in Shutting::try_once$',
+    # A time left equal to the least so far sets the same least.
+    'curl-core/src/conn/shutdown\.rs:.*: replace < with <= in ShutdownSet::perform$',
+    # Only the debug build's invariant check asks it, of a socket entry
+    # naming a closing connection: true passes only a state the check
+    # exists to refuse, which no correct run reaches.
+    'curl-core/src/conn/shutdown\.rs:.*: replace ShutdownSet::holds -> bool with true$',
+    # With none shutting down to that destination, closing the oldest of
+    # them closes none and takes nothing off.
+    'curl-core/src/conn/pool\.rs:.*: replace > with >= in shutdowns_over$',
 ]

@@ -80,19 +80,31 @@ impl Rec {
 /// The fake network, reachable by the test while a multi holds it, the
 /// sockets it closes recorded in order.
 #[derive(Clone)]
-struct Wire(Arc<Mutex<(FakeNet, Vec<i32>)>>);
+struct Wire(Arc<Mutex<Wired>>);
+
+struct Wired {
+    net: FakeNet,
+    closed: Vec<i32>,
+    /// How long each close takes of the clock, if any time.
+    close_takes: Option<(ManualClock, Duration)>,
+}
 
 impl Wire {
     fn closed(&self) -> Vec<i32> {
-        self.0.lock().unwrap().1.clone()
+        self.0.lock().unwrap().closed.clone()
     }
 
     fn hang_up(&self, fd: i32) {
-        self.0.lock().unwrap().0.hang_up(SocketKey::new(fd));
+        self.0.lock().unwrap().net.hang_up(SocketKey::new(fd));
     }
 
     fn open(&self) -> usize {
-        self.0.lock().unwrap().0.open_sockets()
+        self.0.lock().unwrap().net.open_sockets()
+    }
+
+    /// From now on each close moves `clock` on by `takes`.
+    fn slow_closes(&self, clock: &ManualClock, takes: Duration) {
+        self.0.lock().unwrap().close_takes = Some((clock.clone(), takes));
     }
 }
 
@@ -103,17 +115,20 @@ impl Net for Wire {
         fds: &mut [PollFd<'_>],
         timeout: Duration,
     ) -> std::io::Result<u32> {
-        self.0.lock().unwrap().0.poll(sockets, fds, timeout)
+        self.0.lock().unwrap().net.poll(sockets, fds, timeout)
     }
 
     fn open(&mut self, addr: SocketAddr) -> std::io::Result<Box<dyn Socket>> {
-        self.0.lock().unwrap().0.open(addr)
+        self.0.lock().unwrap().net.open(addr)
     }
 
     fn close(&mut self, socket: Sock) {
         let mut w = self.0.lock().unwrap();
-        w.1.push(socket.key().get());
-        w.0.close(socket);
+        w.closed.push(socket.key().get());
+        w.net.close(socket);
+        if let Some((clock, takes)) = &w.close_takes {
+            clock.advance(*takes);
+        }
     }
 
     fn resolve(
@@ -121,7 +136,7 @@ impl Net for Wire {
         name: &[u8],
         family: Family,
     ) -> Result<Vec<std::net::IpAddr>, ResolveFailure> {
-        self.0.lock().unwrap().0.resolve(name, family)
+        self.0.lock().unwrap().net.resolve(name, family)
     }
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
@@ -154,7 +169,11 @@ fn served(linger: Linger, talks: usize) -> (Multi, Wire, ManualClock) {
             }
         }
     }
-    let wire = Wire(Arc::new(Mutex::new((fake, Vec::new()))));
+    let wire = Wire(Arc::new(Mutex::new(Wired {
+        net: fake,
+        closed: Vec::new(),
+        close_takes: None,
+    })));
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(wire.clone()),
@@ -178,7 +197,7 @@ fn closing(port: u16) -> Box<Easy> {
 
 /// Run `m` by `socket_action`, on the socket `fd` of transfer `id`,
 /// until it completes.
-fn by_events(m: &mut Multi, id: TransferId, fd: i32, ev: &mut Rec) {
+fn by_events(m: &mut Multi, id: TransferId, fd: i32, ev: &mut dyn MultiEvents<NoHost>) {
     m.socket_action(SocketEvent::Timeout, ev).unwrap();
     for _ in 0..10 {
         if m.state_of(id).is_completed() {
@@ -191,7 +210,7 @@ fn by_events(m: &mut Multi, id: TransferId, fd: i32, ev: &mut Rec) {
 }
 
 /// Run `m` by `perform` until transfer `id` completes.
-fn by_perform(m: &mut Multi, id: TransferId, ev: &mut Rec) {
+fn by_perform(m: &mut Multi, id: TransferId, ev: &mut dyn MultiEvents<NoHost>) {
     for _ in 0..10 {
         m.perform(ev).unwrap();
         if m.state_of(id).is_completed() {
@@ -627,5 +646,305 @@ fn an_aborted_tls_transfer_says_no_goodbye() {
     assert_eq!(tls.log().closes_sent, 0);
     assert!(!talk.received().ends_with(crate::tls::fake::CLOSE));
     assert_eq!(m.shutdowns.len(), 0);
+    assert_eq!(wire.closed(), [1000]);
+}
+
+/// Room under a limit closes only as many closing connections as the new
+/// one needs, the oldest first (`cpool_check_limits`: those over
+/// `live + shutdowns - max + 1`): three shutting down under a limit of
+/// three, on one host or in all, lose one to a fourth transfer. Under the
+/// limit, each joined with none closed.
+#[test]
+fn room_closes_only_as_many_closing_connections_as_it_needs() {
+    for (host, total) in [(Some(3), None), (None, Some(3))] {
+        let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
+        let limits = m.conn_limits_mut();
+        limits.max_host = host.and_then(NonZeroU32::new);
+        limits.max_total = total.and_then(NonZeroU32::new);
+        let mut ev = Rec::default();
+        for fd in 1000..1003 {
+            let id = m.add(closing(1), (), &mut ev).unwrap();
+            by_events(&mut m, id, fd, &mut ev);
+            m.remove(id, &mut ev).unwrap();
+        }
+        assert_eq!(wire.closed(), [], "each had room");
+        assert_eq!(m.shutdowns.len(), 3);
+        let id = m.add(closing(1), (), &mut ev).unwrap();
+        m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+        assert_eq!(wire.closed(), [1000], "the oldest alone");
+        assert_eq!(m.shutdowns.len(), 2);
+        assert!(!matches!(m.state_of(id), state::TransferState::Pending(_)));
+    }
+}
+
+/// The set's deadline is the least time left of its connections
+/// (`cshutdn_perform`), each counted in whole milliseconds since its
+/// connection was made, as C's `start_ms` is: of three released at 1.0,
+/// 1.2 and 1.4 ms, made at 0, 0.5 and 1.3 ms, the middle one has spent a
+/// millisecond by 1.5 ms, the others none.
+#[test]
+fn the_set_s_deadline_is_its_least_time_left() {
+    let (mut m, _wire, clock) = lingering(Linger::UntilPeer);
+    let mut ev = Rec::default();
+    let at = |clock: &ManualClock, us: u64, start: Instant| {
+        clock.advance(start.after(Duration::from_micros(us)).since(clock.now()));
+    };
+    let start = clock.now();
+    let a = m.add(closing(1), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    at(&clock, 500, start);
+    let b = m.add(closing(2), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    at(&clock, 1000, start);
+    by_events(&mut m, a, 1000, &mut ev);
+    at(&clock, 1200, start);
+    by_events(&mut m, b, 1001, &mut ev);
+    at(&clock, 1300, start);
+    let c = m.add(closing(1), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    at(&clock, 1400, start);
+    by_events(&mut m, c, 1002, &mut ev);
+    assert_eq!(m.shutdowns.len(), 3);
+    at(&clock, 1500, start);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(m.timeout(), Some(Duration::from_millis(1999)));
+}
+
+/// The multi's socket callback, refusing to watch the socket `fd` for the
+/// multi itself.
+struct Refusing {
+    rec: Rec,
+    fd: i32,
+}
+
+impl MultiEvents<NoHost> for Refusing {
+    fn socket(
+        &mut self,
+        cx: &mut EventCx<'_, NoHost>,
+        who: SocketFor,
+        s: SocketKey,
+        what: SocketWhat,
+        p: Option<()>,
+    ) -> Result<(), Abort> {
+        let multi = matches!(who, SocketFor::Multi);
+        self.rec.socket(cx, who, s, what, p)?;
+        if multi && s.get() == self.fd && what != SocketWhat::Remove {
+            return Err(Abort);
+        }
+        Ok(())
+    }
+
+    fn wants_sockets(&self) -> bool {
+        true
+    }
+}
+
+/// A connection the socket callback refuses to watch as it joins the set
+/// is closed at once, and only that one (`Curl_cshutdn_add`, "update
+/// events failed"): the idle one joining at the cleanup goes before the
+/// one already shutting down, which the cleanup closes after its pass.
+#[test]
+fn a_connection_the_callback_refuses_is_closed_alone() {
+    let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
+    let mut ev = Refusing {
+        rec: Rec::default(),
+        fd: 1001,
+    };
+    let a = m.add(closing(1), (), &mut ev).unwrap();
+    by_events(&mut m, a, 1000, &mut ev);
+    let mut idle = closing(2);
+    idle.options_mut().limits.reuse.forbid = false;
+    let b = m.add(idle, (), &mut ev).unwrap();
+    by_events(&mut m, b, 1001, &mut ev);
+    m.remove(a, &mut ev).unwrap();
+    m.remove(b, &mut ev).unwrap();
+    assert_eq!((m.shutdowns.len(), m.caches.pool.len()), (1, 1));
+    m.close_connections(&mut ev);
+    assert!(
+        ev.rec
+            .sockets()
+            .contains(&Call::Socket(None, 1001, SocketWhat::In)),
+        "asked to watch it"
+    );
+    assert_eq!(wire.closed(), [1001, 1000]);
+}
+
+/// An event on a closing connection's socket runs the set once: what is
+/// still shutting down then waits for the set's deadline, not at once.
+#[test]
+fn an_event_runs_the_set_once() {
+    let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
+    let mut ev = Rec::default();
+    let id = m.add(closing(1), (), &mut ev).unwrap();
+    by_events(&mut m, id, 1000, &mut ev);
+    m.remove(id, &mut ev).unwrap();
+    m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+        .unwrap();
+    assert_eq!(wire.closed(), [], "its peer said nothing");
+    assert_eq!(m.timeout(), Some(Duration::from_secs(2)));
+}
+
+/// The trace lines of a transfer, as its debug callback has them.
+#[derive(Clone, Default)]
+struct Lines(Arc<Mutex<Vec<String>>>);
+
+impl crate::handler::DebugHandler for Lines {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+        if kind == crate::handler::DebugKind::Text {
+            let line = String::from_utf8_lossy(data).into_owned();
+            self.0.lock().unwrap().push(line);
+        }
+    }
+}
+
+/// A closing connection that closes lets a transfer waiting for room try
+/// again (`Curl_cshutdn_terminate` calling `Curl_multi_connchanged`), as
+/// its limit may no longer hold: one waiting on a busy host looks again,
+/// and waits again, when a connection to another host closes.
+#[test]
+fn a_closed_connection_lets_a_waiting_transfer_look_again() {
+    let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    let mut ev = Rec::default();
+    let a = m.add(closing(1), (), &mut ev).unwrap();
+    by_events(&mut m, a, 1000, &mut ev);
+    m.remove(a, &mut ev).unwrap();
+    // A transfer to the host that never answers, and one waiting for it.
+    let busy = m.add(closing(3), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    let lines = Lines::default();
+    let mut e = closing(3);
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.debug = Some(crate::handler::Handler::debug(lines.clone()).unwrap());
+    let waiting = m.add(e, (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert!(matches!(
+        m.state_of(waiting),
+        state::TransferState::Pending(_)
+    ));
+    let refused = "No more connections allowed to host\n";
+    let refusals = |lines: &Lines| {
+        lines
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| *l == refused)
+            .count()
+    };
+    assert_eq!(refusals(&lines), 1);
+    wire.hang_up(1000);
+    m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+        .unwrap();
+    assert_eq!(wire.closed(), [1000]);
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(refusals(&lines), 2, "{:?}", lines.0.lock().unwrap());
+    assert!(!m.state_of(busy).is_completed());
+}
+
+/// Running the set takes time, as running a transfer does: the timers
+/// that came due meanwhile run in the same call (`multi_socket`, its
+/// internal handle counted among those run). A transfer whose time runs
+/// out as a closing connection closes is done by the call's end.
+#[test]
+fn the_set_s_run_counts_as_a_run() {
+    let (mut m, wire, clock) = lingering(Linger::UntilPeer);
+    let mut ev = Rec::default();
+    let a = m.add(closing(1), (), &mut ev).unwrap();
+    by_events(&mut m, a, 1000, &mut ev);
+    m.remove(a, &mut ev).unwrap();
+    let mut e = closing(3);
+    e.options_mut().limits.total = crate::time::TimeLimit::from_millis(50);
+    let late = m.add(e, (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert!(!m.state_of(late).is_completed());
+    wire.slow_closes(&clock, Duration::from_millis(100));
+    wire.hang_up(1000);
+    m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+        .unwrap();
+    assert_eq!(wire.closed()[0], 1000);
+    assert!(m.state_of(late).is_completed(), "run in the same call");
+    let done: Vec<_> = std::iter::from_fn(|| m.info_read().map(|msg| msg.result)).collect();
+    assert_eq!(done, [Err(ErrorKind::OperationTimedout)]);
+}
+
+/// A search of a share's pool may close each of the multi's closing
+/// connections under the share's lock: room to hold every one of their
+/// sockets until the lock is let go is made first, more than a lease
+/// given back closes. Eight shutting down are all closed for a transfer
+/// under a total limit of one.
+#[test]
+fn a_share_s_search_holds_every_closing_socket_it_closes() {
+    use crate::share::{Kind, Share};
+    let (mut m, wire, _clock) = served(Linger::UntilPeer, 9);
+    let share = Share::with_net(Box::new(wire.clone())).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut ev = Rec::default();
+    for fd in 1000..1008 {
+        let mut e = closing(1);
+        e.set_share(Some(share.clone()));
+        let id = m.add(e, (), &mut ev).unwrap();
+        by_events(&mut m, id, fd, &mut ev);
+        m.remove(id, &mut ev).unwrap();
+    }
+    assert_eq!(m.shutdowns.len(), 8);
+    m.conn_limits_mut().max_total = NonZeroU32::new(1);
+    let mut e = closing(1);
+    e.set_share(Some(share.clone()));
+    let id = m.add(e, (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(wire.closed(), (1000..1008).collect::<Vec<_>>());
+    assert_eq!(m.shutdowns.len(), 0);
+    assert!(!matches!(m.state_of(id), state::TransferState::Pending(_)));
+}
+
+/// The debug build's cleanup lets its connections shut down for as long
+/// as `CURL_GRACEFUL_SHUTDOWN` says (`Curl_cshutdn_destroy`), in waits of
+/// at most a second (`cshutdn_wait`), and not at all with none shutting
+/// down; read in a child of this binary given it, as the environment is
+/// the whole process's.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn the_debug_build_s_cleanup_waits_as_told() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "multi::shutdown_tests::graceful_cleanup_in_a_child",
+            "--test-threads=1",
+        ])
+        .env("CURL_CORE_CHILD", "graceful")
+        .env("CURL_GRACEFUL_SHUTDOWN", "1500")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The child of `the_debug_build_s_cleanup_waits_as_told`.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn graceful_cleanup_in_a_child() {
+    if std::env::var_os("CURL_CORE_CHILD").is_none_or(|m| m != "graceful") {
+        return;
+    }
+    // None shutting down: nothing to wait for.
+    let (mut m, _wire, clock) = lingering(Linger::UntilPeer);
+    let start = clock.now();
+    m.close_connections(&mut NoEvents);
+    assert_eq!(clock.now(), start, "no wait");
+    // One whose peer never answers: closed once the time is spent, after
+    // waits of 1 s and 0.5 s.
+    let (mut m, wire, clock) = lingering(Linger::UntilPeer);
+    let mut ev = Rec::default();
+    let id = m.add(closing(1), (), &mut ev).unwrap();
+    by_events(&mut m, id, 1000, &mut ev);
+    m.remove(id, &mut ev).unwrap();
+    let start = clock.now();
+    m.close_connections(&mut ev);
+    assert_eq!(clock.now().since(start), Duration::from_millis(1500));
     assert_eq!(wire.closed(), [1000]);
 }

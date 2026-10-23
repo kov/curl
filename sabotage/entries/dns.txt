@@ -88,22 +88,12 @@ witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- new
         if answer.family != Family::Any && answer.family != family && false {
 
-=== the announcing network resolves nothing
+=== a drive's network resolves nothing
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core multi::tests::the_resolver_s_answers_are_kept
 --- old
-        self.forget(socket.key());
-        self.net.close(socket);
-    }
-
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
-        self.net.resolve(name, family)
+        self.step.rest.net.resolve(name, family)
 --- new
-        self.forget(socket.key());
-        self.net.close(socket);
-    }
-
-    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
         let _ = (name, family);
         Err(ResolveFailure::NotFound)
 

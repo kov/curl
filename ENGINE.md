@@ -958,11 +958,12 @@ The rules that keep this sound:
   pool not borrowed at all. The machine is part of the stepping transfer's `Run`, so it is one
   of the owned values moved out. A drive takes a `&mut dyn ConnCx` (§4.7), implemented over
   the `StepCx` (`DriveCx`), and makes call-outs through it: trace lines (`SETUP`, `TCP`, the
-  chain's), the socket callback's REMOVE as an attempt's socket closes (through an
-  `Announcing` built for that call, not held across the drive), and, planned, the socket hooks
-  (OPENSOCKET, SOCKOPT, CLOSESOCKET). The context reaches no pool. Planned (step 40): today the
-  drive takes the network and the time, and reports what C traces from inside it as `Progress`
-  for the transfer to trace after.
+  chain's), the socket callback's REMOVE as an attempt's socket closes (`DriveCx` is the
+  drive's network, and builds an `Announcing` for each close, never held across the drive),
+  and the socket hooks (OPENSOCKET, SOCKOPT, CLOSESOCKET). The context reaches no pool. Built
+  so far: the time, the network with its announced closes, and the names; the lines C traces
+  from inside a connect are still reported as `Progress` for the transfer to trace after,
+  until the chain's trace (step 40h), and the hooks come with step 40k.
 - **Outside a step** (`wait`, the timeout, `fdset`, `waitfds`, `assess`), a trace line for a
   transfer is made through a `StepCx` built for a transfer whose `Run` is in its slot, as
   `trace_membership` and `mark_expired_dirty` build one. `wait` takes the events for that, and
@@ -1066,7 +1067,7 @@ pub(crate) enum ConnectMachine {
     Socks(SocksHandshake), Tunnel(TunnelHandshake), Tls(TlsHandshake),
 }
 impl ConnectMachine {
-    fn drive(self, cx: &mut dyn ConnCx, setup: Setup<'_>) -> Result<Drove, ConnectError>;
+    fn drive(self, cx: &mut dyn ConnCx, setup: Setup) -> Result<Drove, ConnectError>;
 }
 pub(crate) enum Drove { Connecting(ConnectMachine, Progress), Established(Conn) }
 pub(crate) enum Progress { Trying(SocketAddr), Waiting }
@@ -1088,8 +1089,8 @@ place in its slot (§3.6); the transfer traces it in C's
 words ("  Trying …", "connect to … from … failed: …", "Established connection to … ", then
 `failf`'s "Failed to connect to H:P after N ms: …" or "Could not resolve host: …"). The machine
 is driven in its lease, the pool not borrowed (§3.6), and reaches the transfer only through its
-`ConnCx`; today it takes the network and the time and reports through `Progress` (planned, step
-40). As `cf_tcp_connect` does, the socket is polled
+`ConnCx`; `Setup` carries the transfer's settings for the drive (the eyeballs delay, the
+scope, the socket options, the names' rules). As `cf_tcp_connect` does, the socket is polled
 with a zero timeout right after its connect starts, so an answer already there is taken in the
 same pass. A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
 connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
@@ -1333,7 +1334,7 @@ health-checked before reuse; input pending on an idle HTTP/1 connection makes it
 pub struct ConnLease { id: ConnId, conn: Option<ConnSlot>, home: Home }  // no Clone/Copy
 pub enum Home { Multi, Share(Share) }      // the pool the lease came from and goes back to
 impl ConnLease {
-    pub fn connect(&mut self, cx: &mut dyn ConnCx, setup: Setup<'_>)
+    pub fn connect(&mut self, cx: &mut dyn ConnCx, setup: Setup)
         -> Result<Connected, ConnectError>;                     // Connecting, Established, AlreadyUp
     pub fn get(&mut self) -> &mut Conn;                                         // once up
     pub fn home(&self) -> &Home;
@@ -1483,7 +1484,7 @@ its internal one. A share's idle connections close when its last clone drops.
 pub(crate) trait ConnCx: LayerCx {         // the connection context C's admin handle stands in for
     fn net(&mut self) -> &mut dyn Net;
     fn names(&mut self) -> Names<'_>;       // the multi's DnsCache, or the share's under its lock
-    fn hooks(&self) -> &SocketHooks;        // OPENSOCKET, SOCKOPT, CLOSESOCKET
+    fn hooks(&self) -> &SocketHooks;        // OPENSOCKET, SOCKOPT, CLOSESOCKET (step 40k)
 }
 ```
 
@@ -1496,8 +1497,9 @@ is captured the same way (§4.6). The reuse limits (max idle, max age) are the s
 transfer's, passed to `find`. Connection-owned sockets appear in the `SocketTable` with a
 `SocketOwner::Conn(ConnId)` user, with the `Closing` place (step 43).
 
-Planned: `ConnCx` and `DriveCx` (step 40), `ConnSettings` and `SocketOwner::Conn` (step 43).
-Only transfers own sockets today.
+Built: `ConnCx` without `hooks` (step 40k), and `DriveCx`; the tests drive with `Plain`, which
+traces nothing. Planned: `ConnSettings` and `SocketOwner::Conn` (step 43). Only transfers own
+sockets today.
 
 ### 4.8 Resolver
 

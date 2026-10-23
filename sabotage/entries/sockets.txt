@@ -100,3 +100,12 @@ witness: curl-core multi::sockets::tests::a_pollset_holds_each_socket_once
         if let Some((_, had)) = w.wants[..w.len].iter_mut().find(|(k, _)| *k == key) {
 --- new
         if let Some((_, had)) = w.wants[..0].iter_mut().find(|(k, _)| *k == key) {
+
+=== a drive closes a failed attempt's socket without removing it first
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::socket_tests::an_attempt_failing_in_a_drive_is_removed_before_it_closes
+--- old
+        self.step.rest.announcing(me).close(socket);
+--- new
+        let _ = me;
+        self.step.rest.net.close(socket);

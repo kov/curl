@@ -4,14 +4,17 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+use crate::components::Component;
 use crate::conn::io::{
     Connect, Family, Net, PollFd, ResolveFailure, Sock, Socket, SocketKey, SocketPoll,
 };
-use crate::conn::{Caches, Home, Names, Pool};
+use crate::conn::layer::LayerCx;
+use crate::conn::{Caches, ConnCx, DnsCache, Home, Names, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
@@ -24,6 +27,7 @@ use crate::time::{Clock, Instant};
 use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
 use super::sockets::{Change, SocketTable, SocketWhat, UnknownSocket};
+use super::state::StepCx;
 use super::{
     Abort, AddError, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed, Slots,
     TransferId, read_message,
@@ -142,14 +146,95 @@ impl<H: Host> EngineRest<'_, H> {
             events: &mut *self.events,
             who,
         };
-        let names = match kept {
-            Some(k) => Names::Shared {
-                share: &k.share,
-                watch: k.watch(),
-            },
-            None => Names::Own(&mut self.caches.dns),
-        };
-        (net, names)
+        (net, names(&mut self.caches.dns, kept))
+    }
+
+    /// The network as transfer `who`'s pool uses it, which tells the
+    /// socket callback of a socket before it closes.
+    pub(crate) fn announcing(&mut self, who: TransferId) -> Announcing<'_, H> {
+        Announcing {
+            net: &mut *self.net,
+            tell: self.tell.reborrow(),
+            events: &mut *self.events,
+            who,
+        }
+    }
+}
+
+/// The names a setup looks up and keeps: the share's in `kept`, if it
+/// keeps them, else the multi's own.
+fn names<'k>(own: &'k mut DnsCache, kept: Option<&'k Kept>) -> Names<'k> {
+    match kept {
+        Some(k) => Names::Shared {
+            share: &k.share,
+            watch: k.watch(),
+        },
+        None => Names::Own(own),
+    }
+}
+
+/// The context a transfer's step drives its connection's setup with
+/// (`ConnCx`): the step's own, for the time and the trace; the network,
+/// a socket that closes told to the socket callback first, through an
+/// `Announcing` made for that close alone; and the names `kept` says.
+pub(crate) struct DriveCx<'c, 'a, H: Host> {
+    pub(crate) step: &'c mut StepCx<'a, H>,
+    pub(crate) kept: Option<&'c Kept>,
+}
+
+impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
+    fn now(&self) -> Instant {
+        self.step.now()
+    }
+
+    fn traces(&self, component: Component) -> bool {
+        LayerCx::traces(&*self.step, component)
+    }
+
+    fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
+        LayerCx::of(&mut *self.step, component, line);
+    }
+}
+
+impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
+    fn net(&mut self) -> &mut dyn Net {
+        self
+    }
+
+    fn names(&mut self) -> Names<'_> {
+        names(&mut self.step.rest.caches.dns, self.kept)
+    }
+}
+
+impl<H: Host> Net for DriveCx<'_, '_, H> {
+    fn poll(
+        &mut self,
+        sockets: &mut [SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> io::Result<u32> {
+        self.step.rest.net.poll(sockets, fds, timeout)
+    }
+
+    fn connect(
+        &mut self,
+        addr: SocketAddr,
+        options: crate::conn::io::SocketOptions,
+    ) -> io::Result<(Box<dyn Socket>, Connect)> {
+        self.step.rest.net.connect(addr, options)
+    }
+
+    fn close(&mut self, socket: Sock) {
+        let me = self.step.me;
+        self.step.rest.announcing(me).close(socket);
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+        self.step.rest.net.resolve(name, family)
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.step.rest.net.link_local_scope()
     }
 }
 

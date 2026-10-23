@@ -44,7 +44,7 @@ use crate::upload;
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
-use super::cx::{EngineRest, TransferCalls};
+use super::cx::{DriveCx, EngineRest, TransferCalls};
 use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::Pollset;
@@ -1201,9 +1201,7 @@ fn connecting<H: Host>(
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.lease.answer().is_some();
-    let (mut net, dns) = cx.rest.net_names(cx.me, kept.as_ref());
     let setup = Setup {
-        dns,
         wildcard,
         max_age,
         delay,
@@ -1212,7 +1210,13 @@ fn connecting<H: Host>(
         #[cfg(test)]
         layer,
     };
-    let connected = c.lease.connect(&mut net, now, setup);
+    let connected = c.lease.connect(
+        &mut DriveCx {
+            step: cx,
+            kept: kept.as_ref(),
+        },
+        setup,
+    );
     if answered && c.lease.answer().is_none() {
         // Connected, or failed: the answer is let go.
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();

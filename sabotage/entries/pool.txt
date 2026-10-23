@@ -212,7 +212,7 @@ witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 --- old
-                        r.close_all(net);
+                        r.close_all(cx.net());
                         if self.route.handshakes() {
 --- new
                         if self.route.handshakes() {

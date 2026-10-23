@@ -125,7 +125,8 @@ fn networked() -> (Multi<Tagged>, ManualClock, Sockets) {
     let net = FakeNet::new(clock.clone())
         .with_peer(at(2), Peer::Refuses)
         .with_peer(at(3), Peer::Silent)
-        .with_peer(at(4), Peer::AcceptsAfter(Duration::from_millis(5)));
+        .with_peer(at(4), Peer::AcceptsAfter(Duration::from_millis(5)))
+        .with_peer(at(5), Peer::RefusesAfter(Duration::from_millis(5)));
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(Counting(net, closed.clone())),
@@ -186,6 +187,28 @@ fn perform_tells_the_socket_callback_nothing() {
     m.perform(&mut ev).unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
     assert_eq!(ev.calls, [], "not due, so not run");
+}
+
+/// An attempt that fails once announced is removed, as its setup is
+/// driven, before its socket closes (`Curl_multi_will_close`).
+#[test]
+fn an_attempt_failing_in_a_drive_is_removed_before_it_closes() {
+    let (mut m, clock, mut ev) = networked();
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:5/")), (), &mut ev)
+        .unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    clock.advance(Duration::from_millis(5));
+    m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+        .unwrap();
+    assert_eq!(
+        ev.calls,
+        [
+            (id.index(), 1000, Out, None, 0),
+            (id.index(), 1000, Remove, Some(1), 0),
+        ]
+    );
+    assert_eq!(ev.closed.get(), 1);
 }
 
 /// A refused attempt's socket closes before the transfer is assessed, so

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use super::connect::{ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
+use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
 use super::dns::Answer;
 use super::io::{Closer, Events, Net, Socket};
 use super::layer::{Alive, Silent};
@@ -67,13 +67,12 @@ impl ConnLease {
     /// up says so.
     pub(crate) fn connect(
         &mut self,
-        net: &mut dyn Net,
-        now: Instant,
-        setup: Setup<'_>,
+        cx: &mut dyn ConnCx,
+        setup: Setup,
     ) -> Result<Connected, ConnectError> {
         let number = self.number();
         let (slot, connected) = match std::mem::replace(self.slot_mut(), ConnSlot::Failed(number)) {
-            ConnSlot::Connecting(machine) => match machine.drive(net, now, setup) {
+            ConnSlot::Connecting(machine) => match machine.drive(cx, setup) {
                 Ok(Drove::Connecting(m, progress)) => {
                     (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
                 }

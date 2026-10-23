@@ -4,9 +4,10 @@
 //! handshake over what connected (`cf-h1-proxy.c`).
 //!
 //! Each stage owns what the one before produced. A drive moves the machine
-//! on by at most one event, which it returns for the transfer to trace:
-//! the machine never reaches a transfer, so it can be driven while the
-//! pool holding it is borrowed.
+//! on by at most one event, which it returns for the transfer to trace,
+//! through a context (`ConnCx`) that reaches the network, the names kept
+//! and the transfer's trace, never the pool: the machine is driven in its
+//! lease.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
@@ -22,6 +23,7 @@ use super::dns::{Answer, Lookup, Names};
 use super::io::{
     Closer, Connect, Events, Family, Net, ResolveFailure, Sock, Socket, SocketOptions, SocketPoll,
 };
+use super::layer::LayerCx;
 use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
@@ -109,10 +111,56 @@ struct Racing {
     last_start: Option<Instant>,
 }
 
-/// What a drive needs beyond the network.
-pub(crate) struct Setup<'a> {
-    /// The answers kept from the setups before.
-    pub(crate) dns: Names<'a>,
+/// What a drive reaches while it works, as C's connection filters reach
+/// the transfer they connect for: the time and the transfer's trace
+/// (`LayerCx`), the network, and the names kept. A transfer's step
+/// gives one over its own context (`DriveCx`); it is an argument, never
+/// stored.
+pub(crate) trait ConnCx: LayerCx {
+    fn net(&mut self) -> &mut dyn Net;
+
+    /// The answers kept from the setups before: the multi's, or its
+    /// share's.
+    fn names(&mut self) -> Names<'_>;
+}
+
+/// A drive's context with nothing to trace: a network, a cache of names
+/// and the time, for the tests of the machine and the pool.
+#[cfg(test)]
+pub(crate) struct Plain<'a> {
+    pub(crate) net: &'a mut dyn Net,
+    pub(crate) dns: &'a mut DnsCache,
+    pub(crate) now: Instant,
+}
+
+#[cfg(test)]
+impl LayerCx for Plain<'_> {
+    fn now(&self) -> Instant {
+        self.now
+    }
+
+    fn traces(&self, _: crate::components::Component) -> bool {
+        false
+    }
+
+    fn of(&mut self, _: crate::components::Component, _: std::fmt::Arguments<'_>) {}
+}
+
+#[cfg(test)]
+impl ConnCx for Plain<'_> {
+    fn net(&mut self) -> &mut dyn Net {
+        self.net
+    }
+
+    fn names(&mut self) -> Names<'_> {
+        Names::Own(self.dns)
+    }
+}
+
+/// What a drive needs beyond its context: the settings of the transfer
+/// it is driven for.
+#[derive(Clone, Copy)]
+pub(crate) struct Setup {
     /// A `*` entry answers for any name (C's `wildcard_resolve`).
     pub(crate) wildcard: bool,
     /// How long an answer is kept (`CURLOPT_DNS_CACHE_TIMEOUT`).
@@ -388,14 +436,14 @@ impl ConnectMachine {
     /// Move the setup on by one event.
     pub(crate) fn drive(
         mut self,
-        net: &mut dyn Net,
-        now: Instant,
-        setup: Setup<'_>,
+        cx: &mut dyn ConnCx,
+        setup: Setup,
     ) -> Result<Drove, ConnectError> {
+        let now = cx.now();
         let delay = setup.delay;
         let r = match &mut self.stage {
             Stage::Resolving => {
-                let (answer, found) = self.resolve(net, setup, now)?;
+                let (answer, found) = self.resolve(cx, setup)?;
                 let eyeballs = Eyeballs::new(answer, self.route.ip);
                 if !eyeballs.more() {
                     return Err(ConnectError::Unresolved(Unresolved::NoAddress(found)));
@@ -417,21 +465,21 @@ impl ConnectMachine {
             // Writable once the connect is decided, either way
             // (`SOCKET_WRITABLE(sock, 0)`).
             let mut watch = [SocketPoll::new(a.socket.socket(), Events::OUT)];
-            let error = match net.poll(&mut watch, &mut [], Duration::ZERO) {
+            let error = match cx.net().poll(&mut watch, &mut [], Duration::ZERO) {
                 Ok(_) if watch[0].revents().is_empty() => continue,
                 Ok(_) => match a.socket.socket().take_error() {
                     Ok(None) => {
                         let won = r.attempts.remove(i);
-                        r.close_all(net);
+                        r.close_all(cx.net());
                         if self.route.handshakes() {
                             // The connection is the proxy's; the way
                             // through it is still to be made.
                             let answer = r.eyeballs.answer.clone();
-                            let target = self.socks_target(net, setup, now);
+                            let target = self.socks_target(cx, setup);
                             let target = match target {
                                 Ok(target) => target,
                                 Err(e) => {
-                                    net.close(won.socket);
+                                    cx.net().close(won.socket);
                                     return Err(e);
                                 }
                             };
@@ -460,7 +508,7 @@ impl ConnectMachine {
                 },
                 Err(error) => error,
             };
-            let failure = r.attempts.remove(i).fail(net, error)?;
+            let failure = r.attempts.remove(i).fail(cx.net(), error)?;
             return r.failed(failure).map(|p| Drove::Connecting(self, p));
         }
         let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
@@ -468,16 +516,17 @@ impl ConnectMachine {
             if r.attempts.len() == MAX_ATTEMPTS {
                 // The oldest makes room (`cf_ip_ballers_prune`).
                 let oldest = r.attempts.remove(0);
-                net.close(oldest.socket);
+                cx.net().close(oldest.socket);
             }
             if r.attempts.try_reserve(1).is_err() {
                 return Err(ConnectError::OutOfMemory);
             }
             let first = r.attempts.is_empty();
             let ip = r.eyeballs.next().expect("an address is left");
-            let (remote, scope_found) = address(ip, self.route.destination(), setup.scope, net);
+            let (remote, scope_found) =
+                address(ip, self.route.destination(), setup.scope, cx.net());
             r.last_start = Some(now);
-            return match net.connect(remote, setup.socket) {
+            return match cx.net().connect(remote, setup.socket) {
                 Ok((socket, Connect::InProgress | Connect::Done)) => {
                     let socket = Sock::new(socket, self.closer.clone());
                     r.attempts
@@ -517,11 +566,10 @@ impl ConnectMachine {
     /// too; that the resolver could not tell is not.
     fn resolve(
         &self,
-        net: &mut dyn Net,
-        setup: Setup<'_>,
-        now: Instant,
+        cx: &mut dyn ConnCx,
+        setup: Setup,
     ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-        resolve(self.route.destination(), self.route.ip, net, setup, now)
+        resolve(self.route.destination(), self.route.ip, cx, setup)
     }
 
     /// The destination's addresses, for a SOCKS proxy that is not to
@@ -530,9 +578,8 @@ impl ConnectMachine {
     #[expect(clippy::type_complexity, reason = "the field it fills")]
     fn socks_target(
         &self,
-        net: &mut dyn Net,
-        setup: Setup<'_>,
-        now: Instant,
+        cx: &mut dyn ConnCx,
+        setup: Setup,
     ) -> Result<Option<Result<(TryArc<Answer>, Found), Unresolved>>, ConnectError> {
         let Some(leg) = self.route.socks() else {
             return Ok(None);
@@ -540,7 +587,7 @@ impl ConnectMachine {
         if !leg.version.resolves_locally() {
             return Ok(None);
         }
-        match resolve(leg.to, leg.version.ip(self.route.ip), net, setup, now) {
+        match resolve(leg.to, leg.version.ip(self.route.ip), cx, setup) {
             Ok(found) => Ok(Some(Ok(found))),
             Err(ConnectError::Unresolved(why)) => Ok(Some(Err(why))),
             Err(e) => Err(e),
@@ -646,10 +693,10 @@ fn address(
 fn resolve(
     peer: &Peer,
     ip: IpVersion,
-    net: &mut dyn Net,
-    mut setup: Setup<'_>,
-    now: Instant,
+    cx: &mut dyn ConnCx,
+    setup: Setup,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
+    let now = cx.now();
     let (name, port) = (peer.name(), peer.port());
     let family = match ip {
         IpVersion::Any => Family::Any,
@@ -657,8 +704,8 @@ fn resolve(
         IpVersion::V6 => Family::V6,
     };
     let (wildcard, max_age) = (setup.wildcard, setup.max_age);
-    let found: fn(Asked) -> Found = match setup
-        .dns
+    let found: fn(Asked) -> Found = match cx
+        .names()
         .section(|c| c.lookup((name, port), family, wildcard, max_age, now))
     {
         Lookup::Found(answer) => return Ok((answer, Found::Cached)),
@@ -669,7 +716,7 @@ fn resolve(
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     let (answer, found) = match shortcut(peer.shown(), name).map_err(oom)? {
         Some(answer) => (answer, found(Asked::Shortcut)),
-        None => match net.resolve(name, family) {
+        None => match cx.net().resolve(name, family) {
             Ok(addrs) => (
                 Answer::of(name, addrs, family).map_err(oom)?,
                 found(Asked::Resolver),
@@ -678,8 +725,7 @@ fn resolve(
             Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
                 let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
                 let none = TryArc::try_new(none).map_err(oom)?;
-                setup
-                    .dns
+                cx.names()
                     .section(|c| c.put(none, port, now, false))
                     .map_err(oom)?;
                 return Err(ConnectError::Unresolved(Unresolved::Resolver(why)));
@@ -688,8 +734,7 @@ fn resolve(
         },
     };
     let answer = TryArc::try_new(answer).map_err(oom)?;
-    setup
-        .dns
+    cx.names()
         .section(|c| c.put(answer.clone(), port, now, false))
         .map_err(oom)?;
     Ok((answer, found))
@@ -812,7 +857,6 @@ mod tests {
         for _ in 0..5000 {
             let ms = u64::try_from(clock.now().since(start).as_millis()).unwrap();
             let setup = Setup {
-                dns: Names::Own(&mut DnsCache::default()),
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
@@ -820,7 +864,12 @@ mod tests {
                 socket: SocketOptions::default(),
                 layer: None,
             };
-            match m.drive(&mut net, clock.now(), setup) {
+            let mut cx = Plain {
+                net: &mut net,
+                dns: &mut DnsCache::default(),
+                now: clock.now(),
+            };
+            match m.drive(&mut cx, setup) {
                 Ok(Drove::Connecting(next, progress)) => {
                     m = next;
                     raced.most_running = raced.most_running.max(m.sockets().count());
@@ -875,7 +924,6 @@ mod tests {
         let mut dns = DnsCache::default();
         let conn = loop {
             let setup = Setup {
-                dns: Names::Own(&mut dns),
                 wildcard: false,
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
@@ -883,7 +931,12 @@ mod tests {
                 socket: SocketOptions::default(),
                 layer: None,
             };
-            match m.drive(&mut net, clock.now(), setup).unwrap() {
+            let mut cx = Plain {
+                net: &mut net,
+                dns: &mut dns,
+                now: clock.now(),
+            };
+            match m.drive(&mut cx, setup).unwrap() {
                 Drove::Connecting(next, progress) => {
                     m = next;
                     if let Progress::Waiting { .. } = progress {

@@ -53,17 +53,15 @@ pub(crate) enum LayerAnswer {}
 /// What a layer reaches while it works: the time, and the trace of the
 /// transfer it works for. An argument, never stored. A pool's section,
 /// which works for no transfer, has a silent one.
-#[expect(
-    dead_code,
-    reason = "the layers' trace, from step 40's chain lines and TLS"
-)]
 pub(crate) trait LayerCx {
     fn now(&self) -> Instant;
 
     /// Whether `component`'s lines are traced.
+    #[expect(dead_code, reason = "the setup's trace, step 40h")]
     fn traces(&self, component: Component) -> bool;
 
     /// Trace a line of `component`'s, if it is.
+    #[expect(dead_code, reason = "the setup's trace, step 40h")]
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>);
 }
 

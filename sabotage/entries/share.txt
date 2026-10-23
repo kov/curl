@@ -90,3 +90,11 @@ witness: curl-sys-abi handle_tests::a_share_is_used_from_two_threads_at_once
                 true => sh.core.keep(kind),
 --- new
                 true => sh.core.stop_keeping(kind),
+
+=== a drive looks names up in the multi's cache though the share keeps them
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_them
+--- old
+        names(&mut self.step.rest.caches.dns, self.kept)
+--- new
+        names(&mut self.step.rest.caches.dns, None)

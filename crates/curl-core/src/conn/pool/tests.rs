@@ -1,7 +1,8 @@
 use super::*;
+use crate::conn::connect::Plain;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
 use crate::conn::layer::Silent;
-use crate::conn::{DnsCache, Failure, Limit, Names, Scheme, Setup, Tcp};
+use crate::conn::{DnsCache, Failure, Limit, Scheme, Setup, Tcp};
 
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
@@ -26,7 +27,6 @@ fn connect(
     now: Instant,
 ) -> Result<Connected, ConnectError> {
     let setup = Setup {
-        dns: Names::Own(&mut DnsCache::default()),
         wildcard: false,
         max_age: Some(Duration::from_secs(60)),
         delay: Duration::from_millis(200),
@@ -34,7 +34,12 @@ fn connect(
         socket: crate::conn::io::SocketOptions::default(),
         layer: None,
     };
-    lease.connect(net, now, setup)
+    let mut cx = Plain {
+        net,
+        dns: &mut DnsCache::default(),
+        now,
+    };
+    lease.connect(&mut cx, setup)
 }
 
 const RULES: ReuseRules = ReuseRules {

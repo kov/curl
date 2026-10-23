@@ -500,9 +500,9 @@ witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_
 --- new
                         self.outgoing = Sending::Body(Reading { eos_read: false, announced: true });
 
-=== the wait for a 100 never runs out
+=== the wait for a 100 ends whenever the transfer runs again
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
+witness: curl-core proto::http::tests::an_interim_response_does_not_end_the_wait_for_a_100
 --- old
                     Sending::AwaitingContinue(until) if cx.now() < until => {
 --- new

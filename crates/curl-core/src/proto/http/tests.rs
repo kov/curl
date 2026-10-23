@@ -1440,6 +1440,52 @@ fn a_body_goes_when_the_wait_for_a_100_runs_out() {
     assert!(done.is_some() && done < sent, "{text:?}");
 }
 
+/// An interim response other than a 100 wakes the transfer but does not
+/// end the wait: the body is held back each time the transfer runs before
+/// the wait runs out, and goes only then (`cr_exp100_read`). The C build,
+/// sent a 102 at 0.2 s of `--expect100-timeout 1`, sends the body at 1 s.
+#[test]
+fn an_interim_response_does_not_end_the_wait_for_a_100() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    // The 102 answers the head as soon as the transfer has read once,
+    // the 200 the body.
+    let talk = Conversation::replies(&[b"HTTP/1.1 102 Processing\r\n\r\n", OK_EMPTY], false)
+        .per_send()
+        .late_replies();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let start = clock.now();
+    let ran = get(&mut m, "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = crate::options::UploadSource::Bytes(
+            curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap(),
+        );
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+        o.http.continue_wait = crate::options::ContinueWait(Duration::from_millis(300));
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(clock.now().since(start), Duration::from_millis(300));
+    assert!(ran.request.ends_with(b"\r\n\r\na=b"));
+    // The 102 was read before the wait ran out.
+    let seen = ran.seen.0.lock().unwrap().clone();
+    let interim = seen
+        .iter()
+        .position(|(w, l)| *w == "interim" && l == b"HTTP/1.1 102 Processing\r\n");
+    let done = seen
+        .iter()
+        .position(|(w, l)| *w == "text" && l == b"Done waiting for 100-continue\n");
+    assert!(interim.is_some() && interim < done, "{seen:?}");
+}
+
 /// A final response that ends before any 100, on a connection that
 /// closes, stops the body unsent rather than wait for the 100 and send it
 /// to a server that may have closed: said when the response's end is read

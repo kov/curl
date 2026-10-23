@@ -271,6 +271,22 @@ exclude_re = [
     # Every caller of `part` allows a type: only a file name and an
     # encoder are ever not allowed.
     'curl-tool/src/form\.rs:.*: replace match guard !allowed\.mime_type with false in part$',
+    # Standard input read as it is sent, `size` bytes of a regular file:
+    # the core reads a part of known size no further once its own count
+    # reaches the size, and the room left is 0 there besides; the room
+    # differs only after a short read, which a regular file gives only at
+    # its end.
+    'curl-tool/src/form\.rs:.*: (replace match guard st\.at >= size with false|replace - with \+|replace \+= with \*=) in <impl ReadHandler for StdinPart>::read$',
+    # Only `CURLFORM_BUFFERPTR` sets the buffer flags, and it refuses a
+    # NULL buffer: the check is never true, whichever flag it tests.
+    'curl-sys-abi/src/formdata\.rs:.*: (replace buffer_missing -> bool with false|replace & with (\||\^) in buffer_missing|replace != with == in buffer_missing)$',
+    # The flags or-ed are distinct bits, where `^` is `|`.
+    'curl-sys-abi/src/formdata\.rs:.*: replace \| with \^ in formadd_check$',
+    # A 41st tree under the handle's is the content of a part 41 below
+    # it, which the core refuses to send, as too large as this refuses
+    # it: refusing it here instead changes nothing. `curl_formget`'s
+    # trees are two deep at most.
+    'curl-sys-abi/src/mime\.rs:.*: replace (> with (>=|==)|\+ with \*) in too_deep$',
     # A header line ends with its line end: it is never just the name
     # looked for, and an empty rest after `Location:` names nothing.
     'curl-tool/src/output\.rs:.*: replace (> with >=|< with <=) in Stream::name_from$',

@@ -690,3 +690,24 @@ fn to_stream(stream: *mut libc::FILE, text: &[u8]) {
 pub(crate) fn aborts(rc: c_int) -> bool {
     rc == -1
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The application's fields are lent from where a read is, as many
+    /// as fit, and no further than their end.
+    #[test]
+    fn lent_fields_are_copied_from_an_offset_to_their_end() {
+        let fields = *b"abcdef";
+        let lent = AppFields {
+            at: NonNull::from(&fields).cast(),
+            len: fields.len(),
+        };
+        let mut buf = [0u8; 10];
+        assert_eq!(lent.copy_at(4, &mut buf), 2);
+        assert_eq!(&buf[..2], b"ef");
+        assert_eq!(lent.copy_at(1, &mut buf[..3]), 3);
+        assert_eq!(&buf[..3], b"bcd");
+    }
+}

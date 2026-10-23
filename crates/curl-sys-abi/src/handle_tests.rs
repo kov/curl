@@ -174,6 +174,20 @@ fn boolean_options_take_any_nonzero_value() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// `CURLOPT_MIME_OPTIONS` turns form escaping on with its bit, and off
+/// without it whatever else is set.
+#[test]
+fn mime_options_take_the_form_escape_bit() {
+    let c = curl_easy_init();
+    assert!(!options(c, |o| o.mime.form_escape));
+    for (v, on) in [(1, true), (2, false), (3, true), (0, false)] {
+        assert_eq!(long(c, ffi::CURLOPT_MIME_OPTIONS, v), CURLE_OK);
+        assert_eq!(options(c, |o| o.mime.form_escape), on, "{v}");
+    }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_REQUEST_TARGET` is copied; NULL takes it away.
 #[test]
 fn a_request_target_is_kept() {

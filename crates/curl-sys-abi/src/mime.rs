@@ -932,6 +932,14 @@ pub(crate) fn whole(tree: &ShimMime) -> Result<TryArc<Mime>, CURLcode> {
 type CallbackContent<'a> =
     dyn FnMut(NonNull<ShimPart>, &Callback) -> Result<Content, MimeError> + 'a;
 
+/// Whether a tree `depth` levels down is deeper than the core sends: it
+/// refuses a part more than `MAX_LEVELS` below the handle's, which a tree
+/// that deep would be under. Refused here before the core would refuse
+/// it, so that a tree of any depth is not walked to its bottom.
+fn too_deep(depth: usize) -> bool {
+    depth > MAX_LEVELS + 1
+}
+
 /// The core's tree of the application's, `depth` levels down, the content
 /// of a part a function reads made by `callback`.
 fn build(
@@ -939,8 +947,7 @@ fn build(
     callback: &mut CallbackContent<'_>,
     depth: usize,
 ) -> Result<Mime, MimeError> {
-    // Deeper than the core makes: refused before it would be.
-    if depth > MAX_LEVELS + 1 {
+    if too_deep(depth) {
         return Err(MimeError::TooDeep);
     }
     let mut mime = Mime::new(from.boundary);
@@ -1056,7 +1063,7 @@ mod tests {
     use curl_core::options::UploadSource;
 
     use super::{
-        MimeTree, basename, curl_mime_addpart, curl_mime_data, curl_mime_data_cb,
+        MimeTree, ShimMime, basename, curl_mime_addpart, curl_mime_data, curl_mime_data_cb,
         curl_mime_encoder, curl_mime_filedata, curl_mime_free, curl_mime_init, curl_mime_name,
         curl_mime_subparts,
     };
@@ -1393,6 +1400,139 @@ mod tests {
             assert_eq!(part.filename.as_deref(), Some(&b"curl-mime-filedata"[..]));
             std::fs::remove_file(&dir).unwrap();
             curl_mime_free(m);
+        }
+    }
+
+    /// A tree of one part read by `read` from `arg`, `size` bytes long or
+    /// -1 for unknown.
+    fn read_by(
+        read: ffi::curl_read_callback,
+        size: ffi::curl_off_t,
+        arg: *mut c_void,
+    ) -> *mut curl_mime {
+        // SAFETY: a new tree and part; the function takes `arg`.
+        unsafe {
+            let m = curl_mime_init(ptr::null_mut());
+            let p = curl_mime_addpart(m);
+            assert_eq!(curl_mime_data_cb(p, size, read, None, None, arg), CURLE_OK);
+            m
+        }
+    }
+
+    /// The bytes `whole` read for the first part of `m`, or its code.
+    fn whole_of(m: *mut curl_mime) -> Result<Vec<u8>, ffi::CURLcode> {
+        // SAFETY: a live tree.
+        let mime = super::whole(unsafe { &*m.cast::<ShimMime>() })?;
+        let Content::Bytes(b) = &mime.parts()[0].content else {
+            panic!("read whole");
+        };
+        Ok(b.to_vec())
+    }
+
+    /// `curl_formget`'s tree has a part a function reads read whole at
+    /// once: as long as its size says, else to the function's end; a
+    /// function that aborts, or says it gave more than asked, fails it
+    /// with C's codes.
+    #[test]
+    fn whole_reads_a_function_s_part_as_c_does() {
+        /// Up to two bytes at a time of `abcdef`, from where `arg` says.
+        unsafe extern "C" fn give(buf: *mut c_char, _: usize, n: usize, arg: *mut c_void) -> usize {
+            // SAFETY: the test's position.
+            let at = unsafe { &*arg.cast::<Cell<usize>>() };
+            let src = &b"abcdef"[at.get()..];
+            let n = n.min(src.len()).min(2);
+            // SAFETY: `buf` has room for `n` bytes, `n` at most what was
+            // asked for.
+            unsafe { ptr::copy_nonoverlapping(src.as_ptr(), buf.cast::<u8>(), n) };
+            at.set(at.get() + n);
+            n
+        }
+        unsafe extern "C" fn abort(_: *mut c_char, _: usize, _: usize, _: *mut c_void) -> usize {
+            ffi::CURL_READFUNC_ABORT as usize
+        }
+        unsafe extern "C" fn too_much(_: *mut c_char, _: usize, n: usize, _: *mut c_void) -> usize {
+            n + 1
+        }
+        for (size, want) in [(-1, &b"abcdef"[..]), (3, b"abc"), (0, b"")] {
+            let at = Cell::new(0usize);
+            let m = read_by(Some(give), size, (&raw const at).cast_mut().cast());
+            assert_eq!(whole_of(m).as_deref(), Ok(want), "size {size}");
+            // SAFETY: the tree, not used again.
+            unsafe { curl_mime_free(m) };
+        }
+        for (read, size, code) in [
+            (
+                abort as unsafe extern "C" fn(_, _, _, _) -> _,
+                -1,
+                ffi::CURLE_ABORTED_BY_CALLBACK,
+            ),
+            (too_much, -1, CURLE_READ_ERROR),
+            (too_much, 5, CURLE_READ_ERROR),
+        ] {
+            let m = read_by(Some(read), size, ptr::null_mut());
+            assert_eq!(whole_of(m), Err(code), "size {size}");
+            // SAFETY: as above.
+            unsafe { curl_mime_free(m) };
+        }
+    }
+
+    /// A tree of `levels` trees, each the subparts of the one part of the
+    /// one above it, the last empty; made from the bottom up.
+    fn nested(levels: usize) -> *mut curl_mime {
+        // SAFETY: new trees and parts, each attached once.
+        unsafe {
+            let mut below = curl_mime_init(ptr::null_mut());
+            for _ in 1..levels {
+                let m = curl_mime_init(ptr::null_mut());
+                assert_eq!(curl_mime_subparts(curl_mime_addpart(m), below), CURLE_OK);
+                below = m;
+            }
+            below
+        }
+    }
+
+    /// A tree as deep as the core sends is made whole: 40 trees, the
+    /// last empty, have no part more than 40 below the handle's. One 42
+    /// deep is refused as too large, and so is one too deep to walk.
+    #[test]
+    fn whole_refuses_a_tree_deeper_than_the_core_sends() {
+        let deepest = nested(40);
+        // SAFETY: a live tree.
+        let mime = super::whole(unsafe { &*deepest.cast::<ShimMime>() }).expect("made");
+        assert_eq!(mime.depth(), 40);
+        // SAFETY: the tree, not used again.
+        unsafe { curl_mime_free(deepest) };
+        for levels in [42, 100_000] {
+            let deep = nested(levels);
+            // SAFETY: a live tree.
+            let made = super::whole(unsafe { &*deep.cast::<ShimMime>() });
+            assert_eq!(made.err(), Some(ffi::CURLE_TOO_LARGE), "{levels} levels");
+            // SAFETY: as above.
+            unsafe { curl_mime_free(deep) };
+        }
+    }
+
+    /// A copy of a handle copies its parts' header lines, a list of its
+    /// own in the same order, and sends them.
+    #[test]
+    fn a_copied_handle_copies_the_header_lines() {
+        let c = curl_easy_init();
+        // SAFETY: live trees, parts, lists and handles throughout.
+        unsafe {
+            let m = curl_mime_init(ptr::null_mut());
+            let p = curl_mime_addpart(m);
+            let mut list = crate::strings::curl_slist_append(ptr::null_mut(), c"X-A: 1".as_ptr());
+            list = crate::strings::curl_slist_append(list, c"X-B: 2".as_ptr());
+            assert_eq!(super::curl_mime_headers(p, list, 0), CURLE_OK);
+            assert_eq!(post(c, m), CURLE_OK);
+            let d = curl_easy_duphandle(c);
+            assert!(!d.is_null());
+            curl_mime_free(m);
+            crate::strings::curl_slist_free_all(list);
+            let copy = posted(d).expect("the copy's own");
+            assert_eq!(copy.parts()[0].headers, [&b"X-A: 1"[..], b"X-B: 2"]);
+            curl_easy_cleanup(d);
+            curl_easy_cleanup(c);
         }
     }
 }

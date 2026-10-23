@@ -502,6 +502,11 @@ fn copy_field(field: &mut Field, len: usize) -> bool {
     unsafe { field.copy(p, len) }
 }
 
+/// Whether a length is more than a node's `long` holds.
+fn past_long(len: usize) -> bool {
+    len > c_long::MAX as usize
+}
+
 /// A chain node for `form`, after `parent` in its field's list of files,
 /// or else at the end of the chain (`httppost_add`); NULL if it cannot be
 /// made.
@@ -517,7 +522,7 @@ fn httppost_add(
         // SAFETY: a name without a length is a C string.
         namelength = unsafe { libc::strlen(name) };
     }
-    if form.bufferlength > c_long::MAX as usize || namelength > c_long::MAX as usize {
+    if past_long(form.bufferlength) || past_long(namelength) {
         return ptr::null_mut();
     }
     let post = root::allocator()
@@ -562,6 +567,12 @@ fn httppost_add(
     post
 }
 
+/// Whether a part is a buffer without its buffer, as C checks. It never
+/// is: only `CURLFORM_BUFFERPTR` sets these flags, and it refuses NULL.
+fn buffer_missing(form: &FormInfo) -> bool {
+    form.buffer.is_null() && form.flags & BUFFER != 0 && form.flags & PTRBUFFER != 0
+}
+
 /// Check each part given for completeness, make it the copies it owns,
 /// and make it a node of a new chain from `first` to `last`
 /// (`formadd_check`).
@@ -578,7 +589,7 @@ fn formadd_check(
         if ((name.is_null() || !form.value.is_set()) && post.is_null())
             || (form.contentslength != 0 && flags & FILENAME != 0)
             || (flags & FILENAME != 0 && flags & PTRCONTENTS != 0)
-            || (form.buffer.is_null() && flags & BUFFER != 0 && flags & PTRBUFFER != 0)
+            || buffer_missing(form)
             || (flags & READFILE != 0 && flags & PTRCONTENTS != 0)
         {
             return CURL_FORMADD_INCOMPLETE;
@@ -1172,5 +1183,415 @@ mod tests {
             curl_easy_cleanup(c);
             curl_formfree(first);
         }
+    }
+
+    /// An entry of a `CURLFORM_ARRAY`.
+    fn entry(option: ffi::CURLformoption, value: *const c_char) -> ffi::curl_forms {
+        ffi::curl_forms { option, value }
+    }
+
+    /// A number in an array entry, which carries it in a pointer's bits.
+    fn number(n: isize) -> *const c_char {
+        n as *const c_char
+    }
+
+    /// One `curl_formadd` call of `entries`, through `CURLFORM_ARRAY`: its
+    /// code and the chain it made.
+    fn add(entries: &[ffi::curl_forms]) -> (ffi::CURLFORMcode, *mut curl_httppost) {
+        let mut all = entries.to_vec();
+        all.push(entry(ffi::CURLFORM_END, ptr::null()));
+        let (mut first, mut last): (*mut curl_httppost, *mut curl_httppost) =
+            (ptr::null_mut(), ptr::null_mut());
+        // SAFETY: an array of options and values as documented, ended.
+        let code = unsafe {
+            curl_formadd(
+                &mut first,
+                &mut last,
+                ffi::CURLFORM_ARRAY.0,
+                all.as_ptr(),
+                END,
+            )
+        };
+        (code, first)
+    }
+
+    /// The bytes of a C string a node holds, or `None` for NULL.
+    fn text(p: *const c_char) -> Option<Vec<u8>> {
+        // SAFETY: the chain's strings are C strings.
+        (!p.is_null()).then(|| unsafe { core::ffi::CStr::from_ptr(p) }.to_bytes().to_vec())
+    }
+
+    /// What `curl_formget` gives for `form`: its code and bytes.
+    fn formget(form: *mut curl_httppost) -> (c_int, Vec<u8>) {
+        unsafe extern "C" fn collect(arg: *mut c_void, buf: *const c_char, len: usize) -> usize {
+            // SAFETY: the test's buffer, and `len` bytes at `buf`.
+            unsafe {
+                (*arg.cast::<Vec<u8>>())
+                    .extend_from_slice(core::slice::from_raw_parts(buf.cast::<u8>(), len));
+            }
+            len
+        }
+        let mut out = Vec::new();
+        // SAFETY: a live chain; the buffer outlives the call.
+        let code = unsafe { super::curl_formget(form, (&raw mut out).cast(), Some(collect)) };
+        (code, out)
+    }
+
+    /// Whether `haystack` holds `needle`.
+    fn holds(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    /// A file in the temporary directory, named for the test, and its
+    /// name as a C string.
+    fn scratch(name: &str) -> (std::path::PathBuf, std::ffi::CString) {
+        let path =
+            std::env::temp_dir().join(format!("curl-formdata-{}-{name}", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        (path, c)
+    }
+
+    /// Each part is checked as C's `formadd_check` checks it: a file with
+    /// a length, or with contents a pointer names, is incomplete; a name
+    /// holding a zero byte is refused; contents with a length are cut to
+    /// it, and a name without one has its own.
+    #[test]
+    fn formadd_checks_parts_as_c_does() {
+        let (path, file) = scratch("check.txt");
+        let name = entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr());
+        let incomplete: &[&[ffi::curl_forms]] = &[
+            &[
+                name,
+                entry(ffi::CURLFORM_FILE, file.as_ptr()),
+                entry(ffi::CURLFORM_CONTENTSLENGTH, number(1)),
+            ],
+            // The second type makes a file of its own, which the contents
+            // a pointer names then join.
+            &[
+                name,
+                entry(ffi::CURLFORM_FILE, file.as_ptr()),
+                entry(ffi::CURLFORM_CONTENTTYPE, c"t/1".as_ptr()),
+                entry(ffi::CURLFORM_CONTENTTYPE, c"t/2".as_ptr()),
+                entry(ffi::CURLFORM_PTRCONTENTS, c"v".as_ptr()),
+            ],
+        ];
+        for entries in incomplete {
+            assert_eq!(add(entries), (CURL_FORMADD_INCOMPLETE, ptr::null_mut()));
+        }
+        let zeroed = b"a\0b\0";
+        let named = add(&[
+            entry(ffi::CURLFORM_NAMELENGTH, number(3)),
+            entry(ffi::CURLFORM_COPYNAME, zeroed.as_ptr().cast::<c_char>()),
+            entry(ffi::CURLFORM_COPYCONTENTS, c"v".as_ptr()),
+        ]);
+        assert_eq!(named, (CURL_FORMADD_NULL, ptr::null_mut()));
+
+        // Contents with a length: a copy that long, no type.
+        let (code, first) = add(&[
+            name,
+            entry(ffi::CURLFORM_COPYCONTENTS, c"abc".as_ptr()),
+            entry(ffi::CURLFORM_CONTENTSLENGTH, number(2)),
+        ]);
+        assert_eq!(code, CURL_FORMADD_OK);
+        // SAFETY: the chain just made.
+        let node = unsafe { &*first };
+        assert_eq!(text(node.contents), Some(b"ab".to_vec()));
+        assert_eq!(text(node.name), Some(b"n".to_vec()));
+        assert_eq!(node.namelength, 1, "the name's own length");
+        assert!(node.contenttype.is_null());
+        // SAFETY: the chain, not used again.
+        unsafe { curl_formfree(first) };
+
+        // A name given a length keeps it.
+        let (code, first) = add(&[
+            entry(ffi::CURLFORM_NAMELENGTH, number(1)),
+            entry(ffi::CURLFORM_COPYNAME, c"nm".as_ptr()),
+            entry(ffi::CURLFORM_COPYCONTENTS, c"v".as_ptr()),
+        ]);
+        assert_eq!(code, CURL_FORMADD_OK);
+        // SAFETY: as above.
+        let node = unsafe { &*first };
+        assert_eq!((text(node.name), node.namelength), (Some(b"n".to_vec()), 1));
+        // SAFETY: as above.
+        unsafe { curl_formfree(first) };
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// What a pointer is given lends stays the application's: the name,
+    /// the contents, the buffer, the stream. What is copied is not. A
+    /// buffer is typed by the name given for it.
+    #[test]
+    fn formadd_lends_what_c_lends() {
+        let mut buf = *b"buf\0";
+        let buf = buf.as_mut_ptr().cast::<c_char>();
+        let stream = c"stream".as_ptr();
+        let (path, file) = scratch("lend.txt");
+        let parts: &[(&[ffi::curl_forms], c_long)] = &[
+            (
+                &[
+                    entry(ffi::CURLFORM_PTRNAME, c"n".as_ptr()),
+                    entry(ffi::CURLFORM_PTRCONTENTS, c"v".as_ptr()),
+                ],
+                (ffi::CURL_HTTPPOST_PTRNAME | ffi::CURL_HTTPPOST_PTRCONTENTS) as c_long,
+            ),
+            (
+                &[
+                    entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+                    entry(ffi::CURLFORM_BUFFER, c"b.html".as_ptr()),
+                    entry(ffi::CURLFORM_BUFFERPTR, buf),
+                    entry(ffi::CURLFORM_BUFFERLENGTH, number(3)),
+                ],
+                (ffi::CURL_HTTPPOST_BUFFER | ffi::CURL_HTTPPOST_PTRBUFFER) as c_long,
+            ),
+            (
+                &[
+                    entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+                    entry(ffi::CURLFORM_STREAM, stream),
+                ],
+                ffi::CURL_HTTPPOST_CALLBACK as c_long,
+            ),
+            (
+                &[
+                    entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+                    entry(ffi::CURLFORM_FILECONTENT, file.as_ptr()),
+                ],
+                ffi::CURL_HTTPPOST_READFILE as c_long,
+            ),
+        ];
+        let given = [c"v".as_ptr(), buf.cast_const(), stream, file.as_ptr()];
+        for (&(entries, flags), given) in parts.iter().zip(given) {
+            let (code, first) = add(entries);
+            assert_eq!(code, CURL_FORMADD_OK);
+            // SAFETY: the chain just made.
+            let node = unsafe { &*first };
+            let large = ffi::CURL_HTTPPOST_LARGE as c_long;
+            assert_eq!(node.flags, flags | large);
+            let lent = flags & (ffi::CURL_HTTPPOST_READFILE as c_long) == 0;
+            assert_eq!(node.contents.cast_const() == given, lent);
+            assert_eq!(text(node.contents), text(given));
+            let buffer = flags & (ffi::CURL_HTTPPOST_BUFFER as c_long) != 0;
+            let typed = buffer.then(|| b"text/html".to_vec());
+            assert_eq!(text(node.contenttype), typed, "a buffer typed by its name");
+            let ptrname = flags & (ffi::CURL_HTTPPOST_PTRNAME as c_long) != 0;
+            assert_eq!(node.name.cast_const() == entries[0].value, ptrname);
+            // SAFETY: the chain, not used again.
+            unsafe { curl_formfree(first) };
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// More files for one field are a list after its node, each a file
+    /// typed by its name, else by the type before it, else the default.
+    #[test]
+    fn formadd_types_each_file_as_c_does() {
+        let (txt, txt_c) = scratch("files.txt");
+        let (bare, bare_c) = scratch("files");
+        let (code, first) = add(&[
+            entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+            entry(ffi::CURLFORM_FILE, txt_c.as_ptr()),
+            entry(ffi::CURLFORM_FILE, bare_c.as_ptr()),
+        ]);
+        assert_eq!(code, CURL_FORMADD_OK);
+        // SAFETY: the chain just made.
+        let node = unsafe { &*first };
+        assert!(node.next.is_null());
+        assert_eq!(text(node.contenttype), Some(b"text/plain".to_vec()));
+        // SAFETY: as above, its list of files.
+        let more = unsafe { &*node.more };
+        assert!(more.more.is_null() && more.name.is_null());
+        assert_eq!(text(more.contents), text(bare_c.as_ptr()));
+        assert_eq!(text(more.contenttype), Some(b"text/plain".to_vec()));
+        let file = ffi::CURL_HTTPPOST_FILENAME as c_long;
+        assert_eq!(more.flags & file, file);
+        // SAFETY: the chain, not used again.
+        unsafe { curl_formfree(first) };
+        let (code, first) = add(&[
+            entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+            entry(ffi::CURLFORM_FILE, bare_c.as_ptr()),
+        ]);
+        assert_eq!(code, CURL_FORMADD_OK);
+        // SAFETY: as above.
+        let node = unsafe { &*first };
+        assert_eq!(
+            text(node.contenttype),
+            Some(b"application/octet-stream".to_vec())
+        );
+        // SAFETY: as above.
+        unsafe { curl_formfree(first) };
+        std::fs::remove_file(txt).unwrap();
+        std::fs::remove_file(bare).unwrap();
+    }
+
+    /// `CURLFORM_CONTENTLEN` cuts contents a pointer names to its length,
+    /// a large one; a buffer longer than a `long` holds is refused; a file
+    /// that is not there fails the read.
+    #[test]
+    fn lengths_and_files_reach_what_formget_reads() {
+        let (code, first) = add(&[
+            entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+            entry(ffi::CURLFORM_PTRCONTENTS, c"abc".as_ptr()),
+            entry(ffi::CURLFORM_CONTENTLEN, number(2)),
+        ]);
+        assert_eq!(code, CURL_FORMADD_OK);
+        // SAFETY: the chain just made.
+        let node = unsafe { &*first };
+        assert_eq!((node.contentlen, node.contentslength), (2, 0));
+        let (got, bytes) = formget(first);
+        assert_eq!(got, 0);
+        assert!(holds(&bytes, b"\r\n\r\nab\r\n"), "{}", bytes.escape_ascii());
+        // SAFETY: the chain, not used again.
+        unsafe { curl_formfree(first) };
+        let mut buf = *b"buf\0";
+        let buf = buf.as_mut_ptr().cast::<c_char>();
+        let buffer = |len: isize| {
+            add(&[
+                entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+                entry(ffi::CURLFORM_BUFFER, c"b".as_ptr()),
+                entry(ffi::CURLFORM_BUFFERPTR, buf),
+                entry(ffi::CURLFORM_BUFFERLENGTH, number(len)),
+            ])
+        };
+        let (code, first) = buffer(c_long::MAX as isize);
+        assert_eq!(code, CURL_FORMADD_OK);
+        // SAFETY: the chain just made.
+        assert_eq!(unsafe { &*first }.bufferlength, c_long::MAX);
+        // SAFETY: as above.
+        unsafe { curl_formfree(first) };
+        assert_eq!(buffer(-1), (ffi::CURL_FORMADD_MEMORY, ptr::null_mut()));
+        let (code, first) = add(&[
+            entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+            entry(ffi::CURLFORM_FILE, c"/nonexistent/curl-formdata".as_ptr()),
+        ]);
+        assert_eq!(code, CURL_FORMADD_OK);
+        assert_eq!(formget(first).0, ffi::CURLE_READ_ERROR.0 as c_int);
+        // SAFETY: as above.
+        unsafe { curl_formfree(first) };
+    }
+
+    std::thread_local! {
+        /// Blocks this thread holds from the counting allocator.
+        static HELD: core::cell::Cell<isize> = const { core::cell::Cell::new(0) };
+        /// How many more allocations this thread may make before one is
+        /// refused, if any is.
+        static LEFT: core::cell::Cell<Option<usize>> = const { core::cell::Cell::new(None) };
+    }
+
+    /// Whether this allocation is the one refused.
+    fn refused() -> bool {
+        LEFT.with(|left| match left.get() {
+            Some(0) => true,
+            Some(n) => {
+                left.set(Some(n - 1));
+                false
+            }
+            None => false,
+        })
+    }
+
+    fn held(p: *mut c_void) -> *mut c_void {
+        if !p.is_null() {
+            HELD.with(|h| h.set(h.get() + 1));
+        }
+        p
+    }
+
+    unsafe extern "C" fn counted_malloc(size: usize) -> *mut c_void {
+        if refused() {
+            return ptr::null_mut();
+        }
+        // SAFETY: any size.
+        held(unsafe { libc::malloc(size) })
+    }
+
+    unsafe extern "C" fn counted_free(p: *mut c_void) {
+        if !p.is_null() {
+            HELD.with(|h| h.set(h.get() - 1));
+        }
+        // SAFETY: as `curl_free`'s caller guarantees, from `malloc`.
+        unsafe { libc::free(p) };
+    }
+
+    unsafe extern "C" fn counted_realloc(p: *mut c_void, size: usize) -> *mut c_void {
+        if refused() {
+            return ptr::null_mut();
+        }
+        // SAFETY: as the caller guarantees.
+        let q = unsafe { libc::realloc(p, size) };
+        if p.is_null() { held(q) } else { q }
+    }
+
+    unsafe extern "C" fn counted_strdup(s: *const c_char) -> *mut c_char {
+        if refused() {
+            return ptr::null_mut();
+        }
+        // SAFETY: as the caller guarantees, a C string.
+        held(unsafe { libc::strdup(s) }.cast()).cast()
+    }
+
+    unsafe extern "C" fn counted_calloc(n: usize, size: usize) -> *mut c_void {
+        if refused() {
+            return ptr::null_mut();
+        }
+        // SAFETY: any sizes.
+        held(unsafe { libc::calloc(n, size) })
+    }
+
+    /// Install, once for the process, an allocator that counts each
+    /// thread's blocks and can refuse one: it hands out `malloc`'s, so
+    /// the other tests' frees still find their blocks.
+    fn counting() {
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            let code = crate::root::curl_global_init_mem(
+                0,
+                Some(counted_malloc),
+                Some(counted_free),
+                Some(counted_realloc),
+                Some(counted_strdup),
+                Some(counted_calloc),
+            );
+            assert_eq!(code, CURLE_OK);
+        });
+        let before = HELD.with(core::cell::Cell::get);
+        let p = crate::root::allocator().malloc(1);
+        assert_eq!(HELD.with(core::cell::Cell::get), before + 1, "installed");
+        // SAFETY: just allocated.
+        unsafe { crate::root::allocator().free(p) };
+    }
+
+    /// A call refused for want of memory at any of its allocations frees
+    /// what it made before: the copies, then the nodes; one that succeeds
+    /// makes a chain `curl_formfree` frees whole.
+    #[test]
+    fn formadd_frees_what_it_made_when_refused() {
+        counting();
+        let (txt, txt_c) = scratch("refused.txt");
+        let (bare, bare_c) = scratch("refused");
+        for limit in 0.. {
+            let before = HELD.with(core::cell::Cell::get);
+            LEFT.with(|l| l.set(Some(limit)));
+            let (code, first) = add(&[
+                entry(ffi::CURLFORM_COPYNAME, c"n".as_ptr()),
+                entry(ffi::CURLFORM_FILE, txt_c.as_ptr()),
+                entry(ffi::CURLFORM_FILE, bare_c.as_ptr()),
+            ]);
+            LEFT.with(|l| l.set(None));
+            if code == CURL_FORMADD_OK {
+                assert!(limit > 6, "{limit} allocations sufficed");
+                // SAFETY: the chain just made, not used again.
+                unsafe { curl_formfree(first) };
+                assert_eq!(HELD.with(core::cell::Cell::get), before, "all freed");
+                break;
+            }
+            assert_eq!((code, first), (ffi::CURL_FORMADD_MEMORY, ptr::null_mut()));
+            assert_eq!(
+                HELD.with(core::cell::Cell::get),
+                before,
+                "freed, refused after {limit}"
+            );
+        }
+        std::fs::remove_file(txt).unwrap();
+        std::fs::remove_file(bare).unwrap();
     }
 }

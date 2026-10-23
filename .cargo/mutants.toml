@@ -222,6 +222,34 @@ exclude_re = [
     # Nothing read leaves the buffer empty, and the send loop it returns
     # to has spent its one read: it stops all the same.
     'proto/http\.rs:.*: replace > with >= in Request::fill$',
+    # A debug form nothing reads.
+    'mime/mod\.rs:.*: replace <impl std::fmt::Debug for Boundary>::fmt -> std::fmt::Result with Ok\(Default::default\(\)\)$',
+    # A source that keeps no head lines and one that hands out a fresh,
+    # empty record each time it is asked keep nothing alike.
+    'mime/mod\.rs:.*: replace MimeSource::sent_head -> Option<&SentHead> with Some\(Box::leak\(Box::new\(Default::default\(\)\)\)\)$',
+    # The cursors' depth only bounds their own making: `prepare`, run on
+    # the same tree right after, refuses a level sooner whatever it counts.
+    'mime/read\.rs:.*: replace (> with (==|>=)|\+ with \*) in cursor$',
+    # `attachment` is dropped from a part without a name, so the type
+    # test that gives it one there changes nothing (as in C).
+    'mime/read\.rs:.*: delete ! in disposition_line$',
+    # Reading into no room reads nothing, which ends the loop as the
+    # file's end does; and nothing in the library installs a signal
+    # handler, so no read is interrupted.
+    'mime/read\.rs:.*: (replace < with <=|replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false) in fread$',
+    # Content is never read into no room: a part is read only while room
+    # is left, and an encoder's input only while its buffer has space.
+    'mime/read\.rs:.*: replace match guard buf\.is_empty\(\) with false in read_content$',
+    # Input already at the buffer's start is moved onto itself.
+    'mime/read\.rs:.*: replace > with >= in read_encoded$',
+    # Three bytes joined at disjoint bits, where `^` is `|`; and the line
+    # position after the last group, flushed at the end, is cleared
+    # before it is read again (`+=` elsewhere in it is pinned by the
+    # pieces C gives).
+    'mime/read\.rs:.*: replace (\| with \^|\+= with \*=) in base64$',
+    # Only `read_whole`'s reader sends the tree's own headers, or has no
+    # handlers to call, and it never starts over.
+    'mime/read\.rs:.*: (delete field body_only from struct PartRef expression in MimeReader::restart|replace <impl Calls for NoCalls>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\))$',
     # A pool section closes connections and never resolves a name.
     'multi/cx\.rs:.*: replace <impl Net for CloseLater<._>>::resolve -> Result<Vec<IpAddr>, ResolveFailure> with Ok\(vec!\[\]\)$',
     # A transfer is in `Done` only inside a step, while its run is out of

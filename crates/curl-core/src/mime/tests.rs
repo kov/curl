@@ -739,3 +739,528 @@ fn a_file_that_fails_to_read_ends_or_fails() {
     let sent: usize = p.iter().map(Vec::len).sum();
     assert_eq!(r.size(), Some(sent as u64 + 5), "five bytes short");
 }
+
+/// A number at the largest multiple of 62 is drawn again, the one below
+/// it kept; a draw that fails fails the boundary.
+#[test]
+fn a_boundary_redraws_from_the_largest_multiple() {
+    let limit = u32::MAX - u32::MAX % 62;
+    let mut draws = [limit, limit - 1].into_iter().cycle().take(100);
+    let b = Boundary::draw(|| draws.next().ok_or(())).unwrap();
+    assert_eq!(&b.line()[24..], [b'9'; 22]);
+    let mut never = 0;
+    let gone = Boundary::draw(|| {
+        never += 1;
+        if never > 30 { Err(()) } else { Ok(u32::MAX) }
+    });
+    assert_eq!(gone, Err(()));
+}
+
+/// A tree is as deep as its deepest subparts, 1 without any.
+#[test]
+fn a_tree_s_depth_counts_its_levels() {
+    assert_eq!(tree([]).depth(), 1);
+    assert_eq!(tree([named("a", bytes(b"x"))]).depth(), 1);
+    let mid = tree([named("m", Content::Parts(tree([named("i", bytes(b"x"))])))]);
+    assert_eq!(mid.depth(), 2);
+    let top = tree([named("a", bytes(b"x")), named("s", Content::Parts(mid))]);
+    assert_eq!(top.depth(), 3);
+}
+
+/// The encoders are named as `Content-Transfer-Encoding` names them, in
+/// any case.
+#[test]
+fn an_encoder_is_found_by_its_name() {
+    for (name, e) in [
+        (&b"binary"[..], Some(Encoder::Binary)),
+        (b"8BIT", Some(Encoder::EightBit)),
+        (b"7bit", Some(Encoder::SevenBit)),
+        (b"Base64", Some(Encoder::Base64)),
+        (b"quoted-printable", Some(Encoder::QuotedPrintable)),
+        (b"base6", None),
+        (b"", None),
+    ] {
+        assert_eq!(Encoder::from_name(name), e, "{}", name.escape_ascii());
+    }
+}
+
+/// The head lines kept for a probe are copies, and gone once cleared.
+#[test]
+fn sent_head_lines_are_kept_until_cleared() {
+    let kept = SentHead::default();
+    assert!(kept.lines().unwrap().is_empty());
+    kept.keep(&[b"Content-Type: a".to_vec()]).unwrap();
+    assert_eq!(kept.lines().unwrap(), [b"Content-Type: a".to_vec()]);
+    kept.clear();
+    assert!(kept.lines().unwrap().is_empty());
+}
+
+/// A file name's extension, in any case, suggests one of a few types
+/// (`Curl_mime_contenttype`).
+#[test]
+fn a_file_name_suggests_its_type() {
+    for (name, t) in [
+        (&b"photo.GIF"[..], Some(&b"image/gif"[..])),
+        (b"ab.png", Some(b"image/png")),
+        (b"a.jpeg", Some(b"image/jpeg")),
+        (b"index.html", Some(b"text/html")),
+        (b".txt", Some(b"text/plain")),
+        (b"gif", None),
+        (b"a.txt.gz", None),
+        (b"", None),
+    ] {
+        assert_eq!(content_type_for(name), t, "{}", name.escape_ascii());
+    }
+}
+
+/// A file's type is guessed from the name it is sent as, else from its
+/// path; one sent with a name no type is known for is an octet stream,
+/// one without a name is not typed.
+#[test]
+fn a_file_part_is_typed_from_its_name_or_path() {
+    let dir = std::env::temp_dir().join(format!("curl-mime-type-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = |name: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, b"x").unwrap();
+        let path = path.as_os_str().as_encoded_bytes().to_vec();
+        let data = FileData::new(&path).unwrap();
+        assert_eq!(data.path(), path);
+        data
+    };
+    let typed = |filename: Option<&str>, data: FileData| {
+        let mut p = named("f", Content::File(data));
+        p.filename = filename.map(|f| f.as_bytes().to_vec());
+        let body = all(&mut reader(tree([p])), &mut Script::default());
+        let text = String::from_utf8(body).unwrap();
+        let at = text.find("Content-Type: ").map(|at| &text[at + 14..]);
+        at.map(|t| t[..t.find('\r').unwrap()].to_string())
+    };
+    assert_eq!(typed(None, file("a.png")).as_deref(), Some("image/png"));
+    assert_eq!(
+        typed(Some("b.gif"), file("a.png")).as_deref(),
+        Some("image/gif")
+    );
+    assert_eq!(
+        typed(Some("b.bin"), file("a.dat")).as_deref(),
+        Some("application/octet-stream")
+    );
+    assert_eq!(typed(None, file("a.dat")), None);
+    // Bytes are typed from the name they are sent as only.
+    let mut p = named("b", bytes(b"x"));
+    p.filename = Some(b"b.bin".to_vec());
+    let body = all(&mut reader(tree([p])), &mut Script::default());
+    assert!(!contains(&body, b"Content-Type"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A part's own line that is only a header's name, with no colon, names
+/// no header: it is sent as given, and types nothing.
+#[test]
+fn a_line_without_a_colon_names_no_header() {
+    let mut p = named("a", bytes(b"x"));
+    p.headers = vec![b"Content-Type".to_vec(), b"Content-Type:".to_vec()];
+    let body = all(&mut reader(tree([p])), &mut Script::default());
+    assert!(
+        contains(
+            &body,
+            b"name=\"a\"\r\nContent-Type: \r\nContent-Type\r\n\r\nx"
+        ),
+        "{}",
+        body.escape_ascii()
+    );
+}
+
+/// The application's `Content-Type` replaces the library's after a colon
+/// or a semicolon, the blanks after it skipped (`Curl_checkheaders`).
+#[test]
+fn the_application_s_type_is_read_after_its_separator() {
+    for line in [
+        &b"Content-Type;  multipart/mixed"[..],
+        b"Content-Type:multipart/mixed",
+    ] {
+        let headers = UserHeaders::new([line]).unwrap();
+        let r = reader_with(tree([named("a", bytes(b"1"))]), &headers, Escape::Form);
+        assert_eq!(
+            r.head(),
+            [[&b"Content-Type: multipart/mixed; boundary="[..], LINE].concat()],
+            "{}",
+            line.escape_ascii()
+        );
+    }
+}
+
+/// The size of a base64 part: four characters for each three bytes or
+/// part of three, a CRLF between lines of 76; past C's limit against
+/// overflowing a `curl_off_t`, unknown (`encoder_base64_size`).
+#[test]
+fn a_base64_part_s_size_is_c_s() {
+    let size = |n: u64| {
+        let p = Part {
+            encoder: Some(Encoder::Base64),
+            content: callback(Some(n), false),
+            ..Part::default()
+        };
+        reader(tree([p])).size()
+    };
+    let none = size(0).unwrap();
+    for (n, encoded) in [
+        (1, 4),
+        (3, 4),
+        (4, 8),
+        (56, 76),
+        (57, 76),
+        (58, 80 + 2),
+        (114, 152 + 2),
+        (115, 156 + 4),
+    ] {
+        assert_eq!(size(n), Some(none + encoded), "{n} bytes");
+    }
+    const MAX: u64 = ((i64::MAX as u64 / 78) * 76 / 4) * 3 - 3;
+    assert_eq!(MAX, 6_740_156_488_470_797_697);
+    let chars = 4 * (1 + (MAX - 1) / 3);
+    assert_eq!(size(MAX), Some(none + chars + 2 * ((chars - 1) / 76)));
+    assert_eq!(size(MAX + 1), None);
+    // The bytes sent are as many, a line ending only between two.
+    for n in [57, 58, 114] {
+        let p = Part {
+            encoder: Some(Encoder::Base64),
+            content: bytes(&vec![b'z'; n]),
+            ..Part::default()
+        };
+        let mut r = reader(tree([p]));
+        let body = all(&mut r, &mut Script::default());
+        assert_eq!(r.size(), Some(body.len() as u64), "{n} bytes");
+    }
+}
+
+/// A file is read until it ends: one larger than a read's room in as many
+/// reads as it takes, and one that ends short of the size it had ends the
+/// part in the same fill, with no read after it.
+#[test]
+fn a_file_is_read_to_its_end() {
+    let dir = std::env::temp_dir().join(format!("curl-mime-eof-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("big");
+    let content: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&path, &content).unwrap();
+    let data = FileData::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    let mut r = reader(tree([named("f", Content::File(data))]));
+    let (p, end) = pieces(&mut r, &mut Script::default(), 1000);
+    assert_eq!(end, None);
+    let body = p.concat();
+    assert!(contains(
+        &body,
+        &[&b"\r\n\r\n"[..], &content, b"\r\n--"].concat()
+    ));
+    assert_eq!(r.size(), Some(body.len() as u64));
+
+    let path = dir.join("short");
+    std::fs::write(&path, b"abc").unwrap();
+    let data = FileData {
+        size: Some(10),
+        ..FileData::new(path.as_os_str().as_encoded_bytes()).unwrap()
+    };
+    let mut r = reader(tree([
+        named("f", Content::File(data)),
+        named("n", bytes(b"v")),
+    ]));
+    let (p, end) = pieces(&mut r, &mut Script::default(), 1024);
+    assert_eq!(end, None);
+    assert_eq!(p.len(), 1, "one fill");
+    assert!(contains(&p[0], b"abc\r\n--"));
+    assert!(p[0].ends_with(&[&b"v\r\n--"[..], LINE, b"--\r\n"].concat()));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Starting over starts over only the parts the reading reached: a part
+/// not reached yet is not rewound, so one without a way back does not
+/// fail it.
+#[test]
+fn a_rewind_leaves_a_part_not_reached() {
+    let mut r = reader(tree([
+        named("a", bytes(b"x")),
+        named("b", callback(None, false)),
+    ]));
+    let mut buf = [0u8; 10];
+    assert_eq!(
+        r.next_for_test(&mut buf, &mut Script::default()),
+        Got::Bytes(10)
+    );
+    let mut calls = Script::default();
+    assert!(r.restart_for_test(&mut calls));
+    assert_eq!(calls.rewinds, 0);
+}
+
+/// The data the C reader was run on: `binN` bytes of a pattern,
+/// `ascii300` the alphabet over and over, and quoted-printable's cases.
+fn oracle_data(name: &str) -> Vec<u8> {
+    let pattern = |n: usize| (0..n).map(|i| ((i * 37 + 11) % 256) as u8).collect();
+    match name {
+        "bin200" => pattern(200),
+        "bin3000" => pattern(3000),
+        "qp1" => [
+            &b"a=b \r\nc\td \r\x80"[..],
+            &[b'q'; 74],
+            b"=x \r\n",
+            &[b'q'; 75],
+            b"\r\n",
+            &[b'q'; 76],
+            b"\r\n",
+            &[b'z'; 26],
+            b"=\t",
+        ]
+        .concat(),
+        "qp2" => vec![b'r'; 76],
+        "hi" => b"ab\xffc".to_vec(),
+        "ascii300" => (0..300).map(|i| b'a' + (i % 26) as u8).collect(),
+        _ => unreachable!("{name}"),
+    }
+}
+
+/// A handler that gives the data at most `chunk` bytes a call.
+struct Fed {
+    data: Vec<u8>,
+    at: usize,
+    chunk: usize,
+}
+
+impl Calls for Fed {
+    fn read(&mut self, _: &Handler<dyn ReadHandler>, buf: &mut [u8]) -> Read {
+        let n = (self.data.len() - self.at).min(self.chunk).min(buf.len());
+        buf[..n].copy_from_slice(&self.data[self.at..self.at + n]);
+        self.at += n;
+        NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
+    }
+
+    fn rewind(&mut self, _: &Handler<dyn Rewind>) -> Result<(), RewindFailed> {
+        unreachable!("not started over")
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Src {
+    Bytes,
+    /// A handler of unknown size, `Fed` with this chunk.
+    Fed(usize),
+}
+
+/// An encoder, the content, its data's name, whether a part follows, the
+/// room, the size, the pieces' lengths and how the read ends.
+type Case = (
+    Option<Encoder>,
+    Src,
+    &'static str,
+    bool,
+    usize,
+    Option<u64>,
+    &'static str,
+    Option<Got>,
+);
+
+/// An encoder and the name of the data it encodes.
+type Kind = (Option<Encoder>, &'static str);
+
+/// Lengths written `5x3 2` for 5, 5, 5, 2.
+fn expand(lengths: &str) -> Vec<usize> {
+    lengths
+        .split(' ')
+        .flat_map(|run| {
+            let (n, times) = run.split_once('x').unwrap_or((run, "1"));
+            std::iter::repeat_n(n.parse().unwrap(), times.parse().unwrap())
+        })
+        .collect()
+}
+
+/// The pieces C's reader gives a one-part tree (the part unnamed, with a
+/// line `X: y` of its own, then with `trail` a part `n` of `v`), read
+/// with each room: `lib/mime.c` built as the reference, its
+/// `Curl_creader_set_mime` and `Curl_client_read` called with that room.
+/// Where a fill ends follows from where each encoder stops for room and
+/// for input, and at most one handler call each fill. The size is known
+/// but for a handler of unknown size and quoted-printable.
+#[test]
+fn the_pieces_are_c_s() {
+    #[rustfmt::skip]
+    let cases: &[Case] = &[
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 1, Some(550), "1x550", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 3, Some(550), "3x170 1 3x13", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 5, Some(550), "5x25 4x19 2 4x19 2 4x19 2 4x10 5x30 1", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 6, Some(550), "6x20 5 4x18 6 4x18 6 4x18 6 4x10 6x25 1", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 7, Some(550), "7x17 6 4x18 6 4x18 6 4x18 6 4x10 7x21 4", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 8, Some(550), "8x15 5 8x9 6 8x9 6 8x9 6 8x23 7", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 12, Some(550), "12x10 9 12x6 10 12x5 10 12x6 10 12x15 7", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 60, Some(550), "60x2 57 58x2 60x4 17", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 63, Some(550), "63 62 60 62x3 63x2 53", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 64, Some(550), "64 61 64 62x3 64x2 47", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 100, Some(550), "100 97 100 98 100 55", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin200", true, 1024, Some(550), "550", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin200", true, 5, None, "5x25 4x19 2 4x19 2 4x19 2 4x10 5x30 1", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin200", true, 8, None, "8x15 5 8x9 6 8x9 6 8x9 6 8x4 4 8x19 3", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin200", true, 12, None, "12x10 9 12x2 8x2 12 8x2 10 12 8 12 8x2 12 8 10 12 8x2 12 8x2 12 10 8 12 8 4 12x12 11", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin200", true, 60, None, "60x2 13 8 12 8x2 12 8x2 14 8x2 12 8x2 12 8 10 12 8x2 12 8x2 12 10 8 12 8 4 60x2 35", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin200", true, 100, None, "100 33 8 12 8x2 12 8x2 14 8x2 12 8x2 12 8 10 12 8x2 12 8x2 12 10 8 12 8 4 100 55", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin200", true, 1024, None, "133 8 12 8x2 12 8x2 14 8x2 12 8x2 12 8 10 12 8x2 12 8x2 12 10 8 12 8 4 155", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 5, None, "5x29 4 3 5x13 3 5x3 4 5x36 3x2 5x30 4", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 6, None, "6x22 4x2 6x73 1", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 7, None, "7x21 5 7x9 5 7 5 7x49 4", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 8, None, "8x17 7 6 8x8 7 8x44 7", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 11, None, "11x13 9 11x7 10 11x16 10 11x14", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 77, None, "77 75 77x5 42", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 80, None, "80x2 79 80x4 20", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp1", true, 1024, None, "579", None),
+        (Some(Encoder::QuotedPrintable), Src::Fed(5), "qp1", true, 5, None, "5x29 4 3 5x13 3 5x3 4 5x30 4 5x5 4 3 5x30 4", None),
+        (Some(Encoder::QuotedPrintable), Src::Fed(5), "qp1", true, 6, None, "6x22 4x2 6x8 5x6 6x7 5x26 3 6x2 5x4 6x25 4", None),
+        (Some(Encoder::QuotedPrintable), Src::Fed(5), "qp1", true, 8, None, "8x17 7 6 8 6 5x11 8 5x2 8 6 5x28 3 7 5x5 8x19 2", None),
+        (Some(Encoder::QuotedPrintable), Src::Fed(5), "qp1", true, 12, None, "12x11 8x2 10 5x12 8 5x2 9 5x29 3 7 5x5 12x12 10", None),
+        (Some(Encoder::QuotedPrintable), Src::Fed(5), "qp1", true, 77, None, "77 63 8 10 5x12 8 5x2 9 5x29 3 7 5x5 77x2", None),
+        (Some(Encoder::QuotedPrintable), Src::Fed(5), "qp1", true, 1024, None, "140 8 10 5x12 8 5x2 9 5x29 3 7 5x5 154", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp2", false, 5, None, "5x53", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp2", false, 8, None, "8x33 1", None),
+        (Some(Encoder::QuotedPrintable), Src::Bytes, "qp2", false, 1024, None, "265", None),
+        (Some(Encoder::SevenBit), Src::Bytes, "hi", false, 5, Some(181), "5x25", Some(Got::Error)),
+        (Some(Encoder::SevenBit), Src::Bytes, "hi", false, 1024, Some(181), "125", Some(Got::Error)),
+        (Some(Encoder::SevenBit), Src::Bytes, "ascii300", false, 5, Some(477), "5x95 2", None),
+        (Some(Encoder::SevenBit), Src::Bytes, "ascii300", false, 100, Some(477), "100x4 77", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin3000", false, 100, None, "100x31 79", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin3000", false, 1024, None, "381 256x10 184 54", None),
+        (None, Src::Fed(3000), "bin3000", false, 1024, None, "1024x3 18 54", None),
+    ];
+    let mut bodies: Vec<(Kind, Vec<u8>)> = Vec::new();
+    for &(encoder, src, data, trail, room, size, want, end) in cases {
+        let what = format!("{encoder:?} {src:?} {data} room {room}");
+        let content = match src {
+            Src::Bytes => bytes(&oracle_data(data)),
+            Src::Fed(_) => callback(None, false),
+        };
+        let part = Part {
+            encoder,
+            content,
+            headers: vec![b"X: y".to_vec()],
+            ..Part::default()
+        };
+        let mut parts = vec![part];
+        if trail {
+            parts.push(named("n", bytes(b"v")));
+        }
+        let mut r = reader(tree(parts));
+        assert_eq!(r.size(), size, "{what}");
+        let mut calls = Fed {
+            data: oracle_data(data),
+            at: 0,
+            chunk: match src {
+                Src::Bytes => 0,
+                Src::Fed(chunk) => chunk,
+            },
+        };
+        let mut got = Vec::new();
+        let mut buf = vec![0u8; room];
+        let last = loop {
+            match r.next_for_test(&mut buf, &mut calls) {
+                Got::Bytes(0) => break None,
+                Got::Bytes(n) => got.push(buf[..n].to_vec()),
+                other => break Some(other),
+            }
+        };
+        let lengths: Vec<usize> = got.iter().map(Vec::len).collect();
+        assert_eq!(lengths, expand(want), "{what}");
+        assert_eq!(last, end, "{what}");
+        // Every room gives the same bytes.
+        let body = got.concat();
+        match bodies.iter().find(|(k, _)| *k == (encoder, data)) {
+            Some((_, first)) => assert_eq!(&body, first, "{what}"),
+            None => bodies.push(((encoder, data), body)),
+        }
+    }
+    // What C encoded, between the part's head and the next boundary.
+    let encoded = |encoder, data| {
+        let (_, body) = bodies.iter().find(|(k, _)| *k == (encoder, data)).unwrap();
+        let start = body.windows(8).position(|w| w == b"X: y\r\n\r\n").unwrap() + 8;
+        let end = start
+            + body[start..]
+                .windows(4)
+                .position(|w| w == b"\r\n--")
+                .unwrap();
+        body[start..end].to_vec()
+    };
+    assert_eq!(
+        encoded(Some(Encoder::Base64), "bin200")
+            .escape_ascii()
+            .to_string(),
+        "CzBVep/E6Q4zWH2ix+wRNluApcrvFDleg6jN8hc8YYar0PUaP2SJrtP4HUJnjLHW+yBFao+02f4j\\r\\n\
+         SG2St9wBJktwlbrfBClOc5i94gcsUXabwOUKL1R5nsPoDTJXfKHG6xA1Wn+kye4TOF2Cp8zxFjtg\\r\\n\
+         harP9Bk+Y4it0vccQWaLsNX6H0RpjrPY/SJHbJG22wAlSm+Uud4DKE1yl7zhBitQdZq/5AkuU3id\\r\\n\
+         wucMMVZ7oMXqDzRZfqPI7RI3XIGmy/AVOl+Eqc4="
+    );
+    let q = |n| "q".repeat(n);
+    assert_eq!(
+        encoded(Some(Encoder::QuotedPrintable), "qp1")
+            .escape_ascii()
+            .to_string(),
+        format!(
+            "a=3Db=20\\r\\nc\\td =0D=80{}=\\r\\n{}=3Dx=20\\r\\n{}\\r\\n{}\\r\\n{}=3D=09",
+            q(65),
+            q(9),
+            q(75),
+            q(76),
+            "z".repeat(26)
+        )
+    );
+    assert_eq!(
+        encoded(Some(Encoder::QuotedPrintable), "qp2"),
+        vec![b'r'; 76]
+    );
+    // 7bit sends what comes before a byte past 127, then fails.
+    let (_, hi) = bodies
+        .iter()
+        .find(|(k, _)| *k == (Some(Encoder::SevenBit), "hi"))
+        .unwrap();
+    assert!(hi.ends_with(b"X: y\r\n\r\nab"), "{}", hi.escape_ascii());
+}
+
+/// Outside a form a part without a name has no disposition, whatever its
+/// type; inside one it is `form-data` all the same.
+#[test]
+fn a_part_without_a_name_is_no_attachment() {
+    let typed = |t: &[u8]| Part {
+        mime_type: Some(t.to_vec()),
+        content: bytes(b"x"),
+        ..Part::default()
+    };
+    let headers = UserHeaders::new([&b"Content-Type: multipart/mixed"[..]]).unwrap();
+    for t in [&b"a/b"[..], b"text/html", b"multipart/x"] {
+        let mut r = reader_with(tree([typed(t)]), &headers, Escape::Form);
+        let body = all(&mut r, &mut Script::default());
+        let want = [&b"\r\nContent-Type: "[..], t, b"\r\n\r\nx\r\n"].concat();
+        assert!(contains(&body, &want), "{}", body.escape_ascii());
+        assert!(!contains(&body, b"Disposition"), "{}", body.escape_ascii());
+    }
+    let body = all(&mut reader(tree([typed(b"a/b")])), &mut Script::default());
+    assert!(contains(
+        &body,
+        b"\r\nContent-Disposition: form-data\r\nContent-Type: a/b\r\n"
+    ));
+}
+
+/// Started over in the middle of its encoding, a part is encoded afresh:
+/// what was held for the encoder and its place on the line are dropped.
+#[test]
+fn a_rewind_drops_what_the_encoder_held() {
+    let make = || {
+        let p = Part {
+            encoder: Some(Encoder::Base64),
+            content: bytes(&oracle_data("bin200")),
+            ..Part::default()
+        };
+        reader(tree([p]))
+    };
+    let whole = all(&mut make(), &mut Script::default());
+    let mut r = make();
+    let mut buf = [0u8; 150];
+    for _ in 0..2 {
+        let got = r.next_for_test(&mut buf, &mut Script::default());
+        assert!(matches!(got, Got::Bytes(n) if n > 100), "{got:?}");
+    }
+    assert!(r.restart_for_test(&mut Script::default()));
+    assert_eq!(all(&mut r, &mut Script::default()), whole);
+}

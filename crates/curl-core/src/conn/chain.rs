@@ -49,12 +49,12 @@ impl Chain {
 
     /// The chain of a setup over `route` that got as far as `reached`,
     /// with the handshake `under_way` started over the first hop: the
-    /// SOCKS, HTTP-PROXY or HAPROXY filter, added but not connected. The
+    /// SOCKS, HTTP-PROXY or HAPROXY filter, added but not connected. A
+    /// handshake's filter is there once it is under way or made. The
     /// HTTP proxy's tunnel shows its H1-PROXY filter once `installed`, as
     /// C installs it in the tunnel filter's first connect.
     pub(crate) fn of(
         route: &Tcp,
-        haproxy: bool,
         reached: SetupPoint,
         under_way: Option<Component>,
         installed: bool,
@@ -78,7 +78,7 @@ impl Chain {
         let added = Handshakes {
             socks: added(Made::SOCKS, Component::Socks),
             tunnel: added(Made::TUNNEL, Component::HttpProxy),
-            preface: haproxy && added(Made::PREFACE, Component::Haproxy),
+            preface: added(Made::PREFACE, Component::Haproxy),
         };
         let connected = |filter| match filter {
             Component::Socks => made.has(Made::SOCKS),
@@ -195,5 +195,46 @@ impl fmt::Display for Chain {
             write!(f, "[{not}{}]", filter.name())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use curl_alloc::TryArc;
+
+    use super::*;
+    use crate::conn::{Peer, Scheme};
+    use crate::options::IpVersion;
+
+    /// A handshake's filter shows connected once it is made, as C's does
+    /// until the setup filters go; the PROXY line's while a later one is
+    /// still to be made over the same connection.
+    #[test]
+    fn a_handshake_made_shows_connected() {
+        let scheme = Scheme {
+            name: "http",
+            reuse: true,
+        };
+        let route = Tcp {
+            origin: TryArc::try_new(Peer::new(scheme, b"o.test".to_vec(), 80, None)).unwrap(),
+            via: None,
+            ip: IpVersion::Any,
+            proxy: None,
+        };
+        let shown = |made, under_way| {
+            Chain::of(&route, SetupPoint::Dialed(made), under_way, false).to_string()
+        };
+        assert_eq!(
+            shown(Made::PREFACE, None),
+            "[0][!DNS][!SETUP][HAPROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(Made::default(), Some(Component::Haproxy)),
+            "[0][!DNS][!SETUP][!HAPROXY][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(Made::default(), None),
+            "[0][!DNS][!SETUP][HAPPY-EYEBALLS][TCP]"
+        );
     }
 }

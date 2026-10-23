@@ -563,7 +563,7 @@ impl Run {
     ) -> PollsetTrace<impl Iterator<Item = (Instant, TimerKind)> + Clone + use<>> {
         let wants = self.state.pollset(pause).wants();
         let setup = match &self.state {
-            TransferState::Connecting(c) if !wants.as_slice().is_empty() => {
+            TransferState::Connecting(c) => {
                 Some(matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))))
             }
             _ => None,
@@ -1351,10 +1351,8 @@ fn enter_setup<H: Host>(
     entered: &mut bool,
 ) -> Option<Chain> {
     let reached = c.lease.reached()?;
-    let haproxy = cx.easy().options().proxy.haproxy;
     let under_way = c.handshake.as_deref().map(Handshake::filter);
-    let chain =
-        |reached, under_way, installed| Chain::of(&c.route, haproxy, reached, under_way, installed);
+    let chain = |reached, under_way, installed| Chain::of(&c.route, reached, under_way, installed);
     let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
         mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
     };

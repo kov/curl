@@ -45,16 +45,20 @@ impl<H: Host> Multi<H> {
         // After the pollsets, which may arm timers (multi.c:1602).
         let internal = self.multi_timeout(now, ev);
         let timeout = internal.map_or(max, |t| t.min(max));
+        let mut wanted = 0;
+        pollsets(&self.slots, |_, _| wanted += 1);
+        // The waker is watched when the wait will be one (multi.c:1574).
+        let watch_waker = mode == WaitMode::Poll || wanted > 0 || !extra.is_empty();
+        let waker_watched = self.waker.is_some() && watch_waker;
         if let Some(id) = last {
-            self.trace_wait(id, now, extra.len(), mode, timeout, internal, ev);
+            let fds = wanted + usize::from(waker_watched) + extra.len();
+            self.trace_wait(id, now, fds, timeout, internal, ev);
         }
         let oom = |_| MultiErrorKind::OutOfMemory;
         // A few entries are kept on the stack, more in memory of their
         // own, as C's `a_few_on_stack`: a loop of waits allocates nothing.
-        let mut wanted = 0;
         let mut first = None;
         pollsets(&self.slots, |s, events| {
-            wanted += 1;
             first.get_or_insert((s, events));
         });
         let mut few_sockets;
@@ -80,12 +84,10 @@ impl<H: Host> Multi<H> {
                 &mut more_sockets
             }
         };
-        // The waker is watched when the wait will be one (multi.c:1574).
-        let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
         let waker = self
             .waker
             .as_deref()
-            .filter(|_| watch_waker)
+            .filter(|_| waker_watched)
             .map(|w| (w, PollFd::new(w.fd(), Events::IN)));
         let n_fds = extra.len() + usize::from(waker.is_some());
         let mut few_fds;
@@ -132,24 +134,17 @@ impl<H: Host> Multi<H> {
     }
 
     /// The wait about to be made, traced on transfer `id` (`multi_wait`):
-    /// how many descriptors it polls, the waker counted as it is watched,
-    /// for how long, and the multi's own timeout, -1 for none.
-    #[expect(clippy::too_many_arguments, reason = "the line's every field")]
+    /// how many descriptors it polls (`fds`, the waker counted if it is
+    /// watched), for how long, and the multi's own timeout, -1 for none.
     fn trace_wait(
         &mut self,
         id: TransferId,
         now: crate::time::Instant,
-        extra: usize,
-        mode: WaitMode,
+        fds: usize,
         timeout: Duration,
         internal: Option<Duration>,
         ev: &mut dyn MultiEvents<H>,
     ) {
-        let mut sockets = 0;
-        pollsets(&self.slots, |_, _| sockets += 1);
-        let watch_waker = mode == WaitMode::Poll || sockets > 0 || extra > 0;
-        let waker = usize::from(self.waker.is_some() && watch_waker);
-        let fds = sockets + waker + extra;
         // C's milliseconds are an `int`.
         let ms = |d: Duration| i32::try_from(d.as_millis()).unwrap_or(i32::MAX);
         let (timeout, internal) = (ms(timeout), internal.map_or(-1, ms));

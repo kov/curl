@@ -41,7 +41,7 @@ witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_cons
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_wake_ends_a_wait_without_counting_and_is_consumed
 --- old
-        let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
+        let watch_waker = mode == WaitMode::Poll || wanted > 0 || !extra.is_empty();
 --- new
         let watch_waker = true;
 
@@ -116,7 +116,6 @@ file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
 --- old
         pollsets(&self.slots, |s, events| {
-            wanted += 1;
             first.get_or_insert((s, events));
         });
 --- new
@@ -149,7 +148,7 @@ witness: curl-sys-abi handle_tests::the_transfers_sockets_are_listed
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::a_wake_ends_a_wait_on_a_transfer_s_socket
 --- old
-        let watch_waker = mode == WaitMode::Poll || !sockets.is_empty() || !extra.is_empty();
+        let watch_waker = mode == WaitMode::Poll || wanted > 0 || !extra.is_empty();
 --- new
         let watch_waker = mode == WaitMode::Poll || !extra.is_empty();
 
@@ -236,9 +235,9 @@ witness: curl-core proto::http::tests::wait_trace::a_connect_limit_is_waited_for
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core proto::http::tests::wait_trace::a_request_s_waits_are_traced_as_c
 --- old
-        let waker = usize::from(self.waker.is_some() && watch_waker);
+            let fds = wanted + usize::from(waker_watched) + extra.len();
 --- new
-        let waker = usize::from(self.waker.is_some() && watch_waker && false);
+            let fds = wanted + extra.len();
 
 === a perform's own multi has no waker
 file: crates/curl-core/src/easy.rs

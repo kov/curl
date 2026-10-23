@@ -141,6 +141,34 @@ fn a_tunnel_s_setup_is_traced_as_c() {
     assert_eq!(setup_lines(&ran), want);
 }
 
+/// The PROXY line after a tunnel: the tunnel's filters connected while the
+/// PROXY protocol's is added (`-p -x … --haproxy-protocol`).
+#[test]
+fn the_proxy_line_after_a_tunnel_is_traced_as_c() {
+    let talk = Conversation::replies(&[TUNNEL_UP, OK], false).late_replies();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, tracing_setup(), "/", talk, |o| {
+        tunneled(o);
+        o.proxy.make_mut().unwrap().haproxy = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let mut want = expect(&raced("proxy", &format!("127.0.0.1:{PORT}")));
+    want.extend(expect(TUNNEL));
+    want.extend(expect(
+        "[SETUP] added HAPROXY filter
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPROXY][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPROXY][HTTP-PROXY][H1-PROXY][HAPPY-EYEBALLS][TCP]
+        [SETUP] removing connected setup filter
+        [SETUP] destroy
+        [HAPROXY] removing connected setup filter
+        [HAPROXY] destroy
+        [HTTP-PROXY] removing connected setup filter
+        [HTTP-PROXY] destroy
+        [MULTI] [CONNECTING] reduced to [0][H1-PROXY][TCP]",
+    ));
+    assert_eq!(setup_lines(&ran), want);
+}
+
 /// A proxy that closes on its 407 has the setup start over: said, and the
 /// chain traced from the setup filter again.
 #[test]

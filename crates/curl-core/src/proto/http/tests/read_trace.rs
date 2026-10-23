@@ -315,3 +315,102 @@ fn a_body_held_for_a_100_is_asked_for_while_the_wait_runs() {
         "{lines:?}"
     );
 }
+
+/// Gives more than it has room for.
+struct TooMuch;
+
+impl crate::handler::ReadHandler for TooMuch {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        crate::handler::Read::Data(std::num::NonZeroUsize::new(buf.len() + 1).unwrap())
+    }
+}
+
+/// The mime reader's lines a tree of one part read by `handler` traced,
+/// `size` announced for it, and how the transfer ended.
+fn mime_read(
+    handler: Handler<dyn crate::handler::ReadHandler>,
+    size: Option<u64>,
+) -> (Result<(), ErrorKind>, Vec<String>) {
+    let tree = mime_tree(crate::mime::Content::Read {
+        handler,
+        rewind: None,
+        size,
+    });
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = mime_source(tree);
+    });
+    let lines = read_lines(&ran)
+        .into_iter()
+        .filter(|l| l.starts_with("[READ] cr_mime_read"))
+        .collect();
+    (ran.result, lines)
+}
+
+/// A read that fails as C's `cr_mime_read` returns early says what the
+/// tree gave and no more: a tree ending short of its size, and a handler
+/// giving more than its room.
+#[test]
+fn a_mime_read_that_fails_early_says_only_what_it_got() {
+    let (result, lines) = mime_read(Handler::read(Stream::new(b"abc")).unwrap(), Some(10));
+    assert_eq!(result, Err(ErrorKind::ReadError));
+    assert!(
+        lines.last().unwrap().ends_with("mime_read() -> 0"),
+        "{lines:?}"
+    );
+    let (result, lines) = mime_read(Handler::read(TooMuch).unwrap(), None);
+    assert_eq!(result, Err(ErrorKind::ReadError));
+    let last = lines.last().unwrap();
+    assert!(
+        last.contains("mime_read() -> ") && !last.contains("total="),
+        "{lines:?}"
+    );
+}
+
+/// Pauses the sending as the connect starts, and keeps the lines.
+#[derive(Clone, Default)]
+struct PausesOnTrying(Seen);
+
+impl DebugHandler for PausesOnTrying {
+    fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
+        if kind == DebugKind::Text && data.starts_with(b"  Trying") {
+            let me = cx.me();
+            cx.pause(me, PauseRequest::SEND).unwrap();
+        }
+        self.0.debug(cx, kind, data);
+    }
+}
+
+/// A body whose sending the application paused before the request is
+/// not asked for while it stays paused, though the request waits for a
+/// 100 (`Curl_req_send`'s check of the send pause).
+#[test]
+fn a_body_paused_from_the_start_is_not_asked_for() {
+    let (mut m, talk, _) = server(&[OK_EMPTY], false);
+    let mut e = tracing_read();
+    let seen = PausesOnTrying::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+    o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..5 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert!(
+        talk.received().starts_with(b"POST / HTTP/1.1\r\n"),
+        "the request went"
+    );
+    let lines: Vec<_> = seen
+        .0
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[READ] client_read"))
+        .collect();
+    assert_eq!(lines, Vec::<String>::new());
+}

@@ -283,8 +283,9 @@ exclude_re = [
     'multi/wait\.rs:.*: replace match guard (wanted|n_fds) <= ON_STACK with false in Multi<H>::wait$',
     # A known size read to its end sets `seen_eos`, and the next read
     # returns before reading: one that finds nothing has read less than
-    # the size, which a tree's closing boundary keeps above 0.
-    'mime/read\.rs:.*: replace < with <= in MimeReader::read$',
+    # the size, which a tree's closing boundary keeps above 0. C's check
+    # of it, kept, is always true.
+    'mime/read\.rs:.*: (replace < with <= in MimeReader::(read|took)|replace match guard self\.read < size with true in MimeReader::took)$',
     # A share's pool is used to find, check and close connections, never
     # to make one: no address is scoped through it.
     'multi/cx\.rs:.*CloseLater<._>>::link_local_scope',

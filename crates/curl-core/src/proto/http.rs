@@ -1102,11 +1102,8 @@ impl Request {
             }) if self.filled < self.out.len() && !paused => {
                 self.fill(cx)?;
             }
-            AfterHead::Continue if !paused => {
-                self.start_reading(cx);
-                self.held_back(cx);
-            }
-            AfterHead::Body(_) | AfterHead::Continue => {}
+            AfterHead::Continue => self.held_back(cx),
+            AfterHead::Body(_) => {}
         }
         // The engine takes the request as sent at DID if it went now;
         // the buffer read behind the head is this pass's.
@@ -1148,9 +1145,14 @@ impl Request {
         Ok(got.n > 0 || got.eos)
     }
 
-    /// The body is asked for, and held back for a 100: C's readers give
-    /// nothing (`cr_exp100_read`).
-    fn held_back<H: Host>(&self, cx: &mut StepCx<'_, H>) {
+    /// The body is asked for, unless its sending is paused, and held back
+    /// for a 100: C's readers give nothing (`Curl_client_read`,
+    /// `cr_exp100_read`).
+    fn held_back<H: Host>(&mut self, cx: &mut StepCx<'_, H>) {
+        if cx.pause().send_paused() {
+            return;
+        }
+        self.start_reading(cx);
         let nothing = Ok(upload::Readout { n: 0, eos: false });
         upload::client_read(cx, self.out.len() - self.filled, &nothing);
     }

@@ -56,10 +56,9 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_gives_nothing_until_it_comes
 features: test-util
 --- old
-                self.start_reading(cx);
-                self.held_back(cx);
+            AfterHead::Continue => self.held_back(cx),
 --- new
-                self.start_reading(cx);
+            AfterHead::Continue => {}
 
 === an upload to a file is read again past its end
 file: crates/curl-core/src/proto/file.rs
@@ -79,3 +78,15 @@ features: test-util
                     (Ok(_), false) => {
 --- new
                     (Ok(_), _) => {
+
+=== a body paused from the start is asked for
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::a_body_paused_from_the_start_is_not_asked_for
+features: test-util
+--- old
+        if cx.pause().send_paused() {
+            return;
+        }
+        self.start_reading(cx);
+--- new
+        self.start_reading(cx);

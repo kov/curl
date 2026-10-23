@@ -446,6 +446,23 @@ fn little_room_gives_the_same_bytes() {
     }
 }
 
+/// What the reader returns is the size C's `Curl_mime_read` would: the
+/// bytes, or the values standing for an abort, a pause, a stop and an
+/// error.
+#[test]
+fn what_a_read_got_is_c_s_size() {
+    for (got, size) in [
+        (Got::Bytes(7), 7),
+        (Got::Funny(931), 931),
+        (Got::Abort, 0x1000_0000),
+        (Got::Pause, 0x1000_0001),
+        (Got::Stop, 18_446_744_073_709_551_614),
+        (Got::Error, 18_446_744_073_709_551_615),
+    ] {
+        assert_eq!(got.c_size(), size, "{got:?}");
+    }
+}
+
 /// A handler's failures end the read with C's outcome, and stick: it is
 /// not asked again.
 #[test]

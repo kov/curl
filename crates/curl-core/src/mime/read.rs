@@ -54,7 +54,7 @@ impl Got {
     /// What C's `Curl_mime_read` returns for it: the size, or one of the
     /// sizes standing for something else (`CURL_READFUNC_ABORT`,
     /// `CURL_READFUNC_PAUSE`, `STOP_FILLING`, `READ_ERROR`).
-    fn c_size(self) -> u64 {
+    pub(super) fn c_size(self) -> u64 {
         match self {
             Got::Bytes(n) | Got::Funny(n) => n as u64,
             Got::Abort => 0x1000_0000,

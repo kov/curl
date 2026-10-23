@@ -73,7 +73,9 @@ fn parse_args<'a>(
 ) -> Result<Parsed<'a>, ParamError> {
     match Parser::new(argv)?.drive(msgs, wipe) {
         Step::Done(parsed) => parsed,
-        Step::Read(..) | Step::ReadUrls(..) => panic!("a file to read was named"),
+        Step::Read(..) | Step::ReadUrls(..) | Step::Grow(..) => {
+            panic!("a file to read was named, or an argument expanded")
+        }
     }
 }
 
@@ -84,6 +86,8 @@ enum Step<'a> {
     Read(Parser<'a>, Wanted<'a>),
     /// It goes on once the URLs in this file are read (`parse_url`).
     ReadUrls(Parser<'a>, &'a [u8]),
+    /// It goes on once there is room for the argument it expanded.
+    Grow(Parser<'a>),
 }
 
 /// A configuration file to read.
@@ -107,6 +111,25 @@ fn go_on<'a, R>(
     let (parser, wanted) = match step {
         Step::Done(parsed) => return then(parsed, msgs),
         Step::Read(parser, wanted) => (parser, wanted),
+        Step::Grow(parser) => {
+            // Twice the room there was, so that the frames this takes
+            // grow only with the logarithm of what is expanded.
+            let needed = parser.room.pending.as_ref().map_or(0, Vec::len);
+            let size = needed.max(parser.room.size.saturating_mul(2)).max(MIN_ROOM);
+            let mut buf = Vec::new();
+            if buf.try_reserve_exact(size).is_err() {
+                let step = parser.fail(ParamError::NoMem, msgs);
+                return go_on(step, msgs, wipe, then);
+            }
+            #[allow(clippy::disallowed_methods, reason = "reserved above")]
+            buf.resize(size, 0);
+            // What is parsed from here borrows the new room.
+            let mut parser: Parser<'_> = parser;
+            parser.room.spare = &mut buf[..];
+            parser.room.size = size;
+            let step = parser.drive(msgs, wipe);
+            return go_on(step, msgs, wipe, then);
+        }
         Step::ReadUrls(parser, name) => {
             let text = match crate::slurp::read(name, As::Binary) {
                 Ok(text) => text,
@@ -194,10 +217,41 @@ fn shown_name(name: &[u8]) -> &[u8] {
     if name == b"-" { b"<stdin>" } else { name }
 }
 
+/// The least room made for expanded arguments.
+const MIN_ROOM: usize = 4096;
+
+/// Where the arguments `--expand-` options expand to are kept, for as
+/// long as what is parsed: the unused end of a buffer in a frame of
+/// `go_on`'s. One that does not fit waits here while a larger buffer is
+/// made, and its word is read again.
+#[derive(Default)]
+struct Room<'a> {
+    spare: &'a mut [u8],
+    /// The size of the buffer `spare` is the end of.
+    size: usize,
+    /// An expansion waiting for room.
+    pending: Option<Vec<u8>>,
+}
+
+impl<'a> Room<'a> {
+    /// `text` kept for the rest of the parse, or given back if there is
+    /// no room for it.
+    fn place(&mut self, text: Vec<u8>) -> Result<&'a [u8], Vec<u8>> {
+        if text.len() > self.spare.len() {
+            return Err(text);
+        }
+        let (used, rest) = std::mem::take(&mut self.spare).split_at_mut(text.len());
+        used.copy_from_slice(&text);
+        self.spare = rest;
+        Ok(used)
+    }
+}
+
 /// The command line being read, and where from.
 struct Parser<'a> {
     argv: &'a [OsString],
     line: CommandLine<'a>,
+    room: Room<'a>,
     /// The command line, then each configuration file being read from
     /// it, the innermost last.
     sources: Vec<Source<'a>>,
@@ -233,6 +287,7 @@ impl<'a> Parser<'a> {
         Ok(Parser {
             argv,
             line: CommandLine::new()?,
+            room: Room::default(),
             sources,
         })
     }
@@ -263,15 +318,20 @@ impl<'a> Parser<'a> {
                             Ok((Flow::Continue, false))
                         } else {
                             let next = self.argv.get(i + 1).map(|a| a.as_encoded_bytes());
-                            getparameter(arg, i, next, &mut self.line, msgs, wipe)
+                            let line = &mut self.line;
+                            getparameter(arg, i, next, line, &mut self.room, msgs, wipe)
                         }
                     } else {
                         // A URL: it is the argument of an implied `--url`, not
                         // a word after this one to skip.
-                        getparameter(b"--url", i, Some(arg), &mut self.line, msgs, wipe)
+                        let line = &mut self.line;
+                        getparameter(b"--url", i, Some(arg), line, &mut self.room, msgs, wipe)
                             .map(|(flow, _)| (flow, false))
                     };
-                    if let Ok((_, used_next)) = &step {
+                    // A word to read again is not passed.
+                    if let Ok((flow, used_next)) = &step
+                        && !matches!(flow, Flow::Grow)
+                    {
                         *at = i + 1 + usize::from(*used_next);
                     }
                     match step {
@@ -298,7 +358,9 @@ impl<'a> Parser<'a> {
                         continue;
                     };
                     *at += 1;
-                    for warning in entry.warnings {
+                    // Not again when the entry is read again.
+                    let again = self.room.pending.is_some();
+                    for warning in entry.warnings.iter().filter(|_| !again) {
                         if let Ok(number) = try_format(format_args!(":{} Option '", entry.number)) {
                             msgs.warn(&[
                                 shown_name(name),
@@ -314,10 +376,15 @@ impl<'a> Parser<'a> {
                         0,
                         argument,
                         &mut self.line,
+                        &mut self.room,
                         msgs,
                         &mut |_, _| {},
                     );
+                    if let Ok((Flow::Grow, _)) = step {
+                        *at -= 1;
+                    }
                     match step {
+                        Ok((Flow::Grow, _)) => Ok(Flow::Grow),
                         // An argument given that the option takes none.
                         Ok((_, false)) if argument.is_some_and(|a| !a.is_empty()) => {
                             Err(ParamError::GotExtraParameter)
@@ -354,6 +421,7 @@ impl<'a> Parser<'a> {
                 Ok((Flow::NextOperation, _)) => unreachable!("started above"),
                 Ok((Flow::Request(r), _)) => return Step::Done(Ok(Parsed::Request(r))),
                 Ok((Flow::Urls(name), _)) => return Step::ReadUrls(self, name),
+                Ok((Flow::Grow, _)) => return Step::Grow(self),
                 Ok((Flow::Config(name), levels)) => {
                     // Each file read uses up a level (`C_CONFIG`).
                     if levels == 0 {
@@ -462,6 +530,7 @@ fn getparameter<'a>(
     index: usize,
     mut next: Option<&'a [u8]>,
     line: &mut CommandLine<'a>,
+    room: &mut Room<'a>,
     msgs: &mut Messages,
     wipe: Wipe<'_>,
 ) -> Result<(Flow<'a>, bool), ParamError> {
@@ -470,6 +539,8 @@ fn getparameter<'a>(
     let mut separate = true;
     let mut long = None;
     let mut letters: &[u8] = &[];
+    // The argument is an expansion, not a word of the command line.
+    let mut expanded = false;
     if flag.first() != Some(&b'-') || flag.get(1) == Some(&b'-') {
         let mut word = flag.strip_prefix(b"--").unwrap_or(flag);
         let mut negated = false;
@@ -495,14 +566,25 @@ fn getparameter<'a>(
         if negated && spec.kind != ArgKind::Bool {
             return Err(ParamError::NoPrefix);
         }
-        if expand && next.is_some() {
+        if let Some(given) = next.filter(|_| expand) {
             if !spec.kind.takes_argument() {
                 return Err(ParamError::ExpandError);
             }
-            // Variable expansion is not implemented: the option cannot be
-            // applied as asked.
-            line.not_implemented(spec, "--expand-");
-            return Ok((Flow::Continue, separate));
+            // Read again, the word was expanded already.
+            let text = match room.pending.take() {
+                Some(text) => Some(text),
+                None => line.global.variables.expand(given, msgs)?,
+            };
+            if let Some(text) = text {
+                match room.place(text) {
+                    Ok(placed) => next = Some(placed),
+                    Err(text) => {
+                        room.pending = Some(text);
+                        return Ok((Flow::Grow, false));
+                    }
+                }
+                expanded = true;
+            }
         }
         long = Some(spec);
     } else {
@@ -560,7 +642,8 @@ fn getparameter<'a>(
                 }
                 .and_then(|value| apply(line, msgs, spec, value))
             };
-            if spec.secret {
+            // An expansion is a copy, and only the copy is wiped in C.
+            if spec.secret && !expanded {
                 // Wiped whether or not the option was accepted, as in C:
                 // in this word after the option, or the whole next word.
                 if used_next {
@@ -1231,6 +1314,45 @@ mod tests {
             nodes(&["--remote-name-all", "-o", "a", "x"]),
             [(Output::File(b"a"), true)]
         );
+    }
+
+    /// Expanded arguments live as long as the parse, however many need
+    /// more room; one that needs none is the word itself, wiped if
+    /// secret, and an expanded secret is not (only C's copy is).
+    #[test]
+    fn keeps_every_expansion_for_the_parse() {
+        let long = "x".repeat(3000);
+        let mut args = vec!["curl".to_string(), "--variable".into(), format!("v={long}")];
+        for i in 0..200 {
+            args.push("--expand-url".into());
+            args.push(format!("http://h/{i}/{{{{v}}}}"));
+        }
+        args.extend(["--expand-user".into(), "{{v}}:p".into()]);
+        args.extend(["--expand-user".into(), "plain:p".into()]);
+        let argv: Vec<OsString> = args.iter().map(OsString::from).collect();
+        let mut msgs = Messages::new();
+        msgs.silent = true;
+        let mut wiped = Vec::new();
+        let (urls, user) = parse(
+            &argv,
+            None,
+            &mut msgs,
+            &mut |i, o| wiped.push((i, o)),
+            |r, _| {
+                let Ok(Parsed::Run(line)) = r else {
+                    panic!("not parsed");
+                };
+                let op = &line.operations[0];
+                let urls: Vec<Vec<u8>> = op.nodes.iter().map(|n| n.url.unwrap().to_vec()).collect();
+                (urls, op.user.as_deref().map(<[u8]>::to_vec))
+            },
+        );
+        assert_eq!(urls.len(), 200);
+        for (i, url) in urls.iter().enumerate() {
+            assert_eq!(url, format!("http://h/{i}/{long}").as_bytes());
+        }
+        assert_eq!(user.as_deref(), Some(&b"plain:p"[..]));
+        assert_eq!(wiped, [(406, 0)]);
     }
 
     /// A file of the test's own, removed after it.

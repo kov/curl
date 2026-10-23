@@ -26,6 +26,7 @@ pub(crate) use apply::{
 };
 pub(crate) use errors::{ParamError, exit_code};
 pub(crate) use help::{CATEGORIES, HELP, HelpLine};
+pub(crate) use number::leading_number;
 pub(crate) use parse::{Parsed, parse};
 use table::{MAX_OPTION_LEN, OPTIONS, Opt};
 

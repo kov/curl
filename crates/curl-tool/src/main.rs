@@ -28,6 +28,7 @@ mod stdout;
 mod trace;
 #[cfg(test)]
 mod untrusted;
+mod vars;
 mod write_out;
 
 use msgs::Messages;

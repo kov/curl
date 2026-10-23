@@ -1,0 +1,55 @@
+# Variables and `--expand-` (crates/curl-tool/src/vars.rs and the
+# parser's room for expansions), against the C build's `src/var.c`.
+
+=== an escaped {{ counts as an expansion
+file: crates/curl-tool/src/vars.rs
+witness: curl-tool vars::tests::expands_as_c_does
+--- old
+                out.add(b"{{")?;
+                line = &line[at + 2..];
+--- new
+                out.add(b"{{")?;
+                added = true;
+                line = &line[at + 2..];
+
+=== the first variable set of a name is the one used
+file: crates/curl-tool/src/vars.rs
+witness: curl-tool vars::tests::the_last_set_wins
+--- old
+        self.0.iter().rev().find(|v| v.name == name)
+--- new
+        self.0.iter().find(|v| v.name == name)
+
+=== base64 padding is taken anywhere in the last quantum
+file: crates/curl-tool/src/vars.rs
+witness: curl-tool vars::tests::decodes_base64_as_c_does
+--- old
+            let v = if q * 4 + i >= data.len() {
+--- new
+            let v = if b == b'=' && q * 4 + 4 == text.len() {
+
+=== a byte range leaves out its last byte
+file: crates/curl-tool/src/vars.rs
+witness: curl-tool vars::tests::takes_a_byte_range_as_c_does
+--- old
+                &text[start as usize..=last as usize]
+--- new
+                &text[start as usize..last as usize]
+
+=== a word whose expansion waits for room is passed over
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool options::parse::tests::keeps_every_expansion_for_the_parse
+--- old
+                    if let Ok((flow, used_next)) = &step
+                        && !matches!(flow, Flow::Grow)
+                    {
+--- new
+                    if let Ok((_, used_next)) = &step {
+
+=== an expanded secret has its word of the command line wiped
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool options::parse::tests::keeps_every_expansion_for_the_parse
+--- old
+            if spec.secret && !expanded {
+--- new
+            if spec.secret {

@@ -29,6 +29,11 @@ pub(crate) fn read(name: &[u8], how: As) -> Result<Vec<u8>, ReadFailed> {
     } else {
         curl_os::fs::with_c_name(name, curl_os::fs::open_read).map_err(|_| ReadFailed::Open)?
     };
+    read_from(&mut file, how)
+}
+
+/// The bytes of `file`, open for reading, from where it is to its end.
+pub(crate) fn read_from(file: &mut std::fs::File, how: As) -> Result<Vec<u8>, ReadFailed> {
     let mut bytes = Vec::new();
     // A file's size is known: one allocation holds it, as it was then.
     if let Ok(meta) = file.metadata()

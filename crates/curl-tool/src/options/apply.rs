@@ -85,6 +85,9 @@ pub(crate) enum Flow<'a> {
     Config(&'a [u8]),
     /// `--url @file`: read URLs from this file next, one a line.
     Urls(&'a [u8]),
+    /// An expanded argument needs more room than the parse has: the word
+    /// is read again once there is (never from `apply`).
+    Grow,
 }
 
 /// What the command line asked to be shown.
@@ -517,6 +520,8 @@ pub(crate) struct Global<'a> {
     /// `--no-styled-output`: header lines to a terminal are written as
     /// they came.
     pub(crate) unstyled: bool,
+    /// What `--variable` sets, for `--expand-` options to use.
+    pub(crate) variables: crate::vars::Variables,
     /// `--test-event`: transfers are driven by the multi's events (the
     /// debug build's).
     #[cfg(feature = "debug-hooks")]
@@ -1276,6 +1281,11 @@ pub(crate) fn apply<'a>(
         Opt::ProgressBar => line.global.progress_bar = value.toggle(),
         Opt::StyledOutput => line.global.unstyled = !value.toggle(),
         Opt::FailEarly => line.global.fail_early = value.toggle(),
+        Opt::Variable => {
+            // Noted as C notes: if a trace was asked for before.
+            msgs.tracing = line.global.trace != Trace::None;
+            line.global.variables.set(value.text(), msgs)?;
+        }
         Opt::Rate => {
             line.global.ms_per_transfer = number::rate(value.text(), &mut |m| msgs.error(&[m]))?;
         }
@@ -1473,7 +1483,6 @@ pub(crate) fn apply<'a>(
         | Opt::UnixSocket
         | Opt::UploadFlags
         | Opt::UseAscii
-        | Opt::Variable
         | Opt::VlanPriority
         | Opt::Xattr => line.not_implemented(spec, "--"),
     }

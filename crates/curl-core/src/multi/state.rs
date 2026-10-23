@@ -22,7 +22,7 @@ use crate::conn::{
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
-use crate::error::{ErrorKind, UrlErrorKind};
+use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::options::{Flow, Follow, Method, Options, ProxyType, ResolveList};
 use crate::progress::rate::{RateLimits, Verdict, Way};
 use crate::progress::{self, Speedometer};
@@ -3065,37 +3065,9 @@ fn parse_url(url: &[u8], options: &Options) -> Result<Url, UrlRefused> {
     Url::parse(&with_scheme, parse).map_err(UrlRefused::Rejected)
 }
 
-/// A URL's error as a transfer's (`Curl_uc_to_curlcode`).
-pub(crate) fn url_error(e: UrlErrorKind) -> ErrorKind {
-    match e {
-        UrlErrorKind::UnsupportedScheme => ErrorKind::UnsupportedProtocol,
-        UrlErrorKind::OutOfMemory => ErrorKind::OutOfMemory,
-        UrlErrorKind::UserNotAllowed => ErrorKind::LoginDenied,
-        _ => ErrorKind::UrlMalformat,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// `Curl_uc_to_curlcode`.
-    #[test]
-    fn url_errors_map_as_c_maps_them() {
-        assert_eq!(
-            url_error(UrlErrorKind::UnsupportedScheme),
-            ErrorKind::UnsupportedProtocol
-        );
-        assert_eq!(url_error(UrlErrorKind::OutOfMemory), ErrorKind::OutOfMemory);
-        assert_eq!(
-            url_error(UrlErrorKind::UserNotAllowed),
-            ErrorKind::LoginDenied
-        );
-        assert_eq!(
-            url_error(UrlErrorKind::BadHostname),
-            ErrorKind::UrlMalformat
-        );
-    }
 
     /// The URL a transfer with `default` as its default protocol fetches.
     fn with_default(default: Option<&str>, url: &str) -> Result<Vec<u8>, ErrorKind> {

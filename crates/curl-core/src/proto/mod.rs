@@ -21,7 +21,7 @@ use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
 use crate::error::ErrorKind;
-use crate::error::UrlErrorKind;
+use crate::error::{UrlErrorKind, url_error};
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
 use crate::options::{Method, Options};
@@ -43,7 +43,7 @@ pub(super) fn url_peer(
     let zone = match url.get(Part::ZoneId, GetOptions::NONE) {
         Ok(zone) => Some(zone),
         Err(UrlErrorKind::NoZoneid) => None,
-        Err(e) => return Err(crate::multi::state::url_error(e)),
+        Err(e) => return Err(url_error(e)),
     };
     Ok(Peer::new(scheme, host, port, zone))
 }
@@ -166,7 +166,6 @@ impl ProtoState {
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Tcp => {
-                let url_error = crate::multi::state::url_error;
                 let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
                 let port = url.get(Part::Port, GetOptions::NONE).map_err(url_error)?;
                 let port = std::str::from_utf8(&port)

@@ -1,8 +1,7 @@
 //! Where a response's `Location:` leads (`lib/http.c`'s
 //! `Curl_http_follow` and its helpers).
 
-use crate::error::{ErrorKind, UrlErrorKind};
-use crate::multi::state::url_error;
+use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::options::{Method, PostRedir};
 use crate::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 

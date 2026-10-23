@@ -63,3 +63,36 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// A URL's error as a transfer's (`Curl_uc_to_curlcode`).
+pub(crate) fn url_error(e: UrlErrorKind) -> ErrorKind {
+    match e {
+        UrlErrorKind::UnsupportedScheme => ErrorKind::UnsupportedProtocol,
+        UrlErrorKind::OutOfMemory => ErrorKind::OutOfMemory,
+        UrlErrorKind::UserNotAllowed => ErrorKind::LoginDenied,
+        _ => ErrorKind::UrlMalformat,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Curl_uc_to_curlcode`.
+    #[test]
+    fn url_errors_map_as_c_maps_them() {
+        assert_eq!(
+            url_error(UrlErrorKind::UnsupportedScheme),
+            ErrorKind::UnsupportedProtocol
+        );
+        assert_eq!(url_error(UrlErrorKind::OutOfMemory), ErrorKind::OutOfMemory);
+        assert_eq!(
+            url_error(UrlErrorKind::UserNotAllowed),
+            ErrorKind::LoginDenied
+        );
+        assert_eq!(
+            url_error(UrlErrorKind::BadHostname),
+            ErrorKind::UrlMalformat
+        );
+    }
+}

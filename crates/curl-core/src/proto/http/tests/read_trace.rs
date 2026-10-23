@@ -294,3 +294,24 @@ fn a_417_while_sending_keeps_the_body_to_rewind() {
         "{text:?}"
     );
 }
+
+/// A body held for a 100 is asked for at each pass the wait runs, and
+/// gives nothing each time, as C's readers are asked (`cr_exp100_read`).
+#[test]
+fn a_body_held_for_a_100_is_asked_for_while_the_wait_runs() {
+    let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK_EMPTY].concat();
+    let talk = Conversation::replies(&[&continued], false).late_replies();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let held = "[READ] client_read(len=65536) -> 0, nread=0, eos=0";
+    let lines = read_lines(&ran);
+    assert!(
+        lines.iter().filter(|l| *l == held).count() >= 2,
+        "{lines:?}"
+    );
+}

@@ -43,7 +43,7 @@ features: test-util
 
 === a body held for a 100 is not asked for while the wait runs
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_gives_nothing_until_it_comes
+witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_is_asked_for_while_the_wait_runs
 features: test-util
 --- old
                     Sending::AwaitingContinue(until) if cx.now() < until => {

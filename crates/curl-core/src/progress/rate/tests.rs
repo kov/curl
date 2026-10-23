@@ -208,3 +208,68 @@ fn a_pause_stops_the_bucket() {
     r.start(Way::Recv, &l, later, None);
     assert_eq!(r.allowance(Way::Recv, &l, run, later), Some(1000));
 }
+
+/// Every whole step since the last update earns its tokens at once,
+/// with no burst to cap them; the rest of a step is kept, and the wait
+/// for the next tokens is what is left of it.
+#[test]
+fn whole_steps_earn_their_tokens() {
+    let mut ts = at(START);
+    let mut r = bucket(10, 0, ts);
+    r.drain(10, ts);
+    ts = ts.after(Duration::from_millis(3500));
+    assert_eq!(r.avail(ts), 30);
+    r.drain(30, ts);
+    assert_eq!(r.wait_ms(ts), 500, "the half step left");
+    ts = ts.after(Duration::from_millis(500));
+    assert_eq!(r.avail(ts), 10);
+}
+
+/// Tokens earned saturate at `i64::MAX`, the gain and the sum each, as
+/// C guards them (`rlimit_update`): only a gain past it is cut.
+#[test]
+fn earned_tokens_saturate() {
+    let mut ts = at(START);
+    // Two steps of half the most: one short of it, added to a debt.
+    let half = i64::MAX / 2;
+    let mut r = bucket(half, 0, ts);
+    r.drain(usize::MAX, ts);
+    assert_eq!(r.avail(ts), half - i64::MAX);
+    ts = ts.after(Duration::from_secs(2));
+    assert_eq!(r.avail(ts), half - i64::MAX + 2 * half);
+    // Never updated, a bucket is filled to the most; then it earns
+    // again what it spends.
+    let mut r = Bucket::default();
+    r.change(2, 0);
+    assert_eq!(r.avail(ts), i64::MAX);
+    r.drain(10, ts);
+    ts = ts.after(Duration::from_secs(1));
+    assert_eq!(r.avail(ts), i64::MAX - 8);
+}
+
+/// The tuning of the steps for a known total (`rlimit_tune_steps`): a
+/// rest that takes 2 ms is one short step; one that takes a second
+/// exactly is left as it is; one that takes 1.5 s is one step 1.5 s long
+/// with half as many tokens again; a total past what C can multiply is
+/// not tuned.
+#[test]
+fn steps_are_tuned_for_a_known_total() {
+    let ts = at(START);
+    let tuned = |rate: i64, total: u64| {
+        let mut r = Bucket::default();
+        r.change(rate, 0);
+        r.start(ts, Some(total));
+        (r.next_step_ms(ts), r.avail(ts))
+    };
+    // 2 tokens for the rest at 1000 a second, 1 for the last.
+    assert_eq!(tuned(1000, 3), (2, 2));
+    // 100051 for the rest at 100000 a second, 1010 for the last.
+    assert_eq!(tuned(100_000, 101_061), (1000, 100_000));
+    let most = (i64::MAX / 1000) as u64;
+    assert_eq!(
+        tuned(6_148_914_691_233_786, most),
+        (1500, 6_148_914_691_233_786 + 3_074_457_345_616_893)
+    );
+    assert_eq!(tuned(1000, most + 1), (1000, 1000));
+    assert_eq!(tuned(1000, i64::MAX as u64), (1000, 1000));
+}

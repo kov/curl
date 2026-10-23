@@ -1622,4 +1622,87 @@ mod tests {
         assert_eq!(format!("{:?}", A::DIGEST | A::ONLY), "{DIGEST, ONLY}");
         assert_eq!(format!("{:?}", A::NONE), "{}");
     }
+
+    /// Each method is named as its `Authorization` line starts.
+    #[test]
+    fn auth_methods_are_named() {
+        use AuthMethods as A;
+        for (m, name) in [
+            (A::BASIC, "Basic"),
+            (A::DIGEST, "Digest"),
+            (A::BEARER, "Bearer"),
+            (A::AWS_SIGV4, "AWS_SIGV4"),
+            (A::HTTPSIG, "HTTPSIG"),
+        ] {
+            assert_eq!(m.single(), Some(m));
+            assert_eq!(m.name(), name);
+        }
+    }
+
+    /// A source giving one line, numbered by how often it was read.
+    struct Numbered(crate::test_cell::Cell<u32>);
+
+    impl LineSource for Numbered {
+        fn lines(
+            &self,
+            line: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+        ) -> Result<(), OutOfMemory> {
+            self.0.set(self.0.get() + 1);
+            line(format!("line {}", self.0.get()).as_bytes())
+        }
+    }
+
+    fn numbered() -> Handler<dyn LineSource> {
+        Handler::lines(Numbered(crate::test_cell::Cell::new(0))).unwrap()
+    }
+
+    /// A list given by a source is read as it is set, and again as it is
+    /// refilled; setting the resolve list either way is a new setting.
+    #[test]
+    fn a_source_s_lines_are_read_again_as_refilled() {
+        let mut lines = Lines::NONE;
+        lines.set_source(numbered()).unwrap();
+        assert!(lines.iter().eq([&b"line 1"[..]]));
+        lines.refill().unwrap();
+        assert!(lines.iter().eq([&b"line 2"[..]]));
+        let copy = lines.try_clone().unwrap();
+        assert!(copy.iter().eq([&b"line 2"[..]]));
+        let mut copy = copy;
+        copy.refill().unwrap();
+        assert!(copy.iter().eq([&b"line 3"[..]]), "the same source");
+
+        let mut list = ResolveList::default();
+        assert_eq!(list.stamp(), 0);
+        list.set_source(numbered()).unwrap();
+        assert_eq!(list.stamp(), 1);
+        assert!(list.entries().eq([&b"line 1"[..]]));
+        list.refill().unwrap();
+        assert_eq!(list.stamp(), 1, "the same setting");
+        assert!(list.entries().eq([&b"line 2"[..]]));
+        list.set([&b"a:1:127.0.0.1"[..]]).unwrap();
+        list.set_source(numbered()).unwrap();
+        assert_eq!(list.stamp(), 3);
+    }
+
+    /// A group's option set makes the group; cleared, it is cleared, and
+    /// clearing one in a group never made makes nothing.
+    #[test]
+    fn a_group_s_option_is_set_and_cleared() {
+        let mut login: Cold<Login> = Cold::new();
+        login.set(|l| &mut l.user, None).unwrap();
+        assert!(login.made_mut().is_none());
+        login.set(|l| &mut l.user, Some(b"u".to_vec())).unwrap();
+        assert_eq!(login.user.as_deref(), Some(&b"u"[..]));
+        login.set(|l| &mut l.user, None).unwrap();
+        assert_eq!(login.user, None);
+    }
+
+    /// The buffers are held under their largest sizes.
+    #[test]
+    fn buffer_sizes_are_held_to_their_bounds() {
+        assert_eq!(BufferSize::clamped(u64::MAX).get(), 10 * 1024 * 1024);
+        assert_eq!(BufferSize::clamped(0).get(), 1024);
+        assert_eq!(UploadBufferSize::clamped(u64::MAX).get(), 2 * 1024 * 1024);
+        assert_eq!(UploadBufferSize::clamped(0).get(), 16384);
+    }
 }

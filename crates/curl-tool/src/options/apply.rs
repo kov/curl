@@ -509,6 +509,9 @@ pub(crate) struct Global<'a> {
     pub(crate) no_progress: bool,
     /// `--progress-bar`: the bar in place of the meter.
     pub(crate) progress_bar: bool,
+    /// `--no-styled-output`: header lines to a terminal are written as
+    /// they came.
+    pub(crate) unstyled: bool,
     /// `--test-event`: transfers are driven by the multi's events (the
     /// debug build's).
     #[cfg(feature = "debug-hooks")]
@@ -1266,6 +1269,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::ProgressMeter => line.global.no_progress = !value.toggle(),
         Opt::ProgressBar => line.global.progress_bar = value.toggle(),
+        Opt::StyledOutput => line.global.unstyled = !value.toggle(),
         Opt::Verbose => verbose(line, msgs, value.toggle())?,
         Opt::Trace | Opt::TraceAscii => {
             let file = value.text();
@@ -1443,7 +1447,6 @@ pub(crate) fn apply<'a>(
         | Opt::SslSessions
         | Opt::Sslv2
         | Opt::Sslv3
-        | Opt::StyledOutput
         | Opt::TcpFastopen
         | Opt::TcpNodelay
         | Opt::TelnetOption

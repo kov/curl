@@ -231,9 +231,9 @@ witness: curl-tool reports_output_it_cannot_write_when_stdio_would
 file: crates/curl-tool/src/output.rs
 witness: curl-tool output::tests::shows_header_names_in_bold_on_a_terminal
 --- old
-                for part in [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]] {
+                for part in [BOLD, name, BOLD_OFF, b":"] {
 --- new
-                for part in [BOLD, BOLD_OFF, &line[..at], b":", &line[at + 1..]] {
+                for part in [BOLD, BOLD_OFF, name, b":"] {
 
 === a size's fraction keeps digits its unit cannot tell apart
 file: crates/curl-tool/src/options/number.rs
@@ -1137,3 +1137,19 @@ witness: curl-tool trace::tests::a_line_starts_with_the_time_then_the_ids
     const LEN: usize = b"HH:MM:SS.uuuuuu ".len() + 2 * 20 + b"[-] ".len();
 --- new
     const LEN: usize = b"HH:MM:SS.uuuuuu ".len() + 2 * 20 * b"[-] ".len();
+
+=== a Location is linked in a VTE terminal too old to show links well
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::links_a_location_as_c_does
+--- old
+        if number.is_none_or(|n| n <= 4801) {
+--- new
+        if number.is_none_or(|n| n < 4801) {
+
+=== a Location is linked to a scheme that is not HTTP or FTP
+file: crates/curl-tool/src/output.rs
+witness: curl-tool output::tests::links_a_location_as_c_does
+--- old
+    matches!(&scheme[..], b"http" | b"https" | b"ftp" | b"ftps").then_some(target)
+--- new
+    Some(target)

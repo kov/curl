@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 use curl_core::handler::{Handler, HeaderHandler, HeaderOrigin, Write, WriteHandler};
 use curl_core::multi::TransferCx;
+use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 use curl_core::version::Protocol;
 use curl_os::fs::{self, Keep};
 
@@ -29,6 +30,11 @@ const BINARY_CHECK: u64 = 2000;
 const BOLD: &[u8] = b"\x1b[1m";
 /// Ends them: every attribute off, as not every terminal knows bold off.
 const BOLD_OFF: &[u8] = b"\x1b[0m";
+/// Starts a hyperlink's target, and ends one's text when the target is
+/// empty (OSC 8).
+const LINK: &[u8] = b"\x1b]8;;";
+/// Ends a target.
+const LINK_END: &[u8] = b"\x1b\\";
 
 /// A transfer's output, shared by its write and header handlers and the
 /// code that runs the transfer.
@@ -45,9 +51,11 @@ pub(crate) struct Stream {
     init: u64,
     /// Header lines are written too: `--include`.
     pub(crate) show_headers: bool,
-    /// Standard output is a terminal: binary output is refused and header
-    /// names are bold.
+    /// Standard output is a terminal: binary output is refused.
     pub(crate) terminal: bool,
+    /// Header lines are styled for a terminal: their names bold, and a
+    /// `Location:` a link (`isatty` and `styled_output`).
+    pub(crate) styled: bool,
     /// `--output -`: binary output to a terminal is wanted.
     pub(crate) binary_ok: bool,
     /// `--no-buffer`: what is written is flushed at once.
@@ -189,6 +197,7 @@ impl Output {
             init: 0,
             show_headers: false,
             terminal: false,
+            styled: false,
             binary_ok: false,
             no_buffer: false,
             clobber: Clobber::Default,
@@ -596,8 +605,15 @@ impl Stream {
     }
 
     /// The output side of `tool_header_cb`: shown header lines, their
-    /// names in bold on a terminal.
-    fn header(&mut self, line: &[u8], protocol: Option<Protocol>, code: Option<u16>) -> Write {
+    /// names in bold on a terminal, of a response to the transfer's URL
+    /// `url`.
+    fn header(
+        &mut self,
+        line: &[u8],
+        protocol: Option<Protocol>,
+        code: Option<u16>,
+        url: Option<&[u8]>,
+    ) -> Write {
         if self.after_blank {
             self.num_headers = 0;
         }
@@ -634,16 +650,19 @@ impl Stream {
         if !self.create() {
             return Write::Fail;
         }
-        let colon = line
-            .iter()
-            .position(|&b| b == b':')
-            .filter(|_| self.terminal);
+        let colon = line.iter().position(|&b| b == b':').filter(|_| self.styled);
         // C does not check these writes: a failure shows when the output
         // is next written, flushed or closed.
         match colon {
             Some(at) => {
-                for part in [BOLD, &line[..at], BOLD_OFF, b":", &line[at + 1..]] {
+                let (name, value) = (&line[..at], &line[at + 1..]);
+                for part in [BOLD, name, BOLD_OFF, b":"] {
                     self.fwrite(part);
+                }
+                if names_location(name) {
+                    self.linked_location(value, url);
+                } else {
+                    self.fwrite(value);
                 }
             }
             None => {
@@ -655,6 +674,37 @@ impl Stream {
 }
 
 impl Stream {
+    /// A `Location:` line's `value`, after its colon, made a link to the
+    /// URL it leads to from `url`, where that is HTTP or FTP, with or
+    /// without TLS (`write_linked_location`). The link starts after the
+    /// leading blanks and ends after the line's end.
+    fn linked_location(&mut self, value: &[u8], url: Option<&[u8]>) {
+        let skipped = value
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+        let mut buf = [0u8; 64];
+        let vte = curl_os::env::var_into(b"VTE_VERSION", &mut buf);
+        match url.and_then(|url| link_target(&value[skipped..], url, vte)) {
+            Some(target) => {
+                for part in [
+                    &value[..skipped],
+                    LINK,
+                    &target,
+                    LINK_END,
+                    &value[skipped..],
+                    LINK,
+                    LINK_END,
+                ] {
+                    self.fwrite(part);
+                }
+            }
+            None => {
+                self.fwrite(value);
+            }
+        }
+    }
+
     /// The `--remote-header-name` side of `tool_header_cb`
     /// (`content_disposition`): a 3xx's `Location:` names the file for
     /// now; `Content-Disposition:` names it for good with its `filename=`,
@@ -874,8 +924,57 @@ impl HeaderHandler for Headers {
         let report = cx.info(cx.me());
         let protocol = report.and_then(|r| r.protocol());
         let code = report.and_then(|r| r.response_code());
-        self.0.stream().header(line, protocol, code)
+        let url = report.and_then(|r| r.url());
+        self.0.stream().header(line, protocol, code, url)
     }
+}
+
+/// Whether a header `name` is taken for `Location`, as `curl_strnequal`
+/// compares them: a shorter name that starts it is.
+fn names_location(name: &[u8]) -> bool {
+    let location = b"Location";
+    name.len() <= location.len() && name.eq_ignore_ascii_case(&location[..name.len()])
+}
+
+/// What a `Location:` links to, `location` without its leading blanks
+/// resolved against `url`, or nothing to link: a terminal that may show
+/// links badly, its `VTE_VERSION` given as `vte`, a URL that does not
+/// resolve, or one whose scheme is not HTTP or FTP, with or without TLS.
+fn link_target(location: &[u8], url: &[u8], vte: Option<&[u8]>) -> Option<Vec<u8>> {
+    // VTE 0.48.1 and older show some links badly.
+    if let Some(version) = vte {
+        let digits = version.iter().take_while(|b| b.is_ascii_digit()).count();
+        let number = std::str::from_utf8(&version[..digits])
+            .ok()
+            .and_then(|d| d.parse::<i64>().ok());
+        if number.is_none_or(|n| n <= 4801) {
+            return None;
+        }
+    }
+    let end = location
+        .iter()
+        .rposition(|&b| b != b'\r' && b != b'\n')
+        .map_or(0, |at| at + 1);
+    // C copies it as a string: it ends at a zero byte.
+    let location = location[..end]
+        .split(|&b| b == 0)
+        .next()
+        .unwrap_or_default();
+    let mut parsed = Url::parse(url, ParseOptions::NONE).ok()?;
+    parsed
+        .set(Part::Url, Some(location), SetOptions::NONE)
+        .ok()?;
+    let target = parsed
+        .get(
+            Part::Url,
+            GetOptions {
+                no_default_port: true,
+                ..GetOptions::NONE
+            },
+        )
+        .ok()?;
+    let scheme = parsed.get(Part::Scheme, GetOptions::NONE).ok()?;
+    matches!(&scheme[..], b"http" | b"https" | b"ftp" | b"ftps").then_some(target)
 }
 
 #[cfg(test)]
@@ -924,7 +1023,7 @@ mod tests {
         ];
         for line in lines {
             assert_eq!(
-                s.header(line, Some(Protocol::Http), Some(200)),
+                s.header(line, Some(Protocol::Http), Some(200), None),
                 Write::Accepted
             );
         }
@@ -1000,10 +1099,13 @@ mod tests {
             (b"Content-Disposition: inline; filename=\"final\"\r\n", 200),
         ];
         for (line, code) in lines {
-            assert_eq!(out.stream().header(line, http, Some(code)), Write::Accepted);
+            assert_eq!(
+                out.stream().header(line, http, Some(code), None),
+                Write::Accepted
+            );
         }
         assert_eq!(
-            out.stream().header(b"\r\n", http, Some(200)),
+            out.stream().header(b"\r\n", http, Some(200), None),
             Write::Accepted
         );
         assert_eq!(out.stream().body(b"body"), Write::Accepted);
@@ -1025,7 +1127,10 @@ mod tests {
         out.stream().name_from_header =
             Some(FromHeader::new(Some(dir.as_os_str().as_encoded_bytes())).unwrap());
         let line = b"Content-Disposition: inline; filename=final\r\n";
-        assert_eq!(out.stream().header(line, http, Some(200)), Write::Fail);
+        assert_eq!(
+            out.stream().header(line, http, Some(200), None),
+            Write::Fail
+        );
         assert_eq!(std::fs::read(&final_path).unwrap(), written);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1096,17 +1201,17 @@ mod tests {
         dir.join(name)
     }
 
-    /// What `--include` writes of `lines` from a protocol, to a terminal or
-    /// not.
-    fn shown(lines: &[&[u8]], protocol: Option<Protocol>, terminal: bool) -> Vec<u8> {
-        let path = scratch(&format!("{protocol:?}-{terminal}"));
+    /// What `--include` writes of `lines` from a protocol, styled for a
+    /// terminal or not.
+    fn shown(lines: &[&[u8]], protocol: Option<Protocol>, styled: bool) -> Vec<u8> {
+        let path = scratch(&format!("{protocol:?}-{styled}"));
         let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
         {
             let mut s = out.stream();
             s.show_headers = true;
-            s.terminal = terminal;
+            s.styled = styled;
             for line in lines {
-                assert_eq!(s.header(line, protocol, None), Write::Accepted);
+                assert_eq!(s.header(line, protocol, None, None), Write::Accepted);
             }
             assert!(s.create());
         }
@@ -1128,7 +1233,7 @@ mod tests {
         for (fresh, line) in [(true, &b"A: 1\r\n"[..]), (false, b"B: 2\r\n")] {
             let out = Output::null(quiet()).unwrap();
             assert!(out.dump_to(name, fresh, &stdout).is_ok());
-            assert_eq!(out.stream().header(line, None, None), Write::Accepted);
+            assert_eq!(out.stream().header(line, None, None, None), Write::Accepted);
         }
         assert_eq!(std::fs::read(&path).unwrap(), b"A: 1\r\nB: 2\r\n");
         std::fs::remove_file(&path).unwrap();
@@ -1149,8 +1254,11 @@ mod tests {
         assert!(out.dump_to(b"/dev/full", true, &stdout).is_ok());
         let mut long = vec![b'x'; 16384];
         long.extend_from_slice(b": y\r\n");
-        assert_eq!(out.stream().header(&long, None, None), Write::Took(0));
-        assert_eq!(out.stream().header(b"A: 1\r\n", None, None), Write::Fail);
+        assert_eq!(out.stream().header(&long, None, None, None), Write::Took(0));
+        assert_eq!(
+            out.stream().header(b"A: 1\r\n", None, None, None),
+            Write::Fail
+        );
     }
 
     /// A write to the output file that failed is remembered (`ferror`):
@@ -1167,6 +1275,37 @@ mod tests {
         let mut s = out.stream();
         assert_eq!(s.body(&[b'x'; 16384]), Write::Accepted);
         assert!(!s.failed());
+    }
+
+    /// A `Location:` links to where it leads from the transfer's URL, in a
+    /// terminal that shows links well, for HTTP and FTP only
+    /// (`write_linked_location`).
+    #[test]
+    fn links_a_location_as_c_does() {
+        let base = b"http://example.com:80/a/b";
+        let link = |location: &str, vte: Option<&str>| {
+            link_target(location.as_bytes(), base, vte.map(str::as_bytes))
+                .map(|t| String::from_utf8(t).unwrap())
+        };
+        let here = Some("http://example.com/a/here".to_string());
+        assert_eq!(link("here\r\n", None), here);
+        assert_eq!(link("here\n\r\n", Some("4802")), here);
+        assert_eq!(link("here\r\n", Some("4802x")), here);
+        assert_eq!(link("here\r\n", Some("4801")), None);
+        assert_eq!(link("here\r\n", Some("")), None);
+        assert_eq!(link("here\r\n", Some("99999999999999999999")), None);
+        assert_eq!(
+            link("/x\0y\r\n", None),
+            Some("http://example.com/x".to_string())
+        );
+        assert_eq!(link("FTPS://h:990/f", None), Some("ftps://h/f".to_string()));
+        assert_eq!(link("file:///etc/passwd", None), None);
+        assert_eq!(link("http://[::1\r\n", None), None);
+        assert!(names_location(b"location"));
+        assert!(names_location(b"Loc"));
+        assert!(names_location(b""));
+        assert!(!names_location(b"Locations"));
+        assert!(!names_location(b"Content-Location"));
     }
 
     /// Header names are bold on a terminal; lines without one are not.
@@ -1245,7 +1384,7 @@ mod tests {
             s.name_from_header = Some(FromHeader::new(Some(b"dir")).unwrap());
             s.show_headers = show;
             for line in &lines {
-                s.header(line, Some(Protocol::Http), Some(code));
+                s.header(line, Some(Protocol::Http), Some(code), None);
             }
         }
     }

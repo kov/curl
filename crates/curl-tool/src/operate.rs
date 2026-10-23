@@ -650,6 +650,7 @@ fn transfer(
         let mut stream = out.stream();
         stream.show_headers = op.show_headers;
         stream.terminal = terminal;
+        stream.styled = terminal && !run.global.unstyled;
         stream.binary_ok = node.output == Output::File(b"-");
         stream.no_buffer = op.no_buffer;
         stream.clobber = op.clobber;

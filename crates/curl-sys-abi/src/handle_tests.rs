@@ -4960,81 +4960,87 @@ fn a_handle_costs_no_more_than_cs() {
 #[test]
 fn clearing_an_option_makes_no_group() {
     use curl_alloc::track::measure;
-    let cleared = [
-        ffi::CURLOPT_USERPWD,
-        ffi::CURLOPT_USERNAME,
-        ffi::CURLOPT_PASSWORD,
-        ffi::CURLOPT_XOAUTH2_BEARER,
-        ffi::CURLOPT_PROXY,
-        ffi::CURLOPT_PROXYUSERPWD,
-        ffi::CURLOPT_PROXYUSERNAME,
-        ffi::CURLOPT_PROXYPASSWORD,
-        ffi::CURLOPT_PRE_PROXY,
-        ffi::CURLOPT_NOPROXY,
-        ffi::CURLOPT_HAPROXY_CLIENT_IP,
-        ffi::CURLOPT_PROXYHEADER,
-        ffi::CURLOPT_NETRC_FILE,
-        ffi::CURLOPT_COOKIE,
-        ffi::CURLOPT_COOKIEFILE,
-        ffi::CURLOPT_REFERER,
-        ffi::CURLOPT_CUSTOMREQUEST,
-        ffi::CURLOPT_REQUEST_TARGET,
-    ];
-    let c = curl_easy_init();
-    for option in cleared {
-        let (code, cost) = measure(|| pointer(c, option, ptr::null_mut::<c_char>()));
-        assert_eq!(code, CURLE_OK, "{option:?}");
-        assert_eq!(cost.allocations, 0, "{option:?} made its group");
-    }
-    let longs = [
-        ffi::CURLOPT_LOW_SPEED_LIMIT,
-        ffi::CURLOPT_LOW_SPEED_TIME,
-        ffi::CURLOPT_MAXFILESIZE,
-    ];
-    for option in longs {
-        let (code, cost) = measure(|| long(c, option, 0));
-        assert_eq!((code, cost.allocations), (CURLE_OK, 0), "{option:?}");
-    }
-    let offs = [
-        ffi::CURLOPT_MAXFILESIZE_LARGE,
-        ffi::CURLOPT_MAX_RECV_SPEED_LARGE,
-        ffi::CURLOPT_MAX_SEND_SPEED_LARGE,
-    ];
-    for option in offs {
-        let (code, cost) = measure(|| off(c, option, 0));
-        assert_eq!((code, cost.allocations), (CURLE_OK, 0), "{option:?}");
-    }
-    // A limit set makes the group, once; 0 then clears it.
-    let (code, cost) = measure(|| off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 1000));
-    assert_eq!((code, cost.allocations), (CURLE_OK, 1));
-    let (code, cost) = measure(|| off(c, ffi::CURLOPT_MAXFILESIZE_LARGE, 5));
-    assert_eq!((code, cost.allocations), (CURLE_OK, 0));
-    off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 0);
-    assert_eq!(options(c, |o| o.flow.max_recv_speed), None);
-    assert_eq!(
-        options(c, |o| o.flow.max_filesize.map(|n| n.get())),
-        Some(5)
-    );
-    pointer(c, ffi::CURLOPT_PROXY, c"http://p".as_ptr().cast_mut());
-    pointer(
-        c,
-        ffi::CURLOPT_HAPROXY_CLIENT_IP,
-        c"1.2.3.4".as_ptr().cast_mut(),
-    );
-    assert!(options(c, |o| o.proxy.haproxy));
-    pointer(c, ffi::CURLOPT_PROXY, ptr::null_mut::<c_char>());
-    pointer(c, ffi::CURLOPT_HAPROXY_CLIENT_IP, ptr::null_mut::<c_char>());
-    assert_eq!(options(c, |o| o.proxy.url.clone()), None);
-    assert_eq!(options(c, |o| o.proxy.haproxy_client_ip.clone()), None);
-    assert!(!options(c, |o| o.proxy.haproxy), "the protocol is off");
-    // SAFETY: a live handle, not used again.
-    // `CURLOPT_COOKIEJAR` turns the jar on whatever it names, as C makes
-    // its cookie engine.
-    let c = curl_easy_init();
-    let (code, cost) = measure(|| pointer(c, ffi::CURLOPT_COOKIEJAR, ptr::null_mut::<c_char>()));
-    assert_eq!((code, cost.allocations), (CURLE_OK, 1));
-    // SAFETY: a live handle, not used again.
-    unsafe { curl_easy_cleanup(c) };
+    // Every handle made is cleaned up.
+    let ((), held) = measure(|| {
+        let cleared = [
+            ffi::CURLOPT_USERPWD,
+            ffi::CURLOPT_USERNAME,
+            ffi::CURLOPT_PASSWORD,
+            ffi::CURLOPT_XOAUTH2_BEARER,
+            ffi::CURLOPT_PROXY,
+            ffi::CURLOPT_PROXYUSERPWD,
+            ffi::CURLOPT_PROXYUSERNAME,
+            ffi::CURLOPT_PROXYPASSWORD,
+            ffi::CURLOPT_PRE_PROXY,
+            ffi::CURLOPT_NOPROXY,
+            ffi::CURLOPT_HAPROXY_CLIENT_IP,
+            ffi::CURLOPT_PROXYHEADER,
+            ffi::CURLOPT_NETRC_FILE,
+            ffi::CURLOPT_COOKIE,
+            ffi::CURLOPT_COOKIEFILE,
+            ffi::CURLOPT_REFERER,
+            ffi::CURLOPT_CUSTOMREQUEST,
+            ffi::CURLOPT_REQUEST_TARGET,
+        ];
+        let c = curl_easy_init();
+        for option in cleared {
+            let (code, cost) = measure(|| pointer(c, option, ptr::null_mut::<c_char>()));
+            assert_eq!(code, CURLE_OK, "{option:?}");
+            assert_eq!(cost.allocations, 0, "{option:?} made its group");
+        }
+        let longs = [
+            ffi::CURLOPT_LOW_SPEED_LIMIT,
+            ffi::CURLOPT_LOW_SPEED_TIME,
+            ffi::CURLOPT_MAXFILESIZE,
+        ];
+        for option in longs {
+            let (code, cost) = measure(|| long(c, option, 0));
+            assert_eq!((code, cost.allocations), (CURLE_OK, 0), "{option:?}");
+        }
+        let offs = [
+            ffi::CURLOPT_MAXFILESIZE_LARGE,
+            ffi::CURLOPT_MAX_RECV_SPEED_LARGE,
+            ffi::CURLOPT_MAX_SEND_SPEED_LARGE,
+        ];
+        for option in offs {
+            let (code, cost) = measure(|| off(c, option, 0));
+            assert_eq!((code, cost.allocations), (CURLE_OK, 0), "{option:?}");
+        }
+        // A limit set makes the group, once; 0 then clears it.
+        let (code, cost) = measure(|| off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 1000));
+        assert_eq!((code, cost.allocations), (CURLE_OK, 1));
+        let (code, cost) = measure(|| off(c, ffi::CURLOPT_MAXFILESIZE_LARGE, 5));
+        assert_eq!((code, cost.allocations), (CURLE_OK, 0));
+        off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 0);
+        assert_eq!(options(c, |o| o.flow.max_recv_speed), None);
+        assert_eq!(
+            options(c, |o| o.flow.max_filesize.map(|n| n.get())),
+            Some(5)
+        );
+        pointer(c, ffi::CURLOPT_PROXY, c"http://p".as_ptr().cast_mut());
+        pointer(
+            c,
+            ffi::CURLOPT_HAPROXY_CLIENT_IP,
+            c"1.2.3.4".as_ptr().cast_mut(),
+        );
+        assert!(options(c, |o| o.proxy.haproxy));
+        pointer(c, ffi::CURLOPT_PROXY, ptr::null_mut::<c_char>());
+        pointer(c, ffi::CURLOPT_HAPROXY_CLIENT_IP, ptr::null_mut::<c_char>());
+        assert_eq!(options(c, |o| o.proxy.url.clone()), None);
+        assert_eq!(options(c, |o| o.proxy.haproxy_client_ip.clone()), None);
+        assert!(!options(c, |o| o.proxy.haproxy), "the protocol is off");
+        // SAFETY: a live handle, not used again.
+        unsafe { curl_easy_cleanup(c) };
+        // `CURLOPT_COOKIEJAR` turns the jar on whatever it names, as C makes
+        // its cookie engine.
+        let c = curl_easy_init();
+        let (code, cost) =
+            measure(|| pointer(c, ffi::CURLOPT_COOKIEJAR, ptr::null_mut::<c_char>()));
+        assert_eq!((code, cost.allocations), (CURLE_OK, 1));
+        // SAFETY: a live handle, not used again.
+        unsafe { curl_easy_cleanup(c) };
+    });
+    assert_eq!(held.bytes, 0, "a handle left alive");
 }
 
 /// `CURLOPT_COOKIELIST` "FLUSH" replaces a jar named long making the

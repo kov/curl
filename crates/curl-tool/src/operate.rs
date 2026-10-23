@@ -1132,7 +1132,7 @@ fn configure(
         o.upload = options::UploadSource::Bytes(TryArc::try_new(body)?);
     } else if let Some(form) = &config.form {
         o.method = Method::Post;
-        let tree = curl_core::mime::Fixed(form.clone());
+        let tree = curl_core::mime::Fixed::new(form.clone());
         o.upload = options::UploadSource::Mime(Handler::mime(tree)?);
     } else if op.no_body {
         o.method = Method::Head;

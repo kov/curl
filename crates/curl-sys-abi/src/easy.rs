@@ -393,7 +393,7 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     crate::share::unlink(easy).expect("the handle is its own");
     // The tree it posts is the application's again, or freed if its own.
     crate::mime::detach(easy);
-    crate::mime::forget_form(easy);
+    crate::mime::forget_post_state(easy);
     drop(entry);
     let private = easy.private.take();
     easy.magic.set(0);
@@ -476,7 +476,7 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     if let Some(posted) = easy.posted() {
         posted.chain.set(ptr::null_mut());
     }
-    crate::mime::forget_form(easy);
+    crate::mime::forget_post_state(easy);
     easy.errbuf.set(ptr::null_mut());
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as

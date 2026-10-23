@@ -408,7 +408,7 @@ fn apply(
             // SAFETY: as above.
             let shim = unsafe { me.as_ref() };
             shim.post_body.set(PostBody::Mime);
-            crate::mime::forget_form(shim);
+            crate::mime::forget_post_state(shim);
             options.method = Method::Post;
             callbacks::sync_upload(options, me, set)?;
         }
@@ -416,7 +416,7 @@ fn apply(
             // SAFETY: the handle is alive while its options are set.
             let shim = unsafe { me.as_ref() };
             // Made a tree again at the next request, even if the same.
-            crate::mime::forget_form(shim);
+            crate::mime::forget_post_state(shim);
             shim.posted_or_make()?.chain.set(p.cast());
             shim.post_body.set(PostBody::Form);
             options.method = Method::Post;

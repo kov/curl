@@ -5491,7 +5491,7 @@ fn mime_tree(content: crate::mime::Content) -> crate::mime::Mime {
 
 fn mime_source(m: crate::mime::Mime) -> UploadSource {
     let tree = curl_alloc::TryArc::try_new(m).unwrap();
-    UploadSource::Mime(Handler::mime(crate::mime::Fixed(tree)).unwrap())
+    UploadSource::Mime(Handler::mime(crate::mime::Fixed::new(tree)).unwrap())
 }
 
 /// A multipart POST types its head with the tree's boundary after its
@@ -5520,6 +5520,67 @@ fn a_mime_post_types_its_head_with_the_boundary() {
         &line[2..],
     );
     assert_eq!(String::from_utf8_lossy(&ran.request), want);
+}
+
+/// A probe sends the head lines the last request that sent the tree
+/// sent, as C sends the tree's headers as it last made them; before any
+/// request has, it sends none (`http_add_content_hds`). Here the first
+/// origin's probe sends none, and the probe of the origin it redirects to
+/// sends the first origin's.
+#[test]
+fn a_probe_sends_the_tree_s_head_as_last_sent() {
+    let clock = ManualClock::new().unwrap();
+    let (a, b) = (
+        SocketAddr::from(([127, 0, 0, 1], PORT)),
+        SocketAddr::from(([127, 0, 0, 1], PORT + 1)),
+    );
+    let moved = format!(
+        "HTTP/1.1 307 Moved\r\nLocation: http://127.0.0.1:{}/b\r\nContent-Length: 0\r\n\r\n",
+        PORT + 1
+    );
+    let first = Conversation::replies(&[DIGEST_CHALLENGE, moved.as_bytes()], false);
+    let second = Conversation::replies(&[DIGEST_CHALLENGE, OK], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(a, Peer::Accepts)
+        .with_conversation(a, first.clone())
+        .with_peer(b, Peer::Accepts)
+        .with_conversation(b, second.clone());
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let tree = mime_tree(crate::mime::Content::Bytes(
+        curl_alloc::TryArc::try_new(b"v".to_vec()).unwrap(),
+    ));
+    let ran = get(&mut m, "/a", first, |o| {
+        o.method = Method::Post;
+        o.upload = mime_source(tree);
+        o.http.follow = Follow::All;
+        o.http.unrestricted_auth = true;
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    let typed = format!(
+        "Content-Type: multipart/form-data; boundary=------------------------{}\r\n",
+        "A".repeat(22)
+    );
+    let head_of = |text: &str, n: usize| text.split("POST ").nth(n).unwrap().to_owned();
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    let probe = head_of(&text, 1);
+    assert!(probe.ends_with("Content-Length: 0\r\n\r\n"), "{probe}");
+    assert!(head_of(&text, 2).contains(&typed), "{text}");
+    let text = String::from_utf8_lossy(&second.received()).into_owned();
+    let probe = head_of(&text, 1);
+    assert!(
+        probe.ends_with(&format!("Content-Length: 0\r\n{typed}\r\n")),
+        "{probe}"
+    );
+    assert!(head_of(&text, 2).contains(&typed), "{text}");
 }
 
 /// A tree of unknown size goes chunked, in C's pieces.

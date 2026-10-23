@@ -5,7 +5,7 @@ file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi formdata::tests::a_chain_is_made_a_tree_once_each_time_it_is_set
 --- old
             // Made a tree again at the next request, even if the same.
-            crate::mime::forget_form(shim);
+            crate::mime::forget_post_state(shim);
 --- new
             // Made a tree again at the next request, even if the same.
 

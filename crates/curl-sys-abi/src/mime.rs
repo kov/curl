@@ -20,7 +20,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
 use curl_core::mime::{
     Boundary, Content, Encoder, FileData, FileError, MAX_LEVELS, Mime, MimeError, MimeSource, Part,
-    Reached,
+    Reached, SentHead,
 };
 use curl_core::multi::TransferCx;
 
@@ -787,6 +787,9 @@ pub(crate) struct Posted {
     /// The tree made of that chain for the first request that sent it,
     /// the handle's own, until the chain is set again (`state.formp`).
     pub(crate) form: Cell<Option<NonNull<ShimMime>>>,
+    /// The head lines the last request that posted a tree sent, until
+    /// the post is set again (`state.mimepost`'s `curlheaders`).
+    sent: SentHead,
 }
 
 impl Posted {
@@ -795,6 +798,7 @@ impl Posted {
             mime: Cell::new(None),
             chain: Cell::new(ptr::null_mut()),
             form: Cell::new(None),
+            sent: SentHead::default(),
         }
     }
 }
@@ -810,6 +814,12 @@ unsafe impl Send for MimeTree {}
 unsafe impl Sync for MimeTree {}
 
 impl MimeSource for MimeTree {
+    fn sent_head(&self) -> Option<&SentHead> {
+        // SAFETY: the handle outlives the options that hold its adapters.
+        let shim = unsafe { self.0.as_ref() };
+        shim.posted().map(|p| &p.sent)
+    }
+
     fn mime(&self) -> Result<Option<TryArc<Mime>>, MimeError> {
         // SAFETY: the handle outlives the options that hold its adapters.
         let shim = unsafe { self.0.as_ref() };
@@ -860,9 +870,15 @@ fn form_tree(shim: &ShimEasy) -> Result<Option<NonNull<ShimMime>>, MimeError> {
     }
 }
 
-/// Let go of the tree the handle made of its form chain.
-pub(crate) fn forget_form(shim: &ShimEasy) {
-    if let Some(tree) = shim.posted().and_then(|p| p.form.take()) {
+/// Let go of what the handle made of its post as it is set again: the
+/// tree made of its form chain and the head lines last sent
+/// (`state.formp`, `state.mimepost`).
+pub(crate) fn forget_post_state(shim: &ShimEasy) {
+    let Some(posted) = shim.posted() else {
+        return;
+    };
+    posted.sent.clear();
+    if let Some(tree) = posted.form.take() {
         // SAFETY: the handle's own, which nothing else names.
         unsafe { free_tree(tree) };
     }
@@ -1280,6 +1296,27 @@ mod tests {
             part.reached.set(true);
             assert_eq!(post(c, ptr::null_mut()), CURLE_OK);
             assert_eq!(post(c, m), CURLE_SEND_FAIL_REWIND);
+            curl_mime_free(m);
+            curl_easy_cleanup(c);
+        }
+    }
+
+    /// Setting the post again forgets the head lines a probe would send
+    /// again, as C forgets `state.mimepost`.
+    #[test]
+    fn setting_the_post_again_forgets_the_head_sent() {
+        let c = curl_easy_init();
+        // SAFETY: a live handle and tree throughout.
+        unsafe {
+            let m = form(c"f", b"v");
+            assert_eq!(post(c, m), CURLE_OK);
+            let easy = easy::handle(c).expect("a live handle");
+            let source = MimeTree(NonNull::from(easy));
+            let sent = source.sent_head().expect("kept");
+            sent.keep(&[b"Content-Type: x".to_vec()]).unwrap();
+            assert_eq!(sent.lines().unwrap().len(), 1);
+            assert_eq!(post(c, m), CURLE_OK);
+            assert!(sent.lines().unwrap().is_empty());
             curl_mime_free(m);
             curl_easy_cleanup(c);
         }

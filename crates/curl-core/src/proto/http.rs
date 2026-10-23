@@ -864,11 +864,28 @@ impl Request {
         if chunked && upload.is_none() {
             upload = Some(Upload::empty());
         }
+        // A tree's head lines are kept for a probe after this request to
+        // send again; a probe sends those an earlier request sent, as C
+        // sends the headers it made last (`http_add_content_hds`).
+        let sent = match &options.upload {
+            UploadSource::Mime(source) if body == Some(BodyKind::Mime) => source.sent_head(),
+            _ => None,
+        };
+        let probe_head = match (sent, &upload) {
+            (Some(sent), Some(upload)) if !probe => {
+                sent.keep(upload.head().unwrap_or(&[]))
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+                Vec::new()
+            }
+            (Some(sent), _) if probe => sent.lines().map_err(|_| ErrorKind::OutOfMemory)?,
+            _ => Vec::new(),
+        };
         let mut content = body.map(|kind| request::Content {
             length: size.filter(|_| !chunked),
             typed: match kind {
                 BodyKind::Form => Typed::Form,
                 BodyKind::Put => Typed::No,
+                BodyKind::Mime if probe => Typed::Mime(&probe_head),
                 BodyKind::Mime => {
                     Typed::Mime(upload.as_ref().and_then(Upload::head).unwrap_or(&[]))
                 }

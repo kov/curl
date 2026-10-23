@@ -130,6 +130,14 @@ witness: curl-core mime::tests::a_file_that_fails_to_read_ends_or_fails
 --- new
                     (0, true) => Got::Bytes(0),
 
+=== a probe sends no head lines
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_probe_sends_the_tree_s_head_as_last_sent
+--- old
+                BodyKind::Mime if probe => Typed::Mime(&probe_head),
+--- new
+                BodyKind::Mime if probe => Typed::Mime(&[]),
+
 === the application's Content-Type is sent beside the tree's
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http::tests::a_mime_post_types_its_head_with_the_boundary
@@ -165,6 +173,13 @@ witness: curl-sys-abi mime::tests::a_tree_read_before_is_rewound_when_posted
         }
 --- new
         let p = unsafe { p.as_ref() };
+
+=== a post set again keeps the head lines last sent
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi mime::tests::setting_the_post_again_forgets_the_head_sent
+--- old
+    posted.sent.clear();
+--- new
 
 === a part's read answering -2 is asked again, as C's
 file: crates/curl-sys-abi/src/mime.rs

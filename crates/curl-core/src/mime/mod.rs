@@ -302,6 +302,49 @@ impl Encoder {
 /// changed since is sent as it is then. `None` sends an empty body.
 pub trait MimeSource: Send + Sync {
     fn mime(&self) -> Result<Option<TryArc<Mime>>, MimeError>;
+
+    /// Where the head lines a request last sent for a tree of this source
+    /// are kept, for a probe to send again; `None` keeps none, and a probe
+    /// sends none.
+    fn sent_head(&self) -> Option<&SentHead> {
+        None
+    }
+}
+
+/// The head lines (`Content-Type: multipart/...`) the last request that
+/// sent a tree sent, which an authentication probe after it sends again
+/// with its empty body, as C sends `state.mimepost`'s headers as last made.
+/// Its source clears it as the post is set again, as C forgets them then;
+/// until a request has sent a tree, a probe sends none.
+#[derive(Debug, Default)]
+pub struct SentHead(std::sync::Mutex<Vec<Vec<u8>>>);
+
+impl SentHead {
+    /// Keep a copy of `lines`, sent now.
+    pub fn keep(&self, lines: &[Vec<u8>]) -> Result<(), OutOfMemory> {
+        let copy = copy_lines(lines)?;
+        *self.0.lock().expect("no panic holds it") = copy;
+        Ok(())
+    }
+
+    /// A copy of the lines kept.
+    pub fn lines(&self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
+        copy_lines(&self.0.lock().expect("no panic holds it"))
+    }
+
+    pub fn clear(&self) {
+        *self.0.lock().expect("no panic holds it") = Vec::new();
+    }
+}
+
+fn copy_lines(lines: &[Vec<u8>]) -> Result<Vec<Vec<u8>>, OutOfMemory> {
+    let mut copy = Vec::new();
+    for l in lines {
+        let mut line = Vec::new();
+        line.try_extend_from_slice(l)?;
+        copy.try_push(line)?;
+    }
+    Ok(copy)
 }
 
 /// Why a source gave no tree.
@@ -337,11 +380,27 @@ pub fn read_whole(
 }
 
 /// A source that gives the same tree each time.
-pub struct Fixed(pub TryArc<Mime>);
+pub struct Fixed {
+    tree: TryArc<Mime>,
+    sent: SentHead,
+}
+
+impl Fixed {
+    pub fn new(tree: TryArc<Mime>) -> Fixed {
+        Fixed {
+            tree,
+            sent: SentHead::default(),
+        }
+    }
+}
 
 impl MimeSource for Fixed {
     fn mime(&self) -> Result<Option<TryArc<Mime>>, MimeError> {
-        Ok(Some(self.0.clone()))
+        Ok(Some(self.tree.clone()))
+    }
+
+    fn sent_head(&self) -> Option<&SentHead> {
+        Some(&self.sent)
     }
 }
 

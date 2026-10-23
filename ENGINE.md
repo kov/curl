@@ -1472,7 +1472,8 @@ pub enum Content { None, Bytes(TryArc<Vec<u8>>), File(FileData /* path, size if 
                    Read { handler, rewind: Option<Handler<dyn Rewind>>, size: Option<u64> },
                    Parts(Mime) }
 pub enum Encoder { Binary, EightBit, SevenBit, Base64, QuotedPrintable }
-pub trait MimeSource: Send + Sync { fn mime(&self) -> Result<Option<TryArc<Mime>>, MimeError>; }
+pub trait MimeSource: Send + Sync { fn mime(&self) -> Result<Option<TryArc<Mime>>, MimeError>;
+                                    fn sent_head(&self) -> Option<&SentHead> { None } }
 pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree beside the parts */,
                                size: Option<u64>, head: Vec<Vec<u8>> /* the top part's headers */ }
 ```
@@ -1491,6 +1492,11 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   boundary=…`, the application's own `Content-Type` value in place of the type) go in the
   request head after `Content-Length` (`http_add_content_hds`), and the application's
   `Content-Type` line is left out of its headers (`Curl_add_custom_headers`).
+  An authentication probe, sent without the body, sends the lines the last request that sent a
+  tree sent, as C sends the `curlheaders` it made last: the source keeps them
+  (`MimeSource::sent_head`, a `SentHead`), and clears them as the post is set again (the
+  shim's `forget_post_state`, C's `state.mimepost` cleared); before any request has sent a
+  tree, a probe sends none.
 - **Size as C's `mime_size`.** Each part: its headers with CRLFs, the blank line and its
   content, encoded: base64's computed, quoted-printable's unknown unless empty, the others the
   content's. A boundary line is 52 bytes, the last 54 with its dashes. Unknown if any part's

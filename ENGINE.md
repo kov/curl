@@ -1505,11 +1505,13 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   lines of at most 76; a read with no more than 4 bytes of room reads 256 into a side buffer
   first, as `cr_mime_read`'s `tmpbuf` does, so a base64 group always fits.
 - **Failures** are latched as `Upload`'s: Abort is AbortedByCallback "operation aborted by
-  callback"; a handler's failure, a file that cannot be opened or read, a 7bit byte at or over
-  0x80, "read error getting mime data"; a handler giving more than its room, "read function
-  returned funny value"; the end short of a known size, "client mime read EOF fail, only X/Y of
-  needed bytes read"; all ReadError. A pause is not latched: the transfer reads no more until it
-  is unpaused, when the part's handler is called again (`mime_unpause`).
+  callback"; a handler's failure, a file that cannot be opened, a failed read of a file that
+  is not regular, a 7bit byte at or over 0x80, "read error getting mime data" (a failed read
+  of a regular file ends the part there, as C's `fread` does, for the size check); a handler
+  giving more than its room, "read function returned funny value"; the end short of a known
+  size, "client mime read EOF fail, only X/Y of needed bytes read"; all ReadError. A pause is
+  not latched: the transfer reads no more until it is unpaused, when the part's handler is
+  called again (`mime_unpause`).
 - **Rewind.** Whether a request's reading reached a part since it last started over is kept
   in the part (`Part::reached`, a shared flag the copies a source makes of one part hold), as C
   keeps its part state past `MIMESTATE_BEGIN` from one request and one transfer to the next. A

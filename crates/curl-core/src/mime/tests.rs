@@ -715,3 +715,27 @@ fn a_part_reached_before_starts_over_as_c_s() {
         "nothing starts over"
     );
 }
+
+/// A file that fails to read ends there if it is regular, as C's `fread`
+/// ends it, for the body's size to tell; one that is not fails the read,
+/// where C sends what came as all of it (DIVERGENCE.md).
+#[test]
+fn a_file_that_fails_to_read_ends_or_fails() {
+    let dir = std::env::temp_dir();
+    let dir = dir.as_os_str().as_encoded_bytes();
+    let no_size = FileData::new(dir).unwrap();
+    assert_eq!(no_size.size(), None);
+    let mut r = reader(tree([named("d", Content::File(no_size))]));
+    let (_, end) = pieces(&mut r, &mut Script::default(), 1024);
+    assert_eq!(end, Some(Got::Error));
+    // The same failure, in a file whose size is known.
+    let sized = FileData {
+        size: Some(5),
+        ..FileData::new(dir).unwrap()
+    };
+    let mut r = reader(tree([named("d", Content::File(sized))]));
+    let (p, end) = pieces(&mut r, &mut Script::default(), 1024);
+    assert_eq!(end, None, "the part ends");
+    let sent: usize = p.iter().map(Vec::len).sum();
+    assert_eq!(r.size(), Some(sent as u64 + 5), "five bytes short");
+}

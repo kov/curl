@@ -641,6 +641,15 @@ fn read_content(
                 }
                 let file = src.file.as_mut().expect("opened above");
                 match fread(file, buf) {
+                    // C's `fread` gives what came before the failure, which
+                    // then reads as the end of the file: of a regular file,
+                    // the size checked at the body's end tells it.
+                    (n, true) if f.size().is_some() => {
+                        src.file_eof = true;
+                        Got::Bytes(n)
+                    }
+                    // Of any other, C sends what came as all of it
+                    // (DIVERGENCE.md).
                     (0, true) => Got::Error,
                     (n, failed) => {
                         src.file_eof |= n < buf.len() && !failed;

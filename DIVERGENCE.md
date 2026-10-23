@@ -14,6 +14,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   GitHub using `-T` (measured 2026-10-21) had no argument that could name a directory. Pinned by
   `an_upload_that_cannot_be_read_fails` (`crates/curl-tool/tests/transfers.rs`).
 
+- **A form part whose file cannot be read fails the transfer, unless its size is known.** A
+  part sending a file that is not a regular file, such as `-F a=@dir` or
+  `curl_mime_filedata` naming a directory, ends the transfer with 26 (`CURLE_READ_ERROR`) when
+  its read fails. C's `mime_file_read` (`lib/mime.c`) passes on `fread`'s short count, which
+  reads as the part's end: it sends the part empty, the rest of the form after it, and exits 0.
+  Measured against the C build with `-F a=@dir -F b=c`. A regular file, whose size the body's
+  length was counted with, ends there as in C, and the body's size check fails it. Pinned by
+  `a_file_that_fails_to_read_ends_or_fails` (`crates/curl-core/src/mime/tests.rs`).
+
 - **A `file://` download whose read fails is a read error.** A `read()` failing anywhere in the
   file, or a `readdir()` failing partway through a directory listing, ends the transfer with 26
   (`CURLE_READ_ERROR`). C's `file_do` (`lib/file.c`) takes either for the end of the data and

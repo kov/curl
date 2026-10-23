@@ -20,7 +20,7 @@ use curl_core::options::Options;
 use curl_core::report::TransferReport;
 
 use crate::callbacks::{self, CCallbacks, CSettings};
-use crate::error_codes::easy_code;
+use crate::error_codes::{MultiError, easy_code};
 use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_FAILED_INIT, CURLE_OK, CURLE_OUT_OF_MEMORY,
     CURLE_RECURSIVE_API_CALL, CURLcode,
@@ -587,7 +587,7 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
     // Nothing but this call runs on the private multi.
     if let Err(e) = crate::multi::add(m, Reach::Direct, easy) {
         return match e {
-            MultiErrorKind::OutOfMemory => CURLE_OUT_OF_MEMORY,
+            MultiError::Core(MultiErrorKind::OutOfMemory) => CURLE_OUT_OF_MEMORY,
             _ => CURLE_BAD_FUNCTION_ARGUMENT,
         };
     }

@@ -396,14 +396,12 @@ fn joined(dir: &[u8], name: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     Ok(path)
 }
 
-/// Errors after which nothing more is tried (`is_fatal_error`).
+/// Errors after which nothing more is tried (`is_fatal_error`). C's also
+/// has `CURLE_UNKNOWN_OPTION`, which only libcurl's C API returns.
 fn fatal(e: ErrorKind) -> bool {
     matches!(
         e,
-        ErrorKind::FailedInit
-            | ErrorKind::OutOfMemory
-            | ErrorKind::UnknownOption
-            | ErrorKind::BadFunctionArgument
+        ErrorKind::FailedInit | ErrorKind::OutOfMemory | ErrorKind::BadFunctionArgument
     )
 }
 
@@ -2097,7 +2095,6 @@ mod tests {
         for e in [
             ErrorKind::FailedInit,
             ErrorKind::OutOfMemory,
-            ErrorKind::UnknownOption,
             ErrorKind::BadFunctionArgument,
         ] {
             assert!(fatal(e), "{e:?}");

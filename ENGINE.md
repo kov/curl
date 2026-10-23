@@ -408,12 +408,16 @@ the handle is no longer borrowed, so the function may call back into it.
 
 C's `CURLE_AGAIN` has three meanings (would-block, "rebuild the sub-chain", "nothing yet") and
 "OK with 0 bytes" means EOF; here they are distinct variants. `NO_CONNECTION_AVAILABLE` is
-`Acquired::Wait`, never an `Error`. The generated enums (`ErrorKind`, `MultiErrorKind`,
-`ShareErrorKind`) hold every code C's headers define, as `gen/errors.py` emits them all; nothing
-in the types separates the codes only the shim produces. The engine never constructs `Again`,
-`NoConnectionAvailable`, `RecursiveApiCall` or `UnknownOption`, nor most multi codes, but a Rust
-caller matching on the enums still meets them. Moving those codes into an enum of the shim's is
-milestone 3's.
+`Acquired::Wait`, never an `Error`. The core's generated enums (`ErrorKind`, `MultiErrorKind`,
+`UrlErrorKind`) hold only the codes the core produces; `gen/errors.py` lists the codes only
+libcurl's C API produces (`SHIM_ONLY`) and generates them into the shim's `EasyError`,
+`MultiError` and `ShareError`, each beside the core's kind and mapped to C with no wildcard.
+Shim-only: `CURLE_AGAIN`, `CURLE_NO_CONNECTION_AVAILABLE`, `CURLE_RECURSIVE_API_CALL`,
+`CURLE_UNKNOWN_OPTION`; every multi code but out of memory, a bad easy handle, an abort by
+callback and an unrecoverable poll; and every share code, as the core's share fails only with
+its own `InUse` and `OutOfMemory`. TLS's codes stay in `ErrorKind`, which TLS will produce.
+The number of `CURLE_AGAIN`, which the core traces (`-> 81`) but never returns, is a generated
+constant of the core's.
 
 ### 2.6 Easy
 

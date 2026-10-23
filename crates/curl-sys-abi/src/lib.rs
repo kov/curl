@@ -11,7 +11,7 @@
 #[rustfmt::skip]
 mod ffi;
 #[rustfmt::skip]
-#[allow(dead_code, reason = "the share and URL handles come later")]
+#[allow(dead_code, reason = "the shim returns most codes of its own as C constants")]
 mod error_codes;
 #[cfg(feature = "debug-hooks")]
 mod debug;

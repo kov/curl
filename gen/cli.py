@@ -23,6 +23,7 @@ values in inventory/abi.json:
 import json
 import pathlib
 
+from errors import SHIM_ONLY
 import genlib
 from genlib import ABI, ROOT, check
 
@@ -140,11 +141,16 @@ def errors(cli, abi):
     messages = abi["strerror"]["curl_easy_strerror"]["messages"]
     code_arms = []
     for m in members:
-        if m in messages and m != "CURLE_OK":
+        # The tool uses the Rust API, which never gives the codes only
+        # libcurl's C API produces.
+        if (m in messages and m != "CURLE_OK"
+                and m not in SHIM_ONLY["CURLcode"]):
             check(0 < codes[m] < 256, f"{m} does not fit an exit status")
             code_arms.append(f"        ErrorKind::{camel(m, 'CURLE_')} => "
                              f"{codes[m]},\n")
-    return f"""{genlib.header(HERE, [CLI, ABI, ROOT / 'gen' / 'genlib.py', HERE])}\
+    inputs = [CLI, ABI, ROOT / 'gen' / 'genlib.py', ROOT / 'gen' / 'errors.py',
+              HERE]
+    return f"""{genlib.header(HERE, inputs)}\
 //! Why the command line was rejected, and the exit status of each error.
 
 use std::fmt;

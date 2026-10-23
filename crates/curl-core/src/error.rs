@@ -2,12 +2,16 @@
 //!
 //! Each API has its own error kind, one variant per way it can fail. The
 //! kinds and their messages are generated from libcurl's, so `Display`
-//! shows the text `curl_easy_strerror` and friends return.
+//! shows the text `curl_easy_strerror` and friends return. The codes only
+//! libcurl's C API produces (an unknown option id, an invalid handle, a
+//! call from within a callback) have no kind here: the C shim holds them.
+//! The share handle fails only as its own methods say.
 
 #[rustfmt::skip]
 mod kinds;
 
-pub use kinds::{ErrorKind, MultiErrorKind, ShareErrorKind, UrlErrorKind};
+pub(crate) use kinds::AGAIN_NUMBER;
+pub use kinds::{ErrorKind, MultiErrorKind, UrlErrorKind};
 
 use std::fmt;
 

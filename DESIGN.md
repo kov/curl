@@ -172,8 +172,11 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
     then; clearing an option of a group never made makes nothing (`Cold::set`). Every handle pays only for the hot groups and a pointer per cold one; a new option
     of a seldom-used kind joins a cold group. A handle's memory is pinned below C's (libtest
     751's thousand handles; the shim's `a_handle_costs_no_more_than_cs`).
-- **Errors:** one `Error` type per API (easy, multi, share, URL), each carrying an error kind
-  and an optional detail message.
+- **Errors:** one error kind per API that can fail in the core (easy, multi, URL), with a
+  variant per way the core fails; the easy `Error` also carries an optional detail message.
+  - The codes only the C API produces (an unknown option, a bad handle, a call from a
+    callback, every share code) are not the core's: the shim's own enums hold them beside the
+    core's kinds (`gen/errors.py`'s `SHIM_ONLY`).
   - The shim maps each kind to its `CURLcode` with a `match` that has no wildcard, so a new
     kind fails the build until it is mapped.
   - The detail message is what `CURLOPT_ERRORBUFFER` shows.

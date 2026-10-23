@@ -8,7 +8,7 @@ use std::fmt;
 use crate::components::Component;
 use crate::conn::RecvFailed;
 use crate::conn::io::{Recv, Sent};
-use crate::error::ErrorKind;
+use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::DebugKind;
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
@@ -73,7 +73,7 @@ pub(crate) fn of<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fm
 pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, len: usize, sent: &std::io::Result<Sent>) {
     let (code, n) = match sent {
         Ok(Sent::Bytes(n)) => (0, n.get()),
-        Ok(Sent::WouldBlock) => (ErrorKind::Again.number(), 0),
+        Ok(Sent::WouldBlock) => (AGAIN_NUMBER, 0),
         Err(_) => (ErrorKind::SendError.number(), 0),
     };
     of(
@@ -93,7 +93,7 @@ pub(crate) fn received<H: Host>(
     let (code, n) = match got {
         Ok(Recv::Data(n)) => (0, n.get()),
         Ok(Recv::Eof) => (0, 0),
-        Ok(Recv::WouldBlock) => (ErrorKind::Again.number(), 0),
+        Ok(Recv::WouldBlock) => (AGAIN_NUMBER, 0),
         Err(RecvFailed::OutOfMemory) => (ErrorKind::OutOfMemory.number(), 0),
         Err(RecvFailed::Os(_)) => (ErrorKind::RecvError.number(), 0),
     };

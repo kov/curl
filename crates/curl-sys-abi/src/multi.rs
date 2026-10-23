@@ -27,7 +27,7 @@ use curl_core::multi::{
 use curl_core::time::SystemClock;
 
 use crate::easy::{self, ShimEasy};
-use crate::error_codes::{easy_code, multi_code};
+use crate::error_codes::{MultiError, easy_code, multi_code};
 use crate::ffi::{
     self, CURL, CURL_SOCKET_TIMEOUT, CURL_WAIT_POLLIN, CURL_WAIT_POLLOUT, CURL_WAIT_POLLPRI, CURLM,
     CURLM_BAD_EASY_HANDLE, CURLM_BAD_FUNCTION_ARGUMENT, CURLM_BAD_HANDLE, CURLM_OK,
@@ -341,11 +341,11 @@ impl Core<'_> {
 
 /// Add the handle `easy` to `multi`, reached as the gate said
 /// (`Curl_multi_add_handle`).
-pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<(), MultiErrorKind> {
+pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<(), MultiError> {
     if easy.added().is_some() {
-        return Err(MultiErrorKind::AddedAlready);
+        return Err(MultiError::AddedAlready);
     }
-    let core = Core::of(multi, reach).map_err(|_| MultiErrorKind::RecursiveApiCall)?;
+    let core = Core::of(multi, reach).map_err(|_| MultiError::RecursiveApiCall)?;
     // Cleared as early as possible (multi.c:516).
     easy.clear_error_buffer();
     let (mut transfer, owner) = (easy.detach(), NonNull::from(easy));
@@ -354,7 +354,7 @@ pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<()
     let set = easy.set.get();
     if crate::callbacks::sync_upload(transfer.options_mut(), owner, &set).is_err() {
         easy.return_home(transfer);
-        return Err(MultiErrorKind::OutOfMemory);
+        return Err(MultiErrorKind::OutOfMemory.into());
     }
     let mut ev = ShimEvents::new(multi);
     let added = match core {
@@ -372,25 +372,21 @@ pub(crate) fn add(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<()
         }
         Err(e) => {
             easy.return_home(e.easy);
-            Err(e.kind)
+            Err(e.kind.into())
         }
     }
 }
 
 /// Take the handle `easy` out of `multi`, reached as the gate said
 /// (`Curl_multi_remove_handle`): one in no multi is out already.
-pub(crate) fn remove(
-    multi: &ShimMulti,
-    reach: Reach,
-    easy: &ShimEasy,
-) -> Result<(), MultiErrorKind> {
+pub(crate) fn remove(multi: &ShimMulti, reach: Reach, easy: &ShimEasy) -> Result<(), MultiError> {
     let Some((home, id)) = easy.added() else {
         return Ok(());
     };
     if home != NonNull::from(multi) {
-        return Err(MultiErrorKind::BadEasyHandle);
+        return Err(MultiErrorKind::BadEasyHandle.into());
     }
-    let core = Core::of(multi, reach).map_err(|_| MultiErrorKind::RecursiveApiCall)?;
+    let core = Core::of(multi, reach).map_err(|_| MultiError::RecursiveApiCall)?;
     let mut ev = ShimEvents::new(multi);
     let removed = match core {
         Core::Direct(core) => core.remove(id, &mut ev),
@@ -398,7 +394,7 @@ pub(crate) fn remove(
     }
     .expect("an added handle is in its multi");
     easy.return_home(removed.easy);
-    removed.status
+    removed.status.map_err(MultiError::from)
 }
 
 #[unsafe(no_mangle)]

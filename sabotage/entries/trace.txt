@@ -299,7 +299,7 @@ witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_trace
 --- old
         Ok(Recv::Data(n)) => (0, n.get()),
 --- new
-        Ok(Recv::Data(n)) => (ErrorKind::Again.number(), n.get()),
+        Ok(Recv::Data(n)) => (AGAIN_NUMBER, n.get()),
 
 === a request's send is not traced
 file: crates/curl-core/src/proto/http.rs
@@ -467,9 +467,9 @@ witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
 --- old
-        Ok(Asked::Shortcut) => trace::Code(Ok(())),
+        Ok(Asked::Shortcut) => 0,
 --- new
-        Ok(Asked::Shortcut) => trace::Code(Err(ErrorKind::Again)),
+        Ok(Asked::Shortcut) => crate::error::AGAIN_NUMBER,
 
 === a resolver's answer is said to be a shortcut's
 file: crates/curl-core/src/conn/connect.rs

@@ -1,0 +1,37 @@
+# The error codes of the C API: the core's kinds and the codes only the
+# shim produces (gen/errors.py, crates/curl-sys-abi/src/error_codes.rs).
+
+=== a code only the shim produces is lost from the C API's errors
+file: crates/curl-sys-abi/src/error_codes.rs
+witness: curl-sys-abi strerror::tests::errors_are_every_c_code
+--- old
+        MultiError::BadHandle,
+        MultiError::InternalError,
+--- new
+        MultiError::InternalError,
+
+=== two codes only the shim produces trade C codes
+file: crates/curl-sys-abi/src/error_codes.rs
+witness: curl-sys-abi strerror::tests::errors_are_every_c_code
+--- old
+        EasyError::UnknownOption => CURLE_UNKNOWN_OPTION,
+        EasyError::Again => CURLE_AGAIN,
+--- new
+        EasyError::UnknownOption => CURLE_AGAIN,
+        EasyError::Again => CURLE_UNKNOWN_OPTION,
+
+=== a core kind answers with a code only the shim produces
+file: crates/curl-sys-abi/src/error_codes.rs
+witness: curl-sys-abi strerror::tests::errors_are_every_c_code
+--- old
+            ErrorKind::TooManyRedirects => CURLE_TOO_MANY_REDIRECTS,
+--- new
+            ErrorKind::TooManyRedirects => CURLE_UNKNOWN_OPTION,
+
+=== the core traces would-block with another number than C's
+file: crates/curl-core/src/error/kinds.rs
+witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
+--- old
+pub(crate) const AGAIN_NUMBER: u16 = 81;
+--- new
+pub(crate) const AGAIN_NUMBER: u16 = 80;

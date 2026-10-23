@@ -27,6 +27,7 @@ use curl_core::time::TimeLimit;
 
 use crate::callbacks::{self, CCallbacks, CSettings, PostFields};
 use crate::easy::{self, PostBody, ShimEasy};
+use crate::error_codes::EasyError;
 use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_NOT_BUILT_IN, CURLE_OK, CURLE_OUT_OF_MEMORY,
     CURLE_RECURSIVE_API_CALL, CURLE_UNKNOWN_OPTION, CURLcode, CURLoption, curl_off_t,
@@ -1070,7 +1071,7 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
             // files and the save name turn on is made as the next transfer
             // starts.
             easy::EasyRef::Frame(..) if option != ffi::CURLOPT_COOKIELIST => return Ok(()),
-            easy::EasyRef::Frame(..) => return Err(ErrorKind::RecursiveApiCall),
+            easy::EasyRef::Frame(..) => return Err(EasyError::RecursiveApiCall),
         };
         match (option, given) {
             (ffi::CURLOPT_COOKIEFILE, None) => easy.forget_cookies(),
@@ -1078,7 +1079,7 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
                 easy.enable_cookies().map_err(|_| ErrorKind::OutOfMemory)?;
             }
             (ffi::CURLOPT_COOKIELIST, Some(command)) => {
-                return cookie_command(easy, command, &mut notes);
+                return cookie_command(easy, command, &mut notes).map_err(EasyError::from);
             }
             _ => {}
         }

@@ -62,7 +62,7 @@ witness: curl-core multi::tests::a_failed_poll_is_unrecoverable
             .map_err(|_| MultiErrorKind::UnrecoverablePoll)?;
 --- new
             .poll(sockets, fds, timeout)
-            .map_err(|_| MultiErrorKind::InternalError)?;
+            .map_err(|_| MultiErrorKind::OutOfMemory)?;
 
 === the fake network sleeps even when something is ready
 file: crates/curl-core/src/conn/io.rs

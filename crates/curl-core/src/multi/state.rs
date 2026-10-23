@@ -1382,8 +1382,8 @@ fn trace_resolved<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, asked: Result<As
     let peer = route.destination();
     let (name, port, queries) = (Bytes(peer.name()), peer.port(), queries(peer, route.ip));
     let code = match asked {
-        Ok(Asked::Shortcut) => trace::Code(Ok(())),
-        Ok(Asked::Resolver) | Err(()) => trace::Code(Err(ErrorKind::Again)),
+        Ok(Asked::Shortcut) => 0,
+        Ok(Asked::Resolver) | Err(()) => crate::error::AGAIN_NUMBER,
     };
     let dns = Component::Dns;
     trace::of(

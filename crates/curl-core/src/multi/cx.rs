@@ -41,6 +41,8 @@ pub(crate) struct EngineRest<'a, H: Host> {
     /// The transfer last let look for a connection again.
     pub(super) pending_after: &'a mut Option<TransferId>,
     pub(super) net: &'a mut dyn Net,
+    /// IPv6 works, as the multi's probe found.
+    pub(crate) ipv6_works: bool,
     pub(super) dirty: &'a mut RowSet,
     /// What the multi was driven with: the socket callback hears of a
     /// socket closing.
@@ -59,6 +61,7 @@ impl<H: Host> EngineRest<'_, H> {
             caches: &mut *self.caches,
             pending_after: &mut *self.pending_after,
             net: &mut *self.net,
+            ipv6_works: self.ipv6_works,
             dirty: &mut *self.dirty,
             events: &mut *self.events,
             now: self.now,
@@ -230,6 +233,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
 
     fn names(&mut self) -> Names<'_> {
         names(&mut self.step.rest.caches.dns, self.kept)
+    }
+
+    fn ipv6_works(&self) -> bool {
+        self.step.rest.ipv6_works
     }
 
     fn open_socket(&mut self, address: &mut SocketAddr) -> Opened {

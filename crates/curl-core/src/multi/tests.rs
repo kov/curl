@@ -3624,3 +3624,140 @@ fn the_proxy_protocol_is_read_once_its_stage_is_reached() {
     );
     assert!(sent.windows(17).any(|w| w == b"GET /a HTTP/1.1\r\n"));
 }
+
+/// A network that counts the multi's probes of IPv6, and answers them
+/// with `.2`.
+struct Probed(
+    FakeNet,
+    std::sync::Arc<AtomicU32>,
+    Result<bool, OutOfMemory>,
+);
+
+impl Net for Probed {
+    fn poll(
+        &mut self,
+        sockets: &mut [crate::conn::io::SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.poll(sockets, fds, timeout)
+    }
+
+    fn open(
+        &mut self,
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        self.0.open(addr)
+    }
+
+    fn close(&mut self, socket: crate::conn::io::Sock) {
+        self.0.close(socket);
+    }
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: crate::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
+        self.0.resolve(name, family)
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        self.0.link_local_scope()
+    }
+
+    fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {
+        self.1.fetch_add(1, Ordering::Relaxed);
+        self.2
+    }
+}
+
+/// A multi over a network where `dual` stands for `::1` and `127.0.0.1`,
+/// both listening on port 5, whose probe of IPv6 says `ipv6`; and the
+/// count of its probes.
+fn dual_stack(
+    ipv6: Result<bool, OutOfMemory>,
+) -> (Result<Multi, OutOfMemory>, std::sync::Arc<AtomicU32>) {
+    use crate::conn::io::Peer;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    let clock = ManualClock::new().unwrap();
+    let (v6, v4) = (
+        IpAddr::V6(Ipv6Addr::LOCALHOST),
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+    );
+    let net = FakeNet::new(clock.clone())
+        .with_name("dual", &[v6, v4])
+        .with_peer(SocketAddr::new(v6, 5), Peer::Accepts)
+        .with_peer(SocketAddr::new(v4, 5), Peer::Accepts);
+    let probes = std::sync::Arc::new(AtomicU32::new(0));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(Probed(net, probes.clone(), ipv6)),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    (Multi::new(env), probes)
+}
+
+/// The trace's line saying which address is tried first.
+fn trying(trace: &[String]) -> &str {
+    trace
+        .iter()
+        .find(|l| l.starts_with("  Trying"))
+        .expect("an attempt")
+}
+
+/// A multi asks once, as it is made, whether IPv6 works, and its
+/// transfers go by that answer (`Curl_probeipv6` in
+/// `Curl_multi_handle`); running out of memory then fails the multi.
+#[test]
+fn a_multi_probes_ipv6_once_as_it_is_made() {
+    let (m, probes) = dual_stack(Ok(true));
+    let mut m = m.unwrap();
+    assert_eq!(probes.load(Ordering::Relaxed), 1);
+    let (e, lines) = traced("tcp://dual:5/");
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Ok(()));
+    assert_eq!(trying(&trace), "  Trying [::1]:5...\n");
+    let (e, lines) = traced("tcp://dual:5/");
+    assert_eq!(run_traced(&mut m, e, &lines).0, Ok(()));
+    assert_eq!(probes.load(Ordering::Relaxed), 1, "asked once");
+    let (m, probes) = dual_stack(Err(OutOfMemory));
+    assert!(m.is_err());
+    assert_eq!(probes.load(Ordering::Relaxed), 1);
+}
+
+/// Without IPv6 a name is resolved for IPv4 addresses alone, and not at
+/// all for IPv6 alone, which fails as C's does: an address is still its
+/// own answer (`Curl_resolv_dns_queries`, `can_resolve_dns_queries`).
+#[test]
+fn without_ipv6_only_ipv4_is_resolved() {
+    let (m, _) = dual_stack(Ok(false));
+    let mut m = m.unwrap();
+    let (mut e, lines) = traced("tcp://dual:5/");
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"dns");
+    e.set_components(Some(components));
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Ok(()));
+    assert_eq!(trying(&trace), "  Trying 127.0.0.1:5...\n");
+    let lookup = "[DNS] cache lookup dual:5 queries=A -> 0 not found\n";
+    assert!(trace.iter().any(|l| l == lookup), "{trace:?}");
+    let (mut e, lines) = traced("tcp://dual:5/");
+    e.options_mut().ip_version = IpVersion::V6;
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Err(ErrorKind::CouldntResolveHost));
+    assert_eq!(
+        trace,
+        [
+            "Could not resolve: dual:5\n",
+            "Could not resolve: dual\n",
+            "closing connection #1\n"
+        ]
+    );
+    let (mut e, lines) = traced("tcp://[::1]:5/");
+    e.options_mut().ip_version = IpVersion::V6;
+    let (result, trace) = run_traced(&mut m, e, &lines);
+    assert_eq!(result, Ok(()));
+    assert_eq!(trying(&trace), "  Trying [::1]:5...\n");
+}

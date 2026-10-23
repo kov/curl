@@ -132,3 +132,35 @@ witness: curl-core proto::http::tests::a_resolve_list_set_while_one_is_read_is_d
         cx.easy_mut().resolve_read = cx.easy().options().resolve.stamp();
 --- new
         cx.easy_mut().resolve_read = entries.stamp();
+
+=== a multi takes IPv6 for working without asking
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
+--- old
+        let ipv6_works = net.probe_ipv6()?;
+--- new
+        let ipv6_works = true;
+
+=== a name is resolved for IPv6 though IPv6 does not work
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
+--- old
+    let ipv6 = cx.ipv6_works();
+--- new
+    let ipv6 = true;
+
+=== a name is resolved for IPv6 alone though IPv6 does not work
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
+--- old
+        None if family == Family::V6 && !ipv6 => {
+--- new
+        None if family == Family::V6 && ipv6 && !ipv6 => {
+
+=== the queries traced ask for IPv6 though it does not work
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
+--- old
+        IpVersion::Any => (true, ipv6_works),
+--- new
+        IpVersion::Any => (true, true),

@@ -231,6 +231,25 @@ impl From<SocketAddr> for SockAddr {
     }
 }
 
+/// Whether the system has a working IPv6 stack: an IPv6 datagram socket
+/// opens, and is closed at once (`Curl_probeipv6`). Only running out of
+/// memory is an error; any other failure is no IPv6.
+pub fn probe_ipv6() -> io::Result<bool> {
+    // SAFETY: `socket` takes no pointer.
+    let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) };
+    if fd == -1 {
+        let err = io::Error::last_os_error();
+        return match err.raw_os_error() {
+            Some(libc::ENOMEM) => Err(err),
+            _ => Ok(false),
+        };
+    }
+    // SAFETY: `fd` was opened just now and nothing else holds it; it is
+    // closed as the `OwnedFd` drops.
+    drop(unsafe { OwnedFd::from_raw_fd(fd) });
+    Ok(true)
+}
+
 /// The index of the network interface named `name` (`if_nametoindex`),
 /// or `None` if no interface has that name.
 pub fn interface_index(name: &[u8]) -> Option<NonZeroU32> {
@@ -476,6 +495,13 @@ mod tests {
         assert_eq!(from, s.local_addr().unwrap());
         assert_eq!(s.peer_addr().unwrap(), listener.local_addr().unwrap());
         (s, peer)
+    }
+
+    /// IPv6 works here, as `connects_over_ipv4_and_ipv6` needs.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
+    fn the_probe_finds_ipv6() {
+        assert!(probe_ipv6().unwrap());
     }
 
     /// A system call's failure `errno`, as std reports it.

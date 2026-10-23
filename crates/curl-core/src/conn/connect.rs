@@ -163,6 +163,9 @@ pub(crate) trait ConnCx: LayerCx {
     /// share's.
     fn names(&mut self) -> Names<'_>;
 
+    /// IPv6 works here, as the multi's probe found (`ipv6works`).
+    fn ipv6_works(&self) -> bool;
+
     /// A socket for `address`: the application's opener's, which may
     /// change the address, or else the network's (`socket_open`).
     fn open_socket(&mut self, address: &mut SocketAddr) -> Opened;
@@ -238,6 +241,10 @@ impl ConnCx for Plain<'_> {
 
     fn names(&mut self) -> Names<'_> {
         Names::Own(self.dns)
+    }
+
+    fn ipv6_works(&self) -> bool {
+        true
     }
 
     fn open_socket(&mut self, address: &mut SocketAddr) -> Opened {
@@ -429,6 +436,9 @@ pub(crate) enum Unresolved {
     /// None of the addresses found, as `.0` says they were, is of the
     /// family allowed.
     NoAddress(Found),
+    /// Only IPv6 addresses are allowed, and IPv6 does not work here: no
+    /// resolver is asked (`can_resolve_dns_queries`).
+    NoIpv6,
 }
 
 impl ConnectMachine {
@@ -1115,9 +1125,12 @@ fn resolve(
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
     let now = cx.now();
     let (name, port) = (peer.name(), peer.port());
+    // Without IPv6 only IPv4 addresses are asked for
+    // (`Curl_resolv_dns_queries`).
+    let ipv6 = cx.ipv6_works();
     let family = match ip {
-        IpVersion::Any => Family::Any,
-        IpVersion::V4 => Family::V4,
+        IpVersion::Any if ipv6 => Family::Any,
+        IpVersion::Any | IpVersion::V4 => Family::V4,
         IpVersion::V6 => Family::V6,
     };
     let (wildcard, max_age) = (setup.wildcard, setup.max_age);
@@ -1133,6 +1146,11 @@ fn resolve(
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
     let (answer, found) = match shortcut(peer.shown(), name).map_err(oom)? {
         Some(answer) => (answer, found(Asked::Shortcut)),
+        // A resolver is not asked for IPv6 addresses alone without IPv6
+        // (`can_resolve_dns_queries`); nothing is kept of it.
+        None if family == Family::V6 && !ipv6 => {
+            return Err(ConnectError::Unresolved(Unresolved::NoIpv6));
+        }
         None => match cx.net().resolve(name, family) {
             Ok(addrs) => (
                 Answer::of(name, addrs, family).map_err(oom)?,
@@ -1187,11 +1205,11 @@ fn is_localhost(host: &[u8]) -> bool {
 /// `host` as an address if it is one, as the URL holds it: an IPv4
 /// address dotted, an IPv6 one in brackets.
 /// C's name for the address queries a resolve of `peer`'s name in `ip`
-/// makes (`Curl_resolv_query_str`): an address's own family is always
-/// asked for (`cf_dns_start`).
-pub(crate) fn queries(peer: &Peer, ip: IpVersion) -> &'static str {
+/// makes (`Curl_resolv_query_str`), with IPv6 working or not: an
+/// address's own family is always asked for (`cf_dns_start`).
+pub(crate) fn queries(peer: &Peer, ip: IpVersion, ipv6_works: bool) -> &'static str {
     let (mut a, mut aaaa) = match ip {
-        IpVersion::Any => (true, true),
+        IpVersion::Any => (true, ipv6_works),
         IpVersion::V4 => (true, false),
         IpVersion::V6 => (false, true),
     };

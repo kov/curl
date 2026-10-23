@@ -8,7 +8,7 @@ use std::num::NonZeroU32;
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::time::Duration;
 
-use curl_alloc::{TryVec, try_box};
+use curl_alloc::{OutOfMemory, TryVec, try_box};
 
 use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
@@ -197,6 +197,13 @@ pub trait Net {
     /// The scope of the first local interface that is up, is not
     /// loopback and has a link-local IPv6 address, if any.
     fn link_local_scope(&mut self) -> Option<NonZeroU32>;
+
+    /// Whether IPv6 works here, as a multi asks once as it is made
+    /// (`Curl_probeipv6`): an error only if memory ran out. A network of
+    /// the tests' has it unless it says otherwise.
+    fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {
+        Ok(true)
+    }
 }
 
 impl Socket for curl_os::net::TcpSocket {
@@ -270,6 +277,10 @@ impl Net for SystemNet {
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
         curl_os::net::link_local_scope()
+    }
+
+    fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {
+        curl_os::net::probe_ipv6().map_err(|_| OutOfMemory)
     }
 }
 
@@ -639,6 +650,8 @@ pub struct FakeNet {
     conversations: Vec<(SocketAddr, Conversation)>,
     /// The scope of its interface with a link-local address, if it has one.
     link_local: Option<NonZeroU32>,
+    /// Whether IPv6 works, as a multi's probe finds.
+    ipv6: bool,
     /// The sockets open, by number from `FIRST_FAKE`, each with its
     /// conversation: a closed number is handed out again, lowest first, as
     /// the kernel does.
@@ -671,8 +684,15 @@ impl FakeNet {
             names: Vec::new(),
             conversations: Vec::new(),
             link_local: None,
+            ipv6: true,
             open,
         }
+    }
+
+    /// A system where IPv6 does not work: a multi's probe finds none.
+    pub fn without_ipv6(mut self) -> FakeNet {
+        self.ipv6 = false;
+        self
     }
 
     /// An interface with a link-local address, in `scope`.
@@ -851,6 +871,10 @@ impl Net for FakeNet {
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
         self.link_local
+    }
+
+    fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {
+        Ok(self.ipv6)
     }
 }
 
@@ -1085,6 +1109,10 @@ impl Net for SharedNet {
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
         self.0.lock().unwrap().link_local_scope()
+    }
+
+    fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {
+        self.0.lock().unwrap().probe_ipv6()
     }
 }
 

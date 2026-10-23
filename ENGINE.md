@@ -1159,7 +1159,11 @@ is driven in its lease, the pool not borrowed (§3.6), and reaches the transfer 
 scope, the socket options, the names' rules). A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
 connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
 reports it ("Host H:P was resolved.", then each family's addresses), read back from the
-machine through the pool, and NAMELOOKUP is marked when it resolves. An IPv6 attempt's address
+machine through the pool, and NAMELOOKUP is marked when it resolves. Whether IPv6 works is the
+multi's, asked of its `Net` once as the multi is made (`Net::probe_ipv6`, an IPv6 datagram socket
+opened and closed, as `Curl_probeipv6` in `Curl_multi_handle`) and reached by the drive through
+`ConnCx::ipv6_works`: without it a name is resolved for IPv4 alone, and for IPv6 alone not at
+all (`Unresolved::NoIpv6`, `can_resolve_dns_queries`). An IPv6 attempt's address
 carries C's `conn->scope_id`: `CURLOPT_ADDRESS_SCOPE`, else the destination peer's scope, else,
 for a link-local address, the first non-loopback interface's with a link-local address
 (`Net::link_local_scope`, cf-socket.c's `get_scope_id`), which `Progress::Trying` carries for

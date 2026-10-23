@@ -260,6 +260,10 @@ pub struct Multi<H: Host = NoHost> {
     sockets: SocketTable<H::Socket>,
     clock: Box<dyn Clock>,
     net: Box<dyn Net + Send>,
+    /// IPv6 works here, as the network said once as the multi was made
+    /// (`Curl_probeipv6`, `multi->ipv6_works`): a property of the system
+    /// its transfers run on, kept by the root they reach it through.
+    ipv6_works: bool,
     waker: Option<TryArc<Waker>>,
     counts: Tally,
     life: Life,
@@ -270,19 +274,25 @@ pub struct Multi<H: Host = NoHost> {
 
 impl<H: Host> Multi<H> {
     pub fn new(env: Env) -> Result<Self, OutOfMemory> {
+        let slots = Arena::new(env.arena)?;
+        let caches = Caches::new()?;
+        // As C's multi is made, after its waker (`Curl_multi_handle`).
+        let mut net = env.net;
+        let ipv6_works = net.probe_ipv6()?;
         Ok(Multi {
-            slots: Arena::new(env.arena)?,
+            slots,
             dirty: RowSet::default(),
             timers: TimerQueue::new(),
             announce: TimerAnnounce::default(),
             notify: NotifyQueue::default(),
             delivering: false,
-            caches: Caches::new()?,
+            caches,
             limits: ConnLimits::default(),
             pending_after: None,
             sockets: SocketTable::new(),
             clock: env.clock,
-            net: env.net,
+            net,
+            ipv6_works,
             waker: env.waker,
             counts: Tally::default(),
             life: Life::Alive,
@@ -732,6 +742,7 @@ impl<H: Host> Multi<H> {
             caches: &mut self.caches,
             pending_after: &mut self.pending_after,
             net: &mut *self.net,
+            ipv6_works: self.ipv6_works,
             dirty: &mut self.dirty,
             events: ev,
             now,

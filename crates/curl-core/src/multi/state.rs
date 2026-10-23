@@ -1617,6 +1617,29 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     None
 }
 
+/// The name `route` connects to first, missing from the cache, is not
+/// resolved for IPv6 alone without IPv6 (`can_resolve_dns_queries`).
+fn no_ipv6<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, proxy: bool) -> ErrorKind {
+    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver)));
+    let peer = route.destination();
+    let (host, port) = (Bytes(peer.name()), peer.port());
+    let queries = queries(peer, route.ip, cx.rest.ipv6_works);
+    let kind = if proxy {
+        ErrorKind::CouldntResolveProxy
+    } else {
+        ErrorKind::CouldntResolveHost
+    };
+    let code = trace::Code(Err(kind));
+    let dns = Component::Dns;
+    trace::of(
+        cx,
+        dns,
+        format_args!("[{queries}] hostip_resolv started -> {code}"),
+    );
+    let kind = trace::fail(cx, kind, format_args!("Could not resolve: {host}:{port}"));
+    trace::fail(cx, kind, format_args!("Could not resolve: {host}"))
+}
+
 /// The name `route` connects to first was looked up in the cache, as
 /// C's `hostip_resolv` and `Curl_dnscache_get` trace it: found, missing
 /// (or stale, said first) and so resolved, or `None`, the resolver's no
@@ -1625,7 +1648,11 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Foun
     // The name looked up: the proxy's, or what a connect-to names in the
     // origin's place.
     let peer = route.destination();
-    let (name, port, queries) = (Bytes(peer.name()), peer.port(), queries(peer, route.ip));
+    let (name, port, queries) = (
+        Bytes(peer.name()),
+        peer.port(),
+        queries(peer, route.ip, cx.rest.ipv6_works),
+    );
     // The C debug build's line.
     #[cfg(feature = "debug-hooks")]
     trace::of(
@@ -1668,7 +1695,11 @@ fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Foun
 /// later (`CURLE_AGAIN`), its polls not traced.
 fn trace_resolved<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, asked: Result<Asked, ()>) {
     let peer = route.destination();
-    let (name, port, queries) = (Bytes(peer.name()), peer.port(), queries(peer, route.ip));
+    let (name, port, queries) = (
+        Bytes(peer.name()),
+        peer.port(),
+        queries(peer, route.ip, cx.rest.ipv6_works),
+    );
     let code = match asked {
         Ok(Asked::Shortcut) => 0,
         Ok(Asked::Resolver) | Err(()) => crate::error::AGAIN_NUMBER,
@@ -1827,6 +1858,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Unresolved(why) => {
             match why {
+                Unresolved::NoIpv6 => return no_ipv6(cx, route, proxy.is_some()),
                 Unresolved::Negative => trace_lookup(cx, route, None),
                 Unresolved::Resolver(_) => {
                     trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver)));
@@ -1869,7 +1901,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             // What the resolver said no to is kept as said
             // (`Curl_dnscache_add_negative`).
             if let Unresolved::Resolver(ResolveFailure::NotFound | ResolveFailure::NoData) = why {
-                let queries = queries(first, route.ip);
+                let queries = queries(first, route.ip, cx.rest.ipv6_works);
                 trace::of(
                     cx,
                     Component::Dns,

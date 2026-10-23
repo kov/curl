@@ -4552,6 +4552,63 @@ fn post_fields_asked_chunked_keep_their_size() {
     }
 }
 
+/// A debug function that sets `CURLOPT_CUSTOMREQUEST` to PATCH when the
+/// switch to GET after a redirect is traced, as `api.c` lets a callback
+/// set options (`easy_setopt` may recurse).
+unsafe extern "C" fn patch_on_stick(
+    h: *mut CURL,
+    kind: ffi::curl_infotype,
+    ptr: *mut c_char,
+    n: usize,
+    _: *mut c_void,
+) -> c_int {
+    // SAFETY: the shim's `n` bytes.
+    let text = unsafe { core::slice::from_raw_parts(ptr.cast::<u8>(), n) };
+    if kind == ffi::CURLINFO_TEXT && text.starts_with(b"Stick to DELETE instead of GET") {
+        let patch = c"PATCH";
+        assert_eq!(
+            pointer(h, ffi::CURLOPT_CUSTOMREQUEST, patch.as_ptr().cast_mut()),
+            CURLE_OK
+        );
+    }
+    0
+}
+
+/// A custom method the debug function sets while a 303's "Stick to
+/// DELETE instead of GET" is traced is the one the next request sends:
+/// the C build sends `PATCH /b` (`http_switch_to_get` leaves the option
+/// where it is while it traces).
+#[test]
+fn a_custom_method_set_from_the_debug_function_on_a_redirect_stands() {
+    let (port, server) = serve(vec![
+        b"HTTP/1.1 303 See Other\r\nLocation: /b\r\nContent-Length: 0\r\n\
+          Connection: close\r\n\r\n",
+        OK,
+    ]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/a")).unwrap();
+    let c = curl_easy_init();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    function(c, ffi::CURLOPT_WRITEFUNCTION, sink as WriteFn as *const ());
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    long(c, ffi::CURLOPT_FOLLOWLOCATION, 1);
+    pointer(c, ffi::CURLOPT_CUSTOMREQUEST, c"DELETE".as_ptr().cast_mut());
+    long(c, ffi::CURLOPT_VERBOSE, 1);
+    function(
+        c,
+        ffi::CURLOPT_DEBUGFUNCTION,
+        patch_on_stick as DebugFn as *const (),
+    );
+    // SAFETY: a live handle, then not used again.
+    let code = unsafe { curl_easy_perform(c) };
+    // SAFETY: as above.
+    unsafe { curl_easy_cleanup(c) };
+    assert_eq!(code, CURLE_OK);
+    let requests = server.join().unwrap();
+    assert!(requests[0].starts_with(b"DELETE /a "));
+    let second = String::from_utf8_lossy(&requests[1]);
+    assert!(second.starts_with("PATCH /b "), "{second}");
+}
+
 /// What a debug function saw sent of the body.
 unsafe extern "C" fn data_out(
     _: *mut CURL,

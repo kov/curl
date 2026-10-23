@@ -539,3 +539,19 @@ witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
     if let Some(Found::Stale(_)) = found {
         trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
     }
+
+=== the custom method the C debug function sets during a redirect is overwritten
+file: crates/curl-core/src/proto/http.rs
+witness: curl-sys-abi handle_tests::a_custom_method_set_from_the_debug_function_on_a_redirect_stands
+--- old
+    if let Some(said) = said {
+        trace::info_line(cx, &said);
+    }
+--- new
+    if let Some(said) = said {
+        let custom = cx.easy_mut().options_mut().http.custom.made_mut().and_then(|c| c.method.take());
+        trace::info_line(cx, &said);
+        if let Some(c) = cx.easy_mut().options_mut().http.custom.made_mut() {
+            c.method = custom;
+        }
+    }

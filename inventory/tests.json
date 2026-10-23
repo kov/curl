@@ -1,19 +1,19 @@
 {
- "c-commit": "af01ea6963e393dd401df4279838bf7f9ada0df5",
+ "c-commit": "7f413e222f0eee750e112ad7881808f6b4408724",
  "data": {
   "attribute_value_counts": {
    "base64=yes": 2,
-   "crlf=headers": 1096,
+   "crlf=headers": 1101,
    "crlf=yes": 627,
    "delay=1": 3,
-   "mode=text": 194,
+   "mode=text": 195,
    "mode=warn": 2,
-   "nocheck=yes": 519,
+   "nocheck=yes": 523,
    "nonewline=yes": 167,
    "option=binary-trace": 29,
    "option=force-output": 1,
    "option=no-include": 40,
-   "option=no-output": 47,
+   "option=no-output": 48,
    "option=no-output,no-include": 94,
    "option=no-output/no-include": 1,
    "option=no-q": 2,
@@ -25,7 +25,7 @@
    "binary-trace": 29,
    "force-output": 1,
    "no-include": 40,
-   "no-output": 47,
+   "no-output": 48,
    "no-output,no-include": 94,
    "no-output/no-include": 1,
    "no-q": 2,
@@ -36,7 +36,7 @@
   },
   "counts": {
    "c_server_programs": 8,
-   "default_run_candidates": 2132,
+   "default_run_candidates": 2138,
    "disabled_conditional_only": 5,
    "disabled_entries": 20,
    "disabled_unconditional": 14,
@@ -44,7 +44,7 @@
    "perf_programs": 10,
    "pytest_functions": 357,
    "server_keywords_mapped": 36,
-   "test_files": 2146,
+   "test_files": 2152,
    "tunit_programs": 6,
    "unit_programs": 81
   },
@@ -365,7 +365,7 @@
    "14": 1,
    "16": 1,
    "17": 1,
-   "18": 7,
+   "18": 8,
    "19": 3,
    "2": 32,
    "21": 3,
@@ -373,7 +373,7 @@
    "23": 11,
    "25": 7,
    "26": 12,
-   "28": 16,
+   "28": 18,
    "3": 38,
    "30": 1,
    "33": 6,
@@ -433,7 +433,7 @@
   },
   "feature_required_counts": {
    "--libcurl": 13,
-   "Debug": 148,
+   "Debug": 150,
    "DoH": 6,
    "ECH": 3,
    "GSS-API": 6,
@@ -475,7 +475,7 @@
    "http/2": 10,
    "http/3": 4,
    "https": 14,
-   "httpsig": 26,
+   "httpsig": 28,
    "imap": 2,
    "ipfs": 22,
    "large-size": 1,
@@ -721,6 +721,7 @@
    "--interface": 9,
    "--json": 4,
    "--libcurl": 13,
+   "--limit-rate": 2,
    "--local-port": 1,
    "--location": 8,
    "--location-trusted": 6,
@@ -742,7 +743,7 @@
    "--raw": 2,
    "--remote-header-name": 1,
    "--remote-time": 6,
-   "--remove-on-error": 1,
+   "--remove-on-error": 2,
    "--request": 1,
    "--request-target": 3,
    "--resolve": 26,
@@ -900,7 +901,7 @@
    "HELP": 1,
    "HMAC": 1,
    "HSTS": 19,
-   "HTTP": 1093,
+   "HTTP": 1099,
    "HTTP 1xx response code": 1,
    "HTTP Basic": 3,
    "HTTP Basic auth": 39,
@@ -908,7 +909,7 @@
    "HTTP DELETE": 1,
    "HTTP Digest auth": 53,
    "HTTP FORMPOST": 17,
-   "HTTP GET": 671,
+   "HTTP GET": 674,
    "HTTP HEAD": 8,
    "HTTP MIME": 4,
    "HTTP MIME POST": 7,
@@ -916,7 +917,7 @@
    "HTTP Negotiate auth (stub krb5)": 2,
    "HTTP Negotiate auth (stub ntlm)": 1,
    "HTTP POST": 106,
-   "HTTP PUT": 56,
+   "HTTP PUT": 57,
    "HTTP added headers": 4,
    "HTTP auth in URL": 1,
    "HTTP custom request": 2,
@@ -928,7 +929,7 @@
    "HTTP proxy auth": 1,
    "HTTP replaced headers": 14,
    "HTTP set cookie": 4,
-   "HTTP/0.9": 8,
+   "HTTP/0.9": 9,
    "HTTP/1.0": 10,
    "HTTP/2": 15,
    "HTTP/3": 4,
@@ -1003,7 +1004,7 @@
    "RFC6749": 18,
    "RFC7628": 12,
    "RFC821": 2,
-   "RFC9421": 26,
+   "RFC9421": 28,
    "RSET": 2,
    "RTP": 1,
    "RTSP": 13,
@@ -1174,7 +1175,7 @@
    "http1": 1,
    "http_proxy": 12,
    "httponly": 3,
-   "httpsig": 24,
+   "httpsig": 26,
    "httpsig-headers": 1,
    "httpsrr": 3,
    "huge request header": 1,
@@ -1256,7 +1257,7 @@
    "thread-safe": 1,
    "threads": 3,
    "time2str": 1,
-   "timeout": 12,
+   "timeout": 14,
    "timing-dependent": 7,
    "tool-progress": 1,
    "tool-sizeparser": 1,
@@ -1301,7 +1302,7 @@
    "hex": 105,
    "if": 20,
    "include": 26,
-   "repeat": 99
+   "repeat": 101
   },
   "makefile_am": {
    "extra_dist": [
@@ -1335,35 +1336,35 @@
     "data1706-stdout.txt",
     "DISABLED"
    ],
-   "testcases_listed": 2146
+   "testcases_listed": 2152
   },
   "part_counts": {
-   "client/command": 2036,
+   "client/command": 2042,
    "client/connectport": 1,
    "client/disable": 11,
-   "client/features": 1028,
-   "client/file": 363,
+   "client/features": 1030,
+   "client/file": 364,
    "client/file1": 13,
    "client/file2": 13,
    "client/file3": 4,
    "client/file4": 2,
    "client/killserver": 13,
-   "client/name": 2146,
+   "client/name": 2152,
    "client/precheck": 27,
-   "client/server": 1904,
+   "client/server": 1910,
    "client/setenv": 195,
    "client/stdin": 88,
    "client/stdout": 5,
    "client/tool": 112,
    "client/verify": 1,
-   "info/keywords": 2146,
+   "info/keywords": 2152,
    "reply/connect": 75,
    "reply/connect1": 1,
    "reply/connect1000": 3,
    "reply/connect1001": 6,
    "reply/connect1002": 5,
    "reply/connect2": 1,
-   "reply/data": 1510,
+   "reply/data": 1515,
    "reply/data1": 119,
    "reply/data10": 2,
    "reply/data100": 11,
@@ -1388,7 +1389,7 @@
    "reply/data1500": 3,
    "reply/data1501": 3,
    "reply/data1502": 3,
-   "reply/data2": 184,
+   "reply/data2": 186,
    "reply/data200": 10,
    "reply/data3": 35,
    "reply/data300": 9,
@@ -1401,11 +1402,11 @@
    "reply/dns": 3,
    "reply/mdtm": 10,
    "reply/postcmd": 6,
-   "reply/servercmd": 318,
+   "reply/servercmd": 319,
    "reply/size": 18,
    "verify/data": 2,
    "verify/dns": 1,
-   "verify/errorcode": 508,
+   "verify/errorcode": 511,
    "verify/file": 162,
    "verify/file1": 68,
    "verify/file2": 69,
@@ -1413,10 +1414,10 @@
    "verify/limits": 31,
    "verify/notexists": 44,
    "verify/postcheck": 25,
-   "verify/protocol": 1633,
+   "verify/protocol": 1638,
    "verify/proxy": 41,
    "verify/socks": 5,
-   "verify/stderr": 58,
+   "verify/stderr": 59,
    "verify/stdout": 261,
    "verify/strip": 116,
    "verify/stripfile": 45,
@@ -26478,7 +26479,7 @@
    }
   },
   "runner_counts": {
-   "curl": 1636,
+   "curl": 1642,
    "libtest": 394,
    "perl-script": 28,
    "tunit": 6,
@@ -26503,7 +26504,7 @@
    "gopher": 5,
    "gopher-ipv6": 1,
    "gophers": 1,
-   "http": 1184,
+   "http": 1190,
    "http-ipv6": 15,
    "http-proxy": 50,
    "http-unix": 2,
@@ -101465,6 +101466,56 @@
     ]
    },
    {
+    "attr_values": [],
+    "bytes": 481,
+    "command": "--http0.9 -m 1 http://%HOSTIP:%HTTPPORT/%TESTNUMBER",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "28",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "HTTP GET",
+     "HTTP/0.9",
+     "timeout"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "HTTP endless body ends at the total timeout",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3237,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/servercmd",
+     "verify/errorcode"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER"
+    ]
+   },
+   {
     "attr_values": [
      "crlf=headers"
     ],
@@ -101573,6 +101624,297 @@
      "HOSTIP",
      "HTTPPORT",
      "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "mode=text",
+     "nocheck=yes",
+     "option=no-output"
+    ],
+    "bytes": 1148,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -o %LOGDIR/save-%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER -o /dev/null --remove-on-error --no-progress-meter",
+    "command_option": "no-output",
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "18",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--remove-on-error",
+     "HTTP",
+     "HTTP GET"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "--remove-on-error notes the file it removes and warns of one it skips",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3260,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/errorcode",
+     "verify/protocol",
+     "verify/stderr"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers"
+    ],
+    "bytes": 773,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER -T %LOGDIR/test%TESTNUMBER.txt --limit-rate 100K",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--limit-rate",
+     "HTTP",
+     "HTTP PUT"
+    ],
+    "killserver": [],
+    "macros": [
+     "repeat"
+    ],
+    "name": "HTTP PUT under --limit-rate sends the whole body",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3261,
+    "parts": [
+     "client/command",
+     "client/file",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "LOGDIR",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes"
+    ],
+    "bytes": 847,
+    "command": "http://%HOSTIP:%HTTPPORT/%TESTNUMBER --limit-rate 1000 -m 2",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": "28",
+    "features": [],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "--limit-rate",
+     "HTTP",
+     "HTTP GET",
+     "timeout"
+    ],
+    "killserver": [],
+    "macros": [
+     "repeat"
+    ],
+    "name": "--limit-rate limits a small body from its first read",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3262,
+    "parts": [
+     "client/command",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "verify/errorcode",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "TESTNUMBER",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes"
+    ],
+    "bytes": 1357,
+    "command": "\"http://example.com:8000/%TESTNUMBER/resource?a=1\" --httpsig-algo hmac-sha256 --httpsig-key @%SRCDIR/data/data-httpsig-hmac-sha256.key --httpsig-keyid \"shared-key-1\" --connect-to example.com:8000:%HOSTIP:%HTTPPORT --connect-to example.org:9000:%HOSTIP:%HTTPPORT --location",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "httpsig"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "RFC9421",
+     "httpsig"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "httpsig: HMAC-SHA256 not sent to a redirect's other origin",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3263,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data2",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "SRCDIR",
+     "TESTNUMBER",
+     "TESTNUMBER0002",
+     "VERSION"
+    ]
+   },
+   {
+    "attr_values": [
+     "crlf=headers",
+     "nocheck=yes"
+    ],
+    "bytes": 1539,
+    "command": "\"http://example.com:8000/%TESTNUMBER/resource?a=1\" --httpsig-algo hmac-sha256 --httpsig-key @%SRCDIR/data/data-httpsig-hmac-sha256.key --httpsig-keyid \"shared-key-1\" --connect-to example.com:8000:%HOSTIP:%HTTPPORT --connect-to example.org:9000:%HOSTIP:%HTTPPORT --location-trusted",
+    "command_option": null,
+    "command_type": null,
+    "disable": [],
+    "eol": "lf",
+    "errorcode": null,
+    "features": [
+     "Debug",
+     "httpsig"
+    ],
+    "has_command": true,
+    "has_precheck": false,
+    "keywords": [
+     "HTTP",
+     "RFC9421",
+     "httpsig"
+    ],
+    "killserver": [],
+    "macros": [],
+    "name": "httpsig: HMAC-SHA256 sent to a trusted redirect's origin",
+    "non_ascii": false,
+    "nul": false,
+    "number": 3264,
+    "parts": [
+     "client/command",
+     "client/features",
+     "client/name",
+     "client/server",
+     "info/keywords",
+     "reply/data",
+     "reply/data2",
+     "verify/protocol"
+    ],
+    "postcheck": false,
+    "precheck": null,
+    "runner": "curl",
+    "server_names": [
+     "http"
+    ],
+    "servers": [
+     "http"
+    ],
+    "setenv": [],
+    "tool": null,
+    "tool_name": null,
+    "variables": [
+     "HOSTIP",
+     "HTTPPORT",
+     "SRCDIR",
+     "TESTNUMBER",
+     "TESTNUMBER0002",
      "VERSION"
     ]
    },
@@ -146201,12 +146543,12 @@
    "GTT": 1,
    "H2CVER": 2,
    "HOST6IP": 22,
-   "HOSTIP": 1842,
+   "HOSTIP": 1848,
    "HTTP2PORT": 5,
    "HTTP2TLSPORT": 6,
    "HTTP3PORT": 4,
    "HTTP6PORT": 14,
-   "HTTPPORT": 1165,
+   "HTTPPORT": 1171,
    "HTTPS": 3,
    "HTTPSPORT": 68,
    "HTTPSPROXYPORT": 6,
@@ -146214,7 +146556,7 @@
    "IMAPPORT": 72,
    "IMAPSPORT": 1,
    "LIBTESTS": 5,
-   "LOGDIR": 637,
+   "LOGDIR": 639,
    "LT1972": 1,
    "LTA": 2,
    "LTB27397": 6,
@@ -146239,7 +146581,7 @@
    "SMTPSPORT": 1,
    "SOCKSPORT": 27,
    "SOCKSUNIXPATH": 3,
-   "SRCDIR": 96,
+   "SRCDIR": 98,
    "SSHKEYALGO": 1,
    "SSHPORT": 58,
    "SSHSRVMD5": 2,
@@ -146252,11 +146594,11 @@
    "TABTRUE": 4,
    "TELNETPORT": 2,
    "TESTNUM": 1,
-   "TESTNUMBER": 1812,
+   "TESTNUMBER": 1818,
    "TESTNUMBER0000": 1,
    "TESTNUMBER00001": 1,
    "TESTNUMBER0001": 83,
-   "TESTNUMBER0002": 186,
+   "TESTNUMBER0002": 188,
    "TESTNUMBER0003": 30,
    "TESTNUMBER0004": 10,
    "TESTNUMBER0005": 2,
@@ -146276,7 +146618,7 @@
    "TFTPPORT": 18,
    "USER": 54,
    "VALUE2": 2,
-   "VERSION": 888
+   "VERSION": 893
   }
  },
  "generated-by": "inventory/gen/tests.py",
@@ -147628,8 +147970,14 @@
   "tests/data/test3234",
   "tests/data/test3235",
   "tests/data/test3236",
+  "tests/data/test3237",
   "tests/data/test325",
   "tests/data/test326",
+  "tests/data/test3260",
+  "tests/data/test3261",
+  "tests/data/test3262",
+  "tests/data/test3263",
+  "tests/data/test3264",
   "tests/data/test327",
   "tests/data/test3271",
   "tests/data/test328",

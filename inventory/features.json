@@ -1,5 +1,5 @@
 {
- "c-commit": "af01ea6963e393dd401df4279838bf7f9ada0df5",
+ "c-commit": "7f413e222f0eee750e112ad7881808f6b4408724",
  "data": {
   "backends": {
    "all": [
@@ -8159,7 +8159,7 @@
     "NTLM_WB"
    ],
    "table-missing-from-docs": [],
-   "test-feature-blocks": 1035,
+   "test-feature-blocks": 1037,
    "test-feature-vocabulary": [
     {
      "name": "--libcurl",
@@ -8187,7 +8187,7 @@
       ],
       "regex": "\\bDebug"
      },
-     "tests": 148
+     "tests": 150
     },
     {
      "name": "DoH",
@@ -8669,7 +8669,7 @@
      "origin": {
       "kind": "src/curlinfo.c"
      },
-     "tests": 26
+     "tests": 28
     },
     {
      "name": "imap",
@@ -8983,7 +8983,7 @@
      "tests": 2
     }
    ],
-   "test-files-with-features": 1029,
+   "test-files-with-features": 1031,
    "tool-added-features": [
     {
      "bit": null,

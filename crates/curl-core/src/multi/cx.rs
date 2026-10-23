@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::components::Component;
 use crate::conn::io::{Family, Net, PollFd, ResolveFailure, Sock, Socket, SocketKey, SocketPoll};
 use crate::conn::layer::LayerCx;
+use crate::conn::shutdown::{Exits, ShutdownSet, WithSet};
 use crate::conn::{Caches, ConnCx, DnsCache, Home, Names, Opened, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
@@ -24,7 +25,7 @@ use crate::time::{Clock, Instant};
 
 use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
-use super::sockets::{Change, SocketTable, SocketWhat, UnknownSocket};
+use super::sockets::{Change, SocketFor, SocketOwner, SocketTable, SocketWhat, UnknownSocket};
 use super::state::StepCx;
 use super::{
     Abort, AddError, Census, ConnLimits, Counts, Host, Life, Message, Multi, MultiEvents, Removed,
@@ -38,6 +39,8 @@ pub(crate) struct EngineRest<'a, H: Host> {
     /// The transfers, and what the socket callback reaches.
     pub(super) tell: Telling<'a, H>,
     pub(super) caches: &'a mut Caches,
+    /// The connections shutting down.
+    pub(super) shutdowns: &'a mut ShutdownSet,
     /// The transfer last let look for a connection again.
     pub(super) pending_after: &'a mut Option<TransferId>,
     pub(super) net: &'a mut dyn Net,
@@ -51,6 +54,9 @@ pub(crate) struct EngineRest<'a, H: Host> {
     pub(super) now: Instant,
     /// For the calendar time, which only a date needs.
     pub(super) clock: &'a dyn Clock,
+    /// The tests' layer each connection set up is given.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(super) linger: Option<crate::conn::layer::Linger>,
 }
 
 impl<H: Host> EngineRest<'_, H> {
@@ -59,6 +65,7 @@ impl<H: Host> EngineRest<'_, H> {
         EngineRest {
             tell: self.tell.reborrow(),
             caches: &mut *self.caches,
+            shutdowns: &mut *self.shutdowns,
             pending_after: &mut *self.pending_after,
             net: &mut *self.net,
             ipv6_works: self.ipv6_works,
@@ -66,6 +73,8 @@ impl<H: Host> EngineRest<'_, H> {
             events: &mut *self.events,
             now: self.now,
             clock: self.clock,
+            #[cfg(any(test, feature = "test-util"))]
+            linger: self.linger,
         }
     }
 
@@ -85,34 +94,37 @@ impl<H: Host> EngineRest<'_, H> {
         })
     }
 
-    /// Run `section` for transfer `who` on the pool `home` names, with the
-    /// network to use and `home` itself, which leases made there carry: a
-    /// share's, under its lock with the application told around it, or
-    /// the multi's own. The sockets the section closes are closed once the
-    /// share's lock is let go, as closing one tells the socket callback;
-    /// the section closes no more than `CloseLater::FEW` (a lease given
-    /// back), as room for more is not made.
+    /// Run `section` for transfer `who` on the pool `home` names, with
+    /// where the connections it lets go go (the network to close them
+    /// through, and the multi's set for those shutting down) and `home`
+    /// itself, which leases made there carry: a share's, under its lock
+    /// with the application told around it, or the multi's own. The
+    /// sockets the section closes are closed once the share's lock is let
+    /// go, as closing one tells the socket callback; the section closes no
+    /// more than `CloseLater::FEW` (a lease given back), as room for more
+    /// is not made. A connection that joined the set is announced after.
     pub(crate) fn pool_section<R>(
         &mut self,
         who: TransferId,
         home: &Home,
-        section: impl FnOnce(&mut Pool, &mut dyn Net, &Home) -> R,
+        section: impl FnOnce(&mut Pool, &mut dyn Exits, &Home) -> R,
     ) -> R {
-        self.section_on(who, home, Room::Few, |pool, net, here| {
-            Ok(section(pool, net, here))
+        self.section_on(who, home, Room::Few, |pool, exits, here| {
+            Ok(section(pool, exits, here))
         })
         .expect("no room is made for a lease given back")
     }
 
     /// As `pool_section`, for a section that may close any of the pool's
-    /// idle connections (a search, an addition): room to hold the socket
-    /// of each connection in a share's pool is made under its lock before
-    /// the section runs, which does not run without it.
+    /// idle connections and of the set's (a search, an addition): room to
+    /// hold the socket of each in a share's pool, and in the set, is made
+    /// under its lock before the section runs, which does not run without
+    /// it.
     pub(crate) fn pool_search<R>(
         &mut self,
         who: TransferId,
         home: &Home,
-        section: impl FnOnce(&mut Pool, &mut dyn Net, &Home) -> Result<R, OutOfMemory>,
+        section: impl FnOnce(&mut Pool, &mut dyn Exits, &Home) -> Result<R, OutOfMemory>,
     ) -> Result<R, OutOfMemory> {
         self.section_on(who, home, Room::EachConnection, section)
     }
@@ -122,7 +134,7 @@ impl<H: Host> EngineRest<'_, H> {
         who: TransferId,
         home: &Home,
         room: Room,
-        section: impl FnOnce(&mut Pool, &mut dyn Net, &Home) -> Result<R, OutOfMemory>,
+        section: impl FnOnce(&mut Pool, &mut dyn Exits, &Home) -> Result<R, OutOfMemory>,
     ) -> Result<R, OutOfMemory> {
         let watch = self
             .tell
@@ -132,30 +144,67 @@ impl<H: Host> EngineRest<'_, H> {
             .easy
             .share_watch
             .clone();
+        let max_total = self.tell.limits.max_total;
         let mut net = Announcing {
             net: &mut *self.net,
             tell: self.tell.reborrow(),
             events: &mut *self.events,
-            who,
+            who: SocketFor::Transfer(who),
         };
-        let share = match home {
-            Home::Multi => return section(&mut self.caches.pool, &mut net, home),
-            Home::Share(share) => share,
+        let set = &mut *self.shutdowns;
+        let r = match home {
+            Home::Multi => {
+                let mut exits = WithSet {
+                    net: &mut net,
+                    set,
+                    max_total,
+                    multi_pool: None,
+                };
+                section(&mut self.caches.pool, &mut exits, home)
+            }
+            Home::Share(share) => {
+                // The set is capped by the multi's own pool, whichever
+                // pool a connection left (conncache.c:236).
+                let multi_pool = Some(self.caches.pool.len());
+                watched(watch.as_deref(), share, Kind::Connections, || {
+                    let mut later = CloseLater::new(&mut net);
+                    let r = {
+                        let mut pool = share.pool();
+                        if room == Room::EachConnection {
+                            let each = usize::try_from(pool.len()).expect("a pool's size fits");
+                            later.make_room(each + set.len())?;
+                        }
+                        let mut exits = WithSet {
+                            net: &mut later,
+                            set,
+                            max_total,
+                            multi_pool,
+                        };
+                        section(&mut pool, &mut exits, home)
+                    };
+                    // The share's lock is let go.
+                    later.close();
+                    r
+                })
+            }
         };
-        watched(watch.as_deref(), share, Kind::Connections, || {
-            let mut later = CloseLater::new(&mut net);
-            let r = {
-                let mut pool = share.pool();
-                if room == Room::EachConnection {
-                    let each = usize::try_from(pool.len()).expect("a pool's size fits");
-                    later.make_room(each)?;
-                }
-                section(&mut pool, &mut later, home)
-            };
-            // The share's lock is let go.
-            later.close();
-            r
-        })
+        // Told after the section, and out of a share's lock, but before
+        // the transfer is assessed again (`cshutdn_update_ev`).
+        self.announce_closing();
+        r
+    }
+
+    /// Tell the socket callback what each connection that joined the set
+    /// waits on, as the multi's own (`cshutdn_update_ev`): a socket its
+    /// transfer waited on for the same is not told again. One the
+    /// callback refuses, or that no room is had for, is closed.
+    pub(crate) fn announce_closing(&mut self) {
+        announce_closing(
+            &mut *self.shutdowns,
+            &mut *self.net,
+            &mut self.tell,
+            &mut *self.events,
+        );
     }
 
     /// The names transfer `who`'s setups look up and keep, with the
@@ -170,7 +219,7 @@ impl<H: Host> EngineRest<'_, H> {
             net: &mut *self.net,
             tell: self.tell.reborrow(),
             events: &mut *self.events,
-            who,
+            who: SocketFor::Transfer(who),
         };
         (net, names(&mut self.caches.dns, kept))
     }
@@ -182,7 +231,38 @@ impl<H: Host> EngineRest<'_, H> {
             net: &mut *self.net,
             tell: self.tell.reborrow(),
             events: &mut *self.events,
-            who,
+            who: SocketFor::Transfer(who),
+        }
+    }
+}
+
+/// As `EngineRest::announce_closing`, on the multi's parts.
+pub(super) fn announce_closing<H: Host>(
+    set: &mut ShutdownSet,
+    net: &mut dyn Net,
+    tell: &mut Telling<'_, H>,
+    events: &mut dyn MultiEvents<H>,
+) {
+    while let Some((id, wants)) = set.next_unannounced() {
+        if !events.wants_sockets() {
+            continue;
+        }
+        let mut changes = Vec::new();
+        let owner = SocketOwner::Conn(id);
+        let told = tell
+            .sockets
+            .assess(owner, wants.as_slice(), &mut changes)
+            .is_ok()
+            && self::tell(&changes, SocketFor::Multi, events, tell).is_ok();
+        if !told {
+            // C closes it ("update events failed").
+            let mut net = Announcing {
+                net: &mut *net,
+                tell: tell.reborrow(),
+                events: &mut *events,
+                who: SocketFor::Multi,
+            };
+            set.close_one(id, &mut net);
         }
     }
 }
@@ -400,8 +480,25 @@ pub(crate) struct Announcing<'a, H: Host> {
     net: &'a mut dyn Net,
     tell: Telling<'a, H>,
     events: &'a mut dyn MultiEvents<H>,
-    /// The transfer the pool acts for.
-    who: TransferId,
+    /// Whom the pool acts for.
+    who: SocketFor,
+}
+
+impl<'a, H: Host> Announcing<'a, H> {
+    /// The network as the multi's own work closes through it: a
+    /// connection's shutdown.
+    pub(super) fn multi(
+        net: &'a mut dyn Net,
+        tell: Telling<'a, H>,
+        events: &'a mut dyn MultiEvents<H>,
+    ) -> Announcing<'a, H> {
+        Announcing {
+            net,
+            tell,
+            events,
+            who: SocketFor::Multi,
+        }
+    }
 }
 
 impl<H: Host> Net for Announcing<'_, H> {
@@ -434,10 +531,16 @@ impl<H: Host> Net for Announcing<'_, H> {
 
 impl<H: Host> Announcing<'_, H> {
     fn forget(&mut self, key: SocketKey) {
+        // A connection's in the set is the multi's own, whoever closes it.
+        let who = if self.tell.sockets.has_conn(key) {
+            SocketFor::Multi
+        } else {
+            self.who
+        };
         if let Some(change) = self.tell.sockets.forget(key) {
             // An abort leaves the multi dead; the socket closes anyway, as
             // C ignores the callback's answer here.
-            let _ = tell(&[change], self.who, &mut *self.events, &mut self.tell);
+            let _ = tell(&[change], who, &mut *self.events, &mut self.tell);
         }
     }
 }
@@ -468,12 +571,12 @@ impl<H: Host> Telling<'_, H> {
     }
 }
 
-/// Tell the socket callback of `changes` for transfer `who`, in order,
+/// Tell the socket callback of `changes` for `who`, in order,
 /// recording each as told; an abort leaves the multi dead and the rest
 /// untold (`mev_sh_entry_update`, `mev_forget_socket`).
 pub(super) fn tell<H: Host>(
     changes: &[Change<H::Socket>],
-    who: TransferId,
+    who: SocketFor,
     events: &mut dyn MultiEvents<H>,
     t: &mut Telling<'_, H>,
 ) -> Result<(), Abort> {

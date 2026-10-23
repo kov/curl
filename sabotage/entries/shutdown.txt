@@ -1,0 +1,174 @@
+# Connections shutting down in the multi's set (crates/curl-core/src/conn/shutdown.rs).
+
+=== an aborted transfer's connection is shut down and kept
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::an_aborted_transfer_s_connection_closes_at_once
+--- old
+    if aborted {
+        close_now(conn, net);
+--- new
+    if false {
+        close_now(conn, net);
+
+=== a connection whose shutdown waits is closed instead of kept
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::perform_moves_each_shutdown_on
+--- old
+    match linger.filter(|_| may_linger) {
+--- new
+    match linger.filter(|_| false) {
+
+=== a share's connection given back is closed instead of joining the multi's set
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::shutdown_tests::a_share_s_closing_connection_joins_the_releasing_multi_s_set
+--- old
+                discard(conn, finish.premature, true, left, exits, now);
+--- new
+                let lingers = matches!(here, Home::Multi);
+                discard(conn, finish.premature, lingers, left, exits, now);
+
+=== a share's pool keeps what it evicts shutting down
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::shutdown_tests::an_evicted_connection_shuts_down_where_its_pool_lets_it
+--- old
+            Home::Share(_) => Evicted::Closed,
+--- new
+            Home::Share(_) => Evicted::Linger,
+
+=== closing connections do not count toward the limits
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::shutdown_tests::closing_connections_count_toward_the_limits
+--- old
+        let shutdowns = shutdowns_over(exits, Some(to), live, max);
+--- new
+        let shutdowns = 0;
+
+=== closing connections do not count toward the total limit
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::shutdown_tests::closing_connections_count_toward_the_limits
+--- old
+        let shutdowns = shutdowns_over(exits, None, live, max.get());
+--- new
+        let shutdowns = 0;
+
+=== a closing connection to another host counts toward a host's limit
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core multi::shutdown_tests::a_closing_connection_counts_only_toward_its_own_host
+--- old
+        Some(to) => set.count_to(to),
+--- new
+        Some(_) => u32::try_from(set.len()).expect("a set's size fits"),
+
+=== a full set closes its newest, not its oldest
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::a_full_set_closes_its_oldest
+--- old
+            self.close_oldest(None, 1, net);
+--- new
+            if let Some(e) = self.conns.pop() {
+                self.closed(e, net);
+            }
+
+=== a shutdown never runs out of time
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::the_shutdown_deadline_is_the_multi_s_own_row
+--- old
+        let spent = whole_ms(now.since(self.conn.created)).saturating_sub(self.started_ms);
+--- new
+        let spent = 0u64;
+
+=== the set's deadline is not one of the multi's
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::shutdown_tests::the_shutdown_deadline_is_the_multi_s_own_row
+--- old
+        match transfers.into_iter().chain(self.shutdowns.deadline()).min() {
+--- new
+        match transfers.into_iter().min() {
+
+=== the set's deadline coming does not wake it
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::shutdown_tests::the_shutdown_deadline_is_the_multi_s_own_row
+--- old
+        if self.shutdowns.expire(now) {
+            self.shutdowns.mark_dirty();
+        }
+--- new
+        self.shutdowns.expire(now);
+
+=== perform does not move the shutdowns on
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::shutdown_tests::perform_moves_each_shutdown_on
+--- old
+        // The connections shutting down first, as C's internal handle is
+        // the first it runs.
+        self.drive_shutdowns(now, ev);
+--- new
+
+=== an event on a closing connection's socket does not run the set
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::shutdown_tests::a_closing_connection_owns_its_socket_until_the_set_closes_it
+--- old
+                        SocketOwner::Conn(_) => self.shutdowns.mark_dirty(),
+--- new
+                        SocketOwner::Conn(_) => {}
+
+=== a connection joining the set does not take its socket over
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::shutdown_tests::a_closing_connection_owns_its_socket_until_the_set_closes_it
+--- old
+        // Told after the section, and out of a share's lock, but before
+        // the transfer is assessed again (`cshutdn_update_ev`).
+        self.announce_closing();
+--- new
+
+=== a closing connection's socket is removed as the closing transfer's
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::shutdown_tests::closing_connections_count_toward_the_limits
+--- old
+        let who = if self.tell.sockets.has_conn(key) {
+--- new
+        let who = if false {
+
+=== waits do not poll the closing connections' sockets
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::shutdown_tests::a_closing_connection_owns_its_socket_until_the_set_closes_it
+--- old
+    for (socket, events) in set.pollsets() {
+        f(socket, events);
+    }
+--- new
+
+=== the cleanup leaves the closing connections open
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::shutdown_tests::cleanup_closes_every_connection_through_its_own_closer
+--- old
+        self.shutdowns.close_all(&mut net);
+        // Nothing is left to schedule.
+--- new
+        std::mem::forget(std::mem::take(&mut self.shutdowns));
+        // Nothing is left to schedule.
+
+=== a layer's shutdown starts before the one above it is done
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core conn::shutdown::tests::layers_shut_down_from_the_top_one_at_a_time
+--- old
+            if top[0].shutdown(cx, below)? == Handshake::Waiting {
+                return Ok(Handshake::Waiting);
+            }
+--- new
+            let _ = top[0].shutdown(cx, below)?;
+
+=== the socket function hears a closing connection's socket with no handle
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_closing_connection_s_socket_is_removed_by_the_internal_handle
+--- old
+            SocketFor::Multi => self.multi.admin.as_c(),
+--- new
+            SocketFor::Multi => ptr::null_mut(),
+
+=== curl_multi_cleanup closes the connections without the socket function
+file: crates/curl-sys-abi/src/multi.rs
+witness: curl-sys-abi handle_tests::a_closing_connection_s_socket_is_removed_by_the_internal_handle
+--- old
+    core.close_connections(&mut ev);
+--- new

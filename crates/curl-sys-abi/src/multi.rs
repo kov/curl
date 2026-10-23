@@ -22,7 +22,8 @@ use curl_core::error::MultiErrorKind;
 use curl_core::id::ArenaPolicy;
 use curl_core::multi::{
     Abort, ConnLimits, Env, EventCx, Host, Message, Multi, MultiEvents, Notification, NotifyCx,
-    NotifyKind, SocketEvent, SocketWhat, TimerChange, TransferId, UnknownSocket, WaitMode,
+    NotifyKind, SocketEvent, SocketFor, SocketWhat, TimerChange, TransferId, UnknownSocket,
+    WaitMode,
 };
 use curl_core::time::SystemClock;
 
@@ -68,8 +69,9 @@ pub(crate) struct ShimMulti {
     core: UnsafeCell<Multi<CHost>>,
     waker: Option<TryArc<Waker>>,
     cb: Cell<MultiCallbacks>,
-    /// The handle a notification about the multi itself names (C's
-    /// `multi->admin`).
+    /// The handle a notification about the multi itself names, and the
+    /// socket callback a socket of the multi's own work, a connection
+    /// shutting down (C's `multi->admin`).
     admin: ShimEasy,
 }
 
@@ -265,7 +267,7 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
     fn socket(
         &mut self,
         cx: &mut EventCx<'_, CHost>,
-        who: TransferId,
+        who: SocketFor,
         s: SocketKey,
         what: SocketWhat,
         assigned: Option<*mut c_void>,
@@ -278,7 +280,10 @@ impl MultiEvents<CHost> for ShimEvents<'_> {
             SocketWhat::InOut => ffi::CURL_POLL_INOUT,
             SocketWhat::Remove => ffi::CURL_POLL_REMOVE,
         };
-        let easy: *mut CURL = cx.owner(who).map_or(ptr::null_mut(), |e| e.as_ptr().cast());
+        let easy: *mut CURL = match who {
+            SocketFor::Transfer(id) => cx.owner(id).map_or(ptr::null_mut(), |e| e.as_ptr().cast()),
+            SocketFor::Multi => self.multi.admin.as_c(),
+        };
         let socketp = assigned.unwrap_or(ptr::null_mut());
         let frame = Frame::Event(NonNull::from(cx).cast());
         // `cx` is not used again until `lend` returns.
@@ -306,7 +311,7 @@ impl MultiEvents<CHost> for Cleanup<'_> {
     fn socket(
         &mut self,
         cx: &mut EventCx<'_, CHost>,
-        who: TransferId,
+        who: SocketFor,
         s: SocketKey,
         what: SocketWhat,
         assigned: Option<*mut c_void>,
@@ -429,6 +434,9 @@ pub unsafe extern "C" fn curl_multi_cleanup(m: *mut CURLM) -> CURLMcode {
         // SAFETY: a transfer's owner is a live handle while it is added.
         unsafe { removed.owner.as_ref() }.return_home(removed.easy);
     }
+    // Then its connections, the socket callback told of each socket as
+    // the multi's own (`Curl_cpool_destroy`, `Curl_cshutdn_destroy`).
+    core.close_connections(&mut ev);
     drop(entry);
     // SAFETY: made by `boxed`; the caller does not use it again.
     unsafe { ShimMulti::free(NonNull::from(multi)) };

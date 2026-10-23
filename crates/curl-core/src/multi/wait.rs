@@ -46,7 +46,7 @@ impl<H: Host> Multi<H> {
         let internal = self.multi_timeout(now, ev);
         let timeout = internal.map_or(max, |t| t.min(max));
         let mut wanted = 0;
-        pollsets(&self.slots, |_, _| wanted += 1);
+        pollsets(&self.slots, &self.shutdowns, |_, _| wanted += 1);
         // The waker is watched when the wait will be one (multi.c:1574).
         let watch_waker = mode == WaitMode::Poll || wanted > 0 || !extra.is_empty();
         let waker_watched = self.waker.is_some() && watch_waker;
@@ -58,7 +58,7 @@ impl<H: Host> Multi<H> {
         // A few entries are kept on the stack, more in memory of their
         // own, as C's `a_few_on_stack`: a loop of waits allocates nothing.
         let mut first = None;
-        pollsets(&self.slots, |s, events| {
+        pollsets(&self.slots, &self.shutdowns, |s, events| {
             first.get_or_insert((s, events));
         });
         let mut few_sockets;
@@ -68,7 +68,7 @@ impl<H: Host> Multi<H> {
             Some((s, events)) if wanted <= ON_STACK => {
                 few_sockets = [(); ON_STACK].map(|()| SocketPoll::new(s, events));
                 let mut at = 0;
-                pollsets(&self.slots, |s, events| {
+                pollsets(&self.slots, &self.shutdowns, |s, events| {
                     few_sockets[at] = SocketPoll::new(s, events);
                     at += 1;
                 });
@@ -76,7 +76,7 @@ impl<H: Host> Multi<H> {
             }
             Some(_) => {
                 more_sockets.try_reserve_exact(wanted).map_err(oom)?;
-                pollsets(&self.slots, |s, events| {
+                pollsets(&self.slots, &self.shutdowns, |s, events| {
                     more_sockets
                         .try_push(SocketPoll::new(s, events))
                         .expect("reserved");
@@ -174,7 +174,7 @@ impl<H: Host> Multi<H> {
         for _ in watched {
             found.try_push(None).expect("reserved");
         }
-        pollsets(&self.slots, |s, _| {
+        pollsets(&self.slots, &self.shutdowns, |s, _| {
             let key = s.key();
             if let Some(at) = watched.iter().position(|&(k, _)| k == key) {
                 found[at].get_or_insert(s);
@@ -281,7 +281,7 @@ impl<H: Host> MultiEvents<H> for EventTable {
     fn socket(
         &mut self,
         _: &mut EventCx<'_, H>,
-        _: TransferId,
+        _: super::SocketFor,
         s: SocketKey,
         what: SocketWhat,
         _: Option<H::Socket>,

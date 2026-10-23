@@ -9,6 +9,25 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::TransferId;
 use crate::conn::io::{Events, Socket, SocketKey};
+use crate::conn::shutdown::ClosingId;
+
+/// Who waits on a socket: a transfer, or a connection shutting down in
+/// the multi's set, which owns its socket once no transfer has it (C's
+/// `mev_sh_entry`, its transfers and its connection).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SocketOwner {
+    Transfer(TransferId),
+    Conn(ClosingId),
+}
+
+/// Whom the socket callback is told a socket is for: a transfer, or the
+/// multi's own work, a connection shutting down (C passes its internal
+/// handle).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocketFor {
+    Transfer(TransferId),
+    Multi,
+}
 
 /// The most sockets a transfer waits on at once: a connection being set
 /// up races up to six addresses, and a resolver may add its own.
@@ -119,8 +138,8 @@ pub(crate) struct Change<S> {
 #[derive(Debug)]
 struct Entry<S> {
     key: SocketKey,
-    /// The transfers waiting on the socket, and for what.
-    users: Vec<(TransferId, Events)>,
+    /// Who waits on the socket, and for what.
+    users: Vec<(SocketOwner, Events)>,
     /// What the application was last told, if anything.
     told: Option<Events>,
     assigned: Option<S>,
@@ -146,12 +165,12 @@ impl<S: Copy> SocketTable<S> {
         }
     }
 
-    /// Transfer `id` now waits on `wants` (`mev_pollset_diff`): record it,
-    /// and add to `changes` what the application is to hear, the sockets
-    /// waited on first in `wants`'s order, then those given up.
+    /// `id` now waits on `wants` (`mev_pollset_diff`): record it, and add
+    /// to `changes` what the application is to hear, the sockets waited on
+    /// first in `wants`'s order, then those given up.
     pub(crate) fn assess(
         &mut self,
-        id: TransferId,
+        id: SocketOwner,
         wants: &[(SocketKey, Events)],
         changes: &mut Vec<Change<S>>,
     ) -> Result<(), OutOfMemory> {
@@ -226,8 +245,8 @@ impl<S: Copy> SocketTable<S> {
         }
     }
 
-    /// The transfers waiting on `key`, in the order they began to.
-    pub(crate) fn users(&self, key: SocketKey) -> impl Iterator<Item = TransferId> + '_ {
+    /// Who waits on `key`, in the order they began to.
+    pub(crate) fn users(&self, key: SocketKey) -> impl Iterator<Item = SocketOwner> + '_ {
         self.row(key)
             .into_iter()
             .flat_map(|row| self.entries[row].users.iter().map(|&(id, _)| id))
@@ -245,9 +264,15 @@ impl<S: Copy> SocketTable<S> {
         self.row(key).and_then(|row| self.entries[row].assigned)
     }
 
-    /// Every transfer waiting on a socket, and the socket.
+    /// Whether a connection shutting down waits on `key`: its socket is
+    /// the multi's own then, whoever closes it.
+    pub(crate) fn has_conn(&self, key: SocketKey) -> bool {
+        self.users(key).any(|u| matches!(u, SocketOwner::Conn(_)))
+    }
+
+    /// Everyone waiting on a socket, and the socket.
     #[cfg(debug_assertions)]
-    pub(crate) fn each_user(&self, mut f: impl FnMut(TransferId, SocketKey)) {
+    pub(crate) fn each_user(&self, mut f: impl FnMut(SocketOwner, SocketKey)) {
         for entry in &self.entries {
             for &(id, _) in &entry.users {
                 f(id, entry.key);
@@ -336,12 +361,12 @@ mod tests {
         assert_eq!(Wants::NONE.as_slice(), []);
     }
 
-    fn ids() -> (TransferId, TransferId) {
+    fn ids() -> (SocketOwner, SocketOwner) {
         let mut arena: Arena<(), super::super::Transfer> =
             Arena::new(ArenaPolicy::new(4, 0).unwrap()).unwrap();
         (
-            arena.reserve().unwrap().fill(()),
-            arena.reserve().unwrap().fill(()),
+            SocketOwner::Transfer(arena.reserve().unwrap().fill(())),
+            SocketOwner::Transfer(arena.reserve().unwrap().fill(())),
         )
     }
 

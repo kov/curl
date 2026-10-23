@@ -26,6 +26,7 @@ use super::io::{
     Closer, Connect, Events, Family, Net, ResolveFailure, Sock, Socket, SocketOption, SocketPoll,
 };
 use super::layer::LayerCx;
+use super::shutdown::ConnSettings;
 use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::components::Component;
 use crate::error::ErrorKind;
@@ -47,6 +48,8 @@ pub(crate) struct ConnectMachine {
     redials: u8,
     /// What closes each socket it opens: the creating transfer's.
     closer: Closer,
+    /// What the connection keeps of the creating transfer's settings.
+    settings: ConnSettings,
 }
 
 #[derive(Debug)]
@@ -283,6 +286,9 @@ pub(crate) struct Setup {
     /// A layer of the tests' to put on the connection once it is up.
     #[cfg(test)]
     pub(crate) layer: Option<fn() -> Box<dyn super::layer::Layer>>,
+    /// The tests' layer whose shutdown waits, put on as `layer` is.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) linger: Option<super::layer::Linger>,
 }
 
 /// Where a name's answer came from.
@@ -449,6 +455,7 @@ impl ConnectMachine {
         route: Tcp,
         created: Instant,
         closer: Closer,
+        settings: ConnSettings,
     ) -> ConnectMachine {
         ConnectMachine {
             number,
@@ -457,6 +464,7 @@ impl ConnectMachine {
             stage: Stage::Resolving,
             redials: 0,
             closer,
+            settings,
         }
     }
 
@@ -536,9 +544,7 @@ impl ConnectMachine {
         };
         let at = d.connected_at;
         let mut conn = Self::conn(
-            self.number,
-            self.route,
-            self.created,
+            (self.number, self.route, self.created, self.settings),
             d.stream,
             d.remote,
             at,
@@ -842,14 +848,22 @@ impl ConnectMachine {
             });
             return Ok(Drove::Connecting(self, Progress::Dialed));
         }
-        let (number, route, created) = (self.number, self.route, self.created);
-        #[cfg_attr(not(test), expect(unused_mut, reason = "tests push a layer"))]
+        let made = (self.number, self.route, self.created, self.settings);
+        #[cfg_attr(
+            not(any(test, feature = "test-util")),
+            expect(unused_mut, reason = "tests push a layer")
+        )]
         let mut stream = Stream::new(won.socket);
         #[cfg(test)]
         if let Some(layer) = setup.layer {
             stream.layers_mut().push(layer()).expect("a test's memory");
         }
-        let conn = Self::conn(number, route, created, stream, won.remote, now);
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(how) = setup.linger {
+            let layer = super::layer::Lingering::boxed(how).expect("a test's memory");
+            stream.layers_mut().push(layer).expect("a test's memory");
+        }
+        let conn = Self::conn(made, stream, won.remote, now);
         Ok(Drove::Established(conn))
     }
 
@@ -888,14 +902,15 @@ impl ConnectMachine {
     }
     /// The connection set up over `stream` to `remote`, found connected
     /// at `at`.
+    /// The connection the setup `made` (its number, route, start and
+    /// settings) becomes over `stream`.
     fn conn(
-        number: ConnNumber,
-        route: Tcp,
-        created: Instant,
+        made: (ConnNumber, Tcp, Instant, ConnSettings),
         stream: Stream,
         remote: SocketAddr,
         at: Instant,
     ) -> Conn {
+        let (number, route, created, settings) = made;
         Conn {
             number,
             route: Route::Tcp(route),
@@ -908,6 +923,7 @@ impl ConnectMachine {
             socks5_authenticated: false,
             seen_version: None,
             close: false,
+            settings,
         }
     }
 
@@ -1274,7 +1290,13 @@ mod tests {
             ip,
             proxy: None,
         };
-        let mut m = ConnectMachine::new(ConnNumber(0), route, start, Closer::System);
+        let mut m = ConnectMachine::new(
+            ConnNumber(0),
+            route,
+            start,
+            Closer::System,
+            ConnSettings::DEFAULT,
+        );
         m.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(
                 TryArc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
@@ -1300,6 +1322,7 @@ mod tests {
                 socket: SocketSetup::PLAIN,
                 haproxy: false,
                 layer: None,
+                linger: None,
             };
             let mut cx = Plain {
                 net: &mut net,
@@ -1356,7 +1379,13 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
         };
-        let mut m = ConnectMachine::new(ConnNumber(0), route, clock.now(), Closer::System);
+        let mut m = ConnectMachine::new(
+            ConnNumber(0),
+            route,
+            clock.now(),
+            Closer::System,
+            ConnSettings::DEFAULT,
+        );
         let he = Duration::from_millis(200);
         let mut dns = DnsCache::default();
         let conn = loop {
@@ -1368,6 +1397,7 @@ mod tests {
                 socket: SocketSetup::PLAIN,
                 haproxy: false,
                 layer: None,
+                linger: None,
             };
             let mut cx = Plain {
                 net: &mut net,

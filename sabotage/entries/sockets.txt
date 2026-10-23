@@ -13,10 +13,9 @@ witness: curl-core multi::socket_tests::a_transfer_s_socket_is_announced_and_rem
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::socket_tests::a_transfer_s_socket_is_announced_and_removed
 --- old
-                for id in self.sockets.users(key) {
-                    self.dirty.insert(id.index());
-                }
+                        SocketOwner::Transfer(id) => self.dirty.insert(id.index()),
 --- new
+                        SocketOwner::Transfer(_) => {}
 
 === an announcement is not recorded as told
 file: crates/curl-core/src/multi/sockets.rs

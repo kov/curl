@@ -13,8 +13,9 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use super::chain::SetupPoint;
 use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Made, Progress, Setup};
 use super::dns::Answer;
-use super::io::{Closer, Events, Net, Socket};
+use super::io::{Closer, Events, Socket};
 use super::layer::{Alive, Silent};
+use super::shutdown::{ConnSettings, Exits, discard};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::share::Share;
@@ -484,36 +485,45 @@ impl Pool {
         route: Route,
         rules: ReuseRules,
         limits: AddLimits,
-        net: &mut dyn Net,
+        exits: &mut dyn Exits,
         now: Instant,
         notes: &mut Vec<PoolNote>,
     ) -> Result<Acquired, OutOfMemory> {
         if searches(&route, rules)
-            && let Some(lease) = self.find(here, &route, rules, net, now, notes)?
+            && let Some(lease) = self.find(here, &route, rules, exits, now, notes)?
         {
             return Ok(Acquired::Reused(lease));
         }
-        self.add(here, route, Closer::System, limits, net, now)
+        let settings = ConnSettings::DEFAULT;
+        self.add(here, route, Closer::System, settings, limits, exits, now)
     }
 
     /// A new connection for `route`, within `limits`, or none, for want
     /// of room (`Curl_cpool_add`); its lease is from `here`, the pool this
-    /// is.
+    /// is. It closes its sockets with `closer` and keeps `settings`, its
+    /// creating transfer's, whoever closes it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "C's `Curl_cpool_add` and what it captures"
+    )]
     pub(crate) fn add(
         &mut self,
         here: &Home,
         route: Route,
         closer: Closer,
+        settings: ConnSettings,
         limits: AddLimits,
-        net: &mut dyn Net,
+        exits: &mut dyn Exits,
         now: Instant,
     ) -> Result<Acquired, OutOfMemory> {
         // A connection without a network is added with no limits
         // (`Curl_cpool_add(data, needle, 0, 0)`).
-        if let Route::Tcp(tcp) = &route
-            && let Some(reason) = make_room(&mut self.conns, tcp.destination(), limits, net, now)
-        {
-            return Ok(Acquired::Wait(reason));
+        if let Route::Tcp(tcp) = &route {
+            let evicted = Evicted::of(here);
+            let to = tcp.destination();
+            if let Some(reason) = make_room(&mut self.conns, to, limits, evicted, exits, now) {
+                return Ok(Acquired::Wait(reason));
+            }
         }
         let number = ConnNumber(self.next_number);
         let leased = Leased {
@@ -532,8 +542,11 @@ impl Pool {
                 socks5_authenticated: false,
                 seen_version: None,
                 close: false,
+                settings,
             }),
-            Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer)),
+            Route::Tcp(tcp) => {
+                ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer, settings))
+            }
         };
         let id = self.conns.reserve()?.fill(Place::Leased(leased));
         self.next_number += 1;
@@ -554,7 +567,7 @@ impl Pool {
         here: &Home,
         route: &Route,
         rules: ReuseRules,
-        net: &mut dyn Net,
+        exits: &mut dyn Exits,
         now: Instant,
         notes: &mut Vec<PoolNote>,
     ) -> Result<Option<ConnLease>, OutOfMemory> {
@@ -563,7 +576,7 @@ impl Pool {
             .is_none_or(|at| now.since(at) >= Duration::from_secs(1))
         {
             self.last_prune = Some(now);
-            prune(&mut self.conns, rules, net, now);
+            prune(&mut self.conns, rules, exits, now);
         }
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
@@ -617,20 +630,22 @@ impl Pool {
                         notes.try_push(PoolNote::Dead(number))?;
                     }
                     notes.try_push(PoolNote::Closed(number))?;
-                    close(&mut self.conns, id, net);
+                    close(&mut self.conns, id, Evicted::Linger, exits, now);
                 }
             }
         }
         Ok(None)
     }
 
-    /// Close every connection no one leases (`Curl_cpool_destroy`).
-    pub(crate) fn close_idle(&mut self, net: &mut dyn Net) {
+    /// Discard every connection no one leases (`Curl_cpool_destroy`):
+    /// each shut down once, and kept by the multi's set behind `exits`
+    /// if that does not finish.
+    pub(crate) fn close_idle(&mut self, exits: &mut dyn Exits, now: Instant) {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
             if self.conns.get(id).and_then(Place::idle).is_some() {
-                close(&mut self.conns, id, net);
+                close(&mut self.conns, id, Evicted::Linger, exits, now);
             }
         }
     }
@@ -646,7 +661,7 @@ impl Pool {
         lease: ConnLease,
         finish: Finish,
         limit: Limit,
-        net: &mut dyn Net,
+        exits: &mut dyn Exits,
         now: Instant,
     ) -> Released {
         let (id, mut slot, home) = lease.into_parts();
@@ -670,7 +685,7 @@ impl Pool {
             conn.served = true;
             let number = conn.number;
             *self.conns.get_mut(id).expect("checked above") = Place::Idle(slot);
-            return match over_limit(&mut self.conns, limit, net, now) {
+            return match over_limit(&mut self.conns, limit, Evicted::of(here), exits, now) {
                 Some((full, closed)) if closed == Some(id) => Released::Evicted(full),
                 full => Released::Idle {
                     number,
@@ -682,19 +697,16 @@ impl Pool {
         let number = match slot {
             ConnSlot::Connecting(m) => {
                 let number = m.number();
-                m.close(net);
+                m.close(exits.parts().0);
                 number
             }
             ConnSlot::Open(conn) => {
                 // An aborted transfer's connection is not shut down
                 // (`cpool_discard_conn`).
-                let how = if finish.premature {
-                    Closing::Abort
-                } else {
-                    Closing::Clean
-                };
-                close_transport(conn.transport, how, net);
-                conn.number
+                let number = conn.number;
+                let left = self.conns.len();
+                discard(conn, finish.premature, true, left, exits, now);
+                number
             }
             ConnSlot::Failed(number) => number,
         };
@@ -745,7 +757,8 @@ pub(crate) struct Limit {
 fn over_limit(
     conns: &mut Arena<Place, ConnSlot>,
     limit: Limit,
-    net: &mut dyn Net,
+    evicted: Evicted,
+    exits: &mut dyn Exits,
     now: Instant,
 ) -> Option<(Full, Option<ConnId>)> {
     let (max, min_idle_ms) = match limit.max {
@@ -781,32 +794,40 @@ fn over_limit(
     }
     let closed = oldest.map(|(id, _)| id);
     if let Some(id) = closed {
-        close(conns, id, net);
+        close(conns, id, evicted, exits, now);
     }
     Some((Full { conns: count, max }, closed))
 }
 
-/// Make room for a connection to `to` within `limits`, closing idle ones
-/// longest unused, first among those to the same destination
-/// (`cpool_check_limits`); why there is none, if there is not. The
-/// closes trace nowhere, as C's go to its internal handle.
+/// Make room for a connection to `to` within `limits`
+/// (`cpool_check_limits`): past either limit, close the idle connections
+/// longest unused, first among those to the same destination, then the
+/// oldest shutting down in the multi's set, which count toward both; why
+/// there is none, if there is not. The closes trace nowhere, as C's go to
+/// its internal handle.
 fn make_room(
     conns: &mut Arena<Place, ConnSlot>,
     to: &Peer,
     limits: AddLimits,
-    net: &mut dyn Net,
+    evicted: Evicted,
+    exits: &mut dyn Exits,
     now: Instant,
 ) -> Option<WaitReason> {
     let to_host = |place: &Place| place.destination().is_some_and(|d| d.same_bundle(to));
     if let Some(max) = limits.max_host {
-        let live = count(conns, to_host);
-        for _ in max.get()..=live {
-            let Some(id) = oldest_idle(conns, to_host, now) else {
-                break;
-            };
-            close(conns, id, net);
+        let max = max.get();
+        let mut live = count(conns, to_host);
+        if live >= max {
+            for _ in max..=live {
+                let Some(id) = oldest_idle(conns, to_host, now) else {
+                    break;
+                };
+                close(conns, id, evicted, exits, now);
+            }
+            live = count(conns, to_host);
         }
-        if count(conns, to_host) >= max.get() {
+        let shutdowns = shutdowns_over(exits, Some(to), live, max);
+        if live + shutdowns >= max {
             return Some(WaitReason::HostLimit);
         }
     }
@@ -817,13 +838,36 @@ fn make_room(
             let Some(id) = oldest_idle(conns, any, now) else {
                 break;
             };
-            close(conns, id, net);
+            close(conns, id, evicted, exits, now);
         }
-        if count(conns, any) >= max.get() {
+        let live = count(conns, any);
+        let shutdowns = shutdowns_over(exits, None, live, max.get());
+        if live + shutdowns >= max.get() {
             return Some(WaitReason::TotalLimit(max));
         }
     }
     None
+}
+
+/// The connections shutting down in the multi's set (to `to`, if given)
+/// that are left once those past `max`, with the `live` ones, are closed,
+/// oldest first (`Curl_cshutdn_dest_count`, `Curl_cshutdn_count`,
+/// `Curl_cshutdn_close_oldest`).
+fn shutdowns_over(exits: &mut dyn Exits, to: Option<&Peer>, live: u32, max: u32) -> u32 {
+    let (net, linger) = exits.parts();
+    let Some(linger) = linger else {
+        return 0;
+    };
+    let set = linger.set;
+    let mut shutdowns = match to {
+        Some(to) => set.count_to(to),
+        None => u32::try_from(set.len()).expect("a set's size fits"),
+    };
+    if shutdowns > 0 && live + shutdowns >= max {
+        let over = live + shutdowns - max + 1;
+        shutdowns -= set.close_oldest(to, over, net);
+    }
+    shutdowns
 }
 
 /// The connections `which` picks, busy, idle or being set up. A failed
@@ -871,7 +915,12 @@ fn oldest_idle(
 
 /// Close the idle connections that are not healthy, saying nothing: C's
 /// prune traces to its internal handle (`cpool_prune_dead`).
-fn prune(conns: &mut Arena<Place, ConnSlot>, rules: ReuseRules, net: &mut dyn Net, now: Instant) {
+fn prune(
+    conns: &mut Arena<Place, ConnSlot>,
+    rules: ReuseRules,
+    exits: &mut dyn Exits,
+    now: Instant,
+) {
     let mut cursor = None;
     while let Some(id) = conns.next_after(cursor) {
         cursor = Some(id);
@@ -879,16 +928,45 @@ fn prune(conns: &mut Arena<Place, ConnSlot>, rules: ReuseRules, net: &mut dyn Ne
             && let Use::Idle { since } = conn.use_
             && health(conn, since, rules, now).is_err()
         {
-            close(conns, id, net);
+            close(conns, id, Evicted::Linger, exits, now);
         }
     }
 }
 
-/// Close the connection `id` names, which no one leases.
-fn close(conns: &mut Arena<Place, ConnSlot>, id: ConnId, net: &mut dyn Net) {
+/// What becomes of an idle connection a pool evicts to make room
+/// (`cpool_evict_conn`): a multi's goes as any it closes, into the
+/// multi's set if it shuts down slowly; a share's pool, which no multi
+/// owns, closes it after one try of its shutdown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Evicted {
+    Linger,
+    Closed,
+}
+
+impl Evicted {
+    fn of(here: &Home) -> Evicted {
+        match here {
+            Home::Multi => Evicted::Linger,
+            Home::Share(_) => Evicted::Closed,
+        }
+    }
+}
+
+/// Discard the idle connection `id` names (`cpool_conn_close`, or
+/// `cpool_evict_conn` as `evicted` says).
+fn close(
+    conns: &mut Arena<Place, ConnSlot>,
+    id: ConnId,
+    evicted: Evicted,
+    exits: &mut dyn Exits,
+    now: Instant,
+) {
     match conns.remove(id) {
         Some(Place::Idle(slot)) => match slot {
-            ConnSlot::Open(conn) => close_transport(conn.transport, Closing::Clean, net),
+            ConnSlot::Open(conn) => {
+                let left = conns.len();
+                discard(conn, false, evicted == Evicted::Linger, left, exits, now);
+            }
             _ => unreachable!("an idle connection is open"),
         },
         Some(Place::Leased(_)) => panic!("{id:?} is leased"),
@@ -946,30 +1024,6 @@ fn past(elapsed: Duration, max: Duration) -> bool {
 
 fn whole_ms(d: Duration) -> u64 {
     u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
-}
-
-/// How a connection leaves the pool.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Closing {
-    /// Shut down first, as every connection the pool closes is unless
-    /// its transfer was aborted.
-    Clean,
-    Abort,
-}
-
-/// Close an established connection's transport. A clean close of a TCP
-/// socket first reads up to 1 KB of what the peer sent, so the kernel
-/// does not answer it with a reset (`cf_socket_shutdown`).
-fn close_transport(transport: Transport, how: Closing, net: &mut dyn Net) {
-    match transport {
-        Transport::Local => {}
-        Transport::Tcp(stream) => {
-            if how == Closing::Clean {
-                stream.drain();
-            }
-            net.close(stream.into_socket());
-        }
-    }
 }
 
 #[cfg(test)]

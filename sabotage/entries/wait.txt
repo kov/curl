@@ -115,7 +115,7 @@ witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_e
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::an_accepted_connect_goes_on_to_the_request
 --- old
-        pollsets(&self.slots, |s, events| {
+        pollsets(&self.slots, &self.shutdowns, |s, events| {
             first.get_or_insert((s, events));
         });
 --- new

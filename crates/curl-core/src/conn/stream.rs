@@ -7,8 +7,9 @@ use std::io;
 use std::net::SocketAddr;
 
 use super::io::{Events, Recv, Sent, Sock, Socket};
-use super::layer::{Alive, LayerCx, LayerStack};
+use super::layer::{Alive, Handshake, LayerCx, LayerStack};
 use super::{RecvBuf, RecvFailed};
+use crate::error::ErrorKind;
 
 #[derive(Debug)]
 pub(crate) struct Stream {
@@ -28,7 +29,7 @@ impl Stream {
 
     /// Its layers, to push one on.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-util")),
         expect(dead_code, reason = "TLS pushes its layer, step 43; tests push theirs")
     )]
     pub(crate) fn layers_mut(&mut self) -> &mut LayerStack {
@@ -88,6 +89,29 @@ impl Stream {
 
     pub(crate) fn rx_mut(&mut self) -> &mut RecvBuf {
         &mut self.rx
+    }
+
+    /// Move its shutdown on: each layer from the top, past the `shut`
+    /// done already, one at a time, then the socket's own, the 1 KB drain
+    /// (`Curl_cshutdn_try_once_idx`). A layer that waits ends the try; one
+    /// that fails ends the shutdown.
+    pub(crate) fn shutdown(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        shut: &mut usize,
+    ) -> Result<Handshake, ErrorKind> {
+        if self.layers.shutdown(self.socket.socket(), cx, shut)? == Handshake::Waiting {
+            return Ok(Handshake::Waiting);
+        }
+        self.drain();
+        Ok(Handshake::Done)
+    }
+
+    /// What it waits on while it shuts down, `shut` of its layers done:
+    /// what the others say, from the top, with nothing wanted to start
+    /// from (`Curl_conn_adjust_pollset` on a chain in shutdown).
+    pub(crate) fn shutdown_pollset(&self, shut: usize) -> Events {
+        self.layers.shutdown_pollset(shut)
     }
 
     /// Read and drop up to 1 KB of what the peer sent, before a clean

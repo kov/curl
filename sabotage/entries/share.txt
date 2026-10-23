@@ -15,7 +15,8 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
         self.pool
             .get_mut()
             .expect("no panic holds a share's lock")
-            .close_idle(&mut **net);
+            // With no clock, the one try of each shutdown is in time.
+            .close_idle(&mut NoSet(&mut **net), crate::time::Instant::EPOCH);
 --- new
         let _ = (&mut self.pool, net);
 
@@ -31,16 +32,16 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 file: crates/curl-core/src/multi/cx.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-        watched(watch.as_deref(), share, Kind::Connections, || {
-            let mut later = CloseLater::new(&mut net);
-            let r = {
-                let mut pool = share.pool();
+                watched(watch.as_deref(), share, Kind::Connections, || {
+                    let mut later = CloseLater::new(&mut net);
+                    let r = {
+                        let mut pool = share.pool();
 --- new
-        let mut held = share.pool();
-        watched(watch.as_deref(), share, Kind::Connections, || {
-            let mut later = CloseLater::new(&mut net);
-            let r = {
-                let mut pool = &mut held;
+                let mut held = share.pool();
+                watched(watch.as_deref(), share, Kind::Connections, || {
+                    let mut later = CloseLater::new(&mut net);
+                    let r = {
+                        let mut pool = &mut held;
 
 === a transfer's jar ignores its share's
 file: crates/curl-core/src/proto/http/cookies.rs

@@ -39,13 +39,17 @@ impl MultiEvents<Tagged> for Sockets {
     fn socket(
         &mut self,
         cx: &mut EventCx<'_, Tagged>,
-        who: TransferId,
+        who: SocketFor,
         s: SocketKey,
         what: SocketWhat,
         assigned: Option<u32>,
     ) -> Result<(), Abort> {
+        let who = match who {
+            SocketFor::Transfer(id) => id.index(),
+            SocketFor::Multi => u32::MAX,
+        };
         self.calls
-            .push((who.index(), s.get(), what, assigned, self.closed.get()));
+            .push((who, s.get(), what, assigned, self.closed.get()));
         if assigned.is_none() && what != SocketWhat::Remove {
             self.tag += 1;
             cx.assign(s, Some(self.tag)).unwrap();
@@ -308,12 +312,16 @@ fn the_socket_callback_sees_the_transfers() {
         fn socket(
             &mut self,
             cx: &mut EventCx<'_, Host8>,
-            who: TransferId,
+            who: SocketFor,
             _: SocketKey,
             _: SocketWhat,
             _: Option<()>,
         ) -> Result<(), Abort> {
-            self.0.lock().unwrap().push(cx.owner(who).copied());
+            let owner = match who {
+                SocketFor::Transfer(id) => cx.owner(id).copied(),
+                SocketFor::Multi => None,
+            };
+            self.0.lock().unwrap().push(owner);
             Ok(())
         }
         fn wants_sockets(&self) -> bool {

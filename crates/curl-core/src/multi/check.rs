@@ -76,12 +76,17 @@ impl<H: Host> Multi<H> {
             own_leases,
             "the pool's leased connections are not the transfers' leases"
         );
-        // Removal takes a transfer off every socket (`Curl_multi_ev_xfer_done`).
-        self.sockets.each_user(|id, key| {
-            assert!(
+        // Removal takes a transfer off every socket (`Curl_multi_ev_xfer_done`),
+        // and a connection's close takes it off its own.
+        self.sockets.each_user(|user, key| match user {
+            super::SocketOwner::Transfer(id) => assert!(
                 self.slots.get(id).is_some(),
                 "{key:?} names {id:?}, which is not in the multi"
-            );
+            ),
+            super::SocketOwner::Conn(id) => assert!(
+                self.shutdowns.holds(id),
+                "{key:?} names {id:?}, which is not shutting down"
+            ),
         });
         let mut row = 0;
         while let Some(r) = self.dirty.first_from(row) {

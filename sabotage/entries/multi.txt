@@ -91,9 +91,14 @@ witness: curl-core multi::tests::completions_are_read_in_id_order
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::the_timer_hears_of_add_and_remove
 --- old
-        if self.life == Life::Dead || self.dirty.first_from(0).is_some() {
+        if self.life == Life::Dead
+            || self.dirty.first_from(0).is_some()
+            || self.shutdowns.is_dirty()
+        {
 --- new
-        if self.life == Life::Dead {
+        if self.life == Life::Dead
+            || self.shutdowns.is_dirty()
+        {
 
 === a dead multi keeps calling the timer
 file: crates/curl-core/src/multi/mod.rs
@@ -199,10 +204,12 @@ witness: curl-core multi::tests::socket_action_delivers_notifications
 --- old
             self.run_dirty(now, ev)?;
         }
+        self.schedule_if_changed();
         self.dispatch(ev);
 --- new
             self.run_dirty(now, ev)?;
         }
+        self.schedule_if_changed();
 
 === perform never delivers notifications
 file: crates/curl-core/src/multi/mod.rs
@@ -210,10 +217,12 @@ witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
 --- old
             self.run_single(id, now, ev);
         }
+        self.schedule_if_changed();
         self.dispatch(ev);
 --- new
             self.run_single(id, now, ev);
         }
+        self.schedule_if_changed();
 
 === the timer callback's context reads no messages
 file: crates/curl-core/src/multi/cx.rs

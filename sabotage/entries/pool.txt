@@ -26,18 +26,18 @@ witness: curl-core conn::pool::tests::a_dropped_lease_is_caught
             true,
 
 === a connection given back keeps its socket open
-file: crates/curl-core/src/conn/pool.rs
+file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 --- old
-            net.close(stream.into_socket());
+        Transport::Tcp(stream) => net.close(stream.into_socket()),
 --- new
-            std::mem::forget(stream);
+        Transport::Tcp(stream) => std::mem::forget(stream),
 
 === a setup given back keeps its attempt's socket open
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::refused_and_silent_attempts
 --- old
-                m.close(net);
+                m.close(exits.parts().0);
 --- new
                 drop(m);
 
@@ -106,8 +106,9 @@ witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::a_multi_closes_its_idle_connections_when_dropped
 --- old
-        self.caches.pool.close_idle(&mut *self.net);
+            self.caches.pool.close_idle(&mut exits, now);
 --- new
+            let _ = (&mut exits, now);
 
 === a limit is compared to the exact time, not whole milliseconds
 file: crates/curl-core/src/conn/pool.rs
@@ -295,9 +296,11 @@ witness: curl-core multi::tests::the_pool_s_limit_is_guessed_from_the_transfers
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_new_connection_waits_for_room_within_the_limits
 --- old
-        if count(conns, to_host) >= max.get() {
+        if live + shutdowns >= max {
+            return Some(WaitReason::HostLimit);
 --- new
-        if count(conns, to_host) > max.get() {
+        if live + shutdowns > max {
+            return Some(WaitReason::HostLimit);
 
 === no idle connection to the host is closed for room
 file: crates/curl-core/src/conn/pool.rs
@@ -451,25 +454,28 @@ witness: curl-core conn::io::tests::a_dropped_socket_is_caught
             true,
 
 === a clean close leaves the peer's bytes unread
-file: crates/curl-core/src/conn/pool.rs
+file: crates/curl-core/src/conn/stream.rs
 witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 --- old
-            if how == Closing::Clean {
+        self.drain();
+        Ok(Handshake::Done)
 --- new
-            if false {
+        Ok(Handshake::Done)
 
 === an aborted transfer's connection is drained as it closes
-file: crates/curl-core/src/conn/pool.rs
+file: crates/curl-core/src/conn/shutdown.rs
 witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 --- old
-                let how = if finish.premature {
+    if aborted {
+        close_now(conn, net);
 --- new
-                let how = if false {
+    if false {
+        close_now(conn, net);
 
 === an idle connection the pool closes is not drained
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_clean_close_drains_the_socket_first
 --- old
-            ConnSlot::Open(conn) => close_transport(conn.transport, Closing::Clean, net),
+                discard(conn, false, evicted == Evicted::Linger, left, exits, now);
 --- new
-            ConnSlot::Open(conn) => close_transport(conn.transport, Closing::Abort, net),
+                discard(conn, true, evicted == Evicted::Linger, left, exits, now);

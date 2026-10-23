@@ -19,7 +19,6 @@ use crate::error::ErrorKind;
 use crate::time::Instant;
 
 /// What a layer's handshake, or its shutdown, came to.
-#[expect(dead_code, reason = "TLS's handshake and shutdown, step 43")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Handshake {
     Done,
@@ -120,8 +119,9 @@ pub(crate) trait Layer: Send + fmt::Debug {
         below.alive(cx)
     }
 
-    /// Move its shutdown on. None has one yet: TLS's comes with it.
-    #[expect(dead_code, reason = "TLS's shutdown, step 43")]
+    /// Move its shutdown on: say goodbye to the peer, which may take
+    /// more than one pass (TLS's close_notify). Only a test's layer has
+    /// one yet.
     fn shutdown(
         &mut self,
         _cx: &mut dyn LayerCx,
@@ -229,7 +229,7 @@ impl LayerStack {
 
     /// Put `layer` on top.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-util")),
         expect(dead_code, reason = "TLS pushes its layer, step 43; tests push theirs")
     )]
     pub(crate) fn push(&mut self, layer: Box<dyn Layer>) -> Result<(), OutOfMemory> {
@@ -248,6 +248,110 @@ impl LayerStack {
             .flat_map(|l| l.iter())
             .rev()
             .fold(wanted, |wanted, layer| layer.adjust_pollset(wanted))
+    }
+
+    /// Shut its layers down over `socket` from the top, past the `shut`
+    /// done already, counting each that finishes: a layer starts once the
+    /// one above is done (`Curl_cshutdn_try_once_idx`).
+    pub(crate) fn shutdown(
+        &mut self,
+        socket: &dyn Socket,
+        cx: &mut dyn LayerCx,
+        shut: &mut usize,
+    ) -> Result<Handshake, ErrorKind> {
+        let layers = self
+            .layers
+            .as_deref_mut()
+            .map_or(&mut [][..], Vec::as_mut_slice);
+        while *shut < layers.len() {
+            let (below, top) = layers.split_at_mut(layers.len() - 1 - *shut);
+            let below = Below {
+                layers: below,
+                socket,
+            };
+            if top[0].shutdown(cx, below)? == Handshake::Waiting {
+                return Ok(Handshake::Waiting);
+            }
+            *shut += 1;
+        }
+        Ok(Handshake::Done)
+    }
+
+    /// What the layers not shut down yet wait on, `shut` from the top
+    /// being done: each says, from the top, with nothing wanted to start
+    /// from; a layer shut down says nothing (`Curl_conn_cf_adjust_pollset`).
+    pub(crate) fn shutdown_pollset(&self, shut: usize) -> Events {
+        self.layers
+            .iter()
+            .flat_map(|l| l.iter())
+            .rev()
+            .skip(shut)
+            .fold(Events::NONE, |wanted, layer| layer.adjust_pollset(wanted))
+    }
+}
+
+/// How a connection's `Lingering` layer shuts down.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Linger {
+    /// It waits this many tries, then is done.
+    Passes(u32),
+    /// It waits until its peer sends something or closes.
+    UntilPeer,
+}
+
+/// A layer whose shutdown waits, as TLS's does for the peer's
+/// close_notify: what arms a closing connection before TLS can. It passes
+/// the bytes, and while it shuts down waits to read.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Debug)]
+pub(crate) struct Lingering {
+    how: Linger,
+    shutting: bool,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Lingering {
+    pub(crate) fn boxed(how: Linger) -> Result<Box<dyn Layer>, OutOfMemory> {
+        Ok(try_box(Lingering {
+            how,
+            shutting: false,
+        })?)
+    }
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl Layer for Lingering {
+    fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+        below.recv(cx, buf)
+    }
+
+    fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8]) -> io::Result<Sent> {
+        below.send(cx, bytes)
+    }
+
+    fn adjust_pollset(&self, wanted: Events) -> Events {
+        if self.shutting {
+            wanted | Events::IN
+        } else {
+            wanted
+        }
+    }
+
+    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
+        self.shutting = true;
+        match &mut self.how {
+            Linger::Passes(0) => Ok(Handshake::Done),
+            Linger::Passes(n) => {
+                *n -= 1;
+                Ok(Handshake::Waiting)
+            }
+            Linger::UntilPeer => match below.recv(cx, &mut [0u8; 64]) {
+                Ok(Recv::WouldBlock) => Ok(Handshake::Waiting),
+                Ok(Recv::Data(_) | Recv::Eof) => Ok(Handshake::Done),
+                Err(_) => Err(ErrorKind::RecvError),
+            },
+        }
     }
 }
 

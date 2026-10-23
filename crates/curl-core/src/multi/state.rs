@@ -15,6 +15,7 @@ use crate::conn::io::{Closer, Events, ResolveFailure, SocketKey};
 use crate::conn::layer::LayerCx;
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
+use crate::conn::shutdown::ConnSettings;
 use crate::conn::{
     Acquired, Answer, Asked, BadEntry, BadVia, ConnLease, ConnectError, Connected, Finish, Found,
     Full, Home, Limit, ListEntry, Made, Peer, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute,
@@ -464,8 +465,8 @@ fn release<H: Host>(
     }
     let home = lease.home().clone();
     let closes = lease.closes() || stream_closed;
-    let released = cx.rest.pool_section(cx.me, &home, |pool, net, here| {
-        pool.release(here, lease, finish, limit, net, now)
+    let released = cx.rest.pool_section(cx.me, &home, |pool, exits, here| {
+        pool.release(here, lease, finish, limit, exits, now)
     });
     // No connection carries more than one transfer.
     mstate::trace(cx, format_args!("multi_done_locked, in use=0"));
@@ -1485,6 +1486,8 @@ fn connect_once<H: Host>(
     let haproxy = cx.easy().options().proxy.haproxy;
     #[cfg(test)]
     let layer = cx.easy().options().layer;
+    #[cfg(any(test, feature = "test-util"))]
+    let linger = cx.rest.linger;
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.lease.answer().is_some();
@@ -1497,6 +1500,8 @@ fn connect_once<H: Host>(
         haproxy,
         #[cfg(test)]
         layer,
+        #[cfg(any(test, feature = "test-util"))]
+        linger,
     };
     let connected = c.lease.connect(
         &mut DriveCx {
@@ -2953,8 +2958,8 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
         None => Home::Multi,
     };
     let found = if pool::searches(&route, rules) {
-        cx.rest.pool_search(cx.me, &home, |pool, net, here| {
-            pool.find(here, &route, rules, net, now, &mut notes)
+        cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
+            pool.find(here, &route, rules, exits, now, &mut notes)
         })?
     } else {
         None
@@ -2968,8 +2973,11 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
                 Some(close) => Closer::Hook(close.clone()),
                 None => Closer::System,
             };
-            let (added, members) = cx.rest.pool_search(cx.me, &home, |pool, net, here| {
-                pool.add(here, route, closer, add, net, now)
+            // What the connection keeps of the transfer's settings: C's
+            // defaults, as no option sets them.
+            let settings = ConnSettings::DEFAULT;
+            let (added, members) = cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
+                pool.add(here, route, closer, settings, add, exits, now)
                     .map(|added| (added, pool.len()))
             })?;
             if let Acquired::New(lease) = &added {

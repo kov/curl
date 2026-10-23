@@ -3176,6 +3176,84 @@ fn cleanup_removes_the_sockets_the_socket_function_was_told() {
     );
 }
 
+/// lib758's end: a connection whose shutdown waits keeps its socket
+/// registered as its transfer is done and taken out, no socket function
+/// called; `curl_multi_cleanup` closes it, and the socket function hears
+/// REMOVE with the multi's internal handle, non-NULL and not the
+/// transfer's, as C passes its admin handle.
+#[test]
+fn a_closing_connection_s_socket_is_removed_by_the_internal_handle() {
+    use crate::ffi::{CURL_POLL_IN, CURL_POLL_OUT, CURL_POLL_REMOVE, CURL_SOCKET_TIMEOUT};
+    use crate::multi::{ShimMulti, curl_multi_socket_action};
+    use curl_core::conn::Linger;
+    use curl_core::conn::io::{Conversation, FakeNet, Peer};
+    use curl_core::time::ManualClock;
+
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let talk = Conversation::new(reply, false).late_replies();
+    let net = FakeNet::new(clock)
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk);
+    let shim = ShimMulti::boxed_with(Box::new(net)).unwrap();
+    // SAFETY: the multi just made; no call is under way on it.
+    unsafe { shim.as_ref().core_mut() }.linger_connections(Some(Linger::UntilPeer));
+    let m: *mut CURLM = shim.as_ptr().cast();
+    let mut log = SocketLog {
+        m,
+        calls: Vec::new(),
+        abort: false,
+    };
+    let me: *mut c_void = ptr::from_mut(&mut log).cast();
+    let c = curl_easy_init();
+    let url = c"http://127.0.0.1:1/";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_FORBID_REUSE, 1), CURLE_OK);
+    let mut running_now: c_int = -1;
+    // SAFETY: a live multi and handle; the log outlives them.
+    unsafe {
+        let f: ffi::curl_socket_callback = Some(socket_fn);
+        assert_eq!(
+            curl_multi_setopt(m, ffi::CURLMOPT_SOCKETFUNCTION, f),
+            CURLM_OK
+        );
+        assert_eq!(curl_multi_setopt(m, ffi::CURLMOPT_SOCKETDATA, me), CURLM_OK);
+        assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
+        let rc = curl_multi_socket_action(m, CURL_SOCKET_TIMEOUT, 0, &raw mut running_now);
+        assert_eq!(rc, CURLM_OK);
+        for _ in 0..5 {
+            if running_now == 0 {
+                break;
+            }
+            let rc = curl_multi_socket_action(m, 1000, 0, &raw mut running_now);
+            assert_eq!(rc, CURLM_OK);
+        }
+        assert_eq!(running_now, 0, "done");
+        assert_eq!(curl_multi_remove_handle(m, c), CURLM_OK);
+        curl_easy_cleanup(c);
+    }
+    assert_eq!(
+        log.calls,
+        [
+            (c, 1000, CURL_POLL_OUT, ptr::null_mut()),
+            (c, 1000, CURL_POLL_IN, me),
+        ],
+        "kept registered: no REMOVE as the transfer goes"
+    );
+    // SAFETY: the multi made above, done with.
+    unsafe {
+        assert_eq!(curl_multi_cleanup(m), CURLM_OK);
+    }
+    assert_eq!(log.calls.len(), 3);
+    let (admin, fd, what, socketp) = log.calls[2];
+    assert_eq!((fd, what, socketp), (1000, CURL_POLL_REMOVE, me));
+    assert!(!admin.is_null() && admin != c, "the internal handle");
+}
+
 /// Without a `CURLOPT_CONNECT_ONLY` connection there is nothing to read
 /// or write: `CURLE_UNSUPPORTED_PROTOCOL`, nothing moved; a missing count
 /// or buffer is a bad argument (`curl_easy_recv`, `curl_easy_send`).

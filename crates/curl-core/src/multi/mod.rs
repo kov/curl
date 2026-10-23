@@ -24,6 +24,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc};
 
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
+use crate::conn::shutdown::{ShutdownSet, WithSet};
 use crate::conn::{AddLimits, Caches};
 use crate::deliver::{Pause, RecvPause};
 use crate::easy::Easy;
@@ -35,17 +36,17 @@ use crate::share::{Kind, watched};
 use crate::time::{Clock, Instant};
 
 pub use crate::deliver::PauseRequest;
-use cx::{EngineRest, Telling};
+use cx::{Announcing, EngineRest, Telling};
 pub use cx::{EventCx, NotifyCx, TransferCx};
 pub use notify::{Notification, NotifyKind};
 pub use sched::{Census, Counts};
-pub use sockets::{SocketWhat, UnknownSocket};
+pub use sockets::{SocketFor, SocketWhat, UnknownSocket};
 pub use timers::TimerChange;
 pub use wait::{WaitMode, drive_by_events, drive_to_completion};
 
 use notify::NotifyQueue;
 use sched::{RowSet, Tally};
-use sockets::{SocketTable, Wants};
+use sockets::{SocketOwner, SocketTable, Wants};
 use state::{Message as MessageState, PollsetTrace, Run, StepCx, TransferState, Wake};
 use timers::{Due, TimerAnnounce, TimerKind, TimerQueue};
 
@@ -107,15 +108,15 @@ pub trait MultiEvents<H: Host> {
         false
     }
 
-    /// Watch socket `s` for `what` for transfer `who`, or stop
+    /// Watch socket `s` for `what` for `who`, or stop
     /// (`CURLMOPT_SOCKETFUNCTION`). Called on a change only, after a
-    /// transfer runs in `socket_action`, inside `remove` and `pause`, and
-    /// before a socket a transfer waits on closes. `assigned` is the
-    /// application's value for the socket.
+    /// transfer runs in `socket_action`, inside `remove` and `pause`, as a
+    /// connection starts shutting down, and before a socket waited on
+    /// closes. `assigned` is the application's value for the socket.
     fn socket(
         &mut self,
         cx: &mut EventCx<'_, H>,
-        who: TransferId,
+        who: SocketFor,
         s: SocketKey,
         what: SocketWhat,
         assigned: Option<H::Socket>,
@@ -254,6 +255,8 @@ pub struct Multi<H: Host = NoHost> {
     /// Notifications are being delivered.
     delivering: bool,
     caches: Caches,
+    /// The connections shutting down, whichever pool they left.
+    shutdowns: ShutdownSet,
     limits: ConnLimits,
     /// The transfer last let look for a connection again.
     pending_after: Option<TransferId>,
@@ -270,6 +273,9 @@ pub struct Multi<H: Host = NoHost> {
     /// A transfer was told the library is a debug build.
     #[cfg(feature = "debug-hooks")]
     warned: bool,
+    /// The tests' layer each connection set up from here is given.
+    #[cfg(any(test, feature = "test-util"))]
+    linger: Option<crate::conn::layer::Linger>,
 }
 
 impl<H: Host> Multi<H> {
@@ -287,6 +293,7 @@ impl<H: Host> Multi<H> {
             notify: NotifyQueue::default(),
             delivering: false,
             caches,
+            shutdowns: ShutdownSet::default(),
             limits: ConnLimits::default(),
             pending_after: None,
             sockets: SocketTable::new(),
@@ -298,7 +305,17 @@ impl<H: Host> Multi<H> {
             life: Life::Alive,
             #[cfg(feature = "debug-hooks")]
             warned: false,
+            #[cfg(any(test, feature = "test-util"))]
+            linger: None,
         })
+    }
+
+    /// Each connection set up from now on gets a layer whose shutdown
+    /// waits as `how` says, for the tests of the connections shutting
+    /// down; none with `None`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn linger_connections(&mut self, how: Option<crate::conn::Linger>) {
+        self.linger = how;
     }
 
     /// The multi's limits on its connections.
@@ -487,18 +504,50 @@ impl<H: Host> Multi<H> {
 
     fn perform_unchecked(&mut self, ev: &mut dyn MultiEvents<H>) -> Result<u32, MultiErrorKind> {
         let now = self.clock.now();
+        // The connections shutting down first, as C's internal handle is
+        // the first it runs.
+        self.drive_shutdowns(now, ev);
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
             cursor = Some(id);
             self.run_single(id, now, ev);
         }
+        self.schedule_if_changed();
         self.dispatch(ev);
         // Timers due by the pass's start have been dealt with.
         while let Some(id) = self.timers.pop_due(now) {
             self.requeue_after_expiry(id, now);
         }
+        self.shutdowns.expire(now);
         self.update_timer(ev)?;
         Ok(self.counts.get().running)
+    }
+
+    /// Move the shutdowns on (`Curl_cshutdn_perform`), as the multi's own
+    /// work: what closes is told to the socket callback as the multi's.
+    fn drive_shutdowns(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) {
+        self.shutdowns.take_dirty();
+        if self.shutdowns.is_empty() {
+            return;
+        }
+        let tell = Telling {
+            slots: &mut self.slots,
+            limits: &mut self.limits,
+            notify: &mut self.notify,
+            counts: &self.counts,
+            sockets: &mut self.sockets,
+            life: &mut self.life,
+        };
+        let mut net = Announcing::multi(&mut *self.net, tell, ev);
+        self.shutdowns.perform(&mut net, now);
+    }
+
+    /// A connection shutting down closed: one transfer waiting for room
+    /// may find some (`multi_ischanged`, `multi_schedule_pending`).
+    fn schedule_if_changed(&mut self) {
+        if self.shutdowns.take_changed() {
+            state::wake_pending(&mut self.slots, &mut self.dirty, &mut self.pending_after);
+        }
     }
 
     /// Run the transfers an event concerns (`curl_multi_socket_action`).
@@ -523,8 +572,11 @@ impl<H: Host> Multi<H> {
             SocketEvent::Timeout => self.announce.forget(),
             // Every transfer waiting on it runs (`Curl_multi_ev_dirty_xfers`).
             SocketEvent::Socket(key) => {
-                for id in self.sockets.users(key) {
-                    self.dirty.insert(id.index());
+                for user in self.sockets.users(key) {
+                    match user {
+                        SocketOwner::Transfer(id) => self.dirty.insert(id.index()),
+                        SocketOwner::Conn(_) => self.shutdowns.mark_dirty(),
+                    }
                 }
             }
         }
@@ -538,6 +590,7 @@ impl<H: Host> Multi<H> {
             self.mark_expired_dirty(now, ev);
             self.run_dirty(now, ev)?;
         }
+        self.schedule_if_changed();
         self.dispatch(ev);
         self.update_timer(ev)?;
         Ok(self.counts.get().running)
@@ -588,7 +641,9 @@ impl<H: Host> Multi<H> {
             Due::At(at) => at,
         };
         let wait = timers::wait_ms(now, at);
-        if let Some((_, id)) = self.timers.peek()
+        // The set's own deadline is its internal handle's, untraced.
+        if let Some((first, id)) = self.timers.peek()
+            && first == at
             && let Some(kind) = self.run_of(id).deadlines.first()
         {
             let ms = wait.as_millis();
@@ -724,7 +779,7 @@ impl<H: Host> Multi<H> {
     pub fn sockets(&mut self, ev: &mut dyn MultiEvents<H>, f: impl FnMut(&dyn Socket, Events)) {
         let now = self.clock.now();
         self.trace_pollsets(now, ev);
-        pollsets(&self.slots, f);
+        pollsets(&self.slots, &self.shutdowns, f);
     }
 
     /// The multi but for the runs out of their slots, for a step or a
@@ -740,6 +795,7 @@ impl<H: Host> Multi<H> {
                 life: &mut self.life,
             },
             caches: &mut self.caches,
+            shutdowns: &mut self.shutdowns,
             pending_after: &mut self.pending_after,
             net: &mut *self.net,
             ipv6_works: self.ipv6_works,
@@ -747,6 +803,8 @@ impl<H: Host> Multi<H> {
             events: ev,
             now,
             clock: &*self.clock,
+            #[cfg(any(test, feature = "test-util"))]
+            linger: self.linger,
         }
     }
 
@@ -786,11 +844,11 @@ impl<H: Host> Multi<H> {
         }
         let mut changes = Vec::new();
         self.sockets
-            .assess(id, wants.as_slice(), &mut changes)
+            .assess(SocketOwner::Transfer(id), wants.as_slice(), &mut changes)
             .map_err(|OutOfMemory| MultiErrorKind::OutOfMemory)?;
         cx::tell(
             &changes,
-            id,
+            SocketFor::Transfer(id),
             ev,
             &mut Telling {
                 slots: &mut self.slots,
@@ -948,6 +1006,12 @@ impl<H: Host> Multi<H> {
         ev: &mut dyn MultiEvents<H>,
     ) -> Result<u32, MultiErrorKind> {
         let mut ran = 0;
+        // The connections shutting down first, as C's internal handle's
+        // row is the first.
+        if self.shutdowns.is_dirty() {
+            ran += 1;
+            self.drive_shutdowns(now, ev);
+        }
         let mut from = 0;
         while let Some(row) = self.dirty.first_from(from) {
             from = row + 1;
@@ -974,6 +1038,9 @@ impl<H: Host> Multi<H> {
     /// Mark every transfer with a timer due by `now` dirty
     /// (`multi_mark_expired_as_dirty`).
     fn mark_expired_dirty(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) {
+        if self.shutdowns.expire(now) {
+            self.shutdowns.mark_dirty();
+        }
         while let Some(id) = self.timers.pop_due(now) {
             if let Some(kind) = self.run_of(id).deadlines.first() {
                 let mut cx = StepCx {
@@ -1008,11 +1075,16 @@ impl<H: Host> Multi<H> {
     }
 
     fn due(&self) -> Due {
-        if self.life == Life::Dead || self.dirty.first_from(0).is_some() {
+        if self.life == Life::Dead
+            || self.dirty.first_from(0).is_some()
+            || self.shutdowns.is_dirty()
+        {
             return Due::Now;
         }
-        match self.timers.peek() {
-            Some((at, _)) => Due::At(at),
+        let transfers = self.timers.peek().map(|(at, _)| at);
+        // The set's deadline is one row beside the transfers'.
+        match transfers.into_iter().chain(self.shutdowns.deadline()).min() {
+            Some(at) => Due::At(at),
             None => Due::Never,
         }
     }
@@ -1043,8 +1115,13 @@ impl<H: Host> Multi<H> {
 }
 
 /// Every socket the transfers in `slots` wait on, and for what, in id
-/// order: the one computation behind waits, `fdset` and `waitfds`.
-fn pollsets<'a, H: Host>(slots: &'a Slots<H>, mut f: impl FnMut(&'a dyn Socket, Events)) {
+/// order, then those of the connections shutting down in `set`, oldest
+/// first: the one computation behind waits, `fdset` and `waitfds`.
+fn pollsets<'a, H: Host>(
+    slots: &'a Slots<H>,
+    set: &'a ShutdownSet,
+    mut f: impl FnMut(&'a dyn Socket, Events),
+) {
     let mut cursor = None;
     while let Some(id) = slots.next_after(cursor) {
         cursor = Some(id);
@@ -1056,6 +1133,9 @@ fn pollsets<'a, H: Host>(slots: &'a Slots<H>, mut f: impl FnMut(&'a dyn Socket, 
         for (socket, events) in run.state.pollset(slot.pause).iter() {
             f(socket, events);
         }
+    }
+    for (socket, events) in set.pollsets() {
+        f(socket, events);
     }
 }
 
@@ -1200,9 +1280,113 @@ fn put_back<H: Host>(slots: &mut Slots<H>, dirty: &mut RowSet, id: TransferId, r
     slot.run = Some(run);
 }
 
+impl<H: Host> Multi<H> {
+    /// Close the multi's connections, as `curl_multi_cleanup` does once
+    /// its transfers are out (`Curl_cpool_destroy`,
+    /// `Curl_cshutdn_destroy`): each idle one is shut down once, and those
+    /// that do not finish join the set; the set has one pass more (or,
+    /// with `debug-hooks`, as long as `CURL_GRACEFUL_SHUTDOWN` says, in
+    /// milliseconds), and what is left is closed. The socket callback in
+    /// `ev` hears of each socket that closes, as the multi's own.
+    pub fn close_connections(&mut self, ev: &mut dyn MultiEvents<H>) {
+        let now = self.clock.now();
+        let max_total = self.limits.max_total;
+        {
+            let tell = Telling {
+                slots: &mut self.slots,
+                limits: &mut self.limits,
+                notify: &mut self.notify,
+                counts: &self.counts,
+                sockets: &mut self.sockets,
+                life: &mut self.life,
+            };
+            let mut net = Announcing::multi(&mut *self.net, tell, &mut *ev);
+            let mut exits = WithSet {
+                net: &mut net,
+                set: &mut self.shutdowns,
+                max_total,
+                multi_pool: None,
+            };
+            self.caches.pool.close_idle(&mut exits, now);
+        }
+        let mut tell = Telling {
+            slots: &mut self.slots,
+            limits: &mut self.limits,
+            notify: &mut self.notify,
+            counts: &self.counts,
+            sockets: &mut self.sockets,
+            life: &mut self.life,
+        };
+        cx::announce_closing(&mut self.shutdowns, &mut *self.net, &mut tell, &mut *ev);
+        if self.shutdowns.is_empty() {
+            return;
+        }
+        let limit = graceful_shutdown();
+        let mut net = Announcing::multi(&mut *self.net, tell, ev);
+        // `cshutdn_terminate_all`: a pass, then a wait for its sockets,
+        // until all are done or the time is spent.
+        loop {
+            self.shutdowns.perform(&mut net, self.clock.now());
+            if self.shutdowns.is_empty() {
+                break;
+            }
+            let spent = self.clock.now().since(now);
+            if spent >= limit {
+                break;
+            }
+            let wait = (limit - spent).min(Duration::from_secs(1));
+            if wait_for(&self.shutdowns, &mut net, wait).is_err() {
+                break;
+            }
+        }
+        self.shutdowns.close_all(&mut net);
+        // Nothing is left to schedule.
+        self.shutdowns.take_changed();
+    }
+}
+
+/// How long a multi's cleanup lets its connections shut down: no longer
+/// than one pass, or with `debug-hooks` what `CURL_GRACEFUL_SHUTDOWN` says,
+/// in milliseconds up to `INT_MAX` (`Curl_cshutdn_destroy`).
+fn graceful_shutdown() -> Duration {
+    #[cfg(feature = "debug-hooks")]
+    {
+        let mut buf = [0u8; 32];
+        if let Some(given) = curl_os::env::var_into(b"CURL_GRACEFUL_SHUTDOWN", &mut buf)
+            && let Ok(ms) = std::str::from_utf8(given).unwrap_or("").parse::<u32>()
+            && ms <= i32::MAX as u32
+        {
+            return Duration::from_millis(u64::from(ms));
+        }
+    }
+    Duration::ZERO
+}
+
+/// Wait up to `wait` for the sockets the connections in `set` wait on
+/// (`cshutdn_wait`).
+fn wait_for(
+    set: &ShutdownSet,
+    net: &mut dyn Net,
+    wait: Duration,
+) -> Result<(), curl_alloc::OutOfMemory> {
+    use curl_alloc::TryVec as _;
+    let mut polls = Vec::new();
+    polls
+        .try_reserve_exact(set.len())
+        .map_err(|_| curl_alloc::OutOfMemory)?;
+    for (socket, events) in set.pollsets() {
+        polls
+            .try_push(crate::conn::io::SocketPoll::new(socket, events))
+            .expect("reserved");
+    }
+    // A failed poll is a wait that ended.
+    let _ = net.poll(&mut polls, &mut [], wait);
+    Ok(())
+}
+
 impl<H: Host> Drop for Multi<H> {
     /// Take out every transfer still in the multi, giving back its
-    /// connection (`curl_multi_cleanup`).
+    /// connection, then close its connections (`curl_multi_cleanup`).
     fn drop(&mut self) {
         let mut cursor = None;
         while let Some(id) = self.slots.next_after(cursor) {
@@ -1212,12 +1396,14 @@ impl<H: Host> Drop for Multi<H> {
                 self.abandon(id, run, &mut NoEvents);
             }
         }
-        self.caches.pool.close_idle(&mut *self.net);
+        self.close_connections(&mut NoEvents);
     }
 }
 
 #[cfg(test)]
 mod props;
+#[cfg(test)]
+mod shutdown_tests;
 #[cfg(test)]
 mod socket_tests;
 #[cfg(test)]

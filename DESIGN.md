@@ -96,7 +96,8 @@ detects at build time, kept as static strings. `curl_global_sslset` knows only O
   multiplexing limits). A setting added to the route joins the comparison by construction, and
   nothing is written onto a pooled connection when it is reused.
 - **The pool owns the idle connections and issues leases; a lease owns its busy one.** A
-  connection is connecting, open or closing under one id that survives its handshake; setup is a
+  connection is connecting or open under one id that survives its handshake, and closing in
+  its multi's shutdown set, which owns it, under that set's own; setup is a
   pipeline of stages (resolve, race the addresses, proxy, TLS), each owning what the one before
   produced. Operations that need a handshaken connection exist only on an open one. The lease
   names the pool it came from, and goes back only there.

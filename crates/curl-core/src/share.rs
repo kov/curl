@@ -18,6 +18,7 @@ use std::sync::{Mutex, MutexGuard};
 use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::conn::io::{Net, SystemNet};
+use crate::conn::shutdown::NoSet;
 use crate::conn::{DnsCache, Pool};
 use crate::cookie::Jar;
 
@@ -198,7 +199,8 @@ impl Drop for Inner {
         self.pool
             .get_mut()
             .expect("no panic holds a share's lock")
-            .close_idle(&mut **net);
+            // With no clock, the one try of each shutdown is in time.
+            .close_idle(&mut NoSet(&mut **net), crate::time::Instant::EPOCH);
     }
 }
 

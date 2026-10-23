@@ -15,6 +15,7 @@ pub mod io;
 pub(crate) mod layer;
 pub(crate) mod pool;
 pub(crate) mod proxy;
+pub(crate) mod shutdown;
 pub(crate) mod socks;
 mod stream;
 
@@ -39,6 +40,9 @@ use crate::options::{IpVersion, ProxyType};
 use crate::report::ResponseVersion;
 
 pub(crate) use self::buf::RecvBuf;
+/// How the tests' layer shuts down, for `Multi::linger_connections`.
+#[cfg(any(test, feature = "test-util"))]
+pub use self::layer::Linger;
 pub use self::socks::ProxyError;
 pub(crate) use self::stream::Stream;
 
@@ -562,6 +566,8 @@ pub(crate) struct Conn {
     /// It is not to be kept for another request (C's `connclose`), or
     /// its peer closed it, which no request can use again.
     close: bool,
+    /// What it keeps of its creating transfer's settings.
+    settings: shutdown::ConnSettings,
 }
 
 impl Conn {

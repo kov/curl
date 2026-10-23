@@ -608,9 +608,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **b. curl-openssl and Ed25519 signatures.** **Done.** openssl-sys 0.9.117, declarations only, never
       `vendored`; OpenSSL 3.0 or later, checked at build and at init; httpsig signs Ed25519
       through the handle's `Libraries` (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025).
-    - **c. `Closing`.** The multi's `ShutdownSet`, its SHUTDOWN row, sockets owned by a
-      connection and announced with the internal `CURL *`, every discard through one path;
-      armed with a test layer whose shutdown waits. No runtests change.
+    - **c. `Closing`.** **Done.** The multi's `ShutdownSet`, its SHUTDOWN deadline, sockets
+      owned by a connection and announced with the internal `CURL *`, every discard through
+      one path; armed with a test layer whose shutdown waits. No runtests change.
     - **d. TLS in the core.** `curl_core::tls`, `TlsLayer`, the TLS options, `TlsIdentity` on
       `Route`, the `https` scheme and the origin's handshake stage, the bytes past a tunnel's
       answer; over a fake backend. No runtests change.

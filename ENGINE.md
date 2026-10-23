@@ -42,8 +42,8 @@ numbers are those of `SCOPE.md`.
    through one `Stream` (the socket, its layers and its receive buffer), owned first by
    `Dialed` and then by the `Conn`. The layers are a pull chain, as C's filters are (§4.3).
    Where a connection is, is its place in its pool: `Leased` by one transfer or `Idle`, and
-   later `Reserved` and `Attached`; one shutting down is `Closing` in its multi's `ShutdownSet`
-   (§4.6). A lease names its home pool and is given
+   later `Reserved` and `Attached`; one shutting down is in no pool but in its multi's
+   `ShutdownSet` (§4.6). A lease names its home pool and is given
    back only to it; every socket carries the closer it was opened with.
 7. **Generational ids everywhere**: `TransferId`, `ConnId` (whose generation is the
    "Connection #N" number), `ResolveId`, `HeaderCursor`. A stale id fails its own lookup.
@@ -871,11 +871,15 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   HTTPS-RR answer C would not have cached (C keeps it, negative or not, in the DNS cache beside
   the addresses). How the engine knows that without the query is 43g's to settle, against 758's
   timer callbacks and a golden of two connections.
-  The HTTPS-RR lookup itself waits for c-ares. `Shutdown` is the multi's, not a transfer's:
-  C arms EXPIRE_SHUTDOWN on its internal handle for the earliest deadline of the connections
-  shutting down (cshutdn.c:359–367). The multi gets one row of its own in `Deadlines` and
-  `TimerQueue`, reserved at `Multi::new`, which `multi_timeout` and the timer announcement read
-  with the transfers' and which nothing traces.
+  The HTTPS-RR lookup itself waits for c-ares.
+- The set's deadline is the multi's, not a transfer's: C arms EXPIRE_SHUTDOWN on its internal
+  handle for the earliest deadline of the connections shutting down (cshutdn.c:359–367). Built:
+  the `ShutdownSet` keeps it as one `Option<Instant>` of its own beside the `TimerQueue`, not a
+  row in it (a row would need a transfer's slot). Only a pass of the set arms it, at the least
+  time left of its connections, replacing what was armed, as `Curl_expire` does; a connection
+  joining arms nothing. `due`, `multi_timeout` and the timer announcement take the earlier of
+  it and the queue's head; once past, it marks the set dirty as an expired transfer is. Nothing
+  traces it, as C's internal handle has no debug function.
 - **`TimerQueue`** is an indexed binary min-heap with one entry per transfer, holding
   `deadlines.wake_at()` of that transfer, keyed by its `Key` with the position index by row.
   Capacity is reserved at `add`, and `update(key, Option<Instant>)` is O(log n) with no
@@ -939,10 +943,12 @@ an id that is not in this multi returns `None`, which the shim maps to `CURLM_OK
 Dropping a `Multi` removes every transfer still in it (`curl_multi_cleanup`).
 
 **`perform`** (multi.c:2898), with `now` read once:
+0. drive the `ShutdownSet` (`Curl_cshutdn_perform`), as C's internal handle is the first of
+   its process set and is run on every `perform`;
 1. run every process transfer in ascending slot order with an index cursor, so a transfer
    added during the walk at a higher slot runs in the same pass;
-2. `schedule_pending` if a pass flagged a connection change (graceful shutdowns and
-   multiplexing flag it; neither exists yet, so nothing does);
+2. `schedule_pending` if a pass flagged a connection change: a closing connection closed by
+   the set (`Curl_multi_connchanged`), and later multiplexing;
 3. dispatch notifications;
 4. sweep the timer queue for entries before `now`; a late `Pending` transfer goes to setup and
    fails there with the timeout;
@@ -951,7 +957,8 @@ Dropping a `Multi` removes every transfer still in it (`curl_multi_cleanup`).
 
 **`socket_action`** (multi.c:3249):
 1. `now = clock.now()`;
-2. for a socket: mark every user dirty (a connection user is driven through `ShutdownSet`);
+2. for a socket: mark every user dirty (a connection user marks the `ShutdownSet` dirty, which
+   `run_dirty` drives first and counts as one that ran, as C's internal handle);
    `ev_bitmask` is not passed to the core; an unknown socket does nothing. For `Timeout`:
    forget the announced expiry and drain the waker;
 3. mark expired timer entries dirty, then `run_dirty(now)`, which after each transfer
@@ -1377,7 +1384,10 @@ a silent one drops; the report starts over without it with each transfer. A laye
 No layer is pushed outside the tests until TLS: a test's transfer names one
 (`Options::layer`, `cfg(test)`) that each connection it makes puts on its stream once up, and
 `conn::layer::testing` holds those that arm each call (`Upper`, `Holdback`, `WantsOut`,
-`Dying`). `connect`, `shutdown` and `query` have no caller until TLS; `LayerCx`'s trace is the
+`Dying`). `shutdown` is called by the discard and the `ShutdownSet` (§4.6), from the top layer
+down, one at a time, a layer done never asked again; only `Lingering` (test-util, pushed on
+every connection a multi makes under `Multi::linger_connections`) has one before TLS.
+`connect` and `query` have no caller until TLS; `LayerCx`'s trace is the
 connect machine's (`ConnCx` extends it) until a layer traces.
 
 Planned (step 43), settled for TLS (§4.9). `LayerCx` gains what a TLS layer reaches through
@@ -1392,7 +1402,7 @@ The bytes a tunnel's handshake read past its answer, which `rx` holds, are the f
 TLS layer pushed over that stream reads: they move into the layer once, as it is pushed, and its
 BIO reads them before it reads below. That is what C's byte-at-a-time read of the answer comes
 to: whatever followed the answer reaches the TLS handshake first, on both legs.
-`connect`, `shutdown` and `query` get their first producer in the TLS layer. A binding crate
+`connect`, `query` and a real `shutdown` get their first producer in the TLS layer. A binding crate
 cannot implement `Layer`, which stays crate-private: the core's `TlsLayer` implements it over
 the public `curl_core::tls::TlsSession` a backend makes (§4.9).
 
@@ -1559,9 +1569,9 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   3234): the connection kept for its handle's `curl_easy_send` and `curl_easy_recv` after the
   transfer. `Attached { users }` comes before stage 5, for a connection several transfers lease
   at once (a pool place, not the transfer state of §3.1 that holds a lease). Until then every
-  lease count is asserted to be 1. A connection shutting down is in no pool: it is `Closing` in
-  its multi's `ShutdownSet` (below).
-- **Shutting down** (planned, step 43, `conn/shutdown.rs`). Every path on which a connection
+  lease count is asserted to be 1. A connection shutting down is in no pool: its multi's
+  `ShutdownSet` owns it (below).
+- **Shutting down** (built, `conn/shutdown.rs`). Every path on which a connection
   leaves a pool (given back to close, evicted, found dead or too old, pruned, closed for room,
   a cleanup) goes through one discard, shaped as `cpool_discard_conn` (conncache.c:187–247): an
   aborted transfer's or a CONNECT_ONLY connection is terminated at once, as a shutdown would
@@ -1569,23 +1579,29 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   silent context (`Curl_cshutdn_try_once`); done, it is closed (with the 1 KB drain below);
   not done, it joins the `ShutdownSet` of the releasing transfer's multi, whichever pool it
   came from, a share's included (conncache.c:242), and is terminated when there is no multi
-  (a share's cleanup). The set is its one owner, holding the connection with its stream,
-  settings and closer. It is capped as C caps it: the multi's `max_total` less the
-  connections in the pool, 1 when none is left, and with no limit `max(n / 4, 128)` for `n`
-  in the pool; past the cap the oldest closing connection is terminated. Closing connections
+  (a share's cleanup). A share's pool evicting for room terminates after the one try, as
+  `cpool_evict_conn` does for a pool with no multi of its own. The set is the one owner,
+  holding the connection with its stream, settings and closer, each under a `ClosingId` of
+  the set's own, as a connection there is no longer in an arena. It is capped as C caps it:
+  `max_total` less the connections in the releasing multi's own pool, 1 when none is left,
+  and with no limit `max(n / 4, 128)` for `n` in that pool; past the cap the oldest closing
+  connection is terminated. A termination from the set reads nothing first: the drain is part
+  of a shutdown, not of a close. Closing connections
   count toward the host and total limits a new connection is checked against
   (`cpool_check_limits`): after the oldest idle ones, the oldest closing ones to the same
   destination, then any, are terminated to make room, and only what cannot be closed makes the
   transfer wait. Each connection's deadline is its `ConnSettings`' shutdown timeout, always
-  C's default of 2 s (`set.shutdowntimeout` is set by no option); the earliest is the multi's
-  SHUTDOWN row (§3.4). `perform` and `socket_action` drive the set (`Curl_cshutdn_perform`),
+  C's default of 2 s (`set.shutdowntimeout` is set by no option), counted from the first try;
+  the earliest is the set's own deadline (§3.4). Under a share's lock the room a new
+  connection checks for is the share's pool and the multi's set together. `perform` and `socket_action` drive the set (`Curl_cshutdn_perform`),
   `wait`, `fdset` and `waitfds` include its sockets, and a multi's cleanup gives it one
   best-effort pass (timeout 0), or with `debug-hooks` waits `CURL_GRACEFUL_SHUTDOWN` ms. Its
   sockets are owned by the connection (`SocketOwner::Conn`, §4.7): as a connection moves into
   the set its socket stays registered, its transfer gone from it (C's `removed transfer,
   total=0/1 (xfer/conn)`) and no socket callback made; the callback hears `remove` when the
-  set closes it, through the internal `CURL *` (§7.5), at the latest at the multi's cleanup
-  (758's sequence). Nothing of it is traced: C's `[SHUTDOWN]` lines and the shutdown's TLS
+  set closes it, through the internal `CURL *` (`SocketFor::Multi`, §7.5), at the latest at
+  the multi's cleanup (758's sequence). A share's connection joining the set is announced
+  once the share's lock is let go, where C announces it under the lock. Nothing of it is traced: C's `[SHUTDOWN]` lines and the shutdown's TLS
   lines are on its internal handle. A kept-alive TLS connection sends its close_notify from
   the cleanup's pass, as the reference does. Plain TCP never waits in the set: C's TCP shutdown
   finishes in one call (cf-socket.c:1094–1114). A transfer arms SHUTDOWN itself only for a TLS
@@ -1601,8 +1617,8 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   each non-aborted close (`cpool_discard_conn`): given back to close (`Released::Closed`),
   evicted, found dead or too old, pruned, closed for room, or closed at a multi's or share's
   cleanup. A setup's sockets are closed without it, as C's socket filter is not connected yet.
-  A connection whose layers shut down gracefully (TLS's close_notify) is `Closing` instead
-  until they are done (above).
+  A connection whose layers shut down gracefully (TLS's close_notify) is in the
+  `ShutdownSet` instead until they are done (above).
 - **The closer is carried from creation.** `Pool::add` captures the creating transfer's
   closer (CLOSESOCKETFUNCTION and its data, else the system's) and the connect machine gives it
   to every socket the connection opens, the attempts included, as C copies it onto the
@@ -1654,7 +1670,8 @@ letting go of its answer (`Curl_dns_entry_unlink`), the jar's start and a flush 
 The cookie files a transfer starts with are told as one use around the whole walk, warnings
 and what each file's lines say traced inside it, as C locks once around it; each file is read
 under the mutex in a section of its own. The share's cleanup tells CONNECT around closing its connections with no handle, where C gives
-its internal one. A share's idle connections close when its last clone drops.
+its internal one. A share's idle connections close when its last clone drops, each given its
+one shutdown try with no clock (so in time) and terminated.
 
 ### 4.7 No admin easy
 
@@ -1675,11 +1692,11 @@ per connection at creation, from the creating transfer's options and the multi's
 `ConnSettings`, instead of C's `Curl_get_admin` copying the last caller's settings; the closer
 is captured the same way (§4.6). The reuse limits (max idle, max age) are the searching
 transfer's, passed to `find`. Connection-owned sockets appear in the `SocketTable` with a
-`SocketOwner::Conn(ConnId)` user while the connection is `Closing` (step 43, §4.6).
+`SocketOwner::Conn(ClosingId)` user while the connection is in the `ShutdownSet` (§4.6).
 
 Built: `ConnCx` and `DriveCx`; the tests drive with `Plain`, which traces nothing and has no
-hooks. The closer is not a call-out: it is captured with the connection (§4.6). Planned: `ConnSettings` and `SocketOwner::Conn` (step 43). Only transfers own
-sockets today.
+hooks. The closer is not a call-out: it is captured with the connection (§4.6). `ConnSettings`
+(the shutdown timeout, in ms) and `SocketOwner::Conn`; a shutdown's context is `Silent`.
 
 ### 4.8 Resolver
 
@@ -1843,7 +1860,7 @@ not apply to the proxy's handshake.
 
 **Shutdown.** A TLS layer's `shutdown` sends close_notify only after a completed handshake, and
 never for an aborted transfer (§4.6's discard terminates it); it then reads for the peer's,
-within the connection's 2 s, in `Closing`. The reference sends it on every graceful close: after
+within the connection's 2 s, in the multi's `ShutdownSet`. The reference sends it on every graceful close: after
 the server's own close_notify, and from the cleanup's pass for a connection still kept.
 
 **Errors.** The kinds `ErrorKind` kept get their producers: `SslConnectError` 35,
@@ -2604,9 +2621,9 @@ adapters are its own, installed in place of the ones it was cloned with.
 
 ### 7.5 Socket and timer callbacks, info_read, counts
 
-- Socket callback: `SocketWhat` → `CURL_POLL_*`; the easy argument is the owner's `ShimEasy`,
-  or `conn_easy` for connection-owned and resolver sockets (non-NULL, as C passes its admin
-  easy); `socketp` is the `assign`ed value; `-1` → `Abort` → dead multi. `curl_multi_assign`
+- Socket callback: `SocketWhat` → `CURL_POLL_*`; the easy argument is the owner's `ShimEasy`
+  for `SocketFor::Transfer`, or the multi's internal handle (`admin`) for `SocketFor::Multi`,
+  a closing connection's socket (non-NULL, as C passes its admin easy); `socketp` is the `assign`ed value; `-1` → `Abort` → dead multi. `curl_multi_assign`
   inside the callback goes through `EventCx::assign`. From a transfer's own handler it answers
   CURLM_BAD_SOCKET, where C assigns: a handler's `TransferCx` does not reach the socket table,
   and is not generic over the host whose socket value it would store.
@@ -2792,8 +2809,8 @@ peer gets a protocol error, not an out-of-memory one.
   handshake and a reversible cipher that arms each path of the layer (a read that must write,
   partial records, pending bytes, an alert, a close, a shutdown that waits); curl-openssl's
   `test-util` TLS peer over `FakeNet` (memory BIOs, the test certificates), so the OpenSSL paths
-  have cargo tests; and `Lingering`, a layer whose shutdown waits for its peer, for `Closing`
-  before any TLS. The C captures that pin TLS's lines and 758's callback sequence (the
+  have cargo tests. Built: `Lingering` (test-util), a layer whose shutdown waits a number of
+  passes or for its peer, arming the `ShutdownSet` before any TLS (`multi::shutdown_tests`). The C captures that pin TLS's lines and 758's callback sequence (the
   retry-verify pause, and the socket kept through a connection's shutdown until the multi's
   cleanup) are the goldens.
 - **Pure units**: `ResponseHeadParser`, `ChunkDecoder`, `decide_framing`, `render_h1`,

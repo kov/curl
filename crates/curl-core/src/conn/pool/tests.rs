@@ -34,6 +34,7 @@ fn connect(
         socket: crate::conn::SocketSetup::PLAIN,
         haproxy: false,
         layer: None,
+        linger: None,
     };
     let mut cx = Plain {
         net,
@@ -293,7 +294,7 @@ fn a_full_pool_closes_its_oldest_idle_connection() {
         &mut net,
         clock.now(),
     );
-    pool.close_idle(&mut net);
+    pool.close_idle(&mut net, clock.now());
 }
 
 /// A new connection is made within the host and total limits, closing
@@ -490,7 +491,7 @@ fn room_is_made_by_the_connection_idle_longest() {
         [kept(tcp(1)), kept(tcp(4)), kept(mapped())],
         [false, true, true]
     );
-    pool.close_idle(&mut net);
+    pool.close_idle(&mut net, clock.now());
 }
 
 /// A setup tries its address, waits, and is established in the slot it
@@ -1178,7 +1179,7 @@ fn a_clean_close_drains_the_socket_first() {
     ));
     let reads = || talks.each_ref().map(Conversation::reads);
     assert_eq!(reads(), [(1, 1024), (0, 0), (0, 0)]);
-    pool.close_idle(&mut net);
+    pool.close_idle(&mut net, now);
     assert_eq!(reads(), [(1, 1024), (0, 0), (1, 1024)]);
     assert_eq!(net.open_sockets(), 0);
 }
@@ -1266,7 +1267,7 @@ fn a_silent_peer_takes_what_it_is_sent() {
         &mut net,
         now,
     );
-    pool.close_idle(&mut net);
+    pool.close_idle(&mut net, now);
 }
 
 /// A connection serves a route to the same peer however its host is
@@ -1316,5 +1317,5 @@ fn a_host_in_capitals_reuses_the_connection() {
         &mut net,
         now,
     );
-    pool.close_idle(&mut net);
+    pool.close_idle(&mut net, now);
 }

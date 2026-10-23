@@ -54,6 +54,9 @@ pub struct Options {
     /// The IPv6 scope connections are made in, in place of the URL's
     /// zone (`CURLOPT_ADDRESS_SCOPE`).
     pub address_scope: Option<NonZeroU32>,
+    /// What each TCP socket is set to before it connects: by default
+    /// `TCP_NODELAY`, as C sets it (`CURLOPT_TCP_NODELAY`).
+    pub socket: crate::conn::io::SocketOptions,
     /// The port the first URL is reached on, whatever it says, and any a
     /// relative redirect leads to (`CURLOPT_PORT`).
     pub port: Option<NonZeroU16>,
@@ -389,6 +392,7 @@ impl Options {
             limits: self.limits,
             ip_version: self.ip_version,
             address_scope: self.address_scope,
+            socket: self.socket,
             port: self.port,
             resolve: self.resolve.try_clone()?,
             connect_to: self.connect_to.try_clone()?,

@@ -1162,8 +1162,9 @@ socket before its connect.
 - **Socket open order** is one function with C's sequence: the OPENSOCKET callback (or
   `Net::open`), the "Trying" trace, TCP_NODELAY (on by default, url.c:410, cf-socket.c:1322) and
   keepalive, the SOCKOPT callback (`AlreadyConnected` skips the connect; any other failure is
-  AbortedByCallback), bind, non-blocking, connect. Planned (step 40): today `Net::connect(addr)`
-  opens and connects in one call and TCP_NODELAY is never set.
+  AbortedByCallback), bind, non-blocking, connect. Built so far: `Net::connect(addr, options)`
+  opens the socket non-blocking, sets TCP_NODELAY as `Options::socket` says, and connects, in
+  one call; the hooks, keepalive and bind are planned (step 40, step 45).
 - Happy-eyeballs parameters are C's: 25 ms AAAA wait, `happy_eyeballs_timeout` attempt delay, at
   most 6 concurrent attempts, IPv6 first then alternating. Unit 2600 is ported before a second
   attempt is implemented.

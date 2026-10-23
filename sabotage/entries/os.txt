@@ -234,3 +234,29 @@ witness: curl-os fs::tests::takes_a_name_as_c_does
     if name.len() >= NAME_MAX_BYTES {
 --- new
     if name.len() > NAME_MAX_BYTES {
+
+=== a socket connects without the options it was given
+file: crates/curl-os/src/net.rs
+witness: curl-os net::tests::a_socket_is_set_as_asked
+--- old
+    if options.nodelay {
+--- new
+    if false {
+
+=== sockets keep Nagle's algorithm unless told otherwise
+file: crates/curl-os/src/net.rs
+witness: curl-core multi::tests::sockets_are_set_as_the_options_say
+--- old
+    fn default() -> SocketOptions {
+        SocketOptions { nodelay: true }
+--- new
+    fn default() -> SocketOptions {
+        SocketOptions { nodelay: false }
+
+=== a transfer's sockets are set by the defaults, not its options
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::sockets_are_set_as_the_options_say
+--- old
+    let socket = cx.easy().options().socket;
+--- new
+    let socket = crate::conn::io::SocketOptions::default();

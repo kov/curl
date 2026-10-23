@@ -847,6 +847,7 @@ impl Net for BrokenNet {
     fn connect(
         &mut self,
         _: std::net::SocketAddr,
+        _: crate::conn::io::SocketOptions,
     ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
         Err(std::io::Error::from_raw_os_error(9))
     }
@@ -1319,8 +1320,9 @@ impl Net for Patient {
     fn connect(
         &mut self,
         addr: std::net::SocketAddr,
+        options: crate::conn::io::SocketOptions,
     ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        let (socket, connect) = self.net.connect(addr)?;
+        let (socket, connect) = self.net.connect(addr, options)?;
         self.opened.push(socket.key());
         Ok((socket, connect))
     }
@@ -1855,8 +1857,9 @@ impl Net for Closes {
     fn connect(
         &mut self,
         addr: std::net::SocketAddr,
+        options: crate::conn::io::SocketOptions,
     ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.connect(addr)
+        self.0.connect(addr, options)
     }
 
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
@@ -1894,8 +1897,9 @@ impl Net for OneNet {
     fn connect(
         &mut self,
         addr: std::net::SocketAddr,
+        options: crate::conn::io::SocketOptions,
     ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.lock().unwrap().connect(addr)
+        self.0.lock().unwrap().connect(addr, options)
     }
 
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
@@ -2983,8 +2987,9 @@ impl Net for SharedNet {
     fn connect(
         &mut self,
         addr: std::net::SocketAddr,
+        options: crate::conn::io::SocketOptions,
     ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.lock().unwrap().connect(addr)
+        self.0.lock().unwrap().connect(addr, options)
     }
 
     fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
@@ -3002,6 +3007,38 @@ impl Net for SharedNet {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.0.lock().unwrap().link_local_scope()
     }
+}
+
+/// A transfer's sockets are set as its options say before they connect:
+/// `TCP_NODELAY` unless told otherwise, as C sets it by default.
+#[test]
+fn sockets_are_set_as_the_options_say() {
+    use crate::conn::io::{Peer, SocketKey};
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 3));
+    let net = std::sync::Arc::new(std::sync::Mutex::new(
+        FakeNet::new(clock.clone()).with_peer(at, Peer::Silent),
+    ));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(SharedNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let url = "tcp://127.0.0.1:3/";
+    m.add(Box::new(easy(url)), (), &mut NoEvents).unwrap();
+    let mut delaying = easy(url);
+    delaying.options_mut().socket.nodelay = false;
+    m.add(Box::new(delaying), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let nodelay = |n| {
+        net.lock()
+            .unwrap()
+            .socket_options(SocketKey::new(n))
+            .nodelay
+    };
+    assert_eq!([nodelay(1000), nodelay(1001)], [true, false]);
 }
 
 /// Connections are numbered in the order they are made, and one found

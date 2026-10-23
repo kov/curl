@@ -1176,6 +1176,7 @@ fn connecting<H: Host>(
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
     let scope = cx.easy().options().address_scope;
+    let socket = cx.easy().options().socket;
     let max_age = cx.easy().options().limits.reuse.dns_max_age;
     let kept = cx.rest.kept(cx.me, Kind::Names);
     let answered = c.lease.answer().is_some();
@@ -1186,6 +1187,7 @@ fn connecting<H: Host>(
         max_age,
         delay,
         scope,
+        socket,
     };
     let connected = c.lease.connect(&mut net, now, setup);
     if answered && c.lease.answer().is_none() {

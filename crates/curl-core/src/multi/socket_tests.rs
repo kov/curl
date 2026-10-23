@@ -90,8 +90,12 @@ impl Net for Counting {
         self.0.poll(sockets, fds, timeout)
     }
 
-    fn connect(&mut self, addr: SocketAddr) -> std::io::Result<(Box<dyn Socket>, Connect)> {
-        self.0.connect(addr)
+    fn connect(
+        &mut self,
+        addr: SocketAddr,
+        options: crate::conn::io::SocketOptions,
+    ) -> std::io::Result<(Box<dyn Socket>, Connect)> {
+        self.0.connect(addr, options)
     }
 
     fn close(&mut self, socket: Box<dyn Socket>) {

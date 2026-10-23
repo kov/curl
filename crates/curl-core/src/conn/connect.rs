@@ -19,7 +19,9 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 #[cfg(test)]
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
-use super::io::{Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketPoll};
+use super::io::{
+    Connect, Events, Family, Net, Recv, ResolveFailure, Sent, Socket, SocketOptions, SocketPoll,
+};
 use super::{Conn, ConnNumber, Peer, RecvBuf, RecvFailed, Route, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
@@ -140,6 +142,8 @@ pub(crate) struct Setup<'a> {
     /// The IPv6 scope connections are made in, whatever the peer's
     /// (`CURLOPT_ADDRESS_SCOPE`).
     pub(crate) scope: Option<NonZeroU32>,
+    /// What each socket is set to before it connects.
+    pub(crate) socket: SocketOptions,
 }
 
 /// Where a name's answer came from.
@@ -480,7 +484,7 @@ impl ConnectMachine {
             let ip = r.eyeballs.next().expect("an address is left");
             let (remote, scope_found) = address(ip, self.route.destination(), setup.scope, net);
             r.last_start = Some(now);
-            return match net.connect(remote) {
+            return match net.connect(remote, setup.socket) {
                 Ok((socket, Connect::InProgress | Connect::Done)) => {
                     r.attempts
                         .try_push(Attempt { remote, socket })
@@ -823,6 +827,7 @@ mod tests {
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
                 scope: None,
+                socket: SocketOptions::default(),
             };
             match m.drive(&mut net, clock.now(), setup) {
                 Ok(Drove::Connecting(next, progress)) => {
@@ -884,6 +889,7 @@ mod tests {
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
                 scope: None,
+                socket: SocketOptions::default(),
             };
             match m.drive(&mut net, clock.now(), setup).unwrap() {
                 Drove::Connecting(next, progress) => {

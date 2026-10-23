@@ -40,9 +40,25 @@ pub enum Sent {
 #[derive(Debug)]
 pub struct TcpSocket(TcpStream);
 
-/// Open a nonblocking, close-on-exec TCP socket and start connecting it
-/// to `addr`.
-pub fn connect(addr: SocketAddr) -> io::Result<(TcpSocket, Connect)> {
+/// What a TCP socket is set to between its opening and its connect
+/// (`cf_socket_open`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SocketOptions {
+    /// Small sends go out at once, Nagle's algorithm off (`TCP_NODELAY`).
+    pub nodelay: bool,
+}
+
+/// As curl sets a socket unless told otherwise: `TCP_NODELAY` on
+/// (url.c's `Curl_init_userdefined`).
+impl Default for SocketOptions {
+    fn default() -> SocketOptions {
+        SocketOptions { nodelay: true }
+    }
+}
+
+/// Open a nonblocking, close-on-exec TCP socket, set it to `options`,
+/// and start connecting it to `addr`.
+pub fn connect(addr: SocketAddr, options: SocketOptions) -> io::Result<(TcpSocket, Connect)> {
     let family = match addr {
         SocketAddr::V4(_) => libc::AF_INET,
         SocketAddr::V6(_) => libc::AF_INET6,
@@ -54,13 +70,18 @@ pub fn connect(addr: SocketAddr) -> io::Result<(TcpSocket, Connect)> {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `fd` was just opened and is owned by nothing else.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let socket = TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
+    if options.nodelay {
+        // C only traces a failure (`tcpnodelay`): the socket works the
+        // same, its small sends merely wait.
+        let _ = socket.set_nodelay(true);
+    }
     let mut storage = SockAddr::from(addr);
     // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for the
-    // length given, and lives through the call; `fd` is open.
+    // length given, and lives through the call; the socket is open.
     let rc = unsafe {
         libc::connect(
-            std::os::fd::AsRawFd::as_raw_fd(&fd),
+            std::os::fd::AsRawFd::as_raw_fd(&socket),
             (&raw mut storage.raw).cast::<libc::sockaddr>(),
             storage.len,
         )
@@ -76,7 +97,7 @@ pub fn connect(addr: SocketAddr) -> io::Result<(TcpSocket, Connect)> {
             _ => return Err(err),
         }
     };
-    Ok((TcpSocket(TcpStream::from(fd)), state))
+    Ok((TcpSocket(socket), state))
 }
 
 /// A socket address as the kernel reads it.
@@ -229,10 +250,6 @@ impl TcpSocket {
         self.0.shutdown(Shutdown::Write)
     }
 
-    pub fn set_nodelay(&self, on: bool) -> io::Result<()> {
-        self.0.set_nodelay(on)
-    }
-
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.0.local_addr()
     }
@@ -253,6 +270,8 @@ mod tests {
     use super::*;
     use crate::poll::{Events, PollFd, poll};
 
+    const NODELAY: SocketOptions = SocketOptions { nodelay: true };
+
     /// Wait for `s` to be ready for `events`, for at most five seconds.
     fn ready(s: &TcpSocket, events: Events) -> Events {
         let mut fds = [PollFd::new(s.fd(), events)];
@@ -267,7 +286,7 @@ mod tests {
     /// Connected either at once or once it polls writable, with no error;
     /// the listener then has the peer.
     fn connected(listener: &TcpListener) -> (TcpSocket, TcpStream) {
-        let (s, state) = connect(listener.local_addr().unwrap()).unwrap();
+        let (s, state) = connect(listener.local_addr().unwrap(), NODELAY).unwrap();
         if state == Connect::InProgress {
             assert!(ready(&s, Events::OUT).contains(Events::OUT));
         }
@@ -276,6 +295,18 @@ mod tests {
         assert_eq!(from, s.local_addr().unwrap());
         assert_eq!(s.peer_addr().unwrap(), listener.local_addr().unwrap());
         (s, peer)
+    }
+
+    /// The socket is set as asked before it connects: Nagle's algorithm
+    /// off for `nodelay`, as C sets it by default, and left on without.
+    #[test]
+    fn a_socket_is_set_as_asked() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        for nodelay in [true, false] {
+            let (s, _) = connect(addr, SocketOptions { nodelay }).unwrap();
+            assert_eq!(s.0.nodelay().unwrap(), nodelay);
+        }
     }
 
     #[test]
@@ -322,7 +353,7 @@ mod tests {
     #[test]
     fn a_refused_connect_reports_why() {
         let (_held, addr) = refusing_port();
-        let err = match connect(addr) {
+        let err = match connect(addr, NODELAY) {
             Err(e) => e,
             Ok((s, state)) => {
                 assert_eq!(state, Connect::InProgress, "nothing listens there");
@@ -379,8 +410,6 @@ mod tests {
     fn a_shut_down_side_reads_as_the_end_at_the_peer() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let (s, mut peer) = connected(&listener);
-        s.set_nodelay(true).unwrap();
-        assert!(s.0.nodelay().unwrap());
         s.shutdown_send().unwrap();
         let mut buf = [0u8; 4];
         assert_eq!(std::io::Read::read(&mut peer, &mut buf).unwrap(), 0);
@@ -490,7 +519,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         // SAFETY: nothing in this process reads stdin.
         assert_eq!(unsafe { libc::close(0) }, 0);
-        let (s, _) = connect(addr).unwrap();
+        let (s, _) = connect(addr, NODELAY).unwrap();
         assert_eq!(s.fd().as_raw_fd(), 0, "the lowest free descriptor");
         // SAFETY: `dup` of the open stdout; the copy is closed at once.
         let next = unsafe { libc::dup(1) };
@@ -506,7 +535,7 @@ mod tests {
         // SAFETY: `limit` is valid and lives through the call.
         let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
         assert_eq!(rc, 0);
-        let err = connect(addr).unwrap_err();
+        let err = connect(addr, NODELAY).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EMFILE));
         drop(s);
     }

@@ -199,8 +199,12 @@ impl Net for CloseLater<'_> {
         self.net.poll(sockets, fds, timeout)
     }
 
-    fn connect(&mut self, addr: SocketAddr) -> io::Result<(Box<dyn Socket>, Connect)> {
-        self.net.connect(addr)
+    fn connect(
+        &mut self,
+        addr: SocketAddr,
+        options: crate::conn::io::SocketOptions,
+    ) -> io::Result<(Box<dyn Socket>, Connect)> {
+        self.net.connect(addr, options)
     }
 
     fn close(&mut self, socket: Box<dyn Socket>) {
@@ -241,8 +245,12 @@ impl<H: Host> Net for Announcing<'_, H> {
         self.net.poll(sockets, fds, timeout)
     }
 
-    fn connect(&mut self, addr: SocketAddr) -> io::Result<(Box<dyn Socket>, Connect)> {
-        self.net.connect(addr)
+    fn connect(
+        &mut self,
+        addr: SocketAddr,
+        options: crate::conn::io::SocketOptions,
+    ) -> io::Result<(Box<dyn Socket>, Connect)> {
+        self.net.connect(addr, options)
     }
 
     fn close(&mut self, socket: Box<dyn Socket>) {

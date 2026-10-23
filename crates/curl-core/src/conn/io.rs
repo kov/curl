@@ -12,7 +12,7 @@ use curl_alloc::{TryVec, try_box};
 
 use crate::time::Instant;
 
-pub use curl_os::net::{Connect, Recv, Sent};
+pub use curl_os::net::{Connect, Recv, Sent, SocketOptions};
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
 pub use curl_os::wake::Waker;
@@ -102,8 +102,13 @@ pub trait Net {
         timeout: Duration,
     ) -> io::Result<u32>;
 
-    /// Open a TCP socket and start connecting it to `addr`.
-    fn connect(&mut self, addr: SocketAddr) -> io::Result<(Box<dyn Socket>, Connect)>;
+    /// Open a TCP socket, set it to `options`, and start connecting it to
+    /// `addr`.
+    fn connect(
+        &mut self,
+        addr: SocketAddr,
+        options: SocketOptions,
+    ) -> io::Result<(Box<dyn Socket>, Connect)>;
 
     /// Close a socket the network opened.
     fn close(&mut self, socket: Box<dyn Socket>);
@@ -157,8 +162,12 @@ impl Net for SystemNet {
         poll_together(sockets, fds, timeout)
     }
 
-    fn connect(&mut self, addr: SocketAddr) -> io::Result<(Box<dyn Socket>, Connect)> {
-        let (socket, connect) = curl_os::net::connect(addr)?;
+    fn connect(
+        &mut self,
+        addr: SocketAddr,
+        options: SocketOptions,
+    ) -> io::Result<(Box<dyn Socket>, Connect)> {
+        let (socket, connect) = curl_os::net::connect(addr, options)?;
         let socket: Box<dyn Socket> = try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?;
         Ok((socket, connect))
     }
@@ -496,9 +505,9 @@ pub struct FakeNet {
     /// The scope of its interface with a link-local address, if it has one.
     link_local: Option<NonZeroU32>,
     /// The sockets open, by number from `FIRST_FAKE`, each with its
-    /// conversation: a closed number is handed out again, lowest first, as
-    /// the kernel does.
-    open: Vec<Option<Conversation>>,
+    /// conversation and what it was set to: a closed number is handed out
+    /// again, lowest first, as the kernel does.
+    open: Vec<Option<(Conversation, SocketOptions)>>,
 }
 
 /// The first number a fake socket gets: past the descriptors a test
@@ -563,7 +572,7 @@ impl FakeNet {
         self
     }
 
-    fn open_number(&mut self, wire: Conversation) -> io::Result<SocketKey> {
+    fn open_number(&mut self, wire: Conversation, options: SocketOptions) -> io::Result<SocketKey> {
         let row = match self.open.iter().position(Option::is_none) {
             Some(row) => row,
             None => {
@@ -573,7 +582,7 @@ impl FakeNet {
                 self.open.len() - 1
             }
         };
-        self.open[row] = Some(wire);
+        self.open[row] = Some((wire, options));
         let n = i32::try_from(row).expect("a test opens few sockets");
         Ok(SocketKey(FIRST_FAKE + n))
     }
@@ -586,9 +595,16 @@ impl FakeNet {
             .as_ref()
             .expect("an open socket")
             .0
+            .0
             .lock()
             .expect("no test panics holding the wire")
             .hung_up = true;
+    }
+
+    /// What the open socket `key` was set to as it opened.
+    pub fn socket_options(&self, key: SocketKey) -> SocketOptions {
+        let row = usize::try_from(key.0 - FIRST_FAKE).expect("a fake socket's number");
+        self.open[row].as_ref().expect("an open socket").1
     }
 
     /// How many fake sockets are open.
@@ -631,7 +647,11 @@ impl Net for FakeNet {
         }
     }
 
-    fn connect(&mut self, addr: SocketAddr) -> io::Result<(Box<dyn Socket>, Connect)> {
+    fn connect(
+        &mut self,
+        addr: SocketAddr,
+        options: SocketOptions,
+    ) -> io::Result<(Box<dyn Socket>, Connect)> {
         let Some(&(_, peer)) = self.peers.iter().find(|(a, _)| *a == addr) else {
             return Err(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED));
         };
@@ -642,7 +662,7 @@ impl Net for FakeNet {
                     .map_err(|_| io::ErrorKind::OutOfMemory)?,
             ),
         };
-        let key = self.open_number(wire.clone())?;
+        let key = self.open_number(wire.clone(), options)?;
         // The port the kernel would have picked.
         let port = 40000 + u16::try_from(key.0 - FIRST_FAKE).expect("a test opens few sockets");
         let local = match addr {
@@ -880,7 +900,9 @@ mod tests {
     #[test]
     fn sockets_and_descriptors_are_polled_together() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let (socket, _) = SystemNet.connect(listener.local_addr().unwrap()).unwrap();
+        let (socket, _) = SystemNet
+            .connect(listener.local_addr().unwrap(), SocketOptions::default())
+            .unwrap();
         let (mut a, b) = UnixStream::pair().unwrap();
         a.write_all(b"x").unwrap();
         let mut sockets = [SocketPoll::new(&*socket, Events::OUT)];
@@ -905,8 +927,12 @@ mod tests {
     #[test]
     fn more_than_fit_on_the_stack_are_polled() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let (one, _) = SystemNet.connect(listener.local_addr().unwrap()).unwrap();
-        let (two, _) = SystemNet.connect(listener.local_addr().unwrap()).unwrap();
+        let (one, _) = SystemNet
+            .connect(listener.local_addr().unwrap(), SocketOptions::default())
+            .unwrap();
+        let (two, _) = SystemNet
+            .connect(listener.local_addr().unwrap(), SocketOptions::default())
+            .unwrap();
         let pairs: Vec<_> = (0..9).map(|_| UnixStream::pair().unwrap()).collect();
         (&pairs[8].0).write_all(b"x").unwrap();
         let mut sockets = [
@@ -938,11 +964,11 @@ mod tests {
             .with_peer(at(1), Peer::Accepts)
             .with_peer(at(2), Peer::Refuses)
             .with_peer(at(3), Peer::Silent);
-        let err = net.connect(at(9)).unwrap_err();
+        let err = net.connect(at(9), SocketOptions::default()).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(111), "no peer: refused at once");
-        let (a, _) = net.connect(at(1)).unwrap();
-        let (b, _) = net.connect(at(2)).unwrap();
-        let (c, _) = net.connect(at(3)).unwrap();
+        let (a, _) = net.connect(at(1), SocketOptions::default()).unwrap();
+        let (b, _) = net.connect(at(2), SocketOptions::default()).unwrap();
+        let (c, _) = net.connect(at(3), SocketOptions::default()).unwrap();
         assert_eq!(
             [a.key(), b.key(), c.key()].map(SocketKey::get),
             [1000, 1001, 1002]
@@ -973,7 +999,7 @@ mod tests {
         );
         assert_eq!(clock.now().since(start), Duration::from_secs(5));
         net.close(b);
-        let (d, _) = net.connect(at(1)).unwrap();
+        let (d, _) = net.connect(at(1), SocketOptions::default()).unwrap();
         assert_eq!(d.key().get(), 1001, "the lowest free number again");
         for s in [a, c, d] {
             net.close(s);

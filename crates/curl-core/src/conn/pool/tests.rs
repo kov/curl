@@ -30,6 +30,7 @@ fn connect(
         max_age: Some(Duration::from_secs(60)),
         delay: Duration::from_millis(200),
         scope: None,
+        socket: crate::conn::io::SocketOptions::default(),
     };
     lease.connect(net, now, setup)
 }

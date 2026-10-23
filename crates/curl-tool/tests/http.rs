@@ -655,15 +655,18 @@ fn stores_where_a_download_came_from() {
             false,
         ),
     ] {
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader = {
             let pipe = pipe.clone();
-            std::thread::spawn(move || std::fs::read(pipe).unwrap())
+            let done = done.clone();
+            std::thread::spawn(move || read_fifo(&pipe, &done))
         };
         let s = Server::new(reply);
         let url = s.url();
         let mut all = vec!["--no-progress-meter", "-o", name, &url];
         all.extend_from_slice(args);
         let run = curl_columns(&all, Some("1000"));
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(reader.join().unwrap().len(), if warned { 6 } else { 5 });
         let warning = format!(
             "Warning: Error setting extended attributes on '{name}': Operation not permitted\n"
@@ -671,6 +674,42 @@ fn stores_where_a_download_came_from() {
         assert_eq!(run.stderr.contains(&warning), warned, "{}", run.stderr);
     }
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Everything written to the fifo `path`, read without ever blocking on
+/// a writer: the read end opens non-blocking and is polled, so a tool
+/// that never opens its output leaves the reader to end with nothing
+/// once `done` is set, not stuck in `open`. The end is the writer
+/// closing after it wrote, or `done` with nothing more to read.
+fn read_fifo(path: &std::path::Path, done: &std::sync::atomic::AtomicBool) -> Vec<u8> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    /// `O_NONBLOCK` on Linux.
+    const O_NONBLOCK: i32 = 0o4000;
+    let mut fifo = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open(path)
+        .unwrap();
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    loop {
+        match fifo.read(&mut buf) {
+            // No writer yet reads as end of file too: only data seen
+            // first makes it the end.
+            Ok(0) if !got.is_empty() || done.load(std::sync::atomic::Ordering::SeqCst) => {
+                return got;
+            }
+            Ok(0) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    return got;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(e) => panic!("reading the fifo: {e}"),
+        }
+    }
 }
 
 /// HTTP's options are for a URL the tool takes for HTTP's: a file read

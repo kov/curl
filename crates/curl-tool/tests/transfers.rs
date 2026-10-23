@@ -1121,3 +1121,117 @@ fn says_its_version() {
     assert!(lines.iter().any(|l| l.starts_with("Protocols: ")), "{out}");
     assert!(lines.iter().any(|l| l.starts_with("Features: ")), "{out}");
 }
+
+/// A server that takes connections and never answers, for as long as
+/// the test runs: a transfer to it runs until stopped.
+fn silent_server() -> std::net::SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for peer in listener.incoming() {
+            held.push(peer);
+        }
+    });
+    addr
+}
+
+/// `--parallel` runs the transfers in the order given, each ending as it
+/// would one at a time, and exits with the first failure. C forgets a
+/// failure while transfers are left to add (`tool_operate.c`,
+/// `s->result = add_parallel_transfers(...)` in `parallel_transfers`):
+/// its exit status here is 0 (DIVERGENCE.md).
+#[test]
+fn parallel_transfers_keep_the_first_failure() {
+    let s = Scratch::new("parallel");
+    s.write("a", b"A");
+    s.write("b", b"B");
+    let w = "%{urlnum} %{exitcode}\n";
+    let (missing, a, b) = (s.url("missing"), s.url("a"), s.url("b"));
+    let args = ["-s", "-Z", "--parallel-max", "1", "-w", w, &missing, &a, &b];
+    let r = curl(&s, &args);
+    assert_eq!(r.stdout, b"0 37\nA1 0\nB2 0\n");
+    assert_eq!(r.code, 37);
+}
+
+/// With `--fail-early`, the first failure stops the transfers running,
+/// each reporting why.
+#[test]
+fn parallel_fail_early_stops_the_others() {
+    let s = Scratch::new("parallelearly");
+    let silent = format!("http://{}/", silent_server());
+    let w = "%{urlnum} %{exitcode}\n";
+    let missing = s.url("missing");
+    let args = [
+        "-sS",
+        "-Z",
+        "--fail-early",
+        "-o",
+        "o1",
+        "-o",
+        "o2",
+        "-w",
+        w,
+        &missing,
+        &silent,
+    ];
+    let r = curl(&s, &args);
+    assert_eq!(r.code, 37);
+    assert_eq!(r.stdout, b"0 37\n1 42\n");
+    let expected = format!(
+        "curl: (37) Could not open file {}\n\
+         curl: (42) Transfer aborted due to critical error in another transfer\n",
+        s.path("missing")
+    );
+    assert_eq!(r.stderr, expected);
+}
+
+/// A transfer tried again is added again once its wait is over, its
+/// retries counted.
+#[test]
+fn parallel_transfers_are_tried_again() {
+    let s = Scratch::new("parallelretry");
+    let w = "%{num_retries} %{exitcode}\n";
+    let missing = s.url("missing");
+    let args = [
+        "-s",
+        "-Z",
+        "--retry",
+        "1",
+        "--retry-all-errors",
+        "--retry-delay",
+        "1",
+        "-w",
+        w,
+        &missing,
+    ];
+    let r = curl(&s, &args);
+    assert_eq!((r.code, &r.stdout[..]), (37, &b"1 37\n"[..]));
+}
+
+/// A transfer skipped for its output file ends after the others, with
+/// the run's result (`run_all_transfers`'s cleanup).
+#[test]
+fn parallel_skipped_transfers_end_last() {
+    let s = Scratch::new("parallelskip");
+    s.write("there", b"x");
+    s.write("a", b"A");
+    let w = "%{urlnum} %{exitcode}\n";
+    let (a, missing) = (s.url("a"), s.url("missing"));
+    let args = [
+        "-s",
+        "-Z",
+        "--skip-existing",
+        "-w",
+        w,
+        "-o",
+        "there",
+        &a,
+        "-o",
+        "out",
+        &missing,
+    ];
+    let r = curl(&s, &args);
+    assert_eq!(r.code, 37);
+    assert_eq!(r.stdout, b"1 37\n0 37\n");
+}

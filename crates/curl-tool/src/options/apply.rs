@@ -9,6 +9,7 @@
 //! rather than run without it.
 
 use std::borrow::Cow;
+use std::num::NonZeroU16;
 
 use curl_alloc::TryVec;
 use curl_core::components::Components;
@@ -561,10 +562,27 @@ pub(crate) struct Global<'a> {
     /// `--libcurl`: where the C program the transfers amount to is
     /// written, `-` for standard output.
     pub(crate) libcurl: Option<&'a [u8]>,
+    /// `--parallel`: the transfers run at once, driven by one multi.
+    pub(crate) parallel: bool,
+    /// `--parallel-immediate`: a transfer connects at once rather than
+    /// wait for a connection that may multiplex.
+    pub(crate) parallel_immediate: bool,
+    /// `--parallel-max`: how many run at once; none for the default.
+    pub(crate) parallel_max: Option<NonZeroU16>,
+    /// `--parallel-max-host`: how many connections to one host; none for
+    /// no limit.
+    pub(crate) parallel_host: Option<NonZeroU16>,
     /// `--test-event`: transfers are driven by the multi's events (the
     /// debug build's).
     #[cfg(feature = "debug-hooks")]
     pub(crate) test_event: bool,
+}
+
+/// A cap `--parallel-max` or `--parallel-max-host` gives: past the
+/// largest, the largest; below 1, none, for the default
+/// (`MAX_PARALLEL`, `MAX_PARALLEL_HOST`).
+fn parallel_cap(given: u64) -> Option<NonZeroU16> {
+    NonZeroU16::new(u16::try_from(given).unwrap_or(u16::MAX))
 }
 
 /// Where a transfer resumes.
@@ -1393,6 +1411,10 @@ pub(crate) fn apply<'a>(
         Opt::TestDuphandle => line.not_implemented(spec, "--"),
         #[cfg(feature = "debug-hooks")]
         Opt::TestEvent => line.global.test_event = value.toggle(),
+        Opt::Parallel => line.global.parallel = value.toggle(),
+        Opt::ParallelImmediate => line.global.parallel_immediate = value.toggle(),
+        Opt::ParallelMax => line.global.parallel_max = parallel_cap(value.number()),
+        Opt::ParallelHost => line.global.parallel_host = parallel_cap(value.number()),
         Opt::Libcurl => {
             let file = value.text();
             if file.is_empty() {
@@ -1469,10 +1491,6 @@ pub(crate) fn apply<'a>(
         | Opt::Npn
         | Opt::Ntlm
         | Opt::NtlmWb
-        | Opt::Parallel
-        | Opt::ParallelImmediate
-        | Opt::ParallelMax
-        | Opt::ParallelHost
         | Opt::Pass
         | Opt::Pinnedpubkey
         | Opt::ProxyCaNative

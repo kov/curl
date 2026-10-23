@@ -45,6 +45,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_refused_copy_is_out_of_memory` (`crates/curl-os/tests/env_oom.rs`) and
   `finds_the_file_as_c` (`crates/curl-core/src/netrc.rs`).
 
+- **`--parallel` exits with the first failure.** A transfer that fails while more are waiting
+  to be added is not forgotten. C's `parallel_transfers` (`src/tool_operate.c:2059`) assigns
+  `s->result = add_parallel_transfers(...)` on each pass while transfers are left to add, so a
+  failure recorded before that pass is overwritten. `curl -sS -Z --parallel-max 1 -f` with a
+  URL answering 404 and then two answering 200 prints the 404's error and exits 0; without the
+  cap, or with the failing URL last, it exits 22. Pinned by
+  `parallel_transfers_keep_the_first_failure` (`crates/curl-tool/tests/transfers.rs`).
+
 ## Loops C never leaves
 
 - **A form part's read function answering -2 fails the transfer.** -2 is

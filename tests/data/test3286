@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+parallel
+</keywords>
+</info>
+
+# Server-side
+<reply>
+<data1 nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 4
+
+one
+</data1>
+<data2 nocheck="yes">
+HTTP/1.1 404 Not Found
+Content-Length: 4
+
+two
+</data2>
+<data3 nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 6
+
+three
+</data3>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+--parallel-max 1 runs the transfers one at a time, in order
+</name>
+<command option="no-output no-include">
+http://%HOSTIP:%HTTPPORT/%TESTNUMBER0001 http://%HOSTIP:%HTTPPORT/%TESTNUMBER0002 http://%HOSTIP:%HTTPPORT/%TESTNUMBER0003 -Z --parallel-max 1 -s -w "%{urlnum} %{response_code}\n"
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<stdout>
+one
+0 200
+two
+1 404
+three
+2 200
+</stdout>
+<protocol crlf="headers">
+GET /%TESTNUMBER0001 HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+GET /%TESTNUMBER0002 HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+GET /%TESTNUMBER0003 HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+</protocol>
+</verify>
+</testcase>

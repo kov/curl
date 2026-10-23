@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+parallel
+progress
+</keywords>
+</info>
+
+# Server-side
+<reply>
+<data nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 6
+
+first
+</data>
+<data2 nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 7
+
+second
+</data2>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+--parallel progress meter: header and last line
+</name>
+<command option="no-output no-include">
+http://%HOSTIP:%HTTPPORT/%TESTNUMBER http://%HOSTIP:%HTTPPORT/%TESTNUMBER0002 -Z --parallel-max 1 -o %LOGDIR/out1-%TESTNUMBER -o %LOGDIR/out2-%TESTNUMBER --stderr %LOGDIR/meter%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+# The lines drawn before the last end in a carriage return, and the last
+# in four blanks and a newline. Its times and speed depend on how fast the
+# transfers were, so the line is cut after the transfers running.
+<verify>
+<file name="%LOGDIR/meter%TESTNUMBER">
+DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed
+100 --     13     0     2     0[    ]
+</file>
+<stripfile>
+s/^.*\r(.{31}).*    $/$1\[    \]/
+</stripfile>
+<file1 name="%LOGDIR/out2-%TESTNUMBER">
+second
+</file1>
+</verify>
+</testcase>

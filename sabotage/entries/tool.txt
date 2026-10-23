@@ -69,9 +69,11 @@ witness: curl-tool includes_headers
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_an_upload_it_cannot_open
 --- old
-                        let result = self.end(run, Ended::Ran(Err(ErrorKind::ReadError)));
+                        let result = self.end(run, &easy, ended);
+                        return Step::Unopened(result.expect_err("a failure stays one"));
 --- new
                         let result: Result<(), ErrorKind> = Err(ErrorKind::ReadError);
+                        return Step::Unopened(result.expect_err("a failure stays one"));
 
 === the exit status is the first failure, not the last result
 file: crates/curl-tool/src/operate.rs
@@ -816,9 +818,9 @@ witness: curl-tool operate::tests::adds_the_query_as_c_does
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool gets_the_data_in_the_query
 --- old
-        && !said
+        && told != Told::Already
 --- new
-        && (!said || true)
+        && (told != Told::Already || true)
 
 === --url-query replaces the data --get puts in the query
 file: crates/curl-tool/src/operate.rs

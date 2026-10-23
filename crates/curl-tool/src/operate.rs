@@ -1,5 +1,8 @@
 //! Running what the command line asks for: each URL's transfer, one after
-//! another (`src/tool_operate.c`, its serial path).
+//! another (`src/tool_operate.c`, its serial path), or all at once
+//! (`parallel`).
+
+mod parallel;
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -74,8 +77,11 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         Ok(share) => share,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
+    // In parallel the multi keeps the connections (`share_setup`).
     for kind in [Kind::Connections, Kind::Names, Kind::Cookies] {
-        share.keep(kind).expect("held by none yet");
+        if kind != Kind::Connections || !line.global.parallel {
+            share.keep(kind).expect("held by none yet");
+        }
     }
     // And one list of public suffixes (`CURL_LOCK_DATA_PSL`).
     let suffixes = match curl_psl::suffixes() {
@@ -97,7 +103,11 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         suffixes: &suffixes,
         started: Cell::new(None),
     };
-    let ending = run_all(line, &run);
+    let ending = if line.global.parallel {
+        parallel::run_all(line, &run)
+    } else {
+        run_all(line, &run)
+    };
     if let (Some(program), Some(name)) = (program, line.global.libcurl)
         && program.into_inner().finish(name, &stdout, &msgs).is_err()
     {
@@ -585,9 +595,9 @@ struct Shared<'a, 'l> {
 /// `pre_transfer`, the perform and `post_per_transfer`).
 fn transfer(run: &Shared<'_, '_>, item: Item<'_, '_, '_>) -> Step {
     match create(run, item) {
-        Made::Ready(per) => per.run_serial(run),
-        Made::Unfinished(per, ended) => {
-            Step::Failed(per.end(run, ended).expect_err("a failure stays one"))
+        Made::Ready(per, easy) => per.run_serial(run, easy),
+        Made::Unfinished(per, easy, ended) => {
+            Step::Failed(per.end(run, &easy, ended).expect_err("a failure stays one"))
         }
         Made::Failed(e) => Step::Failed(e),
     }
@@ -600,7 +610,6 @@ struct PerTransfer<'a, 'l> {
     /// Its URL as set, and its number on the command line.
     url: Vec<u8>,
     num: u64,
-    easy: Handle,
     out: output::Output,
     bar: Option<Bar>,
     /// The file it uploads, opened for each attempt.
@@ -608,14 +617,16 @@ struct PerTransfer<'a, 'l> {
     method: tool::Method,
     /// Its output file exists (`--skip-existing`): it does not run.
     skip: bool,
+    /// Its output goes to a terminal: no meter is drawn for it.
+    terminal: bool,
     retrying: Retrying,
 }
 
 /// What came of making a transfer.
 enum Made<'a, 'l> {
-    Ready(PerTransfer<'a, 'l>),
+    Ready(PerTransfer<'a, 'l>, Handle),
     /// It failed once its handle existed, and ends so.
-    Unfinished(PerTransfer<'a, 'l>, Ended),
+    Unfinished(PerTransfer<'a, 'l>, Handle, Ended),
     /// It failed before: there is nothing to end (C's failed
     /// `create_transfer`).
     Failed(ErrorKind),
@@ -644,14 +655,15 @@ fn unfinished<'a, 'l>(
                 op,
                 url,
                 num: given.num,
-                easy,
                 out: out.clone(),
                 bar: None,
                 upload: None,
                 method,
                 skip: false,
+                terminal: false,
                 retrying: Retrying::new(op, None),
             },
+            easy,
             ended,
         ),
         Err(OutOfMemory) => Made::Failed(ErrorKind::OutOfMemory),
@@ -661,22 +673,22 @@ fn unfinished<'a, 'l>(
 impl PerTransfer<'_, '_> {
     /// What is done once it is over, whatever its result
     /// (`post_per_transfer`); the result as it ends up.
-    fn end(&self, run: &Shared<'_, '_>, ended: Ended) -> Result<(), ErrorKind> {
+    fn end(&self, run: &Shared<'_, '_>, easy: &Easy, ended: Ended) -> Result<(), ErrorKind> {
         let given = Given {
             text: &self.url,
             num: self.num,
         };
         let bar = self.bar.as_ref();
-        finish(self.op, run, given, &self.easy, &self.out, bar, ended)
+        finish(self.op, run, given, easy, &self.out, bar, ended)
     }
 
     /// Open what it uploads, for an attempt (`pre_transfer`).
-    fn pre_transfer(&mut self, run: &Shared<'_, '_>) -> Result<(), Pre> {
+    fn pre_transfer(&self, run: &Shared<'_, '_>, easy: &mut Easy) -> Result<(), Pre> {
         let Some(file) = self.upload.as_deref() else {
             return Ok(());
         };
         match open_upload(file) {
-            Ok(source) => upload_setopts(&mut self.easy, run, source).map_err(Pre::Failed),
+            Ok(source) => upload_setopts(easy, run, source).map_err(Pre::Failed),
             Err(Unopened::OutOfMemory) => Err(Pre::Failed(ErrorKind::OutOfMemory)),
             Err(Unopened::Io) => {
                 run.msgs.help(&[b"cannot open '", file, b"'"]);
@@ -687,40 +699,39 @@ impl PerTransfer<'_, '_> {
 
     /// Run it to its end, attempt after attempt (the perform and
     /// `post_per_transfer` of `serial_transfers`).
-    fn run_serial(mut self, run: &Shared<'_, '_>) -> Step {
+    fn run_serial(mut self, run: &Shared<'_, '_>, mut easy: Handle) -> Step {
         let msgs = run.msgs;
         let ended = if self.skip {
             run.started.set(Some(Instant::now()));
-            Ended::Skipped
+            Ended::Skipped(Ok(()))
         } else {
             loop {
                 run.started.set(Some(Instant::now()));
                 // Opened for each attempt, from its start.
-                match self.pre_transfer(run) {
+                match self.pre_transfer(run, &mut easy) {
                     Ok(()) => {}
-                    Err(Pre::Failed(e)) => return self.fail(run, e),
+                    Err(Pre::Failed(e)) => return self.fail(run, &easy, e),
                     Err(Pre::Unopened) => {
-                        let result = self.end(run, Ended::Ran(Err(ErrorKind::ReadError)));
+                        let ended = Ended::Ran(Err(ErrorKind::ReadError));
+                        let result = self.end(run, &easy, ended);
                         return Step::Unopened(result.expect_err("a failure stays one"));
                     }
                 }
                 if let Some(source) = run.libcurl
                     && source.borrow_mut().perform().is_err()
                 {
-                    return self.fail(run, ErrorKind::OutOfMemory);
+                    return self.fail(run, &easy, ErrorKind::OutOfMemory);
                 }
                 #[cfg(feature = "debug-hooks")]
                 let result = if run.global.test_event {
-                    self.easy.perform_ev()
+                    easy.perform_ev()
                 } else {
-                    self.easy.perform()
+                    easy.perform()
                 };
                 #[cfg(not(feature = "debug-hooks"))]
-                let result = self.easy.perform();
+                let result = easy.perform();
                 let result = result.map_err(|e| e.kind());
-                let result = settle(
-                    self.op, run, &self.url, &self.easy, &self.out, result, false,
-                );
+                let result = settle(self.op, run, &self.url, &easy, &self.out, result, Told::Not);
                 let attempt = Attempt {
                     result,
                     upload: self.upload.is_some(),
@@ -728,23 +739,21 @@ impl PerTransfer<'_, '_> {
                 };
                 match self
                     .retrying
-                    .check(self.op, msgs, &mut self.easy, &self.out, attempt)
+                    .check(self.op, msgs, &mut easy, &self.out, attempt)
                 {
                     Again::After(wait) => std::thread::sleep(wait),
                     Again::No(result) => break Ended::Settled(result, self.retrying.retries),
                 }
             }
         };
-        Step::Ran(self.end(run, ended))
+        Step::Ran(self.end(run, &easy, ended))
     }
 
     /// It failed to start for a reason of the tool's.
-    fn fail(mut self, run: &Shared<'_, '_>, e: ErrorKind) -> Step {
+    fn fail(mut self, run: &Shared<'_, '_>, easy: &Easy, e: ErrorKind) -> Step {
         self.bar = None;
-        Step::Failed(
-            self.end(run, Ended::Ran(Err(e)))
-                .expect_err("a failure stays one"),
-        )
+        let result = self.end(run, easy, Ended::Ran(Err(e)));
+        Step::Failed(result.expect_err("a failure stays one"))
     }
 }
 
@@ -1057,18 +1066,19 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         Ok(upload) => upload,
         Err(OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
     };
-    Made::Ready(PerTransfer {
+    let per = PerTransfer {
         op,
         url,
         num: given.num,
-        easy,
         out,
         bar,
         upload,
         method,
         skip,
+        terminal,
         retrying: Retrying::new(op, resume_from),
-    })
+    };
+    Made::Ready(per, easy)
 }
 
 /// A transfer's handle, which saves the cookie jar when it is done with,
@@ -1369,9 +1379,10 @@ enum Ended {
     Ran(Result<(), ErrorKind>),
     /// With this result, settled, after this many retries.
     Settled(Result<(), ErrorKind>, u64),
-    /// Never started: its output file exists (`--skip-existing`). It
-    /// succeeds, and only its `--write-out` is written.
-    Skipped,
+    /// Never started: its output file exists (`--skip-existing`). Only
+    /// its `--write-out` is written, with the result given: success, or
+    /// the run's when it ends parallel transfers.
+    Skipped(Result<(), ErrorKind>),
     /// Not set up, for a reason the tool has said itself: it is not said
     /// again (C's `synthetic_error`).
     Said(ErrorKind),
@@ -2255,11 +2266,21 @@ fn finish(
     ended: Ended,
 ) -> Result<(), ErrorKind> {
     let msgs = run.msgs;
+    let mut skipped = Ok(());
     let (result, retries) = match ended {
-        Ended::Ran(result) => (Some(settle(op, run, url.text, easy, out, result, false)), 0),
-        Ended::Said(e) => (Some(settle(op, run, url.text, easy, out, Err(e), true)), 0),
+        Ended::Ran(result) => {
+            let result = settle(op, run, url.text, easy, out, result, Told::Not);
+            (Some(result), 0)
+        }
+        Ended::Said(e) => {
+            let result = settle(op, run, url.text, easy, out, Err(e), Told::Already);
+            (Some(result), 0)
+        }
         Ended::Settled(result, retries) => (Some(result), retries),
-        Ended::Skipped => (None, 0),
+        Ended::Skipped(result) => {
+            skipped = result;
+            (None, 0)
+        }
     };
     // The output is closed once there is no retrying (`post_close_output`).
     let result = match result {
@@ -2300,8 +2321,7 @@ fn finish(
             }
             result
         }
-        // A skipped transfer succeeds.
-        None => Ok(()),
+        None => skipped,
     };
     if let Some(format) = &op.write_out {
         let stream = out.stream();
@@ -2320,6 +2340,18 @@ fn finish(
     result
 }
 
+/// How a failure's reason is told.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Told<'w> {
+    /// Not yet: the transfer's reason is.
+    Not,
+    /// By the tool, already (C's `synthetic_error`).
+    Already,
+    /// As this, in place of the transfer's (C's tool writing the error
+    /// buffer).
+    As(&'w [u8]),
+}
+
 /// What one attempt's `result` comes to (`post_check_result`,
 /// `post_output_handling`): its failure said, a failing response with
 /// `--fail-with-body` made one, where the file of `url` came from stored
@@ -2332,15 +2364,19 @@ fn settle(
     easy: &Easy,
     out: &output::Output,
     mut result: Result<(), ErrorKind>,
-    said: bool,
+    told: Told<'_>,
 ) -> Result<(), ErrorKind> {
     let msgs = run.msgs;
     // The transfer's reason, or the kind's, unless the tool said its own.
     if let Err(e) = result
-        && !said
+        && told != Told::Already
         && let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e)))
     {
-        match easy.report().failure() {
+        let why = match told {
+            Told::As(why) => Some(why),
+            Told::Not | Told::Already => easy.report().failure(),
+        };
+        match why {
             Some(why) => msgs.error_line(&[code.as_bytes(), why, b"\n"]),
             None => {
                 if let Ok(why) = try_format(format_args!("{e}\n")) {

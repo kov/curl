@@ -737,6 +737,33 @@ mod tests {
         }
     }
 
+    /// `--parallel-max` and `--parallel-max-host` cap at 65535, and below
+    /// 1 fall back to their defaults (`MAX_PARALLEL`, `PARALLEL_DEFAULT`).
+    #[test]
+    fn parallel_caps_are_clamped_as_c_clamps_them() {
+        for (given, taken) in [
+            ("0", None),
+            ("1", Some(1)),
+            ("300", Some(300)),
+            ("65535", Some(65535)),
+            ("70000", Some(65535)),
+        ] {
+            let l = line(&[
+                "x",
+                "-Z",
+                "--parallel-max",
+                given,
+                "--parallel-max-host",
+                given,
+            ]);
+            assert!(l.global.parallel);
+            assert_eq!(l.global.parallel_max.map(|n| n.get()), taken, "{given}");
+            assert_eq!(l.global.parallel_host.map(|n| n.get()), taken, "{given}");
+        }
+        let l = line(&["x", "--parallel-immediate"]);
+        assert!(l.global.parallel_immediate && !l.global.parallel);
+    }
+
     /// `--range` is taken as given, but for a lone number, which gets a
     /// dash and loses its leading zeros, as C prints the number it read.
     #[test]

@@ -1,0 +1,50 @@
+=== `--parallel` forgets a failure while transfers are left to add
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool parallel_transfers_keep_the_first_failure
+--- old
+                    Ok((left, _)) => more = left,
+--- new
+                    Ok((left, _)) => {
+                        more = left;
+                        result = Ok(());
+                    }
+
+=== a transfer stopped for another's failure gives the library's reason
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool parallel_fail_early_stops_the_others
+--- old
+                Told::As(ABORTED)
+--- new
+                Told::Not
+
+=== a transfer to be tried again in parallel is never added again
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool parallel_transfers_are_tried_again
+--- old
+                    entry.place = Place::Here(easy);
+--- new
+                    drop(easy);
+
+=== a skipped parallel transfer ends as a success whatever the run's result
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool parallel_skipped_transfers_end_last
+--- old
+                None if entry.per.skip => Ended::Skipped(result),
+--- new
+                None if entry.per.skip => Ended::Skipped(Ok(())),
+
+=== the meter's last line ends with its newline before the padding
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool operate::parallel::tests::draws_lines_as_c_does
+--- old
+{} {:>5}",
+--- new
+{} {:5}",
+
+=== `--parallel-max` past 65535 wraps instead of capping
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::parallel_caps_are_clamped_as_c_clamps_them
+--- old
+    NonZeroU16::new(u16::try_from(given).unwrap_or(u16::MAX))
+--- new
+    NonZeroU16::new(given as u16)

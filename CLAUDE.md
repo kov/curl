@@ -53,6 +53,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   locale (`strftime`).
 - `crates/curl-os/src/locale.rs`: the process's locale, from the environment (`setlocale`).
 - `crates/curl-os/src/users.rs`: the user database.
+- `crates/curl-os/src/xattr.rs`: setting an open file's extended attributes (`fsetxattr`).
 - `crates/curl-sys-abi/csrc/va_fetch.c`: C, not Rust; reads the printf arguments stable Rust
   cannot (`long double`). The `nightly` feature reads them in Rust instead.
 

@@ -34,6 +34,7 @@ mod trace;
 mod untrusted;
 mod vars;
 mod write_out;
+mod xattr;
 
 use msgs::Messages;
 use options::{CommandLine, Parsed, Request, Trace, Unimplemented, exit_code};

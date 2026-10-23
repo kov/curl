@@ -637,6 +637,42 @@ fn saves_the_cookie_jar() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// `--xattr` stores where a download came from with the file the
+/// transfer wrote, once it succeeded: a pipe takes no attributes, and
+/// that is warned of, with the reason.
+#[test]
+fn stores_where_a_download_came_from() {
+    let dir = scratch("xattr");
+    let pipe = dir.join("pipe");
+    let made = Command::new("mkfifo").arg(&pipe).status().unwrap();
+    assert!(made.success());
+    let name = pipe.to_str().unwrap();
+    for (reply, args, warned) in [
+        (OK, &["--xattr"][..], true),
+        (
+            &b"HTTP/1.1 404 Not Found\r\nContent-Length: 5\r\n\r\nabcde"[..],
+            &["--xattr", "--fail-with-body"][..],
+            false,
+        ),
+    ] {
+        let reader = {
+            let pipe = pipe.clone();
+            std::thread::spawn(move || std::fs::read(pipe).unwrap())
+        };
+        let s = Server::new(reply);
+        let url = s.url();
+        let mut all = vec!["--no-progress-meter", "-o", name, &url];
+        all.extend_from_slice(args);
+        let run = curl_columns(&all, Some("1000"));
+        assert_eq!(reader.join().unwrap().len(), if warned { 6 } else { 5 });
+        let warning = format!(
+            "Warning: Error setting extended attributes on '{name}': Operation not permitted\n"
+        );
+        assert_eq!(run.stderr.contains(&warning), warned, "{}", run.stderr);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// HTTP's options are for a URL the tool takes for HTTP's: a file read
 /// with `-c` and `-b` keeps no jar, sends nothing and warns of nothing,
 /// as C's `http_setopts` is not run for it.

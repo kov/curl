@@ -453,6 +453,16 @@ impl Stream {
         matches!(self.target, Target::File { file: Some(_), .. })
     }
 
+    /// The file the output goes to, if it is open.
+    pub(crate) fn open_file(&self) -> Option<&File> {
+        match &self.target {
+            Target::File {
+                file: Some(file), ..
+            } => Some(file.get_ref()),
+            _ => None,
+        }
+    }
+
     /// Keep what was written, for the next attempt to add to: where that
     /// one starts. `None` past the largest size C can hold.
     pub(crate) fn keep(&mut self) -> Option<u64> {

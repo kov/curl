@@ -321,6 +321,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) low_speed_time: u64,
     /// `--create-file-mode`; 0 leaves the library's default.
     pub(crate) create_file_mode: u16,
+    /// `--xattr`: where a download came from is stored with its file.
+    pub(crate) xattr: bool,
 }
 
 /// The addresses `--ipv4` and `--ipv6` limit a name to.
@@ -879,6 +881,7 @@ pub(crate) fn apply<'a>(
             });
         }
         Opt::Include | Opt::ShowHeaders => line.current().show_headers = value.toggle(),
+        Opt::Xattr => line.current().xattr = value.toggle(),
         Opt::Head => {
             let on = value.toggle();
             let op = line.current();
@@ -1513,8 +1516,7 @@ pub(crate) fn apply<'a>(
         | Opt::UnixSocket
         | Opt::UploadFlags
         | Opt::UseAscii
-        | Opt::VlanPriority
-        | Opt::Xattr => line.not_implemented(spec, "--"),
+        | Opt::VlanPriority => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
 }

@@ -2,8 +2,9 @@
 //! safe functions: the process's command line and environment, the
 //! terminal, an error's text, the locale, the local time of day, the user database,
 //! random bytes, with `net` sockets, polling, the system's resolver and
-//! the waker, and with `fs` files and directories. Linux first; each
-//! module says what it needs of the platform.
+//! the waker, and with `fs` files, their extended attributes and
+//! directories. Linux first; each module says what it needs of the
+//! platform.
 
 #[cfg(feature = "args")]
 pub mod args;
@@ -24,3 +25,5 @@ pub mod time;
 pub mod users;
 #[cfg(feature = "net")]
 pub mod wake;
+#[cfg(feature = "fs")]
+pub mod xattr;

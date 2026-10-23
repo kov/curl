@@ -1,0 +1,26 @@
+# `--xattr` (crates/curl-tool/src/xattr.rs, its call in operate.rs) and
+# the extended attributes it sets (crates/curl-os/src/xattr.rs).
+
+=== an attribute is set empty
+file: crates/curl-os/src/xattr.rs
+witness: curl-os xattr::tests::sets_an_attribute
+--- old
+            value.len(),
+--- new
+            0,
+
+=== the URL a download came from is stored with its user and password
+file: crates/curl-tool/src/xattr.rs
+witness: curl-tool xattr::tests::strips_credentials_as_c_does
+--- old
+    url.set(Part::User, None, SetOptions::NONE).ok()?;
+--- new
+
+=== a transfer that failed stores where it came from
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool stores_where_a_download_came_from
+--- old
+    if result.is_ok()
+        && op.xattr
+--- new
+    if op.xattr

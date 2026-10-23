@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
+use std::os::fd::AsFd as _;
 use std::time::{Duration, Instant};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
@@ -802,7 +803,7 @@ fn transfer(
             #[cfg(not(feature = "debug-hooks"))]
             let result = easy.perform();
             let result = result.map_err(|e| e.kind());
-            let result = settle(op, msgs, &easy, &out, result, false);
+            let result = settle(op, run, url, &easy, &out, result, false);
             let attempt = Attempt {
                 result,
                 upload: upload.is_some(),
@@ -1937,8 +1938,8 @@ fn finish(
 ) -> Result<(), ErrorKind> {
     let msgs = run.msgs;
     let (result, retries) = match ended {
-        Ended::Ran(result) => (Some(settle(op, msgs, easy, out, result, false)), 0),
-        Ended::Said(e) => (Some(settle(op, msgs, easy, out, Err(e), true)), 0),
+        Ended::Ran(result) => (Some(settle(op, run, url.text, easy, out, result, false)), 0),
+        Ended::Said(e) => (Some(settle(op, run, url.text, easy, out, Err(e), true)), 0),
         Ended::Settled(result, retries) => (Some(result), retries),
         Ended::Skipped => (None, 0),
     };
@@ -2003,16 +2004,19 @@ fn finish(
 
 /// What one attempt's `result` comes to (`post_check_result`,
 /// `post_output_handling`): its failure said, a failing response with
-/// `--fail-with-body` made one, an output file that got nothing created,
-/// and standard output flushed.
+/// `--fail-with-body` made one, where the file of `url` came from stored
+/// with it, an output file that got nothing created, and standard output
+/// flushed.
 fn settle(
     op: &Operation<'_>,
-    msgs: Messages,
+    run: &Shared<'_, '_>,
+    url: &[u8],
     easy: &Easy,
     out: &output::Output,
     mut result: Result<(), ErrorKind>,
     said: bool,
 ) -> Result<(), ErrorKind> {
+    let msgs = run.msgs;
     // The transfer's reason, or the kind's, unless the tool said its own.
     if let Err(e) = result
         && !said
@@ -2044,6 +2048,20 @@ fn settle(
         result = Err(kind);
     }
     let mut stream = out.stream();
+    // `--xattr`, for a file the transfer opened.
+    if result.is_ok()
+        && op.xattr
+        && let Some(file) = stream.open_file()
+        && let Err(e) = crate::xattr::write(file.as_fd(), url, easy.report(), run.stdout)
+    {
+        let name = stream.file_name().unwrap_or_default();
+        msgs.warn(&[
+            b"Error setting extended attributes on '",
+            name,
+            b"': ",
+            os_message(&e).as_bytes(),
+        ]);
+    }
     // A successful transfer that wrote nothing still leaves its output
     // file, empty, unless a time condition kept the file from coming:
     // then the file is not even replaced.

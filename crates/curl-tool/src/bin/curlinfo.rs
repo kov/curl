@@ -29,7 +29,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("verbose-strings", true),
     ("wakeup", true),
     ("headers-api", true),
-    ("xattr", false),
+    ("xattr", true),
     ("form-api", true),
     // `time_t` and `curl_off_t` are 64 bits wide.
     ("large-time", true),

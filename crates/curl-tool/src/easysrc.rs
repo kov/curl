@@ -131,7 +131,8 @@ const AUTH_BEARER: u64 = 1 << 6;
 const AUTH_AWS_SIGV4: u64 = 1 << 7;
 const AUTH_HTTPSIG: u64 = 1 << 8;
 const AUTH_ONLY: u64 = 1 << 31;
-const AUTH_ANY: u64 = !(AUTH_DIGEST_IE | AUTH_HTTPSIG) & 0xffff_ffff;
+/// The low 32 bits but `CURLAUTH_DIGEST_IE` and `CURLAUTH_HTTPSIG`.
+const AUTH_ANY: u64 = 0xffff_feef;
 
 /// `setopt_nv_CURLAUTH`.
 pub(crate) const AUTH: Bits = &[
@@ -794,6 +795,111 @@ mod tests {
         assert_eq!(reached, ["easysrc.rs"]);
     }
 
+    /// The lines `Setopt` writes for `set`, each value as C's wrappers
+    /// write it.
+    fn lines(set: impl FnOnce(&mut Setopt<'_>)) -> Vec<String> {
+        let mut easy = Easy::new();
+        let mut source = Source::default();
+        set(&mut Setopt::new(&mut easy, Some(&mut source)));
+        source
+            .code
+            .iter()
+            .map(|l| String::from_utf8(l.clone()).unwrap())
+            .collect()
+    }
+
+    fn nothing(_: &mut Options) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
+    /// A `long` equal to its option's default is not written: 0, or the
+    /// default of `setopt_nv_CURLNONZERODEFAULTS`; a `curl_off_t` of 0
+    /// neither; a named value by its name, or as a number if it has none.
+    #[test]
+    fn writes_values_as_c_does() {
+        let written = lines(|s| {
+            s.long("CURLOPT_TCP_NODELAY", 1, nothing).unwrap();
+            s.long("CURLOPT_TCP_NODELAY", 0, nothing).unwrap();
+            s.long("CURLOPT_UPLOAD_FLAGS", 1 << 4, nothing).unwrap();
+            s.long("CURLOPT_UPLOAD_FLAGS", 0, nothing).unwrap();
+            s.long("CURLOPT_VERBOSE", 0, nothing).unwrap();
+            s.offt("CURLOPT_MAXFILESIZE_LARGE", 0, nothing).unwrap();
+            s.offt("CURLOPT_MAXFILESIZE_LARGE", 24, nothing).unwrap();
+            s.enumerated("CURLOPT_PROXYTYPE", PROXY_TYPES, 0, nothing)
+                .unwrap();
+            s.enumerated("CURLOPT_PROXYTYPE", PROXY_TYPES, 1, nothing)
+                .unwrap();
+            s.enumerated("CURLOPT_PROXYTYPE", PROXY_TYPES, 3, nothing)
+                .unwrap();
+        });
+        assert_eq!(
+            written,
+            [
+                "curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 0L);",
+                "curl_easy_setopt(curl, CURLOPT_UPLOAD_FLAGS, 0L);",
+                "curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)24);",
+                "curl_easy_setopt(curl, CURLOPT_PROXYTYPE, (long)CURLPROXY_HTTP_1_0);",
+                "curl_easy_setopt(curl, CURLOPT_PROXYTYPE, 3L);",
+            ]
+        );
+    }
+
+    /// The `CURLPROXY_*` and `CURLAUTH_*` values of curl.h.
+    #[test]
+    fn takes_c_s_values() {
+        for (kind, value) in [
+            (ProxyType::Http, 0),
+            (ProxyType::Http10, 1),
+            (ProxyType::Https, 2),
+            (ProxyType::Https2, 3),
+            (ProxyType::Socks4, 4),
+            (ProxyType::Socks5, 5),
+            (ProxyType::Socks4a, 6),
+            (ProxyType::Socks5Hostname, 7),
+            (ProxyType::Https3, 8),
+        ] {
+            assert_eq!(proxy_type(kind), value, "{kind:?}");
+        }
+        for (methods, mask) in [
+            (AuthMethods::BASIC, 1),
+            (AuthMethods::DIGEST, 2),
+            (AuthMethods::BEARER, 64),
+            (AuthMethods::AWS_SIGV4, 128),
+            (AuthMethods::HTTPSIG, 256),
+            (AuthMethods::ONLY, 1 << 31),
+            (AuthMethods::ANY, 0xffff_feef),
+            (AuthMethods::ANY | AuthMethods::HTTPSIG, 0xffff_ffef),
+        ] {
+            assert_eq!(auth_mask(methods), mask, "{methods:?}");
+        }
+    }
+
+    /// The program goes to the file named, or with `-` to standard
+    /// output; a file that cannot be made is warned of.
+    #[test]
+    fn writes_the_program_to_the_file_named() {
+        let dir = std::env::temp_dir().join(format!("curl-tool-easysrc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prog.c");
+        let stdout = Stdout::new().unwrap();
+        let said = crate::msgs::captured(|msgs| {
+            let name = path.to_str().unwrap().as_bytes();
+            Source::new().unwrap().finish(name, &stdout, &msgs).unwrap();
+            Source::new()
+                .unwrap()
+                .finish(b"/nonexistent/dir/prog.c", &stdout, &msgs)
+                .unwrap();
+        });
+        let mut want = Source::new().unwrap();
+        want.cleanup().unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text(&want));
+        assert_eq!(
+            said,
+            "Warning: Failed to open /nonexistent/dir/prog.c to write libcurl code\n"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Test 1465's body, escaped as C escapes it: octal before a
     /// hexadecimal digit, else hexadecimal.
     #[test]
@@ -803,6 +909,8 @@ mod tests {
             c_escape(body).unwrap(),
             br#"ab\201cd\000e\\\"\?\r\n\t\001fghi\x1ajklm\xfd"#
         );
+        let whole = vec![b'a'; MAX_STRING];
+        assert_eq!(c_escape(&whole).unwrap(), whole, "not cut");
         let long = vec![b'a'; MAX_STRING + 1];
         let cut = c_escape(&long).unwrap();
         assert_eq!(cut.len(), MAX_STRING + 3);

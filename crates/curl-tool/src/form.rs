@@ -1182,6 +1182,38 @@ mod tests {
         assert!(text.contains("  slist1 = curl_slist_append(slist1, \"X: 1\");\n"));
     }
 
+    /// Standard input given with `@` is named `-` unless a name is given;
+    /// given with `<`, it is not named (`TOOLMIME_STDIN`,
+    /// `TOOLMIME_STDINDATA`).
+    #[test]
+    fn names_standard_input_as_c_does() {
+        let mut f = Form::default();
+        for (named, filename) in [(true, None), (true, Some(&b"z"[..])), (false, None)] {
+            let mut p = ToolPart::new(Kind::Stdin {
+                input: Stdin::Unread,
+                named,
+            });
+            p.filename = filename.map(<[u8]>::to_vec);
+            f.parts.push(p);
+        }
+        let mut source = Source::default();
+        f.libcurl(&mut source).unwrap();
+        let mut text = Vec::new();
+        source.finish_into(&mut text);
+        let text = String::from_utf8(text).unwrap();
+        let read = "  curl_mime_data_cb(part1, -1, (curl_read_callback)fread, \\\n                    (curl_seek_callback)fseek, NULL, stdin);\n";
+        let start = text.find("  part1 = ").unwrap();
+        let end = text.find("  curl_easy_cleanup").unwrap();
+        assert_eq!(
+            text[start..end],
+            format!(
+                "  part1 = curl_mime_addpart(mime1);\n{read}  curl_mime_filename(part1, \"-\");\n\
+                 \x20 part1 = curl_mime_addpart(mime1);\n{read}  curl_mime_filename(part1, \"z\");\n\
+                 \x20 part1 = curl_mime_addpart(mime1);\n{read}"
+            )
+        );
+    }
+
     /// `--form-string` takes the value as it is.
     #[test]
     fn a_string_is_taken_as_it_is() {

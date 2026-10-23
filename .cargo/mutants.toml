@@ -340,6 +340,14 @@ exclude_re = [
     'curl-tool/src/write_out\.rs:.*: delete match arm 0 in separator$',
     # The ball's tick is only ever read modulo 200.
     'curl-tool/src/bar\.rs:.*: replace % with \+ in State::fly$',
+    # Bits that never overlap: or and exclusive or make the same mask.
+    'curl-tool/src/easysrc\.rs:.*: replace \| with \^ in auth_mask$',
+    'curl-tool/src/operate\.rs:.*: replace \| with \^ in http_setopts$',
+    # A reservation size: a short one only makes a push grow the list.
+    'curl-tool/src/operate\.rs:.*: replace \+ with \* in credentials_and_headers$',
+    # The decoder asks only after 1 MiB of output, and the manual is under
+    # a third of that; nothing else could stop it.
+    'curl-tool/src/hugehelp\.rs:.*: replace <impl Sink for Pieces<._>>::timed_out -> bool with true$',
     # A reservation size: `--output-dir` refuses a blank argument, so the
     # directory is never empty, and a short reservation only makes a push
     # grow the buffer.

@@ -69,15 +69,7 @@ witness: curl-tool includes_headers
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_an_upload_it_cannot_open
 --- old
-                        let result = finish(
-                            op,
-                            run,
-                            given,
-                            &easy,
-                            &out,
-                            bar.as_ref(),
-                            Ended::Ran(Err(ErrorKind::ReadError)),
-                        );
+                        let result = self.end(run, Ended::Ran(Err(ErrorKind::ReadError)));
 --- new
                         let result: Result<(), ErrorKind> = Err(ErrorKind::ReadError);
 
@@ -85,9 +77,9 @@ witness: curl-tool reports_an_upload_it_cannot_open
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_a_failure
 --- old
-                    *last = result;
+                last = result;
 --- new
-                    *last = last.and(result);
+                last = last.and(result);
 
 === `--show-error` does not bring back the result line under `--silent`
 file: crates/curl-tool/src/msgs.rs
@@ -177,9 +169,15 @@ witness: curl-tool options::parse::tests::fills_nodes_in_turn
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool reports_an_output_it_cannot_open
 --- old
-            return failed(&easy, ErrorKind::WriteError);
+            return failed(easy, ErrorKind::WriteError);
+        }
+    }
+    // An upload to a path without a name gives it the file's; standard
 --- new
-            return Step::Failed(ErrorKind::WriteError);
+            return Made::Failed(ErrorKind::WriteError);
+        }
+    }
+    // An upload to a path without a name gives it the file's; standard
 
 === a line buffer is written only when full
 file: crates/curl-tool/src/stdio.rs
@@ -281,7 +279,7 @@ witness: curl-tool takes_one_method
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool dumps_the_headers
 --- old
-            Err(output::DumpFailed::Open) => return failed(&easy, ErrorKind::WriteError),
+            Err(output::DumpFailed::Open) => return failed(easy, ErrorKind::WriteError),
 --- new
             Err(output::DumpFailed::Open) => {}
 
@@ -305,9 +303,9 @@ witness: curl-tool gives_up_after_the_time_allowed
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool globs_unless_told_not_to
 --- old
-        if op.globoff || literal || !glob::has_patterns(text) {
+    if op.globoff || literal || !glob::has_patterns(text) {
 --- new
-        if literal || !glob::has_patterns(text) {
+    if literal || !glob::has_patterns(text) {
 
 === a status code is written without its leading zeroes
 file: crates/curl-tool/src/write_out.rs

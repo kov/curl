@@ -197,74 +197,253 @@ fn ask_password(
 }
 
 fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
-    let msgs = run.msgs;
+    let mut transfers = Transfers::new(&line.operations, run.msgs);
     // The result of the last transfer that ran.
     let mut last = Ok(());
-    // Each URL's number on the command line, across operations
-    // (`outnum`).
-    let mut urlnum = 0;
-    for op in &line.operations {
-        if op.nodes.first().and_then(|n| n.url).is_none() {
-            msgs.help(&[b"(2) no URL specified"]);
-            return Err(ErrorKind::FailedInit);
+    loop {
+        match transfers.advance() {
+            Ok(true) => {}
+            Ok(false) => return last,
+            Err(ending) => return ending,
         }
-        let mut first = true;
-        for node in &op.nodes {
-            let Some(url) = node.url else {
-                msgs.warn(&[b"Got more output options than URLs"]);
-                break;
-            };
-            let given = Given {
-                text: url,
-                num: urlnum,
-            };
-            urlnum += 1;
-            if let Some(ending) = node_transfers(op, run, node, given, &mut first, &mut last) {
-                return ending;
+        rate_wait(run.global.ms_per_transfer, run.started.get(), run.msgs);
+        match transfer(run, transfers.item()) {
+            Step::Ran(result) => {
+                last = result;
+                if ends_run(result, run.global.fail_early) {
+                    return result;
+                }
             }
+            Step::Failed(e) => return Err(e),
+            Step::Unopened(e) => return last.and(Err(e)),
         }
     }
-    last
 }
 
-/// Run a node's transfers: one for each file its upload pattern names,
-/// times each URL its URL pattern makes, the URL's changing first
-/// (`create_single`). Each has the node's number. `None` if the
-/// operation goes on.
-fn node_transfers(
-    op: &Operation<'_>,
-    run: &Shared<'_, '_>,
-    node: &Node<'_>,
-    given: Given<'_>,
-    first: &mut bool,
-    last: &mut Result<(), ErrorKind>,
-) -> Option<Ending> {
-    let msgs = run.msgs;
-    // A name without patterns still names an output through one, unless
-    // globbing is off (`glob_inuse` is true of a literal).
-    let literal = Glob::literal();
-    let expand = |text: &[u8], literal: bool| -> Result<Option<Glob>, Ending> {
-        if op.globoff || literal || !glob::has_patterns(text) {
-            return Ok(None);
+/// Which text is in use: one the command line gives, or the one a
+/// pattern made last.
+#[derive(Clone, Copy)]
+enum Pick<'l> {
+    Given(&'l [u8]),
+    Held,
+}
+
+/// The transfers the command line asks for, made one at a time as C's
+/// `create_transfer` makes them (its `struct State`): each operation's
+/// nodes in turn, and for each node one transfer for each file its upload
+/// pattern names, times each URL its URL pattern makes, the URL's changing
+/// first (`create_single`). Each has the node's number.
+struct Transfers<'a, 'l> {
+    ops: &'a [Operation<'l>],
+    msgs: Messages,
+    /// What a name reads for a URL without patterns.
+    literal: Glob,
+    /// The operation walked, and its node, none before its first.
+    op: usize,
+    node: Option<usize>,
+    /// Each URL's number on the command line, across operations
+    /// (`outnum`).
+    urlnum: u64,
+    /// The transfer ready is its operation's first.
+    first: bool,
+    /// A transfer is ready.
+    ready: bool,
+    walk: Option<Walk<'l>>,
+}
+
+/// Where the walk of one node is.
+struct Walk<'l> {
+    given: Given<'l>,
+    file: Option<&'l [u8]>,
+    /// The upload pattern (`setup_input_file`).
+    uploads: Option<Glob>,
+    upload_once: bool,
+    upload_held: Vec<u8>,
+    upload: Option<Pick<'l>>,
+    /// The URL pattern for the upload in use, once made for it
+    /// (`setup_url_pattern`).
+    urls: Option<Option<Glob>>,
+    url_once: bool,
+    url_held: Vec<u8>,
+    url: Pick<'l>,
+}
+
+/// One transfer to make.
+struct Item<'a, 'g, 'l> {
+    op: &'a Operation<'l>,
+    node: &'a Node<'l>,
+    given: Given<'g>,
+    upload: Option<&'g [u8]>,
+    names: Option<Names<'g>>,
+    /// The operation's first.
+    first: bool,
+}
+
+impl<'a, 'l> Transfers<'a, 'l> {
+    fn new(ops: &'a [Operation<'l>], msgs: Messages) -> Self {
+        Transfers {
+            ops,
+            msgs,
+            literal: Glob::literal(),
+            op: 0,
+            node: None,
+            urlnum: 0,
+            first: true,
+            ready: false,
+            walk: None,
         }
-        match Glob::parse(text) {
-            Ok((parsed, _)) => Ok(Some(parsed)),
-            Err(e) => {
-                e.show(text, &msgs);
-                Err(Err(e.kind))
+    }
+
+    /// Make the next transfer ready: `false` once there is none, or how
+    /// the run ends if it cannot be made.
+    fn advance(&mut self) -> Result<bool, Ending> {
+        let msgs = self.msgs;
+        if std::mem::take(&mut self.ready) {
+            self.first = false;
+        }
+        loop {
+            let Some(op) = self.ops.get(self.op) else {
+                return Ok(false);
+            };
+            if let Some(walk) = &mut self.walk {
+                if let Some(urls) = &mut walk.urls {
+                    match next_text(urls, &mut walk.url_once, &mut walk.url_held)? {
+                        Some(true) => walk.url = Pick::Held,
+                        Some(false) => walk.url = Pick::Given(walk.given.text),
+                        None => {
+                            walk.urls = None;
+                            continue;
+                        }
+                    }
+                    self.ready = true;
+                    return Ok(true);
+                }
+                match next_text(
+                    &mut walk.uploads,
+                    &mut walk.upload_once,
+                    &mut walk.upload_held,
+                )? {
+                    Some(true) => walk.upload = Some(Pick::Held),
+                    Some(false) => walk.upload = walk.file.map(Pick::Given),
+                    None => {
+                        self.walk = None;
+                        continue;
+                    }
+                }
+                // Made again for each upload; a URL read from a file is
+                // not globbed (`noglob`).
+                let node = &op.nodes[self.node.expect("walking a node")];
+                walk.urls = Some(expand(op, walk.given.text, node.literal, msgs)?);
+                walk.url_once = true;
+                continue;
             }
+            if self.node.is_none() {
+                if op.nodes.first().and_then(|n| n.url).is_none() {
+                    msgs.help(&[b"(2) no URL specified"]);
+                    return Err(Err(ErrorKind::FailedInit));
+                }
+                self.first = true;
+            }
+            let at = self.node.map_or(0, |n| n + 1);
+            let next = op.nodes.get(at).map(|node| (node, node.url));
+            let Some((node, Some(url))) = next else {
+                if next.is_some() {
+                    msgs.warn(&[b"Got more output options than URLs"]);
+                }
+                self.op += 1;
+                self.node = None;
+                continue;
+            };
+            self.node = Some(at);
+            let given = Given {
+                text: url,
+                num: self.urlnum,
+            };
+            self.urlnum += 1;
+            let file = match node.upload {
+                Upload::File(file) => Some(file),
+                Upload::Unset | Upload::Nothing => None,
+            };
+            let uploads = match file {
+                Some(file) => expand(op, file, false, msgs)?,
+                None => None,
+            };
+            self.walk = Some(Walk {
+                given,
+                file,
+                uploads,
+                upload_once: true,
+                upload_held: Vec::new(),
+                upload: None,
+                urls: None,
+                url_once: true,
+                url_held: Vec::new(),
+                url: Pick::Given(url),
+            });
         }
-    };
-    let file = match node.upload {
-        Upload::File(file) => Some(file),
-        Upload::Unset | Upload::Nothing => None,
-    };
-    // `setup_input_file`.
-    let mut uploads = match file.map(|file| expand(file, false)).transpose() {
-        Ok(uploads) => uploads.flatten(),
-        Err(ending) => return Some(ending),
-    };
-    let next = |glob: &mut Option<Glob>, whole: Option<&[u8]>, held: &mut Vec<u8>| match glob {
+    }
+
+    /// The transfer `advance` made ready.
+    fn item(&self) -> Item<'a, '_, 'l> {
+        let op: &'a Operation<'l> = &self.ops[self.op];
+        let node = &op.nodes[self.node.expect("an item is ready")];
+        let walk = self.walk.as_ref().expect("an item is ready");
+        let text = match walk.url {
+            Pick::Given(text) => text,
+            Pick::Held => &walk.url_held[..],
+        };
+        let upload = walk.upload.map(|pick| match pick {
+            Pick::Given(file) => file,
+            Pick::Held => &walk.upload_held[..],
+        });
+        let urls = walk.urls.as_ref().expect("an item is ready");
+        // Names read the patterns while one is in use (`glob_inuse`).
+        let names = (!op.globoff && (!node.literal || walk.file.is_some())).then(|| Names {
+            url: urls.as_ref().unwrap_or(&self.literal),
+            upload: walk.uploads.as_ref(),
+        });
+        Item {
+            op,
+            node,
+            given: Given {
+                text,
+                num: walk.given.num,
+            },
+            upload,
+            names,
+            first: self.first,
+        }
+    }
+}
+
+/// `text`'s pattern, unless globbing is off, the text is `literal` or
+/// it has none; a bad one said.
+fn expand(
+    op: &Operation<'_>,
+    text: &[u8],
+    literal: bool,
+    msgs: Messages,
+) -> Result<Option<Glob>, Ending> {
+    if op.globoff || literal || !glob::has_patterns(text) {
+        return Ok(None);
+    }
+    match Glob::parse(text) {
+        Ok((parsed, _)) => Ok(Some(parsed)),
+        Err(e) => {
+            e.show(text, &msgs);
+            Err(Err(e.kind))
+        }
+    }
+}
+
+/// The next text of `glob` into `held` (`Some(true)`), or without a
+/// pattern the text given, once (`Some(false)`); `None` when done.
+fn next_text(
+    glob: &mut Option<Glob>,
+    once: &mut bool,
+    held: &mut Vec<u8>,
+) -> Result<Option<bool>, Ending> {
+    match glob {
         Some(glob) => match glob.next_url() {
             Ok(Some(next)) => {
                 *held = next;
@@ -273,54 +452,8 @@ fn node_transfers(
             Ok(None) => Ok(None),
             Err(OutOfMemory) => Err(Err(ErrorKind::OutOfMemory)),
         },
-        None => Ok(whole.map(|_| false)),
-    };
-    let mut upload_held = Vec::new();
-    let mut upload_once = true;
-    loop {
-        let upload = match next(&mut uploads, Some(b""), &mut upload_held) {
-            Ok(Some(true)) => Some(&upload_held[..]),
-            Ok(Some(false)) if std::mem::take(&mut upload_once) => file,
-            Ok(_) => break,
-            Err(ending) => return Some(ending),
-        };
-        // `setup_url_pattern`, again for each upload.
-        // A URL read from a file is not globbed (`noglob`).
-        let mut urls = match expand(given.text, node.literal) {
-            Ok(urls) => urls,
-            Err(ending) => return Some(ending),
-        };
-        let mut url_held = Vec::new();
-        let mut url_once = true;
-        loop {
-            let text = match next(&mut urls, Some(b""), &mut url_held) {
-                Ok(Some(true)) => &url_held[..],
-                Ok(Some(false)) if std::mem::take(&mut url_once) => given.text,
-                Ok(_) => break,
-                Err(ending) => return Some(ending),
-            };
-            let this = Given { text, ..given };
-            // Names read the patterns while one is in use (`glob_inuse`).
-            let names = (!op.globoff && (!node.literal || file.is_some())).then(|| Names {
-                url: urls.as_ref().unwrap_or(&literal),
-                upload: uploads.as_ref(),
-            });
-            rate_wait(run.global.ms_per_transfer, run.started.get(), run.msgs);
-            let step = transfer(op, run, node, this, upload, names, *first);
-            *first = false;
-            match step {
-                Step::Ran(result) => {
-                    *last = result;
-                    if ends_run(result, run.global.fail_early) {
-                        return Some(result);
-                    }
-                }
-                Step::Failed(e) => return Some(Err(e)),
-                Step::Unopened(e) => return Some(last.and(Err(e))),
-            }
-        }
+        None => Ok(std::mem::take(once).then_some(false)),
     }
-    None
 }
 
 /// Whether a transfer that ended with `result` ends the run: a fatal
@@ -449,17 +582,182 @@ struct Shared<'a, 'l> {
 }
 
 /// Set up, run and finish one URL's transfer (`create_single`,
-/// `pre_transfer`, the perform and `post_per_transfer`); `first` is the
-/// operation's first.
-fn transfer(
-    op: &Operation<'_>,
-    run: &Shared<'_, '_>,
-    node: &Node<'_>,
+/// `pre_transfer`, the perform and `post_per_transfer`).
+fn transfer(run: &Shared<'_, '_>, item: Item<'_, '_, '_>) -> Step {
+    match create(run, item) {
+        Made::Ready(per) => per.run_serial(run),
+        Made::Unfinished(per, ended) => {
+            Step::Failed(per.end(run, ended).expect_err("a failure stays one"))
+        }
+        Made::Failed(e) => Step::Failed(e),
+    }
+}
+
+/// A transfer made from the command line, set up and not yet ended (C's
+/// `per_transfer`).
+struct PerTransfer<'a, 'l> {
+    op: &'a Operation<'l>,
+    /// Its URL as set, and its number on the command line.
+    url: Vec<u8>,
+    num: u64,
+    easy: Handle,
+    out: output::Output,
+    bar: Option<Bar>,
+    /// The file it uploads, opened for each attempt.
+    upload: Option<Vec<u8>>,
+    method: tool::Method,
+    /// Its output file exists (`--skip-existing`): it does not run.
+    skip: bool,
+    retrying: Retrying,
+}
+
+/// What came of making a transfer.
+enum Made<'a, 'l> {
+    Ready(PerTransfer<'a, 'l>),
+    /// It failed once its handle existed, and ends so.
+    Unfinished(PerTransfer<'a, 'l>, Ended),
+    /// It failed before: there is nothing to end (C's failed
+    /// `create_transfer`).
+    Failed(ErrorKind),
+}
+
+/// Why an attempt could not start (`pre_transfer`).
+enum Pre {
+    Failed(ErrorKind),
+    /// The file to upload could not be opened.
+    Unopened,
+}
+
+/// A transfer that failed as it was made, to end as `ended` says, with
+/// `given` for its URL.
+fn unfinished<'a, 'l>(
+    op: &'a Operation<'l>,
+    out: &output::Output,
+    method: tool::Method,
+    easy: Handle,
     given: Given<'_>,
-    upload: Option<&[u8]>,
-    names: Option<Names<'_>>,
-    first: bool,
-) -> Step {
+    ended: Ended,
+) -> Made<'a, 'l> {
+    match copy(given.text) {
+        Ok(url) => Made::Unfinished(
+            PerTransfer {
+                op,
+                url,
+                num: given.num,
+                easy,
+                out: out.clone(),
+                bar: None,
+                upload: None,
+                method,
+                skip: false,
+                retrying: Retrying::new(op, None),
+            },
+            ended,
+        ),
+        Err(OutOfMemory) => Made::Failed(ErrorKind::OutOfMemory),
+    }
+}
+
+impl PerTransfer<'_, '_> {
+    /// What is done once it is over, whatever its result
+    /// (`post_per_transfer`); the result as it ends up.
+    fn end(&self, run: &Shared<'_, '_>, ended: Ended) -> Result<(), ErrorKind> {
+        let given = Given {
+            text: &self.url,
+            num: self.num,
+        };
+        let bar = self.bar.as_ref();
+        finish(self.op, run, given, &self.easy, &self.out, bar, ended)
+    }
+
+    /// Open what it uploads, for an attempt (`pre_transfer`).
+    fn pre_transfer(&mut self, run: &Shared<'_, '_>) -> Result<(), Pre> {
+        let Some(file) = self.upload.as_deref() else {
+            return Ok(());
+        };
+        match open_upload(file) {
+            Ok(source) => upload_setopts(&mut self.easy, run, source).map_err(Pre::Failed),
+            Err(Unopened::OutOfMemory) => Err(Pre::Failed(ErrorKind::OutOfMemory)),
+            Err(Unopened::Io) => {
+                run.msgs.help(&[b"cannot open '", file, b"'"]);
+                Err(Pre::Unopened)
+            }
+        }
+    }
+
+    /// Run it to its end, attempt after attempt (the perform and
+    /// `post_per_transfer` of `serial_transfers`).
+    fn run_serial(mut self, run: &Shared<'_, '_>) -> Step {
+        let msgs = run.msgs;
+        let ended = if self.skip {
+            run.started.set(Some(Instant::now()));
+            Ended::Skipped
+        } else {
+            loop {
+                run.started.set(Some(Instant::now()));
+                // Opened for each attempt, from its start.
+                match self.pre_transfer(run) {
+                    Ok(()) => {}
+                    Err(Pre::Failed(e)) => return self.fail(run, e),
+                    Err(Pre::Unopened) => {
+                        let result = self.end(run, Ended::Ran(Err(ErrorKind::ReadError)));
+                        return Step::Unopened(result.expect_err("a failure stays one"));
+                    }
+                }
+                if let Some(source) = run.libcurl
+                    && source.borrow_mut().perform().is_err()
+                {
+                    return self.fail(run, ErrorKind::OutOfMemory);
+                }
+                #[cfg(feature = "debug-hooks")]
+                let result = if run.global.test_event {
+                    self.easy.perform_ev()
+                } else {
+                    self.easy.perform()
+                };
+                #[cfg(not(feature = "debug-hooks"))]
+                let result = self.easy.perform();
+                let result = result.map_err(|e| e.kind());
+                let result = settle(
+                    self.op, run, &self.url, &self.easy, &self.out, result, false,
+                );
+                let attempt = Attempt {
+                    result,
+                    upload: self.upload.is_some(),
+                    method: self.method,
+                };
+                match self
+                    .retrying
+                    .check(self.op, msgs, &mut self.easy, &self.out, attempt)
+                {
+                    Again::After(wait) => std::thread::sleep(wait),
+                    Again::No(result) => break Ended::Settled(result, self.retrying.retries),
+                }
+            }
+        };
+        Step::Ran(self.end(run, ended))
+    }
+
+    /// It failed to start for a reason of the tool's.
+    fn fail(mut self, run: &Shared<'_, '_>, e: ErrorKind) -> Step {
+        self.bar = None;
+        Step::Failed(
+            self.end(run, Ended::Ran(Err(e)))
+                .expect_err("a failure stays one"),
+        )
+    }
+}
+
+/// Set up one URL's transfer (`create_single`).
+fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> {
+    let Item {
+        op,
+        node,
+        given,
+        upload,
+        names,
+        first,
+    } = item;
     let msgs = run.msgs;
     let url = given.text;
     // The data of `--data` makes a POST, an upload a PUT, and no other
@@ -479,12 +777,12 @@ fn transfer(
         (None, None) => None,
     };
     if wanted.is_some_and(|wanted| method.choose(wanted, &msgs).is_err()) {
-        return Step::Failed(ErrorKind::FailedInit);
+        return Made::Failed(ErrorKind::FailedInit);
     }
     // `--url-query` gives the query otherwise.
     let query = fields.or(op.url_query.as_deref());
     if upload.is_some() && method.choose(tool::Method::Put, &msgs).is_err() {
-        return Step::Failed(ErrorKind::FailedInit);
+        return Made::Failed(ErrorKind::FailedInit);
     }
     // `check_post_resume`: data is not resumed, and C says so itself.
     let resumed = match op.resume {
@@ -494,7 +792,7 @@ fn transfer(
     };
     if matches!(method, tool::Method::Post | tool::Method::Mime) && resumed {
         msgs.error(&[b"(43) HTTP upload cannot be resumed"]);
-        return Step::Failed(ErrorKind::BadFunctionArgument);
+        return Made::Failed(ErrorKind::BadFunctionArgument);
     }
     // Where the output goes (`setup_outfile`): a file the URL names, for
     // `--remote-name`, is never standard output.
@@ -512,12 +810,12 @@ fn transfer(
                 Ok(globbed) => globbed,
                 Err(e) => {
                     e.show(name, &msgs);
-                    return Step::Failed(e.kind);
+                    return Made::Failed(e.kind);
                 }
             };
             if globbed.is_empty() {
                 msgs.warn(&[b"output glob produces empty string"]);
-                return Step::Failed(ErrorKind::WriteError);
+                return Made::Failed(ErrorKind::WriteError);
             }
             Output::File(&globbed)
         }
@@ -530,7 +828,7 @@ fn transfer(
                 Ok(name) => name,
                 Err(e) => {
                     msgs.error(&[b"Failed to extract a filename from the URL to use for storage"]);
-                    return Step::Failed(e);
+                    return Made::Failed(e);
                 }
             };
             Output::File(&remote_name)
@@ -543,7 +841,7 @@ fn transfer(
         (Output::File(name), Some(dir)) if !to_stdout => {
             in_dir = match joined(dir, name) {
                 Ok(path) => path,
-                Err(OutOfMemory) => return Step::Failed(ErrorKind::OutOfMemory),
+                Err(OutOfMemory) => return Made::Failed(ErrorKind::OutOfMemory),
             };
             Output::File(&in_dir)
         }
@@ -556,7 +854,7 @@ fn transfer(
         Output::Unset | Output::Stdout | Output::Remote => unreachable!("standard output"),
     };
     let Ok(out) = made else {
-        return Step::Failed(ErrorKind::OutOfMemory);
+        return Made::Failed(ErrorKind::OutOfMemory);
     };
     let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()));
@@ -565,15 +863,10 @@ fn transfer(
     easy.set_components(run.global.components.clone());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
-    let failed = |easy: &Easy, e| {
-        let result = finish(op, run, given, easy, &out, None, Ended::Ran(Err(e)));
-        Step::Failed(result.expect_err("a failure stays one"))
-    };
+    let orig = given;
+    let failed = |easy, e| unfinished(op, &out, method, easy, orig, Ended::Ran(Err(e)));
     // A failure the tool has said already (C's `synthetic_error`).
-    let said = |easy: &Easy, e| {
-        let result = finish(op, run, given, easy, &out, None, Ended::Said(e));
-        Step::Failed(result.expect_err("a failure stays one"))
-    };
+    let said = |easy, e| unfinished(op, &out, method, easy, orig, Ended::Said(e));
     // `setup_headerfile`.
     if let Some(name) = op.dump_header {
         if op.create_dirs
@@ -581,12 +874,12 @@ fn transfer(
             && name != b"%"
             && let Err(e) = create_dirs(name, &msgs)
         {
-            return failed(&easy, e);
+            return failed(easy, e);
         }
         match out.dump_to(name, first, run.stdout) {
             Ok(()) => {}
-            Err(output::DumpFailed::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
-            Err(output::DumpFailed::Open) => return failed(&easy, ErrorKind::WriteError),
+            Err(output::DumpFailed::OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
+            Err(output::DumpFailed::Open) => return failed(easy, ErrorKind::WriteError),
         }
     }
     // Where the transfer starts (`setup_outfile`, `setup_transfer_upload`).
@@ -601,7 +894,7 @@ fn transfer(
         if op.create_dirs
             && let Err(e) = create_dirs(name, &msgs)
         {
-            return failed(&easy, e);
+            return failed(easy, e);
         }
         let exists = fs::with_c_name(name, fs::stat);
         if op.skip_existing && exists.is_ok() {
@@ -612,7 +905,7 @@ fn transfer(
             resume_from = exists.as_ref().ok().map(|m| m.len());
         }
         if resume_from.is_some_and(|n| n > 0) && !out.stream().open_to_append() {
-            return failed(&easy, ErrorKind::WriteError);
+            return failed(easy, ErrorKind::WriteError);
         }
     }
     // An upload to a path without a name gives it the file's; standard
@@ -628,7 +921,7 @@ fn transfer(
                 }
             }
             Ok(None) => given,
-            Err(e) => return failed(&easy, e),
+            Err(e) => return failed(easy, e),
         },
         None => given,
     };
@@ -660,9 +953,9 @@ fn transfer(
             )) {
                 msgs.error(&[line.as_bytes()]);
             }
-            return said(&easy, e);
+            return said(easy, e);
         }
-        Some(Err(QueryFailed::Set(e))) => return failed(&easy, e),
+        Some(Err(QueryFailed::Set(e))) => return failed(easy, e),
         None => given,
     };
     let url = given.text;
@@ -670,7 +963,7 @@ fn transfer(
     // goes to its gateway, or nowhere, said once (`synthetic_error`).
     let (proto, parsed) = match url_proto(url, op.default_protocol.map(|d| d.protocol)) {
         Ok(found) => found,
-        Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+        Err(OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
     };
     let rewritten;
     let given = match (proto, parsed) {
@@ -685,8 +978,7 @@ fn transfer(
                 }
                 Err(e) => {
                     let e = e.said(&msgs);
-                    let result = finish(op, run, given, &easy, &out, None, Ended::Said(e));
-                    return Step::Failed(result.expect_err("a failure stays one"));
+                    return unfinished(op, &out, method, easy, given, Ended::Said(e));
                 }
             }
         }
@@ -708,7 +1000,7 @@ fn transfer(
                 Ok(from) => stream.name_from_header = Some(from),
                 Err(OutOfMemory) => {
                     drop(stream);
-                    return failed(&easy, ErrorKind::OutOfMemory);
+                    return failed(easy, ErrorKind::OutOfMemory);
                 }
             }
         }
@@ -722,7 +1014,7 @@ fn transfer(
         };
         match Bar::new(start) {
             Ok(bar) => Some(bar),
-            Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+            Err(OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
         }
     } else {
         None
@@ -732,9 +1024,9 @@ fn transfer(
         (Some(form), tool::Method::Mime) => match form.mime(&msgs) {
             Ok(mime) => match curl_alloc::TryArc::try_new(mime) {
                 Ok(mime) => Some(mime),
-                Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+                Err(OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
             },
-            Err(e) => return failed(&easy, e),
+            Err(e) => return failed(easy, e),
         },
         _ => None,
     };
@@ -749,72 +1041,34 @@ fn transfer(
         terminal,
         bar: bar.as_ref(),
     };
-    {
+    let set = {
         let mut source = run.libcurl.map(RefCell::borrow_mut);
         let mut set = Setopt::new(&mut easy, source.as_deref_mut());
-        if let Err(e) = setopts(&mut set, op, run, &out, &config) {
-            drop(source);
-            return failed(&easy, e);
-        }
-    }
-    let ended = if skip {
-        run.started.set(Some(Instant::now()));
-        Ended::Skipped
-    } else {
-        let mut retrying = Retrying::new(op, resume_from);
-        loop {
-            run.started.set(Some(Instant::now()));
-            // Opened for each attempt, from its start.
-            if let Some(file) = upload {
-                match open_upload(file) {
-                    Ok(source) => {
-                        if let Err(e) = upload_setopts(&mut easy, run, source) {
-                            return failed(&easy, e);
-                        }
-                    }
-                    Err(Unopened::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
-                    Err(Unopened::Io) => {
-                        msgs.help(&[b"cannot open '", file, b"'"]);
-                        let result = finish(
-                            op,
-                            run,
-                            given,
-                            &easy,
-                            &out,
-                            bar.as_ref(),
-                            Ended::Ran(Err(ErrorKind::ReadError)),
-                        );
-                        return Step::Unopened(result.expect_err("a failure stays one"));
-                    }
-                }
-            }
-            if let Some(source) = run.libcurl
-                && source.borrow_mut().perform().is_err()
-            {
-                return failed(&easy, ErrorKind::OutOfMemory);
-            }
-            #[cfg(feature = "debug-hooks")]
-            let result = if run.global.test_event {
-                easy.perform_ev()
-            } else {
-                easy.perform()
-            };
-            #[cfg(not(feature = "debug-hooks"))]
-            let result = easy.perform();
-            let result = result.map_err(|e| e.kind());
-            let result = settle(op, run, url, &easy, &out, result, false);
-            let attempt = Attempt {
-                result,
-                upload: upload.is_some(),
-                method,
-            };
-            match retrying.check(op, msgs, &mut easy, &out, attempt) {
-                Again::After(wait) => std::thread::sleep(wait),
-                Again::No(result) => break Ended::Settled(result, retrying.retries),
-            }
-        }
+        setopts(&mut set, op, run, &out, &config)
     };
-    Step::Ran(finish(op, run, given, &easy, &out, bar.as_ref(), ended))
+    if let Err(e) = set {
+        return failed(easy, e);
+    }
+    let url = match copy(given.text) {
+        Ok(url) => url,
+        Err(OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
+    };
+    let upload = match upload.map(copy).transpose() {
+        Ok(upload) => upload,
+        Err(OutOfMemory) => return failed(easy, ErrorKind::OutOfMemory),
+    };
+    Made::Ready(PerTransfer {
+        op,
+        url,
+        num: given.num,
+        easy,
+        out,
+        bar,
+        upload,
+        method,
+        skip,
+        retrying: Retrying::new(op, resume_from),
+    })
 }
 
 /// A transfer's handle, which saves the cookie jar when it is done with,

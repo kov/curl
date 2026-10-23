@@ -78,10 +78,10 @@ fn start<H: Host>(
                     let name = Bytes(answer.name());
                     trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
                 }
-                Found::Stale => {
+                Found::Stale(_) => {
                     trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
                 }
-                Found::Resolved => {}
+                Found::Resolved(_) => {}
             }
             report_resolved(cx, &answer, target.port());
             Resolved::pick(version, answer.addrs(), ip)

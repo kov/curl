@@ -16,9 +16,9 @@ use crate::conn::io::{Events, ResolveFailure};
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
-    Acquired, Answer, BadEntry, BadVia, ConnLease, ConnectError, Connected, Failure, Finish, Found,
-    Full, Limit, ListEntry, Peer, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute, Released,
-    ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
+    Acquired, Answer, Asked, BadEntry, BadVia, ConnLease, ConnectError, Connected, Failure, Finish,
+    Found, Full, Limit, ListEntry, Peer, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute,
+    Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry, queries,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -1160,17 +1160,9 @@ fn connecting<H: Host>(
     }
     match connected {
         Ok(Connected::Connecting(Progress::Resolved(found))) => {
-            match found {
-                Found::Cached => {
-                    // The name looked up: the proxy's, or what a
-                    // connect-to names in the origin's place.
-                    let name = Bytes(c.route.destination().name());
-                    trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
-                }
-                Found::Stale => {
-                    trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"))
-                }
-                Found::Resolved => {}
+            trace_lookup(cx, &c.route, Some(found));
+            if let Found::Stale(asked) | Found::Resolved(asked) = found {
+                trace_resolved(cx, &c.route, Ok(asked));
             }
             cx.mark(Timer::NameLookup);
             report_answer(cx, &c);
@@ -1237,6 +1229,85 @@ fn dialed<H: Host>(c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wak
         Some(version) => socks::dialed(c, cx, version),
         None => tunnel::dialed(c, cx),
     }
+}
+
+/// The name `route` connects to first was looked up in the cache, as
+/// C's `hostip_resolv` and `Curl_dnscache_get` trace it: found, missing
+/// (or stale, said first) and so resolved, or `None`, the resolver's no
+/// kept from before.
+fn trace_lookup<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, found: Option<Found>) {
+    // The name looked up: the proxy's, or what a connect-to names in the
+    // origin's place.
+    let peer = route.destination();
+    let (name, port, queries) = (Bytes(peer.name()), peer.port(), queries(peer, route.ip));
+    // The C debug build's line.
+    #[cfg(feature = "debug-hooks")]
+    trace::of(
+        cx,
+        Component::Dns,
+        format_args!("[{queries}] hostip_resolv({name}:{port})"),
+    );
+    match found {
+        Some(Found::Stale(_)) => {
+            trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
+        }
+        // What the resolver said no to is kept as an entry without
+        // addresses (`fetch_entry`).
+        None => trace::of(
+            cx,
+            Component::Dns,
+            format_args!("cache entry does not have type={queries} addresses"),
+        ),
+        Some(_) => {}
+    }
+    let (code, not) = match found {
+        Some(Found::Cached) => (Ok(()), ""),
+        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
+        None => (Err(ErrorKind::CouldntResolveHost), "not "),
+    };
+    let code = trace::Code(code);
+    trace::of(
+        cx,
+        Component::Dns,
+        format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
+    );
+    if found == Some(Found::Cached) {
+        trace::info(cx, format_args!("Hostname {name} was found in DNS cache"));
+    }
+}
+
+/// The name `route` connects to first was resolved, `asked` what
+/// answered, its answer kept; or the resolver failed. A shortcut answers
+/// at once; the resolver, as the reference build's c-ares does, answers
+/// later (`CURLE_AGAIN`), its polls not traced.
+fn trace_resolved<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, asked: Result<Asked, ()>) {
+    let peer = route.destination();
+    let (name, port, queries) = (Bytes(peer.name()), peer.port(), queries(peer, route.ip));
+    let code = match asked {
+        Ok(Asked::Shortcut) => trace::Code(Ok(())),
+        Ok(Asked::Resolver) | Err(()) => trace::Code(Err(ErrorKind::Again)),
+    };
+    let dns = Component::Dns;
+    trace::of(
+        cx,
+        dns,
+        format_args!("[{queries}] hostip_resolv started -> {code}"),
+    );
+    if asked.is_err() {
+        return;
+    }
+    if asked == Ok(Asked::Resolver) {
+        trace::of(
+            cx,
+            dns,
+            format_args!("[{queries}] resolve complete for {name}:{port}"),
+        );
+    }
+    trace::of(
+        cx,
+        dns,
+        format_args!("cached entry for {name}:{port} queries={queries}"),
+    );
 }
 
 /// The race's next attempt is due at `at`: its timer armed for then, or
@@ -1378,6 +1449,19 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
     match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Unresolved(why) => {
+            match why {
+                Unresolved::Negative => trace_lookup(cx, route, None),
+                Unresolved::Resolver(_) => {
+                    trace_lookup(cx, route, Some(Found::Resolved(Asked::Resolver)));
+                    trace_resolved(cx, route, Err(()));
+                }
+                Unresolved::NoAddress(found) => {
+                    trace_lookup(cx, route, Some(found));
+                    if let Found::Stale(asked) | Found::Resolved(asked) = found {
+                        trace_resolved(cx, route, Ok(asked));
+                    }
+                }
+            }
             // The name looked up is the first peer's: with a proxy, the
             // first proxy's.
             let (host, port) = (Bytes(first.name()), first.port());
@@ -1405,6 +1489,16 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                 }
                 None => trace::fail(cx, kind, format_args!("Could not resolve {what}: {host}")),
             };
+            // What the resolver said no to is kept as said
+            // (`Curl_dnscache_add_negative`).
+            if let Unresolved::Resolver(ResolveFailure::NotFound | ResolveFailure::NoData) = why {
+                let queries = queries(first, route.ip);
+                trace::of(
+                    cx,
+                    Component::Dns,
+                    format_args!("cache negative name resolve for {host}:{port} type={queries}"),
+                );
+            }
             trace::info(cx, format_args!("Could not resolve: {host}:{port}"));
             if why == Unresolved::Negative {
                 trace::info(cx, format_args!("Could not resolve: {host}"));

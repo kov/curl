@@ -2221,6 +2221,114 @@ fn a_race_with_no_attempt_left_says_so() {
     );
 }
 
+/// One transfer of `url` on `m`, tracing the DNS component: its lines
+/// and the cache's, but the C debug build's `hostip_resolv` line, which
+/// starts each lookup and is checked apart.
+fn dns_lines(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Vec<String> {
+    let (mut e, lines) = traced(url);
+    // A connection of its own, the name looked up again.
+    e.options_mut().limits.reuse.fresh = true;
+    set(e.options_mut());
+    let e = tracing(e, b"dns");
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    m.remove(id, &mut NoEvents).unwrap();
+    let lines = trace_of(&lines);
+    let starts = lines
+        .iter()
+        .filter(|l| l.contains("] hostip_resolv("))
+        .count();
+    let lookups = lines.iter().filter(|l| l.contains("cache lookup")).count();
+    let debug_build = cfg!(feature = "debug-hooks");
+    assert_eq!(starts, if debug_build { lookups } else { 0 }, "{lines:?}");
+    lines
+        .into_iter()
+        .filter(|l| {
+            (l.starts_with("[DNS]") && !l.contains("] hostip_resolv("))
+                || l.starts_with("Hostname")
+                || l.starts_with("Negative")
+        })
+        .map(|l| l.trim_end().to_owned())
+        .collect()
+}
+
+/// The DNS component traces the cache as C's does: each lookup, what
+/// answered a name it did not have and its keeping, the queries named
+/// as the IP version and an address's own family make them.
+#[test]
+fn the_dns_cache_is_traced_as_c_looks_in_it() {
+    let (mut m, _clock) = networked();
+    assert_eq!(
+        dns_lines(&mut m, "tcp://v4.test:1/", |_| {}),
+        [
+            "[DNS] cache lookup v4.test:1 queries=A+AAAA -> 0 not found",
+            "[DNS] [A+AAAA] hostip_resolv started -> 81",
+            "[DNS] [A+AAAA] resolve complete for v4.test:1",
+            "[DNS] cached entry for v4.test:1 queries=A+AAAA",
+        ]
+    );
+    assert_eq!(
+        dns_lines(&mut m, "tcp://v4.test:1/", |_| {}),
+        [
+            "[DNS] cache lookup v4.test:1 queries=A+AAAA -> 0 found",
+            "Hostname v4.test was found in DNS cache",
+        ]
+    );
+    assert_eq!(
+        dns_lines(&mut m, "tcp://127.0.0.1:1/", |o| o.ip_version =
+            IpVersion::V6),
+        [
+            "[DNS] cache lookup 127.0.0.1:1 queries=A+AAAA -> 0 not found",
+            "[DNS] [A+AAAA] hostip_resolv started -> 0",
+            "[DNS] cached entry for 127.0.0.1:1 queries=A+AAAA",
+        ]
+    );
+    assert_eq!(
+        dns_lines(&mut m, "tcp://localhost:1/", |o| o.ip_version =
+            IpVersion::V4),
+        [
+            "[DNS] cache lookup localhost:1 queries=A -> 0 not found",
+            "[DNS] [A] hostip_resolv started -> 0",
+            "[DNS] cached entry for localhost:1 queries=A",
+        ]
+    );
+}
+
+/// A name the resolver says no to is kept so, and found so the next
+/// time; a stale answer is said to be, then resolved again.
+#[test]
+fn the_dns_cache_traces_what_it_keeps_and_lets_go() {
+    let (mut m, clock) = networked();
+    assert_eq!(
+        dns_lines(&mut m, "tcp://example.com:80/", |_| {}),
+        [
+            "[DNS] cache lookup example.com:80 queries=A+AAAA -> 0 not found",
+            "[DNS] [A+AAAA] hostip_resolv started -> 81",
+            "[DNS] cache negative name resolve for example.com:80 type=A+AAAA",
+        ]
+    );
+    assert_eq!(
+        dns_lines(&mut m, "tcp://example.com:80/", |_| {}),
+        [
+            "[DNS] cache entry does not have type=A+AAAA addresses",
+            "[DNS] cache lookup example.com:80 queries=A+AAAA -> 6 not found",
+            "Negative DNS entry",
+        ]
+    );
+    dns_lines(&mut m, "tcp://v4.test:1/", |_| {});
+    clock.advance(Duration::from_secs(61));
+    assert_eq!(
+        dns_lines(&mut m, "tcp://v4.test:1/", |_| {}),
+        [
+            "Hostname in DNS cache was stale, zapped",
+            "[DNS] cache lookup v4.test:1 queries=A+AAAA -> 0 not found",
+            "[DNS] [A+AAAA] hostip_resolv started -> 81",
+            "[DNS] [A+AAAA] resolve complete for v4.test:1",
+            "[DNS] cached entry for v4.test:1 queries=A+AAAA",
+        ]
+    );
+}
+
 /// A resolve list is read into the multi's cache when the transfer
 /// starts, once for each time it is set: the name then answers from the
 /// cache, under the entry's name. Set again, it replaces what it gave.

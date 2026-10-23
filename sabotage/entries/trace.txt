@@ -454,3 +454,86 @@ witness: curl-core multi::tests::a_race_with_no_attempt_left_says_so
                 format_args!("no more attempts to try"),
 --- new
                 format_args!(""),
+
+=== a cache lookup is said to find what it missed
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
+--- old
+        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), "not "),
+--- new
+        Some(Found::Stale(_) | Found::Resolved(_)) => (Ok(()), ""),
+
+=== a shortcut is said to answer later
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
+--- old
+        Ok(Asked::Shortcut) => trace::Code(Ok(())),
+--- new
+        Ok(Asked::Shortcut) => trace::Code(Err(ErrorKind::Again)),
+
+=== a resolver's answer is said to be a shortcut's
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
+--- old
+            Ok(addrs) => (
+                Answer::of(name, addrs, family).map_err(oom)?,
+                found(Asked::Resolver),
+            ),
+--- new
+            Ok(addrs) => (
+                Answer::of(name, addrs, family).map_err(oom)?,
+                found(Asked::Shortcut),
+            ),
+
+=== an address's own family is not asked for
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
+--- old
+        Some(IpAddr::V4(_)) => a = true,
+--- new
+        Some(IpAddr::V4(_)) => {}
+
+=== the answer kept is not said
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_dns_cache_is_traced_as_c_looks_in_it
+--- old
+        format_args!("cached entry for {name}:{port} queries={queries}"),
+--- new
+        format_args!("cached entry for {name}:{port}"),
+
+=== the resolver's no is kept unsaid
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
+--- old
+                    format_args!("cache negative name resolve for {host}:{port} type={queries}"),
+--- new
+                    format_args!("cache negative name resolve for {host}:{port}"),
+
+=== a negative entry is found without a word
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
+--- old
+            format_args!("cache entry does not have type={queries} addresses"),
+--- new
+            format_args!("cache entry does not have addresses"),
+
+=== a stale answer is said after the lookup
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::the_dns_cache_traces_what_it_keeps_and_lets_go
+--- old
+    let code = trace::Code(code);
+    trace::of(
+        cx,
+        Component::Dns,
+        format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
+    );
+--- new
+    let code = trace::Code(code);
+    trace::of(
+        cx,
+        Component::Dns,
+        format_args!("cache lookup {name}:{port} queries={queries} -> {code} {not}found"),
+    );
+    if let Some(Found::Stale(_)) = found {
+        trace::info(cx, format_args!("Hostname in DNS cache was stale, zapped"));
+    }

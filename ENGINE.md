@@ -347,6 +347,15 @@ traced: the filter's own life (its creation, `adjust_pollset`, its removal and d
 the walk over the addresses (`want to do more`, `check for next`, `checked connect attempts`),
 which describe C's structures rather than a step the machine takes.
 
+`DNS` traces the lookup of the name a connection goes to first, from what the connect machine
+reports (`Found`, `Unresolved`): the cache looked in, found, missing, stale or holding the
+resolver's no; what answered a name it did not have, a shortcut at once or the resolver later as
+the reference build's c-ares does; the answer kept, or the no. The queries are named as the IP
+version and an address's own family make them; the debug build's `hostip_resolv` line comes with
+the `debug-hooks` feature. Not traced: C's DNS filter's own life and its reading of the answer,
+c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
+and a SOCKS proxy's lookup of the destination.
+
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
 they are set) is handed to a `notes` closure the caller passes, line by line in the transfer's

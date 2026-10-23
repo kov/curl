@@ -466,9 +466,13 @@ witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_con
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_proxy_s_name_is_the_one_found_in_the_cache
 --- old
-                    let name = Bytes(c.route.destination().name());
+    // The name looked up: the proxy's, or what a connect-to names in the
+    // origin's place.
+    let peer = route.destination();
 --- new
-                    let name = Bytes(c.route.origin.name());
+    // The name looked up: the proxy's, or what a connect-to names in the
+    // origin's place.
+    let peer = &*route.origin;
 
 === the byte after a CONNECT answer's line is not counted before the line
 file: crates/curl-core/src/multi/state/tunnel.rs

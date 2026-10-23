@@ -15,7 +15,9 @@ pub(crate) mod pool;
 pub(crate) mod proxy;
 pub(crate) mod socks;
 
-pub(crate) use connect::{ConnectError, Failure, Found, Progress, Setup, Unresolved};
+pub(crate) use connect::{
+    Asked, ConnectError, Failure, Found, Progress, Setup, Unresolved, queries,
+};
 pub(crate) use connect_to::{BadVia, via};
 pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, Names, parse_entry};
 pub(crate) use pool::{

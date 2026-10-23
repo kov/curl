@@ -148,8 +148,16 @@ pub(crate) enum Found {
     /// Kept from a setup before.
     Cached,
     /// Resolved again: what was kept had gone stale.
-    Stale,
-    Resolved,
+    Stale(Asked),
+    Resolved(Asked),
+}
+
+/// What answered a name the cache did not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Asked {
+    /// The name is an address, or `localhost`: no resolver was asked.
+    Shortcut,
+    Resolver,
 }
 
 /// The attempts to make, over an answer (C's ballers): the families
@@ -292,8 +300,9 @@ pub(crate) enum Unresolved {
     Resolver(ResolveFailure),
     /// It said so before, and the cache kept its word.
     Negative,
-    /// None of the addresses found is of the family allowed.
-    NoAddress,
+    /// None of the addresses found, as `.0` says they were, is of the
+    /// family allowed.
+    NoAddress(Found),
 }
 
 impl ConnectMachine {
@@ -395,7 +404,7 @@ impl ConnectMachine {
                 let (answer, found) = self.resolve(net, setup, now)?;
                 let eyeballs = Eyeballs::new(answer, self.route.ip);
                 if !eyeballs.more() {
-                    return Err(ConnectError::Unresolved(Unresolved::NoAddress));
+                    return Err(ConnectError::Unresolved(Unresolved::NoAddress(found)));
                 }
                 self.stage = Stage::Racing(Racing {
                     eyeballs,
@@ -654,7 +663,7 @@ fn resolve(
         IpVersion::V6 => Family::V6,
     };
     let (wildcard, max_age) = (setup.wildcard, setup.max_age);
-    let found = match setup
+    let found: fn(Asked) -> Found = match setup
         .dns
         .section(|c| c.lookup((name, port), family, wildcard, max_age, now))
     {
@@ -664,10 +673,13 @@ fn resolve(
         Lookup::Missing => Found::Resolved,
     };
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
-    let answer = match shortcut(peer.shown(), name).map_err(oom)? {
-        Some(answer) => answer,
+    let (answer, found) = match shortcut(peer.shown(), name).map_err(oom)? {
+        Some(answer) => (answer, found(Asked::Shortcut)),
         None => match net.resolve(name, family) {
-            Ok(addrs) => Answer::of(name, addrs, family).map_err(oom)?,
+            Ok(addrs) => (
+                Answer::of(name, addrs, family).map_err(oom)?,
+                found(Asked::Resolver),
+            ),
             Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
             Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
                 let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
@@ -718,6 +730,27 @@ fn is_localhost(host: &[u8]) -> bool {
 
 /// `host` as an address if it is one, as the URL holds it: an IPv4
 /// address dotted, an IPv6 one in brackets.
+/// C's name for the address queries a resolve of `peer`'s name in `ip`
+/// makes (`Curl_resolv_query_str`): an address's own family is always
+/// asked for (`cf_dns_start`).
+pub(crate) fn queries(peer: &Peer, ip: IpVersion) -> &'static str {
+    let (mut a, mut aaaa) = match ip {
+        IpVersion::Any => (true, true),
+        IpVersion::V4 => (true, false),
+        IpVersion::V6 => (false, true),
+    };
+    match literal(peer.shown()) {
+        Some(IpAddr::V4(_)) => a = true,
+        Some(IpAddr::V6(_)) => aaaa = true,
+        None => {}
+    }
+    match (a, aaaa) {
+        (true, true) => "A+AAAA",
+        (true, false) => "A",
+        _ => "AAAA",
+    }
+}
+
 fn literal(host: &[u8]) -> Option<IpAddr> {
     let text = std::str::from_utf8(host).ok()?;
     if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {

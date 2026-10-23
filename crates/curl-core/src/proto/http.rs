@@ -1837,11 +1837,11 @@ impl Request {
                 self.send_error(cx, code)?;
             }
             // A document the time condition ruled out ends the transfer
-            // as a 304 would have; a 304 itself says the same
-            // (`http_firstwrite`, `http_on_response`).
+            // as a 304 would have (`http_firstwrite`). A 304 itself says
+            // the condition was unmet by its code alone, as C's getinfo
+            // reads it (`TransferReport::condition_unmet`).
             let unmet = !interim && self.head().meta().unmet();
-            let options = cx.easy().options();
-            if unmet || (!interim && code == 304 && options.time_condition.is_some()) {
+            if unmet {
                 cx.report_mut().set_condition_unmet();
             }
             if unmet && let Some(version) = cx.report_mut().response_version() {

@@ -37,7 +37,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("sha512-256", true),
     ("win32-ca-searchpath", false),
     ("win32-ca-search-safe", false),
-    ("--libcurl", false),
+    ("--libcurl", true),
     ("override-dns", false),
     ("ssl-sessions", false),
     ("cert-status", false),

@@ -2,7 +2,7 @@
 //! another (`src/tool_operate.c`, its serial path).
 
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
@@ -24,6 +24,7 @@ use curl_core::version::Protocol;
 use curl_os::fs;
 
 use crate::bar::Bar;
+use crate::easysrc::{self, Setopt, Source};
 use crate::glob::{self, Glob};
 use crate::msgs::Messages;
 use crate::options::{
@@ -80,7 +81,13 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         Ok(suffixes) => suffixes,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
+    // The program `--libcurl` writes, made as the transfers are.
+    let program = match line.global.libcurl.map(|_| Source::new()).transpose() {
+        Ok(program) => program.map(RefCell::new),
+        Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+    };
     let run = Shared {
+        libcurl: program.as_ref(),
         global: &line.global,
         stdout: &stdout,
         tracer: tracer.as_ref(),
@@ -90,6 +97,11 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         started: Cell::new(None),
     };
     let ending = run_all(line, &run);
+    if let (Some(program), Some(name)) = (program, line.global.libcurl)
+        && program.into_inner().finish(name, &stdout, &msgs).is_err()
+    {
+        return Err(ErrorKind::OutOfMemory);
+    }
     // What is left is written at exit; a failure then goes unreported, as
     // it does in C.
     drop(stdout.flush());
@@ -422,6 +434,8 @@ struct Names<'a> {
 
 /// What every transfer of the run shares.
 struct Shared<'a, 'l> {
+    /// The program `--libcurl` writes, if asked for.
+    libcurl: Option<&'a RefCell<Source>>,
     global: &'a Global<'l>,
     stdout: &'a Stdout,
     tracer: Option<&'a Tracer>,
@@ -653,7 +667,7 @@ fn transfer(
     let url = given.text;
     // Only a URL taken for HTTP's is given HTTP's options; one for IPFS
     // goes to its gateway, or nowhere, said once (`synthetic_error`).
-    let (proto, parsed) = match url_proto(url, op.default_protocol) {
+    let (proto, parsed) = match url_proto(url, op.default_protocol.map(|d| d.protocol)) {
         Ok(found) => found,
         Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
     };
@@ -735,34 +749,12 @@ fn transfer(
         terminal,
         bar: bar.as_ref(),
     };
-    let cookies = match http.then(|| joined_cookies(&op.cookies, &run.msgs)) {
-        Some(Ok(cookies)) => cookies,
-        None => None,
-        Some(Err(e)) => return failed(&easy, e),
-    };
-    if configure(&mut easy, op, run, &out, &config).is_err() {
-        return failed(&easy, ErrorKind::OutOfMemory);
-    }
-    if http && let Err(e) = message_signature(easy.options_mut(), op.httpsig, &msgs) {
-        return failed(&easy, e);
-    }
-    if let Some(pair) = op.proxy_user.as_deref() {
-        let set = match easy.options_mut().proxy.make_mut() {
-            Ok(proxy) => proxy.set_user_password(Some(pair)),
-            Err(OutOfMemory) => Err(options::ProxyUserError::OutOfMemory),
-        };
-        if let Err(e) = set {
-            let kind = match e {
-                options::ProxyUserError::OutOfMemory => ErrorKind::OutOfMemory,
-                options::ProxyUserError::Malformed => ErrorKind::UrlMalformat,
-            };
-            return failed(&easy, kind);
-        }
-    }
-    if cookies.is_some() || easy.options().http.cookies.send.is_some() {
-        match easy.options_mut().http.cookies.make_mut() {
-            Ok(made) => made.send = cookies,
-            Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+    {
+        let mut source = run.libcurl.map(RefCell::borrow_mut);
+        let mut set = Setopt::new(&mut easy, source.as_deref_mut());
+        if let Err(e) = setopts(&mut set, op, run, &out, &config) {
+            drop(source);
+            return failed(&easy, e);
         }
     }
     let ended = if skip {
@@ -775,7 +767,11 @@ fn transfer(
             // Opened for each attempt, from its start.
             if let Some(file) = upload {
                 match open_upload(file) {
-                    Ok(source) => easy.options_mut().upload = source,
+                    Ok(source) => {
+                        if let Err(e) = upload_setopts(&mut easy, run, source) {
+                            return failed(&easy, e);
+                        }
+                    }
                     Err(Unopened::OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
                     Err(Unopened::Io) => {
                         msgs.help(&[b"cannot open '", file, b"'"]);
@@ -791,6 +787,11 @@ fn transfer(
                         return Step::Unopened(result.expect_err("a failure stays one"));
                     }
                 }
+            }
+            if let Some(source) = run.libcurl
+                && source.borrow_mut().perform().is_err()
+            {
+                return failed(&easy, ErrorKind::OutOfMemory);
             }
             #[cfg(feature = "debug-hooks")]
             let result = if run.global.test_event {
@@ -1051,7 +1052,13 @@ impl Retrying {
                 return Again::No(Err(ErrorKind::WriteError));
             };
             self.resumed_at = at;
-            easy.options_mut().resume = NonZeroU64::new(at).map(options::Resume::At);
+            let resume = NonZeroU64::new(at).map(options::Resume::At);
+            Setopt::new(easy, None)
+                .unwritten("`retrycheck` sets it itself", |o| {
+                    o.resume = resume;
+                    Ok(())
+                })
+                .expect("setting a resume point cannot fail");
         } else if !stream.throw_away() {
             return Again::No(Err(ErrorKind::WriteError));
         }
@@ -1141,7 +1148,6 @@ fn joined_cookies(cookies: &[&[u8]], msgs: &Messages) -> Result<Option<Vec<u8>>,
     let Some((first, rest)) = cookies.split_first() else {
         return Ok(None);
     };
-    let oom = |_| ErrorKind::OutOfMemory;
     let mut send = copy(first).map_err(oom)?;
     for cookie in rest {
         send.try_extend_from_slice(b";").map_err(oom)?;
@@ -1158,55 +1164,339 @@ fn joined_cookies(cookies: &[&[u8]], msgs: &Messages) -> Result<Option<Vec<u8>>,
     Ok(Some(send))
 }
 
-/// Set up the transfer of `config.url` as `config2setopts` sets it.
-fn configure(
-    easy: &mut Easy,
+fn oom(_: OutOfMemory) -> ErrorKind {
+    ErrorKind::OutOfMemory
+}
+
+/// What an option C's tool sets does here: nothing, as the library has
+/// no such option, or the tool's own callbacks stand in for C's.
+fn nothing(_: &mut options::Options) -> Result<(), ErrorKind> {
+    Ok(())
+}
+
+/// `n` as the `long` C's tool passes.
+fn long(n: u64) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
+}
+
+/// Set up the transfer of `config.url` as `config2setopts` sets it, in
+/// its order: each option through `s`, which writes the call for
+/// `--libcurl`.
+fn setopts(
+    s: &mut Setopt<'_>,
     op: &Operation<'_>,
     run: &Shared<'_, '_>,
     out: &output::Output,
     config: &Config<'_>,
-) -> Result<(), OutOfMemory> {
-    let bar = config.bar;
-    let o = easy.options_mut();
-    o.set_url(Some(config.url))?;
-    if let Some(protocol) = op.default_protocol {
-        o.set_default_protocol(Some(protocol.name().as_bytes()))?;
-    }
-    if config.upload {
-        o.method = Method::Upload;
-    } else if let Some(post) = config.post {
-        // `setopt_post`'s POSTFIELDS.
-        let mut body = Vec::new();
-        body.try_extend_from_slice(post)?;
-        o.method = Method::Post;
-        o.upload = options::UploadSource::Bytes(TryArc::try_new(body)?);
-    } else if let Some(form) = &config.form {
-        o.method = Method::Post;
-        let tree = curl_core::mime::Fixed::new(form.clone());
-        o.upload = options::UploadSource::Mime(Handler::mime(tree)?);
-    } else if op.no_body {
-        o.method = Method::Head;
-    }
-    if op.form_escape {
-        o.mime.make_mut()?.form_escape = true;
-    }
-    o.resume = config.resume;
-    o.range = op.range.as_deref().map(copy).transpose()?;
-    o.progress = if run.global.no_progress || run.msgs.silent || config.terminal {
-        Progress::Off
-    } else if let Some(bar) = bar {
-        Progress::Handler(bar.handler()?)
-    } else {
-        Progress::Meter
-    };
+) -> Result<(), ErrorKind> {
+    use easysrc::Pointer::{Function, Object};
+    // `gen_trace_setopts`.
     if let Some(tracer) = run.tracer {
-        o.output.verbose = true;
-        o.callbacks.debug = Some(tracer.handler(config.terminal)?);
+        s.ptr("CURLOPT_DEBUGFUNCTION", Function, |o| {
+            o.callbacks.debug = Some(tracer.handler(config.terminal).map_err(oom)?);
+            Ok(())
+        })?;
+        s.ptr("CURLOPT_DEBUGDATA", Object, nothing)?;
+        s.long("CURLOPT_VERBOSE", 1, |o| {
+            o.output.verbose = true;
+            Ok(())
+        })?;
     }
-    o.callbacks.write = Some(out.body_handler()?);
-    o.callbacks.header = Some(out.header_handler()?);
-    // `credentials_and_headers_setopts`.
-    let http = &mut o.http;
+    // `buffersize`.
+    let size = buffer_size(op.limit_rate);
+    s.long("CURLOPT_BUFFERSIZE", long(size), |o| {
+        o.limits.buffer_size = options::BufferSize::clamped(size);
+        Ok(())
+    })?;
+    s.str("CURLOPT_URL", Some(config.url), |o| {
+        o.set_url(Some(config.url)).map_err(oom)
+    })?;
+    // Output to a terminal has no meter (`single_transfer`).
+    let quiet = run.global.no_progress || run.msgs.silent || config.terminal;
+    s.long("CURLOPT_NOPROGRESS", i64::from(quiet), |o| {
+        o.progress = if quiet {
+            Progress::Off
+        } else {
+            Progress::Meter
+        };
+        Ok(())
+    })?;
+    // `gen_cb_setopts`.
+    s.ptr("CURLOPT_WRITEDATA", Object, nothing)?;
+    s.ptr("CURLOPT_INTERLEAVEDATA", Object, nothing)?;
+    s.ptr("CURLOPT_WRITEFUNCTION", Function, |o| {
+        o.callbacks.write = Some(out.body_handler().map_err(oom)?);
+        Ok(())
+    })?;
+    // What is uploaded is opened for each attempt (`pre_transfer`).
+    s.ptr("CURLOPT_READDATA", Object, nothing)?;
+    s.ptr("CURLOPT_READFUNCTION", Function, nothing)?;
+    s.ptr("CURLOPT_SEEKDATA", Object, nothing)?;
+    s.ptr("CURLOPT_SEEKFUNCTION", Function, nothing)?;
+    if let Some(bar) = config.bar.filter(|_| !quiet) {
+        s.ptr("CURLOPT_XFERINFOFUNCTION", Function, |o| {
+            o.progress = Progress::Handler(bar.handler().map_err(oom)?);
+            Ok(())
+        })?;
+        s.ptr("CURLOPT_XFERINFODATA", Object, nothing)?;
+    }
+    s.ptr("CURLOPT_HEADERFUNCTION", Function, |o| {
+        o.callbacks.header = Some(out.header_handler().map_err(oom)?);
+        Ok(())
+    })?;
+    s.ptr("CURLOPT_HEADERDATA", Object, nothing)?;
+    proxy_setopts(s, op)?;
+    credentials_and_headers(s, op)?;
+    transfer_setopts(s, op, run, config)?;
+    if config.http {
+        http_setopts(s, op, &run.msgs)?;
+    }
+    // `dns_and_network_setopts`.
+    s.long(
+        "CURLOPT_CONNECTTIMEOUT_MS",
+        long(op.connect_timeout_ms),
+        |o| {
+            o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
+            Ok(())
+        },
+    )?;
+    s.offt("CURLOPT_MAXFILESIZE_LARGE", long(op.max_filesize), |o| {
+        o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
+        Ok(())
+    })?;
+    let (ip_version, resolve) = match op.ip_version {
+        None => (options::IpVersion::Any, 0),
+        Some(IpVersion::V4) => (options::IpVersion::V4, 1),
+        Some(IpVersion::V6) => (options::IpVersion::V6, 2),
+    };
+    s.long("CURLOPT_IPRESOLVE", resolve, |o| {
+        o.ip_version = ip_version;
+        Ok(())
+    })?;
+    s.long(
+        "CURLOPT_IGNORE_CONTENT_LENGTH",
+        i64::from(op.ignore_content_length),
+        |o| {
+            o.http.ignore_content_length = op.ignore_content_length;
+            Ok(())
+        },
+    )?;
+    if op.raw {
+        s.long("CURLOPT_HTTP_CONTENT_DECODING", 0, |o| {
+            o.http.raw_content = true;
+            Ok(())
+        })?;
+        s.long("CURLOPT_HTTP_TRANSFER_DECODING", 0, |o| {
+            o.http.raw = true;
+            Ok(())
+        })?;
+    }
+    // `tcp_setopts`.
+    s.long("CURLOPT_TCP_KEEPALIVE", 1, nothing)?;
+    // `mail_and_sasl_setopts`.
+    if op.create_file_mode != 0 {
+        s.long(
+            "CURLOPT_NEW_FILE_PERMS",
+            i64::from(op.create_file_mode),
+            |o| {
+                o.new_file_mode =
+                    options::FileMode::new(op.create_file_mode).expect("read as at most 0o777");
+                Ok(())
+            },
+        )?;
+    }
+    // `misc_setopts`.
+    s.ptr("CURLOPT_STDERR", Object, nothing)?;
+    if !op.resolve.is_empty() {
+        s.slist("CURLOPT_RESOLVE", &op.resolve, |o| {
+            o.resolve.set(op.resolve.iter().copied()).map_err(oom)
+        })?;
+    }
+    if !op.connect_to.is_empty() {
+        s.slist("CURLOPT_CONNECT_TO", &op.connect_to, |o| {
+            o.connect_to.set(op.connect_to.iter().copied()).map_err(oom)
+        })?;
+    }
+    let default = op.default_protocol;
+    s.str(
+        "CURLOPT_DEFAULT_PROTOCOL",
+        default.map(|d| d.given),
+        |o| match default {
+            Some(d) => o
+                .set_default_protocol(Some(d.protocol.name().as_bytes()))
+                .map_err(oom),
+            None => Ok(()),
+        },
+    )?;
+    // A delay of C's default is not set.
+    if let Some(ms) = op.happy_eyeballs_ms.filter(|&ms| ms != 200) {
+        s.long("CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS", long(ms), |o| {
+            o.limits.eyeballs = options::EyeballsDelay(Duration::from_millis(ms));
+            Ok(())
+        })?;
+    }
+    s.long(
+        "CURLOPT_DISALLOW_USERNAME_IN_URL",
+        i64::from(op.disallow_username),
+        |o| {
+            o.url_rules.disallow_user = op.disallow_username;
+            Ok(())
+        },
+    )
+}
+
+/// The proxy options (`proxy_setopts`), made only where one is given.
+fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+    if let Some(proxy) = op.proxy {
+        s.str("CURLOPT_PROXY", Some(proxy), |o| {
+            o.proxy.make_mut().map_err(oom)?.url = Some(copy(proxy).map_err(oom)?);
+            Ok(())
+        })?;
+        s.enumerated(
+            "CURLOPT_PROXYTYPE",
+            easysrc::PROXY_TYPES,
+            easysrc::proxy_type(op.proxy_kind),
+            |o| {
+                o.proxy.make_mut().map_err(oom)?.kind = op.proxy_kind;
+                Ok(())
+            },
+        )?;
+    }
+    let user = op.proxy_user.as_deref();
+    s.str("CURLOPT_PROXYUSERPWD", user, |o| {
+        let Some(pair) = user else {
+            return Ok(());
+        };
+        let set = match o.proxy.make_mut() {
+            Ok(proxy) => proxy.set_user_password(Some(pair)),
+            Err(OutOfMemory) => Err(options::ProxyUserError::OutOfMemory),
+        };
+        set.map_err(|e| match e {
+            options::ProxyUserError::OutOfMemory => ErrorKind::OutOfMemory,
+            options::ProxyUserError::Malformed => ErrorKind::UrlMalformat,
+        })
+    })?;
+    s.long("CURLOPT_HTTPPROXYTUNNEL", i64::from(op.proxytunnel), |o| {
+        if op.proxytunnel {
+            o.proxy.make_mut().map_err(oom)?.tunnel = true;
+        }
+        Ok(())
+    })?;
+    if let Some(pre) = op.preproxy {
+        s.str("CURLOPT_PRE_PROXY", Some(pre), |o| {
+            o.proxy.make_mut().map_err(oom)?.pre_proxy = Some(copy(pre).map_err(oom)?);
+            Ok(())
+        })?;
+    }
+    // One method, in C's order.
+    let proxy_auth = if op.proxy_anyauth {
+        Some(options::AuthMethods::ANY)
+    } else if op.proxy_digest {
+        Some(options::AuthMethods::DIGEST)
+    } else if op.proxy_basic {
+        Some(options::AuthMethods::BASIC)
+    } else {
+        None
+    };
+    if let Some(methods) = proxy_auth {
+        s.bitmask(
+            "CURLOPT_PROXYAUTH",
+            easysrc::AUTH,
+            easysrc::auth_mask(methods),
+            |o| {
+                o.proxy.make_mut().map_err(oom)?.auth = options::HttpAuth(methods);
+                Ok(())
+            },
+        )?;
+    }
+    s.str("CURLOPT_NOPROXY", op.noproxy, |o| {
+        if let Some(no) = op.noproxy {
+            o.proxy.make_mut().map_err(oom)?.no_proxy = Some(copy(no).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    // The debug test build suppresses them on request as well, as C's
+    // library does.
+    let suppress = op.suppress_connect_headers
+        || (cfg!(feature = "debug-hooks")
+            && curl_os::env::is_set(b"CURL_DBG_SUPPRESS_CONNECT_HDS"));
+    s.long(
+        "CURLOPT_SUPPRESS_CONNECT_HEADERS",
+        i64::from(op.suppress_connect_headers),
+        |o| {
+            if suppress {
+                o.proxy.make_mut().map_err(oom)?.suppress_connect_headers = true;
+            }
+            Ok(())
+        },
+    )?;
+    if op.haproxy_protocol {
+        s.long("CURLOPT_HAPROXYPROTOCOL", 1, |o| {
+            o.proxy.make_mut().map_err(oom)?.haproxy = true;
+            Ok(())
+        })?;
+    }
+    if let Some(ip) = op.haproxy_clientip {
+        // As C's library takes it: an address turns the protocol on.
+        s.str("CURLOPT_HAPROXY_CLIENT_IP", Some(ip), |o| {
+            let p = o.proxy.make_mut().map_err(oom)?;
+            p.haproxy = true;
+            p.haproxy_client_ip = Some(copy(ip).map_err(oom)?);
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// Who the transfer is, and its headers (`credentials_and_headers_setopts`).
+fn credentials_and_headers(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+    s.str("CURLOPT_XOAUTH2_BEARER", op.bearer, |o| {
+        if let Some(token) = op.bearer {
+            o.login.make_mut().map_err(oom)?.bearer = Some(copy(token).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    let (netrc, value) = if op.netrc_optional {
+        (options::NetrcMode::Optional, 1)
+    } else if op.netrc || op.netrc_file.is_some() {
+        (options::NetrcMode::Required, 2)
+    } else {
+        (options::NetrcMode::Ignored, 0)
+    };
+    s.enumerated("CURLOPT_NETRC", easysrc::NETRC, value, |o| {
+        if netrc != options::NetrcMode::Ignored {
+            o.netrc.make_mut().map_err(oom)?.mode = netrc;
+        }
+        Ok(())
+    })?;
+    s.str("CURLOPT_NETRC_FILE", op.netrc_file, |o| {
+        if let Some(file) = op.netrc_file {
+            o.netrc.make_mut().map_err(oom)?.file = Some(copy(file).map_err(oom)?);
+        }
+        Ok(())
+    })?;
+    // A user given without a password has had one asked for.
+    let user = op.user.as_deref();
+    s.str("CURLOPT_USERPWD", user, |o| {
+        if let Some(pair) = user {
+            let given = options::Login::from_pair(pair).map_err(oom)?;
+            let login = o.login.make_mut().map_err(oom)?;
+            login.user = given.user;
+            login.password = given.password;
+        }
+        Ok(())
+    })?;
+    if !op.auth.is_empty() {
+        s.bitmask(
+            "CURLOPT_HTTPAUTH",
+            easysrc::AUTH,
+            easysrc::auth_mask(op.auth),
+            |o| {
+                o.http.auth = options::HttpAuth(op.auth);
+                Ok(())
+            },
+        )?;
+    }
     // `--json` types the request and accepts JSON, unless the headers
     // say otherwise (`get_args`).
     let json = [
@@ -1214,11 +1504,163 @@ fn configure(
         (b"Accept", b"Accept: application/json"),
     ]
     .map(|(name, line)| (op.json && !in_list(&op.headers, name)).then_some(line));
-    http.headers =
-        options::UserHeaders::new(op.headers.iter().copied().chain(json.into_iter().flatten()))?;
-    http.referer = op.referer.map(copy).transpose()?;
-    http.custom_method = op.custom_request.map(copy).transpose()?;
-    http.request_target = op.request_target.map(copy).transpose()?;
+    let mut headers = Vec::new();
+    headers
+        .try_reserve_exact(op.headers.len() + 2)
+        .map_err(|_| ErrorKind::OutOfMemory)?;
+    for line in op.headers.iter().copied().chain(json.into_iter().flatten()) {
+        headers.try_push(line).map_err(oom)?;
+    }
+    s.slist("CURLOPT_HTTPHEADER", &headers, |o| {
+        o.http.headers = options::UserHeaders::new(headers.iter().copied()).map_err(oom)?;
+        Ok(())
+    })?;
+    s.str("CURLOPT_REFERER", op.referer, |o| {
+        o.http.referer = op.referer.map(copy).transpose().map_err(oom)?;
+        Ok(())
+    })?;
+    let default_agent;
+    let agent = match op.user_agent {
+        Some(agent) => agent,
+        None => {
+            default_agent = try_format(format_args!(
+                "curl/{}",
+                curl_core::version::version().version
+            ))
+            .map_err(oom)?;
+            default_agent.as_bytes()
+        }
+    };
+    s.str("CURLOPT_USERAGENT", Some(agent), |o| {
+        o.http.user_agent = Some(copy(agent).map_err(oom)?);
+        Ok(())
+    })
+}
+
+/// What is transferred, and how (`transfer_setopts`).
+fn transfer_setopts(
+    s: &mut Setopt<'_>,
+    op: &Operation<'_>,
+    run: &Shared<'_, '_>,
+    config: &Config<'_>,
+) -> Result<(), ErrorKind> {
+    s.long("CURLOPT_NOBODY", i64::from(op.no_body), |o| {
+        if op.no_body {
+            o.method = Method::Head;
+        }
+        Ok(())
+    })?;
+    let fail = op.fail == Fail::WithoutBody;
+    s.long("CURLOPT_FAILONERROR", i64::from(fail), |o| {
+        o.http.fail_on_error = fail;
+        Ok(())
+    })?;
+    s.str("CURLOPT_REQUEST_TARGET", op.request_target, |o| {
+        o.http.request_target = op.request_target.map(copy).transpose().map_err(oom)?;
+        Ok(())
+    })?;
+    s.long("CURLOPT_UPLOAD", i64::from(config.upload), |o| {
+        if config.upload {
+            o.method = Method::Upload;
+        }
+        Ok(())
+    })?;
+    s.str("CURLOPT_RANGE", op.range.as_deref(), |o| {
+        o.range = op.range.as_deref().map(copy).transpose().map_err(oom)?;
+        Ok(())
+    })?;
+    s.ptr("CURLOPT_ERRORBUFFER", easysrc::Pointer::Object, nothing)?;
+    s.long("CURLOPT_TIMEOUT_MS", long(op.timeout_ms), |o| {
+        o.limits.total = TimeLimit::from_millis(op.timeout_ms);
+        Ok(())
+    })?;
+    // `setopt_post`.
+    if let Some(post) = config.post {
+        s.postfields(post, |o| {
+            o.method = Method::Post;
+            let body = copy(post).map_err(oom)?;
+            o.upload = options::UploadSource::Bytes(TryArc::try_new(body).map_err(oom)?);
+            Ok(())
+        })?;
+        s.offt(
+            "CURLOPT_POSTFIELDSIZE_LARGE",
+            long(post.len() as u64),
+            nothing,
+        )?;
+    } else if let (Some(tree), Some(form)) = (&config.form, &op.form) {
+        s.mimepost(form, |o| {
+            o.method = Method::Post;
+            let tree = curl_core::mime::Fixed::new(tree.clone());
+            o.upload = options::UploadSource::Mime(Handler::mime(tree).map_err(oom)?);
+            Ok(())
+        })?;
+    }
+    if op.form_escape {
+        s.long("CURLOPT_MIME_OPTIONS", 1, |o| {
+            o.mime.make_mut().map_err(oom)?.form_escape = true;
+            Ok(())
+        })?;
+    }
+    s.long("CURLOPT_LOW_SPEED_LIMIT", long(op.low_speed_limit), nothing)?;
+    s.long("CURLOPT_LOW_SPEED_TIME", long(op.low_speed_time), |o| {
+        o.limits.low_speed = low_speed(op.low_speed_limit, op.low_speed_time);
+        Ok(())
+    })?;
+    s.offt("CURLOPT_MAX_SEND_SPEED_LARGE", long(op.limit_rate), |o| {
+        o.limits.max_send_speed = NonZeroU64::new(op.limit_rate);
+        Ok(())
+    })?;
+    s.offt("CURLOPT_MAX_RECV_SPEED_LARGE", long(op.limit_rate), |o| {
+        o.limits.max_recv_speed = NonZeroU64::new(op.limit_rate);
+        Ok(())
+    })?;
+    // An upload resumed where the peer's file ends is -1.
+    let resume_from = match config.resume {
+        None => 0,
+        Some(options::Resume::At(n)) => long(n.get()),
+        Some(options::Resume::AtEnd) => -1,
+    };
+    s.offt("CURLOPT_RESUME_FROM_LARGE", resume_from, |o| {
+        o.resume = config.resume;
+        Ok(())
+    })?;
+    if op.path_as_is {
+        s.long("CURLOPT_PATH_AS_IS", 1, |o| {
+            o.url_rules.path_as_is = true;
+            Ok(())
+        })?;
+    }
+    if op.no_body || op.remote_time {
+        s.long("CURLOPT_FILETIME", 1, |o| {
+            o.filetime = true;
+            Ok(())
+        })?;
+    }
+    let (condition, time) = match op.time_cond {
+        None => (0, 0),
+        Some(c) => (
+            match c.when {
+                options::Condition::ModifiedSince => 1,
+                options::Condition::UnmodifiedSince => 2,
+                options::Condition::LastModified => 3,
+            },
+            c.time,
+        ),
+    };
+    s.enumerated(
+        "CURLOPT_TIMECONDITION",
+        easysrc::TIME_CONDITIONS,
+        condition,
+        |o| {
+            o.time_condition = op.time_cond;
+            Ok(())
+        },
+    )?;
+    s.offt("CURLOPT_TIMEVALUE_LARGE", time, nothing)?;
+    s.str("CURLOPT_CUSTOMREQUEST", op.custom_request, |o| {
+        o.http.custom_method = op.custom_request.map(copy).transpose().map_err(oom)?;
+        Ok(())
+    })?;
     // `customrequest_helper`.
     if let Some(custom) = op.custom_request {
         let implied = config.method.implied();
@@ -1235,113 +1677,6 @@ fn configure(
             ]);
         }
     }
-    http.user_agent = Some(match op.user_agent {
-        Some(agent) => copy(agent)?,
-        None => copy(
-            try_format(format_args!(
-                "curl/{}",
-                curl_core::version::version().version
-            ))?
-            .as_bytes(),
-        )?,
-    });
-    // A user given without a password has had one asked for.
-    if let Some(pair) = op.user.as_deref() {
-        *o.login.make_mut()? = options::Login::from_pair(pair)?;
-    }
-    let netrc = if op.netrc_optional {
-        options::NetrcMode::Optional
-    } else if op.netrc || op.netrc_file.is_some() {
-        options::NetrcMode::Required
-    } else {
-        options::NetrcMode::Ignored
-    };
-    if netrc != options::NetrcMode::Ignored {
-        let o = o.netrc.make_mut()?;
-        o.mode = netrc;
-        o.file = op.netrc_file.map(copy).transpose()?;
-    }
-    if let Some(token) = op.bearer {
-        o.login.make_mut()?.bearer = Some(copy(token)?);
-    }
-    if !op.auth.is_empty() {
-        http.auth = options::HttpAuth(op.auth);
-    }
-    http.raw = op.raw;
-    http.raw_content = op.raw;
-    http.ignore_content_length = op.ignore_content_length;
-    o.filetime = op.remote_time;
-    o.time_condition = op.time_cond;
-    // One method, in C's order (`proxy_setopts`).
-    let proxy_auth = if op.proxy_anyauth {
-        Some(options::AuthMethods::ANY)
-    } else if op.proxy_digest {
-        Some(options::AuthMethods::DIGEST)
-    } else if op.proxy_basic {
-        Some(options::AuthMethods::BASIC)
-    } else {
-        None
-    };
-    // The debug test build suppresses them on request as well, as C's
-    // library does.
-    let suppress_connect_headers = op.suppress_connect_headers
-        || (cfg!(feature = "debug-hooks")
-            && curl_os::env::is_set(b"CURL_DBG_SUPPRESS_CONNECT_HDS"));
-    // The proxy options are made only where one is given.
-    if op.proxy.is_some()
-        || op.noproxy.is_some()
-        || op.preproxy.is_some()
-        || op.proxytunnel
-        || op.haproxy_protocol
-        || op.haproxy_clientip.is_some()
-        || suppress_connect_headers
-        || proxy_auth.is_some()
-    {
-        let p = o.proxy.make_mut()?;
-        if let Some(proxy) = op.proxy {
-            p.url = Some(copy(proxy)?);
-            p.kind = op.proxy_kind;
-        }
-        p.no_proxy = op.noproxy.map(copy).transpose()?;
-        p.pre_proxy = op.preproxy.map(copy).transpose()?;
-        p.tunnel = op.proxytunnel;
-        // As C's library takes them: an address turns the protocol on.
-        p.haproxy = op.haproxy_protocol || op.haproxy_clientip.is_some();
-        p.haproxy_client_ip = op.haproxy_clientip.map(copy).transpose()?;
-        p.suppress_connect_headers = suppress_connect_headers;
-        if let Some(methods) = proxy_auth {
-            p.auth = options::HttpAuth(methods);
-        }
-    }
-    o.url_rules.path_as_is = op.path_as_is;
-    o.url_rules.disallow_user = op.disallow_username;
-    http.fail_on_error = op.fail == Fail::WithoutBody;
-    o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
-    o.limits.low_speed = low_speed(op.low_speed_limit, op.low_speed_time);
-    if op.create_file_mode != 0 {
-        o.new_file_mode =
-            options::FileMode::new(op.create_file_mode).expect("read as at most 0o777");
-    }
-    o.limits.max_recv_speed = NonZeroU64::new(op.limit_rate);
-    o.limits.max_send_speed = NonZeroU64::new(op.limit_rate);
-    o.limits.buffer_size = buffer_size(op.limit_rate);
-    o.limits.total = TimeLimit::from_millis(op.timeout_ms);
-    o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
-    if let Some(ms) = op.happy_eyeballs_ms {
-        o.limits.eyeballs = options::EyeballsDelay(Duration::from_millis(ms));
-    }
-    if !op.resolve.is_empty() {
-        o.resolve.set(op.resolve.iter().copied())?;
-    }
-    o.connect_to.set(op.connect_to.iter().copied())?;
-    o.ip_version = match op.ip_version {
-        None => options::IpVersion::Any,
-        Some(IpVersion::V4) => options::IpVersion::V4,
-        Some(IpVersion::V6) => options::IpVersion::V6,
-    };
-    if config.http {
-        http_options(o, op)?;
-    }
     Ok(())
 }
 
@@ -1357,74 +1692,157 @@ fn low_speed(limit: u64, time: u64) -> Option<options::LowSpeed> {
 
 /// Reads of 100 KiB, or of a receive rate `limit_rate` under that, so a
 /// limited transfer reads no more than it may at once (`buffersize`).
-fn buffer_size(limit_rate: u64) -> options::BufferSize {
-    options::BufferSize::clamped(match limit_rate {
+fn buffer_size(limit_rate: u64) -> u64 {
+    match limit_rate {
         rate @ 1..TOOL_BUFFER => rate,
         _ => TOOL_BUFFER,
-    })
+    }
 }
 
 /// The options only a URL the tool takes for HTTP's is given
-/// (`http_setopts`).
-fn http_options(o: &mut options::Options, op: &Operation<'_>) -> Result<(), OutOfMemory> {
-    let http = &mut o.http;
+/// (`http_setopts`, `cookie_setopts`).
+fn http_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, msgs: &Messages) -> Result<(), ErrorKind> {
+    let follow = match op.follow {
+        options::Follow::No => 0,
+        options::Follow::All => 1,
+        options::Follow::ObeyCode => 2,
+        options::Follow::FirstOnly => 3,
+    };
+    s.long("CURLOPT_FOLLOWLOCATION", follow, |o| {
+        o.http.follow = op.follow;
+        Ok(())
+    })?;
+    s.long(
+        "CURLOPT_UNRESTRICTED_AUTH",
+        i64::from(op.unrestricted_auth),
+        |o| {
+            o.http.unrestricted_auth = op.unrestricted_auth;
+            Ok(())
+        },
+    )?;
     // As `CURLOPT_AWS_SIGV4` takes it, after the methods: given, it is
     // the one method; not, it is none of them.
-    http.signing
-        .set(|g| &mut g.aws_sigv4, op.aws_sigv4.map(copy).transpose()?)?;
-    http.auth.0 = match op.aws_sigv4 {
-        Some(_) => options::AuthMethods::AWS_SIGV4,
-        None => http.auth.0 & !options::AuthMethods::AWS_SIGV4,
-    };
-    http.follow = op.follow;
-    http.unrestricted_auth = op.unrestricted_auth;
-    http.auto_referer = op.auto_referer;
+    s.str("CURLOPT_AWS_SIGV4", op.aws_sigv4, |o| {
+        let http = &mut o.http;
+        http.signing
+            .set(
+                |g| &mut g.aws_sigv4,
+                op.aws_sigv4.map(copy).transpose().map_err(oom)?,
+            )
+            .map_err(oom)?;
+        http.auth.0 = match op.aws_sigv4 {
+            Some(_) => options::AuthMethods::AWS_SIGV4,
+            None => http.auth.0 & !options::AuthMethods::AWS_SIGV4,
+        };
+        Ok(())
+    })?;
+    message_signature(s, op.httpsig, msgs)?;
+    s.long("CURLOPT_AUTOREFERER", i64::from(op.auto_referer), |o| {
+        o.http.auto_referer = op.auto_referer;
+        Ok(())
+    })?;
     if !op.proxy_headers.is_empty() {
-        o.proxy.make_mut()?.headers = options::UserHeaders::new(op.proxy_headers.iter().copied())?;
+        s.slist("CURLOPT_PROXYHEADER", &op.proxy_headers, |o| {
+            o.proxy.make_mut().map_err(oom)?.headers =
+                options::UserHeaders::new(op.proxy_headers.iter().copied()).map_err(oom)?;
+            Ok(())
+        })?;
     }
     // As `CURLOPT_MAXREDIRS` takes it: -1 no limit, at most 32767.
-    http.max_redirects = options::MaxRedirects(match op.max_redirs.unwrap_or(50) {
-        -1 => None,
-        n => Some(u16::try_from(n.clamp(0, 0x7fff)).expect("clamped")),
-    });
+    let max_redirs = op.max_redirs.unwrap_or(50);
+    s.long("CURLOPT_MAXREDIRS", max_redirs, |o| {
+        o.http.max_redirects = options::MaxRedirects(match max_redirs {
+            -1 => None,
+            n => Some(u16::try_from(n.clamp(0, 0x7fff)).expect("clamped")),
+        });
+        Ok(())
+    })?;
     if let Some(version) = op.http_version {
-        http.version = match version {
-            HttpVersion::Http10 => options::HttpVersion::Http10,
-            HttpVersion::Http11 => options::HttpVersion::Http11,
+        let (version, value) = match version {
+            HttpVersion::Http10 => (options::HttpVersion::Http10, 1),
+            HttpVersion::Http11 => (options::HttpVersion::Http11, 2),
         };
+        s.enumerated("CURLOPT_HTTP_VERSION", easysrc::HTTP_VERSIONS, value, |o| {
+            o.http.version = version;
+            Ok(())
+        })?;
     }
-    http.post_redirect = op.post_redirect;
+    let redir = op.post_redirect;
+    let mask =
+        i64::from(redir.post301) | i64::from(redir.post302) << 1 | i64::from(redir.post303) << 2;
+    s.long("CURLOPT_POSTREDIR", mask, |o| {
+        o.http.post_redirect = redir;
+        Ok(())
+    })?;
     if op.compressed {
-        http.accept_encoding = Some(curl_core::coding::AcceptEncoding::All);
+        s.str("CURLOPT_ACCEPT_ENCODING", Some(b""), |o| {
+            o.http.accept_encoding = Some(curl_core::coding::AcceptEncoding::All);
+            Ok(())
+        })?;
     }
-    http.transfer_encoding = op.tr_encoding;
-    http.allow_09 = op.http09;
+    if op.tr_encoding {
+        s.long("CURLOPT_TRANSFER_ENCODING", 1, |o| {
+            o.http.transfer_encoding = true;
+            Ok(())
+        })?;
+    }
+    s.long("CURLOPT_HTTP09_ALLOWED", i64::from(op.http09), |o| {
+        o.http.allow_09 = op.http09;
+        Ok(())
+    })?;
     if op.expect100_timeout_ms > 0 {
-        // As `CURLOPT_EXPECT_100_TIMEOUT_MS` takes it, at most 65535.
-        let ms = op.expect100_timeout_ms.min(0xffff);
-        http.continue_wait = options::ContinueWait(Duration::from_millis(ms));
+        let ms = op.expect100_timeout_ms;
+        s.long("CURLOPT_EXPECT_100_TIMEOUT_MS", long(ms), |o| {
+            // As `CURLOPT_EXPECT_100_TIMEOUT_MS` takes it, at most 65535.
+            o.http.continue_wait = options::ContinueWait(Duration::from_millis(ms.min(0xffff)));
+            Ok(())
+        })?;
     }
-    // `cookie_setopts`; the `--cookie` strings were joined already. The
-    // cookie options are made only where one is given, as C's library
-    // keeps none it is not given.
-    if !op.cookie_files.is_empty() || op.cookie_jar.is_some() || op.cookie_session {
-        let cookies = http.cookies.make_mut()?;
-        for file in &op.cookie_files {
-            cookies.files.push(file)?;
+    // `cookie_setopts`. The cookie options are made only where one is
+    // given, as C's library keeps none it is not given.
+    if let Some(send) = joined_cookies(&op.cookies, msgs)? {
+        s.str("CURLOPT_COOKIE", Some(&send), |o| {
+            o.http.cookies.make_mut().map_err(oom)?.send = Some(copy(&send).map_err(oom)?);
+            Ok(())
+        })?;
+    }
+    for &file in &op.cookie_files {
+        s.str("CURLOPT_COOKIEFILE", Some(file), |o| {
+            o.http
+                .cookies
+                .make_mut()
+                .map_err(oom)?
+                .files
+                .push(file)
+                .map_err(oom)
+        })?;
+    }
+    s.str("CURLOPT_COOKIEJAR", op.cookie_jar, |o| {
+        if let Some(jar) = op.cookie_jar {
+            o.http.cookies.make_mut().map_err(oom)?.save_to = Some(copy(jar).map_err(oom)?);
         }
-        cookies.save_to = op.cookie_jar.map(copy).transpose()?;
-        cookies.new_session = op.cookie_session;
+        Ok(())
+    })?;
+    s.long("CURLOPT_COOKIESESSION", i64::from(op.cookie_session), |o| {
+        if op.cookie_session {
+            o.http.cookies.make_mut().map_err(oom)?.new_session = true;
+        }
+        Ok(())
+    })?;
+    // The headers for the origin are kept from a tunnel's proxy, as the
+    // library does unless told otherwise.
+    if (op.proxy.is_some() || !op.proxy_headers.is_empty()) && op.proxytunnel {
+        s.long("CURLOPT_HEADEROPT", 1, nothing)?;
     }
     Ok(())
 }
 
-/// `bytes`, owned.
 /// What an HTTP message signature signs with, if any of it is given, as
 /// `httpsig_setopts` sets it after the other HTTP options: the key and
 /// its name required, the algorithm Ed25519 unless given, and the key
 /// read from a file for `@` and its name. What is wrong is said here.
 fn message_signature(
-    o: &mut options::Options,
+    s: &mut Setopt<'_>,
     given: Httpsig<'_>,
     msgs: &Messages,
 ) -> Result<(), ErrorKind> {
@@ -1432,7 +1850,6 @@ fn message_signature(
     if given == Httpsig::default() {
         return Ok(());
     }
-    let oom = |_| ErrorKind::OutOfMemory;
     let Some(key) = given.key else {
         msgs.error(&[b"--httpsig-key is required"]);
         return Err(ErrorKind::FailedInit);
@@ -1441,18 +1858,29 @@ fn message_signature(
         msgs.error(&[b"--httpsig-keyid is required"]);
         return Err(ErrorKind::FailedInit);
     };
-    let algorithm = match given.algorithm {
-        None => A::Ed25519,
-        Some(name) if name.eq_ignore_ascii_case(b"ed25519") => A::Ed25519,
-        Some(name) if name.eq_ignore_ascii_case(b"hmac-sha256") => A::HmacSha256,
+    let (algorithm, value) = match given.algorithm {
+        None => (A::Ed25519, 1),
+        Some(name) if name.eq_ignore_ascii_case(b"ed25519") => (A::Ed25519, 1),
+        Some(name) if name.eq_ignore_ascii_case(b"hmac-sha256") => (A::HmacSha256, 2),
         Some(name) => {
             msgs.error(&[b"--httpsig-algo: unsupported algorithm '", name, b"'"]);
             return Err(ErrorKind::FailedInit);
         }
     };
-    o.http.auth.0 = options::AuthMethods::HTTPSIG;
-    let components = given.components.map(copy).transpose().map_err(oom)?;
-    let key_id = copy(key_id).map_err(oom)?;
+    s.long("CURLOPT_HTTPSIG_ALGORITHM", value, |o| {
+        o.http.auth.0 = options::AuthMethods::HTTPSIG;
+        o.http.signing.make_mut().map_err(oom)?.message.algorithm = Some(algorithm);
+        Ok(())
+    })?;
+    s.str("CURLOPT_HTTPSIG_HEADERS", given.components, |o| {
+        o.http.signing.make_mut().map_err(oom)?.message.components =
+            given.components.map(copy).transpose().map_err(oom)?;
+        Ok(())
+    })?;
+    s.str("CURLOPT_HTTPSIG_KEYID", Some(key_id), |o| {
+        o.http.signing.make_mut().map_err(oom)?.message.key_id = Some(copy(key_id).map_err(oom)?);
+        Ok(())
+    })?;
     let key = match key.split_first() {
         Some((b'@', file)) => {
             // C opens `-` as a file of that name.
@@ -1482,14 +1910,13 @@ fn message_signature(
             return Err(ErrorKind::BadFunctionArgument);
         }
     };
-    let signature = &mut o.http.signing.make_mut().map_err(oom)?.message;
-    signature.algorithm = Some(algorithm);
-    signature.components = components;
-    signature.key_id = Some(key_id);
-    signature.key = Some(key);
-    Ok(())
+    s.str("CURLOPT_HTTPSIG_KEY", Some(&key), |o| {
+        o.http.signing.make_mut().map_err(oom)?.message.key = Some(copy(&key).map_err(oom)?);
+        Ok(())
+    })
 }
 
+/// `bytes`, owned.
 fn copy(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut owned = Vec::new();
     owned.try_extend_from_slice(bytes)?;
@@ -1869,6 +2296,31 @@ enum Unopened {
     OutOfMemory,
 }
 
+/// Upload `source`, its size said if known (`pre_transfer`).
+fn upload_setopts(
+    easy: &mut Easy,
+    run: &Shared<'_, '_>,
+    source: UploadSource,
+) -> Result<(), ErrorKind> {
+    let size = match &source {
+        UploadSource::Read { size, .. } => *size,
+        _ => None,
+    };
+    let mut program = run.libcurl.map(RefCell::borrow_mut);
+    let mut s = Setopt::new(easy, program.as_deref_mut());
+    // C sets no size it does not know.
+    match size {
+        Some(size) => s.offt("CURLOPT_INFILESIZE_LARGE", long(size), |o| {
+            o.upload = source;
+            Ok(())
+        }),
+        None => s.unwritten("the read callback reads it", |o| {
+            o.upload = source;
+            Ok(())
+        }),
+    }
+}
+
 /// The file to upload, opened, with its size if it is a regular file;
 /// standard input for `-`, of a size not known, and started over only if
 /// it is a file.
@@ -2177,8 +2629,131 @@ mod tests {
             (102_400, 102_400),
             (1 << 40, 102_400),
         ] {
-            assert_eq!(buffer_size(rate).get(), size, "{rate}");
+            let set = options::BufferSize::clamped(buffer_size(rate));
+            assert_eq!(set.get(), size, "{rate}");
         }
+    }
+
+    /// What `--libcurl` writes for the transfer `args` set up, as
+    /// `config2setopts` sets it, and the options it was set up with.
+    fn set_up(args: &[&str]) -> Option<(String, String)> {
+        let argv: Vec<std::ffi::OsString> = std::iter::once("curl")
+            .chain(args.iter().copied())
+            .chain(std::iter::once("http://h/"))
+            .map(std::ffi::OsString::from)
+            .collect();
+        let mut msgs = Messages::new();
+        msgs.silent = true;
+        let line = match tool::parse_args(&argv, &mut msgs, &mut |_, _| {}) {
+            Ok(tool::Parsed::Run(line)) if line.unimplemented.is_none() => line,
+            _ => return None,
+        };
+        let op = line.operations.last()?;
+        let stdout = Stdout::new().unwrap();
+        let tracer = Tracer::new(&line.global, &stdout).unwrap();
+        let share = Share::new().unwrap();
+        let suffixes = curl_psl::suffixes().unwrap();
+        let program = RefCell::new(Source::new().unwrap());
+        let run = Shared {
+            libcurl: Some(&program),
+            global: &line.global,
+            stdout: &stdout,
+            tracer: tracer.as_ref(),
+            msgs,
+            share: &share,
+            suffixes: &suffixes,
+            started: Cell::new(None),
+        };
+        let out = output::Output::null(msgs).unwrap();
+        let post = op.post.as_deref().filter(|_| !op.get);
+        let form = match (&op.form, op.method) {
+            (Some(form), tool::Method::Mime) => {
+                Some(TryArc::try_new(form.mime(&msgs).ok()?).unwrap())
+            }
+            _ => None,
+        };
+        let config = Config {
+            url: b"http://h/",
+            http: true,
+            resume: match op.resume {
+                Some(Resume::At(n)) => NonZeroU64::new(n).map(options::Resume::At),
+                _ => None,
+            },
+            upload: false,
+            post,
+            form,
+            method: op.method,
+            terminal: false,
+            bar: None,
+        };
+        let mut easy = Easy::new();
+        {
+            let mut source = program.borrow_mut();
+            let mut s = Setopt::new(&mut easy, Some(&mut source));
+            setopts(&mut s, op, &run, &out, &config).ok()?;
+        }
+        let mut text = Vec::new();
+        program.into_inner().finish_into(&mut text);
+        Some((
+            String::from_utf8(text).unwrap(),
+            format!("{:?}", easy.options()),
+        ))
+    }
+
+    /// Each option that changes what a transfer is set up with changes
+    /// what `--libcurl` writes: an option is not set without its line.
+    /// Options the C writes nothing for, as their value is the default,
+    /// are listed.
+    #[test]
+    fn writes_each_option_it_sets() {
+        // `CURLOPT_HTTP_CONTENT_DECODING` and `_TRANSFER_DECODING` are
+        // set to 0, their default in C's eyes, and not written.
+        let unwritten = ["raw"];
+        let (base_text, base_options) = set_up(&[]).unwrap();
+        let mut tried = 0;
+        let mut changed = 0;
+        for (name, kind) in tool::every_option() {
+            // Those that read a file, run nothing, or point the test's own
+            // standard error elsewhere.
+            if [
+                "config",
+                "url",
+                "next",
+                "help",
+                "version",
+                "manual",
+                "dump-ca-embed",
+                "stderr",
+            ]
+            .contains(&name)
+            {
+                continue;
+            }
+            let flag = format!("--{name}");
+            let values: &[&str] = if kind == tool::ArgKind::None || kind == tool::ArgKind::Bool {
+                &[]
+            } else {
+                &["1", "a=b", "a:b", "x.y", "http://p/", "1 Jan 2020"]
+            };
+            let set = if values.is_empty() {
+                set_up(&[&flag])
+            } else {
+                values.iter().find_map(|v| set_up(&[&flag, v]))
+            };
+            let Some((text, options)) = set else {
+                continue;
+            };
+            tried += 1;
+            if options != base_options {
+                changed += 1;
+                if !unwritten.contains(&name) {
+                    assert_ne!(text, base_text, "--{name} sets an option it does not write");
+                }
+            }
+        }
+        // The needle: options were tried, and most change the transfer.
+        assert!(tried > 100, "{tried} options tried");
+        assert!(changed > 60, "{changed} options changed the transfer");
     }
 
     /// `append2query`: the query added after any there, as given, and a

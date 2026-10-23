@@ -7,12 +7,13 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
 
-use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_format};
 use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
 use curl_core::mime::{Boundary, Content, Encoder, FileData, FileError, Mime, Part};
 use curl_core::multi::TransferCx;
 
+use crate::easysrc::{self, Source, c_string};
 use crate::msgs::Messages;
 
 /// The most parts one level may have (`MAX_FORMPARTS`).
@@ -591,6 +592,89 @@ impl Form {
     pub(crate) fn mime(&self, msgs: &Messages) -> Result<Mime, ErrorKind> {
         to_mime(&self.parts, msgs)
     }
+
+    /// The calls that build the tree, for `--libcurl`
+    /// (`libcurl_generate_mime`): the number of its `curl_mime`.
+    pub(crate) fn libcurl(&self, source: &mut Source) -> Result<u32, OutOfMemory> {
+        libcurl_mime(&self.parts, source)
+    }
+}
+
+/// The calls that make a `curl_mime` of `parts`, each part's after it.
+fn libcurl_mime(parts: &[ToolPart], source: &mut Source) -> Result<u32, OutOfMemory> {
+    let n = source.mime(!parts.is_empty())?;
+    let num = try_format(format_args!("{n}"))?;
+    for p in parts {
+        libcurl_part(p, num.as_bytes(), source)?;
+    }
+    Ok(n)
+}
+
+/// The calls that make part `p` of `curl_mime` `n`
+/// (`libcurl_generate_mime_part`): its content, then its encoder, file
+/// name, name, type and headers.
+fn libcurl_part(p: &ToolPart, n: &[u8], source: &mut Source) -> Result<(), OutOfMemory> {
+    let part: &[u8] = b"part";
+    source.code(&[part, n, b" = curl_mime_addpart(mime", n, b");"])?;
+    let mut filename = p.filename.as_deref();
+    match &p.kind {
+        Kind::Parts(sub) => {
+            let sub = try_format(format_args!("{}", libcurl_mime(sub, source)?))?;
+            let sub = sub.as_bytes();
+            source.code(&[b"curl_mime_subparts(part", n, b", mime", sub, b");"])?;
+            // Freed with its parent, not at the end.
+            source.code(&[b"mime", sub, b" = NULL;"])?;
+        }
+        Kind::Data(data) => {
+            let data = easysrc::c_escape(c_string(data))?;
+            source.code(&[
+                b"curl_mime_data(part",
+                n,
+                b", \"",
+                &data,
+                b"\", CURL_ZERO_TERMINATED);",
+            ])?;
+        }
+        Kind::File { path, named } => {
+            let path = easysrc::c_escape(c_string(path))?;
+            source.code(&[b"curl_mime_filedata(part", n, b", \"", &path, b"\");"])?;
+            if !named && filename.is_none() {
+                source.code(&[b"curl_mime_filename(part", n, b", NULL);"])?;
+            }
+        }
+        Kind::Stdin { named, .. } => {
+            if *named && filename.is_none() {
+                filename = Some(b"-");
+            }
+            source.code(&[
+                b"curl_mime_data_cb(part",
+                n,
+                b", -1, (curl_read_callback)fread, \\",
+            ])?;
+            source.code(&[b"                  (curl_seek_callback)fseek, NULL, stdin);"])?;
+        }
+    }
+    let settings: [(&[u8], Option<&[u8]>); 4] = [
+        (b"curl_mime_encoder(part", p.encoder.as_deref()),
+        (b"curl_mime_filename(part", filename),
+        (b"curl_mime_name(part", p.name.as_deref()),
+        (b"curl_mime_type(part", p.mime_type.as_deref()),
+    ];
+    for (call, value) in settings {
+        if let Some(value) = value {
+            let value = easysrc::c_escape(c_string(value))?;
+            source.code(&[call, n, b", \"", &value, b"\");"])?;
+        }
+    }
+    if !p.headers.is_empty() {
+        let list = source.slist(p.headers.iter().map(Vec::as_slice))?;
+        let list = try_format(format_args!("{list}"))?;
+        let list = list.as_bytes();
+        source.code(&[b"curl_mime_headers(part", n, b", slist", list, b", 1);"])?;
+        // Freed with the part.
+        source.code(&[b"slist", list, b" = NULL;"])?;
+    }
+    Ok(())
 }
 
 /// The last part of a path, as POSIX `basename` gives it.
@@ -1038,6 +1122,64 @@ mod tests {
         let f = form(&[&arg]);
         assert_eq!(data(&f.parts[0]), b"b");
         assert!(f.parts[0].headers.is_empty());
+    }
+
+    /// The calls `--libcurl` writes for a tree, as C's tool writes them
+    /// (its output for the same `-F` arguments): each part's content,
+    /// then its encoder, file name, name, type and headers, a level's
+    /// parts in a `curl_mime` of their own.
+    #[test]
+    fn writes_the_tree_as_c_does() {
+        let f = form(&[
+            "a=b",
+            "c=<up.txt",
+            "d=@up.txt;filename=x;type=t/t;encoder=8bit",
+            "g=@h.txt;headers=X: 1",
+            "h=(;type=multipart/alternative",
+            "i=j",
+            "=)",
+        ]);
+        let mut source = Source::default();
+        assert_eq!(f.libcurl(&mut source).unwrap(), 1);
+        let mut text = Vec::new();
+        source.finish_into(&mut text);
+        let text = String::from_utf8(text).unwrap();
+        let start = text.find("  mime1 = curl_mime_init").unwrap();
+        let end = text.find("  curl_easy_cleanup").unwrap();
+        assert_eq!(
+            &text[start..end],
+            "  mime1 = curl_mime_init(curl);
+  part1 = curl_mime_addpart(mime1);
+  curl_mime_data(part1, \"b\", CURL_ZERO_TERMINATED);
+  curl_mime_name(part1, \"a\");
+  part1 = curl_mime_addpart(mime1);
+  curl_mime_filedata(part1, \"up.txt\");
+  curl_mime_filename(part1, NULL);
+  curl_mime_name(part1, \"c\");
+  part1 = curl_mime_addpart(mime1);
+  curl_mime_filedata(part1, \"up.txt\");
+  curl_mime_encoder(part1, \"8bit\");
+  curl_mime_filename(part1, \"x\");
+  curl_mime_name(part1, \"d\");
+  curl_mime_type(part1, \"t/t\");
+  part1 = curl_mime_addpart(mime1);
+  curl_mime_filedata(part1, \"h.txt\");
+  curl_mime_name(part1, \"g\");
+  curl_mime_headers(part1, slist1, 1);
+  slist1 = NULL;
+  part1 = curl_mime_addpart(mime1);
+  mime2 = curl_mime_init(curl);
+  part2 = curl_mime_addpart(mime2);
+  curl_mime_data(part2, \"j\", CURL_ZERO_TERMINATED);
+  curl_mime_name(part2, \"i\");
+  curl_mime_subparts(part1, mime2);
+  mime2 = NULL;
+  curl_mime_name(part1, \"h\");
+  curl_mime_type(part1, \"multipart/alternative\");
+"
+        );
+        assert!(text.contains("  curl_mime *mime1;\n  curl_mimepart *part1;\n  struct curl_slist *slist1;\n  curl_mime *mime2;\n  curl_mimepart *part2;\n"));
+        assert!(text.contains("  slist1 = curl_slist_append(slist1, \"X: 1\");\n"));
     }
 
     /// `--form-string` takes the value as it is.

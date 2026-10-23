@@ -27,6 +27,8 @@ pub(crate) use apply::{
 pub(crate) use errors::{ParamError, exit_code};
 pub(crate) use help::{CATEGORIES, HELP, HelpLine};
 pub(crate) use number::leading_number;
+#[cfg(test)]
+pub(crate) use parse::parse_args;
 pub(crate) use parse::{Parsed, parse};
 use table::{MAX_OPTION_LEN, OPTIONS, Opt};
 
@@ -69,6 +71,12 @@ pub(crate) struct Spec {
     pub(crate) secret: bool,
     /// Accepted and ignored, with a warning.
     pub(crate) deprecated: bool,
+}
+
+/// Every option's long name, and what it takes. For tests.
+#[cfg(test)]
+pub(crate) fn every_option() -> impl Iterator<Item = (&'static str, ArgKind)> {
+    OPTIONS.iter().map(|s| (s.long, s.kind))
 }
 
 /// The option named `name`, as `findlongopt` finds it.

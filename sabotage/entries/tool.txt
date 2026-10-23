@@ -265,9 +265,9 @@ witness: curl-tool options_shape_the_request
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool fails_on_an_error_code
 --- old
-    http.fail_on_error = op.fail == Fail::WithoutBody;
+        o.http.fail_on_error = fail;
 --- new
-    http.fail_on_error = false;
+        o.http.fail_on_error = false;
 
 === an upload may come with another method
 file: crates/curl-tool/src/operate.rs
@@ -876,18 +876,10 @@ file: crates/curl-tool/src/operate.rs
 witness: curl-tool gives_http_s_options_only_to_http
 --- old
     if config.http {
-        http_options(o, op)?;
+        http_setopts(s, op, &run.msgs)?;
 --- new
     if true {
-        http_options(o, op)?;
-
-=== a cookie string too long fails a URL not taken for HTTP's
-file: crates/curl-tool/src/operate.rs
-witness: curl-tool gives_http_s_options_only_to_http
---- old
-    let cookies = match http.then(|| joined_cookies(&op.cookies, &run.msgs)) {
---- new
-    let cookies = match Some(joined_cookies(&op.cookies, &run.msgs)) {
+        http_setopts(s, op, &run.msgs)?;
 
 === an IPFS path is decoded, so an encoded slash climbs out
 file: crates/curl-tool/src/ipfs.rs

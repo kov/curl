@@ -14,6 +14,7 @@ use curl_core::version::version;
 
 mod bar;
 mod config;
+mod easysrc;
 mod form;
 mod glob;
 mod help;

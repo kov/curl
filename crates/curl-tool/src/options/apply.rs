@@ -112,6 +112,14 @@ pub(crate) struct Httpsig<'a> {
     pub(crate) components: Option<&'a [u8]>,
 }
 
+/// `--proto-default`: the protocol, as named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct DefaultProtocol<'a> {
+    pub(crate) protocol: Protocol,
+    /// Its name as given, in any case.
+    pub(crate) given: &'a [u8],
+}
+
 /// The transfers one part of the command line asks for: the whole of it,
 /// or the part between two `--next`.
 #[derive(Debug, Default)]
@@ -135,7 +143,7 @@ pub(crate) struct Operation<'a> {
     /// `--proto-redir`: the protocols a redirect may go to, if set.
     pub(crate) redirect_protocols: Option<Protocols>,
     /// `--proto-default`.
-    pub(crate) default_protocol: Option<Protocol>,
+    pub(crate) default_protocol: Option<DefaultProtocol<'a>>,
     /// `--include` and `--show-headers`: header lines go to the output.
     pub(crate) show_headers: bool,
     /// `--remote-time`.
@@ -532,6 +540,9 @@ pub(crate) struct Global<'a> {
     pub(crate) unstyled: bool,
     /// What `--variable` sets, for `--expand-` options to use.
     pub(crate) variables: crate::vars::Variables,
+    /// `--libcurl`: where the C program the transfers amount to is
+    /// written, `-` for standard output.
+    pub(crate) libcurl: Option<&'a [u8]>,
     /// `--test-event`: transfers are driven by the multi's events (the
     /// debug build's).
     #[cfg(feature = "debug-hooks")]
@@ -862,7 +873,10 @@ pub(crate) fn apply<'a>(
                 return Err(ParamError::BlankString);
             }
             let protocol = protocols::token(name).ok_or(ParamError::LibcurlUnsupportedProtocol)?;
-            line.current().default_protocol = Some(protocol);
+            line.current().default_protocol = Some(DefaultProtocol {
+                protocol,
+                given: name,
+            });
         }
         Opt::Include | Opt::ShowHeaders => line.current().show_headers = value.toggle(),
         Opt::Head => {
@@ -1349,6 +1363,13 @@ pub(crate) fn apply<'a>(
         Opt::TestDuphandle => line.not_implemented(spec, "--"),
         #[cfg(feature = "debug-hooks")]
         Opt::TestEvent => line.global.test_event = value.toggle(),
+        Opt::Libcurl => {
+            let file = value.text();
+            if file.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.global.libcurl = Some(file);
+        }
         Opt::AbstractUnixSocket
         | Opt::Alpn
         | Opt::AltSvc
@@ -1410,7 +1431,6 @@ pub(crate) fn apply<'a>(
         | Opt::Knownhosts
         | Opt::Krb
         | Opt::Krb4
-        | Opt::Libcurl
         | Opt::ListOnly
         | Opt::LocalPort
         | Opt::LoginOptions

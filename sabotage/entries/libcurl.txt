@@ -1,0 +1,76 @@
+# `--libcurl` (crates/curl-tool/src/easysrc.rs, the tool's option setting in
+# crates/curl-tool/src/operate.rs and the tree of `--form` in form.rs): the C
+# program a command line amounts to, byte for byte as C's tool writes it.
+
+=== an option is set without the line `--libcurl` writes for it
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::writes_each_option_it_sets
+--- old
+        s.long("CURLOPT_TRANSFER_ENCODING", 1, |o| {
+--- new
+        s.unwritten("planted", |o| {
+
+=== a transfer's options are changed outside `Setopt`
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool easysrc::tests::only_setopt_changes_options
+--- old
+            Setopt::new(easy, None)
+                .unwritten("`retrycheck` sets it itself", |o| {
+                    o.resume = resume;
+                    Ok(())
+                })
+                .expect("setting a resume point cannot fail");
+--- new
+            easy.options_mut().resume = resume;
+
+=== a question mark is written as it is, so a trigraph can be made
+file: crates/curl-tool/src/easysrc.rs
+witness: curl-tool easysrc::tests::escapes_as_c_does
+--- old
+            b'?' => b"\\?",
+--- new
+            b'?' => b"?",
+
+=== a byte before a hexadecimal digit is written in hexadecimal
+file: crates/curl-tool/src/easysrc.rs
+witness: curl-tool easysrc::tests::escapes_as_c_does
+--- old
+                let code = if s.get(i + 1).is_some_and(u8::is_ascii_hexdigit) {
+--- new
+                let code = if false {
+
+=== the handle is reset before it is freed
+file: crates/curl-tool/src/easysrc.rs
+witness: curl-tool easysrc::tests::writes_the_program_as_c_does
+--- old
+        self.pending_reset = false;
+        self.add(Section::Code, b"curl_easy_cleanup(curl);")?;
+--- new
+        self.add(Section::Code, b"curl_easy_cleanup(curl);")?;
+
+=== the options no source is written for are said again after each perform
+file: crates/curl-tool/src/easysrc.rs
+witness: curl-tool easysrc::tests::writes_the_program_as_c_does
+--- old
+            for line in std::mem::take(&mut self.too_hard) {
+--- new
+            for line in self.too_hard.clone() {
+
+=== the bits of a mask no name takes are left out
+file: crates/curl-tool/src/easysrc.rs
+witness: curl-tool easysrc::tests::writes_masks_as_c_does
+--- old
+    let n = decimal(rest)?;
+    source.code(&[lead, n.as_bytes(), b"UL);"])
+--- new
+    source.code(&[lead, b"0UL);"])
+
+=== a part's name is written before its file name
+file: crates/curl-tool/src/form.rs
+witness: curl-tool form::tests::writes_the_tree_as_c_does
+--- old
+        (b"curl_mime_filename(part", filename),
+        (b"curl_mime_name(part", p.name.as_deref()),
+--- new
+        (b"curl_mime_name(part", p.name.as_deref()),
+        (b"curl_mime_filename(part", filename),

@@ -66,7 +66,7 @@ pub(crate) fn parse<'a, R>(
 /// Parse `argv` as `parse` does, but for files to read: none may be
 /// named. For tests.
 #[cfg(test)]
-fn parse_args<'a>(
+pub(crate) fn parse_args<'a>(
     argv: &'a [OsString],
     msgs: &mut Messages,
     wipe: Wipe<'_>,

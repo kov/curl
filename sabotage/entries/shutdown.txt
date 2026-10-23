@@ -172,3 +172,11 @@ witness: curl-sys-abi handle_tests::a_closing_connection_s_socket_is_removed_by_
 --- old
     core.close_connections(&mut ev);
 --- new
+
+=== room for one host closes another host's closing connection
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-core multi::shutdown_tests::room_for_a_host_closes_that_host_s_closing_connection
+--- old
+            let goes = to.is_none_or(|to| {
+--- new
+            let goes = true || to.is_none_or(|to| {

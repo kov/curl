@@ -366,10 +366,14 @@ fn a_closing_connection_counts_only_toward_its_own_host() {
     let mut ev = Rec::default();
     let a = m.add(closing(1), (), &mut ev).unwrap();
     by_perform(&mut m, a, &mut ev);
-    m.add(closing(2), (), &mut ev).unwrap();
+    let b = m.add(closing(2), (), &mut ev).unwrap();
     m.perform(&mut ev).unwrap();
     assert_eq!(wire.closed(), [], "to another host");
     assert_eq!(m.shutdowns.len(), 1);
+    assert!(
+        !matches!(m.state_of(b), state::TransferState::Pending(_)),
+        "not waiting for room"
+    );
 }
 
 /// With no limit set, the set keeps at most 128 (a quarter of the pool,
@@ -501,4 +505,25 @@ fn an_evicted_connection_shuts_down_where_its_pool_lets_it() {
             assert_eq!(m.shutdowns.len(), 1);
         }
     }
+}
+
+/// Making room under a host's limit closes the oldest closing connection
+/// to that host, not an older one to another (`Curl_cshutdn_close_oldest`
+/// with the destination).
+#[test]
+fn room_for_a_host_closes_that_host_s_closing_connection() {
+    let (mut m, wire, _clock) = lingering(Linger::UntilPeer);
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    let mut ev = Rec::default();
+    for (port, fd) in [(1, 1000), (2, 1001)] {
+        let id = m.add(closing(port), (), &mut ev).unwrap();
+        by_events(&mut m, id, fd, &mut ev);
+        m.remove(id, &mut ev).unwrap();
+    }
+    assert_eq!(m.shutdowns.len(), 2);
+    let b = m.add(closing(2), (), &mut ev).unwrap();
+    m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(wire.closed(), [1001], "the one to port 2");
+    assert_eq!(m.shutdowns.len(), 1, "the one to port 1 stays");
+    assert!(!matches!(m.state_of(b), state::TransferState::Pending(_)));
 }

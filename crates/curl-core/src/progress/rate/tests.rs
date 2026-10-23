@@ -2,7 +2,7 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use super::*;
-use crate::deliver::{RecvPause, SendPause};
+use crate::deliver::RecvPause;
 
 fn at(us: u64) -> Instant {
     Instant::EPOCH.after(Duration::from_micros(us))
@@ -192,10 +192,8 @@ fn a_pause_stops_the_bucket() {
     let ts = at(START);
     let mut r = RateLimits::default();
     r.start(Way::Recv, &l, ts, None);
-    let paused = Pause {
-        recv: RecvPause::Stopped,
-        send: SendPause::Running,
-    };
+    let mut paused = Pause::default();
+    paused.recv = RecvPause::Stopped;
     assert_eq!(r.allowance(Way::Recv, &l, paused, ts), Some(0));
     assert_eq!(r.allowance(Way::Send, &l, paused, ts), None);
     r.drain(Way::Recv, &l, paused, 5000, ts);

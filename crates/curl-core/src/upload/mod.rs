@@ -8,7 +8,6 @@ mod tests;
 
 use curl_alloc::{TryArc, try_box};
 
-use crate::deliver::SendPause;
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind};
 use crate::mime::MimeError;
@@ -270,7 +269,7 @@ impl Upload {
                 Err(trace::fail(cx, ErrorKind::ReadError, why))
             }
             Read::Pause => {
-                cx.pause_mut().send = SendPause::Paused;
+                cx.pause_mut().ask_send();
                 Ok(Readout { n: 0, eos: false })
             }
             Read::Data(n) if n.get() > room => {

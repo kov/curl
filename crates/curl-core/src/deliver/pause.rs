@@ -34,7 +34,19 @@ impl PauseRequest {
 pub(crate) struct Pause {
     pub(crate) recv: RecvPause,
     pub(crate) send: SendPause,
+    /// How many times a pause a read handler asked for was lifted.
+    lifts: Lifts,
 }
+
+/// A count of the lifts of a transfer's asked-for send pauses: a reader
+/// that keeps such a pause keeps the count it was asked at, and the pause
+/// holds while the count is the same (`mime_unpause`). A lift needs no
+/// reader to hear of it, so none can miss it. The count wraps: a kept
+/// pause is checked by the next read, and the next asked-for pause comes
+/// from a read, so at most one lift falls between the keeping and the
+/// check. Kept small, as every transfer carries it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Lifts(u16);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum RecvPause {
@@ -52,7 +64,12 @@ pub(crate) enum RecvPause {
 pub(crate) enum SendPause {
     #[default]
     Running,
+    /// Paused by the application from outside a read.
     Paused,
+    /// A read handler asked for a pause (`CURL_READFUNC_PAUSE`): until it
+    /// is lifted the reader is paused too (`Curl_creader_is_paused`), and
+    /// an application pause changes nothing.
+    Asked,
 }
 
 impl Pause {
@@ -64,11 +81,25 @@ impl Pause {
             (true, RecvPause::Held) => RecvPause::Held,
             (true, _) => RecvPause::Stopped,
         };
-        self.send = if req.send {
-            SendPause::Paused
-        } else {
-            SendPause::Running
+        self.send = match (req.send, self.send) {
+            (false, SendPause::Asked) => {
+                self.lifts.0 = self.lifts.0.wrapping_add(1);
+                SendPause::Running
+            }
+            (false, _) => SendPause::Running,
+            (true, SendPause::Asked) => SendPause::Asked,
+            (true, _) => SendPause::Paused,
         };
+    }
+
+    /// A read handler asked for a pause.
+    pub(crate) fn ask_send(&mut self) {
+        self.send = SendPause::Asked;
+    }
+
+    /// The lifts so far of the pauses read handlers asked for.
+    pub(crate) fn lifts(&self) -> Lifts {
+        self.lifts
     }
 
     pub(crate) fn recv_paused(&self) -> bool {
@@ -76,7 +107,7 @@ impl Pause {
     }
 
     pub(crate) fn send_paused(&self) -> bool {
-        self.send == SendPause::Paused
+        self.send != SendPause::Running
     }
 
     /// Whether the pause stops a request moving bytes the ways it does
@@ -118,11 +149,29 @@ mod tests {
         assert_eq!(p, Pause::default());
     }
 
+    /// A pause a handler asked for stays so under the application's pause,
+    /// and counts a lift when it ends; the application's own does not.
+    #[test]
+    fn a_lift_counts_the_end_of_an_asked_pause() {
+        let mut p = Pause::default();
+        p.apply(PauseRequest::SEND);
+        p.apply(PauseRequest::CONT);
+        assert_eq!(p.lifts(), Lifts(0));
+        p.ask_send();
+        assert!(p.send_paused());
+        p.apply(PauseRequest::SEND);
+        assert_eq!((p.send, p.lifts()), (SendPause::Asked, Lifts(0)));
+        p.apply(PauseRequest::RECV);
+        assert_eq!((p.send, p.lifts()), (SendPause::Running, Lifts(1)));
+        p.apply(PauseRequest::CONT);
+        assert_eq!(p.lifts(), Lifts(1));
+    }
+
     #[test]
     fn held_output_stays_held_under_a_receive_pause() {
         let mut p = Pause {
             recv: RecvPause::Held,
-            send: SendPause::Running,
+            ..Pause::default()
         };
         p.apply(PauseRequest::RECV);
         assert_eq!(p.recv, RecvPause::Held);

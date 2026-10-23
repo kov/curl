@@ -1930,6 +1930,80 @@ fn a_part_read_answering_stop_filling_fails() {
     }
 }
 
+/// A part's read function pausing after its headers, in the fill that
+/// gave them, is not called again until the transfer is unpaused: the
+/// pause is kept in the part and given by the next read
+/// (`lastreadstatus`), as the reference build does.
+#[test]
+fn a_part_s_pause_after_its_headers_holds_until_unpaused() {
+    #[derive(Default)]
+    struct Calls {
+        /// What the transfer had been unpaused for, at each call.
+        seen: Vec<bool>,
+        unpaused: bool,
+    }
+    unsafe extern "C" fn read(buf: *mut c_char, _: usize, _: usize, data: *mut c_void) -> usize {
+        // SAFETY: the test passes a `Calls`, and room for one byte.
+        let calls = unsafe { &mut *data.cast::<Calls>() };
+        calls.seen.push(calls.unpaused);
+        match calls.seen.len() {
+            1 => ffi::CURL_READFUNC_PAUSE as usize,
+            2 => {
+                // SAFETY: as above.
+                unsafe { *buf = b'B' as c_char };
+                1
+            }
+            _ => 0,
+        }
+    }
+    use crate::mime::{curl_mime_addpart, curl_mime_data_cb, curl_mime_free, curl_mime_init};
+    for size in [-1, 1] {
+        let mut calls = Calls::default();
+        let c = curl_easy_init();
+        // SAFETY: live handles, a tree and its part, freed after the handle;
+        // `calls` outlives them.
+        unsafe {
+            let m = curl_mime_init(c);
+            let p = curl_mime_addpart(m);
+            assert_eq!(
+                curl_mime_data_cb(p, size, Some(read), None, None, (&raw mut calls).cast()),
+                CURLE_OK
+            );
+            pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
+            pointer(c, ffi::CURLOPT_MIMEPOST, m);
+            options(c, |o| {
+                o.script = Some(Script::new(vec![Piece::SendAll]).unwrap());
+            });
+            let multi = curl_multi_init();
+            assert_eq!(curl_multi_add_handle(multi, c), CURLM_OK);
+            let mut running = 1;
+            let mut rounds = 0;
+            while running > 0 {
+                assert_eq!(curl_multi_perform(multi, &raw mut running), CURLM_OK);
+                rounds += 1;
+                assert!(rounds < 1000, "the transfer never ends");
+                if !calls.seen.is_empty() && !calls.unpaused && rounds >= 5 {
+                    calls.unpaused = true;
+                    assert_eq!(curl_easy_pause(c, ffi::CURLPAUSE_CONT), CURLE_OK);
+                }
+            }
+            let mut queued = 0;
+            let msg = curl_multi_info_read(multi, &raw mut queued);
+            assert_eq!((*msg).data.result, CURLE_OK);
+            assert_eq!(curl_multi_remove_handle(multi, c), CURLM_OK);
+            curl_easy_cleanup(c);
+            curl_mime_free(m);
+            assert_eq!(curl_multi_cleanup(multi), CURLM_OK);
+        }
+        let want: &[bool] = if size < 0 {
+            &[false, true, true]
+        } else {
+            &[false, true]
+        };
+        assert_eq!(calls.seen, want, "size {size}");
+    }
+}
+
 /// What the write function answers.
 struct Answer(usize);
 

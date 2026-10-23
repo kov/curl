@@ -8,6 +8,7 @@ use std::num::NonZeroUsize;
 use curl_alloc::TryArc;
 use proptest::prelude::*;
 
+use crate::deliver::{Lifts, Pause, PauseRequest};
 use crate::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
 use crate::multi::TransferCx;
 use crate::proto::http1::request::UserHeaders;
@@ -62,6 +63,8 @@ struct Script {
     rooms: Vec<usize>,
     rewinds: usize,
     rewind_fails: bool,
+    /// The transfer's pause, which the test lifts.
+    pause: Pause,
 }
 
 impl Script {
@@ -71,6 +74,17 @@ impl Script {
             ..Script::default()
         }
     }
+
+    /// The pause a handler asked for, lifted (`curl_easy_pause` with
+    /// `CURLPAUSE_CONT`).
+    fn lift(&mut self) {
+        lift(&mut self.pause);
+    }
+}
+
+fn lift(pause: &mut Pause) {
+    pause.ask_send();
+    pause.apply(PauseRequest::CONT);
 }
 
 impl Calls for Script {
@@ -101,6 +115,10 @@ impl Calls for Script {
         } else {
             Ok(())
         }
+    }
+
+    fn lifts(&self) -> Lifts {
+        self.pause.lifts()
     }
 }
 
@@ -140,8 +158,8 @@ fn reader_with(m: Mime, request: &UserHeaders, escaping: Escape) -> MimeReader {
     MimeReader::new(TryArc::try_new(m).unwrap(), request, escaping).unwrap()
 }
 
-/// Every read with `room`, as the pieces they gave; the last outcome if
-/// not the end.
+/// Every read with `room`, as the pieces they gave, a pause lifted as it
+/// comes; the last outcome if not the end.
 fn pieces(r: &mut MimeReader, calls: &mut Script, room: usize) -> (Vec<Vec<u8>>, Option<Got>) {
     let mut out = Vec::new();
     let mut buf = vec![0u8; room];
@@ -149,7 +167,7 @@ fn pieces(r: &mut MimeReader, calls: &mut Script, room: usize) -> (Vec<Vec<u8>>,
         match r.next_for_test(&mut buf, calls) {
             Got::Bytes(0) => return (out, None),
             Got::Bytes(n) => out.push(buf[..n].to_vec()),
-            Got::Pause => {}
+            Got::Pause => calls.lift(),
             got => return (out, Some(got)),
         }
     }
@@ -448,9 +466,11 @@ fn a_handler_s_failure_ends_the_read() {
     }
 }
 
-/// A pause gives nothing and does not stick: the handler is asked again.
+/// A pause gives nothing and holds until the transfer's pause is lifted,
+/// the handler not asked again before (`lastreadstatus`, `mime_unpause`).
+/// One asked for after the headers in the same fill is the next fill's.
 #[test]
-fn a_pause_does_not_stick() {
+fn a_pause_holds_until_lifted() {
     let mut r = reader(tree([named("a", callback(None, false))]));
     let mut calls = Script::new([Answer::Pause, Answer::Pause, Answer::Data(b"z".to_vec())]);
     let mut buf = [0u8; 1024];
@@ -458,7 +478,17 @@ fn a_pause_does_not_stick() {
         panic!("the headers go before the pause");
     };
     assert!(head > 0);
-    assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Pause);
+    assert_eq!(calls.rooms.len(), 1, "asked in the headers' fill");
+    for asked in [1, 2] {
+        assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Pause);
+        assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Pause);
+        assert_eq!(calls.rooms.len(), asked, "not asked while paused");
+        calls.lift();
+        if asked == 1 {
+            assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Pause);
+            assert_eq!(calls.rooms.len(), 2, "asked once lifted");
+        }
+    }
     assert_eq!(r.next_for_test(&mut buf, &mut calls), Got::Bytes(1));
     assert_eq!(buf[0], b'z');
 }
@@ -1039,6 +1069,10 @@ impl Calls for Fed {
     fn rewind(&mut self, _: &Handler<dyn Rewind>) -> Result<(), RewindFailed> {
         unreachable!("not started over")
     }
+
+    fn lifts(&self) -> Lifts {
+        Lifts::default()
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1347,11 +1381,14 @@ fn a_tree_read_whole_starts_over_with_its_headers() {
 
 /// A handler pausing on its second call, its first made by a fill that
 /// it filled: the fill makes one call at most, so the pause is the next
-/// fill's, at its start (`read_part_content`'s `hasread`). The pieces are
-/// the reference build's for these rooms.
+/// fill's (`read_part_content`'s `hasread`). With room for 134 the
+/// encoder holds a byte of the first call's, which the next fill gives
+/// before the call that pauses: the pause is kept and given by the fill
+/// after, which calls no handler (`lastreadstatus`). Each pause holds
+/// until lifted. The pieces are the reference build's for these rooms.
 #[test]
 fn a_pause_after_a_full_fill_is_the_next_fill_s() {
-    struct PausesSecond(Fed, usize);
+    struct PausesSecond(Fed, usize, Pause);
     impl Calls for PausesSecond {
         fn read(&mut self, h: &Handler<dyn ReadHandler>, buf: &mut [u8]) -> Read {
             self.1 += 1;
@@ -1364,8 +1401,16 @@ fn a_pause_after_a_full_fill_is_the_next_fill_s() {
         fn rewind(&mut self, _: &Handler<dyn Rewind>) -> Result<(), RewindFailed> {
             unreachable!("not started over")
         }
+
+        fn lifts(&self) -> Lifts {
+            self.2.lifts()
+        }
     }
-    for (room, want) in [(135, "135 pause 10x19 54"), (136, "135 pause 10x19 54")] {
+    for (room, want) in [
+        (134, "134 1 pause 10x19 54"),
+        (135, "135 pause 10x19 54"),
+        (136, "135 pause 10x19 54"),
+    ] {
         let part = Part {
             encoder: Some(Encoder::Binary),
             content: callback(None, false),
@@ -1378,14 +1423,20 @@ fn a_pause_after_a_full_fill_is_the_next_fill_s() {
             at: 0,
             chunk: 10,
         };
-        let mut calls = PausesSecond(fed, 0);
+        let mut calls = PausesSecond(fed, 0, Pause::default());
         let mut buf = vec![0u8; room];
         let mut got = Vec::new();
         loop {
             match r.next_for_test(&mut buf, &mut calls) {
                 Got::Bytes(0) => break,
                 Got::Bytes(n) => got.push(n.to_string()),
-                Got::Pause => got.push("pause".to_string()),
+                Got::Pause => {
+                    got.push("pause".to_string());
+                    let asked = calls.1;
+                    let again = r.next_for_test(&mut buf, &mut calls);
+                    assert_eq!((again, calls.1), (Got::Pause, asked), "room {room}");
+                    lift(&mut calls.2);
+                }
                 other => panic!("{other:?}"),
             }
         }

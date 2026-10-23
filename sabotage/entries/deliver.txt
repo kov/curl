@@ -421,3 +421,19 @@ witness: curl-core proto::http::tests::write_trace::a_coded_body_held_at_the_gat
             && held.last_kind().map(is_body) != Some(is_body(kind))
 --- new
             && false
+
+=== the unpause of a handler's pause is not counted, so a part's kept pause outlives it
+file: crates/curl-core/src/deliver/pause.rs
+witness: curl-core deliver::pause::tests::a_lift_counts_the_end_of_an_asked_pause
+--- old
+                self.lifts.0 = self.lifts.0.wrapping_add(1);
+--- new
+                self.lifts.0 = self.lifts.0.wrapping_add(0);
+
+=== an application pause turns a handler's pause into its own, so its unpause lifts nothing
+file: crates/curl-core/src/deliver/pause.rs
+witness: curl-core deliver::pause::tests::a_lift_counts_the_end_of_an_asked_pause
+--- old
+            (true, SendPause::Asked) => SendPause::Asked,
+--- new
+            (true, SendPause::Asked) => SendPause::Paused,

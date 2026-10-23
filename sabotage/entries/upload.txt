@@ -67,7 +67,7 @@ witness: curl-core upload::tests::the_handler_s_end_and_failures_stick
 file: crates/curl-core/src/upload/mod.rs
 witness: curl-core upload::tests::a_pausing_handler_pauses_the_sending
 --- old
-                cx.pause_mut().send = SendPause::Paused;
+                cx.pause_mut().ask_send();
 --- new
 
 === a read pause is taken where none is supported

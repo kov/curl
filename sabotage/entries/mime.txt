@@ -223,3 +223,19 @@ witness: curl-core mime::tests::a_tree_read_whole_starts_with_its_headers
         MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, false).map_err(MakeError::kind)?;
 --- new
         MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, true).map_err(MakeError::kind)?;
+
+=== a pause a part keeps is not given: the handler is called again before the unpause
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_pause_after_a_full_fill_is_the_next_fill_s
+--- old
+        Last::Paused(at) if at == calls.lifts() => return Got::Pause,
+--- new
+        Last::Paused(at) if at != at => return Got::Pause,
+
+=== a handler's pause after bytes in the same fill is not kept, so it is lost
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_pause_holds_until_lifted
+--- old
+        Got::Pause => src.last = Last::Paused(calls.lifts()),
+--- new
+        Got::Pause => {}

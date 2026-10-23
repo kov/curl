@@ -240,8 +240,6 @@ exclude_re = [
     # Content is never read into no room: a part is read only while room
     # is left, and an encoder's input only while its buffer has space.
     'mime/read\.rs:.*: replace match guard buf\.is_empty\(\) with false in read_content$',
-    # Input already at the buffer's start is moved onto itself.
-    'mime/read\.rs:.*: replace > with >= in read_encoded$',
     # Three bytes joined at disjoint bits, where `^` is `|`; and the line
     # position after the last group, flushed at the end, is cleared
     # before it is read again (`+=` elsewhere in it is pinned by the
@@ -297,6 +295,9 @@ exclude_re = [
     # Only `read_whole`'s reader has no handlers to call, and it never
     # starts over.
     'mime/read\.rs:.*: replace <impl Calls for NoCalls>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\)$',
+    # Without a transfer no count of lifts is there: the one given is
+    # already the default, and no handler is called to pause.
+    'mime/read\.rs:.*: replace <impl Calls for NoCalls>::lifts -> Lifts with Default::default\(\)$',
     # A pool section closes connections and never resolves a name.
     'multi/cx\.rs:.*: replace <impl Net for CloseLater<._>>::resolve -> Result<Vec<IpAddr>, ResolveFailure> with Ok\(vec!\[\]\)$',
     # A transfer is in `Done` only inside a step, while its run is out of

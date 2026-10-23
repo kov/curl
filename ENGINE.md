@@ -65,9 +65,10 @@ numbers are those of `SCOPE.md`.
 **Data path**
 
 12. **Pause is one value per direction**: `RecvPause::{Running, Stopped, Held}` and
-    `SendPause::{Running, Paused}`. `Stopped` is an API pause (the current buffer still
-    finishes); `Held` is a callback pause (output is held at once). Rate limiting is a separate
-    fact.
+    `SendPause::{Running, Paused, Asked}`. `Stopped` is an API pause (the current buffer still
+    finishes); `Held` is a callback pause (output is held at once). `Paused` is an API pause of
+    sending; `Asked` a read handler's, which an API pause leaves as it is and whose lift the
+    `Pause` counts (`Lifts`, §5.4.1). Rate limiting is a separate fact.
 13. **The response pipeline is a fixed struct**, ordered by its fields, not a phase-sorted list.
     Paused output is ranges into one buffer, O(1) per append, EOS a separate event.
 14. **Multiplexed connections buffer per stream inside the mux**, so a paused stream never
@@ -1480,7 +1481,7 @@ back, which `Sending::AwaitingContinue` does (§6.1). SMTP's dot-stuffing and li
   ReadError "read function returned funny value") and not called again until a rewind. EOF
   short of a known size is ReadError "client read function EOF fail, only X/Y of needed bytes
   read". `Read::Data` carries a `NonZeroUsize`: the shim maps C's 0 to `Eof`.
-- `Read::Pause` pauses the transfer's sending (`SendPause::Paused`) and gives nothing; on a
+- `Read::Pause` pauses the transfer's sending (`SendPause::Asked`) and gives nothing; on a
   protocol that cannot pause it is ReadError "Read callback asked for PAUSE when not supported".
 - COPYPOSTFIELDS is `Bytes`. Non-copied POSTFIELDS is `Lent`, a shim `LentBytes` over the
   app's pointer (§7.6) that copies from an offset the `Upload` keeps; the core never holds a raw
@@ -1559,8 +1560,12 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   failed read of a regular file ends the part there, as C's `fread` does, for the size check);
   a handler giving more than its room, "read function returned funny value"; the end short of a
   known size, "client mime read EOF fail, only X/Y of needed bytes read"; all ReadError. A pause
-  is not latched: the transfer reads no more until it is unpaused, when the part's handler is
-  called again (`mime_unpause`).
+  is kept in each part it passes through, with the transfer's count of lifted handler pauses
+  (`Last::Paused(Lifts)`, `lastreadstatus`): a fill that gave bytes before its handler paused
+  gives them, and the next read gives the pause without calling the handler. The pause holds
+  while the count is the one it was kept with; the unpause that lifts `SendPause::Asked` moves
+  the count, and every kept pause is then stale and reads as a fine status (`mime_unpause`).
+  No unpause reaches into the reader, so none can miss a part.
 - **Rewind.** Whether a request's reading reached a part since it last started over is kept
   in the part (`Part::reached`, a shared flag the copies a source makes of one part hold), as C
   keeps its part state past `MIMESTATE_BEGIN` from one request and one transfer to the next. A

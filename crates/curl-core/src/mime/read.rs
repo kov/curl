@@ -7,7 +7,7 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
-use crate::deliver::SendPause;
+use crate::deliver::Lifts;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
 use crate::multi::state::StepCx;
@@ -89,10 +89,12 @@ impl MakeError {
 }
 
 /// The application's code a reader calls: a part's read and rewind
-/// handlers.
+/// handlers; and the transfer's count of lifted pauses, which says
+/// whether a pause a part keeps still holds.
 pub(crate) trait Calls {
     fn read(&mut self, handler: &Handler<dyn ReadHandler>, buf: &mut [u8]) -> Read;
     fn rewind(&mut self, handler: &Handler<dyn Rewind>) -> Result<(), RewindFailed>;
+    fn lifts(&self) -> Lifts;
 }
 
 /// The handlers called with the transfer's context.
@@ -105,6 +107,10 @@ impl<H: Host> Calls for StepCalls<'_, '_, H> {
 
     fn rewind(&mut self, handler: &Handler<dyn Rewind>) -> Result<(), RewindFailed> {
         handler.rewind(&mut TransferCx::new(self.0))
+    }
+
+    fn lifts(&self) -> Lifts {
+        self.0.pause().lifts()
     }
 }
 
@@ -131,14 +137,17 @@ enum MimeState {
 }
 
 /// How the last read of a part's content went, for those that stick
-/// (`lastreadstatus`). A pause does not: the transfer reads again only
-/// once unpaused, as C's `mime_unpause` clears it then.
+/// (`lastreadstatus`). A pause holds until the transfer's pause is
+/// lifted, when the count it was kept with is passed (`mime_unpause`):
+/// a fill that gave bytes before its handler paused gives the pause at
+/// the next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Last {
     Fine,
     End,
     Abort,
     Error,
+    Paused(Lifts),
 }
 
 /// An encoder's input and line (`mime_encoder_state`).
@@ -607,7 +616,8 @@ fn read_content(
         Last::End => return Got::Bytes(0),
         Last::Abort => return Got::Abort,
         Last::Error => return Got::Error,
-        Last::Fine => {}
+        Last::Paused(at) if at == calls.lifts() => return Got::Pause,
+        Last::Paused(_) | Last::Fine => {}
     }
     let got = if src.size.is_some_and(|size| src.offset >= size) {
         // At the end of a part of known size: no read.
@@ -675,7 +685,8 @@ fn read_content(
         }
     };
     match got {
-        Got::Stop | Got::Pause => {}
+        Got::Stop => {}
+        Got::Pause => src.last = Last::Paused(calls.lifts()),
         Got::Bytes(0) => src.last = Last::End,
         Got::Abort => src.last = Last::Abort,
         Got::Error | Got::Funny => src.last = Last::Error,
@@ -717,12 +728,10 @@ fn read_encoded(
                 got => return some_or(cursize, got),
             }
         }
-        // More input wanted.
-        if c.enc.beg > 0 {
-            c.enc.buf.copy_within(c.enc.beg..c.enc.end, 0);
-            c.enc.end -= c.enc.beg;
-            c.enc.beg = 0;
-        }
+        // More input wanted, after what is held, moved to the start.
+        c.enc.buf.copy_within(c.enc.beg..c.enc.end, 0);
+        c.enc.end -= c.enc.beg;
+        c.enc.beg = 0;
         if c.enc.end >= ENCODING_BUFFER {
             return some_or(cursize, Got::Error);
         }
@@ -1401,7 +1410,7 @@ impl MimeReader {
                 format_args!("Read callback asked for PAUSE when not supported"),
             )),
             Got::Pause => {
-                cx.pause_mut().send = SendPause::Paused;
+                cx.pause_mut().ask_send();
                 Ok(Readout { n: 0, eos: false })
             }
             Got::Stop | Got::Error => latch(
@@ -1467,6 +1476,10 @@ impl Calls for NoCalls {
 
     fn rewind(&mut self, _: &Handler<dyn Rewind>) -> Result<(), RewindFailed> {
         Err(RewindFailed)
+    }
+
+    fn lifts(&self) -> Lifts {
+        Lifts::default()
     }
 }
 

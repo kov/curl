@@ -5762,19 +5762,19 @@ fn a_probe_reads_none_of_the_tree() {
 }
 
 /// A part's handler pausing pauses the sending of the tree, until the
-/// application lets it go on.
+/// application lets it go on. Its pause after the part's head, in the
+/// fill that gave the head, is the next read's: the handler is not
+/// called again until then (`lastreadstatus`).
 #[test]
 fn a_tree_s_handler_pauses_its_sending() {
-    struct PausesTwice(Stream, Arc<crate::test_cell::Cell<u32>>);
-    impl crate::handler::ReadHandler for PausesTwice {
+    struct PausesOnce(Stream, Arc<crate::test_cell::Cell<u32>>);
+    impl crate::handler::ReadHandler for PausesOnce {
         fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
-            // The first pause, after the part's head in the same fill,
-            // gives the head: only the second pauses the sending.
-            if self.1.get() == 2 {
-                return self.0.read(cx, buf);
-            }
             self.1.set(self.1.get() + 1);
-            crate::handler::Read::Pause
+            if self.1.get() == 1 {
+                return crate::handler::Read::Pause;
+            }
+            self.0.read(cx, buf)
         }
     }
     let (mut m, talk, _) = server(&[OK_EMPTY], false);
@@ -5783,8 +5783,9 @@ fn a_tree_s_handler_pauses_its_sending() {
     o.set_url(Some(format!("http://127.0.0.1:{PORT}/p").as_bytes()))
         .unwrap();
     o.method = Method::Post;
+    let calls = Arc::<crate::test_cell::Cell<u32>>::default();
     o.upload = mime_source(mime_tree(crate::mime::Content::Read {
-        handler: Handler::read(PausesTwice(Stream::new(b"abc"), Arc::default())).unwrap(),
+        handler: Handler::read(PausesOnce(Stream::new(b"abc"), calls.clone())).unwrap(),
         rewind: None,
         size: Some(3),
     }));
@@ -5794,6 +5795,7 @@ fn a_tree_s_handler_pauses_its_sending() {
     }
     let sent = talk.received();
     assert!(sent.ends_with(b"\r\n\r\n"), "{}", sent.escape_ascii());
+    assert_eq!(calls.get(), 1, "not called again while paused");
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
     let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
     assert_eq!(result, Ok(()));

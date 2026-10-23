@@ -1410,7 +1410,21 @@ pub(crate) fn apply<'a>(
         // already took it into account.
         Opt::Disable => {}
         // Deprecated: the parser warns of them and applies nothing.
-        Opt::EgdFile | Opt::RandomFile => unreachable!("a deprecated option is not applied"),
+        Opt::EgdFile
+        | Opt::Krb
+        | Opt::Krb4
+        | Opt::Metalink
+        | Opt::Npn
+        | Opt::NtlmWb
+        | Opt::ProxyTlsauthtype
+        | Opt::ProxyTlspassword
+        | Opt::ProxyTlsuser
+        | Opt::RandomFile
+        | Opt::Sslv2
+        | Opt::Sslv3
+        | Opt::Tlsauthtype
+        | Opt::Tlspassword
+        | Opt::Tlsuser => unreachable!("a deprecated option is not applied"),
         #[cfg(feature = "debug-hooks")]
         Opt::TestDuphandle => line.not_implemented(spec, "--"),
         #[cfg(feature = "debug-hooks")]
@@ -1481,8 +1495,6 @@ pub(crate) fn apply<'a>(
         | Opt::Key
         | Opt::KeyType
         | Opt::Knownhosts
-        | Opt::Krb
-        | Opt::Krb4
         | Opt::ListOnly
         | Opt::LocalPort
         | Opt::LoginOptions
@@ -1490,11 +1502,8 @@ pub(crate) fn apply<'a>(
         | Opt::MailFrom
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
-        | Opt::Metalink
         | Opt::Negotiate
-        | Opt::Npn
         | Opt::Ntlm
-        | Opt::NtlmWb
         | Opt::Pass
         | Opt::Pinnedpubkey
         | Opt::ProxyCaNative
@@ -1517,9 +1526,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxySslAllowBeast
         | Opt::ProxySslAutoClientCert
         | Opt::ProxyTls13Ciphers
-        | Opt::ProxyTlsauthtype
-        | Opt::ProxyTlspassword
-        | Opt::ProxyTlsuser
         | Opt::ProxyTlsv1
         | Opt::Pubkey
         | Opt::Quote
@@ -1539,17 +1545,12 @@ pub(crate) fn apply<'a>(
         | Opt::SslReqd
         | Opt::SslRevokeBestEffort
         | Opt::SslSessions
-        | Opt::Sslv2
-        | Opt::Sslv3
         | Opt::TelnetOption
         | Opt::TftpBlksize
         | Opt::TftpNoOptions
         | Opt::TlsEarlydata
         | Opt::TlsMax
         | Opt::Tls13Ciphers
-        | Opt::Tlsauthtype
-        | Opt::Tlspassword
-        | Opt::Tlsuser
         | Opt::Tlsv1
         | Opt::Tlsv10
         | Opt::Tlsv11

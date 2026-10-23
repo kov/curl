@@ -918,6 +918,69 @@ mod tests {
         assert_eq!(wiped(&["-u", "a:b", "--bogus"]), [(2, 0)]);
     }
 
+    /// Every deprecated option is warned of and does nothing, wherever it
+    /// is given: on the command line, as a letter, in a configuration
+    /// file. One that needs TLS is refused by a library without it.
+    #[test]
+    fn deprecated_options_are_warned_of_and_applied_nowhere() {
+        let deprecated = || super::super::table::OPTIONS.iter().filter(|s| s.deprecated);
+        assert_eq!(deprecated().count(), 15);
+        for spec in deprecated() {
+            let flag = format!("--{}", spec.long);
+            let mut args = vec![flag.as_str()];
+            if spec.kind.takes_argument() {
+                args.push("x");
+            }
+            args.push("http://h/");
+            if spec.needs_tls && !has_tls() {
+                assert_eq!(run(&args), Err(ParamError::LibcurlDoesntSupport));
+                continue;
+            }
+            let mut ran = None;
+            let words: &'static [OsString] = Vec::leak(argv(&args));
+            let said = crate::msgs::captured(|mut msgs| {
+                ran = Some(parse_args(words, &mut msgs, &mut |_, _| {}));
+            });
+            let Some(Ok(Parsed::Run(line))) = ran else {
+                panic!("{args:?} did not parse");
+            };
+            assert!(line.unimplemented.is_none(), "{args:?}");
+            let warning = format!("Warning: {flag} is deprecated and has no function anymore\n");
+            assert_eq!(said, warning, "{args:?}");
+        }
+        // A deprecated letter ends its word: `v` is not read.
+        for word in ["-2v", "-3v"] {
+            let line = line(&[word, "http://h/"]);
+            assert!(line.unimplemented.is_none());
+            assert_eq!(line.global.trace, Trace::None, "{word}");
+        }
+        let file = TempFile::new("deprecated.cfg", b"krb = x\nsslv2\nmetalink\nnpn\n");
+        let args = ["-K", file.name(), "http://h/"];
+        let argv = argv(&args);
+        let said = crate::msgs::captured(|mut msgs| {
+            parse(&argv, None, &mut msgs, &mut |_, _| {}, |r, _| {
+                let Ok(Parsed::Run(line)) = r else {
+                    panic!("not parsed");
+                };
+                assert!(line.unimplemented.is_none());
+            });
+        });
+        assert_eq!(
+            said,
+            "Warning: --krb is deprecated and has no function anymore\n\
+             Warning: --sslv2 is deprecated and has no function anymore\n\
+             Warning: --metalink is deprecated and has no function anymore\n\
+             Warning: --npn is deprecated and has no function anymore\n"
+        );
+    }
+
+    fn argv(args: &[&str]) -> Vec<OsString> {
+        std::iter::once("curl")
+            .chain(args.iter().copied())
+            .map(OsString::from)
+            .collect()
+    }
+
     #[test]
     fn reads_urls_and_operations() {
         assert_eq!(

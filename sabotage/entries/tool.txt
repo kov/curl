@@ -1268,3 +1268,33 @@ witness: curl-tool each_transfer_compares_one_etag
     let etag = match op.etag_compare.map(|name| etag_header(name, &msgs)) {
 --- new
     let etag = match op.etag_compare.filter(|_| first).map(|name| etag_header(name, &msgs)) {
+
+=== a deprecated option that takes an argument is applied
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool options::parse::tests::deprecated_options_are_warned_of_and_applied_nowhere
+--- old
+            let applied = if spec.deprecated {
+--- new
+            let applied = if false {
+
+=== a deprecated option that takes no argument is applied
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool options::parse::tests::deprecated_options_are_warned_of_and_applied_nowhere
+--- old
+        } else if spec.deprecated {
+            deprecated(msgs, spec);
+            Ok(Flow::Continue)
+        } else if spec.kind == ArgKind::Bool {
+--- new
+        } else if false {
+            deprecated(msgs, spec);
+            Ok(Flow::Continue)
+        } else if spec.kind == ArgKind::Bool {
+
+=== a deprecated letter does not end its word
+file: crates/curl-tool/src/options/parse.rs
+witness: curl-tool options::parse::tests::deprecated_options_are_warned_of_and_applied_nowhere
+--- old
+            long.is_none() && !attached && at < letters.len() && !used_next && !spec.deprecated;
+--- new
+            long.is_none() && !attached && at < letters.len() && !used_next;

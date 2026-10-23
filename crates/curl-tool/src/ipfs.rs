@@ -272,6 +272,16 @@ mod tests {
             "an encoded slash stays one"
         );
         assert_eq!(
+            rewritten("ipfs://cid/x", "http://12%37.0.0.1:8/"),
+            ok("http://127.0.0.1:8/ipfs/cid/x"),
+            "the gateway's host decoded"
+        );
+        assert_eq!(
+            rewritten("ipfs://cid", "http://%C3%A9.test/"),
+            Err(Failed::Malformed),
+            "and encoded again, as a host it is not taken"
+        );
+        assert_eq!(
             rewritten("ipfs://cid", "http://gw.test/?a=b"),
             Err(Failed::Malformed)
         );

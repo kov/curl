@@ -51,3 +51,34 @@ fn test96_memory_tracking_operational() {
         "memanalyze.pl found problems:\n{report}\n{log}"
     );
 }
+
+/// An allocation refused while an IPFS URL is rewritten for its gateway
+/// is said to be out of memory, never a malformed URL: at each limit, up
+/// to the one the transfer is reached with, the tool fails for memory or
+/// reaches the gateway, whose port refuses. (About 70 runs.)
+#[test]
+fn an_ipfs_rewrite_short_of_memory_says_so() {
+    for limit in 0..2000 {
+        let out = Command::new(env!("CARGO_BIN_EXE_curl"))
+            .args([
+                "-q",
+                "-sS",
+                "--ipfs-gateway",
+                "http://127.0.0.1:1/g",
+                "ipfs://cid/p",
+            ])
+            .env("CURL_MEMLIMIT", limit.to_string())
+            .output()
+            .unwrap();
+        match out.status.code() {
+            Some(7) => return,
+            // Out of memory, reading the command line or after.
+            Some(2 | 27) => {}
+            other => panic!(
+                "limit {limit}: {other:?}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ),
+        }
+    }
+    panic!("the transfer never reached");
+}

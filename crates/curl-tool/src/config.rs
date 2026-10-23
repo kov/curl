@@ -348,6 +348,17 @@ mod tests {
 
     /// Last, `.curlrc` in the user database's home directory, never
     /// `.config/curlrc` there.
+    /// A file is readable when it can be opened, and a missing one is
+    /// not.
+    #[test]
+    fn readable_is_whether_it_opens() {
+        let path = std::env::temp_dir().join(format!("curl-config-{}", std::process::id()));
+        std::fs::write(&path, b"").unwrap();
+        assert!(readable(&path));
+        std::fs::remove_file(&path).unwrap();
+        assert!(!readable(&path));
+    }
+
     #[test]
     fn then_the_users_home() {
         let files = ["/p/.curlrc", "/p/.config/curlrc", "/h/.curlrc"];

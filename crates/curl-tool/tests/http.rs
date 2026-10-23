@@ -1665,3 +1665,111 @@ fn fails_on_standard_input_it_cannot_read() {
         "{request}"
     );
 }
+
+/// The tool with `args` and only the environment `env` names for the
+/// IPFS gateway, `HOME` among them.
+fn curl_ipfs_env(args: &[&str], env: &[(&str, &std::ffi::OsStr)]) -> Run {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut command = Command::new(tool);
+    command
+        .env_remove("IPFS_GATEWAY")
+        .env_remove("IPFS_PATH")
+        .env_remove("HOME");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let out = command.arg("-q").args(args).output().unwrap();
+    Run {
+        code: out.status.code().unwrap(),
+        stdout: out.stdout,
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    }
+}
+
+/// Without `--ipfs-gateway`, the gateway is `IPFS_GATEWAY`, else the
+/// first line of `gateway` in `IPFS_PATH`, a `/` put between them, else
+/// in `~/.ipfs`, an empty `IPFS_PATH` being none; a `gateway` that
+/// cannot be read is no gateway.
+#[test]
+fn finds_the_ipfs_gateway_as_c_does() {
+    let dir = scratch("ipfs-env");
+    let home = dir.join("home");
+    std::fs::create_dir_all(home.join(".ipfs")).unwrap();
+    let path = dir.join("path");
+    std::fs::create_dir_all(&path).unwrap();
+    let unreadable = dir.join("unreadable");
+    std::fs::create_dir_all(unreadable.join("gateway")).unwrap();
+    let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    for at in ["gateway", "home", "path"] {
+        let s = Server::new(ok);
+        let url = s.url();
+        std::fs::write(home.join(".ipfs/gateway"), format!("{url}\nnot this\n")).unwrap();
+        std::fs::write(path.join("gateway"), format!("{url}\r\n")).unwrap();
+        let empty = std::ffi::OsStr::new("");
+        let env: &[(&str, &std::ffi::OsStr)] = match at {
+            "gateway" => &[("IPFS_GATEWAY", url.as_ref())],
+            "home" => &[("IPFS_PATH", empty), ("HOME", home.as_os_str())],
+            _ => &[("IPFS_PATH", path.as_os_str()), ("HOME", empty)],
+        };
+        let run = curl_ipfs_env(&["-sS", "ipfs://cid/p"], env);
+        assert_eq!((run.code, &run.stderr[..]), (0, ""), "{at}");
+        let request = s.request();
+        assert!(
+            request.starts_with("GET /ipfs/cid/p HTTP/1.1\r\n"),
+            "{at}: {request}"
+        );
+    }
+    let run = curl_ipfs_env(
+        &["-sS", "ipfs://cid"],
+        &[("IPFS_PATH", unreadable.as_os_str())],
+    );
+    assert_eq!(run.code, 37);
+    assert!(
+        run.stderr
+            .starts_with("curl: IPFS automatic gateway detection failed\n"),
+        "{}",
+        run.stderr
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The debug build's times and sizes for `--write-out`, as tests 970
+/// and 1981 set them: `CURL_TIME` for the time now and every time, both
+/// speeds and the local port, `CURL_DEBUG_SIZE` for the header and
+/// request sizes; and a status code, three digits as text and a number
+/// in JSON.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn writes_out_the_debug_build_s_times_and_sizes() {
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let run = |env: &[(&str, &str)], format: &str| {
+        let s = Server::new(OK);
+        let out = Command::new(&tool)
+            .args(["-q", "-s", "-o", "/dev/null", "-w", format, &s.url()])
+            .envs(env.iter().copied())
+            .output()
+            .unwrap();
+        s.request();
+        assert_eq!(out.status.code(), Some(0), "{format}");
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(
+        run(
+            &[("CURL_TIME", "1754037103"), ("LC_TIME", "C"), ("TZ", "UTC")],
+            "Time: %time{%d/%b/%Y %H:%M:%S.%f %z %Z%%s %s}\n"
+        ),
+        "Time: 01/Aug/2025 08:31:43.037103 +0000 UTC%s 1754037103\n"
+    );
+    assert_eq!(
+        run(
+            &[("CURL_TIME", "13"), ("CURL_DEBUG_SIZE", "4019")],
+            "%{time_total} %{size_header} %{size_request} %{local_port} %{speed_download}"
+        ),
+        "0.000013 4019 4019 13 13"
+    );
+    let json = run(&[], "%{http_connect} %{json}");
+    assert!(json.starts_with("000 {"), "{json}");
+    assert!(json.contains(",\"http_connect\":0,"), "{json}");
+}

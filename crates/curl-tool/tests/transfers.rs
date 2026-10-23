@@ -1105,3 +1105,18 @@ fn draws_the_bar_of_an_upload_resumed_at_its_end() {
     assert_eq!(stderr, format!("\r{} 100.0%\n", "#".repeat(23)));
     assert_eq!(s.read("dst"), b"0123456789");
 }
+
+/// `--version` names the tool, its release date and what it was built
+/// with.
+#[test]
+fn says_its_version() {
+    let dir = Scratch::new("version");
+    let run = curl(&dir, &["--version"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let out = String::from_utf8(run.stdout).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines[0].starts_with("curl "), "{out}");
+    assert!(lines[1].starts_with("Release-Date: "), "{out}");
+    assert!(lines.iter().any(|l| l.starts_with("Protocols: ")), "{out}");
+    assert!(lines.iter().any(|l| l.starts_with("Features: ")), "{out}");
+}

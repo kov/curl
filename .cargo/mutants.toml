@@ -268,6 +268,9 @@ exclude_re = [
     'curl-tool/src/operate\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in <impl ReadHandler for UploadFile>::read$',
     'curl-tool/src/slurp\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in read$',
     'curl-tool/src/form\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in (header_file|stdin_part|<impl ReadHandler for StdinPart>::read)$',
+    'curl-tool/src/ipfs\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in first_line$',
+    # The URL got encodes only its host, which was encoded as it was set.
+    'curl-tool/src/ipfs\.rs:.*: delete field url_encode from struct GetOptions expression in rewrite$',
     # Every caller of `part` allows a type: only a file name and an
     # encoder are ever not allowed.
     'curl-tool/src/form\.rs:.*: replace match guard !allowed\.mime_type with false in part$',

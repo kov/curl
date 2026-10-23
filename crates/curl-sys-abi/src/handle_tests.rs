@@ -4570,7 +4570,6 @@ fn clearing_an_option_makes_no_group() {
         ffi::CURLOPT_NETRC_FILE,
         ffi::CURLOPT_COOKIE,
         ffi::CURLOPT_COOKIEFILE,
-        ffi::CURLOPT_COOKIEJAR,
     ];
     let c = curl_easy_init();
     for option in cleared {
@@ -4590,6 +4589,12 @@ fn clearing_an_option_makes_no_group() {
     assert_eq!(options(c, |o| o.proxy.url.clone()), None);
     assert_eq!(options(c, |o| o.proxy.haproxy_client_ip.clone()), None);
     assert!(!options(c, |o| o.proxy.haproxy), "the protocol is off");
+    // SAFETY: a live handle, not used again.
+    // `CURLOPT_COOKIEJAR` turns the jar on whatever it names, as C makes
+    // its cookie engine.
+    let c = curl_easy_init();
+    let (code, cost) = measure(|| pointer(c, ffi::CURLOPT_COOKIEJAR, ptr::null_mut::<c_char>()));
+    assert_eq!((code, cost.allocations), (CURLE_OK, 1));
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

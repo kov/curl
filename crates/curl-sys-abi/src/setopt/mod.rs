@@ -1074,7 +1074,9 @@ unsafe fn jar_option(shim: &ShimEasy, option: CURLoption, p: *mut c_void) -> CUR
         };
         match (option, given) {
             (ffi::CURLOPT_COOKIEFILE, None) => easy.forget_cookies(),
-            (ffi::CURLOPT_COOKIEJAR, _) => easy.enable_cookies(),
+            (ffi::CURLOPT_COOKIEJAR, _) => {
+                easy.enable_cookies().map_err(|_| ErrorKind::OutOfMemory)?;
+            }
             (ffi::CURLOPT_COOKIELIST, Some(command)) => {
                 return cookie_command(easy, command, &mut notes);
             }

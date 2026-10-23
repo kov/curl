@@ -80,7 +80,7 @@ pub(super) fn custom_host(
 pub(crate) fn load<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
     let easy = cx.easy_mut();
     if easy.options().http.cookies.wanted() {
-        easy.enable_cookies();
+        easy.enable_cookies().map_err(|_| ErrorKind::OutOfMemory)?;
     }
     // Files named are read as one use of the share's cookies, told
     // around the whole walk, warnings and all, as C locks them once
@@ -151,7 +151,7 @@ fn load_text<H: Host>(cx: &mut StepCx<'_, H>, text: &[u8]) -> Result<(), ErrorKi
     };
     let loaded = match easy.share().filter(|s| s.keeps(Kind::Cookies)) {
         Some(share) => share.cookies().as_mut().map(read),
-        None => easy.cookies.as_mut().map(read),
+        None => easy.cookies.as_deref_mut().map(read),
     };
     easy.set_cookies = set;
     held.trace(cx)?;
@@ -175,7 +175,7 @@ fn jar_section<R>(easy: &mut Easy, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
     easy.cookies.as_ref()?;
     match easy.with_shared_jar(f) {
         Ok(r) => r,
-        Err(f) => easy.cookies.as_mut().map(f),
+        Err(f) => easy.cookies.as_deref_mut().map(f),
     }
 }
 

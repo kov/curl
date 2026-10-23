@@ -112,7 +112,7 @@ file: crates/curl-core/src/easy.rs
 witness: curl-core proto::http::tests::a_share_keeps_cookies_for_its_handles
 --- old
         let f = match self.with_shared_jar(f) {
-            Ok(r) => return r,
+            Ok(r) => return Ok(r),
             Err(f) => f,
         };
 --- new

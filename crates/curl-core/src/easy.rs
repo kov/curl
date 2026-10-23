@@ -45,7 +45,7 @@ pub struct Easy {
     /// (C's `cookies` with `cookie_engine`): kept from one transfer to
     /// the next, and through `reset`. On a share that keeps cookies, the
     /// share's is used in its place, and this one only says the jar is on.
-    pub(crate) cookies: Option<Jar>,
+    pub(crate) cookies: Option<Box<Jar>>,
     /// Cookies stored from `Set-Cookie:` lines since the request started
     /// (`req.setcookies`), whoever gave them: a response, a cookie file or
     /// the application. Past `MAX_SET_PER_REQUEST`, no cookie of any kind
@@ -137,7 +137,10 @@ impl Easy {
             auth: Auth::default(),
             private: None,
             // A jar of its own, empty, if this one's is on.
-            cookies: self.cookies.as_ref().map(|_| Jar::default()),
+            cookies: match self.cookies {
+                Some(_) => Some(try_box(Jar::default())?),
+                None => None,
+            },
             set_cookies: 0,
             share: None,
             share_watch: None,
@@ -221,11 +224,13 @@ impl Easy {
     }
 
     /// Turn the cookie jar on: one of the handle's own, empty, if it has
-    /// none (`CURLOPT_COOKIEJAR`).
-    pub fn enable_cookies(&mut self) {
+    /// none (`CURLOPT_COOKIEJAR`). Making it is what can run out of
+    /// memory.
+    pub fn enable_cookies(&mut self) -> Result<(), OutOfMemory> {
         if self.cookies.is_none() {
-            self.cookies = Some(Jar::default());
+            self.cookies = Some(try_box(Jar::default())?);
         }
+        Ok(())
     }
 
     /// Forget the cookie files and the handle's own jar, with its cookies
@@ -265,6 +270,7 @@ impl Easy {
                 }
                 Ok(())
             })
+            .map_err(oom)?
             .expect("made if missing")
             .map_err(oom);
         self.set_cookies = set;
@@ -273,14 +279,14 @@ impl Easy {
 
     /// Forget every cookie (`CURLOPT_COOKIELIST` `ALL`).
     pub fn clear_cookies(&mut self) -> Result<(), ErrorKind> {
-        self.with_jar(false, Jar::clear);
+        self.with_jar(false, Jar::clear).map_err(oom)?;
         Ok(())
     }
 
     /// Forget the cookies that last the session (`CURLOPT_COOKIELIST`
     /// `SESS`).
     pub fn clear_session_cookies(&mut self) -> Result<(), ErrorKind> {
-        self.with_jar(false, Jar::clear_session);
+        self.with_jar(false, Jar::clear_session).map_err(oom)?;
         Ok(())
     }
 
@@ -328,6 +334,7 @@ impl Easy {
                 }
                 Ok(())
             })
+            .map_err(oom)?
             .expect("made if missing");
         self.set_cookies = set;
         loaded
@@ -338,34 +345,40 @@ impl Easy {
     /// first.
     pub fn cookie_list(&mut self) -> Result<Vec<Vec<u8>>, ErrorKind> {
         let now = SystemClock::new().unix_time();
-        let listed = self.with_jar(false, |jar| -> Result<_, OutOfMemory> {
-            let mut lines = Vec::new();
-            if jar.len() == 0 {
-                return Ok(lines);
-            }
-            jar.sweep(now);
-            for co in jar.listed() {
-                let mut line = Vec::new();
-                co.netscape(&mut line)?;
-                lines.try_push(line)?;
-            }
-            Ok(lines)
-        });
+        let listed = self
+            .with_jar(false, |jar| -> Result<_, OutOfMemory> {
+                let mut lines = Vec::new();
+                if jar.len() == 0 {
+                    return Ok(lines);
+                }
+                jar.sweep(now);
+                for co in jar.listed() {
+                    let mut line = Vec::new();
+                    co.netscape(&mut line)?;
+                    lines.try_push(line)?;
+                }
+                Ok(lines)
+            })
+            .map_err(oom)?;
         Ok(listed.transpose().map_err(oom)?.unwrap_or_default())
     }
 
     /// Run `f` on the jar the handle uses: its share's, if that keeps the
     /// cookies, as one use of it, else its own, made if `make` and it has
     /// none. None if there is no jar.
-    fn with_jar<R>(&mut self, make: bool, f: impl FnOnce(&mut Jar) -> R) -> Option<R> {
+    fn with_jar<R>(
+        &mut self,
+        make: bool,
+        f: impl FnOnce(&mut Jar) -> R,
+    ) -> Result<Option<R>, OutOfMemory> {
         let f = match self.with_shared_jar(f) {
-            Ok(r) => return r,
+            Ok(r) => return Ok(r),
             Err(f) => f,
         };
-        if make && self.cookies.is_none() {
-            self.cookies = Some(Jar::default());
+        if make {
+            self.enable_cookies()?;
         }
-        self.cookies.as_mut().map(f)
+        Ok(self.cookies.as_deref_mut().map(f))
     }
 
     /// Tell the application of a use of the share's jar that makes none
@@ -408,7 +421,7 @@ impl Easy {
         };
         let written = match self.with_shared_jar(save) {
             Ok(written) => written,
-            Err(save) => self.cookies.as_mut().map(save),
+            Err(save) => self.cookies.as_deref_mut().map(save),
         };
         written.unwrap_or(Ok(())).map_err(|e| match e {
             SaveError::OutOfMemory => ErrorKind::OutOfMemory,

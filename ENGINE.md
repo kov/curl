@@ -856,12 +856,16 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   are not complete: with a second baller, or with the host's HTTPS-RR answer still to come. With
   C's defaults there is one baller, so the reference build arms it exactly for a host name whose
   HTTPS-RR query is outstanding as the attempt starts (`localhost`, which 758 uses), never for an
-  IP literal, which makes no query, nor for a name whose answer is cached, even a negative one
-  (the second connection of a run). Once armed it is not cleared when the race is won: it stays
-  in the transfer's pollset lines through PERFORMING until `[TIMEOUT] all cleared` at
-  COMPLETED. The engine resolves no HTTPS-RR yet, so it arms the timer where C's query would be
-  outstanding (a host name not answered from the cache), to keep the timer callback's sequence;
-  the HTTPS-RR lookup itself waits for c-ares. `Shutdown` is the multi's, not a transfer's:
+  IP literal, which makes no query, nor for a name whose HTTPS-RR answer is cached, even a
+  negative one (the second connection of a run). A `CURLOPT_RESOLVE` entry answers the
+  addresses only, so a name it gives still arms it. Once armed it is not cleared when the race
+  is won: it stays in the transfer's pollset lines through PERFORMING until `[TIMEOUT] all
+  cleared` at COMPLETED. The engine resolves no HTTPS-RR yet, so it arms the timer where C's
+  query would be outstanding, to keep the timer callback's sequence: for a host name whose
+  HTTPS-RR answer C would not have cached (C keeps it, negative or not, in the DNS cache beside
+  the addresses). How the engine knows that without the query is 43g's to settle, against 758's
+  timer callbacks and a golden of two connections.
+  The HTTPS-RR lookup itself waits for c-ares. `Shutdown` is the multi's, not a transfer's:
   C arms EXPIRE_SHUTDOWN on its internal handle for the earliest deadline of the connections
   shutting down (cshutdn.c:359–367). The multi gets one row of its own in `Deadlines` and
   `TimerQueue`, reserved at `Multi::new`, which `multi_timeout` and the timer announcement read

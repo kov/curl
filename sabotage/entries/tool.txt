@@ -1356,9 +1356,9 @@ witness: curl-tool uploads_standard_input_without_waiting_for_it
 file: crates/curl-tool/src/operate/nonblocking.rs
 witness: curl-tool uploads_standard_input_without_waiting_for_it
 --- old
-            self.stdin.wait(left);
+        wait_readable(&file.lock().expect("no panic holds it"), left);
 --- new
-            let _ = left;
+        let _ = (file, left);
 
 === the progress bar lets `-T .` go on when it draws nothing, too soon
 file: crates/curl-tool/src/bar.rs
@@ -1401,3 +1401,21 @@ witness: curl-tool operate::tests::allows_the_tls_versions_c_allows
     let min = if min == 0 && max != 0 && max < 3 {
 --- new
     let min = if false {
+
+=== an upload of a named file or `-T -` reads past `--max-time`
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool an_upload_ends_once_its_time_is_up
+--- old
+        match open_upload(file, limit) {
+--- new
+        match open_upload(file, None) {
+
+=== a read of the upload past `--max-time` still reads
+file: crates/curl-tool/src/operate/nonblocking.rs
+witness: curl-tool an_upload_ends_once_its_time_is_up
+--- old
+        let Some(left) = self.timeout.checked_sub(self.start.elapsed()) else {
+            return false;
+        };
+--- new
+        let left = self.timeout.saturating_sub(self.start.elapsed());

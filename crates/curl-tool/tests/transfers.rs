@@ -643,6 +643,64 @@ fn uploads_a_file() {
     assert_eq!(r.stdout, b"0123456789");
 }
 
+/// An upload of `name` to `file://` under `--max-time 1`, its input
+/// `abc` at once and `def` 1.5 s later from a writer that then holds it
+/// open for 6 s: how long the tool took and what it wrote. `name` is `-`
+/// for standard input, or a FIFO the writer opens.
+fn upload_held_open(s: &Scratch, name: &str) -> (Duration, Vec<u8>) {
+    use std::io::Write as _;
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let stdin = if name == "-" {
+        std::process::Stdio::piped()
+    } else {
+        std::process::Stdio::null()
+    };
+    let start = std::time::Instant::now();
+    let mut child = Command::new(tool)
+        .args(["-q", "-sS", "-m", "1", "-T", name, &s.url("dst")])
+        .current_dir(&s.0)
+        .stdin(stdin)
+        .spawn()
+        .unwrap();
+    let mut input: Box<dyn std::io::Write + Send> = match child.stdin.take() {
+        Some(pipe) => Box::new(pipe),
+        None => Box::new(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(s.path(name))
+                .unwrap(),
+        ),
+    };
+    let writer = std::thread::spawn(move || {
+        input.write_all(b"abc").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        input.write_all(b"def").unwrap();
+        std::thread::sleep(Duration::from_secs(6));
+    });
+    child.wait().unwrap();
+    let took = start.elapsed();
+    writer.join().unwrap();
+    (took, s.read("dst"))
+}
+
+/// Under `--max-time`, a read of the upload waits for input no longer
+/// than the time left, and past it ends the upload without reading: a
+/// read that came back late with more is the last (`tool_read_cb`).
+/// Standard input and a named file alike; the tool is done when the
+/// late part came, not when its writer let go.
+#[test]
+fn an_upload_ends_once_its_time_is_up() {
+    let s = Scratch::new("upload-max-time");
+    let made = Command::new("mkfifo").arg(s.path("fifo")).status().unwrap();
+    assert!(made.success());
+    for name in ["-", "fifo"] {
+        let (took, wrote) = upload_held_open(&s, name);
+        assert_eq!(wrote, b"abcdef", "{name}");
+        assert!(took < Duration::from_secs(5), "{name}: {took:?}");
+    }
+}
+
 /// A file that opens but cannot be read fails its upload with a read
 /// error; C sends nothing and succeeds. A deliberate difference from C
 /// (DIVERGENCE.md), so this test fails on its tool.

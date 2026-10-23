@@ -740,19 +740,26 @@ impl PerTransfer<'_, '_> {
         let Some(file) = self.upload.as_deref() else {
             return Ok(());
         };
+        // Every read of the upload waits no longer than `--max-time` from
+        // the attempt's start, and none is made past it (`tool_read_cb`).
+        let timeout = Some(self.op.timeout_ms)
+            .filter(|&ms| ms > 0)
+            .map(Duration::from_millis);
+        let limit = nonblocking::ReadLimit::starting_now(timeout);
         if let Some(stdin) = &self.stdin {
-            let timeout = Some(self.op.timeout_ms)
-                .filter(|&ms| ms > 0)
-                .map(Duration::from_millis);
             let oom = |_| Pre::Failed(ErrorKind::OutOfMemory);
+            let rewind = UploadFile {
+                file: stdin.file(),
+                limit: None,
+            };
             let source = UploadSource::Read {
-                handler: stdin.reader(timeout).map_err(oom)?,
-                rewind: Some(Handler::rewind(UploadFile(stdin.file())).map_err(oom)?),
+                handler: stdin.reader(limit).map_err(oom)?,
+                rewind: Some(Handler::rewind(rewind).map_err(oom)?),
                 size: None,
             };
             return upload_setopts(easy, run, source).map_err(Pre::Failed);
         }
-        match open_upload(file) {
+        match open_upload(file, limit) {
             Ok(source) => upload_setopts(easy, run, source).map_err(Pre::Failed),
             Err(Unopened::OutOfMemory) => Err(Pre::Failed(ErrorKind::OutOfMemory)),
             Err(Unopened::Io) => {
@@ -3041,8 +3048,11 @@ fn upload_setopts(
 
 /// The file to upload, opened, with its size if it is a regular file;
 /// standard input for `-`, of a size not known, and started over only if
-/// it is a file.
-fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
+/// it is a file. Its reads are bounded by `limit`.
+fn open_upload(
+    name: &[u8],
+    limit: Option<nonblocking::ReadLimit>,
+) -> Result<UploadSource, Unopened> {
     let (file, size) = if name == b"-" {
         (curl_os::fs::stdin().map_err(|_| Unopened::Io)?, None)
     } else {
@@ -3063,8 +3073,13 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
     };
     let file = curl_alloc::TryArc::try_new(std::sync::Mutex::new(file))
         .map_err(|_| Unopened::OutOfMemory)?;
-    let handler = Handler::read(UploadFile(file.clone())).map_err(|_| Unopened::OutOfMemory)?;
-    let rewind = Handler::rewind(UploadFile(file)).map_err(|_| Unopened::OutOfMemory)?;
+    let upload = UploadFile {
+        file: file.clone(),
+        limit,
+    };
+    let handler = Handler::read(upload).map_err(|_| Unopened::OutOfMemory)?;
+    let rewind = UploadFile { file, limit: None };
+    let rewind = Handler::rewind(rewind).map_err(|_| Unopened::OutOfMemory)?;
     Ok(UploadSource::Read {
         handler,
         rewind: Some(rewind),
@@ -3074,15 +3089,24 @@ fn open_upload(name: &[u8]) -> Result<UploadSource, Unopened> {
 
 /// Reads the file to upload (`tool_read_cb`), and starts it over
 /// (`tool_seek_cb`).
-struct UploadFile(curl_alloc::TryArc<std::sync::Mutex<File>>);
+struct UploadFile {
+    file: curl_alloc::TryArc<std::sync::Mutex<File>>,
+    /// `--max-time`, for its reads.
+    limit: Option<nonblocking::ReadLimit>,
+}
 
 impl ReadHandler for UploadFile {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
+        if let Some(limit) = self.limit
+            && !limit.wait(&self.file)
+        {
+            return Read::Eof;
+        }
         // C takes a failed read for the end of the file; here it fails
         // the transfer rather than send part of the file as all of it
         // (DIVERGENCE.md).
         loop {
-            match self.0.lock().expect("no panic holds it").read(buf) {
+            match self.file.lock().expect("no panic holds it").read(buf) {
                 Ok(n) => return NonZeroUsize::new(n).map_or(Read::Eof, Read::Data),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => return Read::Fail,
@@ -3094,7 +3118,7 @@ impl ReadHandler for UploadFile {
 impl Rewind for UploadFile {
     fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
         match self
-            .0
+            .file
             .lock()
             .expect("no panic holds it")
             .seek(SeekFrom::Start(0))
@@ -3446,7 +3470,7 @@ mod tests {
             setopts(&mut s, op, &run, &out, &config).ok()?;
         }
         if let Some(file) = upload {
-            upload_setopts(&mut easy, &run, open_upload(file).ok()?).ok()?;
+            upload_setopts(&mut easy, &run, open_upload(file, None).ok()?).ok()?;
         }
         // As the run would: the options written as comments go before it.
         program.borrow_mut().perform().unwrap();

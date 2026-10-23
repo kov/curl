@@ -1,7 +1,8 @@
 //! `-T .`: standard input uploaded without blocking (`tool_read_cb`,
 //! `tool_readbusy_cb`). A read that finds nothing there pauses the
 //! upload, and the next call the library makes into the tool for the
-//! transfer, of its progress or with its output, lets it go on.
+//! transfer, of its progress or with its output, lets it go on. Also
+//! the wait under `--max-time` that the reads of every upload make.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -65,15 +66,14 @@ impl Stdin {
         self.0.file.clone()
     }
 
-    /// What reads it for an attempt started now, which `timeout` bounds.
+    /// What reads it for an attempt, which `limit` bounds.
     pub(super) fn reader(
         &self,
-        timeout: Option<Duration>,
+        limit: Option<ReadLimit>,
     ) -> Result<Handler<dyn ReadHandler>, OutOfMemory> {
         Handler::read(Reader {
             stdin: self.clone(),
-            start: Instant::now(),
-            timeout,
+            limit,
         })
     }
 
@@ -133,31 +133,59 @@ impl Stdin {
 
     /// Wait up to `timeout` for something to read (`waitfd`).
     fn wait(&self, timeout: Duration) {
-        let file = self.0.file.lock().expect("no panic holds it");
-        let mut fds = [PollFd::new(file.as_fd(), Events::IN)];
-        // What came of it is the next read's to find, as in C.
-        let _ = poll(&mut fds, timeout);
+        wait_readable(&self.0.file.lock().expect("no panic holds it"), timeout);
+    }
+}
+
+/// Wait up to `timeout` for `file` to have something to read (`waitfd`).
+fn wait_readable(file: &File, timeout: Duration) {
+    let mut fds = [PollFd::new(file.as_fd(), Events::IN)];
+    // What came of it is the next read's to find, as in C.
+    let _ = poll(&mut fds, timeout);
+}
+
+/// `--max-time` as the tool's reads of what it uploads see it, counted
+/// from the attempt's start (`tool_read_cb`'s `per->start`).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ReadLimit {
+    start: Instant,
+    timeout: Duration,
+}
+
+impl ReadLimit {
+    /// `timeout` from now, if there is one.
+    pub(super) fn starting_now(timeout: Option<Duration>) -> Option<ReadLimit> {
+        timeout.map(|timeout| ReadLimit {
+            start: Instant::now(),
+            timeout,
+        })
+    }
+
+    /// Before a read of `file`: past the time allowed, there is nothing
+    /// more to send (false); before it, wait for the rest of it for
+    /// something to read. A file that blocks is then read as it is.
+    pub(super) fn wait(self, file: &Mutex<File>) -> bool {
+        let Some(left) = self.timeout.checked_sub(self.start.elapsed()) else {
+            return false;
+        };
+        wait_readable(&file.lock().expect("no panic holds it"), left);
+        true
     }
 }
 
 /// Reads standard input for one attempt (`tool_read_cb`).
 struct Reader {
     stdin: Stdin,
-    /// When the attempt started (`per->start`).
-    start: Instant,
     /// `--max-time`.
-    timeout: Option<Duration>,
+    limit: Option<ReadLimit>,
 }
 
 impl ReadHandler for Reader {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
-        if let Some(timeout) = self.timeout {
-            // Past the time allowed, there is nothing more to send; before
-            // it, the read waits for the rest of it.
-            let Some(left) = timeout.checked_sub(self.start.elapsed()) else {
-                return Read::Eof;
-            };
-            self.stdin.wait(left);
+        if let Some(limit) = self.limit
+            && !limit.wait(&self.stdin.0.file)
+        {
+            return Read::Eof;
         }
         let state = &self.stdin.0;
         let read = loop {

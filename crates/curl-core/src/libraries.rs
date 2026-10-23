@@ -99,3 +99,21 @@ pub(crate) mod testing {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A handle's libraries print the signer by what it does, whichever
+    /// library it is.
+    #[test]
+    fn libraries_print_their_signer() {
+        static KEYED: testing::Keyed = testing::Keyed;
+        let libraries = Libraries {
+            ed25519: Some(&KEYED),
+            ..Libraries::NONE
+        };
+        let printed = format!("{libraries:?}");
+        assert!(printed.ends_with("ed25519: Some(Ed25519) }"), "{printed}");
+    }
+}

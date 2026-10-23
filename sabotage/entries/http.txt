@@ -175,14 +175,6 @@ witness: curl-core a_get_stays_within_its_allocation_budget
 --- new
     out.try_reserve_exact(0)
 
-=== a poll of known sockets makes a list
-file: crates/curl-core/src/conn/io.rs
-witness: curl-core a_get_stays_within_its_allocation_budget
---- old
-        (None, _) => return Ok(curl_os::poll::poll(fds, timeout)? + known),
---- new
-        (None, _) if false => return Ok(curl_os::poll::poll(fds, timeout)? + known),
-
 === a lone socket's readiness is dropped
 file: crates/curl-core/src/conn/io.rs
 witness: curl-core easy::tests::connects_over_loopback

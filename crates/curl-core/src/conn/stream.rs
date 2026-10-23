@@ -57,10 +57,10 @@ impl Stream {
         self.layers.over(self.socket.socket()).send(cx, bytes)
     }
 
-    /// Whether bytes wait in a layer, where a poll of the socket cannot
-    /// see them (`Curl_conn_data_pending`).
+    /// Whether bytes wait where a poll of the socket cannot see them: in
+    /// a layer, or received and not used (`Curl_conn_data_pending`).
     pub(crate) fn data_pending(&mut self) -> bool {
-        self.layers.over(self.socket.socket()).data_pending()
+        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket()).data_pending()
     }
 
     /// What the transfer is to wait for on the socket, given what it

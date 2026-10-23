@@ -633,10 +633,16 @@ impl Conn {
         self.stream().rx_mut()
     }
 
-    /// Read once from the network, up to `max` bytes, behind what was
-    /// received and not used.
+    /// Read once from the network, up to `max` bytes. Bytes received and
+    /// not used, which only a handshake's read past its answer leaves,
+    /// are given first, the socket not asked, as a layer gives what it
+    /// holds: they came first.
     pub(crate) fn recv(&mut self, cx: &mut dyn LayerCx, max: usize) -> Result<Recv, RecvFailed> {
-        let got = self.stream().recv(cx, max);
+        let stream = self.stream();
+        if let Some(n) = std::num::NonZeroUsize::new(stream.received().len()) {
+            return Ok(Recv::Data(n));
+        }
+        let got = stream.recv(cx, max);
         if let Ok(Recv::Eof) = got {
             // Shut down by the server, not reused (`multi_done`).
             self.close = true;

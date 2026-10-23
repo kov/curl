@@ -1210,14 +1210,22 @@ fn a_connection_moves_bytes_both_ways() {
     assert_eq!(talk.received(), b"GET / HTTP/1.1\r\n\r\n");
     assert!(readable(&lease), "a reply waits");
     let conn = lease.get();
+    assert!(!conn.data_pending());
     assert!(matches!(conn.recv(&mut Silent(now), 10).unwrap(), Recv::Data(n) if n.get() == 10));
+    assert!(conn.data_pending(), "bytes received and not used");
+    // What was received and not used comes first, the socket not asked.
+    assert!(matches!(conn.recv(&mut Silent(now), 64).unwrap(), Recv::Data(n) if n.get() == 10));
+    assert_eq!(conn.rx_mut().filled(), b"HTTP/1.1 2");
+    conn.rx_mut().consume(10);
+    assert!(!conn.data_pending());
     assert!(matches!(conn.recv(&mut Silent(now), 64).unwrap(), Recv::Data(n) if n.get() == 11));
-    assert_eq!(conn.rx_mut().filled(), b"HTTP/1.1 200 OK\r\n\r\nhi");
+    assert_eq!(conn.rx_mut().filled(), b"00 OK\r\n\r\nhi");
+    conn.rx_mut().consume(11);
     assert!(matches!(
         conn.recv(&mut Silent(now), 64).unwrap(),
         Recv::Eof
     ));
-    assert_eq!(conn.rx_mut().filled().len(), 21, "the end adds nothing");
+    assert_eq!(conn.rx_mut().filled(), b"", "the end adds nothing");
     pool.release(
         &Home::Multi,
         lease,

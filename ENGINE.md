@@ -676,7 +676,8 @@ A peer that sends faster than it is read thus cannot keep a pass from ending, so
 the progress handler and the other transfers get their turn as in C. C's other exits from that
 loop: a receive limit spent ends the step without a dirty mark, the engine then waiting for
 the limit's timer (§5.3), and bytes held where a poll cannot see them, which run the transfer
-again (`data_pending`, §4.3: what a layer holds, as TLS holds decrypted bytes). One that asks for another request, by a location to
+again (`data_pending`, §4.3: what a layer holds, as TLS holds decrypted bytes, or the stream's
+`rx`). One that asks for another request, by a location to
 follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
 parser, fed an `Unsent` with each piece): 2000 bytes or more, or an unknown amount, and the
 connection closes rather than carry it, the response ending at its head; less, and it goes to be
@@ -1035,8 +1036,9 @@ pub(crate) struct Stream {             // conn/stream.rs
 One `Stream` type, owned by `Dialed` and then by the `Conn` it becomes, gives one read path:
 `recv(cx, max)` fills `rx` through the layers (`RecvBuf::fill`, where a read that reports more
 than the room it had is an error from the socket, `InvalidData`, not an assertion), `send`
-writes through them; `Conn::recv` adds only that the end of input marks the connection
-`close`. A connection's multiplexing (`Session`,
+writes through them; `Conn::recv` adds that bytes received and not used, which only a
+handshake's read past its answer leaves (D11), are given first without asking the socket, and
+that the end of input marks the connection `close`. A connection's multiplexing (`Session`,
 `Mux`, §4.4) comes with stage 5, and until then `Use::Leased(n)` is asserted to be 1.
 `Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
 
@@ -1205,8 +1207,10 @@ aliasing its own state.
 `LayerStack` holds the layers that work on the bytes, boxed, behind one pointer, as every
 transfer's state holds its connection inline (§8.2); for TCP, a SOCKS proxy or a tunnel it is
 empty and allocates nothing. Only TLS pushes a layer, and pushing one allocates.
-The stack answers for the stream: `data_pending` is true while a layer holds bytes; a read that
-would block while data is pending runs the transfer again (`sendrecv_dl` and
+The stack answers for the stream: `data_pending` is true while a layer holds bytes or the
+stream's `rx` is not empty (bytes that came after a tunnel's or a SOCKS proxy's answer, which
+`Conn::recv` gives before it reads again, as a layer gives what it holds); a read that would
+block while data is pending runs the transfer again (`sendrecv_dl` and
 `Curl_conn_data_pending`, through the step's `AtReadLimit` without its trace line). The pollset
 of an exchanging transfer passes through each layer's `adjust_pollset`, top down, unless the
 transfer waits for nothing, as `Curl_conn_adjust_pollset` gates a connected chain; C's other
@@ -1228,7 +1232,10 @@ No layer is pushed outside the tests until TLS: a test's transfer names one
 none until a layer traces.
 
 Open, to be settled with TLS (step 43): what `LayerCx` carries for TLS: the SSL_CTX callback,
-the SSL_DATA debug lines and the key log. That much fixes `LayerCx` as a trait object whose
+the SSL_DATA debug lines and the key log; and the bytes a tunnel's handshake reads past its
+answer, which `rx` gives to the protocol, above any layer: under an origin's TLS they are the
+TLS layer's, so that handshake reads no further than its answer (as C reads it a byte at a
+time) or hands them below the layer it pushes. That much fixes `LayerCx` as a trait object whose
 implementation reaches the transfer's handlers.
 
 TLS (stage 4) drives OpenSSL as `lib/vtls/openssl.c` does: a custom BIO method whose read and

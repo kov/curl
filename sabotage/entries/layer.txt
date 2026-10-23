@@ -55,3 +55,19 @@ witness: curl-core proto::http::tests::an_idle_connection_a_layer_finds_dead_is_
             Some((top, layers)) => top.is_alive(cx, Below { layers, ..self }),
 --- new
             Some((_, layers)) => Below { layers, ..self }.alive(cx),
+
+=== bytes read past a tunnel's answer wait behind the socket
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::bytes_after_a_tunnel_s_answer_are_read_first
+--- old
+        if let Some(n) = std::num::NonZeroUsize::new(stream.received().len()) {
+--- new
+        if let Some(n) = None::<std::num::NonZeroUsize> {
+
+=== bytes received and not used are not pending
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
+--- old
+        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket()).data_pending()
+--- new
+        self.layers.over(self.socket.socket()).data_pending()

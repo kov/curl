@@ -102,10 +102,10 @@ witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_cal
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::an_abort_fails_the_transfer_with_no_last_call
 --- old
-            if d.result != Err(ErrorKind::AbortedByCallback)
+                && d.result != Err(ErrorKind::AbortedByCallback)
                 && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 --- new
-            if let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
+                && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
 
 === the last progress call's abort is ignored
 file: crates/curl-core/src/multi/state.rs
@@ -231,3 +231,13 @@ witness: curl-core proto::file::tests::a_file_draws_its_meter_once
             match progress::update(cx, d.reached == Reached::Exchanged) {
 --- new
             match progress::update(cx, true) {
+
+=== a transfer that never connected gets a last progress pass
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_transfer_that_never_connects_shows_no_progress
+features: test-util
+--- old
+            if d.proto.is_some()
+                && d.result != Err(ErrorKind::AbortedByCallback)
+--- new
+            if d.result != Err(ErrorKind::AbortedByCallback)

@@ -1183,8 +1183,12 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     &mut run.http,
                 );
             }
-            // A last progress pass, unless a callback aborted already.
-            if d.result != Err(ErrorKind::AbortedByCallback)
+            // A last progress pass, unless the transfer never connected
+            // (C's `mstate > MSTATE_CONNECTING`) or a callback aborted
+            // already: a failed connect draws no meter and calls no
+            // handler.
+            if d.proto.is_some()
+                && d.result != Err(ErrorKind::AbortedByCallback)
                 && let Err(e) = progress::finish(cx, d.reached == Reached::Exchanged)
                 && d.result.is_ok()
             {

@@ -1619,6 +1619,87 @@ fn an_accepted_connect_goes_on_to_the_request() {
 
 /// A peer that never answers times out at the connect limit, which the
 /// multi's timeout and `wait` bring about, polling the socket meanwhile.
+/// What the meter wrote.
+#[derive(Clone, Default)]
+struct MeterText(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl crate::handler::TextSink for MeterText {
+    fn write(&self, text: &[u8]) {
+        self.0.lock().unwrap().extend_from_slice(text);
+    }
+}
+
+/// Counts the progress handler's calls.
+#[derive(Clone, Default)]
+struct ProgressCalls(std::sync::Arc<AtomicU32>);
+
+impl crate::handler::ProgressHandler for ProgressCalls {
+    fn progress(
+        &self,
+        _: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// A transfer that never connects draws no meter and calls no progress
+/// handler, as C's `multi_done` skips `Curl_pgrsDone` at or before
+/// CONNECTING and `multi_runsingle` updates the progress only over a
+/// connection connected (`curl http://127.0.0.1:1/` against the C build
+/// prints no meter). One that connects and then fails draws it.
+#[test]
+fn a_transfer_that_never_connects_shows_no_progress() {
+    use crate::handler::Handler;
+    use crate::options::Progress;
+    let setups: [(&str, Option<&str>, ErrorKind); 5] = [
+        ("http://127.0.0.1:2/", None, ErrorKind::CouldntConnect),
+        ("http://example.com/", None, ErrorKind::CouldntResolveHost),
+        (
+            "http://127.0.0.1:1/",
+            Some("127.0.0.1:2"),
+            ErrorKind::CouldntConnect,
+        ),
+        ("http://127.0.0.1:3/", None, ErrorKind::OperationTimedout),
+        // Connected, then out of time waiting for the response.
+        ("http://127.0.0.1:1/", None, ErrorKind::OperationTimedout),
+    ];
+    for (url, proxy, err) in setups {
+        let connects = url == "http://127.0.0.1:1/" && proxy.is_none();
+        let meter = MeterText::default();
+        let calls = ProgressCalls::default();
+        for with_meter in [true, false] {
+            let (mut m, _clock) = networked();
+            let mut e = easy(url);
+            let o = e.options_mut();
+            o.limits.connect = TimeLimit::from_millis(700);
+            o.limits.total = TimeLimit::from_millis(1500);
+            if let Some(p) = proxy {
+                o.proxy.make_mut().unwrap().url = Some(p.as_bytes().to_vec());
+            }
+            if with_meter {
+                o.progress = Progress::Meter;
+                o.callbacks.stderr = Some(Handler::text(meter.clone()).unwrap());
+            } else {
+                o.progress = Progress::Handler(Handler::progress(calls.clone()).unwrap());
+            }
+            let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+            assert_eq!(drive_by_events(&mut m, id), Ok(Err(err)), "{url}");
+        }
+        let drawn = String::from_utf8(meter.0.lock().unwrap().clone()).unwrap();
+        let called = calls.0.load(Ordering::Relaxed);
+        if connects {
+            assert!(drawn.starts_with("  % Total"), "{url}: {drawn:?}");
+            assert!(drawn.ends_with('\n'), "{url}: {drawn:?}");
+            assert!(called > 0, "{url}");
+        } else {
+            assert_eq!(drawn, "", "{url} {proxy:?}");
+            assert_eq!(called, 0, "{url} {proxy:?}");
+        }
+    }
+}
+
 #[test]
 fn a_silent_peer_times_out_at_the_connect_limit() {
     let (mut m, clock) = networked();

@@ -110,10 +110,17 @@ pub fn set(fd: BorrowedFd<'_>, option: SocketOption) -> io::Result<()> {
     // call; `fd` is an open descriptor for as long as it is borrowed.
     let rc =
         unsafe { libc::setsockopt(fd.as_raw_fd(), level, name, (&raw const value).cast(), len) };
+    checked(rc)?;
+    Ok(())
+}
+
+/// A system call's result `rc`, an error if it failed: negative, the
+/// error in `errno`.
+fn checked(rc: libc::c_int) -> io::Result<libc::c_int> {
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(())
+    Ok(rc)
 }
 
 /// The address family of the socket `fd`, `AF_UNSPEC` if it cannot be
@@ -301,14 +308,9 @@ impl TcpSocket {
     pub fn set_nonblocking(&self) -> io::Result<()> {
         let fd = self.fd().as_raw_fd();
         // SAFETY: `fcntl` with `F_GETFL` takes no pointer; `fd` is open.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let flags = checked(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;
         // SAFETY: as above, with `F_SETFL` and an int.
-        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        checked(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
         Ok(())
     }
 
@@ -481,6 +483,11 @@ mod tests {
         assert_eq!(option(&s, tcp, libc::TCP_KEEPCNT), 4);
         assert_eq!(option(&s, libc::SOL_SOCKET, libc::SO_PRIORITY), 3);
         assert_eq!(option(&s, tcp, libc::TCP_FASTOPEN_CONNECT), 1);
+        // One the kernel refuses is an error, as C's `setsockopt` call
+        // sees it: an idle time is at least a second.
+        let refused = s.set(SocketOption::KeepIdle(0)).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(libc::EINVAL));
+        assert_eq!(option(&s, tcp, libc::TCP_KEEPIDLE), 30, "left as it was");
         // The type of service needs the socket's family, which it has once
         // bound: a connect binds it.
         s.connect(addr).unwrap();
@@ -509,6 +516,9 @@ mod tests {
         assert_eq!(flags() & libc::O_NONBLOCK, 0);
         s.set_nonblocking().unwrap();
         assert_ne!(flags() & libc::O_NONBLOCK, 0);
+        // Made so again, it stays so, as `curlx_nonblock` leaves it.
+        s.set_nonblocking().unwrap();
+        assert_ne!(flags() & libc::O_NONBLOCK, 0, "still nonblocking");
         // SAFETY: `F_GETFD` takes no pointer; the socket is open.
         let fd_flags = unsafe { libc::fcntl(s.fd().as_raw_fd(), libc::F_GETFD) };
         assert_ne!(fd_flags & libc::FD_CLOEXEC, 0);

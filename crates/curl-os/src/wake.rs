@@ -115,6 +115,25 @@ mod tests {
         assert_ne!(fd_flags & libc::FD_CLOEXEC, 0, "closed on exec");
     }
 
+    /// A wake with one already pending past counting is no error, as C's
+    /// "wakeup is already ongoing"; a drain with none pending is none
+    /// (`Curl_wakeup_signal`, `Curl_wakeup_consume` on `EAGAIN`).
+    #[test]
+    fn a_full_count_wakes_and_an_empty_one_drains() {
+        use std::io::Write as _;
+        let w = Waker::new().unwrap();
+        w.drain().unwrap();
+        assert!(!woken(&w));
+        // The most an eventfd counts: one more would block.
+        let mut count = std::fs::File::from(w.fd().try_clone_to_owned().unwrap());
+        count.write_all(&(u64::MAX - 1).to_ne_bytes()).unwrap();
+        w.wake().unwrap();
+        assert!(woken(&w));
+        w.drain().unwrap();
+        assert!(!woken(&w));
+        w.drain().unwrap();
+    }
+
     #[test]
     fn many_wakes_drain_as_one() {
         let w = Waker::new().unwrap();

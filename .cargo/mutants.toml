@@ -68,7 +68,8 @@ exclude_re = [
     'url/host\.rs:.*: replace \| with \^ in (ipv4|pton6)$',
     'url/encode\.rs:.*: replace \| with \^ in (escaped_byte|decode)$',
     'proto/http1/auth\.rs:.*: replace \| with \^ in base64$',
-    'curl-os/src/net\.rs:.*: replace \| with \^ in connect$',
+    'curl-os/src/net\.rs:.*: replace \| with \^ in (connect|open)$',
+    'curl-sys-abi/src/sockets\.rs:.*: replace \| with \^ in SockaddrEx::tcp$',
     'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.
     'url/host\.rs:.*: replace < with <= in invalid_host_byte$',
@@ -129,9 +130,9 @@ exclude_re = [
     'multi/mod\.rs:.*: replace \+ with \* in Multi<H>::run_dirty$',
     # Reserving more than needed.
     '(sched|timers|notify)\.rs:.*: replace (< with <=|- with \+) in (RowSet|TimerQueue<T>|NotifyQueue)::reserve$',
-    # The waker holds both ends of its nonblocking pair, so no error but
-    # would-block can be made to happen.
-    'curl-os/src/wake\.rs:.*: replace match guard e\.kind\(\) == io::ErrorKind::WouldBlock with true in Waker::(wake|drain)$',
+    # The waker's eventfd is nonblocking: its reads and writes never wait,
+    # so no signal can interrupt one.
+    'curl-os/src/wake\.rs:.*: delete match arm io::ErrorKind::Interrupted in Waker::(wake|drain)$',
     # Sequence numbers are unique: two entries never compare equal.
     'multi/timers\.rs:.*: replace < with <= in Entry<T>::before$',
     # Past the depth limit every call is refused whether the callback is

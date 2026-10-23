@@ -86,6 +86,72 @@ fn decimal(mut n: u32, buf: &mut [u8; 10]) -> &[u8] {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
+    use curl_core::conn::io::{Conversation, FakeNet, Peer, SocketOption as O};
+    use curl_core::easy::Easy;
+    use curl_core::handler::Handler;
+    use curl_core::id::ArenaPolicy;
+    use curl_core::multi::{Env, Multi, NoEvents};
+    use curl_core::time::ManualClock;
+
+    use super::Marking;
+    use crate::easysrc::{Pointer, Setopt};
+    use crate::msgs::Messages;
+
+    /// Each socket is marked only with what is asked, after the
+    /// library's own option; 0 asks for nothing (`sockopt_callback`'s
+    /// `> 0`).
+    #[test]
+    fn a_socket_is_marked_as_asked() {
+        let at = SocketAddr::from(([127, 0, 0, 1], 3));
+        for (tos, priority, want) in [
+            (0, 0, &[O::NoDelay][..]),
+            (32, 0, &[O::NoDelay, O::TypeOfService(32)]),
+            (0, 7, &[O::NoDelay, O::Priority(7)]),
+            (1, 1, &[O::NoDelay, O::TypeOfService(1), O::Priority(1)]),
+        ] {
+            let clock = ManualClock::new().unwrap();
+            let talk = Conversation::new(b"", false);
+            let net = FakeNet::new(clock.clone())
+                .with_peer(at, Peer::Silent)
+                .with_conversation(at, talk.clone());
+            let env = Env {
+                clock: Box::new(clock),
+                net: Box::new(net),
+                arena: ArenaPolicy::new(16, 0).unwrap(),
+                waker: None,
+            };
+            let mut m: Multi = Multi::new(env).unwrap();
+            let mut easy = Easy::new();
+            let mut s = Setopt::new(&mut easy, None);
+            let url = b"tcp://127.0.0.1:3/";
+            s.str("CURLOPT_URL", Some(url), |o| {
+                o.set_url(Some(url)).unwrap();
+                Ok(())
+            })
+            .unwrap();
+            let marking = Marking {
+                type_of_service: tos,
+                priority,
+                msgs: Messages::new(),
+            };
+            s.ptr("CURLOPT_SOCKOPTFUNCTION", Pointer::Function, |o| {
+                o.sockets.make_mut().unwrap().configure =
+                    Some(Handler::socket_configurer(marking).unwrap());
+                Ok(())
+            })
+            .unwrap();
+            m.add(Box::new(easy), (), &mut NoEvents).unwrap();
+            m.perform(&mut NoEvents).unwrap();
+            assert_eq!(
+                talk.options(),
+                want,
+                "type of service {tos}, priority {priority}"
+            );
+        }
+    }
+
     #[test]
     fn numbers_are_written_in_decimal() {
         let mut buf = [0; 10];

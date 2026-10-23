@@ -2,6 +2,7 @@
 //! another (`src/tool_operate.c`, its serial path), or all at once
 //! (`parallel`).
 
+mod nonblocking;
 mod parallel;
 
 use std::borrow::Cow;
@@ -661,6 +662,8 @@ struct PerTransfer<'a, 'l> {
     bar: Option<Bar>,
     /// The file it uploads, opened for each attempt.
     upload: Option<Vec<u8>>,
+    /// Standard input, for `-T .`.
+    stdin: Option<nonblocking::Stdin>,
     method: tool::Method,
     /// Its output file exists (`--skip-existing`): it does not run.
     skip: bool,
@@ -707,6 +710,7 @@ fn unfinished<'a, 'l>(
                 out: out.clone(),
                 bar: None,
                 upload: None,
+                stdin: None,
                 method,
                 skip: false,
                 terminal: false,
@@ -736,6 +740,18 @@ impl PerTransfer<'_, '_> {
         let Some(file) = self.upload.as_deref() else {
             return Ok(());
         };
+        if let Some(stdin) = &self.stdin {
+            let timeout = Some(self.op.timeout_ms)
+                .filter(|&ms| ms > 0)
+                .map(Duration::from_millis);
+            let oom = |_| Pre::Failed(ErrorKind::OutOfMemory);
+            let source = UploadSource::Read {
+                handler: stdin.reader(timeout).map_err(oom)?,
+                rewind: Some(Handler::rewind(UploadFile(stdin.file())).map_err(oom)?),
+                size: None,
+            };
+            return upload_setopts(easy, run, source).map_err(Pre::Failed);
+        }
         match open_upload(file) {
             Ok(source) => upload_setopts(easy, run, source).map_err(Pre::Failed),
             Err(Unopened::OutOfMemory) => Err(Pre::Failed(ErrorKind::OutOfMemory)),
@@ -1004,7 +1020,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     // An upload to a path without a name gives it the file's; standard
     // input names none (`setup_transfer_upload`, `stdin_upload`).
     let named;
-    let given = match upload.filter(|&file| file != b"-") {
+    let given = match upload.filter(|&file| file != b"-" && file != b".") {
         Some(file) => match with_file_name(url, file) {
             Ok(Some(url)) => {
                 named = url;
@@ -1124,6 +1140,20 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         },
         _ => None,
     };
+    // `-T .` reads standard input without waiting (`check_stdin_upload`).
+    let stdin = match upload.filter(|&file| file == b".") {
+        Some(_) => match nonblocking::Stdin::open(&msgs) {
+            Ok(stdin) => Some(stdin),
+            Err(nonblocking::Unopened::OutOfMemory) => {
+                return failed(easy, ErrorKind::OutOfMemory);
+            }
+            Err(nonblocking::Unopened::Io) => {
+                msgs.help(&[b"cannot open '.'"]);
+                return said(easy, ErrorKind::ReadError);
+            }
+        },
+        None => None,
+    };
     let config = Config {
         url,
         proto,
@@ -1135,6 +1165,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         method,
         terminal,
         bar: bar.as_ref(),
+        stdin: stdin.as_ref(),
     };
     let set = {
         let mut source = run.libcurl.map(RefCell::borrow_mut);
@@ -1159,6 +1190,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         out,
         bar,
         upload,
+        stdin,
         method,
         skip,
         terminal,
@@ -1494,6 +1526,8 @@ struct Config<'a> {
     terminal: bool,
     /// `--progress-bar`'s.
     bar: Option<&'a Bar>,
+    /// Standard input, for `-T .`.
+    stdin: Option<&'a nonblocking::Stdin>,
 }
 
 /// The `--cookie` strings as one (`cookie_setopts`): `;` between them,
@@ -1579,7 +1613,11 @@ fn setopts(
     s.ptr("CURLOPT_WRITEDATA", Object, nothing)?;
     s.ptr("CURLOPT_INTERLEAVEDATA", Object, nothing)?;
     s.ptr("CURLOPT_WRITEFUNCTION", Function, |o| {
-        o.callbacks.write = Some(out.body_handler().map_err(oom)?);
+        let body = out.body_handler().map_err(oom)?;
+        o.callbacks.write = Some(match config.stdin {
+            Some(stdin) => stdin.writer(body).map_err(oom)?,
+            None => body,
+        });
         Ok(())
     })?;
     // What is uploaded is opened for each attempt (`pre_transfer`).
@@ -1589,7 +1627,20 @@ fn setopts(
     s.ptr("CURLOPT_SEEKFUNCTION", Function, nothing)?;
     if let Some(bar) = config.bar.filter(|_| !quiet) {
         s.ptr("CURLOPT_XFERINFOFUNCTION", Function, |o| {
-            o.progress = Progress::Handler(bar.handler().map_err(oom)?);
+            o.progress = Progress::Handler(match config.stdin {
+                Some(stdin) => stdin.bar(bar).map_err(oom)?,
+                None => bar.handler().map_err(oom)?,
+            });
+            Ok(())
+        })?;
+        s.ptr("CURLOPT_XFERINFODATA", Object, nothing)?;
+    } else if let Some(stdin) = config.stdin {
+        // The progress handler lets a paused upload go on, and has the
+        // library draw the meter unless there is none. C's draws it under
+        // `--silent` too (DIVERGENCE.md).
+        s.long("CURLOPT_NOPROGRESS", 0, nothing)?;
+        s.ptr("CURLOPT_XFERINFOFUNCTION", Function, |o| {
+            o.progress = Progress::Handler(stdin.waker(quiet).map_err(oom)?);
             Ok(())
         })?;
         s.ptr("CURLOPT_XFERINFODATA", Object, nothing)?;
@@ -3204,6 +3255,7 @@ mod tests {
             method: op.method,
             terminal: false,
             bar: None,
+            stdin: None,
         };
         let mut easy = Easy::new();
         {

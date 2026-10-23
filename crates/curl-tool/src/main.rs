@@ -149,17 +149,10 @@ fn run(
         msgs.help(&[]);
         return ExitCode::from(exit_code(ErrorKind::FailedInit));
     }
-    match line.unimplemented {
-        Some(Unimplemented::Option(spec, prefix)) => {
-            let name = [prefix.as_bytes(), spec.long.as_bytes()];
-            msgs.error(&[b"option ", name[0], name[1], b": not implemented yet"]);
-            return ExitCode::from(NOT_IMPLEMENTED);
-        }
-        Some(Unimplemented::Feature(feature)) => {
-            msgs.error(&[feature.as_bytes(), b": not implemented yet"]);
-            return ExitCode::from(NOT_IMPLEMENTED);
-        }
-        None => {}
+    if let Some(Unimplemented::Option(spec, prefix)) = line.unimplemented {
+        let name = [prefix.as_bytes(), spec.long.as_bytes()];
+        msgs.error(&[b"option ", name[0], name[1], b": not implemented yet"]);
+        return ExitCode::from(NOT_IMPLEMENTED);
     }
     msgs.tracing = line.global.trace != Trace::None;
     // The debug build's `CURL_DEBUG` has the last word on the library's

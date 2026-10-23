@@ -725,8 +725,6 @@ pub(crate) struct CommandLine<'a> {
 pub(crate) enum Unimplemented {
     /// An option, with the prefix it was used with.
     Option(&'static Spec, &'static str),
-    /// A use of an option that is implemented otherwise.
-    Feature(&'static str),
 }
 
 impl<'a> CommandLine<'a> {
@@ -763,12 +761,6 @@ impl<'a> CommandLine<'a> {
     pub(crate) fn not_implemented(&mut self, spec: &'static Spec, prefix: &'static str) {
         self.unimplemented
             .get_or_insert(Unimplemented::Option(spec, prefix));
-    }
-
-    /// Record that `feature` was asked for and is not implemented.
-    fn feature_not_implemented(&mut self, feature: &'static str) {
-        self.unimplemented
-            .get_or_insert(Unimplemented::Feature(feature));
     }
 }
 
@@ -844,9 +836,6 @@ pub(crate) fn apply<'a>(
             let upload = if file.is_empty() {
                 Upload::Nothing
             } else {
-                if file == b"." {
-                    line.feature_not_implemented("uploading standard input without blocking");
-                }
                 Upload::File(file)
             };
             let op = line.current();

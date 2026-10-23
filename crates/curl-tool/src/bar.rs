@@ -78,13 +78,22 @@ impl Bar {
     }
 }
 
-impl ProgressHandler for Bar {
-    fn progress(&self, _: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
+impl Bar {
+    /// Draw the transfer at `now` (`tool_progress_cb`); false if it was
+    /// drawn too recently to be again, as C's returns early.
+    pub(crate) fn update(&self, now: ProgressNow) -> bool {
         let mut out = std::io::stderr().lock();
         let mut state = self.0.lock().expect("no panic holds it");
         let drawn = state.draw(now, Instant::now(), width());
         // A failed write has nowhere to be reported, as in C.
         let _ = out.write_all(drawn.bytes()).and_then(|()| out.flush());
+        drawn.whole
+    }
+}
+
+impl ProgressHandler for Bar {
+    fn progress(&self, _: &mut TransferCx<'_>, now: ProgressNow) -> ProgressVerdict {
+        self.update(now);
         ProgressVerdict::Continue
     }
 }
@@ -99,6 +108,8 @@ fn width() -> usize {
 struct Drawn {
     buf: [u8; 2 * (MAX_WIDTH + 1)],
     len: usize,
+    /// The call was not cut short for coming too soon after the last.
+    whole: bool,
 }
 
 impl Drawn {
@@ -132,6 +143,7 @@ impl State {
         let mut drawn = Drawn {
             buf: [0; 2 * (MAX_WIDTH + 1)],
             len: 0,
+            whole: false,
         };
         let known = now.download_total.is_some() || now.upload_total.is_some();
         let total_all = now
@@ -183,6 +195,7 @@ impl State {
         }
         self.prev = point;
         self.prev_time = Some(at);
+        drawn.whole = true;
         drawn
     }
 
@@ -242,14 +255,16 @@ mod tests {
     fn draws_the_share_done() {
         let mut s = State::new(Some(0));
         let t0 = Instant::now();
-        assert_eq!(
-            s.draw(now(0, Some(100)), t0, 79).bytes(),
-            b"",
-            "nothing yet"
-        );
-        assert_eq!(s.draw(now(50, Some(100)), t0, 79).bytes(), b"", "too soon");
+        let first = s.draw(now(0, Some(100)), t0, 79);
+        assert_eq!(first.bytes(), b"", "nothing yet");
+        assert!(first.whole, "looked at");
+        let soon = s.draw(now(50, Some(100)), t0, 79);
+        assert_eq!(soon.bytes(), b"", "too soon");
+        // Cut short, as C's returns before it lets a `-T .` upload go on.
+        assert!(!soon.whole);
         let t1 = t0 + REDRAW;
         let half = s.draw(now(50, Some(100)), t1, 79);
+        assert!(half.whole);
         let mut want = b"\r".to_vec();
         want.extend_from_slice(&[b'#'; 36]);
         want.extend_from_slice(&[b' '; 36]);

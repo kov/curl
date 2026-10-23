@@ -5,7 +5,8 @@
 //! calls copy a name of 384 bytes or more with an allocation that cannot
 //! fail. Reading, writing, seeking and an open file's status go through
 //! the std `File` that opening gives. Standard error is pointed at a file
-//! here too, as the tool's `--stderr` asks, and a file is closed saying
+//! here too, as the tool's `--stderr` asks, a file's reads are made not to
+//! wait, as `-T .` asks of standard input, and a file is closed saying
 //! whether that went.
 
 #![allow(unsafe_code)]
@@ -209,6 +210,25 @@ pub fn stdin() -> io::Result<File> {
     }
     // SAFETY: `fd` is the new descriptor, owned by nothing else.
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+}
+
+/// Make reads of `file` not wait for data, as `curlx_nonblock` does
+/// (`O_NONBLOCK`): a read that finds nothing fails with `WouldBlock`. The
+/// flag belongs to the open file, so it holds for every descriptor of it:
+/// for standard input itself when `file` is `stdin`'s.
+pub fn set_nonblocking(file: &File) -> io::Result<()> {
+    let fd = file.as_raw_fd();
+    // SAFETY: `fcntl` reads the flags of `fd`, which `file` keeps open for
+    // the call.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as above; the call changes the flags only.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Make standard error write where `to` writes, as `freopen` of `stderr`
@@ -583,6 +603,22 @@ mod tests {
         assert_eq!(open_on(&dir), 32);
         drop(dirs);
         assert_eq!(open_on(&dir), 0);
+    }
+
+    /// A nonblocking file finds nothing in an empty pipe rather than wait
+    /// for it, and reads what comes; a copy of it does not wait either.
+    #[test]
+    fn a_nonblocking_file_does_not_wait() {
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let file = File::from(OwnedFd::from(reader));
+        let copy = file.try_clone().unwrap();
+        set_nonblocking(&file).unwrap();
+        let mut buf = [0; 4];
+        let nothing = (&copy).read(&mut buf).unwrap_err();
+        assert_eq!(nothing.kind(), io::ErrorKind::WouldBlock);
+        writer.write_all(b"ab").unwrap();
+        assert_eq!((&file).read(&mut buf).unwrap(), 2);
+        assert_eq!(&buf[..2], b"ab");
     }
 
     #[test]

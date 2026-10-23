@@ -267,8 +267,13 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                 Err(Pre::Failed(e)) => return Err(e),
                 Err(Pre::Unopened) => return Err(ErrorKind::ReadError),
             }
-            let gauged = Handler::progress(Gauged(entry.counted.gauge.clone()))
-                .map_err(|_| ErrorKind::OutOfMemory)?;
+            let oom = |_| ErrorKind::OutOfMemory;
+            let gauged = Handler::progress(Gauged(entry.counted.gauge.clone())).map_err(oom)?;
+            // It lets a `-T .` upload waiting for its input go on.
+            let gauged = match &entry.per.stdin {
+                Some(stdin) => stdin.progress(gauged).map_err(oom)?,
+                None => gauged,
+            };
             Setopt::new(easy, None)
                 .unwritten("C sets it with `curl_easy_setopt` as it adds", |o| {
                     o.progress = Progress::Handler(gauged);

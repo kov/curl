@@ -762,7 +762,6 @@ mod tests {
                 line.operations.len(),
                 line.unimplemented.map(|u| match u {
                     Unimplemented::Option(s, _) => s.long,
-                    Unimplemented::Feature(f) => f,
                 }),
                 None,
             )),
@@ -1021,10 +1020,7 @@ mod tests {
         );
         assert_eq!(run(&["x", "--remove-on-error"]), Ok((1, None, None)));
         assert_eq!(run(&["x", "--use-ascii"]), Ok((1, Some("use-ascii"), None)));
-        assert_eq!(
-            run(&["-T", ".", "x"]),
-            Ok((1, Some("uploading standard input without blocking"), None))
-        );
+        assert_eq!(run(&["-T", ".", "x"]), Ok((1, None, None)));
         assert_eq!(run(&["-w", "%time{%Y}", "x"]), Ok((1, None, None)));
         assert_eq!(run(&["-w", "%{url}", "x"]), Ok((1, None, None)));
     }

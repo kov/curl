@@ -2453,3 +2453,97 @@ fn runs_each_transfer_on_a_copy_of_its_handle() {
         "{request}"
     );
 }
+
+/// `-T .` with the input coming in `parts`, `pause` apart, and `args`:
+/// what the tool said, once it is done, and the request. A tool that
+/// takes ten seconds is killed: an upload left paused for good.
+fn upload_dot(parts: &[&'static [u8]], pause: u64, args: &[&str]) -> (Run, String) {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let mut child = Command::new(tool)
+        .args(["-q", "-H", "Expect:", "-T", "."])
+        .args(args)
+        .arg(s.url())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = child.id().to_string();
+    let mut input = child.stdin.take().unwrap();
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || done.send(child.wait_with_output().unwrap()));
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(pause));
+        }
+        input.write_all(part).unwrap();
+    }
+    drop(input);
+    let out = match ended.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(out) => out,
+        Err(_) => {
+            Command::new("kill").args(["-9", &pid]).status().unwrap();
+            panic!("{args:?}: still running after ten seconds");
+        }
+    };
+    let run = Run {
+        code: out.status.code().unwrap(),
+        stdout: out.stdout,
+        stderr: String::from_utf8(out.stderr).unwrap(),
+    };
+    (run, s.request())
+}
+
+/// `-T .` reads standard input without waiting for it: a read that
+/// finds nothing pauses the upload, which goes on once there is more,
+/// each part sent as it comes. With `--max-time`, each read waits for
+/// input instead, up to the time left (`tool_read_cb`). Standard input
+/// names no file in the URL.
+#[test]
+fn uploads_standard_input_without_waiting_for_it() {
+    let paused = "\n* [READ] cr_in_read, callback returned CURL_READFUNC_PAUSE\n";
+    for (mode, pauses) in [
+        (&["-sSv", "--trace-config", "read"][..], true),
+        (&["-Z", "-sSv", "--trace-config", "read"], true),
+        (&["-m", "10", "-sSv", "--trace-config", "read"], false),
+    ] {
+        let (run, request) = upload_dot(&[b"abc", b"def"], 300, mode);
+        assert_eq!(
+            (run.code, &run.stdout[..]),
+            (0, &b"ok\n"[..]),
+            "{mode:?}: {}",
+            run.stderr
+        );
+        assert_eq!(
+            run.stderr.contains(paused),
+            pauses,
+            "{mode:?}: {}",
+            run.stderr
+        );
+        assert!(request.starts_with("PUT / HTTP/1.1\r\n"), "{request}");
+        assert!(
+            request.ends_with("\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n"),
+            "{mode:?}: {request}"
+        );
+    }
+}
+
+/// `-T .` draws the meter as the library does, which C's tool does under
+/// `--silent` too (`tool_readbusy_cb`): here `--silent` draws none. A
+/// deliberate difference from C (DIVERGENCE.md), so this test fails on
+/// its tool.
+#[test]
+fn a_silent_upload_of_standard_input_draws_no_meter() {
+    let (run, request) = upload_dot(&[b"abc", b"def"], 300, &["-s"]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    assert!(request.ends_with("\r\n0\r\n\r\n"), "{request}");
+    let (run, _) = upload_dot(&[b"abc"], 0, &[]);
+    assert_eq!(run.code, 0);
+    assert!(
+        run.stderr.starts_with("  % Total    % Received % Xferd"),
+        "{}",
+        run.stderr
+    );
+}

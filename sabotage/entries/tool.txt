@@ -462,7 +462,7 @@ witness: curl-tool uploads_standard_input
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool uploads_standard_input
 --- old
-    let given = match upload.filter(|&file| file != b"-") {
+    let given = match upload.filter(|&file| file != b"-" && file != b".") {
 --- new
     let given = match upload {
 
@@ -1324,3 +1324,48 @@ features: debug-hooks
                     easy.set_share(Some(run.share.clone()));
 --- new
                     drop(Handle(std::mem::replace(&mut *easy, dup)));
+
+=== `-T .` reads standard input waiting for it
+file: crates/curl-tool/src/operate/nonblocking.rs
+witness: curl-tool uploads_standard_input_without_waiting_for_it
+--- old
+        if let Err(e) = curl_os::fs::set_nonblocking(&file) {
+--- new
+        if let Err(e) = Ok::<(), std::io::Error>(()) {
+
+=== `-T .`'s progress handler leaves the upload paused
+file: crates/curl-tool/src/operate/nonblocking.rs
+witness: curl-tool uploads_standard_input_without_waiting_for_it
+--- old
+                self.stdin.wait(Duration::from_millis(1));
+            }
+            self.stdin.unpause(cx);
+--- new
+                self.stdin.wait(Duration::from_millis(1));
+            }
+
+=== a parallel `-T .` upload is left paused
+file: crates/curl-tool/src/operate/parallel.rs
+witness: curl-tool uploads_standard_input_without_waiting_for_it
+--- old
+                Some(stdin) => stdin.progress(gauged).map_err(oom)?,
+--- new
+                Some(_) => gauged,
+
+=== `-T .` under `--max-time` reads without waiting for input
+file: crates/curl-tool/src/operate/nonblocking.rs
+witness: curl-tool uploads_standard_input_without_waiting_for_it
+--- old
+            self.stdin.wait(left);
+--- new
+            let _ = left;
+
+=== the progress bar lets `-T .` go on when it draws nothing, too soon
+file: crates/curl-tool/src/bar.rs
+witness: curl-tool bar::tests::draws_the_share_done
+--- old
+            len: 0,
+            whole: false,
+--- new
+            len: 0,
+            whole: true,

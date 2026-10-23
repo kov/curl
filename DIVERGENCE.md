@@ -94,6 +94,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   download at 20000 bytes a second takes 3 s on a handle and none on its copy. Pinned by
   `speed_limits_are_kept_and_copied` (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+- **`--silent` keeps an upload of standard input without blocking quiet.** `curl -s -T . URL`
+  draws no progress meter. To let the paused upload go on, C's tool sets `CURLOPT_NOPROGRESS`
+  to 0 with a progress callback (`tool_readbusy_cb`, `src/tool_cb_rea.c`) that has the library
+  draw its meter unless `--no-progress-meter` or output to a terminal says not to: `--silent`
+  is not counted, and C draws the meter on standard error under `-s`. Measured against the C
+  build. Pinned by `a_silent_upload_of_standard_input_draws_no_meter`
+  (`crates/curl-tool/tests/http.rs`).
+
 ## State C carries across transfers
 
 - **`--etag-compare` sends one `If-None-Match:` a transfer.** Each transfer of a URL pattern

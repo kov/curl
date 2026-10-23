@@ -145,6 +145,7 @@ fn a_refused_connect_is_done_with_where_it_failed() {
         "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP]
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
+        [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
         [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]
         [MULTI] [CONNECTING] connect failed -> 7
         [MULTI] [CONNECTING] multi_done: status: 7 prem: 1 done: 0
@@ -204,7 +205,7 @@ fn sends_and_receives_are_traced_as_c() {
         .seen
         .text()
         .into_iter()
-        .filter(|l| l.starts_with("[TCP] "))
+        .filter(|l| l.starts_with("[TCP] send(") || l.starts_with("[TCP] recv("))
         .map(|l| l.trim_end().to_owned())
         .collect();
     let request = request_of("/").len();

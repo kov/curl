@@ -71,3 +71,37 @@ witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
         !self.rx.filled().is_empty() || self.layers.over(self.socket.socket()).data_pending()
 --- new
         self.layers.over(self.socket.socket()).data_pending()
+
+=== a socket with something to read and a hang-up is taken for alive
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core conn::layer::tests::the_socket_says_whether_the_connection_is_alive
+--- old
+                    Ok(_) if watch[0].revents() == Events::IN => Alive::Alive {
+--- new
+                    Ok(_) if !watch[0].revents().is_empty() => Alive::Alive {
+
+=== a layer keeping the defaults hides what the layers below hold
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core conn::layer::tests::a_layer_s_defaults_ask_below
+--- old
+    fn data_pending(&self, below: Below<'_>) -> bool {
+        below.data_pending()
+    }
+--- new
+    fn data_pending(&self, below: Below<'_>) -> bool {
+        let _ = below;
+        false
+    }
+
+=== a layer keeping the defaults waits for nothing
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core conn::layer::tests::a_layer_s_defaults_ask_below
+--- old
+    fn adjust_pollset(&self, wanted: Events) -> Events {
+        wanted
+    }
+--- new
+    fn adjust_pollset(&self, wanted: Events) -> Events {
+        let _ = wanted;
+        Events::NONE
+    }

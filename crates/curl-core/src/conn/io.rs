@@ -274,9 +274,14 @@ pub(crate) fn poll_together(
     let mut known = 0;
     for s in sockets.iter_mut() {
         if let Readiness::Known { now: ready, .. } = s.socket.readiness() {
+            // An error, a hang-up or a bad descriptor is said unasked, as
+            // `poll(2)` says it.
+            let unasked = Events::ERR | Events::HUP | Events::NVAL;
             s.revents = [Events::IN, Events::PRI, Events::OUT]
                 .into_iter()
-                .filter(|&e| ready.contains(e) && s.events.contains(e))
+                .filter(|&e| s.events.contains(e))
+                .chain([Events::ERR, Events::HUP, Events::NVAL])
+                .filter(|&e| ready.contains(e) && (s.events | unasked).contains(e))
                 .fold(Events::NONE, |a, e| a | e);
             known += u32::from(!s.revents.is_empty());
         }
@@ -849,6 +854,10 @@ impl Socket for FakeSocket {
         if now == Events::OUT && !refuses && wire.readable() {
             now = now | Events::IN;
         }
+        if now == Events::OUT && refuses {
+            // A refused connect polls in error, and hung up.
+            now = now | Events::ERR | Events::HUP;
+        }
         let later = self.ready_at.filter(|_| now.is_empty());
         Readiness::Known { now, later }
     }
@@ -1089,9 +1098,10 @@ mod tests {
             .poll(&mut sockets, &mut [], Duration::from_secs(5))
             .unwrap();
         assert_eq!(ready, 2);
+        let refused = Events::OUT | Events::ERR | Events::HUP;
         assert_eq!(
             sockets.each_ref().map(|s| s.revents()),
-            [Events::OUT, Events::OUT, Events::NONE]
+            [Events::OUT, refused, Events::NONE]
         );
         assert_eq!(clock.now(), start, "something was ready: no time passed");
         assert!(a.take_error().unwrap().is_none());

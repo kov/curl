@@ -65,14 +65,12 @@ witness: curl-sys-abi handle_tests::limits_are_checked_as_in_c
             options.address_scope = NonZeroU32::new(n);
 
 === an attempt that fails at once is not traced as tried
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::unresolved_and_immediate_failures
 --- old
-            // it never got a local address (`cf_tcp_connect`).
-            trace_trying(cx, remote, scope_found, first);
+        trace_trying(cx, remote, scope_found);
 --- new
-            // it never got a local address (`cf_tcp_connect`).
-            let _ = (scope_found, first);
+        let _ = scope_found;
 
 === an interface name too long for the kernel is looked up
 file: crates/curl-os/src/net.rs

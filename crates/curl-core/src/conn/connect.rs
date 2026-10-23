@@ -5,10 +5,10 @@
 //! protocol's line), which the transfer makes.
 //!
 //! Each stage owns what the one before produced. A drive moves the machine
-//! on by at most one event, which it returns for the transfer to trace,
-//! through a context (`ConnCx`) that reaches the network, the names kept
-//! and the transfer's trace, never the pool: the machine is driven in its
-//! lease.
+//! on by at most one event, tracing its attempts as C's filters do and
+//! returning the event for the transfer, through a context (`ConnCx`)
+//! that reaches the network, the names kept and the transfer's trace,
+//! never the pool: the machine is driven in its lease.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
@@ -30,6 +30,7 @@ use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::components::Component;
 use crate::options::IpVersion;
 use crate::time::Instant;
+use crate::trace::{Ip, OsError};
 
 /// A connection being set up.
 #[derive(Debug)]
@@ -172,11 +173,9 @@ impl LayerCx for Plain<'_> {
         self.now
     }
 
-    fn traces(&self, _: crate::components::Component) -> bool {
-        false
-    }
-
     fn of(&mut self, _: crate::components::Component, _: std::fmt::Arguments<'_>) {}
+
+    fn info(&mut self, _: std::fmt::Arguments<'_>) {}
 }
 
 #[cfg(test)]
@@ -305,9 +304,8 @@ struct Attempt {
 pub(crate) enum Drove {
     /// Still setting up: drive it again when `wants` comes.
     Connecting(ConnectMachine, Progress),
-    /// The connection is up: the race's attempt `.1`, counted among
-    /// those running, oldest first, won it.
-    Established(Conn, usize),
+    /// The connection is up.
+    Established(Conn),
 }
 
 /// Something a setup said, or nothing new.
@@ -315,48 +313,28 @@ pub(crate) enum Drove {
 pub(crate) enum Progress {
     /// The name resolved: its answer is the machine's.
     Resolved(Found),
-    /// An attempt started on `remote`, in the scope `scope_found` took
-    /// from a local interface if it has one; `first` if no other was
-    /// running. Its socket connected `at_once`, or its connect is in
-    /// progress, to be polled when the transfer is next run, as C polls
-    /// it (`cf_tcp_connect` returns at once on `EINPROGRESS`); the next
-    /// attempt is due at `until`, as `Waiting` has it.
+    /// An attempt started on `remote`. Its socket connected `at_once`, or
+    /// its connect is in progress, to be polled when the transfer is next
+    /// run, as C polls it (`cf_tcp_connect` returns at once on
+    /// `EINPROGRESS`); the next attempt is due at `until`, as `Waiting`
+    /// has it.
     Trying {
+        #[cfg_attr(
+            not(test),
+            expect(dead_code, reason = "the race's tests tell the families by it")
+        )]
         remote: SocketAddr,
-        scope_found: Option<NonZeroU32>,
-        first: bool,
         at_once: bool,
         until: Option<Instant>,
     },
-    /// An attempt failed, and the setup goes on.
-    Failed(Failure),
+    /// An attempt failed, traced as it went, and the setup goes on.
+    Failed,
     /// Nothing until a socket is ready, or until `until`, when the next
     /// attempt is due (`EXPIRE_HAPPY_EYEBALLS`).
     Waiting { until: Option<Instant> },
     /// Connected to the first hop, over which handshakes are to be made
-    /// (`ConnLease::dialed`). The race's attempt `attempt` won, as
-    /// `Drove::Established` counts them.
-    Dialed { attempt: usize },
-}
-
-/// How an attempt failed.
-#[derive(Debug)]
-pub(crate) enum Failure {
-    /// Connecting to `remote`, in the scope `scope_found` took from a
-    /// local interface if it has one, failed at once, before any socket
-    /// was polled; `first` if no other attempt was running.
-    Immediate {
-        remote: SocketAddr,
-        scope_found: Option<NonZeroU32>,
-        first: bool,
-        error: io::Error,
-    },
-    /// The attempt to `remote` from `local` failed.
-    Attempt {
-        remote: SocketAddr,
-        local: Option<SocketAddr>,
-        error: io::Error,
-    },
+    /// (`ConnLease::dialed`).
+    Dialed,
 }
 
 /// Why a setup failed; any socket it had is closed.
@@ -364,8 +342,8 @@ pub(crate) enum Failure {
 pub(crate) enum ConnectError {
     /// The name has no address to try.
     Unresolved(Unresolved),
-    /// The last attempt failed.
-    Failed(Failure),
+    /// The last attempt failed, with its error.
+    Failed(io::Error),
     /// Memory ran out: no failure of the peer's.
     OutOfMemory,
 }
@@ -486,8 +464,9 @@ impl ConnectMachine {
         // filters in it, the tunnel's says so.
         if self.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
             cx.of(Component::HttpProxy, format_args!("destroy"));
+            cx.of(Component::H1Proxy, format_args!("destroy"));
         }
-        cx.net().close(d.stream.into_socket());
+        discard(cx, d.stream.into_socket());
         self.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
@@ -523,104 +502,163 @@ impl ConnectMachine {
         };
         // A running attempt that connected wins; one that failed is
         // dropped (`cf_ip_ballers_run`).
-        for i in 0..r.attempts.len() {
-            let a = &r.attempts[i];
-            // Writable once the connect is decided, either way
-            // (`SOCKET_WRITABLE(sock, 0)`).
-            let mut watch = [SocketPoll::new(a.socket.socket(), Events::OUT)];
-            let error = match cx.net().poll(&mut watch, &mut [], Duration::ZERO) {
-                Ok(_) if watch[0].revents().is_empty() => continue,
-                Ok(_) => match a.socket.socket().take_error() {
-                    Ok(None) => {
-                        let won = r.attempts.remove(i);
-                        r.close_all(cx.net());
-                        if self.route.handshakes() || setup.haproxy {
-                            // The connection is the first hop's; the
-                            // handshakes over it are still to be made.
-                            let answer = r.eyeballs.answer.clone();
-                            let target = self.socks_target(cx, setup);
-                            let target = match target {
-                                Ok(target) => target,
-                                Err(e) => {
-                                    cx.net().close(won.socket);
-                                    return Err(e);
-                                }
-                            };
-                            self.stage = Stage::Dialed(Dialed {
-                                remote: won.remote,
-                                stream: Stream::new(won.socket),
-                                connected_at: now,
-                                answer,
-                                target,
-                                socks5_authenticated: false,
-                                made: Made::default(),
-                            });
-                            let dialed = Progress::Dialed { attempt: i };
-                            return Ok(Drove::Connecting(self, dialed));
-                        }
-                        let (number, route, created) = (self.number, self.route, self.created);
-                        #[cfg_attr(not(test), expect(unused_mut, reason = "tests push a layer"))]
-                        let mut stream = Stream::new(won.socket);
-                        #[cfg(test)]
-                        if let Some(layer) = setup.layer {
-                            stream.layers_mut().push(layer()).expect("a test's memory");
-                        }
-                        let conn = Self::conn(number, route, created, stream, won.remote, now);
-                        return Ok(Drove::Established(conn, i));
-                    }
-                    Ok(Some(error)) | Err(error) => error,
-                },
-                Err(error) => error,
-            };
-            let failure = r.attempts.remove(i).fail(cx.net(), error)?;
-            return r.failed(failure).map(|p| Drove::Connecting(self, p));
+        match r.check(cx) {
+            Checked::Pending => {}
+            Checked::Won(i) => return self.won(cx, setup, i, now),
+            Checked::Failed(i, error) => {
+                let failure = r.attempts.remove(i).fail(cx, error)?;
+                return r.failed(failure).map(|p| Drove::Connecting(self, p));
+            }
         }
         let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
-        if due && r.eyeballs.more() {
-            if r.attempts.len() == MAX_ATTEMPTS {
-                // The oldest makes room (`cf_ip_ballers_prune`).
-                let oldest = r.attempts.remove(0);
-                cx.net().close(oldest.socket);
+        if !(due && r.eyeballs.more()) {
+            let until = r.next_due(delay);
+            return Ok(Drove::Connecting(self, Progress::Waiting { until }));
+        }
+        let first = r.attempts.is_empty();
+        if !first {
+            cx.of(
+                Component::HappyEyeballs,
+                format_args!("happy eyeballs timeout expired, start next attempt"),
+            );
+        }
+        if r.attempts.len() == MAX_ATTEMPTS {
+            // The oldest makes room (`cf_ip_ballers_prune`).
+            let oldest = r.attempts.remove(0);
+            discard(cx, oldest.socket);
+            cx.of(
+                Component::HappyEyeballs,
+                format_args!("discarding oldest attempt to keep limit"),
+            );
+        }
+        if r.attempts.try_reserve(1).is_err() {
+            return Err(ConnectError::OutOfMemory);
+        }
+        let ip = r.eyeballs.next().expect("an address is left");
+        let (which, v) = (
+            if first { "first" } else { "next" },
+            if ip.is_ipv4() { 4 } else { 6 },
+        );
+        cx.of(
+            Component::HappyEyeballs,
+            format_args!("starting {which} attempt for ipv{v} -> 0"),
+        );
+        r.last_start = Some(now);
+        // The attempts running are checked again before the new one's
+        // first connect (`goto evaluate`): one connecting now wins before
+        // it is made, and one failing now is dropped as it is made.
+        match r.check(cx) {
+            Checked::Pending => {}
+            Checked::Won(i) => return self.won(cx, setup, i, now),
+            Checked::Failed(i, error) => {
+                // Traced; whatever the new attempt comes to supersedes it.
+                let superseded = r.attempts.remove(i).fail(cx, error)?;
+                drop(superseded);
             }
-            if r.attempts.try_reserve(1).is_err() {
-                return Err(ConnectError::OutOfMemory);
+        }
+        let (remote, scope_found) = address(ip, self.route.destination(), setup.scope, cx.net());
+        trace_trying(cx, remote, scope_found);
+        match cx.net().connect(remote, setup.socket) {
+            Ok((socket, connect)) => {
+                let fd = socket.key().get();
+                let local = socket.local_addr().ok();
+                let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
+                cx.of(
+                    Component::Tcp,
+                    format_args!("cf_socket_open() -> 0, fd={fd}"),
+                );
+                cx.of(
+                    Component::Tcp,
+                    format_args!("local address {lip} port {lport}..."),
+                );
+                let socket = Sock::new(socket, self.closer.clone());
+                r.attempts
+                    .try_push(Attempt { remote, socket })
+                    .expect("reserved");
+                let tried = Progress::Trying {
+                    remote,
+                    at_once: connect == Connect::Done,
+                    until: r.next_due(delay),
+                };
+                Ok(Drove::Connecting(self, tried))
             }
-            let first = r.attempts.is_empty();
-            let ip = r.eyeballs.next().expect("an address is left");
-            let (remote, scope_found) =
-                address(ip, self.route.destination(), setup.scope, cx.net());
-            r.last_start = Some(now);
-            return match cx.net().connect(remote, setup.socket) {
-                Ok((socket, connect)) => {
-                    let socket = Sock::new(socket, self.closer.clone());
-                    r.attempts
-                        .try_push(Attempt { remote, socket })
-                        .expect("reserved");
-                    let tried = Progress::Trying {
-                        remote,
-                        scope_found,
-                        first,
-                        at_once: connect == Connect::Done,
-                        until: r.next_due(delay),
-                    };
-                    Ok(Drove::Connecting(self, tried))
-                }
-                Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
-                    Err(ConnectError::OutOfMemory)
-                }
-                Err(error) => {
-                    let failure = Failure::Immediate {
-                        remote,
-                        scope_found,
-                        first,
-                        error,
-                    };
-                    r.failed(failure).map(|p| Drove::Connecting(self, p))
+            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+                Err(ConnectError::OutOfMemory)
+            }
+            Err(error) => {
+                // The socket was opened before its connect failed, and
+                // never got a local address (`cf_tcp_connect`).
+                let why = OsError(&error);
+                cx.info(format_args!(
+                    "Immediate connect fail for {}: {why}",
+                    remote.ip()
+                ));
+                let unbound = match remote {
+                    SocketAddr::V4(_) => IpAddr::from(Ipv4Addr::UNSPECIFIED),
+                    SocketAddr::V6(_) => IpAddr::from(Ipv6Addr::UNSPECIFIED),
+                };
+                cx.info(format_args!(
+                    "connect to {} port {} from {unbound} port 0 failed: {why}",
+                    remote.ip(),
+                    remote.port()
+                ));
+                cx.of(Component::Tcp, format_args!("destroy"));
+                r.failed(error).map(|p| Drove::Connecting(self, p))
+            }
+        }
+    }
+
+    /// The race's attempt `i` connected: the others close, and the
+    /// connection is up, or dialed for the handshakes over it.
+    fn won(
+        mut self,
+        cx: &mut dyn ConnCx,
+        setup: Setup,
+        i: usize,
+        now: Instant,
+    ) -> Result<Drove, ConnectError> {
+        let Stage::Racing(r) = &mut self.stage else {
+            unreachable!("only a race is won");
+        };
+        cx.of(
+            Component::HappyEyeballs,
+            format_args!("connect attempt #{i} successful"),
+        );
+        let won = r.attempts.remove(i);
+        for a in r.attempts.drain(..) {
+            discard(cx, a.socket);
+        }
+        if self.route.handshakes() || setup.haproxy {
+            // The connection is the first hop's; the handshakes over it
+            // are still to be made.
+            let answer = r.eyeballs.answer.clone();
+            let target = match self.socks_target(cx, setup) {
+                Ok(target) => target,
+                Err(e) => {
+                    cx.net().close(won.socket);
+                    return Err(e);
                 }
             };
+            self.stage = Stage::Dialed(Dialed {
+                remote: won.remote,
+                stream: Stream::new(won.socket),
+                connected_at: now,
+                answer,
+                target,
+                socks5_authenticated: false,
+                made: Made::default(),
+            });
+            return Ok(Drove::Connecting(self, Progress::Dialed));
         }
-        let until = r.next_due(delay);
-        Ok(Drove::Connecting(self, Progress::Waiting { until }))
+        let (number, route, created) = (self.number, self.route, self.created);
+        #[cfg_attr(not(test), expect(unused_mut, reason = "tests push a layer"))]
+        let mut stream = Stream::new(won.socket);
+        #[cfg(test)]
+        if let Some(layer) = setup.layer {
+            stream.layers_mut().push(layer()).expect("a test's memory");
+        }
+        let conn = Self::conn(number, route, created, stream, won.remote, now);
+        Ok(Drove::Established(conn))
     }
 
     /// The peer's answer (`hostip_resolv`): what the cache keeps, or what
@@ -691,7 +729,55 @@ impl ConnectMachine {
     }
 }
 
+/// What a check of the running attempts found.
+enum Checked {
+    /// None is decided yet.
+    Pending,
+    /// Attempt `.0` connected.
+    Won(usize),
+    /// Attempt `.0` failed with `.1`.
+    Failed(usize, io::Error),
+}
+
 impl Racing {
+    /// Each running attempt's socket checked for its connect, oldest
+    /// first, as `cf_tcp_connect` checks it (`SOCKET_WRITABLE(sock, 0)`):
+    /// the first decided ends the check.
+    fn check(&self, cx: &mut dyn ConnCx) -> Checked {
+        for (i, a) in self.attempts.iter().enumerate() {
+            let socket = a.socket.socket();
+            let fd = socket.key().get();
+            let mut watch = [SocketPoll::new(socket, Events::OUT)];
+            let revents = match cx.net().poll(&mut watch, &mut [], Duration::ZERO) {
+                Ok(_) => watch[0].revents(),
+                Err(error) => return Checked::Failed(i, error),
+            };
+            if revents.is_empty() {
+                cx.of(Component::Tcp, format_args!("not connected yet on fd={fd}"));
+                continue;
+            }
+            // Writable alone, the connect is decided by the socket's
+            // error; with an error or a hang-up it failed.
+            let broken = [Events::ERR, Events::HUP, Events::PRI, Events::NVAL]
+                .into_iter()
+                .any(|e| revents.contains(e));
+            if broken {
+                cx.of(Component::Tcp, format_args!("poll/select error on fd={fd}"));
+            }
+            return match socket.take_error() {
+                Ok(None) if !broken => {
+                    cx.of(Component::Tcp, format_args!("connected on fd={fd}"));
+                    Checked::Won(i)
+                }
+                // C fails it with whatever error the socket says, none
+                // included.
+                Ok(None) => Checked::Failed(i, io::Error::from_raw_os_error(0)),
+                Ok(Some(error)) | Err(error) => Checked::Failed(i, error),
+            };
+        }
+        Checked::Pending
+    }
+
     /// When the next attempt is due, if an address is left for one.
     fn next_due(&self, delay: Duration) -> Option<Instant> {
         self.last_start
@@ -707,29 +793,63 @@ impl Racing {
 
     /// An attempt failed: the setup goes on while an attempt runs or an
     /// address is left, and fails with it otherwise.
-    fn failed(&self, failure: Failure) -> Result<Progress, ConnectError> {
+    fn failed(&self, error: io::Error) -> Result<Progress, ConnectError> {
         if !self.attempts.is_empty() || self.eyeballs.more() {
-            Ok(Progress::Failed(failure))
+            Ok(Progress::Failed)
         } else {
-            Err(ConnectError::Failed(failure))
+            Err(ConnectError::Failed(error))
         }
     }
 }
 
 impl Attempt {
     /// The attempt failed with `error`: its socket is closed, its local
-    /// address read first, as C reads it for the trace.
-    fn fail(self, net: &mut dyn Net, error: io::Error) -> Result<Failure, ConnectError> {
+    /// address read first, as C reads it for the trace, and the failure
+    /// traced as the attempt goes.
+    fn fail(self, cx: &mut dyn ConnCx, error: io::Error) -> Result<io::Error, ConnectError> {
         let local = self.socket.socket().local_addr().ok();
-        net.close(self.socket);
+        cx.net().close(self.socket);
         if error.kind() == io::ErrorKind::OutOfMemory {
             return Err(ConnectError::OutOfMemory);
         }
-        Ok(Failure::Attempt {
-            remote: self.remote,
-            local,
-            error,
-        })
+        let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
+        let why = OsError(&error);
+        let remote = self.remote;
+        cx.info(format_args!(
+            "connect to {} port {} from {lip} port {lport} failed: {why}",
+            remote.ip(),
+            remote.port()
+        ));
+        cx.of(Component::Tcp, format_args!("destroy"));
+        Ok(error)
+    }
+}
+
+/// A socket whose filter goes, still open (`cf_socket_destroy`).
+fn discard(cx: &mut dyn ConnCx, socket: Sock) {
+    let fd = socket.key().get();
+    cx.of(Component::Tcp, format_args!("destroy"));
+    cx.of(Component::Tcp, format_args!("cf_socket_close, fd={fd}"));
+    cx.net().close(socket);
+}
+
+/// An attempt to `remote` starts (`cf_socket_open`): after the scope it
+/// took from a local interface, if it did, and with the scope it has.
+fn trace_trying(cx: &mut dyn ConnCx, remote: SocketAddr, scope_found: Option<NonZeroU32>) {
+    if let Some(scope) = scope_found {
+        cx.info(format_args!(
+            "determined scope_id={scope} for link-local address from local interface"
+        ));
+    }
+    match remote {
+        SocketAddr::V4(_) => cx.info(format_args!("  Trying {remote}...")),
+        SocketAddr::V6(v6) if v6.scope_id() != 0 => {
+            let (ip, port, scope) = (v6.ip(), v6.port(), v6.scope_id());
+            cx.info(format_args!("  Trying [{ip}]:{port} scope_id={scope}..."));
+        }
+        SocketAddr::V6(v6) => {
+            cx.info(format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
+        }
     }
 }
 
@@ -953,13 +1073,13 @@ mod tests {
                             remote: SocketAddr::V6(_),
                             ..
                         } => raced.v6_starts.push(ms),
-                        Progress::Failed(_) => {}
+                        Progress::Failed => {}
                         Progress::Waiting { .. } => clock.advance(Duration::from_millis(1)),
                         Progress::Resolved(_) => unreachable!("resolved already"),
-                        Progress::Dialed { .. } => unreachable!("no proxy"),
+                        Progress::Dialed => unreachable!("no proxy"),
                     }
                 }
-                Ok(Drove::Established(conn, _)) => panic!("{conn:?}"),
+                Ok(Drove::Established(conn)) => panic!("{conn:?}"),
                 Err(ConnectError::Failed(_)) => {
                     raced.failed_at = ms;
                     assert_eq!(net.open_sockets(), 0, "every attempt closed");
@@ -1015,7 +1135,7 @@ mod tests {
                         clock.advance(Duration::from_millis(1));
                     }
                 }
-                Drove::Established(conn, _) => break conn,
+                Drove::Established(conn) => break conn,
             }
         };
         assert_eq!(conn.remote, Some(up));

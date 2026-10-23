@@ -1,0 +1,75 @@
+=== the running attempts are not checked again before a new one opens
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_c_closes_it
+--- old
+        // it is made, and one failing now is dropped as it is made.
+        match r.check(cx) {
+--- new
+        // it is made, and one failing now is dropped as it is made.
+        match Checked::Pending {
+
+=== the losers close before the winner is named
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_losing_attempt_is_closed_as_c_closes_it
+--- old
+        cx.of(
+            Component::HappyEyeballs,
+            format_args!("connect attempt #{i} successful"),
+        );
+        let won = r.attempts.remove(i);
+        for a in r.attempts.drain(..) {
+            discard(cx, a.socket);
+        }
+--- new
+        let won = r.attempts.remove(i);
+        for a in r.attempts.drain(..) {
+            discard(cx, a.socket);
+        }
+        cx.of(
+            Component::HappyEyeballs,
+            format_args!("connect attempt #{i} successful"),
+        );
+
+=== a socket a drive closes is not said to the multi
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::http::tests::tcp_trace::a_refused_socket_is_traced_as_c
+--- old
+        super::mstate::trace(self.step, format_args!("Curl_multi_will_close fd={fd}"));
+--- new
+        let _ = fd;
+
+=== a failed attempt's filter goes before its failure is said
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_refused_socket_is_traced_as_c
+--- old
+        cx.info(format_args!(
+            "connect to {} port {} from {lip} port {lport} failed: {why}",
+            remote.ip(),
+            remote.port()
+        ));
+        cx.of(Component::Tcp, format_args!("destroy"));
+        Ok(error)
+--- new
+        cx.of(Component::Tcp, format_args!("destroy"));
+        cx.info(format_args!(
+            "connect to {} port {} from {lip} port {lport} failed: {why}",
+            remote.ip(),
+            remote.port()
+        ));
+        Ok(error)
+
+=== a connect that polls in error is taken for one decided by the socket's error alone
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_refused_socket_is_traced_as_c
+--- old
+            if broken {
+--- new
+            if false {
+
+=== a redial discards the tunnel without its HTTP/1.1 filter
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_redial_closes_the_socket_as_c
+--- old
+            cx.of(Component::H1Proxy, format_args!("destroy"));
+--- new
+            let _ = Component::H1Proxy;

@@ -56,12 +56,11 @@ pub(crate) enum LayerAnswer {}
 pub(crate) trait LayerCx {
     fn now(&self) -> Instant;
 
-    /// Whether `component`'s lines are traced.
-    #[expect(dead_code, reason = "the setup's trace, step 40h")]
-    fn traces(&self, component: Component) -> bool;
-
     /// Trace a line of `component`'s, if it is.
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>);
+
+    /// A line of the transfer's verbose output (`infof`).
+    fn info(&mut self, line: fmt::Arguments<'_>);
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's
@@ -74,11 +73,9 @@ impl LayerCx for Silent {
         self.0
     }
 
-    fn traces(&self, _: Component) -> bool {
-        false
-    }
-
     fn of(&mut self, _: Component, _: fmt::Arguments<'_>) {}
+
+    fn info(&mut self, _: fmt::Arguments<'_>) {}
 }
 
 /// A layer that works on a connection's bytes (C's `Curl_cftype`). Its
@@ -359,6 +356,14 @@ pub(crate) mod testing {
         }
     }
 
+    /// A `Holdback` holding `bytes` already.
+    pub(crate) fn holding(bytes: &[u8]) -> Box<dyn Layer> {
+        try_box(Holdback {
+            held: bytes.to_vec(),
+        })
+        .unwrap()
+    }
+
     /// Passes the bytes, and says the connection is dead.
     #[derive(Debug)]
     pub(crate) struct Dying;
@@ -389,5 +394,79 @@ pub(crate) mod testing {
         fn is_alive(&mut self, _: &mut dyn LayerCx, _: Below<'_>) -> Alive {
             Alive::Dead
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::{holdback, holding, upper};
+    use super::*;
+    use crate::conn::io::{Conversation, FakeNet, Net as _, Peer};
+    use crate::time::{Clock as _, ManualClock};
+
+    /// A socket of the fake network's to a peer that does as `peer` says,
+    /// holding `talk` if it accepts.
+    fn socket(peer: Peer, talk: &Conversation) -> (Box<dyn Socket>, Silent) {
+        let clock = ManualClock::new().unwrap();
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+        let mut net = FakeNet::new(clock.clone())
+            .with_peer(at, peer)
+            .with_conversation(at, talk.clone());
+        let (socket, _) = net.connect(at, Default::default()).unwrap();
+        (socket, Silent(clock.now()))
+    }
+
+    /// The socket at the bottom is polled as `cf_socket_conn_is_alive`
+    /// polls it: nothing is alive; something to read alone is input
+    /// pending; an error or a hang-up is dead, whatever else is there.
+    #[test]
+    fn the_socket_says_whether_the_connection_is_alive() {
+        let talk = Conversation::replies(&[b"x"], false).per_send();
+        let (s, mut cx) = socket(Peer::Accepts, &talk);
+        let below = || Below {
+            layers: &mut [],
+            socket: &*s,
+        };
+        assert_eq!(
+            below().alive(&mut cx),
+            Alive::Alive {
+                input_pending: false
+            }
+        );
+        below().send(&mut cx, b"hello").unwrap();
+        assert_eq!(
+            below().alive(&mut cx),
+            Alive::Alive {
+                input_pending: true
+            }
+        );
+        let (refused, mut cx) = socket(Peer::Refuses, &talk);
+        let below = Below {
+            layers: &mut [],
+            socket: &*refused,
+        };
+        assert_eq!(below.alive(&mut cx), Alive::Dead);
+    }
+
+    /// A layer that keeps the defaults passes the question below: the
+    /// pollset as it is wanted, and data pending as the layers below hold
+    /// it.
+    #[test]
+    fn a_layer_s_defaults_ask_below() {
+        let talk = Conversation::replies(&[], false);
+        let (s, _) = socket(Peer::Accepts, &talk);
+        assert_eq!(upper().adjust_pollset(Events::IN), Events::IN);
+        let mut holds = [holding(b"x"), upper()];
+        let below = Below {
+            layers: &mut holds,
+            socket: &*s,
+        };
+        assert!(below.data_pending());
+        let mut empty = [holdback(), upper()];
+        let below = Below {
+            layers: &mut empty,
+            socket: &*s,
+        };
+        assert!(!below.data_pending());
     }
 }

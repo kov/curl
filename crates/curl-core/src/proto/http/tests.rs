@@ -4782,6 +4782,7 @@ mod range;
 mod read_trace;
 mod setup_trace;
 mod sigv4;
+mod tcp_trace;
 mod time_condition;
 mod timer_trace;
 mod write_trace;

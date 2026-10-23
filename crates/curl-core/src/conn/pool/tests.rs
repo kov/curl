@@ -2,7 +2,7 @@ use super::*;
 use crate::conn::connect::Plain;
 use crate::conn::io::{Conversation, Events, FakeNet, Peer, Readiness, Recv, Sent};
 use crate::conn::layer::Silent;
-use crate::conn::{DnsCache, Failure, Limit, Scheme, Setup, Tcp};
+use crate::conn::{DnsCache, Limit, Scheme, Setup, Tcp};
 
 use crate::options::IpVersion;
 use crate::time::{Clock as _, ManualClock};
@@ -543,16 +543,9 @@ fn refused_and_silent_attempts() {
     resolved(&mut refused, &mut net, now);
     connect(&mut refused, &mut net, now).unwrap();
     let err = connect(&mut refused, &mut net, now).unwrap_err();
-    let ConnectError::Failed(Failure::Attempt {
-        remote,
-        local,
-        error,
-    }) = err
-    else {
+    let ConnectError::Failed(error) = err else {
         panic!("{err:?}");
     };
-    assert_eq!(remote.port(), 2);
-    assert_eq!(local.map(|l| l.port()), Some(40000));
     assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
     assert_eq!(
         net.open_sockets(),
@@ -600,7 +593,7 @@ fn unresolved_names_and_immediate_failures() {
     resolved(&mut nobody, &mut net, now);
     let err = connect(&mut nobody, &mut net, now).unwrap_err();
     assert!(
-        matches!(err, ConnectError::Failed(Failure::Immediate { remote, .. }) if remote.port() == 9),
+        matches!(&err, ConnectError::Failed(e) if e.kind() == std::io::ErrorKind::ConnectionRefused),
         "{err:?}"
     );
     let premature = Finish {

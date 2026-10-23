@@ -185,10 +185,10 @@ witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
-            eyeballs_won(cx, &c.route, attempt, remote);
+            eyeballs_won(cx, &c.route, remote);
             (TransferState::Connecting(c), Wake::Again)
 --- new
-            let _ = (attempt, remote);
+            let _ = remote;
             (TransferState::Connecting(c), Wake::Again)
 
 === the answer to CONNECT is delivered though suppressed
@@ -456,10 +456,10 @@ witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_fir
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_connected_to_again
 --- old
-        cx.net().close(d.stream.into_socket());
+        discard(cx, d.stream.into_socket());
         self.stage = Stage::Racing(Racing {
 --- new
-        cx.net().close(d.stream.into_socket());
+        discard(cx, d.stream.into_socket());
         let _ = Stage::Racing(Racing {
 
 === a tunnel's setup traces the origin's name as found in the cache
@@ -519,11 +519,11 @@ witness: curl-core multi::tests::a_failed_connect_names_the_first_proxy
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_line_is_sent
 --- old
-                        if self.route.handshakes() || setup.haproxy {
-                            // The connection is the first hop's; the
+        if self.route.handshakes() || setup.haproxy {
+            // The connection is the first hop's; the handshakes over it
 --- new
-                        if self.route.handshakes() {
-                            // The connection is the first hop's; the
+        if self.route.handshakes() {
+            // The connection is the first hop's; the handshakes over it
 
 === the PROXY line goes before the tunnel it is to go through
 file: crates/curl-core/src/multi/state.rs

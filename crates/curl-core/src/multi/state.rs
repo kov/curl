@@ -5,9 +5,7 @@
 //! only `Done` gives it back.
 
 use std::fmt;
-use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr};
-use std::num::NonZeroU32;
 use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
@@ -18,10 +16,9 @@ use crate::conn::layer::LayerCx;
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
-    Acquired, Answer, Asked, BadEntry, BadVia, ConnLease, ConnectError, Connected, Failure, Finish,
-    Found, Full, Home, Limit, ListEntry, Made, Peer, PoolNote, PreProxy, Progress, ProxyCreds,
-    ProxyRoute, Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
-    queries,
+    Acquired, Answer, Asked, BadEntry, BadVia, ConnLease, ConnectError, Connected, Finish, Found,
+    Full, Home, Limit, ListEntry, Made, Peer, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute,
+    Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry, queries,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -40,7 +37,7 @@ use crate::proto::http1::follow;
 use crate::proto::{Inherited, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
-use crate::trace;
+use crate::trace::{self, Bytes, Ip, OsError};
 use crate::upload;
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
@@ -585,12 +582,12 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         self.rest.now
     }
 
-    fn traces(&self, component: Component) -> bool {
-        trace::traces(self, component)
-    }
-
     fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
         trace::of(self, component, line);
+    }
+
+    fn info(&mut self, line: std::fmt::Arguments<'_>) {
+        trace::info(self, line);
     }
 }
 
@@ -1354,7 +1351,7 @@ fn connect_once<H: Host>(
         Ok(Connected::Connecting(
             Progress::Resolved(_)
                 | Progress::Trying { .. }
-                | Progress::Failed(_)
+                | Progress::Failed
                 | Progress::Waiting { .. }
         ))
     ) {
@@ -1370,18 +1367,9 @@ fn connect_once<H: Host>(
             report_answer(cx, &c);
             (TransferState::Connecting(c), Wake::Again)
         }
-        Ok(Connected::Connecting(Progress::Failed(failure))) => {
-            trace_failure(cx, failure);
-            (TransferState::Connecting(c), Wake::Again)
-        }
-        Ok(Connected::Connecting(Progress::Trying {
-            remote,
-            scope_found,
-            first,
-            at_once,
-            until,
-        })) => {
-            trace_trying(cx, remote, scope_found, first);
+        // The drive traced the failure.
+        Ok(Connected::Connecting(Progress::Failed)) => (TransferState::Connecting(c), Wake::Again),
+        Ok(Connected::Connecting(Progress::Trying { at_once, until, .. })) => {
             if at_once {
                 return (TransferState::Connecting(c), Wake::Again);
             }
@@ -1389,23 +1377,17 @@ fn connect_once<H: Host>(
             waiting(run, cx, until);
             (TransferState::Connecting(c), Wake::Idle)
         }
-        Ok(Connected::Connecting(Progress::Dialed { attempt })) => {
+        Ok(Connected::Connecting(Progress::Dialed)) => {
             let (remote, _) = c.lease.dialed().ends();
-            eyeballs_won(cx, &c.route, attempt, remote);
+            eyeballs_won(cx, &c.route, remote);
             (TransferState::Connecting(c), Wake::Again)
         }
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
             waiting(run, cx, until);
             (TransferState::Connecting(c), Wake::Idle)
         }
-        Ok(Connected::Established {
-            remote,
-            local,
-            at,
-            attempt,
-        }) => {
-            let attempt = attempt.expect("a race's connection");
-            eyeballs_won(cx, &c.route, attempt, remote);
+        Ok(Connected::Established { remote, local, at }) => {
+            eyeballs_won(cx, &c.route, remote);
             up(c, cx, remote, local, at)
         }
         // A reused connection is up: nothing to trace or time
@@ -1577,16 +1559,11 @@ fn eyeballs_due<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, at: Instant) {
     arm(&mut run.deadlines, cx, TimerKind::Eyeballs, wait);
 }
 
-/// The race's attempt `attempt` connected to `remote`, the peer `route`
-/// connects to first or the proxy a handshake goes through: the race is
-/// over, and counted (`cf_ip_ballers_run`, `cf_ip_happy_connect`).
-fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, attempt: usize, remote: SocketAddr) {
+/// The race's attempt to `remote`, the peer `route` connects to first
+/// or the proxy a handshake goes through, connected: the race is over,
+/// and counted (`cf_ip_happy_connect`).
+fn eyeballs_won<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, remote: SocketAddr) {
     let he = Component::HappyEyeballs;
-    trace::of(
-        cx,
-        he,
-        format_args!("connect attempt #{attempt} successful"),
-    );
     let (name, ip, port) = (
         Bytes(route.destination().name()),
         remote.ip(),
@@ -1738,10 +1715,9 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             }
             return kind;
         }
-        ConnectError::Failed(failure) => {
-            let (Failure::Immediate { error, .. } | Failure::Attempt { error, .. }) = &failure;
+        ConnectError::Failed(error) => {
+            // The drive traced the failure.
             cx.report_mut().set_connect_error(error.kind());
-            trace_failure(cx, failure);
             // No attempt running, and no address left.
             trace::of(
                 cx,
@@ -1789,103 +1765,6 @@ impl std::fmt::Display for Via<'_> {
     }
 }
 
-/// How an attempt failed, as C traces it.
-fn trace_failure<H: Host>(cx: &mut StepCx<'_, H>, failure: Failure) {
-    match failure {
-        Failure::Immediate {
-            remote,
-            scope_found,
-            first,
-            error,
-        } => {
-            // The socket was opened, and traced, before its connect failed;
-            // it never got a local address (`cf_tcp_connect`).
-            trace_trying(cx, remote, scope_found, first);
-            let why = OsError(&error);
-            trace::info(
-                cx,
-                format_args!("Immediate connect fail for {}: {why}", remote.ip()),
-            );
-            let unbound = match remote {
-                SocketAddr::V4(_) => IpAddr::from(std::net::Ipv4Addr::UNSPECIFIED),
-                SocketAddr::V6(_) => IpAddr::from(std::net::Ipv6Addr::UNSPECIFIED),
-            };
-            trace::info(
-                cx,
-                format_args!(
-                    "connect to {} port {} from {unbound} port 0 failed: {why}",
-                    remote.ip(),
-                    remote.port()
-                ),
-            );
-        }
-        Failure::Attempt {
-            remote,
-            local,
-            error,
-        } => {
-            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-            let lip = Ip(lip);
-            let why = OsError(&error);
-            trace::info(
-                cx,
-                format_args!(
-                    "connect to {} port {} from {lip} port {lport} failed: {why}",
-                    remote.ip(),
-                    remote.port()
-                ),
-            );
-        }
-    }
-}
-
-/// An attempt to `remote` starts (`cf_socket_open`): after the scope it
-/// took from a local interface, if it did, and with the scope it has.
-fn trace_trying<H: Host>(
-    cx: &mut StepCx<'_, H>,
-    remote: SocketAddr,
-    scope_found: Option<NonZeroU32>,
-    first: bool,
-) {
-    let he = Component::HappyEyeballs;
-    if !first {
-        // Another attempt runs: this one starts as the delay ran out.
-        trace::of(
-            cx,
-            he,
-            format_args!("happy eyeballs timeout expired, start next attempt"),
-        );
-    }
-    let (which, v) = (
-        if first { "first" } else { "next" },
-        if remote.is_ipv4() { 4 } else { 6 },
-    );
-    trace::of(
-        cx,
-        Component::HappyEyeballs,
-        format_args!("starting {which} attempt for ipv{v} -> 0"),
-    );
-    if let Some(scope) = scope_found {
-        trace::info(
-            cx,
-            format_args!("determined scope_id={scope} for link-local address from local interface"),
-        );
-    }
-    match remote {
-        SocketAddr::V4(_) => trace::info(cx, format_args!("  Trying {remote}...")),
-        SocketAddr::V6(v6) if v6.scope_id() != 0 => {
-            let (ip, port, scope) = (v6.ip(), v6.port(), v6.scope_id());
-            trace::info(
-                cx,
-                format_args!("  Trying [{ip}]:{port} scope_id={scope}..."),
-            );
-        }
-        SocketAddr::V6(v6) => {
-            trace::info(cx, format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
-        }
-    }
-}
-
 /// The addresses a name resolved to, each family on a line of its own
 /// (`cf_dns_report`), under the name it was found for; nothing for an
 /// address the URL names.
@@ -1919,44 +1798,6 @@ impl std::fmt::Display for Family<'_> {
         };
         first.fmt(f)?;
         of.try_for_each(|a| write!(f, ", {a}"))
-    }
-}
-
-/// Bytes shown as text, as C's `%s` shows them.
-struct Bytes<'a>(&'a [u8]);
-
-impl std::fmt::Display for Bytes<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for chunk in self.0.utf8_chunks() {
-            f.write_str(chunk.valid())?;
-            for b in chunk.invalid() {
-                f.write_char(char::from(*b))?;
-            }
-        }
-        Ok(())
-    }
-}
-
-/// A local address, or C's empty one when none is known.
-struct Ip(Option<IpAddr>);
-
-impl std::fmt::Display for Ip {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Some(ip) => ip.fmt(f),
-            None => Ok(()),
-        }
-    }
-}
-
-/// An operating system error as `strerror` words it, made without
-/// allocating, as C's `curlx_strerror` writes it into a buffer on the
-/// stack.
-pub(crate) struct OsError<'a>(pub(crate) &'a std::io::Error);
-
-impl std::fmt::Display for OsError<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
     }
 }
 

@@ -45,7 +45,7 @@ witness: curl-core conn::pool::tests::refused_and_silent_attempts
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::pool::tests::refused_and_silent_attempts
 --- old
-        net.close(self.socket);
+        cx.net().close(self.socket);
 --- new
         drop(self.socket);
 
@@ -204,18 +204,19 @@ witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::attempts_race_as_unit_2600_has_them
 --- old
-            if r.attempts.len() == MAX_ATTEMPTS {
+        if r.attempts.len() == MAX_ATTEMPTS {
 --- new
-            if r.attempts.len() == usize::MAX {
+        if r.attempts.len() == usize::MAX {
 
 === the losing attempts stay open
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 --- old
-                        r.close_all(cx.net());
-                        if self.route.handshakes() || setup.haproxy {
+        for a in r.attempts.drain(..) {
+            discard(cx, a.socket);
+        }
 --- new
-                        if self.route.handshakes() || setup.haproxy {
+        let _ = &mut r.attempts;
 
 === a transfer is not woken for its next attempt
 file: crates/curl-core/src/multi/state.rs
@@ -426,9 +427,9 @@ witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_mak
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer
 --- old
-                    let socket = Sock::new(socket, self.closer.clone());
+                let socket = Sock::new(socket, self.closer.clone());
 --- new
-                    let socket = Sock::new(socket, Closer::System);
+                let socket = Sock::new(socket, Closer::System);
 
 === a connection is not given its maker's closer
 file: crates/curl-core/src/multi/state.rs

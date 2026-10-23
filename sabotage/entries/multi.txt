@@ -350,18 +350,18 @@ witness: curl-core multi::tests::a_paused_transfer_does_not_connect
     if false {
 
 === a refused connect is not reported
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_refused_connect_fails_as_c_says
 --- old
-            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-            let lip = Ip(lip);
-            let why = OsError(&error);
+        let why = OsError(&error);
+        let remote = self.remote;
 --- new
-            let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
-            let lip = Ip(lip);
-            let why = OsError(&error);
-            let _ = (lip, lport, why, remote);
-            return;
+        let why = OsError(&error);
+        let remote = self.remote;
+        if remote.port() > 0 {
+            let _ = (lip, lport, why);
+            return Ok(error);
+        }
 
 === a kept IPv6 connection is named without its brackets
 file: crates/curl-core/src/multi/state.rs
@@ -517,7 +517,7 @@ witness: curl-core multi::tests::an_established_connection_forgets_the_next_atte
         Ok(Connected::Connecting(
             Progress::Resolved(_)
                 | Progress::Trying { .. }
-                | Progress::Failed(_)
+                | Progress::Failed
                 | Progress::Waiting { .. }
         ))
     ) {

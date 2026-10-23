@@ -111,12 +111,12 @@ witness: curl-core proto::http::tests::lists_set_while_their_entries_are_traced_
     Err(failed)
 
 === a connect failure is traced through std's display, which allocates
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/trace.rs
 witness: curl-core a_refused_connect_survives_every_allocation_failing
 --- old
         Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
 --- new
-        std::fmt::Display::fmt(self.0, f)
+        fmt::Display::fmt(self.0, f)
 
 === a name past 32 bytes is read as a component's
 file: crates/curl-core/src/components.rs
@@ -408,28 +408,28 @@ witness: curl-core proto::http::tests::timer_trace::the_wait_for_a_100_is_armed_
         // The wait
 
 === an attempt's start is not traced
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 --- old
-        format_args!("starting {which} attempt for ipv{v} -> 0"),
+            format_args!("starting {which} attempt for ipv{v} -> 0"),
 --- new
-        format_args!("starting attempt for ipv{v} -> 0"),
+            format_args!("starting attempt for ipv{v} -> 0"),
 
 === every attempt is the first
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 --- old
-            let first = r.attempts.is_empty();
+        let first = r.attempts.is_empty();
 --- new
-            let first = true;
+        let first = true;
 
 === the winner is not named by its place among the attempts
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::the_race_is_traced_as_c_s_happy_eyeballs
 --- old
-                        return Ok(Drove::Established(conn, i));
+            format_args!("connect attempt #{i} successful"),
 --- new
-                        return Ok(Drove::Established(conn, 0));
+            format_args!("connect attempt #{} successful", 0),
 
 === the next attempt's delay is armed unsaid
 file: crates/curl-core/src/multi/state.rs

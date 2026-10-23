@@ -176,12 +176,12 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
         self.step.now()
     }
 
-    fn traces(&self, component: Component) -> bool {
-        LayerCx::traces(&*self.step, component)
-    }
-
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>) {
         LayerCx::of(&mut *self.step, component, line);
+    }
+
+    fn info(&mut self, line: fmt::Arguments<'_>) {
+        LayerCx::info(&mut *self.step, line);
     }
 }
 
@@ -213,7 +213,11 @@ impl<H: Host> Net for DriveCx<'_, '_, H> {
         self.step.rest.net.connect(addr, options)
     }
 
+    /// The socket is closed for the transfer: said, then announced as it
+    /// goes (`socket_close`, `Curl_multi_will_close`).
     fn close(&mut self, socket: Sock) {
+        let fd = socket.key().get();
+        super::mstate::trace(self.step, format_args!("Curl_multi_will_close fd={fd}"));
         let me = self.step.me;
         self.step.rest.announcing(me).close(socket);
     }

@@ -77,12 +77,11 @@ impl ConnLease {
                 Ok(Drove::Connecting(m, progress)) => {
                     (ConnSlot::Connecting(m), Ok(Connected::Connecting(progress)))
                 }
-                Ok(Drove::Established(conn, won)) => {
+                Ok(Drove::Established(conn)) => {
                     let up = Connected::Established {
                         remote: conn.remote.expect("set up over the network"),
                         local: conn.local(),
                         at: conn.connected_at,
-                        attempt: Some(won),
                     };
                     (ConnSlot::Open(conn), Ok(up))
                 }
@@ -131,7 +130,6 @@ impl ConnLease {
             remote: conn.remote.expect("set up over the network"),
             local: conn.local(),
             at: conn.connected_at,
-            attempt: None,
         };
         *self.slot_mut() = ConnSlot::Open(conn);
         up
@@ -356,14 +354,12 @@ pub(crate) enum PoolNote {
 pub(crate) enum Connected {
     /// Still setting up.
     Connecting(Progress),
-    /// Up, from `local` to `remote`, found so at `at`: through the
-    /// race's attempt `attempt`, as `Drove::Established` counts them, or
-    /// at the end of a proxy's handshake.
+    /// Up, from `local` to `remote`, found so at `at`: as the race is
+    /// won, or at the end of a proxy's handshake.
     Established {
         remote: SocketAddr,
         local: Option<SocketAddr>,
         at: Instant,
-        attempt: Option<usize>,
     },
     /// Up before this step: a reused connection, from `local` to
     /// `remote`.

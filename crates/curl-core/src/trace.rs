@@ -323,6 +323,45 @@ fn out<H: Host>(cx: &mut StepCx<'_, H>, kind: DebugKind, bytes: &[u8], ids: &[u8
     }
 }
 
+/// A local address, or C's empty one when none is known.
+pub(crate) struct Ip(pub(crate) Option<std::net::IpAddr>);
+
+impl fmt::Display for Ip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Some(ip) => ip.fmt(f),
+            None => Ok(()),
+        }
+    }
+}
+
+/// An operating system error as `strerror` words it, made without
+/// allocating, as C's `curlx_strerror` writes it into a buffer on the
+/// stack.
+pub(crate) struct OsError<'a>(pub(crate) &'a std::io::Error);
+
+impl fmt::Display for OsError<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Bytes(curl_os::error::ErrorText::of(self.0).as_bytes()).fmt(f)
+    }
+}
+
+/// Bytes shown as text, as C's `%s` shows them.
+pub(crate) struct Bytes<'a>(pub(crate) &'a [u8]);
+
+impl fmt::Display for Bytes<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use fmt::Write as _;
+        for chunk in self.0.utf8_chunks() {
+            f.write_str(chunk.valid())?;
+            for b in chunk.invalid() {
+                f.write_char(char::from(*b))?;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

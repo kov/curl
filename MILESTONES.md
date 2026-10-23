@@ -581,6 +581,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **l. Closing the step:** the sabotage sweep over conn, multi and share, and
       cargo-mutants on the step's diff.
 41. **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
+    **Done.**
 42. **HTTP's decisions after an exchange** moved from the engine into `proto/http`.
 43. **TLS**, its first sub-step the pool's `Closing` place, with the multi's `ShutdownSet`,
     the SHUTDOWN timer and sockets owned by a connection (ENGINE.md 4.6); Ed25519 HTTP signatures on the OpenSSL

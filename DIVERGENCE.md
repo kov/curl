@@ -15,12 +15,16 @@ not a difference: it is tracked in `MILESTONES.md`.
   `an_upload_that_cannot_be_read_fails` (`crates/curl-tool/tests/transfers.rs`).
 
 - **A file of lines that cannot be read fails the command line.** A file read a line at a
-  time, `-K file`, `--url @file`, `-H @file` or `--proxy-header @file`, that opens but fails a
-  read, such as a directory, is an error reading a file (exit 26). C's `get_line`
-  (`src/tool_parsecfg.c`) takes the failed `fgets` for the end of the file: `curl -K dir URL`,
-  `curl --url @dir URL` and `curl -H @dir URL` fetch `URL` and exit 0, the file read as empty.
-  Measured against the C build. Pinned by `a_file_of_lines_that_cannot_be_read_fails`
-  (`crates/curl-tool/tests/transfers.rs`).
+  time, `-K file`, `--url @file`, `-H @file`, `--proxy-header @file` or `-F
+  'name=value;headers=@file'`, that opens but fails a read, such as a directory, fails the way
+  each option fails a line C's `my_get_line` (`src/tool_parsecfg.c`) sets its error flag for:
+  an error reading a file (exit 26), and for `-F` `Failed to read field headers` and a bad use
+  of the option (exit 2). C's `get_line` takes the failed `fgets` for the end of the file:
+  `curl -K dir URL`, `curl --url @dir URL`, `curl -H @dir URL` and `curl -F
+  'a=b;headers=@dir' URL` fetch `URL` and exit 0, the file read as empty. Measured against the
+  C build. Pinned by `a_file_of_lines_that_cannot_be_read_fails`
+  (`crates/curl-tool/tests/transfers.rs`) and `a_header_file_that_cannot_be_read_is_refused`
+  (`crates/curl-tool/src/form.rs`).
 
 - **A form part whose file cannot be read fails the transfer, unless its size is known.** A
   part sending a file that is not a regular file, such as `-F a=@dir` or

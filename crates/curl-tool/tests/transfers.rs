@@ -655,9 +655,10 @@ fn an_upload_that_cannot_be_read_fails() {
 }
 
 /// A file of lines that opens but cannot be read, a directory named by
-/// `-K`, `--url @`, `-H @` or `--proxy-header @`, is an error reading a
-/// file; C reads it as empty and goes on. A deliberate difference from C
-/// (DIVERGENCE.md), so this test fails on its tool.
+/// `-K`, `--url @`, `-H @`, `--proxy-header @` or `-F ...;headers=@`,
+/// fails as a line too long to read fails there: an error reading a file,
+/// or a bad use of `-F`. C reads it as empty and goes on. A deliberate
+/// difference from C (DIVERGENCE.md), so this test fails on its tool.
 #[test]
 fn a_file_of_lines_that_cannot_be_read_fails() {
     let s = Scratch::new("unreadable-lines");
@@ -673,6 +674,15 @@ fn a_file_of_lines_that_cannot_be_read_fails() {
         let r = curl(&s, &[&named[..], &["-s", "-o", "out", &src]].concat());
         assert_eq!(r.code, 26, "{named:?}");
     }
+    let r = curl(&s, &["-F", "a=b;headers=@dir", "-o", "out", &src]);
+    assert_eq!(r.code, 2);
+    assert!(
+        r.stderr.starts_with(
+            "curl: Failed to read field headers\ncurl: option -F: is badly used here\n"
+        ),
+        "{}",
+        r.stderr
+    );
 }
 
 /// Header lines `-i` cannot write fail the transfer though no body write

@@ -1233,3 +1233,14 @@ witness: curl-tool a_file_of_lines_that_cannot_be_read_fails
             Err(_) => return Err(ReadFailed::Read),
 --- new
             Err(_) => break,
+
+=== a form's header file whose read fails is read as ending there
+file: crates/curl-tool/src/form.rs
+witness: curl-tool form::tests::a_header_file_that_cannot_be_read_is_refused
+--- old
+            Err(_) => {
+                msgs.error(&[b"Failed to read field headers"]);
+                return Err(Refused);
+            }
+--- new
+            Err(_) => break,

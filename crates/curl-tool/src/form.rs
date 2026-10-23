@@ -362,7 +362,12 @@ fn header_file(name: &[u8], headers: &mut Vec<Vec<u8>>, msgs: &Messages) -> Resu
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => break,
+            // C takes this for the end of the file (DIVERGENCE.md); it is
+            // the error C gives for a line it cannot read.
+            Err(_) => {
+                msgs.error(&[b"Failed to read field headers"]);
+                return Err(Refused);
+            }
         }
     }
     for line in text.split_inclusive(|&b| b == b'\n') {
@@ -1130,16 +1135,16 @@ mod tests {
         assert_eq!(f.mime(&quiet()).err(), Some(ErrorKind::BadFunctionArgument));
     }
 
-    /// A file of headers whose reading fails, a directory here, ends
-    /// where it fails: C's `fgets` reads that as the end of the file,
-    /// and the part is taken without them.
+    /// A file of headers that opens and fails to be read, a directory
+    /// here, refuses the part as a line too long for C's buffer does.
+    /// C's `fgets` takes the failed read for the end of the file and the
+    /// part is taken without headers (DIVERGENCE.md).
     #[test]
-    fn a_header_file_that_cannot_be_read_ends_there() {
+    fn a_header_file_that_cannot_be_read_is_refused() {
         let dir = std::env::temp_dir();
         let arg = format!("a=b;headers=@{}", dir.display());
-        let f = form(&[&arg]);
-        assert_eq!(data(&f.parts[0]), b"b");
-        assert!(f.parts[0].headers.is_empty());
+        let mut refused = Form::default();
+        assert_eq!(refused.add(arg.as_bytes(), false, &quiet()), Err(Refused));
     }
 
     /// The calls `--libcurl` writes for a tree, as C's tool writes them

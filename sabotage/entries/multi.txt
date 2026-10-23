@@ -654,3 +654,11 @@ witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
             TransferState::Pending(_) => pending += 1,
 --- new
             TransferState::Pending(_) => {}
+
+=== a transfer out of time reads once more before it fails
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_transfer_out_of_time_reads_no_more
+--- old
+        TransferState::Exchanging(x) if expired(run, cx) => {
+--- new
+        TransferState::Exchanging(x) if false && expired(run, cx) => {

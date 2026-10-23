@@ -1020,16 +1020,16 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             Wake::Again,
         ),
         TransferState::Did(x) => (TransferState::Exchanging(x), Wake::Again),
+        // Out of time as the pass starts: nothing more is read or sent
+        // (`multi_handle_timeout`, ahead of the state's work).
+        TransferState::Exchanging(x) if expired(run, cx) => {
+            let kind = timed_out(cx);
+            (TransferState::Exchanging(x).fail(kind), Wake::Again)
+        }
+        // Over a speed limit: nothing moves until it says
+        // (`multistate_performing`'s first `mspeed_check`).
         TransferState::Exchanging(x) if over_limit(run, cx) => {
-            // Over a speed limit: nothing moves until it says
-            // (`multistate_performing`'s first `mspeed_check`), but the
-            // time limit holds (`multi_handle_timeout`).
-            if expired(run, cx) {
-                let kind = timed_out(cx);
-                (TransferState::Exchanging(x).fail(kind), Wake::Again)
-            } else {
-                (TransferState::RateLimiting(x), Wake::Idle)
-            }
+            (TransferState::RateLimiting(x), Wake::Idle)
         }
         TransferState::RateLimiting(x) => {
             if expired(run, cx) {
@@ -1055,7 +1055,6 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         }
         TransferState::Exchanging(mut x) => {
             let stepped = x.proto.step(cx, &mut x.lease);
-            let expired = expired(run, cx);
             match stepped {
                 // Received nothing, perhaps over a reused connection that
                 // closed as it was reused (`multistate_performing`).
@@ -1071,11 +1070,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     ),
                 },
                 Err(e) => (TransferState::Exchanging(x).fail(e), Wake::Again),
-                // Out of time at the end of the pass (transfer.c:382).
-                Ok(ProtoStep::Blocked | ProtoStep::AtReadLimit) if expired => {
-                    let kind = timed_out(cx);
-                    (TransferState::Exchanging(x).fail(kind), Wake::Again)
-                }
+                // `Curl_sendrecv` looks at the time limit again, but the
+                // pass's time is the one checked as it started.
                 Ok(stepped) => {
                     // The end of a receive pass (`Curl_sendrecv`). A request
                     // is not over while output waits for the application to

@@ -5671,6 +5671,50 @@ fn an_unpause_starts_the_receive_limit_over() {
     assert_eq!(m.timeout(), Some(Duration::from_millis(1000 - 4)));
 }
 
+/// A transfer whose time runs out as it waits for the response fails as
+/// the next pass starts, reading nothing more (`multi_handle_timeout`
+/// ahead of `Curl_sendrecv`): its one receive is the one before it first
+/// waited.
+#[test]
+fn a_transfer_out_of_time_reads_no_more() {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    // A peer that never answers.
+    let talk = Conversation::replies(&[], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk);
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let seen = Seen::default();
+    let mut e = Easy::new();
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"tcp");
+    e.set_components(Some(components));
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.limits.total = crate::time::TimeLimit::from_millis(1000);
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Err(ErrorKind::OperationTimedout));
+    let text = seen.text();
+    let recvs = text.iter().filter(|l| l.starts_with("[TCP] recv(")).count();
+    assert_eq!(recvs, 1, "{text:?}");
+    assert!(
+        text.iter()
+            .any(|l| l.starts_with("Operation timed out after 1000 milliseconds")),
+        "{text:?}"
+    );
+}
+
 /// A transfer waiting out its limit still ends at its time limit.
 #[test]
 fn a_rate_limited_transfer_times_out() {

@@ -147,6 +147,29 @@ fn a_refused_socket_is_traced_as_c() {
     );
 }
 
+/// A connect that polls hung up fails, though the socket says no error,
+/// as C fails it on the poll's error alone (`cf_tcp_connect`).
+#[test]
+fn a_socket_hung_up_without_an_error_fails() {
+    let mut m = serving(Peer::HangsUp, &[]);
+    let talk = Conversation::replies(&[], false);
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        socket_lines(&ran),
+        expect(&format!(
+            "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
+              Trying 127.0.0.1:{PORT}...
+            [TCP] cf_socket_open() -> 0, fd=1000
+            [TCP] local address 127.0.0.1 port 40000...
+            [TCP] poll/select error on fd=1000
+            [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
+            connect to 127.0.0.1 port {PORT} from 127.0.0.1 port 40000 failed: Success
+            [TCP] destroy"
+        ))
+    );
+}
+
 /// An IPv6 address refused, then an IPv4 one taken: the descriptor the
 /// first closed is the second's (the fake network's local port goes with
 /// it).

@@ -359,6 +359,9 @@ pub enum Peer {
     RefusesAfter(Duration),
     /// It never answers.
     Silent,
+    /// It hangs up once the socket is polled, the socket saying no error
+    /// (`SO_ERROR` 0).
+    HangsUp,
 }
 
 /// What a fake peer says once connected, as the test suite's server
@@ -763,7 +766,7 @@ impl Net for FakeNet {
         let now = crate::time::Clock::now(&self.clock);
         let ready_at = match peer {
             Peer::AcceptsAfter(d) | Peer::RefusesAfter(d) => Some(now.after(d)),
-            Peer::Accepts | Peer::Refuses | Peer::Silent => None,
+            Peer::Accepts | Peer::Refuses | Peer::Silent | Peer::HangsUp => None,
         };
         let clock = self.clock.clone();
         let socket = FakeSocket {
@@ -842,6 +845,12 @@ impl Socket for FakeSocket {
             };
         }
         let mut now = match (self.peer, self.ready_at) {
+            (Peer::HangsUp, _) => {
+                return Readiness::Known {
+                    now: Events::OUT | Events::HUP,
+                    later: None,
+                };
+            }
             (Peer::Accepts | Peer::Refuses, _) => Events::OUT,
             (Peer::AcceptsAfter(_) | Peer::RefusesAfter(_), Some(at))
                 if crate::time::Clock::now(&self.clock) >= at =>
@@ -867,7 +876,7 @@ impl Socket for FakeSocket {
             Peer::Refuses | Peer::RefusesAfter(_) => {
                 Some(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED))
             }
-            Peer::Accepts | Peer::AcceptsAfter(_) | Peer::Silent => None,
+            Peer::Accepts | Peer::AcceptsAfter(_) | Peer::Silent | Peer::HangsUp => None,
         })
     }
 
@@ -880,7 +889,7 @@ impl Socket for FakeSocket {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         wire.reads += 1;
         wire.last_read_room = buf.len();
-        if wire.hung_up {
+        if wire.hung_up || self.peer == Peer::HangsUp {
             return Ok(Recv::Eof);
         }
         while wire.answered < wire.replies.len() {

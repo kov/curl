@@ -1292,7 +1292,53 @@ fn setopts(
         })?;
     }
     // `tcp_setopts`.
-    s.long("CURLOPT_TCP_KEEPALIVE", 1, nothing)?;
+    if op.nagle {
+        s.long("CURLOPT_TCP_NODELAY", 0, |o| {
+            o.sockets.make_mut().map_err(oom)?.nodelay = false;
+            Ok(())
+        })?;
+    }
+    if op.tcp_fastopen {
+        s.long("CURLOPT_TCP_FASTOPEN", 1, |o| {
+            o.sockets.make_mut().map_err(oom)?.fastopen = true;
+            Ok(())
+        })?;
+    }
+    if op.mptcp {
+        s.ptr("CURLOPT_OPENSOCKETFUNCTION", Function, |o| {
+            let opener = Handler::socket_opener(crate::sockopt::Mptcp).map_err(oom)?;
+            o.sockets.make_mut().map_err(oom)?.open = Some(opener);
+            Ok(())
+        })?;
+    }
+    if op.no_keepalive {
+        s.long("CURLOPT_TCP_KEEPALIVE", 0, nothing)?;
+    } else {
+        s.long("CURLOPT_TCP_KEEPALIVE", 1, |o| {
+            o.sockets.make_mut().map_err(oom)?.keepalive.on = true;
+            Ok(())
+        })?;
+        let time = op.keepalive_time;
+        if time != 0 {
+            let secs = Duration::from_secs(time);
+            s.long("CURLOPT_TCP_KEEPIDLE", long(time), |o| {
+                o.sockets.make_mut().map_err(oom)?.keepalive.idle = secs;
+                Ok(())
+            })?;
+            s.long("CURLOPT_TCP_KEEPINTVL", long(time), |o| {
+                o.sockets.make_mut().map_err(oom)?.keepalive.interval = secs;
+                Ok(())
+            })?;
+        }
+        let count = op.keepalive_cnt;
+        if count != 0 {
+            s.long("CURLOPT_TCP_KEEPCNT", long(count), |o| {
+                let count = u32::try_from(count).unwrap_or(u32::MAX);
+                o.sockets.make_mut().map_err(oom)?.keepalive.count = count;
+                Ok(())
+            })?;
+        }
+    }
     // `mail_and_sasl_setopts`.
     if op.create_file_mode != 0 {
         s.long(
@@ -1342,7 +1388,21 @@ fn setopts(
             o.url_rules.disallow_user = op.disallow_username;
             Ok(())
         },
-    )
+    )?;
+    if op.ip_tos > 0 || op.vlan_priority > 0 {
+        let marking = crate::sockopt::Marking {
+            type_of_service: op.ip_tos,
+            priority: op.vlan_priority,
+            msgs: run.msgs,
+        };
+        s.ptr("CURLOPT_SOCKOPTFUNCTION", Function, |o| {
+            let configurer = Handler::socket_configurer(marking).map_err(oom)?;
+            o.sockets.make_mut().map_err(oom)?.configure = Some(configurer);
+            Ok(())
+        })?;
+        s.ptr("CURLOPT_SOCKOPTDATA", Object, nothing)?;
+    }
+    Ok(())
 }
 
 /// The proxy options (`proxy_setopts`), made only where one is given.
@@ -2724,6 +2784,8 @@ mod tests {
         if let Some(file) = upload {
             upload_setopts(&mut easy, &run, open_upload(file).ok()?).ok()?;
         }
+        // As the run would: the options written as comments go before it.
+        program.borrow_mut().perform().unwrap();
         let mut text = Vec::new();
         program.into_inner().finish_into(&mut text);
         Some((
@@ -2765,6 +2827,51 @@ mod tests {
                 vec![],
                 vec![eyeballs.to_owned()],
             ),
+            // `tcp_setopts`: keepalive on, Nagle off by default.
+            (
+                &[],
+                vec![line("CURLOPT_TCP_KEEPALIVE, 1L")],
+                vec!["TCP_NODELAY".to_owned(), "KEEPIDLE".to_owned()],
+            ),
+            (&["--no-keepalive"], vec![], vec!["KEEPALIVE".to_owned()]),
+            (
+                &["--no-tcp-nodelay"],
+                vec![line("CURLOPT_TCP_NODELAY, 0L")],
+                vec![],
+            ),
+            (
+                &["--keepalive-time", "30", "--keepalive-cnt", "4"],
+                vec![
+                    line("CURLOPT_TCP_KEEPIDLE, 30L"),
+                    line("CURLOPT_TCP_KEEPINTVL, 30L"),
+                    line("CURLOPT_TCP_KEEPCNT, 4L"),
+                ],
+                vec![],
+            ),
+            (
+                &["--keepalive-time", "30", "--no-keepalive"],
+                vec![],
+                vec!["KEEPIDLE".to_owned()],
+            ),
+            (
+                &["--tcp-fastopen"],
+                vec![line("CURLOPT_TCP_FASTOPEN, 1L")],
+                vec![],
+            ),
+            (
+                &["--mptcp"],
+                vec!["  CURLOPT_OPENSOCKETFUNCTION was set to a function pointer\n".to_owned()],
+                vec![],
+            ),
+            (
+                &["--ip-tos", "32"],
+                vec![
+                    "  CURLOPT_SOCKOPTFUNCTION was set to a function pointer\n".to_owned(),
+                    "  CURLOPT_SOCKOPTDATA was set to an object pointer\n".to_owned(),
+                ],
+                vec![],
+            ),
+            (&["--ip-tos", "0"], vec![], vec!["SOCKOPT".to_owned()]),
             (&["-I"], vec![filetime.clone()], vec![]),
             (&["-R"], vec![filetime.clone()], vec![]),
             (&[], vec![], vec![filetime.clone(), headeropt.clone()]),
@@ -2801,6 +2908,24 @@ mod tests {
         let (text, _) = set_up_url(&[], "https://h/").unwrap();
         assert!(!text.contains(&headeropt), "{text}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The socket options reach the transfer as their lines say:
+    /// keepalive on unless told otherwise, with the times and count
+    /// given.
+    #[test]
+    fn sets_the_socket_options_it_writes() {
+        let (_, on) = set_up(&["--keepalive-time", "7", "--keepalive-cnt", "3"]).unwrap();
+        assert!(
+            on.contains("keepalive: KeepAlive { on: true, idle: 7s, interval: 7s, count: 3 }"),
+            "{on}"
+        );
+        let (_, off) = set_up(&["--no-keepalive", "--no-tcp-nodelay", "--tcp-fastopen"]).unwrap();
+        assert!(
+            off.contains("nodelay: false, keepalive: KeepAlive { on: false"),
+            "{off}"
+        );
+        assert!(off.contains("fastopen: true"), "{off}");
     }
 
     /// Each option that changes what a transfer is set up with changes

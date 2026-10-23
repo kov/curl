@@ -27,6 +27,7 @@ mod operate;
 mod options;
 mod output;
 mod slurp;
+mod sockopt;
 mod stdio;
 mod stdout;
 mod trace;

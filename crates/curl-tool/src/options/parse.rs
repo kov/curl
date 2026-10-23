@@ -1306,6 +1306,52 @@ mod tests {
         );
     }
 
+    /// The socket options, as C reads them: `--ip-tos` a name, matched
+    /// as written, or a number up to 255; `--vlan-priority` up to 7;
+    /// keepalive on and Nagle off unless told otherwise. Checked against
+    /// `build/c/src/curl`.
+    #[test]
+    fn socket_options_are_read_as_c_reads_them() {
+        let op = &line(&["x"]).operations[0];
+        assert!(!op.no_keepalive && !op.nagle && !op.mptcp && !op.tcp_fastopen);
+        let op = &line(&[
+            "x",
+            "--no-keepalive",
+            "--no-tcp-nodelay",
+            "--mptcp",
+            "--tcp-fastopen",
+            "--keepalive-time",
+            "30",
+            "--keepalive-cnt",
+            "4",
+            "--vlan-priority",
+            "7",
+        ])
+        .operations[0];
+        assert!(op.no_keepalive && op.nagle && op.mptcp && op.tcp_fastopen);
+        assert_eq!((op.keepalive_time, op.keepalive_cnt), (30, 4));
+        assert_eq!(op.vlan_priority, 7);
+        let tos = |t: &str| {
+            run(&["x", "--ip-tos", t]).map(|_| line(&["x", "--ip-tos", t]).operations[0].ip_tos)
+        };
+        assert_eq!(tos("CS1"), Ok(0x20));
+        assert_eq!(tos("LOWDELAY"), Ok(0x10));
+        assert_eq!(tos("THROUGHPUT"), Ok(0x08));
+        assert_eq!(tos("AF11"), Ok(0x28));
+        assert_eq!(tos("255"), Ok(255));
+        assert_eq!(tos("cs1"), Err(ParamError::BadNumeric), "names as written");
+        assert_eq!(tos("256"), Err(ParamError::NumberTooLarge));
+        assert_eq!(tos("-1"), Err(ParamError::NegativeNumeric));
+        assert_eq!(
+            run(&["x", "--vlan-priority", "8"]),
+            Err(ParamError::NumberTooLarge)
+        );
+        assert_eq!(
+            run(&["x", "--keepalive-time", "-1"]),
+            Err(ParamError::NegativeNumeric)
+        );
+    }
+
     /// `--remote-name` names the first node without an output;
     /// `--no-remote-name` only undoes `--remote-name-all`, whose nodes
     /// take their URL's name.

@@ -1995,3 +1995,32 @@ fn warns_of_odd_characters_in_a_range() {
         assert!(run.stderr.contains("curl: (7) "), "{range}: {}", run.stderr);
     }
 }
+
+/// The socket options a transfer sets through the tool's own handlers:
+/// a priority the system refuses is warned of, and the transfer goes on
+/// (`sockopt_callback`); `--mptcp` opens a Multipath TCP socket, which
+/// talks to a plain TCP server as TCP (`tool_socket_open_mptcp_cb`).
+#[test]
+fn sets_the_socket_options_it_handles() {
+    let s = Server::new(OK);
+    let url = s.url();
+    // Above 6 needs CAP_NET_ADMIN, which the tests do not run with.
+    let run = curl(&["--no-progress-meter", "--vlan-priority", "7", &url]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"-foo-\n"[..]));
+    let root = Command::new("id").arg("-u").output().unwrap().stdout == b"0\n";
+    if !root {
+        assert_eq!(
+            run.stderr,
+            "Warning: VLAN priority 7 failed with errno 1: Operation not permitted\n"
+        );
+    }
+    s.request();
+    let enabled = std::fs::read("/proc/sys/net/mptcp/enabled").is_ok_and(|e| e == b"1\n");
+    if enabled {
+        let s = Server::new(OK);
+        let url = s.url();
+        let run = curl(&["-s", "--mptcp", "--ip-tos", "CS1", &url]);
+        assert_eq!((run.code, &run.stdout[..]), (0, &b"-foo-\n"[..]));
+        assert!(s.request().starts_with("GET / HTTP/1.1\r\n"));
+    }
+}

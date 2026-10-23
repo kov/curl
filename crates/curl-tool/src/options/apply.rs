@@ -250,6 +250,22 @@ pub(crate) struct Operation<'a> {
     pub(crate) time_cond: Option<TimeCondition>,
     /// `--happy-eyeballs-timeout-ms`, if given.
     pub(crate) happy_eyeballs_ms: Option<u64>,
+    /// `--no-tcp-nodelay`: Nagle's algorithm left on.
+    pub(crate) nagle: bool,
+    /// `--tcp-fastopen`.
+    pub(crate) tcp_fastopen: bool,
+    /// `--mptcp`.
+    pub(crate) mptcp: bool,
+    /// `--no-keepalive`.
+    pub(crate) no_keepalive: bool,
+    /// `--keepalive-time`, in seconds; 0 leaves libcurl's.
+    pub(crate) keepalive_time: u64,
+    /// `--keepalive-cnt`; 0 leaves libcurl's.
+    pub(crate) keepalive_cnt: u64,
+    /// `--ip-tos`; 0 sets none.
+    pub(crate) ip_tos: u8,
+    /// `--vlan-priority`, at most 7; 0 sets none.
+    pub(crate) vlan_priority: u8,
     /// `--ipv4` or `--ipv6`, whichever came last.
     pub(crate) ip_version: Option<IpVersion>,
     /// `--ignore-content-length`.
@@ -1104,6 +1120,17 @@ pub(crate) fn apply<'a>(
         Opt::TrEncoding => line.current().tr_encoding = value.toggle(),
         Opt::TimeCond => line.current().time_cond = time_cond(value.text(), msgs),
         Opt::HappyEyeballsTimeoutMs => line.current().happy_eyeballs_ms = Some(value.number()),
+        Opt::TcpNodelay => line.current().nagle = !value.toggle(),
+        Opt::TcpFastopen => line.current().tcp_fastopen = value.toggle(),
+        Opt::Mptcp => line.current().mptcp = value.toggle(),
+        Opt::Keepalive => line.current().no_keepalive = !value.toggle(),
+        Opt::KeepaliveTime => line.current().keepalive_time = value.number(),
+        Opt::KeepaliveCnt => line.current().keepalive_cnt = value.number(),
+        Opt::VlanPriority => {
+            let n = u8::try_from(value.number()).ok().filter(|&n| n <= 7);
+            line.current().vlan_priority = n.ok_or(ParamError::NumberTooLarge)?;
+        }
+        Opt::IpTos => line.current().ip_tos = type_of_service(value.text())?,
         Opt::Ipv4 => line.current().ip_version = Some(IpVersion::V4),
         Opt::Ipv6 => line.current().ip_version = Some(IpVersion::V6),
         Opt::IgnoreContentLength => line.current().ignore_content_length = value.toggle(),
@@ -1425,10 +1452,6 @@ pub(crate) fn apply<'a>(
         | Opt::Http3Only
         | Opt::Insecure
         | Opt::Interface
-        | Opt::IpTos
-        | Opt::Keepalive
-        | Opt::KeepaliveCnt
-        | Opt::KeepaliveTime
         | Opt::Key
         | Opt::KeyType
         | Opt::Knownhosts
@@ -1442,7 +1465,6 @@ pub(crate) fn apply<'a>(
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
         | Opt::Metalink
-        | Opt::Mptcp
         | Opt::Negotiate
         | Opt::Npn
         | Opt::Ntlm
@@ -1497,8 +1519,6 @@ pub(crate) fn apply<'a>(
         | Opt::SslSessions
         | Opt::Sslv2
         | Opt::Sslv3
-        | Opt::TcpFastopen
-        | Opt::TcpNodelay
         | Opt::TelnetOption
         | Opt::TftpBlksize
         | Opt::TftpNoOptions
@@ -1515,10 +1535,52 @@ pub(crate) fn apply<'a>(
         | Opt::Tlsv13
         | Opt::UnixSocket
         | Opt::UploadFlags
-        | Opt::UseAscii
-        | Opt::VlanPriority => line.not_implemented(spec, "--"),
+        | Opt::UseAscii => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
+}
+
+/// The names `--ip-tos` takes for its values (`tos_entries`), in
+/// `strcmp` order.
+const TYPES_OF_SERVICE: &[(&[u8], u8)] = &[
+    (b"AF11", 0x28),
+    (b"AF12", 0x30),
+    (b"AF13", 0x38),
+    (b"AF21", 0x48),
+    (b"AF22", 0x50),
+    (b"AF23", 0x58),
+    (b"AF31", 0x68),
+    (b"AF32", 0x70),
+    (b"AF33", 0x78),
+    (b"AF41", 0x88),
+    (b"AF42", 0x90),
+    (b"AF43", 0x98),
+    (b"CE", 0x03),
+    (b"CS0", 0x00),
+    (b"CS1", 0x20),
+    (b"CS2", 0x40),
+    (b"CS3", 0x60),
+    (b"CS4", 0x80),
+    (b"CS5", 0xa0),
+    (b"CS6", 0xc0),
+    (b"CS7", 0xe0),
+    (b"ECT0", 0x02),
+    (b"ECT1", 0x01),
+    (b"EF", 0xb8),
+    (b"LE", 0x04),
+    (b"LOWCOST", 0x02),
+    (b"LOWDELAY", 0x10),
+    (b"MINCOST", 0x02),
+    (b"RELIABILITY", 0x04),
+    (b"THROUGHPUT", 0x08),
+];
+
+/// `--ip-tos`'s value: a name, as written, or a number up to 255.
+fn type_of_service(given: &[u8]) -> Result<u8, ParamError> {
+    if let Ok(i) = TYPES_OF_SERVICE.binary_search_by(|(name, _)| name.cmp(&given)) {
+        return Ok(TYPES_OF_SERVICE[i].1);
+    }
+    u8::try_from(number::unsigned(given)?).map_err(|_| ParamError::NumberTooLarge)
 }
 
 /// `--verbose`, which counts: `-vv` in one word is more than `-v`, while

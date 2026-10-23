@@ -1160,3 +1160,27 @@ witness: curl-tool operate::tests::retries_for_c_reasons
     } else if op.retry_connrefused && result == Err(ErrorKind::CouldntConnect) {
 --- new
     } else if result == Err(ErrorKind::CouldntConnect) {
+
+=== the tool leaves keepalive off unless told
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::sets_the_socket_options_it_writes
+--- old
+            o.sockets.make_mut().map_err(oom)?.keepalive.on = true;
+--- new
+            let _ = o;
+
+=== a priority the system refuses goes unwarned
+file: crates/curl-tool/src/sockopt.rs
+witness: curl-tool sets_the_socket_options_it_handles
+--- old
+            failed(&e, b"VLAN priority ", priority);
+--- new
+            let _ = e;
+
+=== --vlan-priority takes 8
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::socket_options_are_read_as_c_reads_them
+--- old
+.filter(|&n| n <= 7);
+--- new
+.filter(|&n| n <= 8);

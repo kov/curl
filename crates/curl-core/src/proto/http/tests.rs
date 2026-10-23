@@ -743,14 +743,14 @@ fn an_exchange_waits_to_read_its_socket() {
     m.perform(&mut NoEvents).unwrap();
     // The connect started in the first pass is taken in the next.
     m.perform(&mut NoEvents).unwrap();
-    let waits = |m: &Multi| {
+    let waits = |m: &mut Multi| {
         let mut seen = Vec::new();
-        m.sockets(|_, events| seen.push(events));
+        m.sockets(&mut NoEvents, |_, events| seen.push(events));
         seen
     };
-    assert_eq!(waits(&m), [Events::IN]);
+    assert_eq!(waits(&mut m), [Events::IN]);
     m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
-    assert_eq!(waits(&m), []);
+    assert_eq!(waits(&mut m), []);
 }
 
 /// What an exchange waits for passes through its connection's layers: one
@@ -770,14 +770,14 @@ fn an_exchange_waits_for_what_its_layers_want() {
     m.perform(&mut NoEvents).unwrap();
     // The connect started in the first pass is taken in the next.
     m.perform(&mut NoEvents).unwrap();
-    let waits = |m: &Multi| {
+    let waits = |m: &mut Multi| {
         let mut seen = Vec::new();
-        m.sockets(|_, events| seen.push(events));
+        m.sockets(&mut NoEvents, |_, events| seen.push(events));
         seen
     };
-    assert_eq!(waits(&m), [Events::IN | Events::OUT]);
+    assert_eq!(waits(&mut m), [Events::IN | Events::OUT]);
     m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
-    assert_eq!(waits(&m), []);
+    assert_eq!(waits(&mut m), []);
 }
 
 /// A connection's bytes go through its layers both ways: what a layer
@@ -4280,23 +4280,25 @@ fn waiting(m: &mut Multi, set: impl FnOnce(&mut Options)) -> Vec<crate::conn::io
     // The connect started in the first pass is taken in the next.
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
-    m.sockets(|_, events| seen.push(events));
+    m.sockets(&mut NoEvents, |_, events| seen.push(events));
     seen
 }
 
 /// A proxy's handshake waits to write what it could not send yet, then
 /// to read the answer: a tunnel's `CONNECT`, a SOCKS proxy's request, and
-/// the PROXY protocol's line, which waits for nothing else.
+/// the PROXY protocol's line, which waits for nothing else. It waits to
+/// read throughout, as C's socket filter, connected but not yet in use,
+/// adds (`cf_socket_adjust_pollset`).
 #[test]
 fn a_proxy_handshake_waits_to_send_then_to_read() {
     use crate::conn::io::Events;
     let stalled = |replies: &[&[u8]]| Conversation::replies(replies, false).stalling_sends(1);
     let talk = stalled(&[]);
     let mut m = serving(Peer::Accepts, &[&talk]);
-    assert_eq!(waiting(&mut m, tunneled), [Events::OUT]);
+    assert_eq!(waiting(&mut m, tunneled), [Events::OUT | Events::IN]);
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
-    m.sockets(|_, events| seen.push(events));
+    m.sockets(&mut NoEvents, |_, events| seen.push(events));
     assert_eq!(seen, [Events::IN], "the CONNECT sent, its answer awaited");
     assert!(
         talk.received()
@@ -4305,16 +4307,16 @@ fn a_proxy_handshake_waits_to_send_then_to_read() {
     let talk = stalled(&[]).per_send();
     let mut m = serving(Peer::Accepts, &[&talk]);
     let socks = |o: &mut Options| through_socks(o, "socks5h", b"http://origin.example/a");
-    assert_eq!(waiting(&mut m, socks), [Events::OUT]);
+    assert_eq!(waiting(&mut m, socks), [Events::OUT | Events::IN]);
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
-    m.sockets(|_, events| seen.push(events));
+    m.sockets(&mut NoEvents, |_, events| seen.push(events));
     assert_eq!(seen, [Events::IN], "the offer sent, the pick awaited");
     let talk = stalled(&[OK]);
     let mut m = serving(Peer::Accepts, &[&talk]);
     assert_eq!(
         waiting(&mut m, |o| o.proxy.make_mut().unwrap().haproxy = true),
-        [Events::OUT]
+        [Events::OUT | Events::IN]
     );
 }
 
@@ -4785,6 +4787,7 @@ mod sigv4;
 mod tcp_trace;
 mod time_condition;
 mod timer_trace;
+mod wait_trace;
 mod write_trace;
 
 /// `Proxy-Connection:` counts only on a connection through an HTTP
@@ -5493,7 +5496,7 @@ fn a_receive_limit_lets_its_rate_through_each_second() {
         // Waiting out the step, on its timer alone: no socket
         // (RATELIMITING has no pollset).
         let mut sockets = 0;
-        m.sockets(|_, _| sockets += 1);
+        m.sockets(&mut NoEvents, |_, _| sockets += 1);
         assert_eq!(sockets, 0, "second {second}");
         let wait = m.timeout().expect("a timer for the limit");
         // The pass's reads moved the clock on 4 ms since the step began.

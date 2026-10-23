@@ -18,12 +18,14 @@ fn tracing_multi() -> Easy {
     e
 }
 
-/// The multi component's lines a run traced, the times blanked.
+/// The multi component's lines a run traced, the times blanked; but the
+/// wait's, which `wait_trace.rs` checks.
 fn multi_lines(ran: &Ran) -> Vec<String> {
     ran.seen
         .text()
         .into_iter()
         .filter(|l| l.starts_with("[MULTI] "))
+        .filter(|l| !l.contains("] pollset[") && !l.contains("] multi_wait("))
         .map(|l| {
             let l = l.trim_end();
             match l.find(" added ").filter(|_| l.ends_with("us")) {

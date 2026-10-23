@@ -147,7 +147,7 @@ fn scenario() -> Result<Outcome, OutOfMemory> {
         waker: Some(waker),
     };
     let mut m: Multi = Multi::new(env)?;
-    match m.wait(&mut [], Duration::ZERO, WaitMode::Poll) {
+    match m.wait(&mut [], Duration::ZERO, WaitMode::Poll, &mut NoEvents) {
         Ok(0) | Err(MultiErrorKind::OutOfMemory) => {}
         other => panic!("an idle wait got {other:?}"),
     }

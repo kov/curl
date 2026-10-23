@@ -156,6 +156,14 @@ impl Deadlines {
             .map(|(_, k)| k)
     }
 
+    /// The armed timers, the first to fire first, a tie in `first`'s
+    /// order (`timeouts.first` and its list), with when each fires.
+    pub(crate) fn in_order(&self) -> impl Iterator<Item = (Instant, TimerKind)> + Clone + use<> {
+        let mut all = TimerKind::ALL.map(|k| self.armed[k.slot()].map(|at| (at, k)));
+        all.sort_unstable_by_key(|armed| armed.map(|(at, k)| (at, k.slot())));
+        all.into_iter().flatten()
+    }
+
     pub(crate) fn clear(&mut self, kind: TimerKind) {
         self.armed[kind.slot()] = None;
     }

@@ -46,7 +46,7 @@ pub use wait::{WaitMode, drive_by_events, drive_to_completion};
 use notify::NotifyQueue;
 use sched::{RowSet, Tally};
 use sockets::{SocketTable, Wants};
-use state::{Message as MessageState, Run, StepCx, TransferState, Wake};
+use state::{Message as MessageState, PollsetTrace, Run, StepCx, TransferState, Wake};
 use timers::{Due, TimerAnnounce, TimerKind, TimerQueue};
 
 /// The application's types a multi carries: a value per transfer, handed
@@ -433,11 +433,18 @@ impl<H: Host> Multi<H> {
         self.counts.removed(run.state.is_completed());
         self.abandon(id, run, ev);
         // Whatever its state, it is traced as completed.
-        self.slots.get_mut(id).expect("still in the multi").mstate = mstate::MState::Completed;
-        self.trace_membership(id, "removed from", ev);
-        // Waiting on nothing now; C does not mind the callback's answer
-        // (`Curl_multi_ev_xfer_done`).
+        let slot = self.slots.get_mut(id).expect("still in the multi");
+        slot.mstate = mstate::MState::Completed;
+        // Waiting on nothing now, which event handling assesses
+        // (`Curl_multi_ev_xfer_done`); C does not mind the callback's
+        // answer.
+        if ev.wants_sockets() {
+            let gone = PollsetTrace::gone(slot.pause);
+            let now = self.clock.now();
+            self.trace_pollset(id, now, gone, ev);
+        }
         let _ = self.tell_wants(id, Wants::NONE, ev);
+        self.trace_membership(id, "removed from", ev);
         let slot = self.slots.remove(id).expect("still in the multi");
         self.timers.remove(id);
         self.dirty.remove(id.index());
@@ -558,6 +565,86 @@ impl<H: Host> Multi<H> {
         }
     }
 
+    /// `timeout`, traced as C's `curl_multi_timeout` traces it: the timer
+    /// that gives it, on its transfer.
+    pub fn timeout_traced(&mut self, ev: &mut dyn MultiEvents<H>) -> Option<Duration> {
+        let now = self.clock.now();
+        self.multi_timeout(now, ev)
+    }
+
+    /// How long from `now` until the multi should be driven, as `timeout`
+    /// says, the timer that gives it traced on its transfer
+    /// (`multi_timeout`): none while something is ready.
+    fn multi_timeout(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) -> Option<Duration> {
+        let at = match self.due() {
+            Due::Now => return Some(Duration::ZERO),
+            Due::Never => return None,
+            Due::At(at) => at,
+        };
+        let wait = timers::wait_ms(now, at);
+        if let Some((_, id)) = self.timers.peek()
+            && let Some(kind) = self.run_of(id).deadlines.first()
+        {
+            let ms = wait.as_millis();
+            let mut cx = StepCx {
+                me: id,
+                rest: self.rest(now, ev),
+            };
+            state::trace_timer(&mut cx, kind, format_args!("gives multi timeout in {ms}ms"));
+        }
+        Some(wait)
+    }
+
+    /// Whether transfer `id` is one the multi works on (C's `process`
+    /// set): neither completed nor waiting its turn.
+    fn in_process(&self, id: TransferId) -> bool {
+        let slot = self.slots.get(id).expect("a transfer in the multi");
+        slot.mstate != mstate::MState::Pending && !self.run_of(id).state.is_completed()
+    }
+
+    /// Transfer `id`'s pollset traced as it is made (`Curl_multi_pollset`),
+    /// from what `said` read of it.
+    fn trace_pollset<T: Iterator<Item = (Instant, TimerKind)> + Clone>(
+        &mut self,
+        id: TransferId,
+        now: Instant,
+        said: PollsetTrace<T>,
+        ev: &mut dyn MultiEvents<H>,
+    ) {
+        let mut cx = StepCx {
+            me: id,
+            rest: self.rest(now, ev),
+        };
+        said.trace(&mut cx);
+    }
+
+    /// Transfer `id`'s pollset, as it is now, traced.
+    fn trace_pollset_now(&mut self, id: TransferId, now: Instant, ev: &mut dyn MultiEvents<H>) {
+        let slot = self.slots.get(id).expect("a transfer in the multi");
+        let run = slot
+            .run
+            .as_ref()
+            .expect("no transfer is out while the multi is called");
+        let said = run.pollset_trace(slot.pause);
+        self.trace_pollset(id, now, said, ev);
+    }
+
+    /// Each pollset of the transfers the multi works on traced, in id
+    /// order, as `multi_wait`, `curl_multi_fdset` and `curl_multi_waitfds`
+    /// make them: the last of them, if any.
+    fn trace_pollsets(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) -> Option<TransferId> {
+        let mut last = None;
+        let mut cursor = None;
+        while let Some(id) = self.slots.next_after(cursor) {
+            cursor = Some(id);
+            if self.in_process(id) {
+                self.trace_pollset_now(id, now, ev);
+                last = Some(id);
+            }
+        }
+        last
+    }
+
     pub fn counts(&self) -> Counts {
         self.counts.get()
     }
@@ -626,8 +713,11 @@ impl<H: Host> Multi<H> {
     }
 
     /// Every socket the transfers wait on, and for what, in id order
-    /// (`curl_multi_fdset`, `curl_multi_waitfds`).
-    pub fn sockets(&self, f: impl FnMut(&dyn Socket, Events)) {
+    /// (`curl_multi_fdset`, `curl_multi_waitfds`), each transfer's pollset
+    /// traced first.
+    pub fn sockets(&mut self, ev: &mut dyn MultiEvents<H>, f: impl FnMut(&dyn Socket, Events)) {
+        let now = self.clock.now();
+        self.trace_pollsets(now, ev);
         pollsets(&self.slots, f);
     }
 
@@ -662,6 +752,10 @@ impl<H: Host> Multi<H> {
     ) -> Result<(), MultiErrorKind> {
         if !ev.wants_sockets() {
             return Ok(());
+        }
+        if self.slots.get(id).is_some() {
+            let now = self.clock.now();
+            self.trace_pollset_now(id, now, ev);
         }
         let wants = self.slots.get(id).map_or(Wants::NONE, |slot| {
             let run = slot
@@ -854,6 +948,11 @@ impl<H: Host> Multi<H> {
                 self.dirty.remove(row);
                 continue;
             };
+            let mut cx = StepCx {
+                me: id,
+                rest: self.rest(now, ev),
+            };
+            mstate::trace(&mut cx, format_args!("multi_run_dirty"));
             if self.run_of(id).state.is_completed() {
                 self.dirty.remove(row);
                 continue;
@@ -917,7 +1016,9 @@ impl<H: Host> Multi<H> {
         if !ev.wants_timer() || self.life == Life::Dead {
             return Ok(());
         }
-        let Some(change) = self.announce.update(self.clock.now(), self.due()) else {
+        let now = self.clock.now();
+        self.multi_timeout(now, ev);
+        let Some(change) = self.announce.update(now, self.due()) else {
             return Ok(());
         };
         let mut cx = EventCx {

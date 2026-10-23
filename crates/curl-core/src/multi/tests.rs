@@ -722,7 +722,7 @@ fn wait_with_nothing_to_wait_for_returns_at_once() {
     let (mut m, clock) = multi();
     let max = Duration::from_secs(3);
     let took = slept(&clock, || {
-        assert_eq!(m.wait(&mut [], max, WaitMode::Wait), Ok(0));
+        assert_eq!(m.wait(&mut [], max, WaitMode::Wait, &mut NoEvents), Ok(0));
     });
     assert_eq!(took, Duration::ZERO);
 }
@@ -732,7 +732,7 @@ fn poll_sleeps_out_its_timeout_with_nothing_to_wait_for() {
     let (mut m, clock) = multi();
     let max = Duration::from_secs(3);
     let took = slept(&clock, || {
-        assert_eq!(m.wait(&mut [], max, WaitMode::Poll), Ok(0));
+        assert_eq!(m.wait(&mut [], max, WaitMode::Poll, &mut NoEvents), Ok(0));
     });
     assert_eq!(took, max);
 }
@@ -744,12 +744,12 @@ fn the_multi_s_own_timeout_cuts_a_wait_short() {
     m.add(Box::new(stall_within(1500)), (), ev).unwrap();
     let max = Duration::from_secs(10);
     let took = slept(&clock, || {
-        m.wait(&mut [], max, WaitMode::Poll).unwrap();
+        m.wait(&mut [], max, WaitMode::Poll, &mut NoEvents).unwrap();
     });
     assert_eq!(took, Duration::ZERO, "a transfer to run: no wait at all");
     m.perform(ev).unwrap();
     let took = slept(&clock, || {
-        m.wait(&mut [], max, WaitMode::Poll).unwrap();
+        m.wait(&mut [], max, WaitMode::Poll, &mut NoEvents).unwrap();
     });
     assert_eq!(took, Duration::from_millis(1500));
 }
@@ -768,7 +768,10 @@ fn ready_extra_descriptors_are_reported_in_their_entries() {
     ];
     let max = Duration::from_secs(3);
     let took = slept(&clock, || {
-        assert_eq!(m.wait(&mut extra, max, WaitMode::Wait), Ok(1));
+        assert_eq!(
+            m.wait(&mut extra, max, WaitMode::Wait, &mut NoEvents),
+            Ok(1)
+        );
     });
     assert_eq!(took, Duration::ZERO);
     assert!(extra[0].revents().is_empty());
@@ -791,7 +794,12 @@ fn a_wait_takes_more_than_fit_on_the_stack() {
         .map(|(_, b)| PollFd::new(b.as_fd(), Events::IN))
         .collect();
     assert_eq!(
-        m.wait(&mut extra, Duration::from_secs(3), WaitMode::Wait),
+        m.wait(
+            &mut extra,
+            Duration::from_secs(3),
+            WaitMode::Wait,
+            &mut NoEvents
+        ),
         Ok(1)
     );
     assert!(extra[10].revents().contains(Events::IN));
@@ -817,7 +825,10 @@ fn a_wait_takes_more_than_fit_on_the_stack() {
     for _ in 0..5 {
         m.perform(ev).unwrap();
     }
-    assert_eq!(m.wait(&mut [], Duration::ZERO, WaitMode::Wait), Ok(0));
+    assert_eq!(
+        m.wait(&mut [], Duration::ZERO, WaitMode::Wait, &mut NoEvents),
+        Ok(0)
+    );
 }
 
 #[test]
@@ -827,13 +838,13 @@ fn a_wake_ends_a_wait_without_counting_and_is_consumed() {
     assert!(m.waker().is_some_and(|w| TryArc::ptr_eq(&w, &waker)));
     waker.wake().unwrap();
     // A wait that would not wait leaves the wake pending.
-    assert_eq!(m.wait(&mut [], max, WaitMode::Wait), Ok(0));
+    assert_eq!(m.wait(&mut [], max, WaitMode::Wait, &mut NoEvents), Ok(0));
     let took = slept(&clock, || {
-        assert_eq!(m.wait(&mut [], max, WaitMode::Poll), Ok(0));
+        assert_eq!(m.wait(&mut [], max, WaitMode::Poll, &mut NoEvents), Ok(0));
     });
     assert_eq!(took, Duration::ZERO, "woken");
     let took = slept(&clock, || {
-        assert_eq!(m.wait(&mut [], max, WaitMode::Poll), Ok(0));
+        assert_eq!(m.wait(&mut [], max, WaitMode::Poll, &mut NoEvents), Ok(0));
     });
     assert_eq!(took, max, "the wake was consumed");
 }
@@ -887,7 +898,12 @@ fn a_failed_poll_is_unrecoverable() {
     };
     let mut m: Multi = Multi::new(env).unwrap();
     assert_eq!(
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll),
+        m.wait(
+            &mut [],
+            Duration::from_secs(1),
+            WaitMode::Poll,
+            &mut NoEvents
+        ),
         Err(MultiErrorKind::UnrecoverablePoll)
     );
 }
@@ -1551,7 +1567,12 @@ fn an_accepted_connect_goes_on_to_the_request() {
     assert_eq!(m.counts().running, 1);
     // The wait ends when the peer answers.
     let start = clock.now();
-    let ready = m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait);
+    let ready = m.wait(
+        &mut [],
+        Duration::from_secs(1),
+        WaitMode::Wait,
+        &mut NoEvents,
+    );
     assert_eq!(ready, Ok(1));
     assert_eq!(clock.now().since(start), Duration::from_millis(5));
     m.perform(&mut NoEvents).unwrap();
@@ -1583,8 +1604,13 @@ fn a_silent_peer_times_out_at_the_connect_limit() {
     // The wait polls the connecting socket: nothing is ready, so the
     // fake moves the clock by the whole timeout.
     assert_eq!(
-        m.wait(&mut [], Duration::from_secs(10), WaitMode::Wait)
-            .unwrap(),
+        m.wait(
+            &mut [],
+            Duration::from_secs(10),
+            WaitMode::Wait,
+            &mut NoEvents
+        )
+        .unwrap(),
         0
     );
     assert_eq!(clock.now().since(start), Duration::from_millis(1500));
@@ -1664,8 +1690,13 @@ fn through_proxies(
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..4 {
         m.perform(&mut NoEvents).unwrap();
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
-            .unwrap();
+        m.wait(
+            &mut [],
+            Duration::from_secs(1),
+            WaitMode::Wait,
+            &mut NoEvents,
+        )
+        .unwrap();
     }
     let done = messages(&mut m);
     assert_eq!(done.len(), 1, "{done:?}");
@@ -1756,11 +1787,11 @@ fn removing_a_connecting_transfer_closes_its_socket() {
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     let mut open = 0;
-    m.sockets(|_, _| open += 1);
+    m.sockets(&mut NoEvents, |_, _| open += 1);
     assert_eq!(open, 1);
     m.remove(id, &mut NoEvents).unwrap();
     let mut open = 0;
-    m.sockets(|_, _| open += 1);
+    m.sockets(&mut NoEvents, |_, _| open += 1);
     assert_eq!(open, 0);
     assert_eq!(m.caches.pool.len(), 0);
     assert_eq!(
@@ -1784,21 +1815,21 @@ fn a_paused_transfer_does_not_connect() {
         .add(Box::new(easy("tcp://127.0.0.1:4/")), (), &mut NoEvents)
         .unwrap();
     m.perform(&mut NoEvents).unwrap();
-    let watched = |m: &Multi| {
+    let watched = |m: &mut Multi| {
         let mut watched = Vec::new();
-        m.sockets(|s, e| watched.push((s.key().get(), e)));
+        m.sockets(&mut NoEvents, |s, e| watched.push((s.key().get(), e)));
         watched
     };
-    assert_eq!(watched(&m), [(1000, Events::OUT)]);
+    assert_eq!(watched(&mut m), [(1000, Events::OUT)]);
     m.pause(id, PauseRequest::RECV, &mut NoEvents).unwrap();
     // Paused, it waits on nothing (`mstate_connecting_pollset`).
-    assert_eq!(watched(&m), []);
+    assert_eq!(watched(&mut m), []);
     clock.advance(Duration::from_millis(10));
     // The peer answered, but the transfer is not told.
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(m.counts().running, 1);
     m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
-    assert_eq!(watched(&m), [(1000, Events::OUT)]);
+    assert_eq!(watched(&mut m), [(1000, Events::OUT)]);
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
 }
@@ -1812,8 +1843,13 @@ fn the_next_transfer_reuses_the_connection_left() {
     let (first, _) = traced("tcp://127.0.0.1:4/");
     let first = m.add(Box::new(first), (), &mut NoEvents).unwrap();
     perform_and_connect(&mut m);
-    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
-        .unwrap();
+    m.wait(
+        &mut [],
+        Duration::from_secs(1),
+        WaitMode::Wait,
+        &mut NoEvents,
+    )
+    .unwrap();
     perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
     clock.advance(Duration::from_millis(7));
@@ -2163,11 +2199,21 @@ fn localhost_names_are_the_loopback_addresses() {
     let (refused, lines) = traced("tcp://localhost:2/");
     let refused = m.add(Box::new(refused), (), &mut NoEvents).unwrap();
     perform_and_connect(&mut m);
-    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
-        .unwrap();
+    m.wait(
+        &mut [],
+        Duration::from_secs(1),
+        WaitMode::Wait,
+        &mut NoEvents,
+    )
+    .unwrap();
     perform_and_connect(&mut m);
-    m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
-        .unwrap();
+    m.wait(
+        &mut [],
+        Duration::from_secs(1),
+        WaitMode::Wait,
+        &mut NoEvents,
+    )
+    .unwrap();
     perform_and_connect(&mut m);
     assert_eq!(
         messages(&mut m),
@@ -2502,8 +2548,13 @@ fn stale_answers_are_dropped() {
         let (e, lines) = traced(url);
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
-            .unwrap();
+        m.wait(
+            &mut [],
+            Duration::from_secs(1),
+            WaitMode::Wait,
+            &mut NoEvents,
+        )
+        .unwrap();
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(messages(m).last().unwrap().1, Ok(()));
         m.remove(id, &mut NoEvents).unwrap();
@@ -2596,8 +2647,13 @@ fn answers_may_be_kept_for_ever() {
         e.options_mut().limits.reuse.dns_max_age = None;
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
         m.perform(&mut NoEvents).unwrap();
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
-            .unwrap();
+        m.wait(
+            &mut [],
+            Duration::from_secs(1),
+            WaitMode::Wait,
+            &mut NoEvents,
+        )
+        .unwrap();
         m.perform(&mut NoEvents).unwrap();
         assert_eq!(messages(m).last().unwrap().1, Ok(()));
         m.remove(id, &mut NoEvents).unwrap();
@@ -3208,7 +3264,12 @@ fn a_wake_ends_a_wait_on_a_transfer_s_socket() {
     waker.wake().unwrap();
     let took = slept(&clock, || {
         assert_eq!(
-            m.wait(&mut [], Duration::from_secs(3), WaitMode::Wait),
+            m.wait(
+                &mut [],
+                Duration::from_secs(3),
+                WaitMode::Wait,
+                &mut NoEvents
+            ),
             Ok(0)
         );
     });

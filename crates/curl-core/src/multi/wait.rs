@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use curl_alloc::{TryArc, TryVec};
 
+use super::state::StepCx;
 use super::state::{Message as MessageState, TransferState};
 use super::{
     Abort, EventCx, Host, Multi, MultiEvents, SocketEvent, SocketWhat, TimerChange, TransferId,
-    pollsets,
+    mstate, pollsets,
 };
 use crate::conn::io::{Events, ON_STACK, PollFd, Socket, SocketKey, SocketPoll, Waker};
 use crate::error::{ErrorKind, MultiErrorKind};
@@ -29,14 +30,24 @@ impl<H: Host> Multi<H> {
     /// `max` and no longer than the multi's own timeout
     /// (`curl_multi_wait`, `curl_multi_poll`). Returns how many had events;
     /// `extra`'s are left in its entries. A wake from another thread ends
-    /// the wait without counting.
+    /// the wait without counting. Traced as C's `multi_wait`: each
+    /// pollset as it is collected, then the multi's own timeout, then the
+    /// wait itself on the last transfer whose pollset was.
     pub fn wait(
         &mut self,
         extra: &mut [PollFd<'_>],
         max: Duration,
         mode: WaitMode,
+        ev: &mut dyn MultiEvents<H>,
     ) -> Result<u32, MultiErrorKind> {
-        let timeout = self.timeout().map_or(max, |t| t.min(max));
+        let now = self.clock.now();
+        let last = self.trace_pollsets(now, ev);
+        // After the pollsets, which may arm timers (multi.c:1602).
+        let internal = self.multi_timeout(now, ev);
+        let timeout = internal.map_or(max, |t| t.min(max));
+        if let Some(id) = last {
+            self.trace_wait(id, now, extra.len(), mode, timeout, internal, ev);
+        }
         let oom = |_| MultiErrorKind::OutOfMemory;
         // A few entries are kept on the stack, more in memory of their
         // own, as C's `a_few_on_stack`: a loop of waits allocates nothing.
@@ -118,6 +129,38 @@ impl<H: Host> Multi<H> {
             ready -= 1;
         }
         Ok(ready)
+    }
+
+    /// The wait about to be made, traced on transfer `id` (`multi_wait`):
+    /// how many descriptors it polls, the waker counted as it is watched,
+    /// for how long, and the multi's own timeout, -1 for none.
+    #[expect(clippy::too_many_arguments, reason = "the line's every field")]
+    fn trace_wait(
+        &mut self,
+        id: TransferId,
+        now: crate::time::Instant,
+        extra: usize,
+        mode: WaitMode,
+        timeout: Duration,
+        internal: Option<Duration>,
+        ev: &mut dyn MultiEvents<H>,
+    ) {
+        let mut sockets = 0;
+        pollsets(&self.slots, |_, _| sockets += 1);
+        let watch_waker = mode == WaitMode::Poll || sockets > 0 || extra > 0;
+        let waker = usize::from(self.waker.is_some() && watch_waker);
+        let fds = sockets + waker + extra;
+        // C's milliseconds are an `int`.
+        let ms = |d: Duration| i32::try_from(d.as_millis()).unwrap_or(i32::MAX);
+        let (timeout, internal) = (ms(timeout), internal.map_or(-1, ms));
+        let mut cx = StepCx {
+            me: id,
+            rest: self.rest(now, ev),
+        };
+        mstate::trace(
+            &mut cx,
+            format_args!("multi_wait(fds={fds}, timeout={timeout}) tinternal={internal}"),
+        );
     }
 
     /// Wait up to `timeout`, or for as long as it takes, for the sockets
@@ -204,7 +247,7 @@ pub fn drive_to_completion<H: Host>(
         if m.slots.get(id).is_none() {
             return Err(MultiErrorKind::BadEasyHandle);
         }
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
         m.perform(ev)?;
         if let Some(outcome) = m.take_outcome(id) {
             return Ok(outcome);

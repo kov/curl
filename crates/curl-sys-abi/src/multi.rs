@@ -685,7 +685,7 @@ pub unsafe extern "C" fn curl_multi_timeout(m: *mut CURLM, timeout_ms: *mut c_lo
     let multi = unsafe { multi(m) };
     let due = match entry.reach {
         // SAFETY: the reach is direct.
-        Reach::Direct => unsafe { multi.core_mut() }.timeout(),
+        Reach::Direct => unsafe { multi.core_mut() }.timeout_traced(&mut ShimEvents::new(multi)),
         // SAFETY: as in `curl_multi_info_read`.
         Reach::Frame(Frame::Notify(cx)) => unsafe { &*cx.as_ptr() }.timeout(),
         Reach::Frame(Frame::Event(_) | Frame::Transfer(_)) => return CURLM_RECURSIVE_API_CALL,
@@ -994,7 +994,12 @@ unsafe fn wait(
     // SAFETY: admitted on `m`, which nothing else runs on.
     let multi = unsafe { multi(m) };
     // SAFETY: as above.
-    let ready = unsafe { multi.core_mut() }.wait(fds, Duration::from_millis(timeout), mode);
+    let ready = unsafe { multi.core_mut() }.wait(
+        fds,
+        Duration::from_millis(timeout),
+        mode,
+        &mut ShimEvents::new(multi),
+    );
     for (e, fd) in extra.iter_mut().zip(fds.iter()) {
         e.revents = wait_revents(fd.revents());
     }
@@ -1097,7 +1102,7 @@ pub unsafe extern "C" fn curl_multi_fdset(
     let multi = unsafe { multi(m) };
     let mut highest = -1;
     // SAFETY: as above.
-    unsafe { multi.core_mut() }.sockets(|socket, events| {
+    unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |socket, events| {
         let fd = socket.key().get();
         // One a set cannot hold is left out (`FDSET_SOCK`).
         if usize::try_from(fd).is_ok_and(|fd| fd < libc::FD_SETSIZE) {
@@ -1144,7 +1149,7 @@ pub unsafe extern "C" fn curl_multi_waitfds(
     };
     let mut need: c_uint = 0;
     // SAFETY: as above.
-    unsafe { multi.core_mut() }.sockets(|socket, events| {
+    unsafe { multi.core_mut() }.sockets(&mut ShimEvents::new(multi), |socket, events| {
         // A pollset reads and writes, nothing else.
         let wanted = wait_revents(events);
         if wanted != 0 {

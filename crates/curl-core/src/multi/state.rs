@@ -11,7 +11,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use crate::conn::chain::{Chain, SetupPoint};
-use crate::conn::io::{Closer, Events, ResolveFailure};
+use crate::conn::io::{Closer, Events, ResolveFailure, SocketKey};
 use crate::conn::layer::LayerCx;
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
@@ -45,7 +45,7 @@ use crate::version::Protocol;
 use super::cx::{DriveCx, EngineRest, TransferCalls};
 use super::mstate::{self, MState};
 use super::sched::RowSet;
-use super::sockets::Pollset;
+use super::sockets::{Pollset, Wants};
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
 use super::{Host, Slots, TransferId};
 
@@ -519,8 +519,13 @@ impl TransferState {
         let mut set = Pollset::new();
         match self {
             TransferState::Connecting(c) if pause.recv == RecvPause::Running => {
-                // A tunnel's handshake waits for what it sends or reads.
-                let events = c.handshake.as_ref().map_or(Events::OUT, |h| h.interest());
+                // A handshake waits for what it sends or reads, and to read
+                // too, as the socket's filter, connected but not yet in
+                // use, adds (`cf_socket_adjust_pollset`).
+                let events = match c.handshake.as_ref() {
+                    Some(h) => h.interest() | Events::IN,
+                    None => Events::OUT,
+                };
                 for s in c.lease.sockets() {
                     set.add(s, events);
                 }
@@ -534,6 +539,125 @@ impl TransferState {
             _ => {}
         }
         set
+    }
+}
+
+/// What a transfer's pollset trace says, read from its run before the
+/// trace calls out, so the run stays in its slot meanwhile
+/// (`Curl_multi_pollset`).
+pub(crate) struct PollsetTrace<T> {
+    wants: Wants,
+    /// While the setup runs: whether its sockets are connected, a
+    /// handshake under way over the one dialed.
+    setup: Option<bool>,
+    timers: T,
+    /// Sending and receiving, paused.
+    paused: (bool, bool),
+}
+
+impl Run {
+    /// What the transfer's pollset trace says, its pause `pause`.
+    pub(crate) fn pollset_trace(
+        &self,
+        pause: Pause,
+    ) -> PollsetTrace<impl Iterator<Item = (Instant, TimerKind)> + Clone + use<>> {
+        let wants = self.state.pollset(pause).wants();
+        let setup = match &self.state {
+            TransferState::Connecting(c) if !wants.as_slice().is_empty() => {
+                Some(matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))))
+            }
+            _ => None,
+        };
+        PollsetTrace {
+            wants,
+            setup,
+            timers: self.deadlines.in_order(),
+            paused: (pause.send_paused(), pause.recv != RecvPause::Running),
+        }
+    }
+}
+
+impl PollsetTrace<std::iter::Empty<(Instant, TimerKind)>> {
+    /// The pollset of a transfer that waits on nothing and has no timer,
+    /// its pause `pause`: one taken out of the multi.
+    pub(crate) fn gone(pause: Pause) -> Self {
+        PollsetTrace {
+            wants: Wants::NONE,
+            setup: None,
+            timers: std::iter::empty(),
+            paused: (pause.send_paused(), pause.recv != RecvPause::Running),
+        }
+    }
+}
+
+impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
+    /// Traced as C traces a pollset as it is made: the socket filter's
+    /// part in it while the connection is set up, the set with the number
+    /// of timers armed, then each timer in the order they fire.
+    pub(crate) fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
+        let wants = self.wants.as_slice();
+        if let Some(dialed) = self.setup {
+            for &(key, _) in wants {
+                let fd = key.get();
+                if dialed {
+                    let line = format_args!("adjust_pollset, !active, POLLIN fd={fd}");
+                    trace::of(cx, Component::Tcp, line);
+                } else {
+                    let line = format_args!("adjust_pollset, !connected, POLLOUT fd={fd}");
+                    trace::of(cx, Component::Tcp, line);
+                }
+            }
+        }
+        if !trace::traces(cx, Component::Multi) {
+            return;
+        }
+        let n = self.timers.clone().count();
+        let fd = |&(key, events): &(SocketKey, Events)| {
+            let fd = key.get();
+            let r#in = if events.contains(Events::IN) {
+                "IN"
+            } else {
+                ""
+            };
+            let out = if events.contains(Events::OUT) {
+                "OUT"
+            } else {
+                ""
+            };
+            FdEvents(fd, r#in, out)
+        };
+        match wants {
+            [] => {
+                let (send, recv) = (u8::from(self.paused.0), u8::from(self.paused.1));
+                mstate::trace(
+                    cx,
+                    format_args!("pollset[], timeouts={n}, paused {send}/{recv} (r/w)"),
+                );
+            }
+            [one] => mstate::trace(cx, format_args!("pollset[{}], timeouts={n}", fd(one))),
+            [one, two] => mstate::trace(
+                cx,
+                format_args!("pollset[{}, {}], timeouts={n}", fd(one), fd(two)),
+            ),
+            more => {
+                let fds = more.len();
+                mstate::trace(cx, format_args!("pollset[fds={fds}], timeouts={n}"));
+            }
+        }
+        let now = cx.rest.clock.now();
+        for (at, kind) in self.timers {
+            let us = at.since(now).as_micros();
+            trace_timer(cx, kind, format_args!("expires in {us}us"));
+        }
+    }
+}
+
+/// A socket in a pollset's trace: its descriptor and what it waits for.
+struct FdEvents(i32, &'static str, &'static str);
+
+impl fmt::Display for FdEvents {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "fd={} {}{}", self.0, self.1, self.2)
     }
 }
 

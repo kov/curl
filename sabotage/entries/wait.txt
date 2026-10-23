@@ -15,7 +15,7 @@ witness: curl-core multi::tests::wait_with_nothing_to_wait_for_returns_at_once
 file: crates/curl-core/src/multi/wait.rs
 witness: curl-core multi::tests::the_multi_s_own_timeout_cuts_a_wait_short
 --- old
-        let timeout = self.timeout().map_or(max, |t| t.min(max));
+        let timeout = internal.map_or(max, |t| t.min(max));
 --- new
         let timeout = max;
 
@@ -90,9 +90,9 @@ witness: curl-core multi::tests::driving_a_transfer_to_completion_leaves_others_
         if m.slots.get(id).is_none() {
             return Err(MultiErrorKind::BadEasyHandle);
         }
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
 --- new
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
 
 === driving a transfer checks only at the start that it is in the multi
 file: crates/curl-core/src/multi/wait.rs
@@ -103,13 +103,13 @@ witness: curl-core multi::tests::driving_a_transfer_a_callback_takes_out_is_an_e
         if m.slots.get(id).is_none() {
             return Err(MultiErrorKind::BadEasyHandle);
         }
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
 --- new
     if m.slots.get(id).is_none() {
         return Err(MultiErrorKind::BadEasyHandle);
     }
     loop {
-        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll)?;
+        m.wait(&mut [], Duration::from_secs(1), WaitMode::Poll, ev)?;
 
 === a wait does not poll the connecting sockets
 file: crates/curl-core/src/multi/wait.rs
@@ -220,3 +220,89 @@ features: debug-hooks
         Some(any) if extra.len() <= ON_STACK => {
 --- new
         Some(any) if extra.len() == usize::MAX => {
+
+=== a wait reads the multi's timeout before the pollsets are made
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core proto::http::tests::wait_trace::a_connect_limit_is_waited_for_as_c
+--- old
+        let last = self.trace_pollsets(now, ev);
+        // After the pollsets, which may arm timers (multi.c:1602).
+        let internal = self.multi_timeout(now, ev);
+--- new
+        let internal = self.multi_timeout(now, ev);
+        let last = self.trace_pollsets(now, ev);
+
+=== a wait's descriptors leave the waker out
+file: crates/curl-core/src/multi/wait.rs
+witness: curl-core proto::http::tests::wait_trace::a_request_s_waits_are_traced_as_c
+--- old
+        let waker = usize::from(self.waker.is_some() && watch_waker);
+--- new
+        let waker = usize::from(self.waker.is_some() && watch_waker && false);
+
+=== a perform's own multi has no waker
+file: crates/curl-core/src/easy.rs
+witness: curl-core easy::tests::a_perform_s_multi_has_a_waker
+--- old
+                    Ok(w) => Some(TryArc::try_new(w).map_err(oom)?),
+--- new
+                    Ok(w) => {
+                        drop(w);
+                        None
+                    }
+
+=== a transfer's timers are traced in the order they were declared
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core proto::http::tests::timer_trace::a_leg_arms_its_limits_and_the_race_clears_its_timer
+--- old
+        all.sort_unstable_by_key(|armed| armed.map(|(at, k)| (at, k.slot())));
+--- new
+        let _ = &mut all;
+
+=== event handling's assessment traces no pollset
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_traced_as_c
+--- old
+        if self.slots.get(id).is_some() {
+            let now = self.clock.now();
+            self.trace_pollset_now(id, now, ev);
+        }
+--- new
+        if self.slots.get(id).is_none() {
+            let now = self.clock.now();
+            self.trace_pollset_now(id, now, ev);
+        }
+
+=== a transfer taken out is said gone before event handling hears it
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_traced_as_c
+--- old
+        let _ = self.tell_wants(id, Wants::NONE, ev);
+        self.trace_membership(id, "removed from", ev);
+--- new
+        self.trace_membership(id, "removed from", ev);
+        let _ = self.tell_wants(id, Wants::NONE, ev);
+
+=== a socket action does not say it runs a dirty transfer
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_traced_as_c
+--- old
+            mstate::trace(&mut cx, format_args!("multi_run_dirty"));
+--- new
+            let _ = &mut cx;
+
+=== a handshake's socket is not watched to read while it sends
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_proxy_handshake_waits_to_send_then_to_read
+--- old
+                    Some(h) => h.interest() | Events::IN,
+--- new
+                    Some(h) => h.interest(),
+
+=== a handshake's socket is traced as one still connecting
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::wait_trace::a_tunnel_s_waits_are_traced_as_c
+--- old
+                Some(matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))))
+--- new
+                Some(false)

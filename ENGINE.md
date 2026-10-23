@@ -335,13 +335,18 @@ again as it adds a filter and as it starts over), `connected [0][…]` and `redu
 the connection is up, and `failed to connect [0][…]` before `connect failed -> N`, for a failed
 race and a failed handshake alike; `Curl_multi_will_close fd=N` as a drive closes a socket
 (`DriveCx`), which a socket a connection keeps is not, as C closes it on its internal handle.
-Planned (step 40j): from `wait` before it polls, each process transfer's
-`pollset[…], timeouts=N` and the last one's `multi_wait(fds=N, timeout=T) tinternal=I`, the
-waker counted in `fds` (§3.6). Not traced: the credentials line (`Curl_creds_trace`),
-`xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; event mode's socket-hash lines (`multi_run_dirty`, `ev
-new entry`, `ev entry … added transfer`, `ev update`, `ev update call`), which no step owns yet;
-a transfer let out of PENDING by another is traced entering CONNECT at its next step rather than
-as it is let.
+A transfer's pollset is traced wherever C makes one (`Curl_multi_pollset`): `pollset[…],
+timeouts=N` (`paused S/R (r/w)` for an empty one), for each transfer the multi works on (neither
+completed nor PENDING) as `wait` and `sockets` (`curl_multi_fdset`, `curl_multi_waitfds`)
+collect them, and for the transfer event handling assesses, after each run and as it is taken
+out; then `wait`'s `multi_wait(fds=N, timeout=T) tinternal=I` on the last of them, after the
+multi's own timeout is read, the waker counted in `fds` as it is watched (§3.6). A socket
+action traces `multi_run_dirty` as it comes to each dirty transfer. Not traced: the credentials
+line (`Curl_creds_trace`), `xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; event mode's socket-hash
+lines (`ev new entry`, `ev entry … added transfer`, `ev update`, `ev update call`, `ev last user
+gone`), which count the readers, writers and owners of C's socket hash entries, a bookkeeping the
+engine's `SocketTable` does not keep in that form; a transfer let out of PENDING by another is
+traced entering CONNECT at its next step rather than as it is let.
 
 `TCP` traces each send and receive on a transfer's connection, and the PROXY protocol's line,
 with what it asked for and what it came to. Through the drive's context (§3.6), it traces an
@@ -351,9 +356,11 @@ on fd=N`, or `poll/select error on fd=N` for one that polls in error or hung up;
 its filter goes: after the failure's `connect to … failed` for a failed attempt, and before
 `cf_socket_close, fd=N` and the multi's `Curl_multi_will_close` for a socket still open (the
 race's losers and its oldest attempt pruned, and a 407's redial). A connection that leaves the
-pool traces no `destroy`, as C closes it on its internal handle. Planned (step 40j): its pollset
-while it connects (`adjust_pollset, !connected, POLLOUT fd=N`), with the pollset's line; (step
-40k) the opening, the local address and the close of a socket whose connect fails at once, which
+pool traces no `destroy`, as C closes it on its internal handle. With a pollset made while the
+connection is set up, the socket's part in it: `adjust_pollset, !connected, POLLOUT fd=N` for
+each attempt, and `adjust_pollset, !active, POLLIN fd=N` for the socket a handshake runs over,
+which waits to read throughout as C's filter, connected but not in use, adds. Planned (step
+40k): the opening, the local address and the close of a socket whose connect fails at once, which
 the engine's network opens and connects in one call. Not traced: the health check's `is_alive`
 lines, which the pool's check makes with a silent context where C traces them on the transfer
 looking for a connection. Not traced: the receive
@@ -380,10 +387,11 @@ own wait is HTTP's for a 100, the only one there is) where C arms or clears it: 
 as it starts, the low-speed check, the rate limits, the next connect attempt and the wait for a
 100, each with what is left of its wait read from the clock as it is traced; the race's timer as
 its attempt connects and the 100's as it comes, runs out or the body ends. The first timer due
-is named as a socket action fires it; a perform fires it silently, as C's does. Planned (step
-40): each pending timer's `[X] expires in Nus` after its transfer's pollset line, and `[X] gives
-multi timeout in Nms` on the transfer whose timer is next, both from the multi's internal
-`multi_timeout`, which `wait`, the timer update and the shim's `curl_multi_timeout` call;
+is named as a socket action fires it; a perform fires it silently, as C's does. With the
+multi's lines on, each armed timer's `[X] expires in Nus` follows its transfer's pollset line,
+the first to fire first (`Deadlines::in_order`). `[X] gives multi timeout in Nms` names the timer
+the multi waits for, on its transfer, when nothing is ready (`multi_timeout`, which `wait`, the
+timer update and `Multi::timeout_traced`, the shim's `curl_multi_timeout`, call);
 `Multi::timeout(&self)` stays untraced for Rust callers.
 
 `HAPPY-EYEBALLS` traces the connect machine's race (C's `cf_ip_ballers_run`), the drive its
@@ -446,7 +454,8 @@ constant of the core's.
 pub struct Easy {
     options: Options,              // typed groups; handlers are Option<Box<dyn …>> inside
     report: TransferReport,        // the current or last transfer's; replaced whole at Init
-    private: Option<Box<Multi>>,   // perform's multi, created on first perform, kept after
+    private: Option<Box<Multi>>,   // perform's multi, created on first perform with a waker
+                                   // as C's has one, kept after
 }
 impl Easy {
     pub fn perform(&mut self) -> Result<(), Error>;
@@ -995,8 +1004,9 @@ The rules that keep this sound:
   `trace_membership` and `mark_expired_dirty` build one. `wait` takes the events for that, and
   traces in C's order: each process transfer's pollset and its timers, the transfer whose timer
   gives the multi's timeout, `multi_wait` on the last, then the poll; the socket list is built
-  after those call-outs, so no borrow of a socket is live across a debug handler. Planned (step
-  40).
+  after those call-outs, so no borrow of a socket is live across a debug handler. A pollset's
+  trace reads what it says from the run first (`PollsetTrace`), so the run stays in its slot
+  while the debug handler runs.
 - **Nested flushes cannot happen.** A callback of the transfer being stepped or replayed runs
   with its `Run` out, so `pause(me, Cont)` there only flips the value and marks it dirty; the
   replay under way sees it before its next entry (3235, 3236), and one that had stopped resumes
@@ -1251,9 +1261,10 @@ stream's `rx` is not empty (bytes that came after a tunnel's or a SOCKS proxy's 
 block while data is pending runs the transfer again (`sendrecv_dl` and
 `Curl_conn_data_pending`, through the step's `AtReadLimit` without its trace line). The pollset
 of an exchanging transfer passes through each layer's `adjust_pollset`, top down, unless the
-transfer waits for nothing, as `Curl_conn_adjust_pollset` gates a connected chain; C's other
-run-again, from the pollset (`multi_adjust_pollset`'s "still buffered input"), comes with the
-pollset's trace. The pool's health check asks `is_alive` down the chain, as
+transfer waits for nothing, as `Curl_conn_adjust_pollset` gates a connected chain. C's other
+run-again, from the pollset (`multi_adjust_pollset`'s "still buffered input -> mark as dirty",
+and its line), is not ported: whether the engine, whose step runs a transfer again on pending
+data, can make a pollset with input buffered is open. The pool's health check asks `is_alive` down the chain, as
 `Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068), the socket at the
 bottom polled at once: an error or a hang-up is dead, anything to read is input pending, and
 input pending on an idle HTTP/1 connection makes it unhealthy (1701).

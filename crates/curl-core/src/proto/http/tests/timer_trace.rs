@@ -63,8 +63,20 @@ fn a_leg_arms_its_limits_and_the_race_clears_its_timer() {
             "[MULTI] [CONNECTING] [PGRS-CONNECT] added Nus",
         ]
     );
+    // The wait before the connect is looked at again names each timer
+    // armed, the first to fire first, and the one the multi waits for.
     let timers: Vec<_> = lines.iter().filter(|l| l.starts_with("[TIMER]")).collect();
-    assert_eq!(timers.len(), 3, "{timers:?}");
+    assert_eq!(
+        timers,
+        [
+            "[TIMER] [TIMEOUT] set for 10000000us",
+            "[TIMER] [CONNECTTIMEOUT] set for 3000000us",
+            "[TIMER] [CONNECTTIMEOUT] expires in 3000000us",
+            "[TIMER] [TIMEOUT] expires in 10000000us",
+            "[TIMER] [CONNECTTIMEOUT] gives multi timeout in 3000ms",
+            "[TIMER] [HAPPY_EYEBALLS] cleared",
+        ]
+    );
 }
 
 /// A body announced with `Expect: 100-continue` arms the wait once the
@@ -120,9 +132,11 @@ fn a_wait_for_a_100_that_runs_out_is_cleared() {
         .iter()
         .position(|l| l == "[TIMER] [100_TIMEOUT] set for 300000us")
         .unwrap();
+    // The wait is the one the multi waits for.
     assert_eq!(
-        text[at + 1..at + 3],
+        text[at + 1..at + 4],
         [
+            "[TIMER] [100_TIMEOUT] gives multi timeout in 300ms",
             "[TIMER] [100_TIMEOUT] cleared",
             "Done waiting for 100-continue"
         ]

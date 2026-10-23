@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+--trace-config
+</keywords>
+</info>
+
+# Server-side
+<reply>
+<data crlf="headers">
+HTTP/1.1 200 OK
+Content-Length: 6
+
+hello
+</data>
+</reply>
+
+# Client-side
+<client>
+<features>
+verbose-strings
+</features>
+<server>
+http
+</server>
+<name>
+--trace-config multi traces the wait before the first step
+</name>
+<command>
+-v --trace-config multi http://%HOSTIP:%HTTPPORT/%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<file name="%LOGDIR/stderr%TESTNUMBER" mode="text">
+* [MULTI] [INIT] pollset[], timeouts=0, paused 0/0 (r/w)
+* [MULTI] [INIT] multi_wait(fds=1, timeout=0) tinternal=0
+</file>
+<stripfile>
+$_ = '' if !/^\* \[MULTI\] \[INIT\] (?:pollset|multi_wait)/
+</stripfile>
+</verify>
+</testcase>

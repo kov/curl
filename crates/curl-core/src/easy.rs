@@ -4,11 +4,11 @@ use std::fmt;
 use std::io::Write as _;
 use std::time::Duration;
 
-use curl_alloc::{OutOfMemory, TryVec as _, try_box};
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use crate::coding::Decoders;
 use crate::components::Components;
-use crate::conn::io::SystemNet;
+use crate::conn::io::{SystemNet, Waker};
 use crate::cookie::{Jar, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
@@ -467,11 +467,18 @@ impl Easy {
         let mut multi = match self.private.take() {
             Some(Private(multi)) => multi,
             None => {
+                // A waker, as every C multi has one (`Curl_wakeup_init`),
+                // watched as a perform's multi waits; without the
+                // descriptors for it, the multi goes without.
+                let waker = match Waker::new() {
+                    Ok(w) => Some(TryArc::try_new(w).map_err(oom)?),
+                    Err(_) => None,
+                };
                 let env = Env {
                     clock: try_box(SystemClock::new()).map_err(oom)?,
                     net: try_box(SystemNet).map_err(oom)?,
                     arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
-                    waker: None,
+                    waker,
                 };
                 try_box(Multi::new(env).map_err(oom)?).map_err(oom)?
             }
@@ -552,7 +559,7 @@ fn run_to_end(
 /// (`easy_transfer`).
 fn wait_to_end(multi: &mut Multi) -> Result<(), ErrorKind> {
     loop {
-        if let Err(e) = multi.wait(&mut [], POLL, WaitMode::Poll) {
+        if let Err(e) = multi.wait(&mut [], POLL, WaitMode::Poll, &mut NoEvents) {
             return Err(multi_error(e));
         }
         match multi.perform(&mut NoEvents) {
@@ -842,6 +849,20 @@ mod tests {
     }
 
     /// A handle added to a multi leaves its own multi behind.
+    /// A perform's own multi has a waker, as every C multi has one, which
+    /// its waits count (`multi_wait`'s `fds`).
+    #[test]
+    fn a_perform_s_multi_has_a_waker() {
+        let s = Scratch::new("waker");
+        std::fs::write(s.0.join("f"), b"x").unwrap();
+        let (mut e, _) = easy(&s.url("f"));
+        e.perform().unwrap();
+        let Some(Private(multi)) = &e.private else {
+            panic!("the multi is kept");
+        };
+        assert!(multi.waker().is_some());
+    }
+
     #[test]
     fn adding_a_handle_drops_its_own_multi() {
         let s = Scratch::new("add");

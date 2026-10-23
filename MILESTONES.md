@@ -579,7 +579,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       The drive traces its attempts itself, in C's order; `adjust_pollset` goes with j's
       pollset line.
     - **j. The trace of `wait`:** pollsets, `expires in`, `gives multi timeout` and
-      `multi_wait`, from a traced internal `multi_timeout`.
+      `multi_wait`, from a traced internal `multi_timeout`. **Done.** With them the socket's
+      `adjust_pollset` lines and event mode's `multi_run_dirty`; its `ev …` lines are not
+      traced.
     - **k. The shim's socket hooks:** OPENSOCKETFUNCTION, SOCKOPTFUNCTION and
       CLOSESOCKETFUNCTION (585, 1522, 1530, 1960); the socket options as C sets them (TCP keepalive on
       by default in the tool, `--tcp-nodelay`, `--tcp-fastopen`, `--keepalive*`, `--ip-tos`,

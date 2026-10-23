@@ -273,6 +273,17 @@ exclude_re = [
     # Counting no bytes adds nothing, and the update the bucket's drain
     # makes earns no more than the next would.
     'deliver/mod\.rs:.*: replace > with >= in BodyAccountant::counted$',
+    # More descriptors than fit on the stack are listed on the heap: the
+    # same descriptors are polled whichever holds them.
+    'conn/io\.rs:.*: replace match guard n <= ON_STACK with false in poll_together$',
+    'multi/wait\.rs:.*: replace match guard (wanted|n_fds) <= ON_STACK with false in Multi<H>::wait$',
+    # A known size read to its end sets `seen_eos`, and the next read
+    # returns before reading: one that finds nothing has read less than
+    # the size, which a tree's closing boundary keeps above 0.
+    'mime/read\.rs:.*: replace < with <= in MimeReader::read$',
+    # A share's pool is used to find, check and close connections, never
+    # to make one: no address is scoped through it.
+    'multi/cx\.rs:.*CloseLater<._>>::link_local_scope',
     # Echo is turned off on the controlling terminal, which a test run has
     # none of to own: opening `/dev/tty`, its settings, reading from it
     # and putting them back are reached only from a terminal, by hand.

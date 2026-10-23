@@ -292,7 +292,7 @@ fn node_transfers(
                 url: urls.as_ref().unwrap_or(&literal),
                 upload: uploads.as_ref(),
             });
-            rate_wait(run);
+            rate_wait(run.global.ms_per_transfer, run.started.get(), run.msgs);
             let step = transfer(op, run, node, this, upload, names, *first);
             *first = false;
             match step {
@@ -316,18 +316,18 @@ fn ends_run(result: Result<(), ErrorKind>, fail_early: bool) -> bool {
     result.is_err_and(fatal) || (result.is_err() && fail_early)
 }
 
-/// Wait for what is left of `--rate`'s time since the last transfer
-/// started, if any, saying so (`serial_transfers`).
-fn rate_wait(run: &Shared<'_, '_>) {
-    let Some(started) = run.started.get() else {
+/// Wait for what is left of `every` milliseconds, `--rate`'s, since the
+/// last transfer `started`, if one did, saying so (`serial_transfers`).
+fn rate_wait(every: u64, started: Option<Instant>, msgs: Messages) {
+    let Some(started) = started else {
         return;
     };
     let took = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    if let Some(wait) = rate_left(run.global.ms_per_transfer, took) {
+    if let Some(wait) = rate_left(every, took) {
         if let Ok(note) = try_format(format_args!(
             "Transfer took {took} ms, waits {wait}ms as set by --rate"
         )) {
-            run.msgs.note(&[note.as_bytes()]);
+            msgs.note(&[note.as_bytes()]);
         }
         std::thread::sleep(Duration::from_millis(wait));
     }
@@ -1985,6 +1985,26 @@ mod tests {
         assert_eq!(rate_left(1000, 999), Some(1));
         assert_eq!(rate_left(1000, 1000), None);
         assert_eq!(rate_left(1000, 5000), None);
+    }
+
+    /// `--rate` waits what is left of its time, noted when tracing.
+    #[test]
+    fn waits_for_the_rate_and_says_so() {
+        let start = Instant::now();
+        let said = crate::msgs::captured(|mut msgs| {
+            msgs.tracing = true;
+            rate_wait(300, Some(start), msgs);
+        });
+        assert!(start.elapsed() >= Duration::from_millis(300));
+        assert!(said.starts_with("Note: Transfer took "), "{said}");
+        assert!(said.ends_with("ms as set by --rate\n"), "{said}");
+        let first = Instant::now();
+        let said = crate::msgs::captured(|mut msgs| {
+            msgs.tracing = true;
+            rate_wait(300, None, msgs);
+        });
+        assert!(first.elapsed() < Duration::from_millis(300));
+        assert_eq!(said, "");
     }
 
     /// `--speed-limit` and `--speed-time` both, or no check; a time past

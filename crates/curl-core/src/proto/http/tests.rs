@@ -6152,3 +6152,52 @@ fn a_probe_after_a_sent_tree_sends_its_type() {
         "{probe}"
     );
 }
+
+/// What the debug handler is given of each header line received, ids on
+/// or off, for a line of `len` bytes.
+fn header_traced(ids: bool, len: usize) -> Vec<u8> {
+    let field = format!("A: {}\r\n", "x".repeat(len - 5));
+    let reply = format!("HTTP/1.1 200 OK\r\n{field}Content-Length: 0\r\n\r\n");
+    let (mut m, talk, _) = server(&[reply.as_bytes()], false);
+    let mut e = Easy::new();
+    if ids {
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"lib-ids");
+        e.set_components(Some(c));
+    }
+    let ran = get_with(&mut m, e, "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    ran.seen.of("in").into_iter().nth(1).unwrap()
+}
+
+/// With the ids on, a line traced to the debug handler starts with them
+/// when it is shorter than a trace line, cut and marked `...` where it
+/// leaves no room for C's zero byte; a longer one goes as it is, and
+/// without the ids every line does (`Curl_debug`, `trc_end_buf`).
+#[test]
+fn traced_bytes_take_the_ids_as_c_does() {
+    // C's `TRC_LINE_MAX`.
+    const LINE_MAX: usize = 2048;
+    let ids = b"[0-0] ";
+    let line = |len: usize| {
+        let mut l = b"A: ".to_vec();
+        l.extend(vec![b'x'; len - 5]);
+        l.extend(b"\r\n");
+        l
+    };
+    // Room left: whole, after the ids.
+    let short = header_traced(true, 10);
+    assert_eq!(short, [&ids[..], &line(10)].concat());
+    // The ids and the line fill the trace line but for its zero byte.
+    for len in [LINE_MAX - 1 - ids.len(), LINE_MAX - 1] {
+        let cut = header_traced(true, len);
+        assert_eq!(cut.len(), LINE_MAX - 1, "{len}");
+        assert!(cut.starts_with(b"[0-0] A: xx"), "{len}");
+        assert!(cut.ends_with(b"x...\n"), "{len}");
+    }
+    // As long as a trace line: as it is, no ids.
+    assert_eq!(header_traced(true, LINE_MAX), line(LINE_MAX));
+    // No ids: as it is.
+    assert_eq!(header_traced(false, LINE_MAX - 1), line(LINE_MAX - 1));
+    assert_eq!(header_traced(false, 10), line(10));
+}

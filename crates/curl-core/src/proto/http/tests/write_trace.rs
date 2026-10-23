@@ -175,6 +175,20 @@ fn each_coding_is_looked_for_and_its_decoder_named_as_c() {
             [WRITE] added content decoder identity -> 0"
         )
     );
+    // A coding the handle has no decoder for is the error writer's, as a
+    // coding built without is in C.
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Encoding: deflate\r\nContent-Length: 3\r\n\r\nabc";
+    let (ran, lines) = written(undoing(), reply, |o| {
+        o.http.accept_encoding = Some(crate::coding::AcceptEncoding::All);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::BadContentEncoding));
+    assert_eq!(
+        decoders(lines),
+        expect(
+            "[WRITE] looking for content decoder: deflate
+            [WRITE] added content decoder ce-error -> 0"
+        )
+    );
 }
 
 /// A chunked body that does not end in LF after its last CR says what it
@@ -355,4 +369,129 @@ fn a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed() {
             [WRITE] [OUT] done"
         )
     );
+}
+
+/// The write lines of a run, as `written` gathers them.
+fn write_lines(ran: &Ran) -> Vec<String> {
+    ran.seen
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[WRITE] "))
+        .map(|l| l.trim_end().to_owned())
+        .collect()
+}
+
+/// Each kind of output is typed as C's writers mark it (`CLIENTWRITE_*`,
+/// in hex): an interim response's head, a proxy's answer to `CONNECT`,
+/// and the end of a body that ends with its connection. The C build
+/// traces the same types for the same responses.
+#[test]
+fn each_kind_of_output_is_typed_as_c_marks_it() {
+    let interim = b"HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc";
+    let (ran, lines) = written(writing(), interim, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    for want in [
+        "[WRITE] download_write header(type=2c, blen=23) -> 0",
+        "[WRITE] download_write header(type=24, blen=2) -> 0",
+    ] {
+        assert!(lines.iter().any(|l| l == want), "{want}: {lines:?}");
+    }
+    let (mut m, talk, _) = server(&[b"HTTP/1.0 200 OK\r\n\r\nabc"], true);
+    let ran = get_with(&mut m, writing(), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let lines = write_lines(&ran);
+    for want in [
+        "[WRITE] download_write body(type=81, blen=0) -> 0",
+        "[WRITE] client_write(type=81, len=0) -> 0",
+    ] {
+        assert!(lines.iter().any(|l| l == want), "{want}: {lines:?}");
+    }
+    let refused = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[refused], false);
+    let ran = get_with(&mut m, writing(), "/", talk, tunneled);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let lines = write_lines(&ran);
+    for want in [
+        "[WRITE] download_write header(type=1c, blen=24) -> 0",
+        "[WRITE] download_write header(type=14, blen=19) -> 0",
+        "[WRITE] download_write header(type=14, blen=2) -> 0",
+    ] {
+        assert!(lines.iter().any(|l| l == want), "{want}: {lines:?}");
+    }
+}
+
+/// A body past the largest file allowed is not written: what the limit
+/// leaves room for is, and the rest fails the transfer without a write.
+#[test]
+fn a_body_past_the_size_limit_is_not_written() {
+    let reply = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
+        5\r\nhello\r\n7\r\n world\n\r\n0\r\n\r\n";
+    let (ran, lines) = written(writing(), reply, |o| {
+        o.limits.max_filesize = NonZeroU64::new(5);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::FilesizeExceeded));
+    let bodies: Vec<_> = lines
+        .iter()
+        .filter(|l| l.starts_with("[WRITE] download_write body"))
+        .collect();
+    assert_eq!(bodies, ["[WRITE] download_write body(type=1, blen=5) -> 0"]);
+}
+
+/// Accepts the first write, pauses at the second, then accepts again.
+#[derive(Clone, Default)]
+struct PausesSecond(Arc<Mutex<u32>>);
+
+impl WriteHandler for PausesSecond {
+    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        let mut calls = self.0.lock().unwrap();
+        *calls += 1;
+        if *calls == 2 {
+            Write::Pause
+        } else {
+            Write::Accepted
+        }
+    }
+}
+
+/// A body written in pieces and paused after the first holds what the
+/// handler did not take (`cw_out_do_write`).
+#[test]
+fn a_body_paused_part_way_holds_what_is_left() {
+    const SIZE: usize = 40_000;
+    let reply = [
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {SIZE}\r\n\r\n").into_bytes(),
+        vec![b'a'; SIZE],
+    ]
+    .concat();
+    let (mut m, _talk, _clock) = server(&[&reply], false);
+    let mut e = writing();
+    let seen = Seen::default();
+    let writer = PausesSecond::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.output.verbose = true;
+    o.limits.buffer_size = crate::options::BufferSize::clamped(65536);
+    o.callbacks.write = Some(Handler::write(writer.clone()).unwrap());
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let mut passes = 0;
+    let result = loop {
+        passes += 1;
+        assert!(passes < 100, "the transfer does not end");
+        m.perform(&mut NoEvents).unwrap();
+        if let Some(done) = m.info_read() {
+            break done.result;
+        }
+        m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    };
+    assert_eq!(result, Ok(()));
+    let left = SIZE - 16384;
+    let want = format!("[WRITE] [OUT] paused, buffering {left} more bytes (0/67108864)");
+    let lines: Vec<String> = seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    assert!(lines.contains(&want), "{lines:?}");
 }

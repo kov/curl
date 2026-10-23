@@ -7,6 +7,7 @@
 use super::*;
 use crate::components::Components;
 use crate::conn::io::Peer;
+use std::num::NonZeroUsize;
 
 /// A handle tracing the multi component.
 fn tracing_multi() -> Easy {
@@ -207,4 +208,70 @@ fn sends_and_receives_are_traced_as_c() {
             format!("[TCP] recv(len=16384) -> 0, {reply}"),
         ]
     );
+}
+
+/// The TCP component's lines a run traced.
+fn tcp_lines(ran: &Ran) -> Vec<String> {
+    ran.seen
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[TCP] send"))
+        .map(|l| l.trim_end().to_owned())
+        .collect()
+}
+
+/// A request the socket takes in pieces is sent on from where the last
+/// send stopped, each send asking for what is left of it.
+#[test]
+fn a_request_sent_in_pieces_asks_for_what_is_left() {
+    let talk = Conversation::replies(&[OK], false).taking(NonZeroUsize::new(50).unwrap());
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let request = request_of("/").len();
+    let want: Vec<String> = (0..request)
+        .step_by(50)
+        .map(|sent| {
+            let left = request - sent;
+            format!("[TCP] send(len={left}) -> 0, {}", left.min(50))
+        })
+        .collect();
+    assert_eq!(tcp_lines(&ran), want);
+}
+
+/// The PROXY protocol's line, taken in pieces, is sent on from where the
+/// last send stopped (`cf_haproxy_connect`).
+#[test]
+fn the_proxy_protocol_s_line_sent_in_pieces_asks_for_what_is_left() {
+    let talk = Conversation::replies(&[OK], false).taking(NonZeroUsize::new(10).unwrap());
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk.clone(), |o| {
+        o.proxy.make_mut().unwrap().haproxy = true;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let received = talk.received();
+    let line = received.iter().position(|&b| b == b'\n').unwrap() + 1;
+    let lines = tcp_lines(&ran);
+    let want: Vec<String> = (0..line)
+        .step_by(10)
+        .map(|sent| {
+            let left = line - sent;
+            format!("[TCP] send(len={left}) -> 0, {}", left.min(10))
+        })
+        .collect();
+    assert_eq!(lines[..want.len()], want);
+}
+
+/// A response that closes its connection has `multi_done` say so, though
+/// the request ended well.
+#[test]
+fn a_response_that_closes_is_traced_as_closing() {
+    let closing = b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc";
+    let (mut m, talk, _) = server(&[closing], false);
+    let ran = get_with(&mut m, tracing_multi(), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let want = format!(
+        "[MULTI] [DONE] multi_done, terminating conn #0 to 127.0.0.1:{PORT}, forbid=0, close=1, premature=0, conn_multiplex=0"
+    );
+    assert!(multi_lines(&ran).contains(&want), "{:?}", multi_lines(&ran));
 }

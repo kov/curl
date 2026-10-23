@@ -271,6 +271,12 @@ exclude_re = [
     # Counting no bytes adds nothing, and the update the bucket's drain
     # makes earns no more than the next would.
     'deliver/mod\.rs:.*: replace > with >= in BodyAccountant::counted$',
+    # The write types' bits are disjoint, and a type is ended once, so
+    # joining them by xor is joining them by or.
+    'deliver/mod\.rs:.*: replace \| with \^ in WriteType::(of|eos)$',
+    # Held output is replayed when the kind changes between body and not
+    # body: a test inverted on both sides of the comparison compares alike.
+    'deliver/mod\.rs:.*: replace == with != in is_body$',
     # More descriptors than fit on the stack are listed on the heap: the
     # same descriptors are polled whichever holds them.
     'conn/io\.rs:.*: replace match guard n <= ON_STACK with false in poll_together$',

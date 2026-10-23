@@ -490,7 +490,7 @@ pub(crate) fn write_resp<H: Host>(
 pub(crate) struct WriteType(u16);
 
 impl WriteType {
-    pub(crate) const BODY: WriteType = WriteType(1 << 0);
+    pub(crate) const BODY: WriteType = WriteType(1);
     const HEADER: u16 = 1 << 2;
     const STATUS: u16 = 1 << 3;
     const CONNECT: u16 = 1 << 4;

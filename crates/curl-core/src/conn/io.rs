@@ -306,6 +306,8 @@ struct Wire {
     /// Sends still to be refused as would-block, though the socket polls
     /// writable: a full send buffer that drains by the next poll.
     stalls: usize,
+    /// The most a send takes; the rest is left to the sender.
+    takes: Option<std::num::NonZeroUsize>,
     /// Each reply arrives a poll after its request: its first read
     /// would block.
     late: bool,
@@ -400,6 +402,16 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .stalls = n;
+        self
+    }
+
+    /// The same peer, each send taking at most `n` bytes: a send buffer
+    /// with little room.
+    pub fn taking(self, n: std::num::NonZeroUsize) -> Conversation {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .takes = Some(n);
         self
     }
 
@@ -794,8 +806,10 @@ impl Socket for FakeSocket {
     }
 
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
-        let n = std::num::NonZeroUsize::new(buf.len()).expect("a send needs bytes");
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
+        let n = std::num::NonZeroUsize::new(buf.len()).expect("a send needs bytes");
+        let n = wire.takes.map_or(n, |most| n.min(most));
+        let buf = &buf[..n.get()];
         if wire.hung_up || wire.breaks_after.is_some_and(|n| wire.sends >= n) {
             return Err(io::Error::from_raw_os_error(libc_errno::EPIPE));
         }

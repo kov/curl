@@ -336,6 +336,15 @@ mod tests {
         assert_eq!(on(&[b"-,+,write"]), ["WRITE"]);
     }
 
+    /// Shown, a set lists the components it traces, and only those.
+    #[test]
+    fn a_set_shows_the_components_it_traces() {
+        let c = Components::new().unwrap();
+        assert_eq!(format!("{c:?}"), "{}");
+        c.configure(b"read,tcp");
+        assert_eq!(format!("{c:?}"), "{Read, Tcp}");
+    }
+
     #[test]
     fn categories_name_their_components() {
         assert_eq!(on(&[b"all"]).len(), Component::ALL.len());

@@ -529,24 +529,24 @@ cargo-mutants run on the milestone's diff.
 
 ## Milestone 3: connections in layers, then TLS
 
-Status: **planned**. Opens with what TLS stands on, decided at milestone 2's review:
+Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's review.
 
-- **Component tracing.** `curl_global_trace` and `--trace-config`: one process-wide setting
-  in the shim's root, read live through a shared handle the core is given; C's components,
-  syntax and `ids`/`time` prefixes; the `CURL_TRC_*` lines of the components built so far,
-  each later protocol bringing its own. Closes 3236, 3235, 1515, 758 and 19. With it, the
-  debug handler reachable outside a transfer, so `COOKIELIST`'s cookie lines are traced
-  where C traces them.
-- **The engine rewrite in ENGINE.md:** who owns a connection (exclusive leases; pool places
-  for multiplexed, reserved and closing connections; the socket's closer carried from its
-  creation; a lease checked against its home pool) and the layer stack as a pull chain like
-  C's filters, one `Stream` owned by a dialed socket and a connection alike.
-- **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
-- **HTTP's decisions after an exchange** moved from the engine into `proto/http`.
-- **TLS**, its first sub-step the layer stack; Ed25519 HTTP signatures on the OpenSSL
-  binding it creates (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025).
-- **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
-  claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
+39. **Component tracing.** **In progress.** `curl_global_trace` and `--trace-config`: one
+    process-wide setting in the shim's root, read live through a shared handle the core is
+    given; C's components, syntax and `ids`/`time` prefixes; the `CURL_TRC_*` lines of the
+    components built so far, each later protocol bringing its own. Closes 3236, 3235, 1515, 758
+    and 19. With it, the debug handler reachable outside a transfer, so `COOKIELIST`'s cookie
+    lines are traced where C traces them.
+40. **The engine rewrite in ENGINE.md:** who owns a connection (exclusive leases; pool places
+    for multiplexed, reserved and closing connections; the socket's closer carried from its
+    creation; a lease checked against its home pool) and the layer stack as a pull chain like
+    C's filters, one `Stream` owned by a dialed socket and a connection alike.
+41. **Error codes only the shim produces** in a shim-side enum, before TLS's codes go live.
+42. **HTTP's decisions after an exchange** moved from the engine into `proto/http`.
+43. **TLS**, its first sub-step the layer stack; Ed25519 HTTP signatures on the OpenSSL
+    binding it creates (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025).
+44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
+    claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
 
 After this milestone: **a corpus of real command lines**, as compatibility guidance. Some
 thousands of curl invocations sampled from public shell scripts, Dockerfiles, CI configurations

@@ -5861,8 +5861,11 @@ fn a_body_held_for_a_100_earns_from_the_head() {
 /// go, from as many fills as that takes.
 #[test]
 fn a_head_goes_beside_a_second_s_worth_of_the_body() {
+    // Under the least burst, a second's worth alone: the limit starts
+    // afresh as the body is first read (`Curl_rlimit_start`).
     for (rate, sends_want) in [
-        (50_000, &[50_000][..]),
+        (10_000, &[10_000][..]),
+        (50_000, &[50_000]),
         (65_409, &[65_409]),
         (65_500, &[65_409, 91]),
     ] {
@@ -6093,4 +6096,41 @@ fn a_tree_not_read_needs_no_rewind() {
     assert_eq!(stream.rewinds.get(), 0);
     let sent = String::from_utf8_lossy(&second.received()).into_owned();
     assert!(sent.contains("\r\n\r\nabc\r\n--"), "{sent}");
+}
+
+/// A Digest probe after a request that sent the tree types itself with
+/// the head lines that request sent, as C sends the tree's headers it
+/// made last (`http_add_content_hds`; the C library, one easy handle
+/// posting one tree without and then with Digest, sends
+/// `Content-Length: 0` and the earlier `Content-Type` in its probe).
+#[test]
+fn a_probe_after_a_sent_tree_sends_its_type() {
+    let tree = mime_tree(crate::mime::Content::Bytes(
+        curl_alloc::TryArc::try_new(b"b".to_vec()).unwrap(),
+    ));
+    let first = Conversation::new(OK, true);
+    let second = Conversation::replies(&[DIGEST_CHALLENGE, OK], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let ran = get(&mut m, "/1", first.clone(), |o| {
+        o.method = Method::Post;
+        o.upload = mime_source(tree);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = String::from_utf8_lossy(&first.received()).into_owned();
+    let typed = sent
+        .lines()
+        .find(|l| l.starts_with("Content-Type: multipart/form-data; boundary="))
+        .unwrap()
+        .to_string();
+    let ran = get_with(&mut m, ran.easy, "/2", second.clone(), |o| {
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = String::from_utf8_lossy(&second.received()).into_owned();
+    let probe = &sent[..sent.find("\r\n\r\n").unwrap() + 4];
+    assert!(
+        probe.ends_with(&format!("Content-Length: 0\r\n{typed}\r\n\r\n")),
+        "{probe}"
+    );
 }

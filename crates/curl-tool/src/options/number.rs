@@ -8,7 +8,7 @@ const LONG_MAX: u64 = i64::MAX.unsigned_abs();
 /// The leading decimal number of `s`, and what follows it, as
 /// `curlx_str_number` reads it: at least one digit, no sign, no space, and
 /// `None` above `max`.
-fn leading_number(s: &[u8], max: u64) -> Option<(u64, &[u8])> {
+pub(crate) fn leading_number(s: &[u8], max: u64) -> Option<(u64, &[u8])> {
     let digits = s.iter().take_while(|b| b.is_ascii_digit()).count();
     if digits == 0 {
         return None;
@@ -81,6 +81,47 @@ pub(crate) fn octal(s: &[u8], max: u64) -> Result<u64, ParamError> {
         return Err(ParamError::BadNumeric);
     }
     Ok(n)
+}
+
+/// The shortest time between transfer starts `--rate` asks for, in
+/// milliseconds, as `set_rate` reads it: transfers per hour, or per `N`
+/// seconds, minutes, hours or days after a `/`, `N` 1 if not given. What
+/// follows the number, or the unit, is ignored. `bad` is told the error
+/// C reports about the unit.
+pub(crate) fn rate(s: &[u8], bad: &mut dyn FnMut(&[u8])) -> Result<u64, ParamError> {
+    const MAX: u64 = i64::MAX.unsigned_abs();
+    let (per, rest) = leading_number(s, MAX).ok_or(ParamError::BadNumeric)?;
+    if per < 1 {
+        return Err(ParamError::BadUse);
+    }
+    let mut err = None;
+    // Per hour unless said otherwise.
+    let mut span: u64 = 60 * 60 * 1000;
+    if let Some(rest) = rest.strip_prefix(b"/") {
+        let (units, rest) = leading_number(rest, MAX).unwrap_or((1, rest));
+        match rest.first() {
+            Some(b's') => span = 1000,
+            Some(b'm') => span = 60 * 1000,
+            Some(b'h') => {}
+            Some(b'd') => span = 24 * 60 * 60 * 1000,
+            _ => {
+                bad(b"unsupported --rate unit");
+                err = Some(ParamError::BadUse);
+            }
+        }
+        // The check is made after an unknown unit too, as in C.
+        if MAX / span < units {
+            bad(b"too large --rate unit");
+            err = Some(ParamError::NumberTooLarge);
+        } else {
+            span *= units;
+        }
+    }
+    match err {
+        Some(e) => Err(e),
+        None if per > span => Err(ParamError::NumberTooLarge),
+        None => Ok(span / per),
+    }
 }
 
 /// A number of seconds with an optional fraction, in milliseconds, as
@@ -235,6 +276,60 @@ mod tests {
         assert_eq!(offset(b"-1"), Err(ParamError::BadNumeric));
         assert_eq!(offset(b"1k"), Err(ParamError::BadNumeric));
         assert_eq!(offset(b""), Err(ParamError::BadNumeric));
+    }
+
+    /// `set_rate`, as the C tool reads `--rate`.
+    #[test]
+    fn rate_like_c() {
+        use ParamError::*;
+        let read = |s: &str| {
+            let mut said = Vec::new();
+            let got = rate(s.as_bytes(), &mut |m| {
+                said.push(String::from_utf8(m.to_vec()).unwrap())
+            });
+            (got, said)
+        };
+        for (given, ms) in [
+            ("1/s", 1000),
+            ("2/s", 500),
+            ("3/s", 333),
+            ("1/3s", 3000),
+            ("10/m", 6000),
+            ("1/h", 3_600_000),
+            ("2", 1_800_000),
+            ("2x", 1_800_000),
+            ("1/d", 86_400_000),
+            ("1/2days", 172_800_000),
+            ("1000/s", 1),
+        ] {
+            assert_eq!(read(given), (Ok(ms), vec![]), "{given}");
+        }
+        assert_eq!(read("1001/s").0, Err(NumberTooLarge));
+        assert_eq!(read("0/s").0, Err(BadUse));
+        assert_eq!(read("x").0, Err(BadNumeric));
+        assert_eq!(read("-1").0, Err(BadNumeric));
+        assert_eq!(read("99999999999999999999").0, Err(BadNumeric));
+        let unknown = vec!["unsupported --rate unit".to_string()];
+        assert_eq!(read("1/w"), (Err(BadUse), unknown.clone()));
+        assert_eq!(read("1/"), (Err(BadUse), unknown.clone()));
+        assert_eq!(read("1/xs"), (Err(BadUse), unknown));
+        assert_eq!(
+            read("1/9999999999999999s"),
+            (
+                Err(NumberTooLarge),
+                vec!["too large --rate unit".to_string()]
+            )
+        );
+        assert_eq!(
+            read("1/9999999999999999w"),
+            (
+                Err(NumberTooLarge),
+                vec![
+                    "unsupported --rate unit".to_string(),
+                    "too large --rate unit".to_string()
+                ]
+            )
+        );
     }
 
     /// `oct2nummax`, as the C tool reads `--create-file-mode`.

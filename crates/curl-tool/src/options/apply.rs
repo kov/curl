@@ -509,6 +509,11 @@ pub(crate) struct Global<'a> {
     pub(crate) no_progress: bool,
     /// `--progress-bar`: the bar in place of the meter.
     pub(crate) progress_bar: bool,
+    /// `--rate`: the shortest time between the starts of two transfers,
+    /// in milliseconds; 0 for none.
+    pub(crate) ms_per_transfer: u64,
+    /// `--fail-early`: the first transfer to fail ends the rest.
+    pub(crate) fail_early: bool,
     /// `--no-styled-output`: header lines to a terminal are written as
     /// they came.
     pub(crate) unstyled: bool,
@@ -1270,6 +1275,10 @@ pub(crate) fn apply<'a>(
         Opt::ProgressMeter => line.global.no_progress = !value.toggle(),
         Opt::ProgressBar => line.global.progress_bar = value.toggle(),
         Opt::StyledOutput => line.global.unstyled = !value.toggle(),
+        Opt::FailEarly => line.global.fail_early = value.toggle(),
+        Opt::Rate => {
+            line.global.ms_per_transfer = number::rate(value.text(), &mut |m| msgs.error(&[m]))?;
+        }
         Opt::Verbose => verbose(line, msgs, value.toggle())?,
         Opt::Trace | Opt::TraceAscii => {
             let file = value.text();
@@ -1348,7 +1357,6 @@ pub(crate) fn apply<'a>(
         | Opt::Engine
         | Opt::Eprt
         | Opt::Epsv
-        | Opt::FailEarly
         | Opt::FalseStart
         | Opt::FtpAccount
         | Opt::FtpAlternativeToUser
@@ -1427,7 +1435,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyTlsv1
         | Opt::Pubkey
         | Opt::Quote
-        | Opt::Rate
         | Opt::RetryConnrefused
         | Opt::SaslAuthzid
         | Opt::SaslIr

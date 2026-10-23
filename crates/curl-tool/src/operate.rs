@@ -2,6 +2,7 @@
 //! another (`src/tool_operate.c`, its serial path).
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::fs::File;
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
@@ -86,6 +87,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         msgs,
         share: &share,
         suffixes: &suffixes,
+        started: Cell::new(None),
     };
     let ending = run_all(line, &run);
     // What is left is written at exit; a failure then goes unreported, as
@@ -290,12 +292,13 @@ fn node_transfers(
                 url: urls.as_ref().unwrap_or(&literal),
                 upload: uploads.as_ref(),
             });
+            rate_wait(run);
             let step = transfer(op, run, node, this, upload, names, *first);
             *first = false;
             match step {
                 Step::Ran(result) => {
                     *last = result;
-                    if result.is_err_and(fatal) {
+                    if result.is_err_and(fatal) || (result.is_err() && run.global.fail_early) {
                         return Some(result);
                     }
                 }
@@ -305,6 +308,26 @@ fn node_transfers(
         }
     }
     None
+}
+
+/// Wait for what is left of `--rate`'s time since the last transfer
+/// started, if any, saying so (`serial_transfers`).
+fn rate_wait(run: &Shared<'_, '_>) {
+    let every = run.global.ms_per_transfer;
+    let Some(started) = run.started.get() else {
+        return;
+    };
+    let took = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if every == 0 || took >= every {
+        return;
+    }
+    if let Ok(note) = try_format(format_args!(
+        "Transfer took {took} ms, waits {}ms as set by --rate",
+        every - took
+    )) {
+        run.msgs.note(&[note.as_bytes()]);
+    }
+    std::thread::sleep(Duration::from_millis(every - took));
 }
 
 /// Make each directory `path`, a file's name, is in that is not there
@@ -398,6 +421,9 @@ struct Shared<'a, 'l> {
     msgs: Messages,
     share: &'a Share,
     suffixes: &'a Suffixes,
+    /// When the last transfer, or its last attempt, started, for
+    /// `--rate`.
+    started: Cell<Option<Instant>>,
 }
 
 /// Set up, run and finish one URL's transfer (`create_single`,
@@ -733,10 +759,12 @@ fn transfer(
         }
     }
     let ended = if skip {
+        run.started.set(Some(Instant::now()));
         Ended::Skipped
     } else {
         let mut retrying = Retrying::new(op, resume_from);
         loop {
+            run.started.set(Some(Instant::now()));
             // Opened for each attempt, from its start.
             if let Some(file) = upload {
                 match open_upload(file) {

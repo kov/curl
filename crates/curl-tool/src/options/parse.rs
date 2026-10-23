@@ -953,6 +953,29 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_switches_for_every_transfer() {
+        let g = |args: &[&str]| {
+            let l = line(args);
+            (
+                l.global.fail_early,
+                l.global.unstyled,
+                l.global.ms_per_transfer,
+            )
+        };
+        assert_eq!(g(&["x"]), (false, false, 0));
+        assert_eq!(
+            g(&["--fail-early", "--no-styled-output", "x", "--rate", "4/s"]),
+            (true, true, 250)
+        );
+        // They are the whole command line's, whatever operation sets them.
+        assert_eq!(
+            g(&["x", "--fail-early", "--next", "y", "--no-fail-early"]),
+            (false, false, 0)
+        );
+        assert_eq!(run(&["x", "--rate", "1/w"]), Err(ParamError::BadUse));
+    }
+
+    #[test]
     fn reads_the_progress_meter_switch() {
         assert!(line(&["x", "--no-progress-meter"]).global.no_progress);
         assert!(!line(&["x", "--progress-meter"]).global.no_progress);

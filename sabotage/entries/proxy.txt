@@ -63,24 +63,24 @@ witness: curl-sys-abi handle_tests::proxy_options_are_checked_as_in_c
             options.proxy.make_mut()?.port = NonZeroU16::new(port);
 
 === a 407 fails whatever the proxy's credentials
-file: crates/curl-core/src/proto/http/auth.rs
-witness: curl-core proto::http::auth::tests::acts_on_a_407_as_c
+file: crates/curl-core/src/proto/http1/auth.rs
+witness: curl-core proto::http1::auth::tests::acts_on_a_407_as_c
 --- old
             407 => !asked.proxy.credentials || self.problem,
 --- new
             407 => true,
 
 === a problem with the proxy's challenge does not stop the origin's
-file: crates/curl-core/src/proto/http/auth.rs
-witness: curl-core proto::http::auth::tests::acts_on_a_407_as_c
+file: crates/curl-core/src/proto/http1/auth.rs
+witness: curl-core proto::http1::auth::tests::acts_on_a_407_as_c
 --- old
             problem: asked.problem || offered.host.refused || offered.proxy.refused,
 --- new
             problem: asked.problem || offered.host.refused,
 
 === a proxy is offered Bearer
-file: crates/curl-core/src/proto/http/auth.rs
-witness: curl-core proto::http::auth::tests::acts_on_a_407_as_c
+file: crates/curl-core/src/proto/http1/auth.rs
+witness: curl-core proto::http1::auth::tests::acts_on_a_407_as_c
 --- old
             let picked = pick(&offered.proxy, &asked.proxy, false);
 --- new

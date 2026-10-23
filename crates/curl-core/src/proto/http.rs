@@ -30,6 +30,10 @@ use crate::upload::chain;
 use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
 
+use super::http1::auth::{
+    AuthAct, AuthRequest, Credentials, CredentialsError, NetrcLookup, Offered, Output, OutputError,
+    Secret, Side,
+};
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
 use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
@@ -40,16 +44,10 @@ use super::{Inherited, ProtoStep};
 use crate::netrc::{self, NetrcError};
 use crate::options::AuthMethods;
 use crate::options::NetrcMode;
-use auth::{
-    AuthAct, AuthRequest, Credentials, CredentialsError, NetrcLookup, Offered, Output, OutputError,
-    Secret, Side,
-};
 use std::ffi::CStr;
 use std::num::NonZeroUsize;
 
-pub(crate) mod auth;
 pub(crate) mod cookies;
-pub(crate) mod digest;
 pub(crate) mod httpsig;
 pub(crate) mod sigv4;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};

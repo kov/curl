@@ -67,7 +67,7 @@ exclude_re = [
     # Joining parts whose bits cannot overlap: `|` and `^` agree.
     'url/host\.rs:.*: replace \| with \^ in (ipv4|pton6)$',
     'url/encode\.rs:.*: replace \| with \^ in (escaped_byte|decode)$',
-    'proto/http/auth\.rs:.*: replace \| with \^ in base64$',
+    'proto/http1/auth\.rs:.*: replace \| with \^ in base64$',
     'curl-os/src/net\.rs:.*: replace \| with \^ in connect$',
     'curl-os/src/fs\.rs:.*: replace \| with \^ in (open|open_write)$',
     # 0x80 is in no list of invalid bytes, so it stays allowed either way.
@@ -151,7 +151,7 @@ exclude_re = [
     'curl-sys-abi/src/getinfo\.rs:.*: replace < with (==|>|<=) in long_time$',
     # Reservation sizes: a wrong one only changes how often the vector
     # grows.
-    'proto/http/auth\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Credentials::basic$',
+    'proto/http1/auth\.rs:.*: replace (\+ with \*|\* with (\+|/)) in Credentials::basic$',
     'proto/http1/request\.rs:.*: replace - with \+ in render_h1$',
     'url/mod\.rs:.*: replace \+ with \* in Url::whole$',
     'curl-sys-abi/src/(headers|getinfo)\.rs:.*: replace \+ with (-|\*) in (HeaderOut::show|effective_url)$',

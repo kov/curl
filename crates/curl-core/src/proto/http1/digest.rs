@@ -259,7 +259,7 @@ impl Digest {
             random(&mut bytes);
             let mut cnonce = Vec::new();
             cnonce.try_reserve_exact(16)?;
-            crate::proto::http::auth::base64(bytes.iter().copied(), bytes.len(), &mut cnonce)?;
+            crate::proto::http1::auth::base64(bytes.iter().copied(), bytes.len(), &mut cnonce)?;
             self.cnonce = Some(cnonce);
         }
         let realm = self.realm.as_deref().unwrap_or(b"");

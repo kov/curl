@@ -195,13 +195,15 @@ curl-core/src/
                              Inherited
     file.rs
     http.rs, http/           the HTTP/1 driver: the request sent, the response read;
-                             auth.rs (Basic, Bearer), digest.rs, cookies.rs (the jar as
-                             HTTP uses it); suite.rs, C's test cases over the fake network
+                             cookies.rs (the jar as HTTP uses it), sigv4.rs, httpsig.rs;
+                             suite.rs, C's test cases over the fake network
     script.rs                the test protocol `script:` (test-util)
-    http1/                   the parsers and the renderer, sans-IO: request.rs, response.rs,
-                             framing.rs, chunked.rs (decoder and encoder), fields.rs,
-                             follow.rs (where a `Location:` leads); tunnel.rs, CONNECT and
-                             the proxy's answer; fixture.rs, the test cases' sections (tests)
+    http1/                   the parsers and the renderer, sans-IO, which import nothing of
+                             the driver: request.rs, response.rs, framing.rs, chunked.rs
+                             (decoder and encoder), fields.rs, follow.rs (where a
+                             `Location:` leads); auth.rs (Basic, Bearer, the challenges a
+                             head reads), digest.rs; tunnel.rs, CONNECT and the proxy's
+                             answer; fixture.rs, the test cases' sections (tests)
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 

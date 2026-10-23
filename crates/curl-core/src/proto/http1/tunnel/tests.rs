@@ -1,5 +1,5 @@
 use super::*;
-use crate::proto::http::auth::{Challenges, PeerAsked};
+use crate::proto::http1::auth::{Challenges, PeerAsked};
 use crate::proto::http1::request::CredentialGate;
 
 /// Every line `input` gives out, each applied, until the answer ends or
@@ -570,7 +570,7 @@ proptest::proptest! {
             whole_lines(),
         ],
         cuts in crate::untrusted::cuts(),
-        asked in crate::proto::http::auth::arbitrary::peer_asked(),
+        asked in crate::proto::http1::auth::arbitrary::peer_asked(),
     ) {
         let whole = drive(&[&answer], &asked);
         let pieces = crate::untrusted::pieces(&answer, &cuts);

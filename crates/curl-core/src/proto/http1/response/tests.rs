@@ -17,7 +17,7 @@ const ASKED: Asked = Asked {
     fail_on_error: false,
     resume_from: None,
     follow: false,
-    auth: crate::proto::http::auth::AuthAsked::DEFAULT,
+    auth: crate::proto::http1::auth::AuthAsked::DEFAULT,
     http_proxy: false,
     forwarded: false,
     time_condition: None,
@@ -1015,8 +1015,8 @@ proptest! {
 #[test]
 fn a_line_never_needs_more_than_four_notes() {
     use crate::options::{Condition, TimeCondition};
-    use crate::proto::http::auth::AuthAsked;
-    use crate::proto::http::auth::arbitrary::{BASIC, PROBE};
+    use crate::proto::http1::auth::AuthAsked;
+    use crate::proto::http1::auth::arbitrary::{BASIC, PROBE};
     use crate::proto::http1::framing::Left;
 
     let statuses: [&[u8]; 4] = [

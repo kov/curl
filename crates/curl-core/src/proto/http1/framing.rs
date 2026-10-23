@@ -15,7 +15,7 @@ use super::fields;
 use super::response::{HttpVersion, Status};
 use crate::date::{self, BadDate};
 use crate::options::{AuthMethods, Resume, TimeCondition, Unmet};
-use crate::proto::http::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered};
+use crate::proto::http1::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
 const MAX_CODINGS: u8 = 5;
@@ -877,7 +877,7 @@ pub(crate) mod arbitrary {
 
     use super::{Asked, Left, NonZeroU64, Unsent};
     use crate::options::{Condition, Resume, TimeCondition};
-    use crate::proto::http::auth::arbitrary::auth_asked;
+    use crate::proto::http1::auth::arbitrary::auth_asked;
 
     /// A count, small or of any size C's `curl_off_t` holds.
     fn count() -> impl Strategy<Value = u64> {

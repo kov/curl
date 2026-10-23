@@ -1,22 +1,22 @@
 === a message signature goes to an origin the settings may not go to
-file: crates/curl-core/src/proto/http/auth.rs
-witness: curl-core proto::http::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
+file: crates/curl-core/src/proto/http1/auth.rs
+witness: curl-core proto::http1::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
 --- old
                 (request.trusted.is_some(), None)
 --- new
                 (true, None)
 
 === a proxy is asked for a message signature
-file: crates/curl-core/src/proto/http/auth.rs
-witness: curl-core proto::http::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
+file: crates/curl-core/src/proto/http1/auth.rs
+witness: curl-core proto::http1::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
 --- old
         let signatures = AuthMethods::AWS_SIGV4 | AuthMethods::HTTPSIG;
 --- new
         let signatures = AuthMethods::AWS_SIGV4;
 
 === a message signature needs credentials it does not use
-file: crates/curl-core/src/proto/http/auth.rs
-witness: curl-core proto::http::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
+file: crates/curl-core/src/proto/http1/auth.rs
+witness: curl-core proto::http1::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
 --- old
         if credentials.is_none() && !self.want.contains(AuthMethods::HTTPSIG) {
 --- new

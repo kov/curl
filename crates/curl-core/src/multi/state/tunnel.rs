@@ -16,7 +16,7 @@ use crate::multi::cx::DriveCx;
 use crate::options::ProxyType;
 use crate::progress;
 use crate::proto::ProtoState;
-use crate::proto::http::auth::{
+use crate::proto::http1::auth::{
     AuthAct, AuthRequest, Challenges, HeardNote, Offered, OutputError, PeerAsked, Secret, Side,
 };
 use crate::proto::http1::fields::{self, MAX_HEADERS};

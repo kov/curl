@@ -15,7 +15,7 @@ use crate::handler::Handler;
 use crate::id::ArenaPolicy;
 use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::{Lines, Options};
-use crate::proto::http::auth::Auth;
+use crate::proto::http1::auth::Auth;
 use crate::report::TransferReport;
 use crate::save::{self, SaveError};
 use crate::share::{Kind, Share, ShareLock, watched};

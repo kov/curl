@@ -9,12 +9,12 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use super::auth::base64;
 use crate::error::ErrorKind;
 use crate::hash::hmac_sha256;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::{MessageSignature, SignatureAlgorithm};
+use crate::proto::http1::auth::base64;
 use crate::proto::http1::request::UserHeaders;
 use crate::trace;
 

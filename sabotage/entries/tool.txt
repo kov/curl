@@ -1314,3 +1314,13 @@ witness: curl-tool sets_the_socks5_methods_asked_for
             gssapi: op.socks5_gssapi,
 --- new
             gssapi: false,
+
+=== `--test-duphandle`'s copy of a handle is not given the share again
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool runs_each_transfer_on_a_copy_of_its_handle
+features: debug-hooks
+--- old
+                    drop(Handle(std::mem::replace(&mut *easy, dup)));
+                    easy.set_share(Some(run.share.clone()));
+--- new
+                    drop(Handle(std::mem::replace(&mut *easy, dup)));

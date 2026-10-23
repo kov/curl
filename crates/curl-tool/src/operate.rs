@@ -771,6 +771,17 @@ impl PerTransfer<'_, '_> {
                 {
                     return self.fail(run, &easy, ErrorKind::OutOfMemory);
                 }
+                // The debug build runs a copy, which needs the share set
+                // again, and lets the original go as `curl_easy_cleanup`
+                // does.
+                #[cfg(feature = "debug-hooks")]
+                if run.global.test_duphandle {
+                    let Ok(dup) = easy.try_clone() else {
+                        return self.fail(run, &easy, ErrorKind::OutOfMemory);
+                    };
+                    drop(Handle(std::mem::replace(&mut *easy, dup)));
+                    easy.set_share(Some(run.share.clone()));
+                }
                 #[cfg(feature = "debug-hooks")]
                 let result = if run.global.test_event {
                     easy.perform_ev()

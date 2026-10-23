@@ -2419,3 +2419,37 @@ fn a_304_leaves_the_output_alone() {
     assert!(!absent.exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `--test-duphandle` runs each transfer on a copy of its handle: the
+/// copy has its options, and shares the connections as the original
+/// would, so the second transfer reuses the first's.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn runs_each_transfer_on_a_copy_of_its_handle() {
+    let s = Server::script(vec![vec![OK.to_vec(), OK.to_vec()]]);
+    let url = s.url();
+    let run = curl(&[
+        "--test-duphandle",
+        "-sSv",
+        "-m",
+        "10",
+        "-A",
+        "dup",
+        &url,
+        &url,
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, b"-foo-\n-foo-\n");
+    assert!(
+        run.stderr
+            .contains("\n* Reusing existing http: connection with host 127.0.0.1\n"),
+        "{}",
+        run.stderr
+    );
+    let request = s.request();
+    assert_eq!(
+        request.matches("\r\nUser-Agent: dup\r\n").count(),
+        2,
+        "{request}"
+    );
+}

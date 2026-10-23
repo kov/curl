@@ -586,6 +586,10 @@ pub(crate) struct Global<'a> {
     /// debug build's).
     #[cfg(feature = "debug-hooks")]
     pub(crate) test_event: bool,
+    /// `--test-duphandle`: each serial attempt runs on a copy of its
+    /// handle (the debug build's).
+    #[cfg(feature = "debug-hooks")]
+    pub(crate) test_duphandle: bool,
 }
 
 /// A cap `--parallel-max` or `--parallel-max-host` gives: past the
@@ -1432,7 +1436,7 @@ pub(crate) fn apply<'a>(
         | Opt::Tlspassword
         | Opt::Tlsuser => unreachable!("a deprecated option is not applied"),
         #[cfg(feature = "debug-hooks")]
-        Opt::TestDuphandle => line.not_implemented(spec, "--"),
+        Opt::TestDuphandle => line.global.test_duphandle = value.toggle(),
         #[cfg(feature = "debug-hooks")]
         Opt::TestEvent => line.global.test_event = value.toggle(),
         Opt::Parallel => line.global.parallel = value.toggle(),

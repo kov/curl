@@ -3062,7 +3062,10 @@ fn a_redirect_s_own_credentials_go_with_it() {
 #[test]
 fn a_417_has_the_request_made_again_without_expect() {
     let refused = b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n";
+    // The 417 comes while the body waits for a 100, not before the wait
+    // starts.
     let (mut m, talk, _) = server(&[refused, OK], false);
+    let talk = talk.late_replies();
     let body = vec![b'x'; 2 * 1024 * 1024];
     let ran = get(&mut m, "/a", talk, |o| {
         o.method = Method::Upload;

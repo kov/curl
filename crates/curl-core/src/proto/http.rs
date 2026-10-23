@@ -214,6 +214,10 @@ enum Sending {
     /// The head goes, `left` bytes of it still to, ahead of anything
     /// else in the buffer; `then` is what follows it.
     Head { left: NonZeroUsize, then: AfterHead },
+    /// The head has gone, its body announced with `Expect:
+    /// 100-continue`: the wait for the 100 starts as the body is next
+    /// asked for (`EXP100_SENDING_REQUEST`, the request all sent).
+    HeadSent,
     /// The head has gone; the body, announced with `Expect:
     /// 100-continue` and not read yet, waits for a 100 until this
     /// instant (`EXP100_AWAITING_CONTINUE`).
@@ -281,6 +285,7 @@ impl Sending {
                 then: AfterHead::Continue,
                 ..
             }
+            | Sending::HeadSent
             | Sending::AwaitingContinue(_) => true,
             Sending::Head {
                 then: AfterHead::Body(reading),
@@ -1294,6 +1299,19 @@ impl Request {
                 // A body announced with `Expect: 100-continue` waits for
                 // the 100, or until the wait runs out (`cr_exp100_read`).
                 match self.outgoing {
+                    // The body is asked for the first time since the head
+                    // went: the wait starts.
+                    Sending::HeadSent => {
+                        if !read || cx.pause().send_paused() {
+                            return Ok(false);
+                        }
+                        let wait = cx.easy().options().http.continue_wait.0;
+                        let until = cx.now().after(wait);
+                        self.outgoing = Sending::AwaitingContinue(until);
+                        state::trace_set(cx, TimerKind::Proto, until);
+                        self.held_back(cx, Held::Starts);
+                        return Ok(false);
+                    }
                     Sending::AwaitingContinue(until) if cx.now() < until => {
                         self.held_back(cx, Held::Waits);
                         return Ok(false);
@@ -1400,15 +1418,13 @@ impl Request {
                 self.outgoing = match (NonZeroUsize::new(left.get() - head), then) {
                     (Some(left), then) => Sending::Head { left, then },
                     (None, AfterHead::Body(reading)) => Sending::Body(reading),
-                    // The head has gone: the wait for a 100 starts.
+                    // The head has gone: the wait for a 100 starts when
+                    // the body is next asked for, not in this send
+                    // (`Curl_req_send_more` reads before it flushes).
                     (None, AfterHead::Continue) => {
                         self.sent = 0;
                         self.filled = 0;
-                        let wait = cx.easy().options().http.continue_wait.0;
-                        let until = cx.now().after(wait);
-                        self.outgoing = Sending::AwaitingContinue(until);
-                        state::trace_set(cx, TimerKind::Proto, until);
-                        self.held_back(cx, Held::Starts);
+                        self.outgoing = Sending::HeadSent;
                         return Ok(false);
                     }
                 };
@@ -1862,7 +1878,9 @@ impl Request {
             Sending::Head { then, .. } if *then == AfterHead::Continue => {
                 *then = AfterHead::Body(open);
             }
-            Sending::AwaitingContinue(_) => self.outgoing = Sending::Body(open),
+            Sending::HeadSent | Sending::AwaitingContinue(_) => {
+                self.outgoing = Sending::Body(open);
+            }
             _ => return,
         }
         state::trace_timer(cx, TimerKind::Proto, format_args!("cleared"));

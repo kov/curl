@@ -700,15 +700,16 @@ is the send buffer with what of it has gone, and beside it one enum for where se
 
 ```rust
 enum Sending { Idle /* before DO */, Head { left: NonZeroUsize, then: AfterHead },
-               AwaitingContinue(Instant), Body(Reading), Done, Aborted }
+               HeadSent, AwaitingContinue(Instant), Body(Reading), Done, Aborted }
 enum AfterHead { Continue /* held for a 100 */, Body(Reading) }
 struct Reading { eos_read: bool, announced: bool /* the head said Expect: 100-continue */ }
 ```
 
 C's `sendbuf_hds_len` is `Head`'s `left`, `eos_read` is `Reading`'s, `upload_done` is `Done` or
 `Aborted`, `upload_aborted` is `Aborted`, and `cr_exp100`'s states are `AfterHead::Continue`
-(`EXP100_SENDING_REQUEST`), `AwaitingContinue` and a `Reading` that is `announced`
-(`EXP100_SEND_DATA`; `http_exp100_is_selected` is any of the three). A body held for a 100 is
+and `HeadSent` (`EXP100_SENDING_REQUEST`, before and after the head has gone),
+`AwaitingContinue` and a `Reading` that is `announced` (`EXP100_SEND_DATA`;
+`http_exp100_is_selected` is any of them). A body held for a 100 is
 never read behind the head, so it cannot be held and read at once; a 100 or an error response
 that lets the body go on turns either holding state into a `Reading`. Nothing in it is
 HTTP/1's framing: HTTP/2 keeps one per stream. Whether the connection is used again is not
@@ -2024,8 +2025,10 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   C's render-to-HTTP/1-then-reparse (`Curl_h1_req_parse_read`) has no counterpart, and the H1
   request parser survives only as test support (unit 2603).
 - `Expect: 100-continue`, asked for or added (`addexpect`), holds the body back: it is not
-  read behind the head, and once the head has drained the request is `Sending::AwaitingContinue`
-  until a deadline (`continue_wait`), not asking to write, the deadline its `wake_at`. A 100,
+  read behind the head. Once the head has drained, the request is `Sending::HeadSent` until
+  the body is next asked for, in a later pass, as C's readers are asked before the send buffer
+  is flushed; from then it is `Sending::AwaitingContinue` until a deadline (`continue_wait`),
+  not asking to write, the deadline its `wake_at`. A 100,
   the deadline ("Done waiting for 100-continue") or keep-sending-on-error opens it. A final
   response of 300 or more before the body has gone, the connection not closing anyway, stops
   the send ("HTTP error before end of send, stop sending", then "abort upload") and the

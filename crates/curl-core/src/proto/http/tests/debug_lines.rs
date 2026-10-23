@@ -87,6 +87,35 @@ fn a_body_held_for_a_100_is_said_at_each_read() {
     assert!(in_order(&lines, &want), "{lines:?}");
 }
 
+/// A pass while the wait for a 100 runs asks for the body again, and is
+/// told the wait has not run out: here the low-speed check's, a second
+/// into a wait of three (`cr_exp100_read`'s `AWAITING_CONTINUE`).
+#[test]
+fn a_pass_during_the_wait_for_a_100_is_said() {
+    let (mut m, talk, clock) = server(&[OK_EMPTY], false);
+    let start = clock.now();
+    let ran = get_with(&mut m, tracing_tcp(), "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
+        o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+        o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(3));
+        o.flow.make_mut().unwrap().low_speed = Some(crate::options::LowSpeed {
+            limit: NonZeroU64::new(1).unwrap(),
+            time: std::num::NonZeroU16::new(10).unwrap(),
+        });
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(clock.now().since(start), Duration::from_secs(3));
+    let lines = lines(&ran);
+    let want = [
+        "cr_exp100_read, start AWAITING_CONTINUE, timeout 3000ms",
+        "cr_exp100_read, AWAITING_CONTINUE, not expired",
+        "cr_exp100_read, AWAITING_CONTINUE, not expired",
+        "cr_exp100_read, pass through",
+    ];
+    assert!(in_order(&lines, &want), "{lines:?}");
+}
+
 /// The connection's end is said after its receive, and the body's end
 /// is then traced as body of no bytes (`xfer_recv_resp`).
 #[test]

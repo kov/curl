@@ -43,8 +43,8 @@ features: test-util
 
 === a body held for a 100 is not asked for while the wait runs
 file: crates/curl-core/src/proto/http.rs
-witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_is_asked_for_while_the_wait_runs
-features: test-util
+witness: curl-core proto::http::tests::debug_lines::a_pass_during_the_wait_for_a_100_is_said
+features: debug-hooks
 --- old
                     Sending::AwaitingContinue(until) if cx.now() < until => {
                         self.held_back(cx, Held::Waits);
@@ -90,3 +90,18 @@ features: test-util
         self.start_reading(cx);
 --- new
         self.start_reading(cx);
+
+=== the wait for a 100 starts in the send that finishes the head
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_is_asked_for_while_the_wait_runs
+features: test-util
+--- old
+                        self.outgoing = Sending::HeadSent;
+                        return Ok(false);
+--- new
+                        let wait = cx.easy().options().http.continue_wait.0;
+                        let until = cx.now().after(wait);
+                        self.outgoing = Sending::AwaitingContinue(until);
+                        state::trace_set(cx, TimerKind::Proto, until);
+                        self.held_back(cx, Held::Starts);
+                        return Ok(false);

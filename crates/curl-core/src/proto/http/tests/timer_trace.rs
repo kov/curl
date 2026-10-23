@@ -85,7 +85,10 @@ fn a_leg_arms_its_limits_and_the_race_clears_its_timer() {
 #[test]
 fn the_wait_for_a_100_is_armed_and_cleared_as_c_does() {
     let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK_EMPTY].concat();
+    // The 100 comes after the first read looks for it, as from C's test
+    // server.
     let (mut m, talk, _) = server(&[&continued], false);
+    let talk = talk.late_replies();
     let ran = get_with(&mut m, tracing(b"timer,multi"), "/p", talk, |o| {
         o.method = Method::Post;
         o.upload = crate::options::UploadSource::Bytes(
@@ -99,6 +102,8 @@ fn the_wait_for_a_100_is_armed_and_cleared_as_c_does() {
         lines,
         [
             "[TIMER] [100_TIMEOUT] set for 1000000us",
+            "[TIMER] [100_TIMEOUT] expires in 1000000us",
+            "[TIMER] [100_TIMEOUT] gives multi timeout in 1000ms",
             "[TIMER] [100_TIMEOUT] cleared",
             "[MULTI] [PERFORMING] [PGRS-POSTRANSFER] added Nus",
             "[TIMER] [100_TIMEOUT] cleared",

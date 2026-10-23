@@ -66,7 +66,10 @@ fn bytes_are_read_through_the_buffer_reader() {
 #[test]
 fn a_handler_s_pieces_are_read_into_chunks() {
     let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK].concat();
+    // The 100 comes after the first read looks for it, as from the test
+    // suite's server.
     let (mut m, talk, _) = server(&[&continued], false);
+    let talk = talk.late_replies();
     let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
         o.method = Method::Upload;
         o.upload = pieces(&[b"abc"]);
@@ -128,7 +131,9 @@ fn a_body_sent_again_is_kept_and_rewound() {
 #[test]
 fn a_body_held_for_a_100_gives_nothing_until_it_comes() {
     let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK_EMPTY].concat();
+    // The 100 comes after the first read looks for it.
     let (mut m, talk, _) = server(&[&continued], false);
+    let talk = talk.late_replies();
     let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
         o.method = Method::Post;
         o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
@@ -295,14 +300,18 @@ fn a_417_while_sending_keeps_the_body_to_rewind() {
     );
 }
 
-/// A body held for a 100 is asked for at each pass the wait runs, and
-/// gives nothing each time, as C's readers are asked (`cr_exp100_read`).
+/// A body held for a 100 is asked for behind the head, and again as the
+/// wait starts, in the pass after the one that sent the head's end
+/// (`Curl_req_send_more` reads before it flushes), giving nothing each
+/// time, as C's readers are asked (`cr_exp100_read`).
 #[test]
 fn a_body_held_for_a_100_is_asked_for_while_the_wait_runs() {
     let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK_EMPTY].concat();
     let talk = Conversation::replies(&[&continued], false).late_replies();
     let mut m = serving(Peer::Accepts, &[&talk]);
-    let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
+    let e = tracing_read();
+    e.components().unwrap().configure(b"read,tcp");
+    let ran = get_with(&mut m, e, "/p", talk, |o| {
         o.method = Method::Post;
         o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
@@ -310,10 +319,15 @@ fn a_body_held_for_a_100_is_asked_for_while_the_wait_runs() {
     assert_eq!(ran.result, Ok(()));
     let held = "[READ] client_read(len=65536) -> 0, nread=0, eos=0";
     let lines = read_lines(&ran);
-    assert!(
-        lines.iter().filter(|l| *l == held).count() >= 2,
-        "{lines:?}"
-    );
+    assert_eq!(lines.iter().filter(|l| *l == held).count(), 1, "{lines:?}");
+    // The wait started after the request's first read for its response.
+    let text = ran.seen.text();
+    let first_read = text
+        .iter()
+        .position(|l| l.starts_with("[TCP] recv("))
+        .unwrap();
+    let start = text.iter().position(|l| l.trim_end() == held).unwrap();
+    assert!(first_read < start, "{text:?}");
 }
 
 /// Gives more than it has room for.

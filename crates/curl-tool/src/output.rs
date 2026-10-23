@@ -117,6 +117,27 @@ enum DumpTarget {
     File(Stdio<File>),
 }
 
+impl DumpTarget {
+    /// Write `line`: how much of it was taken (`fwrite`).
+    fn fwrite(&mut self, line: &[u8]) -> usize {
+        match self {
+            DumpTarget::Stdout(out) => out.fwrite(line),
+            // Standard error is unbuffered.
+            DumpTarget::Stderr => unbuffered(&mut std::io::stderr(), line),
+            DumpTarget::File(file) => file.fwrite(line),
+        }
+    }
+
+    /// Write what is held (`fflush`).
+    fn flush(&mut self) -> Result<(), stdio::Failed> {
+        match self {
+            DumpTarget::Stdout(out) => out.flush(),
+            DumpTarget::Stderr => Ok(()),
+            DumpTarget::File(file) => file.flush(),
+        }
+    }
+}
+
 /// Why `--dump-header`'s file could not be set up.
 pub(crate) enum DumpFailed {
     OutOfMemory,
@@ -560,22 +581,11 @@ impl Stream {
             return Write::Accepted;
         };
         // A line not all taken is a count for the library to report.
-        let flushed = match &mut dump.target {
-            DumpTarget::Stdout(out) => match out.fwrite(line) {
-                took if took < line.len() => return Write::Took(took),
-                _ => out.flush(),
-            },
-            // Standard error is unbuffered.
-            DumpTarget::Stderr => match unbuffered(&mut std::io::stderr(), line) {
-                took if took < line.len() => return Write::Took(took),
-                _ => Ok(()),
-            },
-            DumpTarget::File(file) => match file.fwrite(line) {
-                took if took < line.len() => return Write::Took(took),
-                _ => file.flush(),
-            },
-        };
-        match flushed {
+        let took = dump.target.fwrite(line);
+        if took < line.len() {
+            return Write::Took(took);
+        }
+        match dump.target.flush() {
             Ok(()) => Write::Accepted,
             Err(stdio::Failed) => {
                 self.msgs
@@ -1128,6 +1138,35 @@ mod tests {
             out.dump_to(missing.as_os_str().as_encoded_bytes(), true, &stdout),
             Err(DumpFailed::Open)
         ));
+    }
+
+    /// A header line too long for the buffer fails at once, its count
+    /// for the library to report; one held fails as it is flushed.
+    #[test]
+    fn dumps_headers_short_to_a_full_device() {
+        let stdout = Stdout::new().unwrap();
+        let out = Output::null(quiet()).unwrap();
+        assert!(out.dump_to(b"/dev/full", true, &stdout).is_ok());
+        let mut long = vec![b'x'; 16384];
+        long.extend_from_slice(b": y\r\n");
+        assert_eq!(out.stream().header(&long, None, None), Write::Took(0));
+        assert_eq!(out.stream().header(b"A: 1\r\n", None, None), Write::Fail);
+    }
+
+    /// A write to the output file that failed is remembered (`ferror`):
+    /// what was written is then not resumed from.
+    #[test]
+    fn remembers_a_failed_write() {
+        let out = Output::file(b"/dev/full", quiet()).unwrap();
+        let mut s = out.stream();
+        assert!(s.create());
+        assert!(!s.failed());
+        assert_eq!(s.body(&[b'x'; 16384]), Write::Took(0));
+        assert!(s.failed());
+        let out = Output::file(b"/dev/null", quiet()).unwrap();
+        let mut s = out.stream();
+        assert_eq!(s.body(&[b'x'; 16384]), Write::Accepted);
+        assert!(!s.failed());
     }
 
     /// Header names are bold on a terminal; lines without one are not.

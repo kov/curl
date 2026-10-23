@@ -385,4 +385,7 @@ exclude_re = [
     # turn a stream that is not line buffered takes, the room is the whole
     # buffer and `at` is 0, and the rest fits whatever the arithmetic.
     'curl-tool/src/stdio\.rs:.*: replace - with \+ in Stdio<S>::put$',
+    # The extra turn writes nothing: an empty write returns `Ok(0)`, which
+    # ends the loop with the same count.
+    'curl-tool/src/output\.rs:.*: replace < with <= in unbuffered$',
 ]

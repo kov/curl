@@ -1121,3 +1121,19 @@ witness: curl-tool trace::tests::ids_name_the_transfer_and_its_connection
             None => write!(text, "[{transfer}-x] "),
 --- new
             None => write!(text, "[{transfer}-0] "),
+
+=== the ids are not put after the time
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::a_line_starts_with_the_time_then_the_ids
+--- old
+        let _ = std::io::Write::write_all(self, bytes);
+--- new
+        let _ = bytes;
+
+=== the start of a line has room to spare
+file: crates/curl-tool/src/trace.rs
+witness: curl-tool trace::tests::a_line_starts_with_the_time_then_the_ids
+--- old
+    const LEN: usize = b"HH:MM:SS.uuuuuu ".len() + 2 * 20 + b"[-] ".len();
+--- new
+    const LEN: usize = b"HH:MM:SS.uuuuuu ".len() + 2 * 20 * b"[-] ".len();

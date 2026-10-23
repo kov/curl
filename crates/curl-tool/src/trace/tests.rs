@@ -141,3 +141,19 @@ fn ids_name_the_transfer_and_its_connection() {
     let max = text(Some(u64::MAX), Some(u64::MAX)).unwrap();
     assert_eq!(max.len(), 2 * 20 + 4);
 }
+
+/// The time and the longest ids together fill the start of a line: none
+/// of either is cut, and the room is no more than they take.
+#[test]
+fn a_line_starts_with_the_time_then_the_ids() {
+    let ids = |transfer, conn| TransferIds { transfer, conn }.text();
+    let start = line_start(Some(timestamp()), ids(Some(u64::MAX), Some(u64::MAX)));
+    let text = String::from_utf8(start.bytes().to_vec()).unwrap();
+    let max = u64::MAX;
+    assert!(text.ends_with(&format!(" [{max}-{max}] ")), "{text:?}");
+    assert_eq!(text.find(" ["), Some(15), "the time first: {text:?}");
+    assert_eq!(start.bytes().len(), Stamp::LEN, "{text:?}");
+    let start = line_start(None, ids(Some(1), None));
+    assert_eq!(start.bytes(), b"[1-x] ");
+    assert_eq!(line_start(None, None).bytes(), b"");
+}

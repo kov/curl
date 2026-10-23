@@ -4719,6 +4719,38 @@ fn flushes_a_jar_named_long_without_copying_the_name() {
 /// before it, their copies and those reset among them, as C's process-wide
 /// levels do. Tried on a component nothing traces yet, as the setting is
 /// the process's and other tests run beside this one.
+/// With `CURL_DEBUG` set, a debug build applies it at the first
+/// `curl_global_init` and after each `curl_global_trace`, over what that
+/// asked (`Curl_trc_opt`). Checked in a process of its own, the variable
+/// set there.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_debug_build_takes_curl_debug_last() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "handle_tests::curl_debug_applied", "--ignored"])
+        .env("CURL_DEBUG", "threads")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("1 passed"), "the test ran: {stdout}");
+}
+
+#[cfg(feature = "debug-hooks")]
+#[test]
+#[ignore = "run by a_debug_build_takes_curl_debug_last, CURL_DEBUG set"]
+fn curl_debug_applied() {
+    use curl_core::components::Component;
+    let threads = || crate::root::components().traces(Component::Threads);
+    assert!(!threads(), "nothing read before the library starts");
+    assert_eq!(crate::root::curl_global_init(0), CURLE_OK);
+    assert!(threads(), "read as the library starts");
+    // SAFETY: a C string.
+    unsafe { crate::root::curl_global_trace(c"-threads".as_ptr()) };
+    assert!(threads(), "read again over what the application asked");
+    crate::root::curl_global_cleanup();
+}
+
 #[test]
 fn the_global_trace_reaches_every_handle() {
     use curl_core::components::Component;

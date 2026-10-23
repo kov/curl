@@ -307,3 +307,16 @@ witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_trace
 --- old
             trace::sent(cx, end - self.sent, &sent);
 --- new
+
+=== a debug build ignores CURL_DEBUG
+file: crates/curl-sys-abi/src/root.rs
+witness: curl-sys-abi handle_tests::a_debug_build_takes_curl_debug_last
+features: debug-hooks
+--- old
+        components().configure(unsafe { core::ffi::CStr::from_ptr(value) }.to_bytes());
+    }
+}
+--- new
+        let _ = value;
+    }
+}

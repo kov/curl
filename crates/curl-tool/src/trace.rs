@@ -106,13 +106,10 @@ impl Tracer {
         state.sink.open();
         let mut out = std::mem::take(&mut state.scratch);
         out.clear();
-        let stamp = state.time.then(timestamp);
-        let stamp = stamp.as_ref().map_or(&b""[..], Stamp::bytes);
-        let ids = state.ids.then(|| ids.text()).flatten();
-        let ids = ids.as_ref().map_or(&b""[..], Stamp::bytes);
-        let mut start = Stamp::empty();
-        start.push(stamp);
-        start.push(ids);
+        let start = line_start(
+            state.time.then(timestamp),
+            state.ids.then(|| ids.text()).flatten(),
+        );
         let stamp = start.bytes();
         let written = match state.kind {
             Trace::Plain => plain(&mut state, &mut out, stamp, kind, data, terminal),
@@ -135,6 +132,15 @@ impl DebugHandler for Entry {
         };
         self.tracer.entry(kind, data, self.terminal, ids);
     }
+}
+
+/// What starts each line of an entry: the time, then the ids.
+fn line_start(time: Option<Stamp>, ids: Option<Stamp>) -> Stamp {
+    let mut start = Stamp::empty();
+    for part in [time, ids].iter().flatten() {
+        start.push(part.bytes());
+    }
+    start
 }
 
 /// The numbers of the transfer an entry is of, and of its connection.

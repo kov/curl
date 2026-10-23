@@ -96,9 +96,20 @@ struct Run {
 
 /// Run the tool with `args`, without a configuration file.
 fn curl(args: &[&str]) -> Run {
+    curl_columns(args, None)
+}
+
+/// `curl`, with messages wrapped at `columns` instead of the default 79:
+/// a message naming a file under the temporary directory is as long as
+/// that directory's name.
+fn curl_columns(args: &[&str], columns: Option<&str>) -> Run {
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
-    let out = Command::new(tool).arg("-q").args(args).output().unwrap();
+    let mut command = Command::new(tool);
+    if let Some(columns) = columns {
+        command.env("COLUMNS", columns);
+    }
+    let out = command.arg("-q").args(args).output().unwrap();
     Run {
         code: out.status.code().unwrap(),
         stdout: out.stdout,
@@ -155,7 +166,7 @@ fn dumps_the_headers() {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("heads");
     let s = Server::new(OK);
-    let run = curl(&["-s", "-D", file.to_str().unwrap(), &s.url()]);
+    let run = curl_columns(&["-s", "-D", file.to_str().unwrap(), &s.url()], Some("500"));
     assert_eq!((run.code, &run.stdout[..]), (0, &b"-foo-\n"[..]));
     assert_eq!(
         std::fs::read(&file).unwrap(),
@@ -164,12 +175,15 @@ fn dumps_the_headers() {
     std::fs::remove_dir_all(&dir).unwrap();
     // One that cannot be opened fails the transfer before it starts.
     let missing = dir.join("no/such/heads");
-    let run = curl(&[
-        "-sS",
-        "-D",
-        missing.to_str().unwrap(),
-        "http://127.0.0.1:1/",
-    ]);
+    let run = curl_columns(
+        &[
+            "-sS",
+            "-D",
+            missing.to_str().unwrap(),
+            "http://127.0.0.1:1/",
+        ],
+        Some("500"),
+    );
     assert_eq!(run.code, 23);
     assert_eq!(
         run.stderr,
@@ -1393,14 +1407,17 @@ fn removes_the_file_a_failed_transfer_wrote() {
     let file = dir.join("out");
     let name = file.to_str().unwrap();
     let s = Server::new(PARTIAL);
-    let run = curl(&[
-        "--no-progress-meter",
-        "-v",
-        "--remove-on-error",
-        &s.url(),
-        "-o",
-        name,
-    ]);
+    let run = curl_columns(
+        &[
+            "--no-progress-meter",
+            "-v",
+            "--remove-on-error",
+            &s.url(),
+            "-o",
+            name,
+        ],
+        Some("500"),
+    );
     let said: Vec<_> = run
         .stderr
         .lines()
@@ -1418,38 +1435,50 @@ fn removes_the_file_a_failed_transfer_wrote() {
     assert!(!file.exists());
     // Not tracing, nothing is said of it.
     let s = Server::new(PARTIAL);
-    let run = curl(&["-sS", "--remove-on-error", &s.url(), "-o", name]);
+    let run = curl_columns(
+        &["-sS", "--remove-on-error", &s.url(), "-o", name],
+        Some("500"),
+    );
     assert_eq!(
         run.stderr,
         "curl: (18) end of response with 16 bytes missing\n"
     );
     assert!(!file.exists());
     let s = Server::new(PARTIAL);
-    let run = curl(&[
-        "-S",
-        "--no-progress-meter",
-        "--remove-on-error",
-        &s.url(),
-        "-o",
-        "/dev/null",
-    ]);
+    let run = curl_columns(
+        &[
+            "-S",
+            "--no-progress-meter",
+            "--remove-on-error",
+            &s.url(),
+            "-o",
+            "/dev/null",
+        ],
+        Some("500"),
+    );
     assert_eq!(
         run.stderr,
         "curl: (18) end of response with 16 bytes missing\n\
          Warning: Skipping removal; not a regular file: /dev/null\n"
     );
     std::fs::write(&file, "before").unwrap();
-    let run = curl(&[
-        "-sS",
-        "--remove-on-error",
-        "http://127.0.0.1:1/",
-        "-o",
-        name,
-    ]);
+    let run = curl_columns(
+        &[
+            "-sS",
+            "--remove-on-error",
+            "http://127.0.0.1:1/",
+            "-o",
+            name,
+        ],
+        Some("500"),
+    );
     assert_eq!(run.code, 7);
     assert_eq!(std::fs::read(&file).unwrap(), b"before");
     let s = Server::new(OK);
-    let run = curl(&["-sS", "--remove-on-error", &s.url(), "-o", name]);
+    let run = curl_columns(
+        &["-sS", "--remove-on-error", &s.url(), "-o", name],
+        Some("500"),
+    );
     assert_eq!(
         (run.code, std::fs::read(&file).unwrap()),
         (0, b"-foo-\n".to_vec())

@@ -654,6 +654,27 @@ fn an_upload_that_cannot_be_read_fails() {
     assert_eq!((r.code, &r.stdout[..]), (26, &b"26"[..]));
 }
 
+/// A file of lines that opens but cannot be read, a directory named by
+/// `-K`, `--url @`, `-H @` or `--proxy-header @`, is an error reading a
+/// file; C reads it as empty and goes on. A deliberate difference from C
+/// (DIVERGENCE.md), so this test fails on its tool.
+#[test]
+fn a_file_of_lines_that_cannot_be_read_fails() {
+    let s = Scratch::new("unreadable-lines");
+    std::fs::create_dir(s.0.join("dir")).unwrap();
+    s.write("src", b"x");
+    let src = s.url("src");
+    for named in [
+        ["-K", "dir"],
+        ["--url", "@dir"],
+        ["-H", "@dir"],
+        ["--proxy-header", "@dir"],
+    ] {
+        let r = curl(&s, &[&named[..], &["-s", "-o", "out", &src]].concat());
+        assert_eq!(r.code, 26, "{named:?}");
+    }
+}
+
 /// Header lines `-i` cannot write fail the transfer though no body write
 /// follows to fail: those writes are not checked, and the output they
 /// are held in fails to be written when it is closed.

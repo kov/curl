@@ -14,6 +14,14 @@ not a difference: it is tracked in `MILESTONES.md`.
   GitHub using `-T` (measured 2026-10-21) had no argument that could name a directory. Pinned by
   `an_upload_that_cannot_be_read_fails` (`crates/curl-tool/tests/transfers.rs`).
 
+- **A file of lines that cannot be read fails the command line.** A file read a line at a
+  time, `-K file`, `--url @file`, `-H @file` or `--proxy-header @file`, that opens but fails a
+  read, such as a directory, is an error reading a file (exit 26). C's `get_line`
+  (`src/tool_parsecfg.c`) takes the failed `fgets` for the end of the file: `curl -K dir URL`,
+  `curl --url @dir URL` and `curl -H @dir URL` fetch `URL` and exit 0, the file read as empty.
+  Measured against the C build. Pinned by `a_file_of_lines_that_cannot_be_read_fails`
+  (`crates/curl-tool/tests/transfers.rs`).
+
 - **A form part whose file cannot be read fails the transfer, unless its size is known.** A
   part sending a file that is not a regular file, such as `-F a=@dir` or
   `curl_mime_filedata` naming a directory, ends the transfer with 26 (`CURLE_READ_ERROR`) when

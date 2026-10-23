@@ -1225,3 +1225,11 @@ witness: curl-tool a_header_file_that_does_not_open_fails
                             ParamError::ReadError
 --- new
                             ParamError::ReadError
+
+=== a file whose read fails is read as ending there
+file: crates/curl-tool/src/slurp.rs
+witness: curl-tool a_file_of_lines_that_cannot_be_read_fails
+--- old
+            Err(_) => return Err(ReadFailed::Read),
+--- new
+            Err(_) => break,

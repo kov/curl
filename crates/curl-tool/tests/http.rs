@@ -1739,7 +1739,8 @@ fn finds_the_ipfs_gateway_as_c_does() {
 /// speeds and the local port, `CURL_DEBUG_SIZE` for the header and
 /// request sizes; a status code, three digits as text and a number in
 /// JSON; a value missing, nothing as text and `null` in JSON; and a
-/// part of the URL, as it is in text and quoted in JSON.
+/// part of the URL and an address, as they are in text and quoted in
+/// JSON.
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn writes_out_the_debug_build_s_times_and_sizes() {
@@ -1772,9 +1773,10 @@ fn writes_out_the_debug_build_s_times_and_sizes() {
     );
     let json = run(
         &[],
-        "%{http_connect} [%{redirect_url}] [%{url.path}] %{json}",
+        "%{http_connect} [%{redirect_url}] [%{url.path}] [%{local_ip}] %{json}",
     );
-    assert!(json.starts_with("000 [] [/] {"), "{json}");
+    assert!(json.starts_with("000 [] [/] [127.0.0.1] {"), "{json}");
+    assert!(json.contains(",\"local_ip\":\"127.0.0.1\","), "{json}");
     assert!(json.contains(",\"url.path\":\"/\","), "{json}");
     assert!(json.contains(",\"http_connect\":0,"), "{json}");
     assert!(json.contains(",\"redirect_url\":null,"), "{json}");

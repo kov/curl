@@ -1040,7 +1040,13 @@ pub(crate) mod arbitrary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conn::Scheme;
     use crate::url::ParseOptions;
+
+    const HTTP: Scheme = Scheme {
+        name: "http",
+        reuse: true,
+    };
 
     /// A user and a password.
     type Pair = (Vec<u8>, Vec<u8>);
@@ -1513,7 +1519,7 @@ mod tests {
     /// acted on leaves what it offered open for the next (`avail`).
     #[test]
     fn keeps_digest_for_its_origin_and_credentials() {
-        let peer = |host: &[u8]| Peer::new(crate::proto::HTTP, host.to_vec(), 80, None);
+        let peer = |host: &[u8]| Peer::new(HTTP, host.to_vec(), 80, None);
         let creds = |password: &[u8]| Credentials {
             user: b"u".to_vec(),
             password: password.to_vec(),
@@ -1596,7 +1602,7 @@ mod tests {
     /// or done by a response.
     #[test]
     fn keeps_the_handle_s_state() {
-        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let peer = Peer::new(HTTP, b"h".to_vec(), 80, None);
         let mut auth = Auth::default();
         auth.start(AuthMethods::ANY, AuthMethods::ANY);
         assert!(!auth.problem());
@@ -1638,7 +1644,7 @@ mod tests {
     /// Authorization of its own.
     #[test]
     fn picks_and_sends_by_what_the_credentials_have() {
-        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let peer = Peer::new(HTTP, b"h".to_vec(), 80, None);
         let (none, b, br) = (AuthMethods::NONE, AuthMethods::BASIC, AuthMethods::BEARER);
         let pick = |secret: Secret<'_>, methods| {
             let mut auth = Auth::default();
@@ -1685,7 +1691,7 @@ mod tests {
     /// the request is signed where it is made. A proxy never uses it.
     #[test]
     fn aws_sigv4_is_used_at_once_and_never_by_a_proxy() {
-        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let peer = Peer::new(HTTP, b"h".to_vec(), 80, None);
         let request = AuthRequest {
             origin: &peer,
             method: b"GET",
@@ -1714,7 +1720,7 @@ mod tests {
     /// settings may not go to, and never to a proxy.
     #[test]
     fn a_message_signature_is_used_at_once_and_never_by_a_proxy() {
-        let peer = Peer::new(crate::proto::HTTP, b"h".to_vec(), 80, None);
+        let peer = Peer::new(HTTP, b"h".to_vec(), 80, None);
         let sig = AuthMethods::HTTPSIG;
         for (secret, trusted, used) in [
             (None, true, sig),

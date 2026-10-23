@@ -15,8 +15,6 @@ mod script;
 
 use std::num::NonZeroU32;
 
-use curl_alloc::TryArc;
-
 use crate::conn::io::Events;
 use crate::conn::{ConnLease, Peer, Scheme};
 use crate::deliver::{Directions, Pause, Pipeline};
@@ -25,6 +23,7 @@ use crate::error::{UrlErrorKind, url_error};
 use crate::multi::Host;
 use crate::multi::state::{AfterRequest, StepCx};
 use crate::options::{Method, Options};
+use crate::proto::http1::follow::Inherited;
 use crate::url::{GetOptions, Part, Url};
 
 /// The peer `url` names, at `host` and `port`: in the IPv6 scope
@@ -48,48 +47,18 @@ pub(super) fn url_peer(
     Ok(Peer::new(scheme, host, port, zone))
 }
 
-/// What a transfer's request takes from the ones before it.
-#[derive(Debug)]
-pub(crate) struct Inherited {
+/// What a transfer's next request takes from the ones before it.
+#[derive(Clone, Copy)]
+pub(crate) struct Before<'r> {
     /// Where the first request went (`state.initial_origin`): what the
     /// application said for it goes nowhere else.
-    pub(crate) first: Option<TryArc<Peer>>,
+    pub(crate) first: Option<&'r Peer>,
     /// The method, which a redirect may have turned into a GET
     /// (`state.httpreq`).
     pub(crate) method: Method,
-    /// The application's custom method is no longer sent
-    /// (`state.http_ignorecustom`).
-    pub(crate) ignore_custom: bool,
-    /// A response said HTTP/1.0: so do the requests after it
-    /// (`state.http_neg.rcvd_min`).
-    pub(crate) http10: bool,
-    /// A 417 refused `Expect: 100-continue`: the library adds it no more
-    /// (`state.disableexpect`).
-    pub(crate) no_expect: bool,
-    /// `Options::port` still applies: no redirect led to an absolute URL
-    /// (`state.allow_port`).
-    pub(crate) allow_port: bool,
+    /// What HTTP's requests take from the ones before them.
+    pub(crate) http: &'r Inherited,
 }
-
-impl Inherited {
-    /// What the first request of a transfer that asks for `method` has.
-    pub(crate) fn new(method: Method) -> Inherited {
-        Inherited {
-            first: None,
-            method,
-            ignore_custom: false,
-            http10: false,
-            no_expect: false,
-            allow_port: true,
-        }
-    }
-}
-
-/// HTTP, as the connection layer knows it.
-const HTTP: Scheme = Scheme {
-    name: "http",
-    reuse: true,
-};
 
 /// A protocol's state for one transfer.
 #[derive(Debug)]
@@ -128,13 +97,13 @@ impl ProtoState {
     pub(crate) fn start<H: Host>(
         scheme: &[u8],
         url: &Url,
-        inherited: &Inherited,
+        before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
             b"file" => ProtoState::File(file::Request::open(url, cx)?),
             b"http" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::new(url, inherited, cx)?)
+                curl_alloc::try_box(http::Request::new(url, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             #[cfg(any(test, feature = "test-util"))]
@@ -158,10 +127,7 @@ impl ProtoState {
     ) -> Result<Option<Peer>, ErrorKind> {
         match *self {
             ProtoState::File(_) => Ok(None),
-            ProtoState::Http(ref r) => {
-                let (host, port) = r.origin()?;
-                Ok(Some(url_peer(HTTP, host, port, url, scope)?))
-            }
+            ProtoState::Http(ref r) => Ok(Some(r.network(url, scope)?)),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) => Ok(None),
             #[cfg(any(test, feature = "test-util"))]
@@ -307,16 +273,6 @@ impl ProtoState {
         }
     }
 
-    /// A response to the request said HTTP/1.0.
-    pub(crate) fn saw_http10(&self) -> bool {
-        match *self {
-            ProtoState::Http(ref r) => r.saw_http10(),
-            ProtoState::File(_) => false,
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
-        }
-    }
-
     /// The request's body is to be read again for the next request
     /// (`Curl_creader_will_rewind`).
     pub(crate) fn rewinds_upload(&self) -> bool {
@@ -410,7 +366,8 @@ impl ProtoState {
     }
 
     /// The request is over, with `result` so far, and `next` to follow it
-    /// (C's `done`): what the protocol says of it.
+    /// (C's `done`): what the protocol says of it, and what HTTP's next
+    /// request takes from it into `http`.
     pub(crate) fn done<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
@@ -418,9 +375,10 @@ impl ProtoState {
         result: Result<(), ErrorKind>,
         premature: bool,
         next: &AfterRequest,
+        http: &mut Inherited,
     ) -> Result<(), ErrorKind> {
         match *self {
-            ProtoState::Http(ref mut r) => r.done(cx, lease, result, premature, next),
+            ProtoState::Http(ref mut r) => r.done(cx, lease, result, premature, next, http),
             ProtoState::File(_) => result,
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {

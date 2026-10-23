@@ -192,7 +192,7 @@ curl-core/src/
   mime/                      Mime, Part, Content, Encoder, MimeSource; read.rs: MimeReader
   proto/
     mod.rs                   ProtoState (File, Http; test-util: Null, Stall, Script, Tcp),
-                             Inherited
+                             Before
     file.rs
     http.rs, http/           the HTTP/1 driver: the request sent, the response read;
                              cookies.rs (the jar as HTTP uses it), sigv4.rs, httpsig.rs;
@@ -518,9 +518,11 @@ pub(crate) struct Run {              // created at add, dropped at removal
     deadlines: Deadlines,
     url: Vec<u8>,                    // the request's URL read back whole (C's state.url)
     retries: u8,                     // fresh connections tried this transfer (retrycount)
-    inherited: Inherited,            // what a request takes from the ones before it: the
-                                     // first origin, the method a redirect changed, HTTP/1.0
-                                     // seen, Expect refused, whether CURLOPT_PORT applies
+    first: Option<Origin>,           // the first request's origin (state.initial_origin)
+    method: Method,                  // the method, as a redirect changed it (state.httpreq)
+    allow_port: bool,                // CURLOPT_PORT still applies (state.allow_port)
+    http: follow::Inherited,         // what HTTP's next request takes, HTTP's alone: HTTP/1.0
+                                     // seen, Expect refused, the custom method dropped
     #[cfg(feature = "debug-hooks")]
     warn: bool,                      // this transfer says the library is a debug build
 }
@@ -2010,7 +2012,7 @@ pub(crate) fn render_h1(head: &RequestHead<'_>, gate: &CredentialGate, out: &mut
   response of 300 or more before the body has gone, the connection not closing anyway, stops
   the send ("HTTP error before end of send, stop sending", then "abort upload") and the
   connection is not used again, unless keep-sending-on-error. A 417 makes the request again
-  without it, on a second leg (`Inherited::no_expect`).
+  without it, on a second leg (`follow::Inherited::no_expect`).
   Unknown body length on HTTP/1.1 uses the chunk encoder (chunks ≤ 64 KiB, trailers from the
   trailer handler); on HTTP/1.0 it is UploadFailed.
 
@@ -2129,7 +2131,7 @@ the transfer fails TooManyRedirects), counts the redirect in the report (C's
 FOLLOW_REDIR does and starts the next leg through `next_leg`, the tail it shares with a retry.
 That leg's URL replaces `Run::url` whole (C's `state.url`). A redirect reaches only the schemes
 `Options::http.redirect_protocols` holds: C's default, `CURLPROTO_REDIR` (HTTP, HTTPS, FTP,
-FTPS), unless set (the shim does not take `CURLOPT_REDIR_PROTOCOLS_STR` yet). `Inherited::first`, in the `Run`, holds the first leg's origin (`state.initial_origin`):
+FTPS), unless set (the shim does not take `CURLOPT_REDIR_PROTOCOLS_STR` yet). `Run::first` holds the first leg's origin (`state.initial_origin`):
 each request's `CredentialGate` is fixed when the request is made, from that origin and its own.
 The gate holds back what the application said; credentials in the request's own URL go to its
 origin regardless (`Trusted::own_url`), as C takes them per leg in `url_set_data_creds`. Each
@@ -2141,22 +2143,25 @@ login, over the URL's only to complete them, or, when required, to replace their
 (`netrc_lookup`); an entry found replaces the user and password and goes to its host wherever
 the transfer started. `netrc.rs` is the file's parser, a port of `lib/netrc.c` bounded as C's
 is. Unlike C, the entry is not written into the request's URL: the next leg looks it up again.
-What one request takes from the ones before it is `Inherited` on `Run`, reset at a transfer's
-start: the first origin, the method (C's `state.httpreq`), whether the custom method is still
-sent (`state.http_ignorecustom`) and whether a response said HTTP/1.0 (`rcvd_min`, which makes
-the later requests HTTP/1.0). A request copies what it needs of it when it is made. Following a
+What one request takes from the ones before it is on `Run`, reset at a transfer's start: the
+first origin and the method (C's `state.httpreq`), which any protocol's request reads, and
+HTTP's own, `http1::follow::Inherited`, which the engine holds for HTTP and never reads:
+whether the custom method is still sent (`state.http_ignorecustom`), whether a response said
+HTTP/1.0 (`rcvd_min`, which makes the later requests HTTP/1.0; HTTP's `done` records it) and
+whether Expect was refused. A request is given them as `Before` and copies what it needs when
+it is made. Following a
 redirect, in C's order: the old request's body is rewound (`Curl_req_soft_reset`), "Issue
 another request" is said, `FIRSTONLY` drops the custom method, `follow::switches_to_get`
 decides from `(code, method, POSTREDIR)` and `switch_to_get` applies it (a HEAD stays one).
 A failed rewind fails the transfer unless the next request is a GET. A retry rewinds the same
 way. A 417 to a body sent behind `Expect: 100-continue` makes the exchange end with a Follow
 to the request's own URL, as C's `newurl` does: counted as a redirect, and with
-`Inherited::no_expect` set so the library adds no Expect again. The connection is kept if the
+`no_expect` set so the library adds no Expect again. The connection is kept if the
 body was still held, and closed if some of it went. A URL the application keeps (`SharedUrl`, `CURLOPT_CURLU`, which the shim's `CURLU *` is) goes
 before the text URL: each transfer reads it as it starts, taking a copy of it as the first leg's
 parsed URL; it is reached only inside a closure, so no borrow of it outlives the read.
 `Options::port` replaces the port of that first URL, and of each leg after, until a redirect
-leads to an absolute URL (`Inherited::allow_port`); as C sets it only in `state.uh`, it goes into
+leads to an absolute URL (`Run::allow_port`); as C sets it only in `state.uh`, it goes into
 where the request goes and what a relative redirect resolves against (`request_url`), never into
 `Run::url`, so the URL a retry traces, the report keeps and a referer names is the one asked for. The referer a request sends is the report's (`state.referer`): the application's, copied
 at the transfer's start, until a redirect followed with AUTOREFERER replaces it with the URL it

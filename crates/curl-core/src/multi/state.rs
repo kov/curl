@@ -34,7 +34,8 @@ mod socks;
 mod tunnel;
 use crate::components::Component;
 use crate::proto::http1::follow;
-use crate::proto::{Inherited, ProtoState, ProtoStep};
+use crate::proto::http1::follow::Inherited;
+use crate::proto::{Before, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
 use crate::trace::{self, Bytes, Ip, OsError};
@@ -64,8 +65,18 @@ pub(crate) struct Run {
     /// Requests made again on a fresh connection, their reused one having
     /// died (`state.retrycount`).
     retries: u8,
-    /// What the next request takes from the ones before it.
-    inherited: Inherited,
+    /// Where the first request went (`state.initial_origin`): what the
+    /// application said for it goes nowhere else.
+    first: Option<Origin>,
+    /// The method, which a redirect may have turned into a GET
+    /// (`state.httpreq`).
+    method: Method,
+    /// `Options::port` still applies: no redirect led to an absolute URL
+    /// (`state.allow_port`).
+    allow_port: bool,
+    /// What HTTP's next request takes from the ones before it, kept for
+    /// HTTP and not read here.
+    http: Inherited,
 }
 
 impl Run {
@@ -75,7 +86,10 @@ impl Run {
             deadlines: Deadlines::new(None, None),
             url: Vec::new(),
             retries: 0,
-            inherited: Inherited::new(Method::Get),
+            first: None,
+            method: Method::Get,
+            allow_port: true,
+            http: Inherited::default(),
         }
     }
 }
@@ -1133,7 +1147,14 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 ),
             );
             if let Some(proto) = d.proto.as_mut() {
-                d.result = proto.done(cx, &mut d.lease, d.result, premature, &d.next);
+                d.result = proto.done(
+                    cx,
+                    &mut d.lease,
+                    d.result,
+                    premature,
+                    &d.next,
+                    &mut run.http,
+                );
             }
             // A last progress pass, unless a callback aborted already.
             if d.result != Err(ErrorKind::AbortedByCallback)
@@ -1164,9 +1185,6 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 cx.rate_start(Way::Recv, None);
             }
             let now = cx.rest.now;
-            if d.proto.as_ref().is_some_and(ProtoState::saw_http10) {
-                run.inherited.http10 = true;
-            }
             let leg = match (&d.next, d.result, d.proto.as_mut()) {
                 // A send failure is what a retry from DO set out to mend.
                 (AfterRequest::Retry, Ok(()) | Err(ErrorKind::SendError), Some(proto)) => {
@@ -2025,7 +2043,10 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
         ));
     }
     run.retries = 0;
-    run.inherited = Inherited::new(cx.easy().options().method);
+    run.first = None;
+    run.method = cx.easy().options().method;
+    run.allow_port = true;
+    run.http = Inherited::default();
     let options = cx.easy().options();
     let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
     cx.easy_mut().auth.start(want, proxy_want);
@@ -2165,7 +2186,7 @@ fn after_exchange<H: Host>(
     // A 417 has the request made again without `Expect`, as a redirect
     // to its own URL.
     if x.proto.expect_refused() {
-        run.inherited.no_expect = true;
+        run.http.no_expect = true;
         let mut location = Vec::new();
         location
             .try_extend_from_slice(&run.url)
@@ -2238,12 +2259,7 @@ fn request_url<H: Host>(run: &Run, cx: &StepCx<'_, H>) -> Result<Url, ErrorKind>
 /// The application's port set over `url`'s, unless a redirect took it
 /// away (`Curl_peer_from_url`'s `port_override`).
 fn apply_port<H: Host>(url: &mut Url, run: &Run, cx: &StepCx<'_, H>) {
-    if let Some(port) = cx
-        .easy()
-        .options()
-        .port
-        .filter(|_| run.inherited.allow_port)
-    {
+    if let Some(port) = cx.easy().options().port.filter(|_| run.allow_port) {
         url.set_port(port);
     }
 }
@@ -2306,7 +2322,7 @@ fn follow_leg<H: Host>(
     // An absolute URL is reached on its own port, unless the code asks
     // for credentials.
     if !matches!(code, 401 | 407) && url::is_absolute(location) {
-        run.inherited.allow_port = false;
+        run.allow_port = false;
     }
     let text = match url.get(Part::Url, GetOptions::NONE) {
         Ok(text) => text,
@@ -2326,15 +2342,15 @@ fn follow_leg<H: Host>(
     );
     let http = &cx.easy().options().http;
     let custom = http.custom.method.is_some();
-    if http.follow == Follow::FirstOnly && custom && !run.inherited.ignore_custom {
-        run.inherited.ignore_custom = true;
+    if http.follow == Follow::FirstOnly && custom && !run.http.ignore_custom {
+        run.http.ignore_custom = true;
         trace::info(
             cx,
             format_args!("Drop custom request method for next request"),
         );
     }
     let http = &cx.easy().options().http;
-    let switched = follow::switches_to_get(code, run.inherited.method, http.post_redirect);
+    let switched = follow::switches_to_get(code, run.method, http.post_redirect);
     if switched {
         switch_to_get(run, cx, code);
     }
@@ -2408,11 +2424,10 @@ fn referer_of(url: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 fn switch_to_get<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, code: u16) {
     let http = &cx.easy().options().http;
     let custom = http.custom.method.as_deref();
-    let inherited = &mut run.inherited;
+    let inherited = &mut run.http;
     // Formatted before it is traced, as the debug handler may set the
     // custom method, and the next request uses what it sets.
-    let said = if (custom.is_some() || inherited.method != Method::Get)
-        && http.follow == Follow::ObeyCode
+    let said = if (custom.is_some() || run.method != Method::Get) && http.follow == Follow::ObeyCode
     {
         inherited.ignore_custom = true;
         Some(trace::line(format_args!(
@@ -2432,8 +2447,8 @@ fn switch_to_get<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, code: u16) {
         trace::info_line(cx, &said);
     }
     // A HEAD stays bodyless, as `CURLOPT_NOBODY` keeps it.
-    if run.inherited.method != Method::Head {
-        run.inherited.method = Method::Get;
+    if run.method != Method::Head {
+        run.method = Method::Get;
     }
 }
 
@@ -2492,7 +2507,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     if let Err(OutOfMemory) = cx.easy_mut().options_mut().connect_to.refill() {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     }
-    cx.report_mut().set_method(run.inherited.method);
+    cx.report_mut().set_method(run.method);
     cx.mark(Timer::StartSingle);
     for (kind, at) in run.deadlines.start_leg(cx.rest.now).into_iter().flatten() {
         trace_set(cx, kind, at);
@@ -2541,7 +2556,12 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let started = if refused {
         Ok(None)
     } else {
-        ProtoState::start(&scheme, &url, &run.inherited, cx)
+        let before = Before {
+            first: run.first.as_deref(),
+            method: run.method,
+            http: &run.http,
+        };
+        ProtoState::start(&scheme, &url, before, cx)
     };
     let proto = match started {
         Ok(Some(proto)) => proto,
@@ -2593,8 +2613,8 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let Ok(origin) = TryArc::try_new(target) else {
         return TransferState::Init.fail(ErrorKind::OutOfMemory);
     };
-    if run.inherited.first.is_none() {
-        run.inherited.first = Some(origin.clone());
+    if run.first.is_none() {
+        run.first = Some(origin.clone());
     }
     let via = match connect_to(cx, &origin) {
         Ok(via) => via,

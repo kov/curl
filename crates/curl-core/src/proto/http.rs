@@ -8,7 +8,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use crate::coding::{AcceptEncoding, Coding, Decoder, Decoders, Identity, Named, Unrecognized};
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
-use crate::conn::{ConnLease, Peer, RecvFailed};
+use crate::conn::{ConnLease, Peer, RecvFailed, Scheme};
 use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
@@ -35,17 +35,18 @@ use super::http1::auth::{
     Secret, Side,
 };
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
+use super::http1::follow::Inherited;
 use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
     self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
     Typed,
 };
-use super::{Inherited, ProtoStep};
+use super::{Before, ProtoStep};
 use crate::netrc::{self, NetrcError};
 use crate::options::AuthMethods;
 use crate::options::NetrcMode;
 use std::ffi::CStr;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 pub(crate) mod cookies;
 pub(crate) mod httpsig;
@@ -73,6 +74,12 @@ enum BodyKind {
 
 /// The port a URL without one means.
 const DEFAULT_PORT: u16 = 80;
+
+/// HTTP, as the connection layer knows it.
+const SCHEME: Scheme = Scheme {
+    name: "http",
+    reuse: true,
+};
 
 /// What a final response's challenges offered and led to, its code, and
 /// the origin the request authenticated with.
@@ -366,10 +373,10 @@ impl Request {
     }
 
     /// A request for `url`, whose scheme is `http`, after the transfer's
-    /// earlier ones left it `inherited`.
+    /// earlier ones left it `before`.
     pub(crate) fn new<H: Host>(
         url: &Url,
-        inherited: &Inherited,
+        before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
         let host = url.get(Part::Host, GetOptions::NONE).map_err(url_error)?;
@@ -409,8 +416,8 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         }
         let scope = cx.easy().options().address_scope;
-        let peer = super::url_peer(super::HTTP, host, port, url, scope)?;
-        let gate = match inherited.first.as_deref() {
+        let peer = super::url_peer(SCHEME, host, port, url, scope)?;
+        let gate = match before.first {
             None => CredentialGate::FIRST,
             Some(first) => {
                 let other_hosts = cx.easy().options().http.unrestricted_auth;
@@ -437,13 +444,13 @@ impl Request {
             credentials,
             peer,
             gate,
-            method: inherited.method,
-            custom: !inherited.ignore_custom,
-            no_expect: inherited.no_expect,
+            method: before.method,
+            custom: !before.http.ignore_custom,
+            no_expect: before.http.no_expect,
             expect_refused: false,
             closing: false,
             version: cx.easy().options().http.version,
-            after_http10: inherited.http10,
+            after_http10: before.http.http10,
             out: Vec::new(),
             filled: 0,
             sent: 0,
@@ -474,12 +481,13 @@ impl Request {
         Ok(())
     }
 
-    /// The host and port the request connects to.
-    pub(crate) fn origin(&self) -> Result<(Vec<u8>, u16), ErrorKind> {
+    /// The peer the request connects to: its origin, in the IPv6 scope
+    /// `scope` if the application sets one.
+    pub(crate) fn network(&self, url: &Url, scope: Option<NonZeroU32>) -> Result<Peer, ErrorKind> {
         let mut host = Vec::new();
         host.try_extend_from_slice(self.peer.shown())
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        Ok((host, self.peer.port()))
+        super::url_peer(SCHEME, host, self.peer.port(), url, scope)
     }
 
     pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
@@ -514,11 +522,6 @@ impl Request {
     /// A 417 refused the request's `Expect: 100-continue`.
     pub(crate) fn expect_refused(&self) -> bool {
         self.expect_refused
-    }
-
-    /// A response to the request said HTTP/1.0.
-    pub(crate) fn saw_http10(&self) -> bool {
-        self.head.as_ref().is_some_and(HeadParser::saw_http10)
     }
 
     /// The body is to be read again for the next request
@@ -1933,11 +1936,17 @@ impl Request {
         result: Result<(), ErrorKind>,
         premature: bool,
         next: &AfterRequest,
+        inherited: &mut Inherited,
     ) -> Result<(), ErrorKind> {
         let Some(head) = self.head.as_ref() else {
             // The request was never made.
             return result;
         };
+        // Whatever comes of the request, the next says HTTP/1.0 if a
+        // response to it did.
+        if head.saw_http10() {
+            inherited.http10 = true;
+        }
         let held = head.held();
         if !held.is_empty() {
             let mut line = Vec::new();

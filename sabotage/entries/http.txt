@@ -680,11 +680,11 @@ witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_t
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::the_application_s_credentials_stay_with_the_first_origin
 --- old
-    if run.inherited.first.is_none() {
-        run.inherited.first = Some(origin.clone());
+    if run.first.is_none() {
+        run.first = Some(origin.clone());
     }
 --- new
-    run.inherited.first = Some(origin.clone());
+    run.first = Some(origin.clone());
 
 === unrestricted auth is ignored
 file: crates/curl-core/src/proto/http.rs
@@ -714,14 +714,14 @@ witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_d
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
 --- old
-        run.inherited.method = Method::Get;
+        run.method = Method::Get;
 --- new
 
 === a HEAD redirected by a 303 becomes a GET
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
 --- old
-    if run.inherited.method != Method::Head {
+    if run.method != Method::Head {
 --- new
     if true {
 
@@ -729,14 +729,14 @@ witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_d
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
 --- old
-    cx.report_mut().set_method(run.inherited.method);
+    cx.report_mut().set_method(run.method);
 --- new
 
 === a custom method asked only of the first URL is kept
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
 --- old
-        run.inherited.ignore_custom = true;
+        run.http.ignore_custom = true;
 --- new
 
 === an obeyed code keeps the custom method
@@ -789,10 +789,10 @@ witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_trans
         let rereads = false;
 
 === an HTTP/1.0 response is forgotten
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_response_in_http_1_0_makes_the_next_request_one
 --- old
-                run.inherited.http10 = true;
+            inherited.http10 = true;
 --- new
 
 === a redirect's referer is not kept
@@ -875,15 +875,15 @@ witness: curl-core proto::http::tests::a_shared_url_is_read_as_each_transfer_sta
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
 --- old
-        .filter(|_| run.inherited.allow_port)
+    if let Some(port) = cx.easy().options().port.filter(|_| run.allow_port) {
 --- new
-        .filter(|_| false)
+    if let Some(port) = cx.easy().options().port.filter(|_| false) {
 
 === the application's port holds past an absolute redirect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::the_application_s_port_holds_until_an_absolute_redirect
 --- old
-        run.inherited.allow_port = false;
+        run.allow_port = false;
 --- new
 
 === a host name over 65535 bytes is looked up

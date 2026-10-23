@@ -5,6 +5,23 @@ use crate::error::{ErrorKind, UrlErrorKind, url_error};
 use crate::options::{Method, PostRedir};
 use crate::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 
+/// What an HTTP request takes from the requests of its transfer before
+/// it, beyond the method and the first origin, which any protocol's
+/// does. The engine keeps it for HTTP between the requests and never
+/// reads it.
+#[derive(Debug, Default)]
+pub(crate) struct Inherited {
+    /// The application's custom method is no longer sent
+    /// (`state.http_ignorecustom`).
+    pub(crate) ignore_custom: bool,
+    /// A response said HTTP/1.0: so do the requests after it
+    /// (`state.http_neg.rcvd_min`).
+    pub(crate) http10: bool,
+    /// A 417 refused `Expect: 100-continue`: the library adds it no more
+    /// (`state.disableexpect`).
+    pub(crate) no_expect: bool,
+}
+
 /// Where `location` leads from `base`, the request's URL, for a response
 /// not followed (`follow_parse_url` and `follow_fake`, `FOLLOW_FAKE`):
 /// resolved against it, any scheme allowed, and read back without

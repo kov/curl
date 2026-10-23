@@ -56,13 +56,63 @@ witness: curl-core mime::tests::a_part_s_headers_are_c_s
 --- new
         .filter(|h| !h.is_empty())
 
-=== a new reader leaves the handlers unrewound
+=== a new reader leaves the parts unrewound
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_part_reached_before_starts_over_as_c_s
+--- old
+                rewind.as_ref().is_some_and(|r| calls.rewind(r).is_ok())
+--- new
+                rewind.is_some()
+
+=== a new reader starts over parts no request reached
 file: crates/curl-core/src/mime/read.rs
 witness: curl-core mime::tests::a_rewind_starts_over
 --- old
-            } => ok &= calls.rewind(r).is_ok(),
+    for p in &m.parts {
+        if !p.reached.get() {
+            continue;
+        }
+        let over = match &p.content {
+            // Nothing to start over, where C fails (DIVERGENCE.md).
+            Content::None
 --- new
-            } => ok &= Handler::ptr_eq(r, r),
+    for p in &m.parts {
+        let over = match &p.content {
+            // Nothing to start over, where C fails (DIVERGENCE.md).
+            Content::None
+
+=== a part whose headers were read is not reached
+file: crates/curl-core/src/mime/read.rs
+witness: curl-sys-abi handle_tests::a_tree_posted_again_starts_over_what_was_reached
+--- old
+                part.reached.set(true);
+--- new
+
+=== a file that is not regular is opened again
+file: crates/curl-core/src/mime/read.rs
+witness: curl-sys-abi handle_tests::a_tree_posted_again_starts_over_what_was_reached
+--- old
+            Content::File(f) => f.size().is_some(),
+--- new
+            Content::File(_) => true,
+
+=== a part of nothing fails its rewind as C's
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_part_reached_before_starts_over_as_c_s
+--- old
+            Content::None | Content::Bytes(_) => true,
+--- new
+            Content::None => false,
+            Content::Bytes(_) => true,
+
+=== a part started over stays reached
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_part_reached_before_starts_over_as_c_s
+--- old
+        if over {
+            p.reached.set(false);
+        }
+--- new
 
 === the application's Content-Type is sent beside the tree's
 file: crates/curl-core/src/proto/http1/request.rs
@@ -89,14 +139,16 @@ witness: curl-sys-abi mime::tests::a_copied_handle_posts_a_copy_of_the_tree
 --- new
     if depth(tree) > MAX_LEVELS {
 
-=== a part never read is sought
+=== a part never reached is sought
 file: crates/curl-sys-abi/src/mime.rs
 witness: curl-sys-abi mime::tests::a_tree_read_before_is_rewound_when_posted
 --- old
-    if !p.read.get() {
-        return true;
-    }
+        let p = unsafe { p.as_ref() };
+        if !p.reached.get() {
+            continue;
+        }
 --- new
+        let p = unsafe { p.as_ref() };
 
 === a freed tree's parts keep their content
 file: crates/curl-sys-abi/src/mime.rs

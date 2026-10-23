@@ -16,7 +16,12 @@ use crate::proto::http1::request::UserHeaders;
 use crate::trace;
 use crate::upload::Readout;
 
-use super::{BOUNDARY_LEN, Content, Encoder, FileData, MAX_LEVELS, Mime, Part, content_type_for};
+use super::{
+    BOUNDARY_LEN, Content, Encoder, FileData, MAX_LEVELS, Mime, Part, Reached, content_type_for,
+};
+
+/// The record of a part whose reaching no one keeps: the tree's own top.
+static UNKEPT: Reached = Reached(None);
 
 /// A boundary line: CRLF, two dashes, the boundary and CRLF.
 const BOUNDARY_SIZE: u64 = 4 + BOUNDARY_LEN as u64 + 2;
@@ -212,6 +217,7 @@ struct PartRef<'a> {
     content: ContentRef<'a>,
     /// Its headers are not part of the body (`MIME_BODY_ONLY`).
     body_only: bool,
+    reached: &'a Reached,
 }
 
 #[derive(Clone, Copy)]
@@ -251,6 +257,7 @@ impl<'a> PartRef<'a> {
                 Content::Parts(m) => ContentRef::Parts(m),
             },
             body_only: false,
+            reached: &part.reached,
         }
     }
 
@@ -263,6 +270,7 @@ impl<'a> PartRef<'a> {
             encoder: None,
             content: ContentRef::Parts(mime),
             body_only: true,
+            reached: &UNKEPT,
         }
     }
 }
@@ -939,6 +947,7 @@ fn readback_part(
         let mut sz = 0;
         match c.state {
             PartState::Begin => {
+                part.reached.set(true);
                 c.state = if part.body_only {
                     PartState::Body
                 } else {
@@ -1103,8 +1112,9 @@ fn rewind_part(part: PartRef<'_>, c: &mut PartCursor, calls: &mut dyn Calls) -> 
     let mut ok = true;
     if c.state > target {
         ok = match part.content {
-            // No seek function: C cannot start one over once read.
-            ContentRef::None => false,
+            // Nothing to start over. C has no seek function for it and
+            // fails (DIVERGENCE.md).
+            ContentRef::None => true,
             ContentRef::Bytes(_) => true,
             ContentRef::File(f) => match (&mut c.src.file, f.size()) {
                 // Not a regular file: no seek function.
@@ -1124,6 +1134,7 @@ fn rewind_part(part: PartRef<'_>, c: &mut PartCursor, calls: &mut dyn Calls) -> 
         c.hdr = 0;
         c.src.offset = 0;
         c.src.file_eof = false;
+        part.reached.set(false);
     }
     c.src.last = Last::Fine;
     ok
@@ -1147,19 +1158,30 @@ fn rewind_subparts(m: &Mime, mc: &mut MimeCursor, calls: &mut dyn Calls) -> bool
     ok
 }
 
-/// Call the rewind of every part a handler reads, as a new reader starts
-/// a tree that may have been read before (`Curl_creader_set_mime`'s
-/// `mime_rewind`): the handler knows whether its part was.
-fn rewind_handlers(m: &Mime, calls: &mut dyn Calls) -> bool {
+/// Start over every part an earlier request's reading reached, as a new
+/// reader starts a tree (`Curl_creader_set_mime`'s `mime_rewind`): a
+/// handler's part is rewound, and fails it without a rewind; a regular file
+/// is opened again, and one that is not fails it; bytes, and nothing, start
+/// over as they are. Every part is tried, whatever the others did.
+fn rewind_parts(m: &Mime, calls: &mut dyn Calls) -> bool {
     let mut ok = true;
     for p in &m.parts {
-        match &p.content {
-            Content::Read {
-                rewind: Some(r), ..
-            } => ok &= calls.rewind(r).is_ok(),
-            Content::Parts(sub) => ok &= rewind_handlers(sub, calls),
-            _ => {}
+        if !p.reached.get() {
+            continue;
         }
+        let over = match &p.content {
+            // Nothing to start over, where C fails (DIVERGENCE.md).
+            Content::None | Content::Bytes(_) => true,
+            Content::File(f) => f.size().is_some(),
+            Content::Read { rewind, .. } => {
+                rewind.as_ref().is_some_and(|r| calls.rewind(r).is_ok())
+            }
+            Content::Parts(sub) => rewind_parts(sub, calls),
+        };
+        if over {
+            p.reached.set(false);
+        }
+        ok &= over;
     }
     ok
 }
@@ -1241,11 +1263,11 @@ impl MimeReader {
         })
     }
 
-    /// Rewind the parts a handler reads, as the tree may have been read
-    /// before (`Curl_creader_set_mime`'s `mime_rewind`): the handler knows
-    /// whether its part was. Failing, SendFailRewind.
+    /// Start over the parts an earlier request reached, as the tree may
+    /// have been read before (`Curl_creader_set_mime`'s `mime_rewind`):
+    /// whether a part was is its `Reached`. Failing, SendFailRewind.
     pub(crate) fn start<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-        if rewind_handlers(&self.mime, &mut StepCalls(cx)) {
+        if rewind_parts(&self.mime, &mut StepCalls(cx)) {
             Ok(())
         } else {
             Err(ErrorKind::SendFailRewind)
@@ -1481,7 +1503,7 @@ pub(crate) mod testing {
         }
 
         pub(crate) fn start_for_test(&mut self, calls: &mut dyn Calls) -> bool {
-            rewind_handlers(&self.mime, calls)
+            rewind_parts(&self.mime, calls)
         }
     }
 }

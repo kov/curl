@@ -20,6 +20,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use curl_core::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
 use curl_core::mime::{
     Boundary, Content, Encoder, FileData, FileError, MAX_LEVELS, Mime, MimeError, MimeSource, Part,
+    Reached,
 };
 use curl_core::multi::TransferCx;
 
@@ -67,9 +68,9 @@ pub(crate) struct ShimPart {
     headers: *mut curl_slist,
     headers_owned: bool,
     content: PartContent,
-    /// Its read function was called since it was last rewound: C's part
-    /// state past its start, which its seek function is called for.
-    read: Cell<bool>,
+    /// A request's reading reached it since it last started over: C's
+    /// part state past its start, kept across the trees built of it.
+    reached: Reached,
 }
 
 #[derive(Default)]
@@ -176,7 +177,7 @@ fn add_part(mime: &mut ShimMime) -> Option<NonNull<ShimPart>> {
         headers: ptr::null_mut(),
         headers_owned: false,
         content: PartContent::None,
-        read: Cell::new(false),
+        reached: Reached::new().ok()?,
     })
     .ok()?;
     let part = NonNull::from(Box::leak(part));
@@ -301,7 +302,7 @@ fn clear_content(p: &mut ShimPart) {
         PartContent::Subparts(sub) => unsafe { free_tree(sub) },
         PartContent::None | PartContent::Data(_) | PartContent::File(_) => {}
     }
-    p.read.set(false);
+    p.reached.set(false);
 }
 
 /// # Safety
@@ -445,37 +446,42 @@ pub unsafe extern "C" fn curl_mime_headers(
 }
 const _: ffi::proto::curl_mime_headers = curl_mime_headers;
 
-/// Rewind the parts of `mime` read since their last rewind, as a tree
-/// attached anew is (`mime_subparts_seek`): whether all could be.
+/// Start over the parts of `mime` a request reached since they last
+/// started over, as a tree attached anew is (`mime_subparts_seek`), as the
+/// core does as a request starts: whether all could be.
 fn rewind_tree(mime: &ShimMime) -> bool {
     let mut ok = true;
     for &p in &mime.parts {
         // SAFETY: a tree's parts live as long as it does.
         let p = unsafe { p.as_ref() };
-        match &p.content {
-            PartContent::Callback(cb) => ok &= seek(p, cb),
-            // SAFETY: as above, for its subparts.
-            PartContent::Subparts(sub) => ok &= rewind_tree(unsafe { sub.as_ref() }),
-            _ => {}
+        if !p.reached.get() {
+            continue;
         }
+        let over = match &p.content {
+            // Nothing to start over, where C fails (DIVERGENCE.md).
+            PartContent::None | PartContent::Data(_) => true,
+            // Not a regular file: no way back.
+            PartContent::File(f) => f.size().is_some(),
+            PartContent::Callback(cb) => seek(cb),
+            // SAFETY: as above, for its subparts.
+            PartContent::Subparts(sub) => rewind_tree(unsafe { sub.as_ref() }),
+        };
+        if over {
+            p.reached.set(false);
+        }
+        ok &= over;
     }
     ok
 }
 
-/// Start a callback part over if it was read (`mime_part_rewind`).
-fn seek(p: &ShimPart, cb: &Callback) -> bool {
-    if !p.read.get() {
-        return true;
-    }
+/// Start a callback part over with its seek function
+/// (`mime_part_rewind`): whether it could be.
+fn seek(cb: &Callback) -> bool {
     let Some(seek) = cb.seek else {
         return false;
     };
     // SAFETY: the application's seek function takes its argument.
-    let ok = unsafe { seek(cb.arg, 0, libc::SEEK_SET) } == CURL_SEEKFUNC_OK;
-    if ok {
-        p.read.set(false);
-    }
-    ok
+    unsafe { seek(cb.arg, 0, libc::SEEK_SET) == CURL_SEEKFUNC_OK }
 }
 
 /// # Safety
@@ -867,7 +873,7 @@ pub(crate) fn forget_form(shim: &ShimEasy) {
 /// call it in later. Failing, the code to return.
 pub(crate) fn whole(tree: &ShimMime) -> Result<TryArc<Mime>, CURLcode> {
     let mut failed = CURLE_OK;
-    let mut read_now = |part: NonNull<ShimPart>, cb: &Callback| -> Result<Content, MimeError> {
+    let mut read_now = |_: NonNull<ShimPart>, cb: &Callback| -> Result<Content, MimeError> {
         let mut bytes = Vec::new();
         let mut buf = [0u8; 8192];
         loop {
@@ -878,8 +884,6 @@ pub(crate) fn whole(tree: &ShimMime) -> Result<TryArc<Mime>, CURLcode> {
             if room == 0 {
                 break;
             }
-            // SAFETY: the part is live while its tree is.
-            unsafe { part.as_ref() }.read.set(true);
             // SAFETY: `buf` has room for `room` bytes; the function takes
             // its argument.
             let got = unsafe { (cb.read)(buf.as_mut_ptr().cast(), 1, room, cb.arg) };
@@ -956,6 +960,7 @@ fn build(
             headers,
             encoder: src.encoder,
             content,
+            reached: src.reached.clone(),
         })?;
     }
     Ok(mime)
@@ -973,13 +978,13 @@ unsafe impl Send for PartAdapter {}
 unsafe impl Sync for PartAdapter {}
 
 impl PartAdapter {
-    /// The part and its functions, if it still has them.
-    fn callback(&self) -> Option<(&ShimPart, Callback)> {
+    /// The part's functions, if it still has them.
+    fn callback(&self) -> Option<Callback> {
         // SAFETY: the tree outlives the request that reads it, as C
         // requires of a tree a handle posts.
         let p = unsafe { self.part.as_ref() };
         match &p.content {
-            PartContent::Callback(cb) => Some((p, *cb)),
+            PartContent::Callback(cb) => Some(*cb),
             _ => None,
         }
     }
@@ -987,10 +992,9 @@ impl PartAdapter {
 
 impl ReadHandler for PartAdapter {
     fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
-        let Some((p, cb)) = self.callback() else {
+        let Some(cb) = self.callback() else {
             return Read::Fail;
         };
-        p.read.set(true);
         let len = buf.len();
         let got = Adapter(self.easy).call(cx, || {
             // SAFETY: `buf` has room for `len` bytes; the function takes
@@ -1013,10 +1017,10 @@ impl ReadHandler for PartAdapter {
 
 impl Rewind for PartAdapter {
     fn rewind(&self, cx: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
-        let Some((p, cb)) = self.callback() else {
+        let Some(cb) = self.callback() else {
             return Err(RewindFailed);
         };
-        let ok = Adapter(self.easy).call(cx, || seek(p, &cb));
+        let ok = Adapter(self.easy).call(cx, || seek(&cb));
         if ok { Ok(()) } else { Err(RewindFailed) }
     }
 }
@@ -1232,7 +1236,7 @@ mod tests {
         assert_eq!(FREED.with(Cell::get), 4);
     }
 
-    /// A part whose read function was called is started over before the
+    /// A part a request reached is started over before the
     /// tree is posted again, and a tree that cannot be is refused
     /// (`mime_subparts_seek`).
     #[test]
@@ -1263,17 +1267,17 @@ mod tests {
             assert_eq!(post(c, m), CURLE_OK);
             assert_eq!(SEEKS.with(Cell::get), 0);
             let part = &*p.cast::<super::ShimPart>();
-            part.read.set(true);
+            part.reached.set(true);
             assert_eq!(post(c, ptr::null_mut()), CURLE_OK);
             assert_eq!(post(c, m), CURLE_OK);
             assert_eq!(SEEKS.with(Cell::get), 1);
-            assert!(!part.read.get());
+            assert!(!part.reached.get());
             // Without a seek function, a part read cannot be.
             assert_eq!(
                 curl_mime_data_cb(p, -1, Some(read), None, None, ptr::null_mut()),
                 CURLE_OK
             );
-            part.read.set(true);
+            part.reached.set(true);
             assert_eq!(post(c, ptr::null_mut()), CURLE_OK);
             assert_eq!(post(c, m), CURLE_SEND_FAIL_REWIND);
             curl_mime_free(m);

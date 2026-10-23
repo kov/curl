@@ -476,11 +476,11 @@ fn a_rewind_starts_over() {
     let mut r = reader(tree([named("a", callback(None, true))]));
     let mut calls = Script::new([Answer::Data(b"1".to_vec())]);
     assert!(r.start_for_test(&mut calls));
-    assert_eq!(calls.rewinds, 1);
+    assert_eq!(calls.rewinds, 0, "not reached before");
     let first = all(&mut r, &mut calls);
     calls.answers.push_back(Answer::Data(b"1".to_vec()));
     assert!(r.restart_for_test(&mut calls));
-    assert_eq!(calls.rewinds, 2);
+    assert_eq!(calls.rewinds, 1);
     assert_eq!(all(&mut r, &mut calls), first);
     calls.rewind_fails = true;
     assert!(!r.restart_for_test(&mut calls));
@@ -670,5 +670,48 @@ fn a_tree_read_whole_starts_with_its_headers() {
     assert_eq!(
         read_whole(handled, &mut |b| b.len()),
         Err(crate::error::ErrorKind::ReadError)
+    );
+}
+
+fn new_reader(m: &TryArc<Mime>) -> MimeReader {
+    MimeReader::new(m.clone(), &UserHeaders::NONE, Escape::Form).unwrap()
+}
+
+/// A part a request reached starts over before the next request reads
+/// it, as C keeps in the part whether it was reached: a handler's part is
+/// rewound only then, even if its handler was never called (a size of 0),
+/// and a file that is not regular fails it. A part of nothing starts
+/// over, where C fails (DIVERGENCE.md).
+#[test]
+fn a_part_reached_before_starts_over_as_c_s() {
+    let m = TryArc::try_new(tree([named("a", callback(Some(0), true))])).unwrap();
+    let mut calls = Script::default();
+    let mut r = new_reader(&m);
+    assert!(r.start_for_test(&mut calls));
+    assert_eq!(calls.rewinds, 0, "not reached yet");
+    all(&mut r, &mut calls);
+    assert!(calls.rooms.is_empty(), "a size of 0 is not read");
+    assert!(new_reader(&m).start_for_test(&mut calls));
+    assert_eq!(calls.rewinds, 1, "reached, though never read");
+    assert!(new_reader(&m).start_for_test(&mut calls));
+    assert_eq!(calls.rewinds, 1, "started over since");
+
+    let dev_null = FileData::new(b"/dev/null").unwrap();
+    assert_eq!(dev_null.size(), None);
+    let m = TryArc::try_new(tree([named("f", Content::File(dev_null))])).unwrap();
+    let mut r = new_reader(&m);
+    assert!(r.start_for_test(&mut calls));
+    all(&mut r, &mut calls);
+    assert!(
+        !new_reader(&m).start_for_test(&mut calls),
+        "a file that is not regular has no way back"
+    );
+
+    let m = TryArc::try_new(tree([named("n", Content::None)])).unwrap();
+    all(&mut new_reader(&m), &mut calls);
+    assert!(m.parts()[0].reached.get());
+    assert!(
+        new_reader(&m).start_for_test(&mut calls),
+        "nothing starts over"
     );
 }

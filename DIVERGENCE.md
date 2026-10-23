@@ -36,6 +36,17 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_refused_copy_is_out_of_memory` (`crates/curl-os/tests/env_oom.rs`) and
   `finds_the_file_as_c` (`crates/curl-core/src/netrc.rs`).
 
+## Bodies C cannot send again
+
+- **A form part of nothing is sent again.** A part given a name but no content
+  (`curl_mime_addpart` with no `curl_mime_data` or the like) is posted again by a second
+  transfer, or by a request sent again, as it was the first time. C gives such a part no seek
+  function, so `mime_part_rewind` fails it once it was read: the second `curl_easy_perform`
+  of the tree fails with 65 (`CURLE_SEND_FAIL_REWIND`), "Cannot rewind mime/post data".
+  Measured against the C build. Pinned by `a_tree_posted_again_starts_over_what_was_reached`
+  (`crates/curl-sys-abi/src/handle_tests.rs`) and `a_part_reached_before_starts_over_as_c_s`
+  (`crates/curl-core/src/mime/tests.rs`).
+
 ## Options C loses
 
 - **A duplicated handle keeps its speed limits.** `curl_easy_duphandle` copies

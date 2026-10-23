@@ -1467,7 +1467,7 @@ back, which `Sending::AwaitingContinue` does (§6.1). SMTP's dot-stuffing and li
 ```rust
 pub struct Mime { boundary: Boundary, parts: Vec<Part> }                  // mime/mod.rs
 pub struct Part { name, filename, mime_type: Option<Vec<u8>>, headers: Vec<Vec<u8>>,
-                  encoder: Option<Encoder>, content: Content }
+                  encoder: Option<Encoder>, content: Content, reached: Reached }
 pub enum Content { None, Bytes(TryArc<Vec<u8>>), File(FileData /* path, size if regular */),
                    Read { handler, rewind: Option<Handler<dyn Rewind>>, size: Option<u64> },
                    Parts(Mime) }
@@ -1510,15 +1510,16 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   returned funny value"; the end short of a known size, "client mime read EOF fail, only X/Y of
   needed bytes read"; all ReadError. A pause is not latched: the transfer reads no more until it
   is unpaused, when the part's handler is called again (`mime_unpause`).
-- **Rewind.** Making the reader rewinds the tree, as `Curl_creader_set_mime` does, and so does
-  `Upload::rewind`: every `Read` part's `Rewind` is called (C's seek function), and its failure
-  or a part read without one is SendFailRewind "Cannot rewind mime/post data"; bytes start over
-  and a file is opened again at its next read. Whether a part was read since its last rewind,
-  which C keeps in the part and which decides whether its seek function is called, is the
-  rewind handler's to keep: the shim's keeps it in its part (§7.6), set when the part's read
-  function is called, so the seek function is called at the next perform too. C's part counts
-  as read once its headers are, so C also seeks a part whose headers went but whose read
-  function was never called (a transfer that failed between the two).
+- **Rewind.** Whether a request's reading reached a part since it last started over is kept
+  in the part (`Part::reached`, a shared flag the copies a source makes of one part hold), as C
+  keeps its part state past `MIMESTATE_BEGIN` from one request and one transfer to the next. A
+  part counts as reached once its headers are read, before its content. Making the reader
+  starts over every part reached (`Curl_creader_set_mime`'s `mime_rewind`), and
+  `Upload::rewind` the whole tree: a `Read` part's `Rewind` is called (C's seek function),
+  even if its handler never was; its failure, a part without one, or a file that is not regular
+  is SendFailRewind "Cannot rewind mime/post data"; bytes and nothing start over, and a regular
+  file is opened again at its next read. A part of nothing is the exception to C, which fails it
+  (DIVERGENCE.md).
 - **One tree, the application's.** The application gives `UploadSource::Mime(Handler<dyn
   MimeSource>)`; the core asks it for the tree each time it builds a request with a body, as it
   reads a header list again (`LineSource`, DESIGN.md), so a tree changed between performs
@@ -2021,9 +2022,11 @@ adapters are its own, installed in place of the ones it was cloned with.
 - **Read**: `n > nmemb` passed through as `Read::Data(n)` for the core to reject ("read function
   returned funny value"); READFUNC_ABORT → `Abort`; READFUNC_PAUSE → `Pause`.
 - **MIME parts' callbacks** (`curl_mime_data_cb`): read as Read is, but (size_t)-1, C's
-  `READ_ERROR`, is `Fail`, and so is -2, which C loops on; the rewind adapter keeps whether the
-  part was read since its last rewind and calls the seek function only then, failing without
-  one (`mime_part_rewind`); the free function runs when the part's content is replaced or
+  `READ_ERROR`, is `Fail`, and so is -2, which C loops on; the rewind adapter
+  calls the seek function, failing without one (`mime_part_rewind`), when the core starts the
+  part over, which it does only for a part reached (§5.4.1): the shim's part holds the
+  `Reached` each tree built of it shares, so it lasts from one perform to the next and is
+  cleared as the part's content is set again; the free function runs when the part's content is replaced or
   freed, once for each copy `curl_easy_duphandle` made.
 - **Progress**: XFERINFO if set, else PROGRESS with doubles; CURL_PROGRESSFUNC_CONTINUE →
   `ContinueWithMeter`.

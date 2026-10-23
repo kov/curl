@@ -1821,6 +1821,70 @@ fn a_rewind_asks_the_application() {
     );
 }
 
+/// A tree posted twice starts over, as the second transfer begins, the
+/// parts the first one's reading reached, as C keeps that in the part
+/// (`mime_part_rewind` past `MIMESTATE_BEGIN`): a part a function reads is
+/// seeked though its function was never called, as its size is 0; a file
+/// that is not regular fails the transfer; a part of nothing does not,
+/// where C fails it too (DIVERGENCE.md).
+#[test]
+fn a_tree_posted_again_starts_over_what_was_reached() {
+    thread_local!(static SEEKS: core::cell::Cell<u32> = const { core::cell::Cell::new(0) });
+    unsafe extern "C" fn read(_: *mut c_char, _: usize, _: usize, _: *mut c_void) -> usize {
+        panic!("a part of size 0 is not read");
+    }
+    unsafe extern "C" fn seek(_: *mut c_void, _: curl_off_t, _: c_int) -> c_int {
+        SEEKS.with(|s| s.set(s.get() + 1));
+        ffi::CURL_SEEKFUNC_OK
+    }
+    enum What {
+        Function,
+        DevNull,
+        Nothing,
+    }
+    let twice = |what: What| {
+        use crate::mime::{
+            curl_mime_addpart, curl_mime_data_cb, curl_mime_filedata, curl_mime_free,
+            curl_mime_init, curl_mime_name,
+        };
+        let c = curl_easy_init();
+        // SAFETY: a live tree and part, freed after the handle.
+        let m = unsafe {
+            let m = curl_mime_init(c);
+            let p = curl_mime_addpart(m);
+            assert_eq!(curl_mime_name(p, c"f".as_ptr()), CURLE_OK);
+            let set = match what {
+                What::Function => {
+                    curl_mime_data_cb(p, 0, Some(read), Some(seek), None, ptr::null_mut())
+                }
+                What::DevNull => curl_mime_filedata(p, c"/dev/null".as_ptr()),
+                What::Nothing => CURLE_OK,
+            };
+            assert_eq!(set, CURLE_OK);
+            m
+        };
+        pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
+        pointer(c, ffi::CURLOPT_MIMEPOST, m);
+        options(c, |o| {
+            o.script = Some(Script::new(vec![Piece::SendAll]).unwrap());
+        });
+        // SAFETY: a live handle, then the tree it posts, then nothing.
+        unsafe {
+            let codes = [curl_easy_perform(c), curl_easy_perform(c)];
+            curl_easy_cleanup(c);
+            curl_mime_free(m);
+            codes
+        }
+    };
+    assert_eq!(twice(What::Function), [CURLE_OK, CURLE_OK]);
+    assert_eq!(SEEKS.with(core::cell::Cell::get), 1);
+    assert_eq!(
+        twice(What::DevNull),
+        [CURLE_OK, ffi::CURLE_SEND_FAIL_REWIND]
+    );
+    assert_eq!(twice(What::Nothing), [CURLE_OK, CURLE_OK]);
+}
+
 /// What the write function answers.
 struct Answer(usize);
 

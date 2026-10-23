@@ -665,6 +665,7 @@ fn to_mime(parts: &[ToolPart], msgs: &Messages) -> Result<Mime, ErrorKind> {
             headers,
             encoder,
             content,
+            reached: curl_core::mime::Reached::default(),
         };
         mime.add(part).map_err(oom)?;
     }
@@ -675,12 +676,7 @@ fn to_mime(parts: &[ToolPart], msgs: &Messages) -> Result<Mime, ErrorKind> {
 /// it goes.
 fn stdin_content(origin: u64, size: Option<u64>, msgs: &Messages) -> Result<Content, ErrorKind> {
     let file = curl_os::fs::stdin().map_err(|_| ErrorKind::ReadError)?;
-    let state = TryArc::try_new(Mutex::new(StdinState {
-        file,
-        at: 0,
-        read: false,
-    }))
-    .map_err(oom)?;
+    let state = TryArc::try_new(Mutex::new(StdinState { file, at: 0 })).map_err(oom)?;
     let reader = StdinPart {
         state,
         origin,
@@ -705,8 +701,6 @@ struct StdinState {
     file: File,
     /// How far into the part it is.
     at: u64,
-    /// It was read since it was started or last started over.
-    read: bool,
 }
 
 /// Standard input read as a part (`tool_mime_stdin_read`), and started
@@ -721,7 +715,6 @@ struct StdinPart {
 impl ReadHandler for StdinPart {
     fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
         let mut st = self.state.lock().expect("no panic holds it");
-        st.read = true;
         let room = match self.size {
             Some(size) if st.at >= size => return Read::Eof,
             Some(size) => buf
@@ -750,15 +743,10 @@ impl ReadHandler for StdinPart {
 impl Rewind for StdinPart {
     fn rewind(&self, _: &mut TransferCx<'_>) -> Result<(), RewindFailed> {
         let mut st = self.state.lock().expect("no panic holds it");
-        // Not read since: where it was, as C seeks only a part it read.
-        if !st.read {
-            return Ok(());
-        }
         st.file
             .seek(SeekFrom::Start(self.origin))
             .map_err(|_| RewindFailed)?;
         st.at = 0;
-        st.read = false;
         Ok(())
     }
 }

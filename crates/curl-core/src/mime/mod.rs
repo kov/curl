@@ -9,6 +9,7 @@ pub(crate) mod read;
 mod tests;
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
@@ -98,8 +99,12 @@ impl Mime {
         &self.parts
     }
 
-    /// `part` after the others (`curl_mime_addpart`).
-    pub fn add(&mut self, part: Part) -> Result<(), OutOfMemory> {
+    /// `part` after the others (`curl_mime_addpart`); one without a
+    /// record of its own of whether it was reached is given one.
+    pub fn add(&mut self, mut part: Part) -> Result<(), OutOfMemory> {
+        if part.reached.0.is_none() {
+            part.reached = Reached::new()?;
+        }
         self.parts.try_push(part)
     }
 
@@ -134,6 +139,37 @@ pub struct Part {
     /// How its content is encoded (`curl_mime_encoder`).
     pub encoder: Option<Encoder>,
     pub content: Content,
+    /// Whether a request's reading reached it since it last started over.
+    pub reached: Reached,
+}
+
+/// Whether a request's reading reached a part since the part last started
+/// over (C's part state past its start). C keeps it in the part from one
+/// request, and one transfer, to the next, and starts over only a part
+/// that was reached: a handler's part is rewound, one without a rewind
+/// fails the request, and so does a file that is not regular, which has
+/// no way back. The copies of a part a source gives each request share
+/// one; `Mime::add` gives a part that has none its own.
+#[derive(Clone, Debug, Default)]
+pub struct Reached(Option<TryArc<AtomicBool>>);
+
+impl Reached {
+    /// A new record, not reached, that its clones share.
+    pub fn new() -> Result<Reached, OutOfMemory> {
+        Ok(Reached(Some(TryArc::try_new(AtomicBool::new(false))?)))
+    }
+
+    pub fn get(&self) -> bool {
+        self.0.as_ref().is_some_and(|r| r.load(Ordering::Relaxed))
+    }
+
+    /// Say whether it was reached: set as a reading reaches it, cleared
+    /// as it starts over.
+    pub fn set(&self, reached: bool) {
+        if let Some(r) = &self.0 {
+            r.store(reached, Ordering::Relaxed);
+        }
+    }
 }
 
 /// What a part holds.
@@ -147,10 +183,10 @@ pub enum Content {
     /// A file's (`curl_mime_filedata`), read as it is sent.
     File(FileData),
     /// What a handler reads, `size` bytes if known (`curl_mime_data_cb`).
-    /// Its rewind is called before each request reads it, and whenever
-    /// the body must be sent again; it starts the content over if any of
-    /// it was read. Without one, a part that was read cannot be sent
-    /// again.
+    /// Its rewind is called before a request reads it if an earlier one
+    /// reached it (`Part::reached`), and whenever the body must be sent
+    /// again; it starts the content over. Without one, a part that was
+    /// reached cannot be sent again.
     Read {
         handler: Handler<dyn ReadHandler>,
         rewind: Option<Handler<dyn Rewind>>,

@@ -305,6 +305,9 @@ mod tests {
             assert_eq!(read(given), (Ok(ms), vec![]), "{given}");
         }
         assert_eq!(read("1001/s").0, Err(NumberTooLarge));
+        // As many units as fit in milliseconds, and one more.
+        assert_eq!(read("1/9223372036854775s").0, Ok(9_223_372_036_854_775_000));
+        assert_eq!(read("1/9223372036854776s").0, Err(NumberTooLarge));
         assert_eq!(read("0/s").0, Err(BadUse));
         assert_eq!(read("x").0, Err(BadNumeric));
         assert_eq!(read("-1").0, Err(BadNumeric));

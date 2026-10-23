@@ -384,6 +384,14 @@ impl Method {
     }
 }
 
+impl Global<'_> {
+    /// Whether header lines are styled, written to a terminal or not
+    /// (`isatty` and `styled_output`).
+    pub(crate) fn styles(&self, terminal: bool) -> bool {
+        terminal && !self.unstyled
+    }
+}
+
 impl<'a> Operation<'a> {
     /// The URLs given.
     pub(crate) fn url_count(&self) -> usize {

@@ -156,7 +156,33 @@ fn columns(env: Option<&[u8]>, terminal: impl FnOnce() -> Option<u16>) -> usize 
 /// Write to standard error. A failed write has nowhere to be reported,
 /// as in C.
 fn emit(bytes: &[u8]) {
+    #[cfg(test)]
+    if CAPTURED
+        .with_borrow_mut(|c| c.as_mut().map(|c| c.extend_from_slice(bytes)))
+        .is_some()
+    {
+        return;
+    }
     let _ = std::io::stderr().write_all(bytes);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What this thread's messages wrote, while `captured` runs.
+    static CAPTURED: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// What the messages `f` writes on this thread, at 79 columns, instead
+/// of standard error. For tests.
+#[cfg(test)]
+pub(crate) fn captured(f: impl FnOnce(Messages)) -> String {
+    CAPTURED.with_borrow_mut(|c| *c = Some(Vec::new()));
+    f(Messages {
+        columns: DEFAULT_COLUMNS,
+        ..Messages::new()
+    });
+    let bytes = CAPTURED.with_borrow_mut(Option::take).unwrap_or_default();
+    String::from_utf8(bytes).unwrap()
 }
 
 /// A message, built on the stack and cut at 1023 bytes as C's buffer cuts

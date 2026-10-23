@@ -1065,6 +1065,15 @@ mod tests {
             (false, false, 0)
         );
         assert_eq!(run(&["x", "--rate", "1/w"]), Err(ParamError::BadUse));
+        // Styled on a terminal only, and there unless said otherwise.
+        let styles = |args: &[&str], terminal| line(args).global.styles(terminal);
+        assert!(styles(&["x"], true));
+        assert!(!styles(&["x"], false));
+        assert!(!styles(&["x", "--no-styled-output"], true));
+        assert!(styles(
+            &["x", "--no-styled-output", "--styled-output"],
+            true
+        ));
     }
 
     #[test]
@@ -1362,6 +1371,125 @@ mod tests {
         }
         assert_eq!(user.as_deref(), Some(&b"plain:p"[..]));
         assert_eq!(wiped, [(406, 0)]);
+    }
+
+    /// An expansion that fills what is left of the room exactly fits.
+    #[test]
+    fn an_expansion_fits_the_room_to_its_last_byte() {
+        let mut buf = [0u8; 4];
+        let mut room = Room {
+            spare: &mut buf[..],
+            size: 4,
+            pending: None,
+        };
+        assert_eq!(room.place(b"ab".to_vec()), Ok(&b"ab"[..]));
+        assert_eq!(room.place(b"cde".to_vec()), Err(b"cde".to_vec()));
+        assert_eq!(room.place(b"cd".to_vec()), Ok(&b"cd"[..]));
+        assert_eq!(room.place(b"e".to_vec()), Err(b"e".to_vec()));
+    }
+
+    /// In a configuration file too, an entry whose expansion waits for
+    /// room is read again, warned of once.
+    #[test]
+    fn keeps_every_expansion_of_a_config_file() {
+        let long = "x".repeat(3000);
+        let mut text = format!("--variable v={long}\n");
+        for i in 0..50 {
+            text.push_str(&format!("--expand-url http://h/{i}/{{{{v}}}}\n"));
+        }
+        text.push_str("--expand-url 'http://h/q/{{v}}\n");
+        let file = TempFile::new("expand.cfg", text.as_bytes());
+        let argv: Vec<OsString> = ["curl", "-K", file.name()]
+            .iter()
+            .map(OsString::from)
+            .collect();
+        let mut urls = Vec::new();
+        let said = crate::msgs::captured(|mut msgs| {
+            urls = parse(&argv, None, &mut msgs, &mut |_, _| {}, |r, _| {
+                let Ok(Parsed::Run(line)) = r else {
+                    panic!("not parsed");
+                };
+                let op = &line.operations[0];
+                op.nodes
+                    .iter()
+                    .map(|n| n.url.unwrap().to_vec())
+                    .collect::<Vec<_>>()
+            });
+        });
+        assert_eq!(urls.len(), 51);
+        for (i, url) in urls.iter().take(50).enumerate() {
+            assert_eq!(url, format!("http://h/{i}/{long}").as_bytes());
+        }
+        assert_eq!(urls[50], format!("'http://h/q/{long}").as_bytes());
+        // Unwrapped: where the lines break depends on the file's name.
+        let said = said.replace("\nWarning: ", "");
+        let warning = format!(
+            "{}:52 Option '--expand-url' uses argument with leading single quote. \
+             It is probably a mistake. Consider double quotes.",
+            file.name()
+        );
+        assert_eq!(said.matches(&warning).count(), 1, "{said}");
+    }
+
+    /// Room that cannot be had fails the entry that wanted it, the one a
+    /// configuration file stepped back over.
+    #[test]
+    fn a_failed_room_names_the_entry_that_wanted_it() {
+        let argv: Vec<OsString> = ["curl", "-K", "f"].iter().map(OsString::from).collect();
+        let entry = |number, option| Entry {
+            number,
+            option,
+            argument: None,
+            warnings: &[],
+        };
+        let entries = [entry(3, &b"a"[..]), entry(7, b"b"), entry(9, b"c")];
+        let said = crate::msgs::captured(|mut msgs| {
+            let mut parser = Parser::new(&argv).unwrap();
+            if let Some(Source::Args { word, .. }) = parser.sources.last_mut() {
+                *word = 1;
+            }
+            parser
+                .sources
+                .try_push(Source::File {
+                    name: b"f",
+                    entries: &entries,
+                    at: 1,
+                    levels: 1,
+                    curlrc: false,
+                })
+                .unwrap();
+            assert!(matches!(
+                parser.fail_to_grow(&mut msgs),
+                Step::Done(Err(ParamError::NoMem))
+            ));
+        });
+        assert!(
+            said.starts_with("curl: f:7 config file option 'b' out of memory\n"),
+            "{said}"
+        );
+    }
+
+    /// A variable set again is noted when a trace was asked for before
+    /// it, as C's `notef` notes it then.
+    #[test]
+    fn notes_a_variable_set_again_when_tracing() {
+        let said = |args: &[&str]| {
+            let argv: Vec<OsString> = std::iter::once("curl")
+                .chain(args.iter().copied())
+                .map(OsString::from)
+                .collect();
+            crate::msgs::captured(|mut msgs| {
+                assert!(parse_args(&argv, &mut msgs, &mut |_, _| {}).is_ok());
+            })
+        };
+        let set_twice = ["--variable", "a=1", "--variable", "a=2", "x"];
+        let mut traced = vec!["-v"];
+        traced.extend(set_twice);
+        assert_eq!(said(&traced), "Note: Overwriting variable 'a'\n");
+        assert_eq!(said(&set_twice), "");
+        let mut late = set_twice.to_vec();
+        late.push("-v");
+        assert_eq!(said(&late), "");
     }
 
     /// A file of the test's own, removed after it.

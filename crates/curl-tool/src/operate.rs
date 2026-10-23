@@ -298,7 +298,7 @@ fn node_transfers(
             match step {
                 Step::Ran(result) => {
                     *last = result;
-                    if result.is_err_and(fatal) || (result.is_err() && run.global.fail_early) {
+                    if ends_run(result, run.global.fail_early) {
                         return Some(result);
                     }
                 }
@@ -310,24 +310,33 @@ fn node_transfers(
     None
 }
 
+/// Whether a transfer that ended with `result` ends the run: a fatal
+/// error, or any with `--fail-early` (`serial_transfers`).
+fn ends_run(result: Result<(), ErrorKind>, fail_early: bool) -> bool {
+    result.is_err_and(fatal) || (result.is_err() && fail_early)
+}
+
 /// Wait for what is left of `--rate`'s time since the last transfer
 /// started, if any, saying so (`serial_transfers`).
 fn rate_wait(run: &Shared<'_, '_>) {
-    let every = run.global.ms_per_transfer;
     let Some(started) = run.started.get() else {
         return;
     };
     let took = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    if every == 0 || took >= every {
-        return;
+    if let Some(wait) = rate_left(run.global.ms_per_transfer, took) {
+        if let Ok(note) = try_format(format_args!(
+            "Transfer took {took} ms, waits {wait}ms as set by --rate"
+        )) {
+            run.msgs.note(&[note.as_bytes()]);
+        }
+        std::thread::sleep(Duration::from_millis(wait));
     }
-    if let Ok(note) = try_format(format_args!(
-        "Transfer took {took} ms, waits {}ms as set by --rate",
-        every - took
-    )) {
-        run.msgs.note(&[note.as_bytes()]);
-    }
-    std::thread::sleep(Duration::from_millis(every - took));
+}
+
+/// How many milliseconds are left to wait of `every` between transfer
+/// starts, `took` having passed since the last; none for no `--rate`.
+fn rate_left(every: u64, took: u64) -> Option<u64> {
+    (every != 0 && took < every).then(|| every - took)
 }
 
 /// Make each directory `path`, a file's name, is in that is not there
@@ -676,7 +685,7 @@ fn transfer(
         let mut stream = out.stream();
         stream.show_headers = op.show_headers;
         stream.terminal = terminal;
-        stream.styled = terminal && !run.global.unstyled;
+        stream.styled = run.global.styles(terminal);
         stream.binary_ok = node.output == Output::File(b"-");
         stream.no_buffer = op.no_buffer;
         stream.clobber = op.clobber;
@@ -1957,6 +1966,37 @@ fn decoders() -> curl_core::coding::Decoders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fatal error ends the run, and with `--fail-early` any failure.
+    #[test]
+    fn ends_the_run_as_c_does() {
+        let failed = Err(ErrorKind::CouldntConnect);
+        assert!(!ends_run(Ok(()), true));
+        assert!(!ends_run(failed, false));
+        assert!(ends_run(failed, true));
+        assert!(ends_run(Err(ErrorKind::OutOfMemory), false));
+    }
+
+    /// `--rate`'s wait: what is left of its time, if any.
+    #[test]
+    fn waits_what_is_left_of_the_rate() {
+        assert_eq!(rate_left(0, 0), None);
+        assert_eq!(rate_left(1000, 300), Some(700));
+        assert_eq!(rate_left(1000, 999), Some(1));
+        assert_eq!(rate_left(1000, 1000), None);
+        assert_eq!(rate_left(1000, 5000), None);
+    }
+
+    /// `--speed-limit` and `--speed-time` both, or no check; a time past
+    /// what the library keeps is the longest it does.
+    #[test]
+    fn asks_for_a_low_speed_with_both() {
+        let low = |limit, time| low_speed(limit, time).map(|l| (l.limit.get(), l.time.get()));
+        assert_eq!(low(100, 30), Some((100, 30)));
+        assert_eq!(low(0, 30), None);
+        assert_eq!(low(1, 0), None);
+        assert_eq!(low(1, 70_000), Some((1, u16::MAX)));
+    }
 
     /// `retrycheck`'s reasons: failures that may pass, the HTTP codes that
     /// say so (with `--fail`, as its failure too), and with

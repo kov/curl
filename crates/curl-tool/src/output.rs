@@ -660,7 +660,9 @@ impl Stream {
                     self.fwrite(part);
                 }
                 if names_location(name) {
-                    self.linked_location(value, url);
+                    let mut buf = [0u8; 64];
+                    let vte = curl_os::env::var_into(b"VTE_VERSION", &mut buf);
+                    self.linked_location(value, url, vte);
                 } else {
                     self.fwrite(value);
                 }
@@ -676,15 +678,14 @@ impl Stream {
 impl Stream {
     /// A `Location:` line's `value`, after its colon, made a link to the
     /// URL it leads to from `url`, where that is HTTP or FTP, with or
-    /// without TLS (`write_linked_location`). The link starts after the
-    /// leading blanks and ends after the line's end.
-    fn linked_location(&mut self, value: &[u8], url: Option<&[u8]>) {
+    /// without TLS, and the terminal, its `VTE_VERSION` given as `vte`,
+    /// shows links well (`write_linked_location`). The link starts after
+    /// the leading blanks and ends after the line's end.
+    fn linked_location(&mut self, value: &[u8], url: Option<&[u8]>, vte: Option<&[u8]>) {
         let skipped = value
             .iter()
             .take_while(|&&b| b == b' ' || b == b'\t')
             .count();
-        let mut buf = [0u8; 64];
-        let vte = curl_os::env::var_into(b"VTE_VERSION", &mut buf);
         match url.and_then(|url| link_target(&value[skipped..], url, vte)) {
             Some(target) => {
                 for part in [
@@ -1306,6 +1307,35 @@ mod tests {
         assert!(names_location(b""));
         assert!(!names_location(b"Locations"));
         assert!(!names_location(b"Content-Location"));
+    }
+
+    /// A styled `Location:` is a link from after its blanks to past the
+    /// line's end; one that does not link is written as it came.
+    #[test]
+    fn writes_a_linked_location_as_c_does() {
+        let written = |value: &[u8], vte: Option<&[u8]>| {
+            let path = scratch("linked");
+            let out = Output::file(path.as_os_str().as_encoded_bytes(), quiet()).unwrap();
+            {
+                let mut s = out.stream();
+                assert!(s.create());
+                s.linked_location(value, Some(b"http://h/a/b"), vte);
+            }
+            drop(out);
+            let written = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            String::from_utf8(written).unwrap()
+        };
+        assert_eq!(
+            written(b" \t c\r\n", None),
+            " \t \x1b]8;;http://h/a/c\x1b\\c\r\n\x1b]8;;\x1b\\"
+        );
+        assert_eq!(
+            written(b"c\r\n", Some(b"5000")),
+            "\x1b]8;;http://h/a/c\x1b\\c\r\n\x1b]8;;\x1b\\"
+        );
+        assert_eq!(written(b" c\r\n", Some(b"4801")), " c\r\n");
+        assert_eq!(written(b" file:///x\r\n", None), " file:///x\r\n");
     }
 
     /// Header names are bold on a terminal; lines without one are not.

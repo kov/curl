@@ -322,12 +322,11 @@ const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 /// `bytes` in base64, padded (`curlx_base64_encode`).
 fn base64(bytes: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     let mut out = Vec::new();
-    out.try_reserve_exact(bytes.len().div_ceil(3) * 4)?;
     for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        // The three bytes, zeros after the last, in the low 24 bits.
+        let mut word = [0u8; 4];
+        word[1..=chunk.len()].copy_from_slice(chunk);
+        let n = u32::from_be_bytes(word);
         for i in 0..4 {
             if i <= chunk.len() {
                 out.try_push(BASE64[(n >> (18 - 6 * i) & 0x3f) as usize])?;
@@ -353,7 +352,6 @@ fn base64_decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
     }
     let len = text.len() / 4 * 3 - padding;
     let mut out = Vec::new();
-    out.try_reserve_exact(len + 2)?;
     let data = &text[..text.len() - padding];
     for (q, quantum) in text.chunks(4).enumerate() {
         let mut n = 0u32;
@@ -367,7 +365,7 @@ fn base64_decode(text: &[u8]) -> Result<Option<Vec<u8>>, OutOfMemory> {
                     None => return Ok(None),
                 }
             };
-            n = n << 6 | v;
+            n = n * 64 + v;
         }
         out.try_extend_from_slice(&n.to_be_bytes()[1..])?;
     }
@@ -452,6 +450,7 @@ mod tests {
         );
         same("{{b:64dec}}|{{b:64dec:b64}}|{{none:64dec}}", "hi|aGk=|");
         same("{{q:json}}", "\\\"\\\\\\t");
+        same("{{e:trim}}|{{none:trim}}|{{e:json}}", "||");
         let long = "F".repeat(128);
         same(
             &format!("{{{{{long}}}}}{{{{a}}}}"),
@@ -464,6 +463,99 @@ mod tests {
         for line in ["{{a:}}", "{{a:trim,url}}", "{{a:super}}", "{{a:trimx}}"] {
             assert_eq!(expand(&v, line), Err(ParamError::ExpandError), "{line}");
         }
+    }
+
+    /// JSON escapes the characters it has a letter for with it, and the
+    /// other controls as `\u00XX` (`jsonquoted`).
+    #[test]
+    fn escapes_json_as_c_does() {
+        let v = vars(&["c=\x08\x0c\n\r\t\x01\x1f /"]);
+        assert_eq!(
+            expand(&v, "{{c:json}}"),
+            Ok(Some("\\b\\f\\n\\r\\t\\u0001\\u001f /".to_string()))
+        );
+    }
+
+    /// An expansion is at most `MAX_EXPAND` bytes less one, as C's
+    /// buffer holds it with its zero; past that, memory is said to have
+    /// run out.
+    #[test]
+    fn an_expansion_fits_c_s_buffer() {
+        let at_most = "x".repeat(MAX_EXPAND - 1);
+        let v = vars(&[&format!("v={at_most}")]);
+        assert_eq!(
+            v.expand(b"{{v}}", &quiet()).unwrap().map(|e| e.len()),
+            Some(MAX_EXPAND - 1)
+        );
+        assert_eq!(v.expand(b"{{v}}x", &quiet()), Err(ParamError::NoMem));
+        let over = vars(&[&format!("v={at_most}x")]);
+        assert_eq!(over.expand(b"{{v}}", &quiet()), Err(ParamError::NoMem));
+    }
+
+    /// What is said of a bad variable or expansion, in C's words.
+    #[test]
+    fn says_what_c_says() {
+        let said = |given: &[&str], line: &str| {
+            crate::msgs::captured(|msgs| {
+                let mut v = Variables::default();
+                for g in given {
+                    let _ = v.set(g.as_bytes(), &msgs);
+                }
+                let _ = v.expand(line.as_bytes(), &msgs);
+            })
+        };
+        assert_eq!(
+            said(&["a=x"], "{{a:trim,url}}"),
+            "curl: unknown variable function in ':trim,url'\n"
+        );
+        assert_eq!(
+            said(&["a=x"], "1{{a:}}2"),
+            "curl: unknown variable function in ':'\n"
+        );
+        assert_eq!(
+            said(&["n@/nonexistent/x"], ""),
+            "curl: Failed to open /nonexistent/x: No such file or directory\n"
+        );
+        assert_eq!(
+            said(&["%CURL_TEST_SURELY_NOT_SET_45"], ""),
+            "curl: Variable 'CURL_TEST_SURELY_NOT_SET_45' import fail, not set\n"
+        );
+        assert_eq!(
+            said(&["x"], ""),
+            "Warning: Bad --variable syntax, skipping: x\n"
+        );
+        assert_eq!(
+            said(&["=x"], ""),
+            "Warning: Bad variable name length (0), skipping\n"
+        );
+        assert_eq!(
+            said(&["a=x"], "{{a.b}}"),
+            "Warning: bad variable name: a.b\n"
+        );
+        assert_eq!(
+            said(&["a=x"], "{{a"),
+            "Warning: missing close '}}' in '{{a'\n"
+        );
+        assert_eq!(
+            said(&[], "{{}}"),
+            "Warning: bad variable name length '{{}}'\n"
+        );
+    }
+
+    /// `%name` takes the environment's value, before anything after the
+    /// name; unset, what follows is used, and nothing following fails.
+    #[test]
+    fn imports_from_the_environment() {
+        let path = curl_os::env::var(b"PATH").unwrap().unwrap();
+        let v = vars(&["%PATH=default", "%CURL_TEST_SURELY_NOT_SET_45=default"]);
+        assert_eq!(v.find(b"PATH").map(|v| v.content.clone()), Some(path));
+        assert_eq!(
+            v.find(b"CURL_TEST_SURELY_NOT_SET_45")
+                .map(|v| &v.content[..]),
+            Some(&b"default"[..])
+        );
+        let refused = Variables::default().set(b"%CURL_TEST_SURELY_NOT_SET_45", &quiet());
+        assert_eq!(refused, Err(ParamError::ExpandError));
     }
 
     /// A zero byte cannot be shown; functions see the content to its
@@ -539,9 +631,12 @@ mod tests {
             assert_eq!(refused(bad), Err(ParamError::VarSyntax), "{bad}");
         }
         assert_eq!(refused("n@/nonexistent/x"), Err(ParamError::ReadError));
-        // A bad name is skipped.
-        assert_eq!(refused(&format!("{}=x", "a".repeat(128))), Ok(()));
-        assert_eq!(refused("=x"), Ok(()));
+        // A name of 127 bytes is one; a longer one, or none, is skipped.
+        let name = "a".repeat(127);
+        assert_eq!(vars(&[&format!("{name}=x")]).0.len(), 1);
+        for bad in [format!("{name}a=x"), "=x".to_string(), "%=x".to_string()] {
+            assert_eq!(vars(&[&bad]).0.len(), 0, "{bad}");
+        }
     }
 
     /// The last set is the one used.

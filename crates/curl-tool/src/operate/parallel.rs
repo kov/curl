@@ -130,11 +130,7 @@ enum Place {
 struct Entry<'a, 'l> {
     per: PerTransfer<'a, 'l>,
     place: Place,
-    gauge: TryArc<Gauge>,
-    /// Its totals are in the meter's already (`dltotal_added`,
-    /// `ultotal_added`).
-    download_counted: bool,
-    upload_counted: bool,
+    counted: Counted,
     /// Not added again before this second since the epoch, for a retry
     /// (`startat`).
     start_at: u64,
@@ -171,6 +167,20 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Whether a transfer to be added again at the second `start_at` waits
+/// still, at the second `now`.
+fn waiting(now: u64, start_at: u64) -> bool {
+    now < start_at
+}
+
+/// The second a transfer tried again after `wait` is added again at, from
+/// the second `now`: the wait is counted in whole seconds, so one shorter
+/// than a second is none (`check_finished`).
+fn start_at(now: u64, wait: Duration) -> u64 {
+    let secs = u64::try_from(wait.as_millis() / 1000).unwrap_or(u64::MAX);
+    now.saturating_add(secs)
+}
+
 /// The failure of a transfer that ended as it was made.
 fn failure(ended: Ended) -> ErrorKind {
     match ended {
@@ -199,9 +209,7 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
             let entry = Entry {
                 per,
                 place: Place::Here(easy),
-                gauge: TryArc::try_new(Gauge::default()).map_err(|_| ErrorKind::OutOfMemory)?,
-                download_counted: false,
-                upload_counted: false,
+                counted: Counted::new().map_err(|_| ErrorKind::OutOfMemory)?,
                 start_at: 0,
                 unfinished,
             };
@@ -230,14 +238,20 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
         }
         let now = unix_now();
         let (mut sleeping, mut added) = (false, false);
+        // Stopped by the cap, transfers may be left (C's `per` not NULL).
+        let mut capped = false;
         let mut at = 0;
-        while at < self.list.len() && self.all_added < self.max {
+        while at < self.list.len() {
+            if self.all_added >= self.max {
+                capped = true;
+                break;
+            }
             let entry = &mut self.list[at];
             at += 1;
             if entry.passed() {
                 continue;
             }
-            if now < entry.start_at {
+            if waiting(now, entry.start_at) {
                 sleeping = true;
                 continue;
             }
@@ -249,7 +263,7 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                 Err(Pre::Failed(e)) => return Err(e),
                 Err(Pre::Unopened) => return Err(ErrorKind::ReadError),
             }
-            let gauged = Handler::progress(Gauged(entry.gauge.clone()))
+            let gauged = Handler::progress(Gauged(entry.counted.gauge.clone()))
                 .map_err(|_| ErrorKind::OutOfMemory)?;
             Setopt::new(easy, None)
                 .unwritten("C sets it with `curl_easy_setopt` as it adds", |o| {
@@ -277,7 +291,7 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
             self.all_added += 1;
             added = true;
         }
-        Ok((at < self.list.len() || sleeping, added))
+        Ok((capped || sleeping, added))
     }
 }
 
@@ -292,7 +306,7 @@ impl Parallel<'_, '_, '_> {
         }
         let mut result = Ok(());
         let mut still_running = true;
-        let (mut wrapitup, mut wrapped) = (false, false);
+        let mut wrapitup = false;
         let mut failed = None;
         let start = Instant::now();
         while still_running || more {
@@ -300,12 +314,11 @@ impl Parallel<'_, '_, '_> {
                 if !still_running {
                     break;
                 }
-                // Those running stop at their next progress.
-                if !std::mem::replace(&mut wrapped, true) {
-                    for entry in &self.list {
-                        if matches!(entry.place, Place::Added(_)) {
-                            entry.gauge.abort.store(true, Ordering::Relaxed);
-                        }
+                // Those running stop at their next progress (C flags them
+                // once; flagging them again changes nothing).
+                for entry in &self.list {
+                    if matches!(entry.place, Place::Added(_)) {
+                        entry.counted.gauge.abort.store(true, Ordering::Relaxed);
                     }
                 }
             } else if more {
@@ -372,7 +385,7 @@ impl Parallel<'_, '_, '_> {
                 .expect("every transfer added is listed");
             let mut easy = Handle(*removed.easy);
             let entry = &mut self.list[at];
-            let aborted = entry.gauge.abort.load(Ordering::Relaxed);
+            let aborted = entry.counted.gauge.abort.load(Ordering::Relaxed);
             let told = if aborted && ended == Err(ErrorKind::AbortedByCallback) {
                 Told::As(ABORTED)
             } else {
@@ -388,14 +401,12 @@ impl Parallel<'_, '_, '_> {
             let again = per
                 .retrying
                 .check(per.op, run.msgs, &mut easy, &per.out, attempt);
-            self.meter.finalize(entry);
+            self.meter.finalize(&mut entry.counted);
             self.all_added -= 1;
             checked = true;
             match again {
                 Again::After(wait) => {
-                    // In whole seconds.
-                    let secs = u64::try_from(wait.as_millis() / 1000).unwrap_or(u64::MAX);
-                    entry.start_at = unix_now().saturating_add(secs);
+                    entry.start_at = start_at(unix_now(), wait);
                     entry.place = Place::Here(easy);
                 }
                 Again::No(settled) => {
@@ -469,8 +480,17 @@ impl Parallel<'_, '_, '_> {
         }
         let counts = self.multi.counts();
         let live = counts.running - self.multi.pending();
-        self.meter
-            .draw(&mut self.list, start, counts.added_ever, live, last);
+        let counted = self.list.iter_mut().map(|e| &mut e.counted);
+        let mut err = std::io::stderr().lock();
+        let now = Instant::now();
+        let line = Line {
+            start,
+            now,
+            added: counts.added_ever,
+            live,
+            last,
+        };
+        self.meter.draw(&mut err, counted, line);
     }
 }
 
@@ -518,17 +538,17 @@ impl Meter {
 
     /// Count a transfer's numbers before it goes, or is tried again
     /// (`progress_finalize`).
-    fn finalize(&mut self, entry: &mut Entry<'_, '_>) {
-        let g = &entry.gauge;
+    fn finalize(&mut self, counted: &mut Counted) {
+        let g = &counted.gauge;
         add_off(&mut self.downloaded, g.downloaded.load(Ordering::Relaxed));
         add_off(&mut self.uploaded, g.uploaded.load(Ordering::Relaxed));
-        if !std::mem::replace(&mut entry.download_counted, true) {
+        if !std::mem::replace(&mut counted.download, true) {
             add_off(
                 &mut self.download_total,
                 g.download_total.load(Ordering::Relaxed),
             );
         }
-        if !std::mem::replace(&mut entry.upload_counted, true) {
+        if !std::mem::replace(&mut counted.upload, true) {
             add_off(
                 &mut self.upload_total,
                 g.upload_total.load(Ordering::Relaxed),
@@ -536,79 +556,67 @@ impl Meter {
         }
     }
 
-    /// The header once, then a line if half a second passed since the
-    /// last or this is the `last`: `added` transfers so far, `live` of
-    /// them running.
-    fn draw(
+    /// Onto `out`, the header once, then the line of the transfers
+    /// `counted` if half a second passed since the last or it is the last.
+    fn draw<'c>(
         &mut self,
-        list: &mut [Entry<'_, '_>],
-        start: Instant,
-        added: u64,
-        live: u32,
-        last: bool,
+        out: &mut dyn std::io::Write,
+        counted: impl Iterator<Item = &'c mut Counted>,
+        line: Line,
     ) {
-        let now = Instant::now();
-        let mut err = std::io::stderr().lock();
         // Nowhere to report a failed write, as in C.
         if !std::mem::replace(&mut self.header, true) {
-            let _ = err
+            let _ = out
                 .write_all(b"DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed\n");
         }
         let due = self
             .stamp
-            .is_none_or(|at| now.duration_since(at) > Duration::from_millis(500));
-        if !(last || due) {
+            .is_none_or(|at| line.now.duration_since(at) > Duration::from_millis(500));
+        if !(line.last || due) {
             return;
         }
-        self.stamp = Some(now);
-        let mut line = [0u8; 128];
-        let len = self.line(&mut line, list, start, now, added, live, last);
-        let _ = err.write_all(&line[..len]);
+        self.stamp = Some(line.now);
+        let mut buf = [0u8; 128];
+        let len = self.line(&mut buf, counted, line);
+        let _ = out.write_all(&buf[..len]);
     }
 
     /// The line as C prints it, into `buf`; its length.
-    #[expect(clippy::too_many_arguments, reason = "the line's every field")]
-    fn line(
+    fn line<'c>(
         &mut self,
         buf: &mut [u8],
-        list: &mut [Entry<'_, '_>],
-        start: Instant,
-        now: Instant,
-        added: u64,
-        live: u32,
-        last: bool,
+        counted: impl Iterator<Item = &'c mut Counted>,
+        line: Line,
     ) -> usize {
+        let Line {
+            start,
+            now,
+            added,
+            live,
+            last,
+        } = line;
         let spent = now.duration_since(start).as_secs();
         let (mut dlnow, mut ulnow) = (0, 0);
         add_off(&mut dlnow, self.downloaded);
         add_off(&mut ulnow, self.uploaded);
         let (mut dlknown, mut ulknown) = (true, true);
-        for entry in list.iter_mut() {
-            let g = &entry.gauge;
+        for c in counted {
+            let g = &c.gauge;
             add_off(&mut dlnow, g.downloaded.load(Ordering::Relaxed));
             add_off(&mut ulnow, g.uploaded.load(Ordering::Relaxed));
             let total = g.download_total.load(Ordering::Relaxed);
             if total == 0 {
                 dlknown = false;
-            } else if !std::mem::replace(&mut entry.download_counted, true) {
+            } else if !std::mem::replace(&mut c.download, true) {
                 add_off(&mut self.download_total, total);
             }
             let total = g.upload_total.load(Ordering::Relaxed);
             if total == 0 {
                 ulknown = false;
-            } else if !std::mem::replace(&mut entry.upload_counted, true) {
+            } else if !std::mem::replace(&mut c.upload, true) {
                 add_off(&mut self.upload_total, total);
             }
         }
-        let percent = |known: bool, now: u64, total: u64| {
-            (known && total > 0).then(|| {
-                if now < OFF_MAX / 100 {
-                    now * 100 / total
-                } else {
-                    now / (total / 100)
-                }
-            })
-        };
         let dlpercent = percent(dlknown, dlnow, self.download_total);
         let ulpercent = percent(ulknown, ulnow, self.upload_total);
         // The speed, the higher of the two, over the last few draws.
@@ -654,6 +662,50 @@ impl Meter {
             if last { "\n" } else { "" },
         );
         usize::try_from(cursor.position()).expect("within the buffer")
+    }
+}
+
+/// The moment a line is drawn at, and what it says of the multi.
+#[derive(Clone, Copy)]
+struct Line {
+    /// When the transfers started.
+    start: Instant,
+    now: Instant,
+    /// Transfers added so far, each attempt counted.
+    added: u64,
+    /// Transfers running, not waiting for a connection.
+    live: u32,
+    /// The last line, drawn whenever it is due.
+    last: bool,
+}
+
+/// `now` of `total` as a percentage, if every total is `known`; a count
+/// too large to multiply is divided first.
+fn percent(known: bool, now: u64, total: u64) -> Option<u64> {
+    (known && total > 0).then(|| {
+        if now < OFF_MAX / 100 {
+            now * 100 / total
+        } else {
+            now / (total / 100)
+        }
+    })
+}
+
+/// What the meter keeps of one transfer: what its handler tells, and
+/// whether its totals are counted (`dltotal_added`, `ultotal_added`).
+struct Counted {
+    gauge: TryArc<Gauge>,
+    download: bool,
+    upload: bool,
+}
+
+impl Counted {
+    fn new() -> Result<Counted, OutOfMemory> {
+        Ok(Counted {
+            gauge: TryArc::try_new(Gauge::default())?,
+            download: false,
+            upload: false,
+        })
     }
 }
 
@@ -753,6 +805,8 @@ mod tests {
             (99_999, "99999"),
             (100_000, "97.6k"),
             (131_072, " 128k"),
+            (102_400, " 100k"),
+            (10_240_000, " 9.7M"),
             (12_645_826, "12.0M"),
             (1_099_445_657_078_333, " 999T"),
             (OFF_MAX, "8191P"),
@@ -768,6 +822,7 @@ mod tests {
         for (n, s) in [
             (0, "        "),
             (1, "00:00:01"),
+            (3_661, "01:01:01"),
             (524_287, "  6d 01h"),
             (134_217_727, " 51m 23d"),
             (4_294_967_295, "    136y"),
@@ -786,28 +841,157 @@ mod tests {
         assert_eq!(format!("{:<3}|", Percent(Some(12345))), "123|");
     }
 
-    /// The line drawn: a carriage return first, and the last ends in four
-    /// blanks and a newline where the others end in five blanks.
+    /// A transfer's numbers as its handler last told them.
+    fn counted(downloaded: u64, download_total: u64, uploaded: u64, upload_total: u64) -> Counted {
+        let c = Counted::new().unwrap();
+        let g = &c.gauge;
+        g.downloaded.store(downloaded, Ordering::Relaxed);
+        g.download_total.store(download_total, Ordering::Relaxed);
+        g.uploaded.store(uploaded, Ordering::Relaxed);
+        g.upload_total.store(upload_total, Ordering::Relaxed);
+        c
+    }
+
+    /// The line `meter` draws of `list` at `line`.
+    fn drawn(meter: &mut Meter, list: &mut [Counted], line: Line) -> String {
+        let mut buf = [0u8; 128];
+        let n = meter.line(&mut buf, list.iter_mut(), line);
+        String::from_utf8(buf[..n].to_vec()).unwrap()
+    }
+
+    fn at(start: Instant, ms: u64, added: u64, live: u32, last: bool) -> Line {
+        Line {
+            start,
+            now: start + Duration::from_millis(ms),
+            added,
+            live,
+            last,
+        }
+    }
+
+    /// The line drawn, its fields worked out as `progress_meter` works
+    /// them out: a carriage return first, the percentages of the totals
+    /// once every one is known, the speed since the start, the times from
+    /// it, and at the end four blanks and a newline where the others end
+    /// in five blanks.
     #[test]
     fn draws_lines_as_c_does() {
+        let start = Instant::now();
+        // Ended transfers' counts only: 13 bytes in 2 s is 6 a second,
+        // 13 / 6 is 2 s in all, and none left.
         let mut meter = Meter::new();
         meter.downloaded = 13;
         meter.download_total = 13;
-        let now = Instant::now();
-        let start = now - Duration::from_secs(2);
-        let mut buf = [0u8; 128];
-        let n = meter.line(&mut buf, &mut [], start, now, 2, 0, true);
         assert_eq!(
-            std::str::from_utf8(&buf[..n]).unwrap(),
+            drawn(&mut meter, &mut [], at(start, 2000, 2, 0, true)),
             "\r100 --     13     0     2     0  00:00:02 00:00:02              6     \n"
         );
-        let n = meter.line(&mut buf, &mut [], start, now, 2, 1, false);
-        assert!(
-            std::str::from_utf8(&buf[..n])
-                .unwrap()
-                .ends_with("     1  00:00:02 00:00:02              6      "),
-            "{:?}",
-            std::str::from_utf8(&buf[..n])
+        assert_eq!(
+            drawn(&mut meter, &mut [], at(start, 2000, 2, 1, false)),
+            "\r100 --     13     0     2     1  00:00:02 00:00:02              6      "
         );
+        // 50 of 200 down and 25 of 100 up in 1 s: 50 a second, 4 s in
+        // all, 3 s left. The totals count once, however often drawn.
+        let mut meter = Meter::new();
+        let mut list = [counted(50, 200, 25, 100)];
+        for _ in 0..2 {
+            assert_eq!(
+                drawn(&mut meter, &mut list, at(start, 1000, 1, 1, false)),
+                "\r 25  25    50    25     1     1  00:00:04 00:00:01 00:00:03    50      "
+            );
+        }
+        // A size not known leaves its percentage and the times blank.
+        let mut meter = Meter::new();
+        let mut list = [counted(50, 200, 0, 0), counted(10, 0, 0, 0)];
+        assert_eq!(
+            drawn(&mut meter, &mut list, at(start, 1000, 2, 2, false)),
+            "\r--  --     60     0     2     2           00:00:01             60      "
+        );
+        // Nothing moved: no speed, and no times from it.
+        let mut meter = Meter::new();
+        let mut list = [counted(0, 200, 0, 0)];
+        assert_eq!(
+            drawn(&mut meter, &mut list, at(start, 1000, 1, 1, false)),
+            "\r  0 --      0     0     1     1           00:00:01              0      "
+        );
+    }
+
+    /// A transfer's totals count once it ends, if no line counted them
+    /// (`progress_finalize`), and its counts stay in those of the ended.
+    #[test]
+    fn an_ended_transfer_stays_counted() {
+        let start = Instant::now();
+        let mut meter = Meter::new();
+        let mut c = counted(10, 10, 4, 4);
+        meter.finalize(&mut c);
+        meter.finalize(&mut counted(0, 0, 0, 0));
+        assert_eq!(
+            drawn(&mut meter, &mut [], at(start, 1000, 1, 0, false)),
+            "\r100 100    10     4     1     0  00:00:01 00:00:01             10      "
+        );
+    }
+
+    /// Once ten lines are drawn, the speed is over the last ten
+    /// (`speedstore`): 1000 bytes at 10 s, 10 at 1 s, is 110 a second.
+    #[test]
+    fn the_speed_is_over_the_last_ten_lines() {
+        let start = Instant::now();
+        for (download, speed) in [(true, "  110"), (false, "  220")] {
+            let mut meter = Meter::new();
+            let mut list = [counted(0, 0, 0, 0)];
+            let mut last = String::new();
+            for k in 0..=10u64 {
+                let g = &list[0].gauge;
+                if download {
+                    g.downloaded.store(k * k * 10, Ordering::Relaxed);
+                } else {
+                    g.uploaded.store(k * k * 20, Ordering::Relaxed);
+                }
+                last = drawn(&mut meter, &mut list, at(start, k * 1000, 1, 1, false));
+            }
+            assert!(last.ends_with(&format!("{speed}      ")), "{last:?}");
+        }
+    }
+
+    /// A count too large to multiply by 100 is divided first.
+    #[test]
+    fn percentages_of_large_counts() {
+        assert_eq!(percent(true, 50, 200), Some(25));
+        assert_eq!(percent(false, 50, 200), None);
+        assert_eq!(percent(true, 50, 0), None);
+        let large = OFF_MAX / 100;
+        assert_eq!(percent(true, large, 250), Some(large / 2));
+        assert_eq!(percent(true, large - 1, 250), Some((large - 1) * 100 / 250));
+    }
+
+    /// The header goes once; a line goes when half a second passed since
+    /// the last, or when it is the last (`progress_meter`).
+    #[test]
+    fn draws_at_most_every_half_second() {
+        let start = Instant::now();
+        let mut meter = Meter::new();
+        let mut out = Vec::new();
+        let mut draw = |ms, last| {
+            out.clear();
+            meter.draw(&mut out, std::iter::empty(), at(start, ms, 0, 0, last));
+            String::from_utf8(out.clone()).unwrap()
+        };
+        let first = draw(0, false);
+        assert!(first.starts_with("DL% UL%  Dled"), "{first:?}");
+        assert_eq!(first.matches('\r').count(), 1, "{first:?}");
+        assert_eq!(draw(500, false), "");
+        assert!(draw(501, false).starts_with('\r'));
+        assert!(draw(502, true).ends_with('\n'));
+    }
+
+    /// A transfer tried again waits whole seconds: one second less than
+    /// it may, as C counts from the second it is in.
+    #[test]
+    fn retries_wait_whole_seconds() {
+        assert_eq!(start_at(100, Duration::from_millis(999)), 100);
+        assert_eq!(start_at(100, Duration::from_millis(2500)), 102);
+        assert!(waiting(101, 102));
+        assert!(!waiting(102, 102));
+        assert!(!waiting(103, 102));
     }
 }

@@ -830,6 +830,204 @@ mod tests {
         assert_eq!(f.add(b"novalue", false, &quiet()), Err(Refused));
     }
 
+    /// A file in the temporary directory, named for the test, holding
+    /// `bytes`.
+    fn scratch(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("curl-form-{}-{name}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn headers(p: &ToolPart) -> Vec<&[u8]> {
+        p.headers.iter().map(Vec::as_slice).collect()
+    }
+
+    /// Blanks after `=`, `;` and each setting's name are passed over,
+    /// the names in any case; an unquoted word loses the blanks after
+    /// it, a quoted one keeps its own; an unknown setting and an empty
+    /// one are passed over. As C's tool builds the parts of the same
+    /// arguments.
+    #[test]
+    fn settings_are_read_as_c_reads_them() {
+        let f = form(&[
+            r#"a= "x\"y\\z" ;filename= "f g" ;Encoder= 8bit ;headers= X-H: v ;TYPE= t/u;p=1"#,
+            "b=v ;filename= f ;encoder= base64",
+            r#"c=" v ";unknown=1;  ;type=t"#,
+            r#"d="v";type=t2 "#,
+        ]);
+        let a = &f.parts[0];
+        assert_eq!(data(a), br#"x"y\z"#);
+        assert_eq!(a.filename.as_deref(), Some(&b"f g"[..]));
+        assert_eq!(a.encoder.as_deref(), Some(&b"8bit"[..]));
+        assert_eq!(headers(a), [b"X-H: v"]);
+        assert_eq!(a.mime_type.as_deref(), Some(&b"t/u;p=1"[..]));
+        let b = &f.parts[1];
+        assert_eq!(data(b), b"v");
+        assert_eq!(b.filename.as_deref(), Some(&b"f"[..]));
+        assert_eq!(b.encoder.as_deref(), Some(&b"base64"[..]));
+        let c = &f.parts[2];
+        assert_eq!(data(c), b" v ");
+        assert_eq!(c.mime_type.as_deref(), Some(&b"t"[..]));
+        assert_eq!(f.parts[3].mime_type.as_deref(), Some(&b"t2"[..]));
+    }
+
+    /// `=(` takes only a type; `<` takes no file name. A `)` with a name
+    /// is data, not the end of a level; `<` read literally is data too.
+    #[test]
+    fn each_kind_of_part_takes_its_own_settings() {
+        let file = scratch("kinds", b"F");
+        let path = file.display();
+        let f = form(&[
+            "b=(;filename=x;encoder=y;type=multipart/mixed",
+            "c=)",
+            "=)",
+            &format!("d=<{path};filename=x;type=t;encoder=binary"),
+        ]);
+        let b = &f.parts[0];
+        assert!(b.filename.is_none() && b.encoder.is_none());
+        assert_eq!(b.mime_type.as_deref(), Some(&b"multipart/mixed"[..]));
+        let Kind::Parts(inner) = &b.kind else {
+            panic!("a level");
+        };
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0].name.as_deref(), Some(&b"c"[..]));
+        assert_eq!(data(&inner[0]), b")");
+        let d = &f.parts[1];
+        let Kind::File { path: got, named } = &d.kind else {
+            panic!("a file, not {:?}", d.kind);
+        };
+        assert_eq!(got, file.as_os_str().as_encoded_bytes());
+        assert!(!named);
+        assert!(d.filename.is_none());
+        assert_eq!(d.mime_type.as_deref(), Some(&b"t"[..]));
+        assert_eq!(d.encoder.as_deref(), Some(&b"binary"[..]));
+        let mut f = Form::default();
+        f.add(b"e=<x", true, &quiet()).unwrap();
+        assert_eq!(data(&f.parts[0]), b"<x");
+        std::fs::remove_file(&file).unwrap();
+    }
+
+    /// A file of headers: comments and blank lines passed over, a line
+    /// starting with a space joined to the one before (or alone, first),
+    /// trailing blanks and line ends cut; a line as long as C's buffer
+    /// refused. As C's tool sends the same files.
+    #[test]
+    fn header_files_are_read_as_c_reads_them() {
+        let lines = scratch(
+            "headers",
+            b"X-A: 1\n#c\n\n  \n\t# comment\nX-B: 2  \r\n folded\t\r\n\r\n \r\n\tX-T: tab\nX-C:3",
+        );
+        let lead = scratch("lead", b" lead\n");
+        let mut longest = b"X-L: ".to_vec();
+        longest.resize(8190, b'v');
+        longest.push(b'\n');
+        let fits = scratch("fits", &longest);
+        longest.insert(5, b'v');
+        let too_long = scratch("too-long", &longest);
+        let f = form(&[
+            &format!("a=b;headers=@{}", lines.display()),
+            &format!(
+                "a=b;headers=< {};headers=@{}",
+                lead.display(),
+                fits.display()
+            ),
+        ]);
+        assert_eq!(
+            headers(&f.parts[0]),
+            [&b"X-A: 1"[..], b"X-B: 2 folded", b"\tX-T: tab", b"X-C:3"]
+        );
+        let got = headers(&f.parts[1]);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], b" lead");
+        assert_eq!(got[1], &longest[..8190]);
+        let mut refused = Form::default();
+        let arg = format!("a=b;headers=@{}", too_long.display());
+        assert_eq!(refused.add(arg.as_bytes(), false, &quiet()), Err(Refused));
+        for p in [lines, lead, fits, too_long] {
+            std::fs::remove_file(p).unwrap();
+        }
+    }
+
+    /// POSIX `basename`, which C's tool names a file part with.
+    #[test]
+    fn basename_is_posix_s() {
+        let table: &[(&[u8], &[u8])] = &[
+            (b"", b"."),
+            (b"/", b"/"),
+            (b"///", b"/"),
+            (b"a", b"a"),
+            (b"a/b", b"b"),
+            (b"/a/bc/", b"bc"),
+            (b"/a//", b"a"),
+        ];
+        for &(path, base) in table {
+            assert_eq!(
+                basename(path),
+                base,
+                "{:?}",
+                path.escape_ascii().to_string()
+            );
+        }
+    }
+
+    /// A file given with `@` is named after it unless a name is given;
+    /// one with `<`, and standard input with `<`, are not; standard input
+    /// with `@` is named `-`. Each file after one `@` takes its own
+    /// settings.
+    #[test]
+    fn parts_are_named_as_c_names_them() {
+        let one = scratch("one.txt", b"1");
+        let two = scratch("two.html", b"2");
+        let mut f = form(&[
+            &format!("e=@{},{};filename=g", one.display(), two.display()),
+            &format!("i=@{}", one.display()),
+            &format!("j=@{};filename=k", two.display()),
+            &format!("l=<{}", one.display()),
+        ]);
+        for named in [true, false] {
+            let mut p = ToolPart::new(Kind::Stdin {
+                input: Stdin::Read(TryArc::try_new(b"in".to_vec()).unwrap()),
+                named,
+            });
+            p.name = Some(b"s".to_vec());
+            f.parts.push(p);
+        }
+        let mime = f.mime(&quiet()).unwrap();
+        let parts = mime.parts();
+        let Content::Parts(group) = &parts[0].content else {
+            panic!("a group");
+        };
+        let base = |p: &std::path::Path| p.file_name().unwrap().as_encoded_bytes().to_vec();
+        assert_eq!(parts[0].name.as_deref(), Some(&b"e"[..]));
+        assert_eq!(group.parts()[0].filename, Some(base(&one)));
+        assert_eq!(group.parts()[1].filename.as_deref(), Some(&b"g"[..]));
+        assert_eq!(parts[1].filename, Some(base(&one)));
+        assert_eq!(parts[2].filename.as_deref(), Some(&b"k"[..]));
+        assert!(parts[3].filename.is_none());
+        assert_eq!(parts[4].filename.as_deref(), Some(&b"-"[..]));
+        assert!(parts[5].filename.is_none());
+        let Content::Bytes(stdin) = &parts[5].content else {
+            panic!("bytes");
+        };
+        assert_eq!(&stdin[..], b"in");
+        std::fs::remove_file(one).unwrap();
+        std::fs::remove_file(two).unwrap();
+    }
+
+    /// One more part than `MAX_FORMPARTS` is taken, as C counts them;
+    /// two more are refused.
+    #[test]
+    fn a_level_holds_as_many_parts_as_c_s() {
+        let d = TryArc::try_new(Vec::new()).unwrap();
+        let mut f = Form::default();
+        for _ in 0..=MAX_PARTS {
+            f.parts.push(ToolPart::new(Kind::Data(d.clone())));
+        }
+        assert_eq!(f.mime(&quiet()).unwrap().parts().len(), MAX_PARTS + 1);
+        f.parts.push(ToolPart::new(Kind::Data(d)));
+        assert_eq!(f.mime(&quiet()).err(), Some(ErrorKind::BadFunctionArgument));
+    }
+
     /// A file of headers whose reading fails, a directory here, ends
     /// where it fails: C's `fgets` reads that as the end of the file,
     /// and the part is taken without them.

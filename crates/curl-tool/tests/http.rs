@@ -1485,3 +1485,183 @@ fn removes_the_file_a_failed_transfer_wrote() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// `request` with each boundary it names written `B0`, `B1`, ... in the
+/// order they come: they are random.
+fn unbound(request: &str) -> String {
+    let mut out = request.to_owned();
+    let mut rest = request;
+    let mut n = 0;
+    while let Some(at) = rest.find("boundary=") {
+        rest = &rest[at + "boundary=".len()..];
+        let end = rest.find("\r\n").unwrap();
+        out = out.replace(&rest[..end], &format!("B{n}"));
+        n += 1;
+    }
+    out
+}
+
+/// `-F` warns of what it passes over as C's tool does: data after a
+/// quoted value that is not blank, an unknown setting, a setting a kind
+/// of part does not take, and what is left after a value; and sends the
+/// rest.
+#[test]
+fn warns_of_form_fields_as_c_does() {
+    let dir = scratch("form-warns");
+    let file = dir.join("f1.txt");
+    std::fs::write(&file, "F1").unwrap();
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let e = format!("e=<{};filename=z;encoder=8bit", file.display());
+    let run = curl_columns(
+        &[
+            "--no-progress-meter",
+            "-F",
+            r#"a="x" y;type=t"#,
+            "-F",
+            r#"b="x" ;type=t"#,
+            "-F",
+            "c=v;bogus=1",
+            "-F",
+            "d=(;filename=x;encoder=y;type=multipart/mixed",
+            "-F",
+            &e,
+            "-F",
+            "=)",
+            "-F",
+            "f=v;type=t x",
+            &s.url(),
+        ],
+        Some("500"),
+    );
+    assert_eq!(
+        (run.code, &run.stderr[..]),
+        (
+            0,
+            "Warning: Trailing data after quoted form parameter\n\
+             Warning: skip unknown form field: bogus=1\n\
+             Warning: Field filename not allowed here: x\n\
+             Warning: Field encoder not allowed here: y\n\
+             Warning: Field filename not allowed here: z\n\
+             Warning: garbage at end of field specification:  x\n"
+        )
+    );
+    let request = unbound(&s.request());
+    let body = "--B0\r\n\
+        Content-Disposition: form-data; name=\"a\"\r\nContent-Type: t\r\n\r\nx\r\n--B0\r\n\
+        Content-Disposition: form-data; name=\"b\"\r\nContent-Type: t\r\n\r\nx\r\n--B0\r\n\
+        Content-Disposition: form-data; name=\"c\"\r\n\r\nv\r\n--B0\r\n\
+        Content-Disposition: form-data; name=\"d\"\r\n\
+        Content-Type: multipart/mixed; boundary=B1\r\n\r\n--B1\r\n\
+        Content-Disposition: attachment; name=\"e\"\r\n\
+        Content-Transfer-Encoding: 8bit\r\n\r\nF1\r\n--B1--\r\n\r\n--B0\r\n\
+        Content-Disposition: form-data; name=\"f\"\r\nContent-Type: t\r\n\r\nv\r\n--B0--\r\n";
+    assert!(
+        request.ends_with(&format!(
+            "Content-Length: 859\r\n\
+             Content-Type: multipart/form-data; boundary=B0\r\n\r\n{body}"
+        )),
+        "{request}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Standard input that is a regular file is a part read as it is sent:
+/// from where it stood, as many bytes as it then held, again from there
+/// when a redirect sends the part again, though the file has grown.
+#[test]
+fn sends_standard_input_again_as_it_stood() {
+    let dir = scratch("form-stdin");
+    let file = dir.join("in");
+    std::fs::write(&file, "0123456789").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let grown = file.clone();
+    let server = std::thread::spawn(move || {
+        let (mut peer, _) = listener.accept().unwrap();
+        let mut requests = Vec::new();
+        for reply in [
+            &b"HTTP/1.1 307 Again\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n"[..],
+            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        ] {
+            let mut got = Vec::new();
+            let mut buf = [0; 4096];
+            while !request_ended(&got) {
+                match peer.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            requests.push(String::from_utf8(got).unwrap());
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&grown)
+                .unwrap();
+            f.write_all(b"XYZ").unwrap();
+            peer.write_all(reply).unwrap();
+        }
+        requests
+    });
+    let mut input = std::fs::File::open(&file).unwrap();
+    std::io::Seek::seek(&mut input, std::io::SeekFrom::Start(3)).unwrap();
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let out = Command::new(tool)
+        .args(["-q", "-sS", "-L", "-F", "a=@-"])
+        .arg(format!("http://127.0.0.1:{port}/"))
+        .stdin(input)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    let requests = server.join().unwrap();
+    for request in &requests {
+        let request = unbound(request);
+        assert!(
+            request.ends_with(
+                "\r\n\r\n--B0\r\n\
+                 Content-Disposition: form-data; name=\"a\"; filename=\"-\"\r\n\r\n\
+                 3456789\r\n--B0--\r\n"
+            ),
+            "{request}"
+        );
+    }
+    assert_eq!(requests.len(), 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Standard input that cannot be read, a directory here, is read again
+/// as the part is sent, and that read failing is said and ends the
+/// transfer.
+#[test]
+fn fails_on_standard_input_it_cannot_read() {
+    let s = Server::new(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let dir = std::fs::File::open(std::env::temp_dir()).unwrap();
+    let out = Command::new(tool)
+        .args([
+            "-q",
+            "--no-progress-meter",
+            "-H",
+            "Expect:",
+            "-F",
+            "a=<-",
+            &s.url(),
+        ])
+        .stdin(dir)
+        .output()
+        .unwrap();
+    assert_eq!(
+        (out.status.code(), &String::from_utf8_lossy(&out.stderr)[..]),
+        (
+            Some(42),
+            "Warning: Failed to read from stdin: Is a directory\n\
+             curl: (42) operation aborted by callback\n"
+        )
+    );
+    let request = unbound(&s.request());
+    assert!(
+        request.ends_with("--B0\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n\r\n"),
+        "{request}"
+    );
+}

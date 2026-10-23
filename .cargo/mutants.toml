@@ -267,6 +267,10 @@ exclude_re = [
     # The tool installs no signal handler, so no read is interrupted.
     'curl-tool/src/operate\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in <impl ReadHandler for UploadFile>::read$',
     'curl-tool/src/slurp\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in read$',
+    'curl-tool/src/form\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in (header_file|stdin_part|<impl ReadHandler for StdinPart>::read)$',
+    # Every caller of `part` allows a type: only a file name and an
+    # encoder are ever not allowed.
+    'curl-tool/src/form\.rs:.*: replace match guard !allowed\.mime_type with false in part$',
     # A header line ends with its line end: it is never just the name
     # looked for, and an empty rest after `Location:` names nothing.
     'curl-tool/src/output\.rs:.*: replace (> with >=|< with <=) in Stream::name_from$',

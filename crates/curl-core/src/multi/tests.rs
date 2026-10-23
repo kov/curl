@@ -2883,12 +2883,14 @@ fn a_transfer_waits_for_room_under_the_host_limit() {
         "it does not run while it waits"
     );
     assert_eq!(m.counts().running, 2);
+    assert_eq!(m.pending(), 1, "the one waiting");
     clock.advance(Duration::from_millis(5));
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         trace_of(&a_lines).last().unwrap(),
         "Connection #0 to host 127.0.0.1:4 left intact\n"
     );
+    assert_eq!(m.pending(), 0);
     assert_eq!(
         trace_of(&b_lines)[1..],
         [

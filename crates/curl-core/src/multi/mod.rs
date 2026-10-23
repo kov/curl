@@ -548,6 +548,21 @@ impl<H: Host> Multi<H> {
         unread
     }
 
+    /// How many transfers wait for a connection the multi's limits allow
+    /// none of yet (`CURLMINFO_XFERS_PENDING`): of those `counts` says
+    /// run, the ones that do not.
+    pub fn pending(&self) -> u32 {
+        let mut pending = 0;
+        let mut cursor = None;
+        while let Some(id) = self.slots.next_after(cursor) {
+            cursor = Some(id);
+            if matches!(self.run_of(id).state, TransferState::Pending(_)) {
+                pending += 1;
+            }
+        }
+        pending
+    }
+
     /// Turn a kind of notification on or off
     /// (`curl_multi_notify_enable`, `curl_multi_notify_disable`). One
     /// already queued is not delivered once its kind is off.

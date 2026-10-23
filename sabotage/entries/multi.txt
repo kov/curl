@@ -646,3 +646,11 @@ witness: curl-core multi::tests::a_connection_closed_as_it_comes_back_is_no_one_
         Released::Evicted(_) => cx.report_mut().set_conn(None),
 --- new
         Released::Evicted(_) => {}
+
+=== the multi counts no transfer waiting for a connection
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_transfer_waits_for_room_under_the_host_limit
+--- old
+            if matches!(self.run_of(id).state, TransferState::Pending(_)) {
+--- new
+            if false {

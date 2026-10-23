@@ -611,9 +611,12 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **c. `Closing`.** **Done.** The multi's `ShutdownSet`, its SHUTDOWN deadline, sockets
       owned by a connection and announced with the internal `CURL *`, every discard through
       one path; armed with a test layer whose shutdown waits. No runtests change.
-    - **d. TLS in the core.** `curl_core::tls`, `TlsLayer`, the TLS options, `TlsIdentity` on
-      `Route`, the `https` scheme and the origin's handshake stage, the bytes past a tunnel's
-      answer; over a fake backend. No runtests change.
+    - **d. TLS in the core.** **Done.** `curl_core::tls` (the seam a library implements),
+      `TlsLayer`, `Cold<TlsOptions>`, `TlsIdentity` on `Route` and compared for reuse, `https`
+      with a TLS library and the origin's handshake as the setup's last stage, the bytes past a
+      tunnel's answer read first, the goodbye through the shutdown set; over `FakeTls`, with an
+      HTTPS GET budget of 52 over it. No runtests change: the shim and the tool name no TLS
+      library until e1, which also brings the CA default.
     - **e1. The OpenSSL layer and the flip.** The BIO, the context, verification and hostcheck
       (1397), the CA default and store cache, the tool's `-k`, `--cacert`, `--capath`, version
       and cipher options, `curl_global_sslset`; `https`, `SSL` and `OpenSSL/3.5.9` reported.

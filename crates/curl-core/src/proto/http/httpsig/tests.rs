@@ -249,3 +249,77 @@ fn reads_a_leading_number() {
     assert_eq!(leading_number(b""), None);
     assert_eq!(leading_number(b"99999999999999999999"), None);
 }
+
+/// A failure's kind: the build's, the size's and memory's own, else a bad
+/// argument.
+#[test]
+fn a_failure_has_c_s_code() {
+    assert_eq!(SignError::NotBuiltIn.kind(), ErrorKind::NotBuiltIn);
+    assert_eq!(SignError::TooLarge.kind(), ErrorKind::TooLarge);
+    assert_eq!(SignError::OutOfMemory.kind(), ErrorKind::OutOfMemory);
+    assert_eq!(SignError::NoKey.kind(), ErrorKind::BadFunctionArgument);
+}
+
+/// A key id is quoted whatever its printable bytes, up to C's buffer of
+/// 100 KiB; a control byte is refused.
+#[test]
+fn a_key_id_is_quoted_up_to_c_s_buffer() {
+    let none = headers(&[]);
+    let mut sig = hmac(Some(b"method"));
+    sig.key_id = Some(b"a b~".to_vec());
+    let signing = sign(&request(&sig, &none, None));
+    assert!(text(&signing.notes[0]).contains(";keyid=\"a b~\";"));
+    sig.key_id = Some(b"a\x01".to_vec());
+    assert_eq!(
+        sign(&request(&sig, &none, None)).result,
+        Err(SignError::Unquotable)
+    );
+    sig.key_id = Some(vec![b'k'; 100_000]);
+    assert!(sign(&request(&sig, &none, None)).result.is_ok());
+}
+
+/// An HMAC key may be of any length; only Ed25519's is 32 bytes.
+#[test]
+fn an_hmac_key_has_any_length() {
+    let none = headers(&[]);
+    let mut sig = hmac(None);
+    sig.key = Some(b"00112233".to_vec());
+    assert!(sign(&request(&sig, &none, None)).result.is_ok());
+}
+
+/// A key is at most C's longest string option in hex.
+#[test]
+fn a_key_is_at_most_c_s_longest_option() {
+    assert_eq!(
+        decode_hex_key(&vec![b'0'; 8_000_000]).unwrap().0.len(),
+        4_000_000
+    );
+    assert_eq!(
+        decode_hex_key(&vec![b'0'; 8_000_002]).err(),
+        Some(SignError::KeyTooLong)
+    );
+}
+
+/// `authority` names `@authority`, what `Host` says.
+#[test]
+fn the_authority_is_a_component() {
+    let sig = hmac(Some(b"authority"));
+    let none = headers(&[]);
+    let base = base(&request(&sig, &none, None));
+    assert!(
+        base.starts_with("\"@authority\": example.com:7000\n"),
+        "{base}"
+    );
+}
+
+/// The signature says it was made now, without the debug build's fixed
+/// time.
+#[test]
+fn the_signature_is_made_now() {
+    let sig = hmac(None);
+    let none = headers(&[]);
+    let mut now = request(&sig, &none, None);
+    now.now = 1_700_000_000;
+    let signing = sign(&now);
+    assert!(text(&signing.notes[0]).contains(";created=1700000000;"));
+}

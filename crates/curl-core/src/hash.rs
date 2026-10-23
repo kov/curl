@@ -465,6 +465,18 @@ mod tests {
     /// Units 1601, 1610 and 1615, and RFC 1321's, FIPS 180's vectors.
     /// The test cases of RFC 4231, the fifth's output truncated as it
     /// is there; the message also fed in two parts.
+    /// A key of a block's length is used as it is, as a shorter one is
+    /// padded with zeros to it: only a longer one is hashed first.
+    #[test]
+    fn a_key_of_a_block_is_not_hashed() {
+        let short = [0x5a; 63];
+        let block = [&short[..], &[0]].concat();
+        assert_eq!(
+            hmac_sha256(&short, &[b"message"]),
+            hmac_sha256(&block, &[b"message"])
+        );
+    }
+
     #[test]
     fn hmacs_as_rfc_4231() {
         let hex = |d: &[u8]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();

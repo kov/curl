@@ -121,3 +121,100 @@ fn a_signing_fails_as_c_fails_it() {
         "{text:?}"
     );
 }
+
+/// What is signed is the request as it goes: its path and its query
+/// apart, the port the URL names, the login's password.
+#[test]
+fn the_request_signed_is_the_one_sent() {
+    for (target, password) in [("/p?b=2&a=1", &b"p"[..]), ("/q", b"other")] {
+        let (mut m, talk, clock) = server(&[OK], false);
+        let now = clock.unix_time();
+        let ran = get(&mut m, target, talk, |o| {
+            signing(b"aws:amz:r1:s1")(o);
+            let mut pair = b"u:".to_vec();
+            pair.extend_from_slice(password);
+            *o.login.make_mut().unwrap() = crate::options::Login::from_pair(&pair).unwrap();
+        });
+        assert_eq!(ran.result, Ok(()));
+        let (path, query) = match target.split_once('?') {
+            Some((p, q)) => (p, Some(q.as_bytes())),
+            None => (target, None),
+        };
+        let want = crate::proto::http::sigv4::sign(&crate::proto::http::sigv4::Request {
+            params: Some(b"aws:amz:r1:s1"),
+            method: b"GET",
+            kind: crate::proto::http::sigv4::Kind::GetOrHead,
+            hostname: b"127.0.0.1",
+            host: b"127.0.0.1",
+            port: Some(PORT),
+            path: path.as_bytes(),
+            query,
+            headers: &UserHeaders::NONE,
+            post_fields: crate::proto::http::sigv4::PostFields::None,
+            empty_upload: false,
+            user: b"u",
+            password,
+            now,
+        })
+        .result
+        .unwrap();
+        let request = String::from_utf8(ran.request).unwrap();
+        let want = String::from_utf8(want).unwrap();
+        assert!(request.contains(&want), "{request}\n{want}");
+    }
+}
+
+/// An HTTP message signature signs the request as it goes: the path and
+/// the query apart, the authority `Host` says, the application's if it
+/// says one, else the library's with the port.
+#[test]
+fn a_message_signature_signs_the_request_sent() {
+    let key = b"00112233445566778899aabbccddeeff".to_vec();
+    for (target, host, authority) in [
+        ("/p?b=2", None, format!("127.0.0.1:{PORT}")),
+        (
+            "/p",
+            Some(&b"Host: example.com"[..]),
+            "example.com".to_string(),
+        ),
+        ("/p?", Some(b"Host:"), format!("127.0.0.1:{PORT}")),
+    ] {
+        let (mut m, talk, clock) = server(&[OK], false);
+        let now = clock.unix_time();
+        let headers = UserHeaders::new(host).unwrap();
+        let ran = get(&mut m, target, talk, |o| {
+            let message = &mut o.http.signing.make_mut().unwrap().message;
+            message.algorithm = Some(crate::options::SignatureAlgorithm::HmacSha256);
+            message.key = Some(key.clone());
+            message.key_id = Some(b"k".to_vec());
+            o.http.auth = crate::options::HttpAuth(AuthMethods::HTTPSIG);
+            o.http.headers = UserHeaders::new(host).unwrap();
+        });
+        assert_eq!(ran.result, Ok(()), "{target}");
+        let (path, query) = match target.split_once('?') {
+            Some((p, q)) => (p, Some(q.as_bytes())),
+            None => (target, None),
+        };
+        let signature = crate::options::MessageSignature {
+            algorithm: Some(crate::options::SignatureAlgorithm::HmacSha256),
+            key: Some(key.clone()),
+            key_id: Some(b"k".to_vec()),
+            components: None,
+        };
+        let want = crate::proto::http::httpsig::sign(&crate::proto::http::httpsig::Request {
+            signature: &signature,
+            method: b"GET",
+            authority: authority.as_bytes(),
+            path: path.as_bytes(),
+            query,
+            headers: &headers,
+            now,
+        })
+        .result
+        .unwrap()
+        .unwrap();
+        let request = String::from_utf8(ran.request).unwrap();
+        let want = String::from_utf8(want).unwrap();
+        assert!(request.contains(&want), "{target}: {request}\n{want}");
+    }
+}

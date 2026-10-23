@@ -331,3 +331,68 @@ fn hashes_the_payload_as_c() {
     .unwrap();
     assert_eq!((String::from_utf8(hash).unwrap(), header), (want, None));
 }
+
+/// Lent POST data is hashed whole, in as many reads as it takes, as the
+/// same bytes held are.
+#[test]
+fn lent_post_data_is_hashed_whole() {
+    struct Lent(Vec<u8>);
+    impl crate::handler::LentBytes for Lent {
+        fn size(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn copy_at(&self, at: u64, buf: &mut [u8]) -> usize {
+            let rest = &self.0[usize::try_from(at).unwrap()..];
+            let n = rest.len().min(buf.len());
+            buf[..n].copy_from_slice(&rest[..n]);
+            n
+        }
+    }
+    let data: Vec<u8> = (0..10_000u32).map(|i| (i % 253) as u8).collect();
+    let lent = Lent(data.clone());
+    let mut want = Sha256::default();
+    want.update(&data);
+    assert_eq!(
+        post_fields_hash(PostFields::Lent(&lent)).unwrap(),
+        hex(&want.finish()).unwrap()
+    );
+    assert_eq!(
+        post_fields_hash(PostFields::Lent(&lent)).unwrap(),
+        post_fields_hash(PostFields::Bytes(&data)).unwrap()
+    );
+}
+
+/// The date header is the provider's name with only its first letter in
+/// uppercase, however long the name; its canonical entry is in lowercase
+/// but the time.
+#[test]
+fn the_date_header_is_named_for_the_provider() {
+    assert_eq!(date_key(b"GOOG").unwrap(), b"X-Goog-Date");
+    let none = headers(&[]);
+    let long = "P".repeat(40);
+    let params_text = format!("aws:{long}:us-east-2:es");
+    let mut request = test_439(&none);
+    request.params = Some(params_text.as_bytes());
+    request.query = None;
+    let canonical = canonical_headers(
+        &request,
+        &params(request.params, b"", &mut Vec::new()).unwrap(),
+        b"19700101T000000Z",
+        None,
+    )
+    .unwrap();
+    let lines = String::from_utf8(canonical.lines).unwrap();
+    assert!(
+        lines.ends_with(&format!("\nx-{}-date:19700101T000000Z\n", "p".repeat(40))),
+        "{lines}"
+    );
+}
+
+/// A `%` not before two hex digits is a byte like any, encoded; two in
+/// either case are the byte they say.
+#[test]
+fn a_query_s_escapes_are_read_in_either_case() {
+    assert_eq!(query("a=%4a%4A"), "a=JJ");
+    assert_eq!(query("a=%zz&b=%2"), "a=%25zz&b=%252");
+    assert_eq!(query("a=%2g"), "a=%252g");
+}

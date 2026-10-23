@@ -2024,3 +2024,56 @@ fn sets_the_socket_options_it_handles() {
         assert!(s.request().starts_with("GET / HTTP/1.1\r\n"));
     }
 }
+
+/// One after another, the transfers share their connections, as C's
+/// tool shares them through its share (`CURL_LOCK_DATA_CONNECT`): the
+/// second reuses the first's.
+#[test]
+fn serial_transfers_share_a_connection() {
+    let s = Server::script(vec![vec![OK.to_vec(), OK.to_vec()]]);
+    let url = s.url();
+    let run = curl(&[
+        "-s",
+        "-o",
+        "/dev/null",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{num_connects}\n",
+        &url,
+        &url,
+    ]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"1\n0\n"[..]));
+    assert_eq!(s.request().matches("GET / ").count(), 2);
+}
+
+const COOKIE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: a=1\r\n\r\n";
+
+/// In parallel the multi keeps the connections, and the share still
+/// the cookies: a cookie the first transfer gets goes with the second,
+/// over the connection it left.
+#[test]
+fn parallel_transfers_share_cookies_and_connections() {
+    let s = Server::script(vec![vec![COOKIE.to_vec(), OK.to_vec()]]);
+    let url = s.url();
+    let run = curl(&[
+        "-s",
+        "-Z",
+        "--parallel-max",
+        "1",
+        "-b",
+        "nosuchfile",
+        "-o",
+        "/dev/null",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{num_connects}\n",
+        &url,
+        &url,
+    ]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"1\n0\n"[..]));
+    let requests = s.request();
+    let second = requests.rsplit("GET / ").next().unwrap();
+    assert!(second.contains("\r\nCookie: a=1\r\n"), "{requests}");
+}

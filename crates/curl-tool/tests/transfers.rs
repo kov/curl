@@ -1219,7 +1219,7 @@ fn parallel_skipped_transfers_end_last() {
     let w = "%{urlnum} %{exitcode}\n";
     let (a, missing) = (s.url("a"), s.url("missing"));
     let args = [
-        "-s",
+        "-sS",
         "-Z",
         "--skip-existing",
         "-w",
@@ -1234,4 +1234,129 @@ fn parallel_skipped_transfers_end_last() {
     let r = curl(&s, &args);
     assert_eq!(r.code, 37);
     assert_eq!(r.stdout, b"1 37\n0 37\n");
+    // Its end says no failure of its own.
+    let line = format!("curl: (37) Could not open file {}\n", s.path("missing"));
+    assert_eq!(r.stderr, line);
+}
+
+/// The parallel meter: its header, then lines, the last ending in a
+/// newline; none when silenced. Its "Live" column leaves out a transfer
+/// waiting for a connection the host limit allows none of yet.
+#[test]
+fn parallel_meter_is_drawn_unless_silenced() {
+    let s = Scratch::new("parallelmeter");
+    s.write("a", b"hello\n");
+    let a = s.url("a");
+    let header = "DL% UL%  Dled  Uled  Xfers  Live Total     Current  Left    Speed\n";
+    let r = curl(&s, &["-Z", "-o", "o", &a]);
+    assert!(r.stderr.starts_with(header), "{:?}", r.stderr);
+    let last = r.stderr.rsplit('\r').next().unwrap();
+    assert!(
+        last.starts_with("100 --      6     0     1     0  "),
+        "{last:?}"
+    );
+    assert!(last.ends_with("    \n"), "{last:?}");
+    for quiet in ["-s", "--no-progress-meter"] {
+        let r = curl(&s, &[quiet, "-Z", "-o", "o", &a]);
+        assert_eq!(r.stderr, "", "{quiet}");
+    }
+    let silent = format!("http://{}/", silent_server());
+    let r = curl(
+        &s,
+        &[
+            "-Z",
+            "--parallel-max-host",
+            "1",
+            "--parallel-immediate",
+            "--max-time",
+            "1",
+            "-o",
+            "o1",
+            "-o",
+            "o2",
+            &silent,
+            &silent,
+        ],
+    );
+    assert_eq!(r.code, 28);
+    let first = r.stderr.split('\r').nth(1).unwrap();
+    assert!(
+        first.starts_with("--  --      0     0     2     1 "),
+        "{:?}",
+        r.stderr
+    );
+}
+
+/// After a failure with `--fail-early`, nothing more is added: the
+/// transfer made next ends with the run's result, saying it.
+#[test]
+fn parallel_fail_early_adds_nothing_more() {
+    let s = Scratch::new("parallelnomore");
+    s.write("a", b"A");
+    let (missing, a) = (s.url("missing"), s.url("a"));
+    let w = "%{urlnum} %{exitcode}\n";
+    let args = [
+        "-sS",
+        "-Z",
+        "--fail-early",
+        "--parallel-max",
+        "1",
+        "-w",
+        w,
+        "-o",
+        "o1",
+        "-o",
+        "o2",
+        &missing,
+        &a,
+    ];
+    let r = curl(&s, &args);
+    assert_eq!((r.code, &r.stdout[..]), (37, &b"0 37\n1 37\n"[..]));
+    let expected = format!(
+        "curl: (37) Could not open file {}\ncurl: (37) Could not read a file:// file\n",
+        s.path("missing")
+    );
+    assert_eq!(r.stderr, expected);
+    assert!(!s.exists("o2"));
+}
+
+/// Of the transfers ending together, the last to fail gives the result,
+/// and one that succeeds after it does not clear it (`check_finished`).
+#[test]
+fn parallel_transfers_ending_together() {
+    let s = Scratch::new("paralleltogether");
+    s.write("a", b"A");
+    let (missing, a) = (s.url("missing"), s.url("a"));
+    let r = curl(&s, &["-s", "-Z", "-o", "o1", "-o", "o2", &missing, &a]);
+    assert_eq!(r.code, 37);
+    let r = curl(&s, &["-s", "-Z", &missing, "--next", "-C", "100", &a]);
+    assert_eq!(r.code, 36);
+}
+
+/// A transfer that fails as it is made, after its handle exists, ends
+/// with its failure, and nothing more runs.
+#[test]
+fn parallel_transfer_failing_as_it_is_made() {
+    let s = Scratch::new("parallelmade");
+    s.write("a", b"hello");
+    let w = "%{urlnum} %{exitcode}\n";
+    let r = curl(
+        &s,
+        &[
+            "-sS",
+            "-Z",
+            "-C",
+            "10",
+            "-o",
+            "nodir/x",
+            "-w",
+            w,
+            &s.url("a"),
+        ],
+    );
+    assert_eq!((r.code, &r.stdout[..]), (23, &b"0 23\n"[..]));
+    assert_eq!(
+        r.stderr,
+        "curl: cannot open 'nodir/x'\ncurl: (23) Failed writing received data to disk/application\n"
+    );
 }

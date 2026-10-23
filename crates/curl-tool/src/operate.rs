@@ -1269,12 +1269,7 @@ fn configure(
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
     o.limits.max_recv_speed = NonZeroU64::new(op.limit_rate);
     o.limits.max_send_speed = NonZeroU64::new(op.limit_rate);
-    // Reads of 100 KiB, or of a receive rate under that, so a limited
-    // transfer reads no more than it may at once (`buffersize`).
-    o.limits.buffer_size = options::BufferSize::clamped(match op.limit_rate {
-        rate @ 1..TOOL_BUFFER => rate,
-        _ => TOOL_BUFFER,
-    });
+    o.limits.buffer_size = buffer_size(op.limit_rate);
     o.limits.total = TimeLimit::from_millis(op.timeout_ms);
     o.limits.connect = TimeLimit::from_millis(op.connect_timeout_ms);
     if let Some(ms) = op.happy_eyeballs_ms {
@@ -1293,6 +1288,15 @@ fn configure(
         http_options(o, op)?;
     }
     Ok(())
+}
+
+/// Reads of 100 KiB, or of a receive rate `limit_rate` under that, so a
+/// limited transfer reads no more than it may at once (`buffersize`).
+fn buffer_size(limit_rate: u64) -> options::BufferSize {
+    options::BufferSize::clamped(match limit_rate {
+        rate @ 1..TOOL_BUFFER => rate,
+        _ => TOOL_BUFFER,
+    })
 }
 
 /// The options only a URL the tool takes for HTTP's is given
@@ -1696,6 +1700,15 @@ enum UrlProto {
     Other,
 }
 
+/// What a URL whose scheme could not be had for `e` is taken to be: one
+/// of no protocol the tool knows, unless memory ran out.
+fn no_proto(e: UrlErrorKind) -> Result<(UrlProto, Option<Url>), OutOfMemory> {
+    match e {
+        UrlErrorKind::OutOfMemory => Err(OutOfMemory),
+        _ => Ok((UrlProto::Other, None)),
+    }
+}
+
 /// The protocol of `url`'s scheme, guessed from its host if it names
 /// none, or `default`'s (`--proto-default`) then; a URL that does not
 /// parse has none (`url_proto_and_rewrite`). An IPFS one comes with the
@@ -1709,13 +1722,9 @@ fn url_proto(
         non_support_scheme: true,
         ..ParseOptions::NONE
     };
-    let oom = |e| match e {
-        UrlErrorKind::OutOfMemory => Err(OutOfMemory),
-        _ => Ok((UrlProto::Other, None)),
-    };
     let url = match Url::parse(url, parse) {
         Ok(url) => url,
-        Err(e) => return oom(e),
+        Err(e) => return no_proto(e),
     };
     // With a default, a scheme only guessed counts as none.
     let get = GetOptions {
@@ -1730,7 +1739,7 @@ fn url_proto(
             name.try_extend_from_slice(default.name().as_bytes())?;
             name
         }
-        (Err(e), _) => return oom(e),
+        (Err(e), _) => return no_proto(e),
     };
     if let Some(kind) = crate::ipfs::Kind::of_scheme(&scheme) {
         return Ok((UrlProto::Ipfs(kind), Some(url)));
@@ -2001,6 +2010,31 @@ mod tests {
         assert!(ipfs("ipfs://cid", Some(Protocol::Http)), "given");
         assert!(!ipfs("cid", None));
         assert!(!http("http://[bad/", None), "does not parse");
+        // Memory running out is said, as C's `CURLUE_OUT_OF_MEMORY` is.
+        assert!(matches!(
+            no_proto(UrlErrorKind::OutOfMemory),
+            Err(OutOfMemory)
+        ));
+        assert!(matches!(
+            no_proto(UrlErrorKind::MalformedInput),
+            Ok((UrlProto::Other, None))
+        ));
+    }
+
+    /// `buffersize`: 100 KiB, or a receive rate under that, as the core
+    /// takes it.
+    #[test]
+    fn reads_no_more_than_the_rate_at_once() {
+        for (rate, size) in [
+            (0, 102_400),
+            (1, 1024),
+            (5000, 5000),
+            (102_399, 102_399),
+            (102_400, 102_400),
+            (1 << 40, 102_400),
+        ] {
+            assert_eq!(buffer_size(rate).get(), size, "{rate}");
+        }
     }
 
     /// `append2query`: the query added after any there, as given, and a

@@ -555,7 +555,11 @@ fn over_tls(talk: &Conversation) -> (Multi, Wire, &'static crate::tls::fake::Fak
     let fake = FakeNet::new(clock.clone())
         .with_peer(at, Peer::Accepts)
         .with_conversation(at, talk.clone());
-    let wire = Wire(Arc::new(Mutex::new((fake, Vec::new()))));
+    let wire = Wire(Arc::new(Mutex::new(Wired {
+        net: fake,
+        closed: Vec::new(),
+        close_takes: None,
+    })));
     let env = Env {
         clock: Box::new(clock),
         net: Box::new(wire.clone()),

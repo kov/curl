@@ -1773,3 +1773,140 @@ fn writes_out_the_debug_build_s_times_and_sizes() {
     assert!(json.starts_with("000 {"), "{json}");
     assert!(json.contains(",\"http_connect\":0,"), "{json}");
 }
+
+/// `--httpsig-*` signs the request with the algorithm named in any
+/// case, Ed25519 unless named, its key read from the file after `@`, a
+/// file named `-` among them; an unknown algorithm and an empty key file
+/// are refused as C refuses them. Ed25519 needs a TLS backend: without
+/// one it is refused by its name.
+#[test]
+fn signs_the_request_as_told() {
+    let keys = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/data");
+    let ed25519 = keys.join("data-httpsig-ed25519.key");
+    let hmac = keys.join("data-httpsig-hmac-sha256.key");
+    let dir = scratch("httpsig");
+    std::fs::copy(&hmac, dir.join("-")).unwrap();
+    std::fs::write(dir.join("empty"), "").unwrap();
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let run = |args: &[&str], url: &str| {
+        let out = Command::new(&tool)
+            .arg("-q")
+            .args(["-sS", "--httpsig-keyid", "k"])
+            .args(args)
+            .arg(url)
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap(),
+            String::from_utf8(out.stderr).unwrap(),
+        )
+    };
+    let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let key = |p: &std::path::Path| format!("@{}", p.display());
+    let no_tls = "curl: (4) httpsig: algorithm 'ed25519' not supported by TLS backend\n";
+    for (args, alg) in [
+        (
+            vec![
+                "--httpsig-algo",
+                "HMAC-SHA256",
+                "--httpsig-key",
+                &key(&hmac),
+            ],
+            "hmac-sha256",
+        ),
+        (
+            vec!["--httpsig-algo", "hmac-sha256", "--httpsig-key", "@-"],
+            "hmac-sha256",
+        ),
+        (
+            vec!["--httpsig-algo", "Ed25519", "--httpsig-key", &key(&ed25519)],
+            "ed25519",
+        ),
+        (vec!["--httpsig-key", &key(&ed25519)], "ed25519"),
+    ] {
+        let s = Server::new(ok);
+        let got = run(&args, &s.url());
+        let request = s.request();
+        if alg == "ed25519" && got == (4, no_tls.to_owned()) {
+            continue;
+        }
+        assert_eq!(got, (0, String::new()), "{args:?}");
+        let input = format!(";keyid=\"k\";alg=\"{alg}\"\r\n");
+        assert!(request.contains(&input), "{args:?}: {request}");
+        assert!(
+            request.contains("\r\nSignature: sig1=:"),
+            "{args:?}: {request}"
+        );
+    }
+    let (code, stderr) = run(
+        &["--httpsig-algo", "rsa", "--httpsig-key", "00"],
+        "http://127.0.0.1:1/",
+    );
+    assert_eq!(code, 2);
+    assert!(
+        stderr.starts_with("curl: --httpsig-algo: unsupported algorithm 'rsa'\n"),
+        "{stderr}"
+    );
+    let (code, stderr) = run(&["--httpsig-key", "@empty"], "http://127.0.0.1:1/");
+    assert_eq!(code, 43);
+    assert!(
+        stderr.starts_with("curl: httpsig: key file 'empty' is empty\n"),
+        "{stderr}"
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `-x` alone sends the request to the proxy, with the `--proxy-header`
+/// lines; `-b` naming a file sends the cookies it holds.
+#[test]
+fn proxies_and_cookie_files_reach_the_request() {
+    let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let s = Server::new(ok);
+    let run = curl(&[
+        "-sS",
+        "-x",
+        &s.url(),
+        "--proxy-header",
+        "X-P: 1",
+        "http://example.test/a",
+    ]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(
+        request.starts_with("GET http://example.test/a HTTP/1.1\r\nHost: example.test\r\n"),
+        "{request}"
+    );
+    assert!(request.contains("\r\nX-P: 1\r\n"), "{request}");
+    let dir = scratch("cookie-file");
+    let jar = dir.join("jar");
+    std::fs::write(&jar, "127.0.0.1\tFALSE\t/\tFALSE\t0\tname\tvalue\n").unwrap();
+    let s = Server::new(ok);
+    let run = curl(&["-sS", "-b", jar.to_str().unwrap(), &s.url()]);
+    assert_eq!((run.code, &run.stderr[..]), (0, ""));
+    let request = s.request();
+    assert!(request.contains("\r\nCookie: name=value\r\n"), "{request}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// `-r` warns of a character in the range that is no digit, dash or
+/// comma, and of nothing in one that has none.
+#[test]
+fn warns_of_odd_characters_in_a_range() {
+    let warning = "Warning: Invalid character is found in given range.";
+    for (range, warns) in [("1-2,3-4", false), ("1-a", true), ("x-2", true)] {
+        // No transfer: the URL's port refuses.
+        let run = curl_columns(
+            &["--no-progress-meter", "-r", range, "http://127.0.0.1:1/"],
+            Some("500"),
+        );
+        assert_eq!(
+            run.stderr.starts_with(warning),
+            warns,
+            "{range}: {}",
+            run.stderr
+        );
+        assert!(run.stderr.contains("curl: (7) "), "{range}: {}", run.stderr);
+    }
+}

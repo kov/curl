@@ -269,6 +269,10 @@ exclude_re = [
     'curl-tool/src/slurp\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in read$',
     'curl-tool/src/form\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in (header_file|stdin_part|<impl ReadHandler for StdinPart>::read)$',
     'curl-tool/src/ipfs\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in first_line$',
+    # No digits make no number, as the empty text parses as none.
+    'curl-tool/src/options/apply\.rs:.*: replace > with >= in range$',
+    # The URL is parsed guessing a scheme, so it always has one.
+    'curl-tool/src/operate\.rs:.*: delete field default_scheme from struct GetOptions expression in url_proto$',
     # The URL got encodes only its host, which was encoded as it was set.
     'curl-tool/src/ipfs\.rs:.*: delete field url_encode from struct GetOptions expression in rewrite$',
     # Every caller of `part` allows a type: only a file name and an

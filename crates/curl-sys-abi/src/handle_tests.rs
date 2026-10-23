@@ -5141,6 +5141,9 @@ struct SocketsSeen {
     set: Vec<c_int>,
     closed: Vec<c_int>,
     answer: c_int,
+    /// The port the opener points the address to, if not 0; the port the
+    /// connecting configurer connects to.
+    port: u16,
 }
 
 unsafe extern "C" fn opener(
@@ -5149,7 +5152,17 @@ unsafe extern "C" fn opener(
     address: *mut ffi::curl_sockaddr,
 ) -> ffi::curl_socket_t {
     // SAFETY: the test's data is a `SocketsSeen`; the address is live.
-    let (seen, a) = unsafe { (&mut *data.cast::<SocketsSeen>(), &*address) };
+    let seen = unsafe { &mut *data.cast::<SocketsSeen>() };
+    if seen.port != 0 {
+        // SAFETY: the address is live, with room for its family's; the
+        // port is at the same place in both.
+        unsafe {
+            let at = ptr::addr_of_mut!((*address).addr).cast::<libc::sockaddr_in>();
+            (*at).sin_port = seen.port.to_be();
+        }
+    }
+    // SAFETY: as above.
+    let a = unsafe { &*address };
     assert_eq!(purpose, ffi::CURLSOCKTYPE_IPCXN);
     // SAFETY: the type and protocol asked for, as C's opener would.
     let fd = unsafe { libc::socket(a.family, a.socktype, a.protocol) };
@@ -5168,6 +5181,32 @@ unsafe extern "C" fn sockopt(
     let seen = unsafe { &mut *data.cast::<SocketsSeen>() };
     seen.set.push(fd);
     seen.answer
+}
+
+/// A configurer that connects the socket itself, to the port of its
+/// data on this host, and says so.
+unsafe extern "C" fn connecting_sockopt(
+    data: *mut c_void,
+    fd: ffi::curl_socket_t,
+    _: ffi::curlsocktype,
+) -> c_int {
+    // SAFETY: the test's data is a `SocketsSeen`.
+    let seen = unsafe { &mut *data.cast::<SocketsSeen>() };
+    seen.set.push(fd);
+    let to = libc::sockaddr_in {
+        sin_family: libc::AF_INET as libc::sa_family_t,
+        sin_port: seen.port.to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from(std::net::Ipv4Addr::LOCALHOST).to_be(),
+        },
+        sin_zero: [0; 8],
+    };
+    let len = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
+    // SAFETY: the opener's socket is blocking, so the connect is made
+    // before it returns; the address lives through the call.
+    let rc = unsafe { libc::connect(fd, (&raw const to).cast(), len) };
+    assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
+    ffi::CURL_SOCKOPT_ALREADY_CONNECTED
 }
 
 unsafe extern "C" fn closer(data: *mut c_void, fd: ffi::curl_socket_t) -> c_int {
@@ -5260,6 +5299,145 @@ fn socket_functions_are_called_as_c_calls_them() {
     }
 }
 
+const SERVED: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// A handle performing a GET of `url` with the socket functions `hooks`
+/// set, each with its data `seen`.
+fn perform_hooked(
+    url: &str,
+    hooks: &[(CURLoption, CURLoption, *const ())],
+    seen: &mut SocketsSeen,
+) -> CURLcode {
+    let url = std::ffi::CString::new(url).unwrap();
+    let c = curl_easy_init();
+    let data: *mut SocketsSeen = seen;
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let w = sink as WriteFn as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_WRITEFUNCTION, w), CURLE_OK);
+    for &(f, d, hook) in hooks {
+        assert_eq!(function(c, f, hook), CURLE_OK);
+        assert_eq!(pointer(c, d, data), CURLE_OK);
+    }
+    // SAFETY: a live handle, not used again.
+    unsafe {
+        let code = curl_easy_perform(c);
+        curl_easy_cleanup(c);
+        code
+    }
+}
+
+/// Each socket function is called set alone, as C calls whichever is
+/// set; one set to NULL on a new handle makes nothing to keep. A
+/// configurer's `CURL_SOCKOPT_OK` connects as usual; its
+/// `CURL_SOCKOPT_ALREADY_CONNECTED` skips the connect it made itself
+/// (`cf_socket_open`).
+#[test]
+fn each_socket_function_is_called_alone() {
+    let c = curl_easy_init();
+    assert_eq!(
+        function(c, ffi::CURLOPT_OPENSOCKETFUNCTION, ptr::null()),
+        CURLE_OK
+    );
+    assert!(
+        options(c, |o| o.sockets.made_mut().is_none()),
+        "none set: no group"
+    );
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+    let (port, server) = serve(vec![SERVED; 4]);
+    let url = format!("http://127.0.0.1:{port}/");
+    let hooks = [
+        (
+            ffi::CURLOPT_OPENSOCKETFUNCTION,
+            ffi::CURLOPT_OPENSOCKETDATA,
+            opener as *const (),
+        ),
+        (
+            ffi::CURLOPT_SOCKOPTFUNCTION,
+            ffi::CURLOPT_SOCKOPTDATA,
+            sockopt as *const (),
+        ),
+        (
+            ffi::CURLOPT_CLOSESOCKETFUNCTION,
+            ffi::CURLOPT_CLOSESOCKETDATA,
+            closer as *const (),
+        ),
+    ];
+    for (i, hook) in hooks.iter().enumerate() {
+        let mut seen = SocketsSeen {
+            answer: ffi::CURL_SOCKOPT_OK,
+            ..SocketsSeen::default()
+        };
+        assert_eq!(perform_hooked(&url, &[*hook], &mut seen), CURLE_OK);
+        let mut want = [0; 3];
+        want[i] = 1;
+        let calls = [seen.opened.len(), seen.set.len(), seen.closed.len()];
+        assert_eq!(calls, want, "hook {i}");
+    }
+    let mut seen = SocketsSeen {
+        port,
+        ..SocketsSeen::default()
+    };
+    let connecting = (
+        ffi::CURLOPT_SOCKOPTFUNCTION,
+        ffi::CURLOPT_SOCKOPTDATA,
+        connecting_sockopt as *const (),
+    );
+    // The opener's blocking socket, which the configurer connects.
+    let code = perform_hooked(&url, &[hooks[0], connecting], &mut seen);
+    assert_eq!(code, CURLE_OK);
+    assert_eq!(seen.set, [seen.opened[0][4]]);
+    assert_eq!(server.join().unwrap().len(), 4, "each reached the server");
+}
+
+/// An opener may point the address elsewhere, of either family, and the
+/// socket connects there (`socket_open` hands it `ctx->addr`).
+#[test]
+fn an_opener_may_change_the_port() {
+    // A port nothing listens on, which the URL names.
+    let unused = |at: &str| {
+        let l = std::net::TcpListener::bind(at).unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let (port, server) = serve(vec![SERVED]);
+    let mut seen = SocketsSeen {
+        port,
+        ..SocketsSeen::default()
+    };
+    let hook = (
+        ffi::CURLOPT_OPENSOCKETFUNCTION,
+        ffi::CURLOPT_OPENSOCKETDATA,
+        opener as *const (),
+    );
+    let url = format!("http://127.0.0.1:{}/", unused("127.0.0.1:0"));
+    assert_eq!(perform_hooked(&url, &[hook], &mut seen), CURLE_OK);
+    assert_eq!(server.join().unwrap().len(), 1);
+    let Ok(v6) = std::net::TcpListener::bind("[::1]:0") else {
+        return;
+    };
+    let port = v6.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        use std::io::Write as _;
+        let (mut peer, _) = v6.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let request = read_request(&mut peer);
+        peer.write_all(SERVED).unwrap();
+        request
+    });
+    let mut seen = SocketsSeen {
+        port,
+        ..SocketsSeen::default()
+    };
+    let url = format!("http://[::1]:{}/", unused("[::1]:0"));
+    assert_eq!(perform_hooked(&url, &[hook], &mut seen), CURLE_OK);
+    assert_eq!(seen.opened[0][0], libc::AF_INET6);
+    assert!(server.join().unwrap().starts_with(b"GET / HTTP/1.1\r\n"));
+}
+
 /// The keepalive times and count are held to C's range: negative is
 /// refused, past `INT_MAX` is `INT_MAX`; a TCP option at its default
 /// makes no group, as most handles set none.
@@ -5299,6 +5477,21 @@ fn tcp_options_are_held_to_c_s_range() {
             }
         );
         assert!(!s.nodelay && s.fastopen);
+    });
+    // 0 is in the range.
+    for o in [
+        ffi::CURLOPT_TCP_KEEPIDLE,
+        ffi::CURLOPT_TCP_KEEPINTVL,
+        ffi::CURLOPT_TCP_KEEPCNT,
+    ] {
+        assert_eq!(long(c, o, 0), CURLE_OK);
+    }
+    options(c, |o| {
+        let k = o.sockets.made_mut().expect("made").keepalive;
+        assert_eq!(
+            (k.idle, k.interval, k.count),
+            (Duration::ZERO, Duration::ZERO, 0)
+        );
     });
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };

@@ -143,7 +143,7 @@ fn scenario() -> Result<Outcome, OutOfMemory> {
     let clock = ManualClock::new()?;
     let boxed: Box<dyn Clock> = try_box(clock.clone())?;
     let net: Box<dyn Net + Send> = try_box(fake_net(&clock))?;
-    let waker = TryArc::try_new(Waker::new().expect("a socket pair"))?;
+    let waker = TryArc::try_new(Waker::new().expect("an eventfd"))?;
     let env = Env {
         clock: boxed,
         net,

@@ -18,24 +18,30 @@ witness: curl-os poll::tests::a_sub_millisecond_timeout_still_waits
 --- new
     let ms = timeout.as_nanos() / 1_000_000;
 
-=== a wake into a full pipe is an error
+=== the waker's eventfd blocks
 file: crates/curl-os/src/wake.rs
-witness: curl-os wake::tests::waking_more_than_the_pipe_holds_is_fine
+witness: curl-os wake::tests::the_waker_is_one_eventfd
 --- old
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK)
 --- new
-            Ok(_) => Ok(()),
+libc::eventfd(0, libc::EFD_CLOEXEC)
 
-=== draining takes only the first read's worth of wakes
+=== a drain leaves the wakes counted
 file: crates/curl-os/src/wake.rs
-witness: curl-os wake::tests::waking_more_than_the_pipe_holds_is_fine
+witness: curl-os wake::tests::a_wake_is_seen_until_drained
 --- old
-                Ok(0) => return Ok(()),
-                Ok(_) => {}
+        let mut count = [0u8; 8];
 --- new
-                Ok(0) => return Ok(()),
-                Ok(_) => return Ok(()),
+        let mut count = [0u8; 8];
+        return Ok(());
+
+=== a wake writes less than the count's 8 bytes
+file: crates/curl-os/src/wake.rs
+witness: curl-os wake::tests::a_wake_is_seen_until_drained
+--- old
+one.as_ptr().cast(), one.len())
+--- new
+one.as_ptr().cast(), 4)
 
 === a connect in progress is an error
 file: crates/curl-os/src/net.rs

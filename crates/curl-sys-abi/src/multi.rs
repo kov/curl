@@ -75,7 +75,7 @@ pub(crate) struct ShimMulti {
 
 impl ShimMulti {
     /// A multi with the system's clock and network. Without a waker, which
-    /// takes two descriptors, `curl_multi_wakeup` fails, as in C.
+    /// takes a descriptor, `curl_multi_wakeup` fails, as in C.
     fn new() -> Result<ShimMulti, OutOfMemory> {
         ShimMulti::with_net(try_box(SystemNet)?)
     }

@@ -105,7 +105,7 @@ yet meet.
      `cargo test` builds the test doubles and runs it.
 6. **os: add sockets, polling and the waker.** **Done.** `curl-os` (feature `net`): `net.rs`
    (nonblocking TCP: connect, recv, send, `SO_ERROR`; UDP and Unix sockets when a protocol
-   needs them), `poll.rs`, `wake.rs` (a socket pair in safe code), with the CLAUDE.md unsafe list
+   needs them), `poll.rs`, `wake.rs` (an eventfd, as C's), with the CLAUDE.md unsafe list
    updated; core `Net` (just `poll` so far), `SystemNet`, `FakeNet`; `Env` gains the network and
    the waker; `Multi::wait` with `WaitMode::{Wait, Poll}`, `Multi::waker`,
    `drive_to_completion`. Loopback tests for connect done or in progress, refusal, would-block

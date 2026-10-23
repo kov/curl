@@ -118,7 +118,7 @@ fn go_on<'a, R>(
             let size = needed.max(parser.room.size.saturating_mul(2)).max(MIN_ROOM);
             let mut buf = Vec::new();
             if buf.try_reserve_exact(size).is_err() {
-                let step = parser.fail(ParamError::NoMem, msgs);
+                let step = parser.fail_to_grow(msgs);
                 return go_on(step, msgs, wipe, then);
             }
             #[allow(clippy::disallowed_methods, reason = "reserved above")]
@@ -453,6 +453,15 @@ impl<'a> Parser<'a> {
             return Step::Done(Err(report(msgs, b":", ParamError::ContdispResumeFrom)));
         }
         Step::Done(Ok(Parsed::Run(self.line)))
+    }
+
+    /// Fail for want of room for the word to be read again, which a
+    /// configuration file has already stepped back over.
+    fn fail_to_grow(mut self, msgs: &mut Messages) -> Step<'a> {
+        if let Some(Source::File { at, .. }) = self.sources.last_mut() {
+            *at += 1;
+        }
+        self.fail(ParamError::NoMem, msgs)
     }
 
     /// Report `e`, met reading the innermost source: each file reading it

@@ -77,14 +77,6 @@ witness: curl-core proto::http::tests::tls::a_read_asks_the_session_for_the_tran
         let n = buf.len().min(4096);
         session.recv(&mut io, &mut buf[..n])
 
-=== bytes a TLS session holds are not pending
-file: crates/curl-core/src/conn/tls.rs
-witness: curl-core proto::http::tests::tls::bytes_tls_holds_are_read_without_waiting
---- old
-        !self.early.is_empty() || self.session.pending() || below.data_pending()
---- new
-        !self.early.is_empty() || below.data_pending()
-
 === a TLS layer's shutdown says no goodbye
 file: crates/curl-core/src/conn/tls.rs
 witness: curl-core multi::shutdown_tests::a_tls_connection_says_goodbye_as_it_closes
@@ -144,3 +136,11 @@ witness: curl-core proto::http::tests::tls::secure_cookies_go_over_tls
             || self.host.eq_ignore_ascii_case(b"localhost")
 --- new
         self.host.eq_ignore_ascii_case(b"localhost")
+
+=== bytes a TLS session holds are not pending
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core conn::tls::tests::the_layer_says_what_its_session_holds_and_waits_for
+--- old
+        !self.early.is_empty() || self.session.pending() || below.data_pending()
+--- new
+        !self.early.is_empty() || below.data_pending()

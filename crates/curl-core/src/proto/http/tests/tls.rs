@@ -102,11 +102,11 @@ fn an_https_get_goes_through_its_tls_layer() {
     assert_eq!(plain.easy.report().timings().appconnect(), Duration::ZERO);
 }
 
-/// Bytes the TLS session read and has not given out, a record longer
-/// than the transfer's read, are read without waiting on the socket,
-/// which cannot see them (`Curl_conn_data_pending`).
+/// A record longer than the transfer's read is given out over as many
+/// reads, from what the session holds, without waiting on the socket,
+/// which has nothing more to say.
 #[test]
-fn bytes_tls_holds_are_read_without_waiting() {
+fn a_record_longer_than_a_read_is_read_without_waiting() {
     let (_, libraries) = tls();
     let body = vec![b'x'; 3000];
     let mut response =

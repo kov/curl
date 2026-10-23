@@ -357,11 +357,9 @@ impl TlsSession for FakeSession {
             }
         }
         assert_eq!(self.stage, Stage::Open, "read once the handshake is done");
-        if let Flushed::Blocked = self.flush(io)? {
-            self.waits = TlsWait::Send;
-            return Ok(Recv::WouldBlock);
-        }
         loop {
+            // What it holds goes first; a record kept to send goes before
+            // it reads the peer again.
             if let Some(n) = NonZeroUsize::new(self.plain.len().min(buf.len())) {
                 let from = self.plain.start;
                 buf[..n.get()].copy_from_slice(&self.body[from..from + n.get()]);
@@ -371,6 +369,10 @@ impl TlsSession for FakeSession {
             }
             if self.peer_closed {
                 return Ok(Recv::Eof);
+            }
+            if let Flushed::Blocked = self.flush(io)? {
+                self.waits = TlsWait::Send;
+                return Ok(Recv::WouldBlock);
             }
             if let Some(got) = self.read_record(io)? {
                 self.waits = match got {

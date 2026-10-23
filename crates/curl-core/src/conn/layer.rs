@@ -146,6 +146,14 @@ pub(crate) struct Below<'a> {
     socket: &'a dyn Socket,
 }
 
+impl<'a> Below<'a> {
+    /// The layers `layers`, bottom first, over `socket`, for a test.
+    #[cfg(test)]
+    pub(crate) fn new(layers: &'a mut [Box<dyn Layer>], socket: &'a dyn Socket) -> Below<'a> {
+        Below { layers, socket }
+    }
+}
+
 impl Below<'_> {
     /// The same layers and socket, for one call that leaves them to the
     /// caller after.

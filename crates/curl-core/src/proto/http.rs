@@ -1191,6 +1191,7 @@ impl Request {
                 _ => self.filled,
             };
             let sent = lease.get().send(&self.out[self.sent..end]);
+            trace::sent(cx, end - self.sent, &sent);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(false),
@@ -1359,7 +1360,9 @@ impl Request {
                 None => max,
             };
             reads += 1;
-            match lease.get().recv(max) {
+            let got = lease.get().recv(max);
+            trace::received(cx, max, &got);
+            match got {
                 Ok(Recv::WouldBlock) => return Ok(Read::Waits),
                 Ok(Recv::Eof) => {
                     // The connection's end stops the sending too

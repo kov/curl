@@ -323,6 +323,13 @@ C's connection filters and its pollset and `multi_wait` internals, the credentia
 (`Curl_creds_trace`), `xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; a transfer let out of PENDING
 by another is traced entering CONNECT at its next step rather than as it is let.
 
+`TCP` traces each send and receive on a transfer's connection, and the PROXY protocol's line,
+with what it asked for and what it came to. Not traced: the socket's opening, local address and
+connect, which the connect machine does without a context to trace in; the receive C tries
+before its first poll in PERFORMING, which the engine does not make; and a tunnel's and SOCKS
+handshake's reads and writes: C reads a proxy's answer to `CONNECT` a byte at a time from the
+socket, where the engine reads what is there.
+
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
 they are set) is handed to a `notes` closure the caller passes, line by line in the transfer's

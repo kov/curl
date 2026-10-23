@@ -1,7 +1,8 @@
 //! The multi component's trace (`CURL_TRC_M`): each change of C's state,
 //! the times taken, the transfer coming and going, and what `multi_done`
-//! does with the connection. Each expected sequence is the C build's for
-//! the same transfer, the times left out.
+//! does with the connection; and the TCP component's sends and receives.
+//! Each expected sequence is the C build's for the same transfer, the
+//! times left out.
 
 use super::*;
 use crate::components::Components;
@@ -170,5 +171,40 @@ fn a_failed_response_closes_its_connection_in_performing() {
             [MULTI] [COMPLETED] -> [MSGSENT]
             [MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1"
         ))[..]
+    );
+}
+
+/// A handle tracing the TCP component.
+fn tracing_tcp() -> Easy {
+    let mut e = Easy::new();
+    let components = Components::new().unwrap();
+    components.configure(b"tcp");
+    e.set_components(Some(components));
+    e
+}
+
+/// Each send and receive on the connection is traced with what it asked
+/// for and what it came to (`cf_socket_send`, `cf_socket_recv`).
+#[test]
+fn sends_and_receives_are_traced_as_c() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let lines: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[TCP] "))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let request = request_of("/").len();
+    let reply = OK.len();
+    assert_eq!(
+        lines,
+        [
+            format!("[TCP] send(len={request}) -> 0, {request}"),
+            // The buffer's size, the library's default.
+            format!("[TCP] recv(len=16384) -> 0, {reply}"),
+        ]
     );
 }

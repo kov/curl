@@ -6,6 +6,8 @@
 use std::fmt;
 
 use crate::components::Component;
+use crate::conn::RecvFailed;
+use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
 use crate::handler::DebugKind;
 use crate::multi::state::StepCx;
@@ -65,6 +67,41 @@ pub(crate) fn of<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fm
     line.push_fmt(args);
     end_line(&mut line);
     text(cx, line.bytes());
+}
+
+/// What a send of `len` bytes on the connection came to (`cf_socket_send`).
+pub(crate) fn sent<H: Host>(cx: &mut StepCx<'_, H>, len: usize, sent: &std::io::Result<Sent>) {
+    let (code, n) = match sent {
+        Ok(Sent::Bytes(n)) => (0, n.get()),
+        Ok(Sent::WouldBlock) => (ErrorKind::Again.number(), 0),
+        Err(_) => (ErrorKind::SendError.number(), 0),
+    };
+    of(
+        cx,
+        Component::Tcp,
+        format_args!("send(len={len}) -> {code}, {n}"),
+    );
+}
+
+/// What a receive of up to `len` bytes on the connection came to
+/// (`cf_socket_recv`).
+pub(crate) fn received<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    len: usize,
+    got: &Result<Recv, RecvFailed>,
+) {
+    let (code, n) = match got {
+        Ok(Recv::Data(n)) => (0, n.get()),
+        Ok(Recv::Eof) => (0, 0),
+        Ok(Recv::WouldBlock) => (ErrorKind::Again.number(), 0),
+        Err(RecvFailed::OutOfMemory) => (ErrorKind::OutOfMemory.number(), 0),
+        Err(RecvFailed::Os(_)) => (ErrorKind::RecvError.number(), 0),
+    };
+    of(
+        cx,
+        Component::Tcp,
+        format_args!("recv(len={len}) -> {code}, {n}"),
+    );
 }
 
 /// `of` with a line made of `parts`, which need not be text.

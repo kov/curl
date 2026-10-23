@@ -45,6 +45,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   `a_refused_copy_is_out_of_memory` (`crates/curl-os/tests/env_oom.rs`) and
   `finds_the_file_as_c` (`crates/curl-core/src/netrc.rs`).
 
+## Loops C never leaves
+
+- **A form part's read function answering -2 fails the transfer.** -2 is
+  `CURL_READFUNC_STOP_FILLING`, which no part's read function may give; here it is a read error,
+  26 (`CURLE_READ_ERROR`). C's `read_part_content` (`lib/mime.c`) takes it for "nothing now" and
+  asks the function again for ever: measured against the C build, the transfer had not returned
+  when a 10 s `timeout` killed it. Pinned by `a_part_read_answering_stop_filling_fails`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
+
 ## Bodies C cannot send again
 
 - **A form part of nothing is sent again.** A part given a name but no content

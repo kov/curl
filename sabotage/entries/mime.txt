@@ -166,6 +166,16 @@ witness: curl-sys-abi mime::tests::a_tree_read_before_is_rewound_when_posted
 --- new
         let p = unsafe { p.as_ref() };
 
+=== a part's read answering -2 is asked again, as C's
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi handle_tests::a_part_read_answering_stop_filling_fails
+--- old
+        } else if got >= usize::MAX - 1 {
+--- new
+        } else if got == usize::MAX - 1 {
+            Read::Pause
+        } else if got == usize::MAX {
+
 === a freed tree's parts keep their content
 file: crates/curl-sys-abi/src/mime.rs
 witness: curl-sys-abi mime::tests::frees_call_each_free_function_once

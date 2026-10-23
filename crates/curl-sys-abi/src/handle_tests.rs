@@ -1885,6 +1885,37 @@ fn a_tree_posted_again_starts_over_what_was_reached() {
     assert_eq!(twice(What::Nothing), [CURLE_OK, CURLE_OK]);
 }
 
+/// A part's read function answering -2, the value of a filling
+/// function's `CURL_READFUNC_STOP_FILLING` that no part's function may
+/// give, fails the transfer as a read error. C asks the function again
+/// for ever (DIVERGENCE.md).
+#[test]
+fn a_part_read_answering_stop_filling_fails() {
+    unsafe extern "C" fn read(_: *mut c_char, _: usize, _: usize, _: *mut c_void) -> usize {
+        usize::MAX - 1
+    }
+    use crate::mime::{curl_mime_addpart, curl_mime_data_cb, curl_mime_free, curl_mime_init};
+    let c = curl_easy_init();
+    // SAFETY: a live tree and part, freed after the handle.
+    unsafe {
+        let m = curl_mime_init(c);
+        let p = curl_mime_addpart(m);
+        assert_eq!(
+            curl_mime_data_cb(p, -1, Some(read), None, None, ptr::null_mut()),
+            CURLE_OK
+        );
+        pointer(c, ffi::CURLOPT_URL, c"script://a".as_ptr().cast_mut());
+        pointer(c, ffi::CURLOPT_MIMEPOST, m);
+        long(c, ffi::CURLOPT_TIMEOUT, 5);
+        options(c, |o| {
+            o.script = Some(Script::new(vec![Piece::SendAll]).unwrap());
+        });
+        assert_eq!(curl_easy_perform(c), ffi::CURLE_READ_ERROR);
+        curl_easy_cleanup(c);
+        curl_mime_free(m);
+    }
+}
+
 /// What the write function answers.
 struct Answer(usize);
 

@@ -1505,12 +1505,12 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
   lines of at most 76; a read with no more than 4 bytes of room reads 256 into a side buffer
   first, as `cr_mime_read`'s `tmpbuf` does, so a base64 group always fits.
 - **Failures** are latched as `Upload`'s: Abort is AbortedByCallback "operation aborted by
-  callback"; a handler's failure, a file that cannot be opened, a failed read of a file that
-  is not regular, a 7bit byte at or over 0x80, "read error getting mime data" (a failed read
-  of a regular file ends the part there, as C's `fread` does, for the size check); a handler
-  giving more than its room, "read function returned funny value"; the end short of a known
-  size, "client mime read EOF fail, only X/Y of needed bytes read"; all ReadError. A pause is
-  not latched: the transfer reads no more until it is unpaused, when the part's handler is
+  callback"; a handler's failure or its -2, a file that cannot be opened, a failed read of a
+  file that is not regular, a 7bit byte at or over 0x80, "read error getting mime data" (a
+  failed read of a regular file ends the part there, as C's `fread` does, for the size check);
+  a handler giving more than its room, "read function returned funny value"; the end short of a
+  known size, "client mime read EOF fail, only X/Y of needed bytes read"; all ReadError. A pause
+  is not latched: the transfer reads no more until it is unpaused, when the part's handler is
   called again (`mime_unpause`).
 - **Rewind.** Whether a request's reading reached a part since it last started over is kept
   in the part (`Part::reached`, a shared flag the copies a source makes of one part hold), as C
@@ -2024,7 +2024,7 @@ adapters are its own, installed in place of the ones it was cloned with.
 - **Read**: `n > nmemb` passed through as `Read::Data(n)` for the core to reject ("read function
   returned funny value"); READFUNC_ABORT → `Abort`; READFUNC_PAUSE → `Pause`.
 - **MIME parts' callbacks** (`curl_mime_data_cb`): read as Read is, but (size_t)-1, C's
-  `READ_ERROR`, is `Fail`, and so is -2, which C loops on; the rewind adapter
+  `READ_ERROR`, is `Fail`, and so is -2, which C loops on (DIVERGENCE.md); the rewind adapter
   calls the seek function, failing without one (`mime_part_rewind`), when the core starts the
   part over, which it does only for a part reached (§5.4.1): the shim's part holds the
   `Reached` each tree built of it shares, so it lasts from one perform to the next and is

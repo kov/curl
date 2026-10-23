@@ -5629,3 +5629,310 @@ fn a_mime_post_without_a_tree_is_empty() {
         ran.request.escape_ascii()
     );
 }
+
+/// A one-part tree whose part `stream` reads, its size known, rewound by
+/// the stream if `rewinds`.
+fn streamed_tree(stream: &Stream, rewinds: bool) -> UploadSource {
+    mime_source(mime_tree(crate::mime::Content::Read {
+        handler: Handler::read(stream.clone()).unwrap(),
+        rewind: rewinds.then(|| Handler::rewind(stream.clone()).unwrap()),
+        size: Some(stream.data.len() as u64),
+    }))
+}
+
+/// A tree read by its handlers is started over by them: for a redirect
+/// that sends it again, once it was read (`cr_mime_cntrl`), and for the
+/// next transfer that sends it, as a request reached its part
+/// (`Curl_creader_set_mime`).
+#[test]
+fn a_tree_is_started_over_by_its_handlers() {
+    // Each on a connection of its own: a body's blank line would read
+    // to the fake peer as a request's head.
+    let stream = Stream::new(b"abc");
+    let first = Conversation::new(&redirect(307, "/b"), true);
+    let second = Conversation::new(OK, true);
+    let third = Conversation::new(OK, true);
+    let mut m = serving(Peer::Accepts, &[&first, &second, &third]);
+    let ran = get(&mut m, "/a", first.clone(), |o| {
+        o.method = Method::Post;
+        o.upload = streamed_tree(&stream, true);
+        o.http.follow = Follow::All;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(stream.rewinds.get(), 1);
+    let body = |c: &Conversation| {
+        String::from_utf8_lossy(&c.received())
+            .matches("\r\n\r\nabc\r\n--")
+            .count()
+    };
+    assert_eq!((body(&first), body(&second)), (1, 1));
+    assert!(
+        ran.seen
+            .text()
+            .contains(&"Need to rewind upload for next request\n".to_string())
+    );
+    let ran = get_with(&mut m, ran.easy, "/c", third.clone(), |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(stream.rewinds.get(), 2);
+    assert_eq!(body(&third), 1);
+}
+
+/// A tree whose part was read and cannot be rewound cannot be sent
+/// again: not to a redirect, nor by the next transfer; one whose rewind
+/// fails neither.
+#[test]
+fn a_tree_that_cannot_start_over_is_not_sent_again() {
+    for rewinds in [false, true] {
+        let stream = Stream::new(b"abc");
+        let mut source = streamed_tree(&stream, rewinds);
+        if rewinds {
+            struct Refuses;
+            impl crate::handler::Rewind for Refuses {
+                fn rewind(
+                    &self,
+                    _: &mut TransferCx<'_>,
+                ) -> Result<(), crate::handler::RewindFailed> {
+                    Err(crate::handler::RewindFailed)
+                }
+            }
+            source = mime_source(mime_tree(crate::mime::Content::Read {
+                handler: Handler::read(stream.clone()).unwrap(),
+                rewind: Some(Handler::rewind(Refuses).unwrap()),
+                size: Some(3),
+            }));
+        }
+        let first = redirect(307, "/b");
+        let (mut m, talk, _) = server(&[&first, OK], false);
+        let ran = get(&mut m, "/a", talk.clone(), |o| {
+            o.method = Method::Post;
+            o.upload = source;
+            o.http.follow = Follow::All;
+        });
+        assert_eq!(ran.result, Err(ErrorKind::SendFailRewind), "{rewinds}");
+        assert!(
+            ran.seen
+                .text()
+                .contains(&"Cannot rewind mime/post data\n".to_string()),
+            "{:?}",
+            ran.seen.text()
+        );
+        let ran = get_with(&mut m, ran.easy, "/c", talk, |o| o.http.follow = Follow::No);
+        assert_eq!(ran.result, Err(ErrorKind::SendFailRewind), "{rewinds}");
+    }
+}
+
+/// A probe sends none of the tree, so it reads none of it: nothing is
+/// rewound before the request that sends it.
+#[test]
+fn a_probe_reads_none_of_the_tree() {
+    let stream = Stream::new(b"abc");
+    let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.method = Method::Post;
+        o.upload = streamed_tree(&stream, true);
+        *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
+        o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(stream.rewinds.get(), 0);
+    let text = String::from_utf8_lossy(&ran.request).into_owned();
+    assert_eq!(text.matches("\r\n\r\nabc\r\n--").count(), 1, "{text}");
+    assert!(
+        !ran.seen
+            .text()
+            .iter()
+            .any(|l| l.starts_with("Need to rewind")),
+        "{:?}",
+        ran.seen.text()
+    );
+}
+
+/// A part's handler pausing pauses the sending of the tree, until the
+/// application lets it go on.
+#[test]
+fn a_tree_s_handler_pauses_its_sending() {
+    struct PausesTwice(Stream, Arc<crate::test_cell::Cell<u32>>);
+    impl crate::handler::ReadHandler for PausesTwice {
+        fn read(&self, cx: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+            // The first pause, after the part's head in the same fill,
+            // gives the head: only the second pauses the sending.
+            if self.1.get() == 2 {
+                return self.0.read(cx, buf);
+            }
+            self.1.set(self.1.get() + 1);
+            crate::handler::Read::Pause
+        }
+    }
+    let (mut m, talk, _) = server(&[OK_EMPTY], false);
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/p").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    o.upload = mime_source(mime_tree(crate::mime::Content::Read {
+        handler: Handler::read(PausesTwice(Stream::new(b"abc"), Arc::default())).unwrap(),
+        rewind: None,
+        size: Some(3),
+    }));
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..10 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    let sent = talk.received();
+    assert!(sent.ends_with(b"\r\n\r\n"), "{}", sent.escape_ascii());
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    let sent = String::from_utf8_lossy(&talk.received()).into_owned();
+    assert!(sent.contains("\r\n\r\nabc\r\n--"), "{sent}");
+}
+
+/// A handler is given no more room than is left of the body's size, so
+/// it cannot send past it.
+#[test]
+fn a_handler_is_given_no_room_past_the_size() {
+    struct OneThenAll(Arc<crate::test_cell::Cell<usize>>);
+    impl crate::handler::ReadHandler for OneThenAll {
+        fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+            let data = b"abcdefghij";
+            let at = self.0.get();
+            let n = if at == 0 {
+                1
+            } else {
+                buf.len().min(data.len() - at)
+            };
+            buf[..n].copy_from_slice(&data[at..at + n]);
+            self.0.set(at + n);
+            std::num::NonZeroUsize::new(n)
+                .map_or(crate::handler::Read::Eof, crate::handler::Read::Data)
+        }
+    }
+    let ran = run("/p", OK_EMPTY, false, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Read {
+            handler: Handler::read(OneThenAll(Arc::default())).unwrap(),
+            rewind: None,
+            size: Some(5),
+        };
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.request.ends_with(b"\r\n\r\nabcde"),
+        "{}",
+        ran.request.escape_ascii()
+    );
+}
+
+/// Under a send limit, a body held for a 100 earns its tokens from when
+/// the head went, as C's readers are asked for it then: after a wait of
+/// two seconds, three seconds' worth go at once, a second's in each
+/// send, and no more than that.
+#[test]
+fn a_body_held_for_a_100_earns_from_the_head() {
+    const RATE: u64 = 10_000;
+    let (mut m, talk, clock) = server(&[], false);
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.method = Method::Post;
+    o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
+    o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
+    o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(2));
+    o.limits.max_send_speed = NonZeroU64::new(RATE);
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(after_head(&talk.received()), 0, "held for the 100");
+    clock.advance(Duration::from_secs(2));
+    for _ in 0..20 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    assert_eq!(after_head(&talk.received()) as u64, 3 * RATE);
+}
+
+/// A 417 to a request that announced nothing is an error like any: the
+/// body stops, and the request is not made again.
+#[test]
+fn a_417_without_expect_stops_the_body() {
+    let refused = b"HTTP/1.1 417 Expectation Failed\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[refused], false);
+    let ran = get(&mut m, "/a", talk.clone(), |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 300_000]).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l == "HTTP error before end of send, stop sending\n"),
+        "{text:?}"
+    );
+    assert!(!text.iter().any(|l| l.contains("417 while")), "{text:?}");
+    assert_eq!(
+        talk.received().windows(5).filter(|w| w == b"POST ").count(),
+        1
+    );
+}
+
+/// A tree of known size whose handler ends short of it fails the read,
+/// saying how much came (`cr_mime_read`).
+#[test]
+fn a_tree_ending_short_of_its_size_fails() {
+    let ran = run("/p", OK_EMPTY, false, |o| {
+        o.method = Method::Post;
+        o.upload = mime_source(mime_tree(crate::mime::Content::Read {
+            handler: Handler::read(Stream::new(b"ab")).unwrap(),
+            rewind: None,
+            size: Some(5),
+        }));
+    });
+    assert_eq!(ran.result, Err(ErrorKind::ReadError));
+    let text = ran.seen.text();
+    assert!(
+        text.iter()
+            .any(|l| l.starts_with("client mime read EOF fail, only ")
+                && l.ends_with(" of needed bytes read\n")),
+        "{text:?}"
+    );
+}
+
+/// A link-local address given without its scope is reached on the
+/// interface that has one (cf-socket.c's `get_scope_id`).
+#[test]
+fn a_link_local_address_takes_the_interface_s_scope() {
+    let clock = ManualClock::new().unwrap();
+    let ip: std::net::Ipv6Addr = "fe80::1".parse().unwrap();
+    let at = SocketAddr::V6(std::net::SocketAddrV6::new(ip, PORT, 0, 3));
+    let talk = Conversation::replies(&[OK], false);
+    let net = FakeNet::new(clock.clone())
+        .with_link_local_scope(std::num::NonZeroU32::new(3).unwrap())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut e = Easy::new();
+    e.options_mut()
+        .set_url(Some(format!("http://[fe80::1]:{PORT}/").as_bytes()))
+        .unwrap();
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    assert_eq!(
+        drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+        Ok(())
+    );
+    assert!(talk.received().starts_with(b"GET / HTTP/1.1\r\n"));
+}
+
+/// The system's network asks the system for the scope.
+#[test]
+fn the_system_s_scope_is_the_system_s() {
+    use crate::conn::io::Net as _;
+    assert_eq!(
+        crate::conn::io::SystemNet.link_local_scope(),
+        curl_os::net::link_local_scope()
+    );
+}

@@ -727,6 +727,26 @@ fn a_pausing_read_fails() {
     };
     let (e, _) = upload(&s.url("f"), source);
     assert_eq!(run(e).0, Err(ErrorKind::ReadError));
+    // Nor can a part's handler pause a tree's.
+    let mut tree = crate::mime::Mime::new(
+        crate::mime::Boundary::draw(|| Ok::<_, std::convert::Infallible>(0)).unwrap(),
+    );
+    tree.add(crate::mime::Part {
+        name: Some(b"p".to_vec()),
+        content: crate::mime::Content::Read {
+            handler: Handler::read(Pauser).unwrap(),
+            rewind: None,
+            size: None,
+        },
+        ..crate::mime::Part::default()
+    })
+    .unwrap();
+    let tree = crate::mime::Fixed::new(TryArc::try_new(tree).unwrap());
+    let (e, _) = upload(
+        &s.url("t"),
+        UploadSource::Mime(Handler::mime(tree).unwrap()),
+    );
+    assert_eq!(run(e).0, Err(ErrorKind::ReadError));
 }
 
 fn modified(t: i64) -> Result<String, ErrorKind> {
@@ -987,4 +1007,69 @@ fn a_range_reads_past_a_time_condition() {
     assert_eq!(r, Ok(()));
     assert_eq!(seen.body(), b"ello");
     assert!(!e.report().condition_unmet());
+}
+
+/// The debug build traces the range as C's does (`Curl_range`'s
+/// `DEBUGF`), the lines taken from the C build for a file of 5 bytes.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn the_debug_build_traces_the_range() {
+    #[derive(Clone, Default)]
+    struct Lines(Arc<Mutex<Vec<String>>>);
+    impl crate::handler::DebugHandler for Lines {
+        fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+            if kind == crate::handler::DebugKind::Text {
+                let line = String::from_utf8_lossy(data).into_owned();
+                self.0.lock().unwrap().push(line);
+            }
+        }
+    }
+    let s = Scratch::new("rangetrace");
+    s.file("f", b"hello", Y2K_NOON);
+    for (range, want) in [
+        (
+            &b"1-2"[..],
+            [
+                "RANGE from 1 getting 2 bytes",
+                "range-download from 1 to 2, totally 2 bytes",
+            ],
+        ),
+        (
+            b"0-1",
+            [
+                "RANGE from 0 getting 2 bytes",
+                "range-download from 0 to 1, totally 2 bytes",
+            ],
+        ),
+        (
+            b"-2",
+            [
+                "RANGE the last 2 bytes",
+                "range-download from 0 to 2, totally 2 bytes",
+            ],
+        ),
+        (
+            b"3-",
+            [
+                "RANGE 3 to end of file",
+                "range-download from 3 to 0, totally -1 bytes",
+            ],
+        ),
+    ] {
+        let (mut e, _) = easy(&s.url("f"));
+        let lines = Lines::default();
+        e.options_mut().range = Some(range.to_vec());
+        e.options_mut().output.verbose = true;
+        e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+        assert_eq!(run(e).0, Ok(()));
+        let got: Vec<String> = lines
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.to_ascii_lowercase().starts_with("range"))
+            .map(|l| l.trim_end().to_string())
+            .collect();
+        assert_eq!(got, want, "{range:?}");
+    }
 }

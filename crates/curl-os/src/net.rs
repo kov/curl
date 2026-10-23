@@ -236,18 +236,23 @@ impl From<SocketAddr> for SockAddr {
 /// memory is an error; any other failure is no IPv6.
 pub fn probe_ipv6() -> io::Result<bool> {
     // SAFETY: `socket` takes no pointer.
-    let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) };
-    if fd == -1 {
-        let err = io::Error::last_os_error();
-        return match err.raw_os_error() {
-            Some(libc::ENOMEM) => Err(err),
-            _ => Ok(false),
-        };
-    }
+    let fd = match checked(unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) }) {
+        Ok(fd) => fd,
+        Err(err) => return probe_failed(err),
+    };
     // SAFETY: `fd` was opened just now and nothing else holds it; it is
     // closed as the `OwnedFd` drops.
     drop(unsafe { OwnedFd::from_raw_fd(fd) });
     Ok(true)
+}
+
+/// What the probe's socket failing to open with `err` means: running out
+/// of memory is an error, anything else no IPv6.
+fn probe_failed(err: io::Error) -> io::Result<bool> {
+    match err.raw_os_error() {
+        Some(libc::ENOMEM) => Err(err),
+        _ => Ok(false),
+    }
 }
 
 /// The index of the network interface named `name` (`if_nametoindex`),
@@ -502,6 +507,17 @@ mod tests {
     #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
     fn the_probe_finds_ipv6() {
         assert!(probe_ipv6().unwrap());
+    }
+
+    /// The probe's socket failing to open is no IPv6, whatever the
+    /// reason, unless memory ran out (`Curl_probeipv6`, `socket_open`).
+    #[test]
+    fn a_failed_probe_is_no_ipv6_unless_memory_ran_out() {
+        for errno in [libc::EAFNOSUPPORT, libc::EMFILE, libc::EACCES] {
+            assert!(!probe_failed(os(errno)).unwrap(), "{errno}");
+        }
+        let err = probe_failed(os(libc::ENOMEM)).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::ENOMEM));
     }
 
     /// A system call's failure `errno`, as std reports it.
@@ -925,6 +941,8 @@ mod tests {
         assert_eq!(rc, 0);
         let err = connect(addr).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EMFILE));
+        // No descriptor for the probe's socket is no IPv6, not an error.
+        assert!(!probe_ipv6().unwrap());
         drop(s);
     }
 

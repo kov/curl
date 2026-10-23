@@ -244,7 +244,7 @@ impl TcpSocket {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::disallowed_methods)]
+    #![allow(clippy::disallowed_methods, clippy::disallowed_macros)]
 
     use std::net::{Ipv6Addr, TcpListener};
     use std::os::fd::AsRawFd;
@@ -509,5 +509,34 @@ mod tests {
         let err = connect(addr).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EMFILE));
         drop(s);
+    }
+
+    /// The scope given a link-local address is that of an interface that
+    /// is up, is not loopback and has one, as the kernel lists them
+    /// (`/proc/net/if_inet6`, `/sys/class/net/*/flags`); none without one.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "FFI")]
+    fn a_link_local_address_takes_an_interface_s_scope() {
+        let listed = std::fs::read_to_string("/proc/net/if_inet6").unwrap_or_default();
+        let mut scopes = Vec::new();
+        for line in listed.lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (addr, index, name) = (f[0], f[1], f[5]);
+            let flags = std::fs::read_to_string(format!("/sys/class/net/{name}/flags")).unwrap();
+            let flags = u32::from_str_radix(flags.trim().trim_start_matches("0x"), 16).unwrap();
+            let up = flags & libc::IFF_UP as u32 != 0;
+            let loopback = flags & libc::IFF_LOOPBACK as u32 != 0;
+            let link_local = ["fe8", "fe9", "fea", "feb"]
+                .iter()
+                .any(|p| addr.starts_with(p));
+            if link_local && up && !loopback {
+                scopes.push(u32::from_str_radix(index, 16).unwrap());
+            }
+        }
+        match link_local_scope() {
+            Some(scope) => assert!(scopes.contains(&scope.get()), "{scope} of {scopes:?}"),
+            None => assert!(scopes.is_empty(), "none of {scopes:?}"),
+        }
     }
 }

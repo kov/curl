@@ -139,6 +139,12 @@ mod tests {
         let mut text = ErrorText::empty();
         assert!(fmt::write(&mut text, format_args!("{}", "x".repeat(300))).is_err());
         assert_eq!(text.as_bytes().len(), LEN - 1);
+        // After some text, what fits behind it.
+        let mut text = ErrorText::empty();
+        fmt::write(&mut text, format_args!("abc")).unwrap();
+        assert!(fmt::write(&mut text, format_args!("{}", "x".repeat(300))).is_err());
+        assert_eq!(text.as_bytes().len(), LEN - 1);
+        assert!(text.as_bytes().starts_with(b"abcx"));
     }
 
     #[test]

@@ -478,6 +478,9 @@ mod tests {
         assert_eq!(f.len(), 5);
         assert!(!f.is_empty());
         assert_eq!(f.modified(), std.mtime());
+        std::fs::write(s.0.join("e"), b"").unwrap();
+        let e = stat(&s.c("e")).unwrap();
+        assert!(e.is_file() && e.is_empty());
         let d = stat(&c(&s.0)).unwrap();
         assert!(d.is_dir() && !d.is_file());
         let missing = stat(&s.c("missing")).unwrap_err();

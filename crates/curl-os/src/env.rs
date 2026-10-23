@@ -154,7 +154,14 @@ mod tests {
         set(&long, b"long");
         assert_eq!(var(&long), Ok(Some(Vec::from(&b"long"[..]))));
 
-        for name in [SET, EMPTY, BYTES, &long] {
+        // The longest read on the stack.
+        let mut most = [b'M'; NAME_ON_STACK];
+        most[..17].copy_from_slice(b"CURL_OS_ENV_TEST_");
+        assert_eq!(var(&most), Ok(None));
+        set(&most, b"most");
+        assert_eq!(var(&most), Ok(Some(Vec::from(&b"most"[..]))));
+
+        for name in [SET, EMPTY, BYTES, &long, &most] {
             unset(name);
         }
     }

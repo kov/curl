@@ -274,6 +274,10 @@ exclude_re = [
     # The URL is parsed guessing a scheme, so it always has one.
     'curl-tool/src/operate\.rs:.*: delete field default_scheme from struct GetOptions expression in url_proto$',
     # The URL got encodes only its host, which was encoded as it was set.
+    # The gateway's host is one host decoded or not: a byte encoded that
+    # a host may hold is decoded as the gateway is parsed, and any other
+    # is refused as the host is set, either way.
+    'curl-tool/src/ipfs\.rs:.*: delete field url_decode from struct GetOptions expression in rewrite$',
     'curl-tool/src/ipfs\.rs:.*: delete field url_encode from struct GetOptions expression in rewrite$',
     # Every caller of `part` allows a type: only a file name and an
     # encoder are ever not allowed.

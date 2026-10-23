@@ -1737,8 +1737,8 @@ fn finds_the_ipfs_gateway_as_c_does() {
 /// The debug build's times and sizes for `--write-out`, as tests 970
 /// and 1981 set them: `CURL_TIME` for the time now and every time, both
 /// speeds and the local port, `CURL_DEBUG_SIZE` for the header and
-/// request sizes; and a status code, three digits as text and a number
-/// in JSON.
+/// request sizes; a status code, three digits as text and a number in
+/// JSON; and a value missing, nothing as text and `null` in JSON.
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn writes_out_the_debug_build_s_times_and_sizes() {
@@ -1769,9 +1769,10 @@ fn writes_out_the_debug_build_s_times_and_sizes() {
         ),
         "0.000013 4019 4019 13 13"
     );
-    let json = run(&[], "%{http_connect} %{json}");
-    assert!(json.starts_with("000 {"), "{json}");
+    let json = run(&[], "%{http_connect} [%{redirect_url}] %{json}");
+    assert!(json.starts_with("000 [] {"), "{json}");
     assert!(json.contains(",\"http_connect\":0,"), "{json}");
+    assert!(json.contains(",\"redirect_url\":null,"), "{json}");
 }
 
 /// `--httpsig-*` signs the request with the algorithm named in any
@@ -1859,7 +1860,9 @@ fn signs_the_request_as_told() {
 }
 
 /// `-x` alone sends the request to the proxy, with the `--proxy-header`
-/// lines; `-b` naming a file sends the cookies it holds.
+/// lines; `-p` alone tunnels through the proxy the environment names,
+/// and `--noproxy` alone goes around it; `-b` naming a file sends the
+/// cookies it holds.
 #[test]
 fn proxies_and_cookie_files_reach_the_request() {
     let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
@@ -1879,6 +1882,29 @@ fn proxies_and_cookie_files_reach_the_request() {
         "{request}"
     );
     assert!(request.contains("\r\nX-P: 1\r\n"), "{request}");
+    // The proxy the environment names: `-p` alone tunnels through it,
+    // `--noproxy` alone goes around it.
+    let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
+        .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
+    let s = Server::new(b"HTTP/1.1 200 Connection established\r\n\r\n");
+    Command::new(&tool)
+        .args(["-q", "-s", "-p", "http://example.test/x"])
+        .env("http_proxy", s.url())
+        .output()
+        .unwrap();
+    let request = s.request();
+    assert!(
+        request.starts_with("CONNECT example.test:80 HTTP/1.1\r\n"),
+        "{request}"
+    );
+    let s = Server::new(ok);
+    let out = Command::new(&tool)
+        .args(["-q", "-sS", "--noproxy", "127.0.0.1", &s.url()])
+        .env("http_proxy", "http://127.0.0.1:1/")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{out:?}");
+    assert!(s.request().starts_with("GET / HTTP/1.1\r\n"));
     let dir = scratch("cookie-file");
     let jar = dir.join("jar");
     std::fs::write(&jar, "127.0.0.1\tFALSE\t/\tFALSE\t0\tname\tvalue\n").unwrap();

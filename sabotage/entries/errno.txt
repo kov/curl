@@ -87,3 +87,14 @@ witness: curl-tool operate::tests::retries_for_c_reasons
         (os_errno.map(OsErrno::kind) == Some(std::io::ErrorKind::ConnectionRefused))
 --- new
         (os_errno.is_some())
+
+=== a reset of the handle forgets the number
+file: crates/curl-core/src/report.rs
+witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
+--- old
+        TransferReport {
+            os_errno: self.os_errno,
+            ..self.cleared()
+        }
+--- new
+        self.cleared()

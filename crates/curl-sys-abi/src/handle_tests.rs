@@ -4611,8 +4611,8 @@ fn post_fields_are_read_in_place_and_rewound() {
 }
 
 /// `CURLINFO_OS_ERRNO` is the number of the last socket call that failed:
-/// a connect refused, a receive the peer reset; and 0 again once the
-/// handle's next transfer starts (`easy_perform`).
+/// a connect refused, a receive the peer reset; kept by a reset of the
+/// handle, and 0 again once its next transfer starts (`easy_perform`).
 #[test]
 fn the_os_errno_is_the_last_socket_failure_s() {
     let c = curl_easy_init();
@@ -4653,6 +4653,14 @@ fn the_os_errno_is_the_last_socket_failure_s() {
         info::<c_long>(c, ffi::CURLINFO_OS_ERRNO),
         c_long::from(libc::ECONNRESET)
     );
+    // A reset leaves it: C keeps it in the handle's state, not its info.
+    // SAFETY: a live handle.
+    unsafe { easy::curl_easy_reset(c) };
+    assert_eq!(
+        info::<c_long>(c, ffi::CURLINFO_OS_ERRNO),
+        c_long::from(libc::ECONNRESET)
+    );
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
 
     let (port, server) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"]);
     let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();

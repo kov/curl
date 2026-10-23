@@ -154,6 +154,17 @@ impl TransferReport {
         }
     }
 
+    /// What a reset of the handle leaves (`curl_easy_reset`): cleared,
+    /// but for the last socket failure's number, which C keeps in the
+    /// handle's state rather than its info (`Curl_initinfo` leaves
+    /// `state.os_errno`).
+    pub(crate) fn reset(&self) -> TransferReport {
+        TransferReport {
+            os_errno: self.os_errno,
+            ..self.cleared()
+        }
+    }
+
     /// Every request's response headers.
     pub fn headers(&self) -> &HeaderStore {
         &self.headers

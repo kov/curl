@@ -160,11 +160,12 @@ impl Easy {
         })
     }
 
-    /// Every option back to its default, and the report with them
-    /// (`curl_easy_reset`). The private multi and the cookie jar stay.
+    /// Every option back to its default, and the report with them but
+    /// for its last socket error (`curl_easy_reset`). The private multi
+    /// and the cookie jar stay.
     pub fn reset(&mut self) {
         self.options = Options::default();
-        self.report = self.report.cleared();
+        self.report = self.report.reset();
         self.meter_titled = false;
         self.resolve_read = 0;
         self.wildcard_resolve = false;

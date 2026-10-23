@@ -141,7 +141,7 @@ witness: curl-core report::headers::tests::a_cursor_from_an_earlier_transfer_lea
 file: crates/curl-core/src/easy.rs
 witness: curl-core deliver::tests::a_transfer_s_headers_are_stored_for_its_handlers_and_after
 --- old
-        self.report = self.report.cleared();
+        self.report = self.report.reset();
 --- new
         self.report = TransferReport::default();
 

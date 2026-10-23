@@ -138,7 +138,7 @@ witness: curl-core proto::http::tests::a_head_answered_in_http_0_9_is_refused
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core a_get_survives_every_allocation_failing
 --- old
-            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+            Err(error) if !opened.by_application && error.kind() == io::ErrorKind::OutOfMemory => {
 --- new
             Err(error) if false => {
 

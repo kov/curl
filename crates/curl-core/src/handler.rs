@@ -5,13 +5,14 @@
 //! handler is called through `&self` and keeps its state in cells.
 
 use std::fmt;
+use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
-use crate::conn::io::{Socket, SocketKey};
+use crate::conn::io::{Socket, SocketKey, SocketOption};
 use crate::multi::TransferCx;
 
 /// What a write or header handler did with what it was given.
@@ -203,16 +204,37 @@ pub trait HeaderHandler: Send + Sync {
 }
 
 /// Opens the sockets a transfer connects over, in place of the system
-/// (`CURLOPT_OPENSOCKETFUNCTION`): a socket for `address`'s family, not
-/// connected yet, or none, which fails the attempt as a refused open does.
+/// (`CURLOPT_OPENSOCKETFUNCTION`): a TCP socket for `address`'s family,
+/// not connected yet, which is made nonblocking once set. It may change
+/// `address`, which is then the one connected to. An error fails the
+/// attempt, as a socket the system could not open does.
 pub trait SocketOpener: Send + Sync {
-    fn open(&self, address: SocketAddr) -> Option<Box<dyn Socket>>;
+    fn open(
+        &self,
+        cx: &mut TransferCx<'_>,
+        address: &mut SocketAddr,
+    ) -> io::Result<Box<dyn Socket>>;
 }
 
-/// Told of each socket a transfer opens, before it connects
-/// (`CURLOPT_SOCKOPTFUNCTION`).
+/// Told of each socket a transfer opens, once the library has set it and
+/// before it connects (`CURLOPT_SOCKOPTFUNCTION`).
 pub trait SocketConfigurer: Send + Sync {
-    fn configure(&self, socket: SocketKey) -> Configured;
+    fn configure(&self, cx: &mut TransferCx<'_>, socket: SocketToSet<'_>) -> Configured;
+}
+
+/// A socket as a `SocketConfigurer` is given it: its number, and the
+/// options it may set.
+#[derive(Clone, Copy)]
+pub struct SocketToSet<'a>(pub(crate) &'a dyn Socket);
+
+impl SocketToSet<'_> {
+    pub fn key(&self) -> SocketKey {
+        self.0.key()
+    }
+
+    pub fn set(&self, option: SocketOption) -> io::Result<()> {
+        self.0.set(option)
+    }
 }
 
 /// What a `SocketConfigurer` made of a socket.
@@ -253,6 +275,20 @@ impl<T: ?Sized> Handler<T> {
 
 impl Handler<dyn SocketCloser> {
     pub fn socket_closer(handler: impl SocketCloser + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn SocketOpener> {
+    pub fn socket_opener(handler: impl SocketOpener + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn SocketConfigurer> {
+    pub fn socket_configurer(
+        handler: impl SocketConfigurer + 'static,
+    ) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

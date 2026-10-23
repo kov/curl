@@ -427,9 +427,11 @@ witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_mak
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer
 --- old
-                let socket = Sock::new(socket, self.closer.clone());
+        let socket = Sock::new(socket, self.closer.clone());
+        match connect {
 --- new
-                let socket = Sock::new(socket, Closer::System);
+        let socket = Sock::new(socket, Closer::System);
+        match connect {
 
 === a connection is not given its maker's closer
 file: crates/curl-core/src/multi/state.rs

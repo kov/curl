@@ -862,11 +862,10 @@ impl Net for BrokenNet {
         Err(std::io::Error::from_raw_os_error(9))
     }
 
-    fn connect(
+    fn open(
         &mut self,
         _: std::net::SocketAddr,
-        _: crate::conn::io::SocketOptions,
-    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
         Err(std::io::Error::from_raw_os_error(9))
     }
 
@@ -1347,14 +1346,13 @@ impl Net for Patient {
             .poll(sockets, fds, timeout.min(Duration::from_secs(3600)))
     }
 
-    fn connect(
+    fn open(
         &mut self,
         addr: std::net::SocketAddr,
-        options: crate::conn::io::SocketOptions,
-    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        let (socket, connect) = self.net.connect(addr, options)?;
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        let socket = self.net.open(addr)?;
         self.opened.push(socket.key());
-        Ok((socket, connect))
+        Ok(socket)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {
@@ -1907,12 +1905,11 @@ impl Net for Closes {
         self.0.poll(sockets, fds, timeout)
     }
 
-    fn connect(
+    fn open(
         &mut self,
         addr: std::net::SocketAddr,
-        options: crate::conn::io::SocketOptions,
-    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.connect(addr, options)
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        self.0.open(addr)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {
@@ -1947,12 +1944,11 @@ impl Net for OneNet {
         self.0.lock().unwrap().poll(sockets, fds, timeout)
     }
 
-    fn connect(
+    fn open(
         &mut self,
         addr: std::net::SocketAddr,
-        options: crate::conn::io::SocketOptions,
-    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.lock().unwrap().connect(addr, options)
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        self.0.lock().unwrap().open(addr)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {
@@ -2070,7 +2066,7 @@ fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
     let made = || {
         let mut e = easy("tcp://two.test:1/");
         let closer = crate::handler::Handler::socket_closer(Closer(told.clone())).unwrap();
-        e.options_mut().socket_hooks.make_mut().unwrap().close = Some(closer);
+        e.options_mut().sockets.make_mut().unwrap().close = Some(closer);
         e
     };
     let told_now = || std::mem::take(&mut *told.lock().unwrap());
@@ -2150,7 +2146,7 @@ fn a_share_s_sockets_close_out_of_its_lock() {
             locked: locked.clone(),
         };
         let closer = crate::handler::Handler::socket_closer(closer).unwrap();
-        e.options_mut().socket_hooks.make_mut().unwrap().close = Some(closer);
+        e.options_mut().sockets.make_mut().unwrap().close = Some(closer);
         e
     };
     let mut m: Multi = Multi::new(env()).unwrap();
@@ -3189,49 +3185,16 @@ fn a_pause_never_blocks_a_setup() {
     assert_eq!(m.timeout(), Some(Duration::ZERO));
 }
 
-/// A fake network the test reaches while the multi holds it.
-struct SharedNet(std::sync::Arc<std::sync::Mutex<FakeNet>>);
+use crate::conn::io::SharedNet;
 
-impl Net for SharedNet {
-    fn poll(
-        &mut self,
-        sockets: &mut [crate::conn::io::SocketPoll<'_>],
-        fds: &mut [PollFd<'_>],
-        timeout: Duration,
-    ) -> std::io::Result<u32> {
-        self.0.lock().unwrap().poll(sockets, fds, timeout)
-    }
-
-    fn connect(
-        &mut self,
-        addr: std::net::SocketAddr,
-        options: crate::conn::io::SocketOptions,
-    ) -> std::io::Result<(Box<dyn crate::conn::io::Socket>, crate::conn::io::Connect)> {
-        self.0.lock().unwrap().connect(addr, options)
-    }
-
-    fn close(&mut self, socket: crate::conn::io::Sock) {
-        self.0.lock().unwrap().close(socket);
-    }
-
-    fn resolve(
-        &mut self,
-        name: &[u8],
-        family: crate::conn::io::Family,
-    ) -> Result<Vec<std::net::IpAddr>, crate::conn::io::ResolveFailure> {
-        self.0.lock().unwrap().resolve(name, family)
-    }
-
-    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
-        self.0.lock().unwrap().link_local_scope()
-    }
-}
-
-/// A transfer's sockets are set as its options say before they connect:
-/// `TCP_NODELAY` unless told otherwise, as C sets it by default.
+/// A transfer's sockets are set as its options say before they connect,
+/// in C's order: `TCP_NODELAY` unless told otherwise, as C sets it by
+/// default; keepalive's times and count only with it on; TCP Fast Open
+/// last, just before the connect (`cf_socket_open`, `do_connect`).
 #[test]
 fn sockets_are_set_as_the_options_say() {
-    use crate::conn::io::{Peer, SocketKey};
+    use crate::conn::io::{Peer, SocketKey, SocketOption as O};
+    use crate::options::KeepAlive;
     let clock = ManualClock::new().unwrap();
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], 3));
     let net = std::sync::Arc::new(std::sync::Mutex::new(
@@ -3247,16 +3210,42 @@ fn sockets_are_set_as_the_options_say() {
     let url = "tcp://127.0.0.1:3/";
     m.add(Box::new(easy(url)), (), &mut NoEvents).unwrap();
     let mut delaying = easy(url);
-    delaying.options_mut().socket.nodelay = false;
+    delaying.options_mut().sockets.make_mut().unwrap().nodelay = false;
     m.add(Box::new(delaying), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
-    let nodelay = |n| {
-        net.lock()
-            .unwrap()
-            .socket_options(SocketKey::new(n))
-            .nodelay
+    let mut alive = easy(url);
+    let sockets = alive.options_mut().sockets.make_mut().unwrap();
+    sockets.keepalive = KeepAlive {
+        on: true,
+        idle: Duration::from_secs(30),
+        ..KeepAlive::DEFAULT
     };
-    assert_eq!([nodelay(1000), nodelay(1001)], [true, false]);
+    sockets.fastopen = true;
+    m.add(Box::new(alive), (), &mut NoEvents).unwrap();
+    let mut idle_off = easy(url);
+    idle_off
+        .options_mut()
+        .sockets
+        .make_mut()
+        .unwrap()
+        .keepalive
+        .idle = Duration::from_secs(5);
+    m.add(Box::new(idle_off), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    let set = |n| net.lock().unwrap().socket_options(SocketKey::new(n));
+    assert_eq!(set(1000), [O::NoDelay]);
+    assert_eq!(set(1001), []);
+    assert_eq!(
+        set(1002),
+        [
+            O::NoDelay,
+            O::KeepAlive,
+            O::KeepIdle(30),
+            O::KeepInterval(60),
+            O::KeepCount(9),
+            O::FastOpenConnect
+        ]
+    );
+    assert_eq!(set(1003), [O::NoDelay], "keepalive's times wait for it");
 }
 
 /// Connections are numbered in the order they are made, and one found

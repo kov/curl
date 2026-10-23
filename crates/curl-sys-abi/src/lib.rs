@@ -36,6 +36,7 @@ mod printf;
 mod root;
 mod setopt;
 mod share;
+mod sockets;
 mod strerror;
 mod strings;
 mod url;

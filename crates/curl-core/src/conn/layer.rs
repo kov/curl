@@ -401,7 +401,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::{holdback, holding, upper};
     use super::*;
-    use crate::conn::io::{Conversation, FakeNet, Net as _, Peer};
+    use crate::conn::io::{Conversation, FakeNet, Peer};
     use crate::time::{Clock as _, ManualClock};
 
     /// A socket of the fake network's to a peer that does as `peer` says,
@@ -412,8 +412,7 @@ mod tests {
         let mut net = FakeNet::new(clock.clone())
             .with_peer(at, peer)
             .with_conversation(at, talk.clone());
-        let (socket, _) = net.connect(at, Default::default()).unwrap();
-        (socket, Silent(clock.now()))
+        (crate::conn::io::dial(&mut net, at), Silent(clock.now()))
     }
 
     /// The socket at the bottom is polled as `cf_socket_conn_is_alive`

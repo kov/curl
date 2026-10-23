@@ -54,12 +54,10 @@ pub struct Options {
     /// The IPv6 scope connections are made in, in place of the URL's
     /// zone (`CURLOPT_ADDRESS_SCOPE`).
     pub address_scope: Option<NonZeroU32>,
-    /// What each TCP socket is set to before it connects: by default
-    /// `TCP_NODELAY`, as C sets it (`CURLOPT_TCP_NODELAY`).
-    pub socket: crate::conn::io::SocketOptions,
-    /// What opens, sets and closes a transfer's sockets in place of the
-    /// system; few transfers set any.
-    pub socket_hooks: Cold<SocketHooks>,
+    /// What each TCP socket is set to before it connects, and what opens,
+    /// sets and closes a transfer's sockets in place of the system; few
+    /// transfers change any of it.
+    pub sockets: Cold<Sockets>,
     /// The port the first URL is reached on, whatever it says, and any a
     /// relative redirect leads to (`CURLOPT_PORT`).
     pub port: Option<NonZeroU16>,
@@ -399,7 +397,6 @@ impl Options {
             limits: self.limits,
             ip_version: self.ip_version,
             address_scope: self.address_scope,
-            socket: self.socket,
             port: self.port,
             resolve: self.resolve.try_clone()?,
             connect_to: self.connect_to.try_clone()?,
@@ -416,7 +413,7 @@ impl Options {
                 })
             })?,
             proxy: self.proxy.try_clone(Proxy::try_clone)?,
-            socket_hooks: self.socket_hooks.try_clone(|h| Ok(h.clone()))?,
+            sockets: self.sockets.try_clone(|h| Ok(h.clone()))?,
             http: self.http.try_clone()?,
             tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]
@@ -574,20 +571,55 @@ impl ColdGroup for MimeOptions {
     const NONE: MimeOptions = MimeOptions { form_escape: false };
 }
 
-/// The application's own handling of a transfer's sockets, each in place
-/// of the system's (`CURLOPT_OPENSOCKETFUNCTION`, `CURLOPT_SOCKOPTFUNCTION`,
+/// What each TCP socket a transfer opens is set to before it connects
+/// (`tcpnodelay`, `tcpkeepalive`, `do_connect`), and the application's
+/// own handling of its sockets, each in place of the system's
+/// (`CURLOPT_OPENSOCKETFUNCTION`, `CURLOPT_SOCKOPTFUNCTION`,
 /// `CURLOPT_CLOSESOCKETFUNCTION`). The closer is kept by each connection
 /// the transfer makes, and closes its sockets whoever closes them.
 #[derive(Clone, Debug)]
-pub struct SocketHooks {
+pub struct Sockets {
+    /// Small sends go out at once, Nagle's algorithm off
+    /// (`CURLOPT_TCP_NODELAY`): on by default, as in C.
+    pub nodelay: bool,
+    pub keepalive: KeepAlive,
+    /// The connect is made with TCP Fast Open (`CURLOPT_TCP_FASTOPEN`).
+    pub fastopen: bool,
     pub open: Option<Handler<dyn SocketOpener>>,
     pub configure: Option<Handler<dyn SocketConfigurer>>,
     pub close: Option<Handler<dyn SocketCloser>>,
 }
 
-impl ColdGroup for SocketHooks {
-    const UNSET: &'static SocketHooks = &SocketHooks::NONE;
-    const NONE: SocketHooks = SocketHooks {
+/// The kernel's probes of an idle connection (`CURLOPT_TCP_KEEPALIVE`,
+/// `CURLOPT_TCP_KEEPIDLE`, `CURLOPT_TCP_KEEPINTVL`, `CURLOPT_TCP_KEEPCNT`):
+/// the times and count are kept while it is off, for when it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeepAlive {
+    pub on: bool,
+    /// Idle before the first probe, in whole seconds.
+    pub idle: Duration,
+    /// Between probes, in whole seconds.
+    pub interval: Duration,
+    /// Probes unanswered before the connection is dropped.
+    pub count: u32,
+}
+
+impl KeepAlive {
+    /// C's: off, a minute idle and between probes, nine probes.
+    pub const DEFAULT: KeepAlive = KeepAlive {
+        on: false,
+        idle: Duration::from_secs(60),
+        interval: Duration::from_secs(60),
+        count: 9,
+    };
+}
+
+impl ColdGroup for Sockets {
+    const UNSET: &'static Sockets = &Sockets::NONE;
+    const NONE: Sockets = Sockets {
+        nodelay: true,
+        keepalive: KeepAlive::DEFAULT,
+        fastopen: false,
         open: None,
         configure: None,
         close: None,

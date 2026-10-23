@@ -4826,3 +4826,175 @@ fn a_perform_out_of_memory_adding_its_handle_says_so() {
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }
+
+/// What a test's socket functions saw, and what its configurer answers.
+#[derive(Default)]
+struct SocketsSeen {
+    /// The family, type, protocol and address length each open was asked
+    /// for, and the descriptor it gave.
+    opened: Vec<[c_int; 5]>,
+    set: Vec<c_int>,
+    closed: Vec<c_int>,
+    answer: c_int,
+}
+
+unsafe extern "C" fn opener(
+    data: *mut c_void,
+    purpose: ffi::curlsocktype,
+    address: *mut ffi::curl_sockaddr,
+) -> ffi::curl_socket_t {
+    // SAFETY: the test's data is a `SocketsSeen`; the address is live.
+    let (seen, a) = unsafe { (&mut *data.cast::<SocketsSeen>(), &*address) };
+    assert_eq!(purpose, ffi::CURLSOCKTYPE_IPCXN);
+    // SAFETY: the type and protocol asked for, as C's opener would.
+    let fd = unsafe { libc::socket(a.family, a.socktype, a.protocol) };
+    let addrlen = c_int::try_from(a.addrlen).unwrap();
+    seen.opened
+        .push([a.family, a.socktype, a.protocol, addrlen, fd]);
+    fd
+}
+
+unsafe extern "C" fn sockopt(
+    data: *mut c_void,
+    fd: ffi::curl_socket_t,
+    _: ffi::curlsocktype,
+) -> c_int {
+    // SAFETY: the test's data is a `SocketsSeen`.
+    let seen = unsafe { &mut *data.cast::<SocketsSeen>() };
+    seen.set.push(fd);
+    seen.answer
+}
+
+unsafe extern "C" fn closer(data: *mut c_void, fd: ffi::curl_socket_t) -> c_int {
+    // SAFETY: the test's data is a `SocketsSeen`.
+    let seen = unsafe { &mut *data.cast::<SocketsSeen>() };
+    seen.closed.push(fd);
+    // SAFETY: the closer owns the descriptor.
+    unsafe { libc::close(fd) }
+}
+
+/// The socket functions are called with their data and with what C
+/// gives them: the opener a close-on-exec TCP stream for the address's
+/// family; a configurer's failure aborts the transfer, its socket closed
+/// through the closer. A copy calls them with the data it was copied
+/// with; a reset forgets them.
+#[test]
+fn socket_functions_are_called_as_c_calls_them() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = std::ffi::CString::new(format!(
+        "http://127.0.0.1:{}/",
+        listener.local_addr().unwrap().port()
+    ))
+    .unwrap();
+    let mut seen = SocketsSeen {
+        answer: ffi::CURL_SOCKOPT_ERROR,
+        ..SocketsSeen::default()
+    };
+    let c = curl_easy_init();
+    let data: *mut SocketsSeen = &raw mut seen;
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    let o = opener as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_OPENSOCKETFUNCTION, o), CURLE_OK);
+    assert_eq!(pointer(c, ffi::CURLOPT_OPENSOCKETDATA, data), CURLE_OK);
+    let s = sockopt as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_SOCKOPTFUNCTION, s), CURLE_OK);
+    assert_eq!(pointer(c, ffi::CURLOPT_SOCKOPTDATA, data), CURLE_OK);
+    let x = closer as *const ();
+    assert_eq!(function(c, ffi::CURLOPT_CLOSESOCKETFUNCTION, x), CURLE_OK);
+    assert_eq!(pointer(c, ffi::CURLOPT_CLOSESOCKETDATA, data), CURLE_OK);
+    // SAFETY: a live handle.
+    let dup = unsafe { crate::easy::curl_easy_duphandle(c) };
+    assert!(!dup.is_null());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_ABORTED_BY_CALLBACK);
+    let stream = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    let fd = seen.opened[0][4];
+    assert_eq!(
+        seen.opened,
+        [[libc::AF_INET, stream, libc::IPPROTO_TCP, 16, fd]]
+    );
+    assert_eq!((&seen.set[..], &seen.closed[..]), (&[fd][..], &[fd][..]));
+    // The original's data changes; the copy keeps what it was made with.
+    let mut other = SocketsSeen::default();
+    let elsewhere: *mut SocketsSeen = &raw mut other;
+    assert_eq!(pointer(c, ffi::CURLOPT_OPENSOCKETDATA, elsewhere), CURLE_OK);
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(dup) }, CURLE_ABORTED_BY_CALLBACK);
+    assert_eq!(
+        (seen.opened.len(), seen.set.len(), seen.closed.len()),
+        (2, 2, 2)
+    );
+    assert!(other.opened.is_empty());
+    // A port nothing listens on, which the reset handle is refused at.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let refused = std::ffi::CString::new(format!(
+        "http://127.0.0.1:{}/",
+        closed.local_addr().unwrap().port()
+    ))
+    .unwrap();
+    drop(closed);
+    // SAFETY: live handles.
+    unsafe {
+        crate::easy::curl_easy_reset(dup);
+        assert_eq!(
+            pointer(dup, ffi::CURLOPT_URL, refused.as_ptr().cast_mut()),
+            CURLE_OK
+        );
+        // Data alone brings back no function.
+        assert_eq!(pointer(dup, ffi::CURLOPT_OPENSOCKETDATA, data), CURLE_OK);
+        assert_eq!(curl_easy_perform(dup), ffi::CURLE_COULDNT_CONNECT);
+    }
+    assert_eq!(seen.opened.len(), 2, "a reset handle opens its own");
+    // SAFETY: live handles, not used again.
+    unsafe {
+        curl_easy_cleanup(dup);
+        curl_easy_cleanup(c);
+    }
+}
+
+/// The keepalive times and count are held to C's range: negative is
+/// refused, past `INT_MAX` is `INT_MAX`; a TCP option at its default
+/// makes no group, as most handles set none.
+#[test]
+fn tcp_options_are_held_to_c_s_range() {
+    use curl_core::options::KeepAlive;
+    let c = curl_easy_init();
+    for o in [
+        ffi::CURLOPT_TCP_KEEPIDLE,
+        ffi::CURLOPT_TCP_KEEPINTVL,
+        ffi::CURLOPT_TCP_KEEPCNT,
+    ] {
+        assert_eq!(long(c, o, -1), CURLE_BAD_FUNCTION_ARGUMENT);
+    }
+    assert_eq!(long(c, ffi::CURLOPT_TCP_NODELAY, 1), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_TCP_KEEPALIVE, 0), CURLE_OK);
+    assert!(
+        options(c, |o| o.sockets.made_mut().is_none()),
+        "defaults: no group"
+    );
+    assert_eq!(long(c, ffi::CURLOPT_TCP_KEEPIDLE, c_long::MAX), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_TCP_KEEPINTVL, 7), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_TCP_KEEPCNT, 3), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_TCP_KEEPALIVE, 2), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_TCP_NODELAY, 0), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_TCP_FASTOPEN, 1), CURLE_OK);
+    let max = Duration::from_secs(i32::MAX.unsigned_abs().into());
+    options(c, |o| {
+        let s = o.sockets.made_mut().expect("made by a value set");
+        assert_eq!(
+            s.keepalive,
+            KeepAlive {
+                on: true,
+                idle: max,
+                interval: Duration::from_secs(7),
+                count: 3,
+            }
+        );
+        assert!(!s.nodelay && s.fastopen);
+    });
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}

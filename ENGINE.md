@@ -205,7 +205,7 @@ curl-core/src/
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: the file marked step 40 above; `conn/mux.rs`; `conn/shutdown.rs`
+Planned, not built: `conn/mux.rs`; `conn/shutdown.rs`
 (ShutdownSet, with TLS); a `Resolver` for names the cache and the shortcuts do not answer; and
 `DebugNet`.
 
@@ -993,12 +993,12 @@ The rules that keep this sound:
   the `StepCx` (`DriveCx`), and makes call-outs through it: trace lines (`SETUP`, `TCP`, the
   chain's), the socket callback's REMOVE as an attempt's socket closes (`DriveCx` is the
   drive's network, and builds an `Announcing` for each close, never held across the drive),
-  and the socket hooks (OPENSOCKET, SOCKOPT, CLOSESOCKET). The context reaches no pool. Built
-  so far: the time, the network with its announced closes, the names, and the lines a drive
-  traces itself, in C's order among them: its attempts' and their sockets' (`HAPPY-EYEBALLS`,
-  `TCP`, `Trying`, a failure), a close's `Curl_multi_will_close`, a redial's `retrying connect`.
-  What it reports as `Progress` the transfer traces after it (the name's lookup, the winner's
-  peer, the timers), and the chain's lines with it; the hooks come with step 40k.
+  and the socket hooks (OPENSOCKET, SOCKOPT), the transfer's own handlers called with a
+  `TransferCx` over the step, and a failure's first reason (`failf`). The context reaches no
+  pool. A drive traces its own lines, in C's order among them: its attempts' and their
+  sockets' (`HAPPY-EYEBALLS`, `TCP`, `Trying`, a failure), a close's `Curl_multi_will_close`, a
+  redial's `retrying connect`. What it reports as `Progress` the transfer traces after it (the
+  name's lookup, the winner's peer, the timers), and the chain's lines with it.
 - **Outside a step** (`wait`, the timeout, `fdset`, `waitfds`, `assess`), a trace line for a
   transfer is made through a `StepCx` built for a transfer whose `Run` is in its slot, as
   `trace_membership` and `mark_expired_dirty` build one. `wait` takes the events for that, and
@@ -1208,12 +1208,17 @@ socket before its connect.
   a pre-proxy. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
   for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a
   SOCKS5 pre-proxy; `--socks5-hostname` has one).
-- **Socket open order** is one function with C's sequence: the OPENSOCKET callback (or
-  `Net::open`), the "Trying" trace, TCP_NODELAY (on by default, url.c:410, cf-socket.c:1322) and
-  keepalive, the SOCKOPT callback (`AlreadyConnected` skips the connect; any other failure is
-  AbortedByCallback), bind, non-blocking, connect. Built so far: `Net::connect(addr, options)`
-  opens the socket non-blocking, sets TCP_NODELAY as `Options::socket` says, and connects, in
-  one call; the hooks, keepalive and bind are planned (step 40, step 45).
+- **Socket open order** is the attempt's, in C's sequence (`cf_socket_open`, `do_connect`):
+  the OPENSOCKET callback, which may change the address, or `Net::open`, a non-blocking socket;
+  the "Trying" trace; TCP_NODELAY (on by default, url.c:410, cf-socket.c:1322), and keepalive
+  with its idle time, interval and count only while it is on; the SOCKOPT callback
+  (`AlreadyConnected` wins the attempt as it opens, with no connect to check; any other failure
+  closes the socket and is AbortedByCallback); non-blocking, for a socket the application
+  opened; `cf_socket_open() -> 0`; TCP_FASTOPEN_CONNECT; the connect and the local address.
+  `Socket::set`, `set_nonblocking` and `connect` are each one system call. A socket that does
+  not open, or closes as it is set, is traced as C traces it, with neither address known or the
+  local one not, and the setup's failure is the last attempt's kind (`ConnectError::Failed`).
+  Bind is planned (step 46).
 - Happy-eyeballs parameters are C's: 25 ms AAAA wait, `happy_eyeballs_timeout` attempt delay, at
   most 6 concurrent attempts, IPv6 first then alternating. Unit 2600 is ported before a second
   attempt is implemented.
@@ -1533,7 +1538,9 @@ its internal one. A share's idle connections close when its last clone drops.
 pub(crate) trait ConnCx: LayerCx {         // the connection context C's admin handle stands in for
     fn net(&mut self) -> &mut dyn Net;
     fn names(&mut self) -> Names<'_>;       // the multi's DnsCache, or the share's under its lock
-    fn hooks(&self) -> &SocketHooks;        // OPENSOCKET, SOCKOPT, CLOSESOCKET (step 40k)
+    fn open_socket(&mut self, address: &mut SocketAddr) -> Opened;  // OPENSOCKET, or the network
+    fn configure_socket(&mut self, socket: &dyn Socket) -> Configured; // SOCKOPT
+    fn fail(&mut self, reason: fmt::Arguments<'_>); // failf: the first reason is kept
 }
 ```
 
@@ -1546,8 +1553,8 @@ is captured the same way (§4.6). The reuse limits (max idle, max age) are the s
 transfer's, passed to `find`. Connection-owned sockets appear in the `SocketTable` with a
 `SocketOwner::Conn(ConnId)` user, with the `Closing` place (step 43).
 
-Built: `ConnCx` without `hooks` (step 40k), and `DriveCx`; the tests drive with `Plain`, which
-traces nothing. Planned: `ConnSettings` and `SocketOwner::Conn` (step 43). Only transfers own
+Built: `ConnCx` and `DriveCx`; the tests drive with `Plain`, which traces nothing and has no
+hooks. The closer is not a call-out: it is captured with the connection (§4.6). Planned: `ConnSettings` and `SocketOwner::Conn` (step 43). Only transfers own
 sockets today.
 
 ### 4.8 Resolver
@@ -1599,7 +1606,7 @@ are given the lease the transfer's state holds. Inside an `Exchanging` step of `
    were made (`sendrecv_dl`'s `maxloops`, §3.2): each `Conn::recv` reads into `conn.rx`, which
    the step takes out (`mem::take`), feeds whole to the head parser, the body and the chunk
    decoder, and puts back emptied. A read that would block while the stream has data pending
-   runs the transfer again (§4.3; planned, step 40);
+   runs the transfer again (§4.3);
 3. EOF decides: a head cut short with a size known is "transfer closed with N bytes remaining to
    read" (18), a short body "end of response with N bytes missing" (18), unfinished chunks
    "transfer closed with outstanding read data remaining" (18), an `UntilClose` body ends. A
@@ -2366,11 +2373,17 @@ adapters are its own, installed in place of the ones it was cloned with.
   transfer time (SAFETY: the CURLOPT_POSTFIELDS contract keeps the buffer alive). Setting it after
   `add_handle` takes effect (1531).
 - **Sockets**: OPEN/SOCKOPT/CLOSESOCKETFUNCTION as the core's `SocketOpener`,
-  `SocketConfigurer` and `SocketCloser` handlers, kept in the options' cold `SocketHooks`
-  group, called as transfer callbacks (api.c:111, 117, 121); the shim makes a `Socket` from the
-  application's fd in `curl-os`. The closer gets no context: a share's cleanup calls it with no
-  handle. Planned (step 40): the core calls only the closer, and the options are known but
-  answer NOT_BUILT_IN.
+  `SocketConfigurer` and `SocketCloser` handlers, kept in the options' cold `Sockets` group
+  with the TCP options (`CURLOPT_TCP_NODELAY`, `_KEEPALIVE`, `_KEEPIDLE`, `_KEEPINTVL`,
+  `_KEEPCNT`, `_FASTOPEN`; the group is made only for a value off its default). The opener and
+  configurer are adapters reading the function and data at call time, called as transfer
+  callbacks (api.c:117, 121); the opener is given a `Curl_sockaddr_ex` with room for either
+  family, and the shim adopts the descriptor it returns (`curl_os::net::adopt`). The closer
+  holds the function and data it was made with, as a connection outlives its handle and a
+  share's cleanup closes with no handle; it gets no context. The functions and data live in
+  a store the handle makes when one is first set (8 bytes a handle), copied by
+  `curl_easy_duphandle`, whose adapters are made again for the copy, and cleared by
+  `curl_easy_reset`.
 
 ### 7.7 setopt, getinfo, headers, errors
 

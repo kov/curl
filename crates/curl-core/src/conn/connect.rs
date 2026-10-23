@@ -23,12 +23,14 @@ use super::chain::SetupPoint;
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
 use super::io::{
-    Closer, Connect, Events, Family, Net, ResolveFailure, Sock, Socket, SocketOptions, SocketPoll,
+    Closer, Connect, Events, Family, Net, ResolveFailure, Sock, Socket, SocketOption, SocketPoll,
 };
 use super::layer::LayerCx;
 use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::components::Component;
-use crate::options::IpVersion;
+use crate::error::ErrorKind;
+use crate::handler::Configured;
+use crate::options::{IpVersion, KeepAlive, Sockets};
 use crate::time::Instant;
 use crate::trace::{Ip, OsError};
 
@@ -156,6 +158,52 @@ pub(crate) trait ConnCx: LayerCx {
     /// The answers kept from the setups before: the multi's, or its
     /// share's.
     fn names(&mut self) -> Names<'_>;
+
+    /// A socket for `address`: the application's opener's, which may
+    /// change the address, or else the network's (`socket_open`).
+    fn open_socket(&mut self, address: &mut SocketAddr) -> Opened;
+
+    /// The socket set by the application's configurer, if it has one,
+    /// before it connects.
+    fn configure_socket(&mut self, socket: &dyn Socket) -> Configured;
+
+    /// Why the transfer fails, kept if nothing said so before (`failf`).
+    fn fail(&mut self, reason: std::fmt::Arguments<'_>);
+}
+
+/// A socket opened for an attempt, or why none was, and whether the
+/// application opened it: one it did is made nonblocking once set, as
+/// C cannot know how it was opened.
+pub(crate) struct Opened {
+    pub(crate) socket: io::Result<Box<dyn Socket>>,
+    pub(crate) by_application: bool,
+}
+
+/// What each socket an attempt opens is set to (`tcpnodelay`,
+/// `tcpkeepalive`, `do_connect`).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SocketSetup {
+    pub(crate) nodelay: bool,
+    pub(crate) keepalive: KeepAlive,
+    pub(crate) fastopen: bool,
+}
+
+impl SocketSetup {
+    /// Nothing set at all, for the tests of the machine.
+    #[cfg(test)]
+    pub(crate) const PLAIN: SocketSetup = SocketSetup {
+        nodelay: false,
+        keepalive: KeepAlive::DEFAULT,
+        fastopen: false,
+    };
+
+    pub(crate) fn of(sockets: &Sockets) -> SocketSetup {
+        SocketSetup {
+            nodelay: sockets.nodelay,
+            keepalive: sockets.keepalive,
+            fastopen: sockets.fastopen,
+        }
+    }
 }
 
 /// A drive's context with nothing to trace: a network, a cache of names
@@ -187,6 +235,19 @@ impl ConnCx for Plain<'_> {
     fn names(&mut self) -> Names<'_> {
         Names::Own(self.dns)
     }
+
+    fn open_socket(&mut self, address: &mut SocketAddr) -> Opened {
+        Opened {
+            socket: self.net.open(*address),
+            by_application: false,
+        }
+    }
+
+    fn configure_socket(&mut self, _: &dyn Socket) -> Configured {
+        Configured::Ok
+    }
+
+    fn fail(&mut self, _: std::fmt::Arguments<'_>) {}
 }
 
 /// What a drive needs beyond its context: the settings of the transfer
@@ -203,7 +264,7 @@ pub(crate) struct Setup {
     /// (`CURLOPT_ADDRESS_SCOPE`).
     pub(crate) scope: Option<NonZeroU32>,
     /// What each socket is set to before it connects.
-    pub(crate) socket: SocketOptions,
+    pub(crate) socket: SocketSetup,
     /// The transfer sends the PROXY protocol's line over a connection it
     /// makes (`CURLOPT_HAPROXYPROTOCOL`): the connection is open only
     /// once it is sent.
@@ -342,8 +403,8 @@ pub(crate) enum Progress {
 pub(crate) enum ConnectError {
     /// The name has no address to try.
     Unresolved(Unresolved),
-    /// The last attempt failed, with its error.
-    Failed(io::Error),
+    /// The last attempt failed, with its error, as `.1` says it.
+    Failed(io::Error, ErrorKind),
     /// Memory ran out: no failure of the peer's.
     OutOfMemory,
 }
@@ -507,7 +568,9 @@ impl ConnectMachine {
             Checked::Won(i) => return self.won(cx, setup, i, now),
             Checked::Failed(i, error) => {
                 let failure = r.attempts.remove(i).fail(cx, error)?;
-                return r.failed(failure).map(|p| Drove::Connecting(self, p));
+                return r
+                    .failed(failure, ErrorKind::CouldntConnect)
+                    .map(|p| Drove::Connecting(self, p));
             }
         }
         let due = r.last_start.is_none_or(|at| now >= at.after(delay)) || r.attempts.is_empty();
@@ -556,22 +619,79 @@ impl ConnectMachine {
                 drop(superseded);
             }
         }
-        let (remote, scope_found) = address(ip, self.route.destination(), setup.scope, cx.net());
-        trace_trying(cx, remote, scope_found);
-        match cx.net().connect(remote, setup.socket) {
-            Ok((socket, connect)) => {
-                let fd = socket.key().get();
-                let local = socket.local_addr().ok();
-                let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
-                cx.of(
-                    Component::Tcp,
-                    format_args!("cf_socket_open() -> 0, fd={fd}"),
-                );
-                cx.of(
-                    Component::Tcp,
-                    format_args!("local address {lip} port {lport}..."),
-                );
-                let socket = Sock::new(socket, self.closer.clone());
+        let (mut remote, scope_found) =
+            address(ip, self.route.destination(), setup.scope, cx.net());
+        if let Some(scope) = scope_found {
+            cx.info(format_args!(
+                "determined scope_id={scope} for link-local address from local interface"
+            ));
+        }
+        let opened = cx.open_socket(&mut remote);
+        let socket = match opened.socket {
+            Ok(socket) => socket,
+            Err(error) if !opened.by_application && error.kind() == io::ErrorKind::OutOfMemory => {
+                return Err(ConnectError::OutOfMemory);
+            }
+            Err(error) => {
+                // Neither address is known yet (`set_remote_ip`).
+                cx.fail(format_args!("failed to open socket: {}", OsError(&error)));
+                let none = io::Error::from_raw_os_error(0);
+                return self.not_opened(cx, None, ErrorKind::CouldntConnect, none);
+            }
+        };
+        trace_trying(cx, remote);
+        let fd = socket.key().get();
+        set_up(cx, &*socket, setup.socket);
+        let connected = match cx.configure_socket(&*socket) {
+            Configured::Ok => false,
+            Configured::AlreadyConnected => true,
+            Configured::Abort => {
+                cx.net().close(Sock::new(socket, self.closer.clone()));
+                let none = io::Error::from_raw_os_error(0);
+                let kind = ErrorKind::AbortedByCallback;
+                return self.not_opened(cx, Some(remote), kind, none);
+            }
+        };
+        if opened.by_application
+            && let Err(error) = socket.set_nonblocking()
+        {
+            cx.net().close(Sock::new(socket, self.closer.clone()));
+            let kind = ErrorKind::UnsupportedProtocol;
+            return self.not_opened(cx, Some(remote), kind, error);
+        }
+        cx.of(
+            Component::Tcp,
+            format_args!("cf_socket_open() -> 0, fd={fd}"),
+        );
+        let Stage::Racing(r) = &mut self.stage else {
+            unreachable!("an attempt is made in a race");
+        };
+        if connected {
+            // The application connected it: it won as it opened, with no
+            // connect to check.
+            let socket = Sock::new(socket, self.closer.clone());
+            r.attempts
+                .try_push(Attempt { remote, socket })
+                .expect("reserved");
+            let i = r.attempts.len() - 1;
+            return self.won(cx, setup, i, now);
+        }
+        if setup.socket.fastopen && socket.set(SocketOption::FastOpenConnect).is_err() {
+            cx.of(
+                Component::Tcp,
+                format_args!("Failed to enable TCP Fast Open on fd {fd}"),
+            );
+        }
+        let connect = socket.connect(remote);
+        let local = socket.local_addr().ok();
+        let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
+        cx.of(
+            Component::Tcp,
+            format_args!("local address {lip} port {lport}..."),
+        );
+        let socket = Sock::new(socket, self.closer.clone());
+        match connect {
+            Ok(connect) => {
                 r.attempts
                     .try_push(Attempt { remote, socket })
                     .expect("reserved");
@@ -582,30 +702,52 @@ impl ConnectMachine {
                 };
                 Ok(Drove::Connecting(self, tried))
             }
-            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
-                Err(ConnectError::OutOfMemory)
-            }
             Err(error) => {
-                // The socket was opened before its connect failed, and
-                // never got a local address (`cf_tcp_connect`).
                 let why = OsError(&error);
                 cx.info(format_args!(
                     "Immediate connect fail for {}: {why}",
                     remote.ip()
                 ));
-                let unbound = match remote {
-                    SocketAddr::V4(_) => IpAddr::from(Ipv4Addr::UNSPECIFIED),
-                    SocketAddr::V6(_) => IpAddr::from(Ipv6Addr::UNSPECIFIED),
-                };
+                cx.net().close(socket);
                 cx.info(format_args!(
-                    "connect to {} port {} from {unbound} port 0 failed: {why}",
+                    "connect to {} port {} from {lip} port {lport} failed: {why}",
                     remote.ip(),
                     remote.port()
                 ));
                 cx.of(Component::Tcp, format_args!("destroy"));
-                r.failed(error).map(|p| Drove::Connecting(self, p))
+                r.failed(error, ErrorKind::CouldntConnect)
+                    .map(|p| Drove::Connecting(self, p))
             }
         }
+    }
+
+    /// An attempt whose socket did not open, or was closed as it was set:
+    /// traced as `cf_socket_open` and `cf_tcp_connect` trace it, the
+    /// remote address only once it is known, and the local one never
+    /// (`ip_quadruple` starts out empty). `error` is the socket's own
+    /// (`ctx->sockerr`), none for most.
+    fn not_opened(
+        mut self,
+        cx: &mut dyn ConnCx,
+        remote: Option<SocketAddr>,
+        kind: ErrorKind,
+        error: io::Error,
+    ) -> Result<Drove, ConnectError> {
+        let code = crate::trace::Code(Err(kind));
+        cx.of(
+            Component::Tcp,
+            format_args!("cf_socket_open() -> {code}, fd=-1"),
+        );
+        let (rip, rport) = (Ip(remote.map(|r| r.ip())), remote.map_or(0, |r| r.port()));
+        cx.info(format_args!(
+            "connect to {rip} port {rport} from  port 0 failed: {}",
+            OsError(&error)
+        ));
+        cx.of(Component::Tcp, format_args!("destroy"));
+        let Stage::Racing(r) = &mut self.stage else {
+            unreachable!("an attempt is made in a race");
+        };
+        r.failed(error, kind).map(|p| Drove::Connecting(self, p))
     }
 
     /// The race's attempt `i` connected: the others close, and the
@@ -793,11 +935,13 @@ impl Racing {
 
     /// An attempt failed: the setup goes on while an attempt runs or an
     /// address is left, and fails with it otherwise.
-    fn failed(&self, error: io::Error) -> Result<Progress, ConnectError> {
+    /// The attempt failed with `error`, as `kind` says: the setup goes
+    /// on while another runs or an address is left.
+    fn failed(&self, error: io::Error, kind: ErrorKind) -> Result<Progress, ConnectError> {
         if !self.attempts.is_empty() || self.eyeballs.more() {
             Ok(Progress::Failed)
         } else {
-            Err(ConnectError::Failed(error))
+            Err(ConnectError::Failed(error, kind))
         }
     }
 }
@@ -833,14 +977,9 @@ fn discard(cx: &mut dyn ConnCx, socket: Sock) {
     cx.net().close(socket);
 }
 
-/// An attempt to `remote` starts (`cf_socket_open`): after the scope it
-/// took from a local interface, if it did, and with the scope it has.
-fn trace_trying(cx: &mut dyn ConnCx, remote: SocketAddr, scope_found: Option<NonZeroU32>) {
-    if let Some(scope) = scope_found {
-        cx.info(format_args!(
-            "determined scope_id={scope} for link-local address from local interface"
-        ));
-    }
+/// An attempt to `remote` has its socket (`cf_socket_open`), with the
+/// scope it has.
+fn trace_trying(cx: &mut dyn ConnCx, remote: SocketAddr) {
     match remote {
         SocketAddr::V4(_) => cx.info(format_args!("  Trying {remote}...")),
         SocketAddr::V6(v6) if v6.scope_id() != 0 => {
@@ -849,6 +988,54 @@ fn trace_trying(cx: &mut dyn ConnCx, remote: SocketAddr, scope_found: Option<Non
         }
         SocketAddr::V6(v6) => {
             cx.info(format_args!("  Trying [{}]:{}...", v6.ip(), v6.port()));
+        }
+    }
+}
+
+/// A socket set as the transfer asks, before the application's
+/// configurer sees it (`tcpnodelay`, `tcpkeepalive`): a failure is
+/// traced, and the socket goes on unset.
+fn set_up(cx: &mut dyn ConnCx, socket: &dyn Socket, setup: SocketSetup) {
+    let fd = socket.key().get();
+    if setup.nodelay
+        && let Err(e) = socket.set(SocketOption::NoDelay)
+    {
+        let why = OsError(&e);
+        cx.of(
+            Component::Tcp,
+            format_args!("Could not set TCP_NODELAY: {why}"),
+        );
+    }
+    let alive = setup.keepalive;
+    if !alive.on {
+        return;
+    }
+    // The times and count only once keepalive is on.
+    let errno = |e: &io::Error| e.raw_os_error().unwrap_or(0);
+    if let Err(e) = socket.set(SocketOption::KeepAlive) {
+        let n = errno(&e);
+        cx.of(
+            Component::Tcp,
+            format_args!("Failed to set SO_KEEPALIVE on fd {fd}: errno {n}"),
+        );
+        return;
+    }
+    let secs = |d: Duration| i32::try_from(d.as_secs()).unwrap_or(i32::MAX);
+    let count = i32::try_from(alive.count).unwrap_or(i32::MAX);
+    for (option, name) in [
+        (SocketOption::KeepIdle(secs(alive.idle)), "TCP_KEEPIDLE"),
+        (
+            SocketOption::KeepInterval(secs(alive.interval)),
+            "TCP_KEEPINTVL",
+        ),
+        (SocketOption::KeepCount(count), "TCP_KEEPCNT"),
+    ] {
+        if let Err(e) = socket.set(option) {
+            let n = errno(&e);
+            cx.of(
+                Component::Tcp,
+                format_args!("Failed to set {name} on fd {fd}: errno {n}"),
+            );
         }
     }
 }
@@ -1051,7 +1238,7 @@ mod tests {
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
                 scope: None,
-                socket: SocketOptions::default(),
+                socket: SocketSetup::PLAIN,
                 haproxy: false,
                 layer: None,
             };
@@ -1080,7 +1267,7 @@ mod tests {
                     }
                 }
                 Ok(Drove::Established(conn)) => panic!("{conn:?}"),
-                Err(ConnectError::Failed(_)) => {
+                Err(ConnectError::Failed(..)) => {
                     raced.failed_at = ms;
                     assert_eq!(net.open_sockets(), 0, "every attempt closed");
                     return raced;
@@ -1119,7 +1306,7 @@ mod tests {
                 max_age: Some(Duration::from_secs(60)),
                 delay: he,
                 scope: None,
-                socket: SocketOptions::default(),
+                socket: SocketSetup::PLAIN,
                 haproxy: false,
                 layer: None,
             };

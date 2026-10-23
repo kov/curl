@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use super::*;
-use crate::conn::io::{Connect, FakeNet, Peer, PollFd, SocketPoll};
+use crate::conn::io::{FakeNet, Peer, PollFd, SocketPoll};
 use crate::time::ManualClock;
 
 /// A multi whose sockets the application tags with a number.
@@ -90,12 +90,11 @@ impl Net for Counting {
         self.0.poll(sockets, fds, timeout)
     }
 
-    fn connect(
+    fn open(
         &mut self,
-        addr: SocketAddr,
-        options: crate::conn::io::SocketOptions,
-    ) -> std::io::Result<(Box<dyn Socket>, Connect)> {
-        self.0.connect(addr, options)
+        addr: std::net::SocketAddr,
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        self.0.open(addr)
     }
 
     fn close(&mut self, socket: crate::conn::io::Sock) {

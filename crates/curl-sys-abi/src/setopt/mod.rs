@@ -14,14 +14,15 @@ mod known;
 use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
 use core::ptr::NonNull;
+use core::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
 use curl_core::options::{
-    BufferSize, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion, Lines,
-    LowSpeed, MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits,
-    TimeCondition, UploadBufferSize, UserHeaders,
+    BufferSize, ColdGroup, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion,
+    Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits,
+    Sockets, TimeCondition, UploadBufferSize, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -33,6 +34,7 @@ use crate::ffi::{
     CURLE_RECURSIVE_API_CALL, CURLE_UNKNOWN_OPTION, CURLcode, CURLoption, curl_off_t,
 };
 use crate::gate::EasyCall;
+use crate::sockets::{self, CSockets};
 
 /// C's longest string option (`CURL_MAX_INPUT_LENGTH`).
 const MAX_INPUT_LENGTH: usize = 8_000_000;
@@ -966,11 +968,94 @@ fn apply(
             ccb.progress = unsafe { function(p) };
             callbacks::sync_progress(options, me, set, ccb)?;
         }
+        (ffi::CURLOPT_TCP_NODELAY, Long(n)) => tcp(options, |s| s.nodelay = n != 0)?,
+        (ffi::CURLOPT_TCP_KEEPALIVE, Long(n)) => tcp(options, |s| s.keepalive.on = n != 0)?,
+        (ffi::CURLOPT_TCP_KEEPIDLE, Long(n)) => {
+            let secs = Duration::from_secs(keepalive_value(n)?.into());
+            tcp(options, |s| s.keepalive.idle = secs)?;
+        }
+        (ffi::CURLOPT_TCP_KEEPINTVL, Long(n)) => {
+            let secs = Duration::from_secs(keepalive_value(n)?.into());
+            tcp(options, |s| s.keepalive.interval = secs)?;
+        }
+        (ffi::CURLOPT_TCP_KEEPCNT, Long(n)) => {
+            let count = keepalive_value(n)?;
+            tcp(options, |s| s.keepalive.count = count)?;
+        }
+        // Linux connects with `TCP_FASTOPEN_CONNECT`.
+        (ffi::CURLOPT_TCP_FASTOPEN, Long(n)) => tcp(options, |s| s.fastopen = n != 0)?,
+        (ffi::CURLOPT_OPENSOCKETFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL.
+            let f = unsafe { function(p) };
+            socket_hooks(me, options, |c| c.open = f)?;
+        }
+        (ffi::CURLOPT_OPENSOCKETDATA, Ptr(p)) => socket_hooks(me, options, |c| c.open_data = p)?,
+        (ffi::CURLOPT_SOCKOPTFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL.
+            let f = unsafe { function(p) };
+            socket_hooks(me, options, |c| c.sockopt = f)?;
+        }
+        (ffi::CURLOPT_SOCKOPTDATA, Ptr(p)) => socket_hooks(me, options, |c| c.sockopt_data = p)?,
+        (ffi::CURLOPT_CLOSESOCKETFUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL.
+            let f = unsafe { function(p) };
+            socket_hooks(me, options, |c| c.close = f)?;
+        }
+        (ffi::CURLOPT_CLOSESOCKETDATA, Ptr(p)) => socket_hooks(me, options, |c| c.close_data = p)?,
         (option, _) if known::KNOWN.binary_search(&option.0).is_ok() => {
             return Err(Refused::NotBuiltIn);
         }
         _ => return Err(Refused::Unknown),
     }
+    Ok(())
+}
+
+/// A TCP option of `options` changed by `change`: its group is made only
+/// for a value that differs from the defaults.
+fn tcp(options: &mut Options, change: impl FnOnce(&mut Sockets)) -> Result<(), OutOfMemory> {
+    if let Some(made) = options.sockets.made_mut() {
+        change(made);
+        return Ok(());
+    }
+    let mut probe = <Sockets as ColdGroup>::NONE;
+    change(&mut probe);
+    let unset = <Sockets as ColdGroup>::UNSET;
+    if (probe.nodelay, probe.keepalive, probe.fastopen)
+        != (unset.nodelay, unset.keepalive, unset.fastopen)
+    {
+        *options.sockets.make_mut()? = probe;
+    }
+    Ok(())
+}
+
+/// A keepalive time or count (`value_range(&arg, 0, 0, INT_MAX)`):
+/// negative is refused, past `INT_MAX` is `INT_MAX`.
+fn keepalive_value(n: c_long) -> Result<u32, Refused> {
+    if n < 0 {
+        return Err(Refused::Bad);
+    }
+    Ok(u32::try_from(n.min(c_long::from(i32::MAX))).expect("clamped to INT_MAX"))
+}
+
+/// The application's socket functions changed by `change`, and the
+/// handlers that call them made to match. A store for them is made the
+/// first time a value is set.
+fn socket_hooks(
+    me: NonNull<ShimEasy>,
+    options: &mut Options,
+    change: impl FnOnce(&mut CSockets),
+) -> Result<(), OutOfMemory> {
+    // SAFETY: `me` is the live handle being set; only its socket store is
+    // reached, which no other borrow holds.
+    let easy = unsafe { me.as_ref() };
+    let mut c = easy.sockets();
+    change(&mut c);
+    let room = easy.sockets_room()?;
+    sockets::sync(options, me, &c)?;
+    room.set(c);
     Ok(())
 }
 

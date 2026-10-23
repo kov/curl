@@ -68,9 +68,10 @@ witness: curl-sys-abi handle_tests::limits_are_checked_as_in_c
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::unresolved_and_immediate_failures
 --- old
-        trace_trying(cx, remote, scope_found);
+        trace_trying(cx, remote);
+        let fd = socket.key().get();
 --- new
-        let _ = scope_found;
+        let fd = socket.key().get();
 
 === an interface name too long for the kernel is looked up
 file: crates/curl-os/src/net.rs

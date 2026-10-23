@@ -1438,7 +1438,7 @@ fn connect_once<H: Host>(
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
     let scope = cx.easy().options().address_scope;
-    let socket = cx.easy().options().socket;
+    let socket = crate::conn::SocketSetup::of(&cx.easy().options().sockets);
     let haproxy = cx.easy().options().proxy.haproxy;
     #[cfg(test)]
     let layer = cx.easy().options().layer;
@@ -1778,7 +1778,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
     // The proxy named in a failure: the SOCKS one when there are two
     // (`socks_proxy` before `http_proxy`), which is the first.
     let proxy = route.proxy.as_ref().map(ProxyRoute::first_peer);
-    match e {
+    let failure = match e {
         ConnectError::OutOfMemory => return ErrorKind::OutOfMemory,
         ConnectError::Unresolved(why) => {
             match why {
@@ -1837,7 +1837,7 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             }
             return kind;
         }
-        ConnectError::Failed(error) => {
+        ConnectError::Failed(error, kind) => {
             // The drive traced the failure.
             cx.report_mut().set_connect_error(error.kind());
             // No attempt running, and no address left.
@@ -1846,20 +1846,21 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
                 Component::HappyEyeballs,
                 format_args!("no more attempts to try"),
             );
+            kind
         }
-    }
+    };
     let origin = &*route.origin;
     let (host, port) = (Bytes(origin.name()), origin.port());
     // A peer that is neither the origin nor the proxy named is shown.
     let via = Via(Some(first).filter(|&f| f != origin && Some(f) != proxy));
     let over = OverProxy(proxy);
     let ms = cx.easy().report().timings().since_single_ms(cx.rest.now);
+    // The last attempt's failure says what the setup's is.
+    let why = failure.message();
     trace::fail(
         cx,
-        ErrorKind::CouldntConnect,
-        format_args!(
-            "Failed to connect to {host}:{port}{via} {over}after {ms} ms: Could not connect to server"
-        ),
+        failure,
+        format_args!("Failed to connect to {host}:{port}{via} {over}after {ms} ms: {why}"),
     )
 }
 
@@ -2980,7 +2981,7 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
         None => {
             // The connection closes its sockets as the transfer making it
             // says, whoever closes them (url.c's `fclosesocket`).
-            let closer = match &cx.easy().options().socket_hooks.close {
+            let closer = match &cx.easy().options().sockets.close {
                 Some(close) => Closer::Hook(close.clone()),
                 None => Closer::System,
             };

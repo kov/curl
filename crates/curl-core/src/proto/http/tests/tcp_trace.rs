@@ -34,6 +34,8 @@ fn socket_lines(ran: &Ran) -> Vec<String> {
         "  Trying ",
         "connect to ",
         "Immediate connect fail",
+        "failed to open socket",
+        "Failed to connect",
         "Established connection",
         "[SETUP] retrying",
         "[HTTP-PROXY] destroy",
@@ -107,8 +109,9 @@ fn v4(last: u8) -> IpAddr {
 #[test]
 fn a_socket_s_setup_is_traced_as_c() {
     let (mut m, talk, _) = server(&[OK], false);
-    let ran = get_with(&mut m, tracing_tcp(), "/", talk, |_| {});
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk.clone(), |_| {});
     assert_eq!(ran.result, Ok(()));
+    assert_eq!(talk.made_nonblocking_after(), None, "nonblocking as opened");
     assert_eq!(
         socket_lines(&ran),
         expect(&format!(
@@ -142,7 +145,8 @@ fn a_refused_socket_is_traced_as_c() {
             [TCP] poll/select error on fd=1000
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             connect to 127.0.0.1 port {PORT} from 127.0.0.1 port 40000 failed: Connection refused
-            [TCP] destroy"
+            [TCP] destroy
+            Failed to connect to 127.0.0.1:{PORT} after 0 ms: Could not connect to server"
         ))
     );
 }
@@ -165,7 +169,8 @@ fn a_socket_hung_up_without_an_error_fails() {
             [TCP] poll/select error on fd=1000
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             connect to 127.0.0.1 port {PORT} from 127.0.0.1 port 40000 failed: Success
-            [TCP] destroy"
+            [TCP] destroy
+            Failed to connect to 127.0.0.1:{PORT} after 0 ms: Could not connect to server"
         ))
     );
 }
@@ -300,4 +305,291 @@ fn a_redial_closes_the_socket_as_c() {
         [HTTP-PROXY] destroy"
     )));
     assert_eq!(socket_lines(&ran), want);
+}
+
+/// A connect failing at once: the socket was opened and traced as it
+/// opened, never bound, then closed (C's capture `immediate6`, there
+/// unreachable, here refused: no peer is at the address).
+#[test]
+fn a_connect_failing_at_once_is_traced_as_c() {
+    let mut m = serving(Peer::Accepts, &[]);
+    let talk = Conversation::replies(&[], false);
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk, |o| {
+        let url = format!("http://[::1]:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        socket_lines(&ran),
+        expect(&format!(
+            "[HAPPY-EYEBALLS] starting first attempt for ipv6 -> 0
+              Trying [::1]:{PORT}...
+            [TCP] cf_socket_open() -> 0, fd=1000
+            [TCP] local address :: port 0...
+            Immediate connect fail for ::1: Connection refused
+            [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
+            connect to ::1 port {PORT} from :: port 0 failed: Connection refused
+            [TCP] destroy
+            Failed to connect to ::1:{PORT} after 0 ms: Could not connect to server"
+        ))
+    );
+}
+
+/// What a test's application does with a transfer's sockets: opens
+/// them on the fake network, to `to` if it says so, connecting them
+/// itself if `dial`, or opens none if `fail`; says `configured` of each;
+/// and keeps the numbers of those it set and closed.
+struct Hooks {
+    net: Arc<Mutex<FakeNet>>,
+    to: Option<SocketAddr>,
+    /// The error number an opener that opens nothing leaves.
+    fail: Option<i32>,
+    dial: bool,
+    configured: crate::handler::Configured,
+    /// The port the URL names, if not the server's.
+    url_port: Option<u16>,
+    set: Arc<Mutex<Vec<i32>>>,
+    closed: Arc<Mutex<Vec<i32>>>,
+}
+
+impl crate::handler::SocketOpener for Hooks {
+    fn open(
+        &self,
+        _: &mut TransferCx<'_>,
+        address: &mut SocketAddr,
+    ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+        if let Some(errno) = self.fail {
+            return Err(std::io::Error::from_raw_os_error(errno));
+        }
+        if let Some(to) = self.to {
+            *address = to;
+        }
+        let socket = crate::conn::io::Net::open(&mut *self.net.lock().unwrap(), *address)?;
+        if self.dial {
+            socket.connect(*address)?;
+        }
+        Ok(socket)
+    }
+}
+
+impl crate::handler::SocketConfigurer for Hooks {
+    fn configure(
+        &self,
+        _: &mut TransferCx<'_>,
+        socket: crate::handler::SocketToSet<'_>,
+    ) -> crate::handler::Configured {
+        self.set.lock().unwrap().push(socket.key().get());
+        self.configured
+    }
+}
+
+impl crate::handler::SocketCloser for Hooks {
+    fn close(&self, socket: crate::conn::io::SocketKey) {
+        self.closed.lock().unwrap().push(socket.get());
+    }
+}
+
+/// What a run with `hooks` saw: the run, the sockets its configurer was
+/// given, and those its closer closed.
+struct Hooked {
+    ran: Ran,
+    talk: Conversation,
+    set: Vec<i32>,
+    closed: Vec<i32>,
+}
+
+/// A GET from a server at `PORT` that does as `peer` says, the
+/// application's hooks made by `hooks` over the network.
+fn hooked(peer: Peer, hooks: impl FnOnce(&mut Hooks)) -> Hooked {
+    use crate::handler::Handler;
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let talk = Conversation::replies(&[OK], false);
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, peer)
+        .with_conversation(at, talk.clone());
+    let net = Arc::new(Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(crate::conn::io::SharedNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let (set, closed) = (Arc::default(), Arc::default());
+    let mut h = Hooks {
+        net: net.clone(),
+        to: None,
+        fail: None,
+        dial: false,
+        configured: crate::handler::Configured::Ok,
+        url_port: None,
+        set: Arc::clone(&set),
+        closed: Arc::clone(&closed),
+    };
+    hooks(&mut h);
+    let url = format!("http://127.0.0.1:{}/", h.url_port.unwrap_or(PORT));
+    let h = Arc::new(h);
+    struct Shared(Arc<Hooks>);
+    impl crate::handler::SocketOpener for Shared {
+        fn open(
+            &self,
+            cx: &mut TransferCx<'_>,
+            a: &mut SocketAddr,
+        ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+            self.0.open(cx, a)
+        }
+    }
+    impl crate::handler::SocketConfigurer for Shared {
+        fn configure(
+            &self,
+            cx: &mut TransferCx<'_>,
+            s: crate::handler::SocketToSet<'_>,
+        ) -> crate::handler::Configured {
+            self.0.configure(cx, s)
+        }
+    }
+    impl crate::handler::SocketCloser for Shared {
+        fn close(&self, s: crate::conn::io::SocketKey) {
+            self.0.close(s);
+        }
+    }
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk.clone(), |o| {
+        o.set_url(Some(url.as_bytes())).unwrap();
+        let sockets = o.sockets.make_mut().unwrap();
+        sockets.open = Some(Handler::socket_opener(Shared(h.clone())).unwrap());
+        sockets.configure = Some(Handler::socket_configurer(Shared(h.clone())).unwrap());
+        sockets.close = Some(Handler::socket_closer(Shared(h.clone())).unwrap());
+    });
+    drop(m);
+    let set = set.lock().unwrap().clone();
+    let closed = closed.lock().unwrap().clone();
+    Hooked {
+        ran,
+        talk,
+        set,
+        closed,
+    }
+}
+
+/// An opener that opens nothing fails the attempt before anything about
+/// it is known: its addresses are traced empty, and the transfer fails
+/// for the open (C's capture `hooks.txt`, mode 0).
+#[test]
+fn an_opener_opening_nothing_fails_as_c() {
+    // C's errno after a callback that opened nothing: none.
+    let h = hooked(Peer::Accepts, |h| h.fail = Some(0));
+    assert_eq!(h.ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        socket_lines(&h.ran),
+        expect(&format!(
+            "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
+            failed to open socket: Success
+            [TCP] cf_socket_open() -> 7, fd=-1
+            connect to  port 0 from  port 0 failed: Success
+            [TCP] destroy
+            Failed to connect to 127.0.0.1:{PORT} after 0 ms: Could not connect to server"
+        ))
+    );
+    assert_eq!(
+        h.ran.easy.report().failure(),
+        Some(&b"failed to open socket: Success"[..]),
+        "the first reason is kept"
+    );
+    assert!(h.set.is_empty() && h.closed.is_empty());
+}
+
+/// An opener out of memory opens nothing like any other: the attempt
+/// fails, not the transfer for memory, as only the system's socket
+/// running out is (`socket_open`).
+#[test]
+fn an_opener_out_of_memory_fails_its_attempt() {
+    let h = hooked(Peer::Accepts, |h| h.fail = Some(12));
+    assert_eq!(h.ran.result, Err(ErrorKind::CouldntConnect));
+    assert_eq!(
+        h.ran.easy.report().failure(),
+        Some(&b"failed to open socket: Cannot allocate memory"[..])
+    );
+}
+
+/// A configurer that fails the socket has it closed through the closer,
+/// and the transfer fails as aborted (C's capture, mode 1).
+#[test]
+fn a_configurer_failing_a_socket_aborts_as_c() {
+    let h = hooked(Peer::Accepts, |h| {
+        h.configured = crate::handler::Configured::Abort;
+    });
+    assert_eq!(h.ran.result, Err(ErrorKind::AbortedByCallback));
+    assert_eq!(
+        socket_lines(&h.ran),
+        expect(&format!(
+            "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
+              Trying 127.0.0.1:{PORT}...
+            [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
+            [TCP] cf_socket_open() -> 42, fd=-1
+            connect to 127.0.0.1 port {PORT} from  port 0 failed: Success
+            [TCP] destroy
+            Failed to connect to 127.0.0.1:{PORT} after 0 ms: Operation was aborted by an application callback"
+        ))
+    );
+    assert_eq!((h.set, h.closed), (vec![1000], vec![1000]));
+}
+
+/// A socket the application connected skips its connect: it wins as it
+/// opens (C's capture, mode 2).
+#[test]
+fn a_socket_already_connected_wins_as_it_opens() {
+    let h = hooked(Peer::Accepts, |h| {
+        h.dial = true;
+        h.configured = crate::handler::Configured::AlreadyConnected;
+    });
+    assert_eq!(h.ran.result, Ok(()));
+    let lines = socket_lines(&h.ran);
+    assert_eq!(
+        lines[..5],
+        expect(&format!(
+            "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
+              Trying 127.0.0.1:{PORT}...
+            [TCP] cf_socket_open() -> 0, fd=1000
+            [HAPPY-EYEBALLS] connect attempt #0 successful
+            [HAPPY-EYEBALLS] Connected to 127.0.0.1 (127.0.0.1) port {PORT}"
+        ))
+    );
+    assert_eq!(
+        lines[5],
+        format!(
+            "Established connection to 127.0.0.1 (127.0.0.1 port {PORT}) from 127.0.0.1 port 40000"
+        )
+    );
+    assert_eq!(h.set, [1000]);
+    assert_eq!(
+        h.talk.made_nonblocking_after(),
+        Some(1),
+        "after the options set"
+    );
+}
+
+/// An opener may change the address, which the attempt then connects to
+/// and traces (C's capture, mode 3).
+#[test]
+fn an_opener_may_change_the_address() {
+    // The URL names a port nothing is at; the opener points to the
+    // server's.
+    let h = hooked(Peer::Accepts, |h| {
+        h.url_port = Some(PORT + 1);
+        h.to = Some(SocketAddr::from(([127, 0, 0, 1], PORT)));
+    });
+    assert_eq!(h.ran.result, Ok(()));
+    assert_eq!(
+        socket_lines(&h.ran)[..4],
+        expect(&format!(
+            "[HAPPY-EYEBALLS] starting first attempt for ipv4 -> 0
+              Trying 127.0.0.1:{PORT}...
+            [TCP] cf_socket_open() -> 0, fd=1000
+            [TCP] local address 127.0.0.1 port 40000..."
+        ))
+    );
+    // The application's socket is made nonblocking once set: here after
+    // the `TCP_NODELAY` the library sets.
+    assert_eq!(h.talk.made_nonblocking_after(), Some(1));
 }

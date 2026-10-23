@@ -43,7 +43,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/fs.rs`: opening and closing files, a file's status, removing, renaming
   and setting the times of files by name, making and listing directories, reading standard
   input unbuffered, and pointing standard error at a file.
-- `crates/curl-os/src/net.rs`: opening and connecting sockets.
+- `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, and adopting one the
+  application opened.
 - `crates/curl-os/src/poll.rs`: `poll(2)`.
 - `crates/curl-os/src/random.rs`: random bytes from the kernel, `getrandom`.
 - `crates/curl-os/src/resolve.rs`: the system's resolver, `getaddrinfo`.

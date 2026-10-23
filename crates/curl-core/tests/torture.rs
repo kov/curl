@@ -733,15 +733,11 @@ impl Net for SharedNet {
         self.0.lock().unwrap().poll(sockets, fds, timeout)
     }
 
-    fn connect(
+    fn open(
         &mut self,
         addr: std::net::SocketAddr,
-        options: curl_core::conn::io::SocketOptions,
-    ) -> std::io::Result<(
-        Box<dyn curl_core::conn::io::Socket>,
-        curl_core::conn::io::Connect,
-    )> {
-        self.0.lock().unwrap().connect(addr, options)
+    ) -> std::io::Result<Box<dyn curl_core::conn::io::Socket>> {
+        self.0.lock().unwrap().open(addr)
     }
 
     fn close(&mut self, socket: curl_core::conn::io::Sock) {

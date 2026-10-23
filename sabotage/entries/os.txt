@@ -41,9 +41,9 @@ witness: curl-os wake::tests::waking_more_than_the_pipe_holds_is_fine
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_refused_connect_reports_why
 --- old
-            Some(libc::EINPROGRESS | libc::EINTR) => Connect::InProgress,
+            Some(libc::EINPROGRESS | libc::EINTR | libc::EAGAIN) => Ok(Connect::InProgress),
 --- new
-            Some(libc::EINTR) => Connect::InProgress,
+            Some(libc::EINTR | libc::EAGAIN) => Ok(Connect::InProgress),
 
 === the port is sent in host byte order
 file: crates/curl-os/src/net.rs
@@ -239,24 +239,24 @@ witness: curl-os fs::tests::takes_a_name_as_c_does
 file: crates/curl-os/src/net.rs
 witness: curl-os net::tests::a_socket_is_set_as_asked
 --- old
-    if options.nodelay {
+            SocketOption::NoDelay => (tcp, libc::TCP_NODELAY, 1),
 --- new
-    if false {
+            SocketOption::NoDelay => (tcp, libc::TCP_NODELAY, 0),
 
 === sockets keep Nagle's algorithm unless told otherwise
-file: crates/curl-os/src/net.rs
+file: crates/curl-core/src/options/mod.rs
 witness: curl-core multi::tests::sockets_are_set_as_the_options_say
 --- old
-    fn default() -> SocketOptions {
-        SocketOptions { nodelay: true }
+    const NONE: Sockets = Sockets {
+        nodelay: true,
 --- new
-    fn default() -> SocketOptions {
-        SocketOptions { nodelay: false }
+    const NONE: Sockets = Sockets {
+        nodelay: false,
 
 === a transfer's sockets are set by the defaults, not its options
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::sockets_are_set_as_the_options_say
 --- old
-    let socket = cx.easy().options().socket;
+    let socket = crate::conn::SocketSetup::of(&cx.easy().options().sockets);
 --- new
-    let socket = crate::conn::io::SocketOptions::default();
+    let socket = crate::conn::SocketSetup::of(<crate::options::Sockets as crate::options::ColdGroup>::UNSET);

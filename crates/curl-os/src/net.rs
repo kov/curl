@@ -1,14 +1,15 @@
-//! Nonblocking TCP sockets (`lib/cf-socket.c`). Opening and connecting
-//! are system calls of their own; everything after goes through a std
-//! `TcpStream`, which already sends with `MSG_NOSIGNAL`. A nonblocking
-//! receive or send never sleeps, so no signal interrupts it.
+//! Nonblocking TCP sockets (`lib/cf-socket.c`). Opening, setting and
+//! connecting are system calls of their own, in C's order; everything
+//! after goes through a std `TcpStream`, which already sends with
+//! `MSG_NOSIGNAL`. A nonblocking receive or send never sleeps, so no
+//! signal interrupts it.
 
 #![allow(unsafe_code)]
 
 use std::io::{self, Read as _, Write as _};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 /// How a connect started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,68 +37,144 @@ pub enum Sent {
     WouldBlock,
 }
 
-/// A nonblocking TCP socket, connected or connecting.
+/// A TCP socket: opened, then connecting or connected.
 #[derive(Debug)]
 pub struct TcpSocket(TcpStream);
 
-/// What a TCP socket is set to between its opening and its connect
-/// (`cf_socket_open`).
+/// The protocol a stream socket speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SocketOptions {
-    /// Small sends go out at once, Nagle's algorithm off (`TCP_NODELAY`).
-    pub nodelay: bool,
+pub enum Protocol {
+    /// `IPPROTO_TCP`, as curl opens its sockets.
+    Tcp,
+    /// Multipath TCP (`IPPROTO_MPTCP`), as the tool's `--mptcp` opens them.
+    Mptcp,
 }
 
-/// As curl sets a socket unless told otherwise: `TCP_NODELAY` on
-/// (url.c's `Curl_init_userdefined`).
-impl Default for SocketOptions {
-    fn default() -> SocketOptions {
-        SocketOptions { nodelay: true }
+/// An option set on a socket between its opening and its connect
+/// (`cf_socket_open`, `do_connect`), each one `setsockopt`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SocketOption {
+    /// Small sends go out at once, Nagle's algorithm off (`TCP_NODELAY`).
+    NoDelay,
+    /// The kernel probes an idle connection (`SO_KEEPALIVE`).
+    KeepAlive,
+    /// Seconds idle before the first probe (`TCP_KEEPIDLE`).
+    KeepIdle(i32),
+    /// Seconds between probes (`TCP_KEEPINTVL`).
+    KeepInterval(i32),
+    /// Probes unanswered before the connection is dropped (`TCP_KEEPCNT`).
+    KeepCount(i32),
+    /// The connect is made with TCP Fast Open (`TCP_FASTOPEN_CONNECT`).
+    FastOpenConnect,
+    /// The type of service of what it sends: `IP_TOS` over IPv4,
+    /// `IPV6_TCLASS` over IPv6, nothing over any other family.
+    TypeOfService(i32),
+    /// The priority of what it sends, a VLAN's (`SO_PRIORITY`).
+    Priority(i32),
+}
+
+impl SocketOption {
+    /// Its level, name and value, or none for the family.
+    fn raw(self, family: libc::c_int) -> Option<(libc::c_int, libc::c_int, libc::c_int)> {
+        let tcp = libc::IPPROTO_TCP;
+        Some(match self {
+            SocketOption::NoDelay => (tcp, libc::TCP_NODELAY, 1),
+            SocketOption::KeepAlive => (libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1),
+            SocketOption::KeepIdle(s) => (tcp, libc::TCP_KEEPIDLE, s),
+            SocketOption::KeepInterval(s) => (tcp, libc::TCP_KEEPINTVL, s),
+            SocketOption::KeepCount(n) => (tcp, libc::TCP_KEEPCNT, n),
+            SocketOption::FastOpenConnect => (tcp, libc::TCP_FASTOPEN_CONNECT, 1),
+            SocketOption::TypeOfService(tos) => match family {
+                libc::AF_INET => (libc::IPPROTO_IP, libc::IP_TOS, tos),
+                libc::AF_INET6 => (libc::IPPROTO_IPV6, libc::IPV6_TCLASS, tos),
+                _ => return None,
+            },
+            SocketOption::Priority(p) => (libc::SOL_SOCKET, libc::SO_PRIORITY, p),
+        })
     }
 }
 
-/// Open a nonblocking, close-on-exec TCP socket, set it to `options`,
-/// and start connecting it to `addr`.
-pub fn connect(addr: SocketAddr, options: SocketOptions) -> io::Result<(TcpSocket, Connect)> {
+/// Set `option` on the socket `fd`. The type of service is set for the
+/// family the socket is bound to; on one of no family it sets nothing,
+/// as the tool's `sockopt_callback` does.
+pub fn set(fd: BorrowedFd<'_>, option: SocketOption) -> io::Result<()> {
+    let family = match option {
+        SocketOption::TypeOfService(_) => family(fd),
+        _ => libc::AF_UNSPEC,
+    };
+    let Some((level, name, value)) = option.raw(family) else {
+        return Ok(());
+    };
+    let len = libc::socklen_t::try_from(size_of::<libc::c_int>()).expect("an int's size fits");
+    // SAFETY: `value` is an int of the length given and lives through the
+    // call; `fd` is an open descriptor for as long as it is borrowed.
+    let rc =
+        unsafe { libc::setsockopt(fd.as_raw_fd(), level, name, (&raw const value).cast(), len) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// The address family of the socket `fd`, `AF_UNSPEC` if it cannot be
+/// told (`get_address_family`).
+fn family(fd: BorrowedFd<'_>) -> libc::c_int {
+    // SAFETY: all-zero bytes are a valid `sockaddr_storage`.
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut len =
+        libc::socklen_t::try_from(size_of::<libc::sockaddr_storage>()).expect("its size fits");
+    // SAFETY: `storage` has room for any address, `len` says so, and both
+    // live through the call; `fd` is open while borrowed.
+    let rc = unsafe {
+        libc::getsockname(
+            fd.as_raw_fd(),
+            (&raw mut storage).cast::<libc::sockaddr>(),
+            &raw mut len,
+        )
+    };
+    if rc == 0 {
+        libc::c_int::from(storage.ss_family)
+    } else {
+        libc::AF_UNSPEC
+    }
+}
+
+/// Open a close-on-exec TCP stream socket of `addr`'s family, speaking
+/// `protocol`, nonblocking if `nonblocking`: not connected yet.
+pub fn open(addr: SocketAddr, protocol: Protocol, nonblocking: bool) -> io::Result<TcpSocket> {
     let family = match addr {
         SocketAddr::V4(_) => libc::AF_INET,
         SocketAddr::V6(_) => libc::AF_INET6,
     };
-    let kind = libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+    let mut kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    if nonblocking {
+        kind |= libc::SOCK_NONBLOCK;
+    }
+    let protocol = match protocol {
+        Protocol::Tcp => libc::IPPROTO_TCP,
+        Protocol::Mptcp => libc::IPPROTO_MPTCP,
+    };
     // SAFETY: `socket` takes no pointers; a negative result is an error.
-    let fd = unsafe { libc::socket(family, kind, 0) };
+    let fd = unsafe { libc::socket(family, kind, protocol) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
     // SAFETY: `fd` was just opened and is owned by nothing else.
-    let socket = TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
-    if options.nodelay {
-        // C only traces a failure (`tcpnodelay`): the socket works the
-        // same, its small sends merely wait.
-        let _ = socket.set_nodelay(true);
-    }
-    let mut storage = SockAddr::from(addr);
-    // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for the
-    // length given, and lives through the call; the socket is open.
-    let rc = unsafe {
-        libc::connect(
-            std::os::fd::AsRawFd::as_raw_fd(&socket),
-            (&raw mut storage.raw).cast::<libc::sockaddr>(),
-            storage.len,
-        )
-    };
-    let state = if rc == 0 {
-        Connect::Done
-    } else {
-        let err = io::Error::last_os_error();
-        match err.raw_os_error() {
-            // A nonblocking connect interrupted by a signal goes on in
-            // the background, as one in progress does.
-            Some(libc::EINPROGRESS | libc::EINTR) => Connect::InProgress,
-            _ => return Err(err),
-        }
-    };
-    Ok((TcpSocket(socket), state))
+    Ok(TcpSocket(TcpStream::from(unsafe {
+        OwnedFd::from_raw_fd(fd)
+    })))
+}
+
+/// The socket `fd`, which an application opened and gives up: closing
+/// the `TcpSocket` closes it.
+///
+/// # Safety
+///
+/// `fd` is an open socket descriptor that nothing else owns or closes
+/// while the `TcpSocket` lives.
+pub unsafe fn adopt(fd: RawFd) -> TcpSocket {
+    // SAFETY: as the caller guarantees.
+    TcpSocket(TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) }))
 }
 
 /// A socket address as the kernel reads it.
@@ -215,6 +292,52 @@ impl TcpSocket {
         self.0.as_fd()
     }
 
+    /// Set `option` on it, as [`set`] does.
+    pub fn set(&self, option: SocketOption) -> io::Result<()> {
+        set(self.fd(), option)
+    }
+
+    /// Make it nonblocking, as `curlx_nonblock` does (`F_SETFL`).
+    pub fn set_nonblocking(&self) -> io::Result<()> {
+        let fd = self.fd().as_raw_fd();
+        // SAFETY: `fcntl` with `F_GETFL` takes no pointer; `fd` is open.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: as above, with `F_SETFL` and an int.
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Start connecting it to `addr`; the socket is nonblocking, so a
+    /// connect not decided at once goes on in the background.
+    pub fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
+        let mut storage = SockAddr::from(addr);
+        // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
+        // the length given, and lives through the call; the socket is open.
+        let rc = unsafe {
+            libc::connect(
+                self.fd().as_raw_fd(),
+                (&raw mut storage.raw).cast::<libc::sockaddr>(),
+                storage.len,
+            )
+        };
+        if rc == 0 {
+            return Ok(Connect::Done);
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            // A nonblocking connect interrupted by a signal goes on in the
+            // background, as one in progress does; C takes EAGAIN so too
+            // (`socket_connect_result`).
+            Some(libc::EINPROGRESS | libc::EINTR | libc::EAGAIN) => Ok(Connect::InProgress),
+            _ => Err(err),
+        }
+    }
+
     /// The error that ended a connect in progress, once the socket polls
     /// writable; `None` if it connected (`SO_ERROR`).
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
@@ -276,7 +399,33 @@ mod tests {
     use super::*;
     use crate::poll::{Events, PollFd, poll};
 
-    const NODELAY: SocketOptions = SocketOptions { nodelay: true };
+    /// Open a nonblocking socket, Nagle's algorithm off, and start
+    /// connecting it to `addr`, as curl does by default.
+    fn connect(addr: SocketAddr) -> io::Result<(TcpSocket, Connect)> {
+        let s = open(addr, Protocol::Tcp, true)?;
+        s.set(SocketOption::NoDelay)?;
+        let state = s.connect(addr)?;
+        Ok((s, state))
+    }
+
+    /// The int value of option `name` at `level` on `s`.
+    fn option(s: &TcpSocket, level: libc::c_int, name: libc::c_int) -> libc::c_int {
+        let mut value: libc::c_int = -1;
+        let mut len = libc::socklen_t::try_from(size_of::<libc::c_int>()).unwrap();
+        // SAFETY: `value` is an int of the length given, and both live
+        // through the call; `s` is open.
+        let rc = unsafe {
+            libc::getsockopt(
+                s.fd().as_raw_fd(),
+                level,
+                name,
+                (&raw mut value).cast(),
+                &raw mut len,
+            )
+        };
+        assert_eq!(rc, 0, "{}", io::Error::last_os_error());
+        value
+    }
 
     /// Wait for `s` to be ready for `events`, for at most five seconds.
     fn ready(s: &TcpSocket, events: Events) -> Events {
@@ -292,7 +441,7 @@ mod tests {
     /// Connected either at once or once it polls writable, with no error;
     /// the listener then has the peer.
     fn connected(listener: &TcpListener) -> (TcpSocket, TcpStream) {
-        let (s, state) = connect(listener.local_addr().unwrap(), NODELAY).unwrap();
+        let (s, state) = connect(listener.local_addr().unwrap()).unwrap();
         if state == Connect::InProgress {
             assert!(ready(&s, Events::OUT).contains(Events::OUT));
         }
@@ -303,16 +452,121 @@ mod tests {
         (s, peer)
     }
 
-    /// The socket is set as asked before it connects: Nagle's algorithm
-    /// off for `nodelay`, as C sets it by default, and left on without.
+    /// Each option reaches the kernel's socket as C sets it: Nagle's
+    /// algorithm off, keepalive on with its times and count, the type of
+    /// service for the socket's family, and the priority.
     #[test]
+    #[cfg_attr(miri, ignore = "Miri sets few socket options")]
     fn a_socket_is_set_as_asked() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        for nodelay in [true, false] {
-            let (s, _) = connect(addr, SocketOptions { nodelay }).unwrap();
-            assert_eq!(s.0.nodelay().unwrap(), nodelay);
+        let s = open(addr, Protocol::Tcp, true).unwrap();
+        let tcp = libc::IPPROTO_TCP;
+        assert_eq!(option(&s, tcp, libc::TCP_NODELAY), 0, "Nagle on until set");
+        for o in [
+            SocketOption::NoDelay,
+            SocketOption::KeepAlive,
+            SocketOption::KeepIdle(30),
+            SocketOption::KeepInterval(20),
+            SocketOption::KeepCount(4),
+            SocketOption::Priority(3),
+            SocketOption::FastOpenConnect,
+        ] {
+            s.set(o).unwrap();
         }
+        assert_eq!(option(&s, tcp, libc::TCP_NODELAY), 1);
+        assert_eq!(option(&s, libc::SOL_SOCKET, libc::SO_KEEPALIVE), 1);
+        assert_eq!(option(&s, tcp, libc::TCP_KEEPIDLE), 30);
+        assert_eq!(option(&s, tcp, libc::TCP_KEEPINTVL), 20);
+        assert_eq!(option(&s, tcp, libc::TCP_KEEPCNT), 4);
+        assert_eq!(option(&s, libc::SOL_SOCKET, libc::SO_PRIORITY), 3);
+        assert_eq!(option(&s, tcp, libc::TCP_FASTOPEN_CONNECT), 1);
+        // The type of service needs the socket's family, which it has once
+        // bound: a connect binds it.
+        s.connect(addr).unwrap();
+        s.set(SocketOption::TypeOfService(32)).unwrap();
+        assert_eq!(option(&s, libc::IPPROTO_IP, libc::IP_TOS), 32);
+        if let Ok(v6) = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)) {
+            let at = v6.local_addr().unwrap();
+            let s = open(at, Protocol::Tcp, true).unwrap();
+            s.connect(at).unwrap();
+            s.set(SocketOption::TypeOfService(32)).unwrap();
+            assert_eq!(option(&s, libc::IPPROTO_IPV6, libc::IPV6_TCLASS), 32);
+        }
+    }
+
+    /// A socket opened blocking, as an application's may be, is made
+    /// nonblocking; one opened so is close-on-exec either way.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot read SO_PROTOCOL")]
+    fn a_socket_is_made_nonblocking() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 1));
+        let s = open(addr, Protocol::Tcp, false).unwrap();
+        let flags = || {
+            // SAFETY: `F_GETFL` takes no pointer; the socket is open.
+            unsafe { libc::fcntl(s.fd().as_raw_fd(), libc::F_GETFL) }
+        };
+        assert_eq!(flags() & libc::O_NONBLOCK, 0);
+        s.set_nonblocking().unwrap();
+        assert_ne!(flags() & libc::O_NONBLOCK, 0);
+        // SAFETY: `F_GETFD` takes no pointer; the socket is open.
+        let fd_flags = unsafe { libc::fcntl(s.fd().as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(fd_flags & libc::FD_CLOEXEC, 0);
+        assert_eq!(
+            option(&s, libc::SOL_SOCKET, libc::SO_PROTOCOL),
+            libc::IPPROTO_TCP
+        );
+    }
+
+    /// An application's descriptor is the socket's from then on: it
+    /// connects through it, and closing the socket closes it.
+    #[test]
+    fn an_adopted_descriptor_is_the_socket_s() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // SAFETY: `socket` takes no pointers.
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(fd >= 0);
+        // SAFETY: `fd` was just opened here and is given up.
+        let s = unsafe { adopt(fd) };
+        assert_eq!(s.fd().as_raw_fd(), fd);
+        s.set_nonblocking().unwrap();
+        if s.connect(addr).unwrap() == Connect::InProgress {
+            assert!(ready(&s, Events::OUT).contains(Events::OUT));
+        }
+        assert_eq!(s.peer_addr().unwrap(), addr);
+        drop(s);
+        // SAFETY: `F_GETFD` on a number, which must no longer be open.
+        assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1, "closed");
+    }
+
+    /// Multipath TCP is the protocol asked for, where the kernel has it.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri opens TCP sockets only")]
+    fn a_socket_may_speak_multipath_tcp() {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 1));
+        match open(addr, Protocol::Mptcp, true) {
+            Ok(s) => assert_eq!(
+                option(&s, libc::SOL_SOCKET, libc::SO_PROTOCOL),
+                libc::IPPROTO_MPTCP
+            ),
+            // A kernel without it says so.
+            Err(e) => assert!(
+                matches!(
+                    e.raw_os_error(),
+                    Some(libc::EPROTONOSUPPORT | libc::EINVAL | libc::ENOPROTOOPT)
+                ),
+                "{e}"
+            ),
+        }
+    }
+
+    /// The type of service of a socket of no family yet sets nothing.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri cannot name a socket pair")]
+    fn the_type_of_service_needs_a_family() {
+        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        set(a.as_fd(), SocketOption::TypeOfService(32)).unwrap();
     }
 
     /// A socket let go of stays open until its new owner closes it.
@@ -371,7 +625,7 @@ mod tests {
     #[test]
     fn a_refused_connect_reports_why() {
         let (_held, addr) = refusing_port();
-        let err = match connect(addr, NODELAY) {
+        let err = match connect(addr) {
             Err(e) => e,
             Ok((s, state)) => {
                 assert_eq!(state, Connect::InProgress, "nothing listens there");
@@ -537,7 +791,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         // SAFETY: nothing in this process reads stdin.
         assert_eq!(unsafe { libc::close(0) }, 0);
-        let (s, _) = connect(addr, NODELAY).unwrap();
+        let (s, _) = connect(addr).unwrap();
         assert_eq!(s.fd().as_raw_fd(), 0, "the lowest free descriptor");
         // SAFETY: `dup` of the open stdout; the copy is closed at once.
         let next = unsafe { libc::dup(1) };
@@ -553,7 +807,7 @@ mod tests {
         // SAFETY: `limit` is valid and lives through the call.
         let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) };
         assert_eq!(rc, 0);
-        let err = connect(addr, NODELAY).unwrap_err();
+        let err = connect(addr).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::EMFILE));
         drop(s);
     }

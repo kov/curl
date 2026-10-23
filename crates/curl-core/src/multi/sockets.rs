@@ -298,6 +298,15 @@ mod tests {
         fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
             unreachable!()
         }
+        fn set(&self, _: crate::conn::io::SocketOption) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn set_nonblocking(&self) -> std::io::Result<()> {
+            unreachable!()
+        }
+        fn connect(&self, _: std::net::SocketAddr) -> std::io::Result<crate::conn::io::Connect> {
+            unreachable!()
+        }
         fn recv(&self, _: &mut [u8]) -> std::io::Result<Recv> {
             unreachable!()
         }

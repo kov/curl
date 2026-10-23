@@ -31,7 +31,7 @@ fn connect(
         max_age: Some(Duration::from_secs(60)),
         delay: Duration::from_millis(200),
         scope: None,
-        socket: crate::conn::io::SocketOptions::default(),
+        socket: crate::conn::SocketSetup::PLAIN,
         haproxy: false,
         layer: None,
     };
@@ -548,7 +548,7 @@ fn refused_and_silent_attempts() {
     resolved(&mut refused, &mut net, now);
     connect(&mut refused, &mut net, now).unwrap();
     let err = connect(&mut refused, &mut net, now).unwrap_err();
-    let ConnectError::Failed(error) = err else {
+    let ConnectError::Failed(error, _) = err else {
         panic!("{err:?}");
     };
     assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
@@ -598,7 +598,7 @@ fn unresolved_names_and_immediate_failures() {
     resolved(&mut nobody, &mut net, now);
     let err = connect(&mut nobody, &mut net, now).unwrap_err();
     assert!(
-        matches!(&err, ConnectError::Failed(e) if e.kind() == std::io::ErrorKind::ConnectionRefused),
+        matches!(&err, ConnectError::Failed(e, _) if e.kind() == std::io::ErrorKind::ConnectionRefused),
         "{err:?}"
     );
     let premature = Finish {

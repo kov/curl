@@ -13,7 +13,7 @@ use curl_alloc::{TryVec, try_box};
 use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
 
-pub use curl_os::net::{Connect, Recv, Sent, SocketOptions};
+pub use curl_os::net::{Connect, Protocol, Recv, Sent, SocketOption, TcpSocket, adopt, open};
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
 pub use curl_os::wake::Waker;
@@ -49,6 +49,15 @@ pub trait Socket: fmt::Debug + Send {
     fn take_error(&self) -> io::Result<Option<io::Error>>;
 
     fn local_addr(&self) -> io::Result<SocketAddr>;
+
+    /// Set `option` on it.
+    fn set(&self, option: SocketOption) -> io::Result<()>;
+
+    /// Make it nonblocking, as a socket the application opened may not be.
+    fn set_nonblocking(&self) -> io::Result<()>;
+
+    /// Start connecting it to `addr`.
+    fn connect(&self, addr: SocketAddr) -> io::Result<Connect>;
 
     /// Receive into `buf`, which is not empty.
     fn recv(&self, buf: &mut [u8]) -> io::Result<Recv>;
@@ -174,13 +183,9 @@ pub trait Net {
         timeout: Duration,
     ) -> io::Result<u32>;
 
-    /// Open a TCP socket, set it to `options`, and start connecting it to
-    /// `addr`.
-    fn connect(
-        &mut self,
-        addr: SocketAddr,
-        options: SocketOptions,
-    ) -> io::Result<(Box<dyn Socket>, Connect)>;
+    /// Open a nonblocking TCP socket for `addr`'s family, not connected
+    /// yet.
+    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>>;
 
     /// Close a socket the network opened, through its closer.
     fn close(&mut self, socket: Sock);
@@ -211,6 +216,18 @@ impl Socket for curl_os::net::TcpSocket {
         curl_os::net::TcpSocket::local_addr(self)
     }
 
+    fn set(&self, option: SocketOption) -> io::Result<()> {
+        curl_os::net::TcpSocket::set(self, option)
+    }
+
+    fn set_nonblocking(&self) -> io::Result<()> {
+        curl_os::net::TcpSocket::set_nonblocking(self)
+    }
+
+    fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
+        curl_os::net::TcpSocket::connect(self, addr)
+    }
+
     fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
         curl_os::net::TcpSocket::recv(self, buf)
     }
@@ -238,14 +255,9 @@ impl Net for SystemNet {
         poll_together(sockets, fds, timeout)
     }
 
-    fn connect(
-        &mut self,
-        addr: SocketAddr,
-        options: SocketOptions,
-    ) -> io::Result<(Box<dyn Socket>, Connect)> {
-        let (socket, connect) = curl_os::net::connect(addr, options)?;
-        let socket: Box<dyn Socket> = try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?;
-        Ok((socket, connect))
+    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+        let socket = curl_os::net::open(addr, Protocol::Tcp, true)?;
+        Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
     }
 
     fn close(&mut self, socket: Sock) {
@@ -386,6 +398,10 @@ struct Wire {
     read: usize,
     /// The peer closes once its last reply is read.
     then_close: bool,
+    /// The options its socket was set to, in order.
+    options: [Option<SocketOption>; 8],
+    /// Its socket was made nonblocking, after that many options.
+    nonblocking_after: Option<usize>,
     /// The peer closes on a request it has no reply for, as a server
     /// closing an idle connection just as it is reused.
     hang_up_unanswered: bool,
@@ -565,6 +581,15 @@ impl Conversation {
         self
     }
 
+    /// After how many options its socket was made nonblocking, if it
+    /// was: a socket the network opens is nonblocking from the start.
+    pub fn made_nonblocking_after(&self) -> Option<usize> {
+        self.0
+            .lock()
+            .expect("no test panics holding the wire")
+            .nonblocking_after
+    }
+
     /// What the peer was sent so far.
     pub fn received(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -599,9 +624,9 @@ pub struct FakeNet {
     /// The scope of its interface with a link-local address, if it has one.
     link_local: Option<NonZeroU32>,
     /// The sockets open, by number from `FIRST_FAKE`, each with its
-    /// conversation and what it was set to: a closed number is handed out
-    /// again, lowest first, as the kernel does.
-    open: Vec<Option<(Conversation, SocketOptions)>>,
+    /// conversation: a closed number is handed out again, lowest first, as
+    /// the kernel does.
+    open: Vec<Option<Conversation>>,
 }
 
 /// The first number a fake socket gets: past the descriptors a test
@@ -666,7 +691,7 @@ impl FakeNet {
         self
     }
 
-    fn open_number(&mut self, wire: Conversation, options: SocketOptions) -> io::Result<SocketKey> {
+    fn open_number(&mut self, wire: Conversation) -> io::Result<SocketKey> {
         let row = match self.open.iter().position(Option::is_none) {
             Some(row) => row,
             None => {
@@ -676,7 +701,7 @@ impl FakeNet {
                 self.open.len() - 1
             }
         };
-        self.open[row] = Some((wire, options));
+        self.open[row] = Some(wire);
         let n = i32::try_from(row).expect("a test opens few sockets");
         Ok(SocketKey(FIRST_FAKE + n))
     }
@@ -689,16 +714,21 @@ impl FakeNet {
             .as_ref()
             .expect("an open socket")
             .0
-            .0
             .lock()
             .expect("no test panics holding the wire")
             .hung_up = true;
     }
 
-    /// What the open socket `key` was set to as it opened.
-    pub fn socket_options(&self, key: SocketKey) -> SocketOptions {
+    /// The options the open socket `key` was set to, in order.
+    pub fn socket_options(&self, key: SocketKey) -> Vec<SocketOption> {
         let row = usize::try_from(key.0 - FIRST_FAKE).expect("a fake socket's number");
-        self.open[row].as_ref().expect("an open socket").1
+        let wire = self.open[row].as_ref().expect("an open socket");
+        let wire = wire.0.lock().expect("no test panics holding the wire");
+        let mut set = Vec::new();
+        for &option in wire.options.iter().flatten() {
+            set.try_push(option).expect("a test's options fit");
+        }
+        set
     }
 
     /// How many fake sockets are open.
@@ -741,22 +771,19 @@ impl Net for FakeNet {
         }
     }
 
-    fn connect(
-        &mut self,
-        addr: SocketAddr,
-        options: SocketOptions,
-    ) -> io::Result<(Box<dyn Socket>, Connect)> {
-        let Some(&(_, peer)) = self.peers.iter().find(|(a, _)| *a == addr) else {
-            return Err(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED));
-        };
+    /// A socket to the peer at `addr`, if there is one, whose next
+    /// conversation it has; to an address without one, its connect is
+    /// refused at once.
+    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+        let peer = self.peers.iter().find(|(a, _)| *a == addr).map(|&(_, p)| p);
         let wire = match self.conversations.iter().position(|(a, _)| *a == addr) {
-            Some(at) => self.conversations.remove(at).1,
-            None => Conversation(
+            Some(at) if peer.is_some() => self.conversations.remove(at).1,
+            _ => Conversation(
                 curl_alloc::TryArc::try_new(std::sync::Mutex::new(Wire::default()))
                     .map_err(|_| io::ErrorKind::OutOfMemory)?,
             ),
         };
-        let key = self.open_number(wire.clone(), options)?;
+        let key = self.open_number(wire.clone())?;
         // The port the kernel would have picked.
         let port = 40000 + u16::try_from(key.0 - FIRST_FAKE).expect("a test opens few sockets");
         let local = match addr {
@@ -765,20 +792,20 @@ impl Net for FakeNet {
         };
         let now = crate::time::Clock::now(&self.clock);
         let ready_at = match peer {
-            Peer::AcceptsAfter(d) | Peer::RefusesAfter(d) => Some(now.after(d)),
-            Peer::Accepts | Peer::Refuses | Peer::Silent | Peer::HangsUp => None,
+            Some(Peer::AcceptsAfter(d) | Peer::RefusesAfter(d)) => Some(now.after(d)),
+            _ => None,
         };
-        let clock = self.clock.clone();
         let socket = FakeSocket {
             key,
             peer,
             local,
-            clock,
+            connected: std::sync::atomic::AtomicBool::new(false),
+            opened_for: addr,
+            clock: self.clock.clone(),
             ready_at,
             wire,
         };
-        let socket: Box<dyn Socket> = try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?;
-        Ok((socket, Connect::InProgress))
+        Ok(try_box(socket).map_err(|_| io::ErrorKind::OutOfMemory)?)
     }
 
     fn close(&mut self, socket: Sock) {
@@ -817,17 +844,31 @@ impl Net for FakeNet {
     }
 }
 
-/// A socket to a fake peer.
+/// A socket to a fake peer, or to none.
 #[cfg(any(test, feature = "test-util"))]
 #[derive(Debug)]
 struct FakeSocket {
     key: SocketKey,
-    peer: Peer,
+    /// None where nothing is at the address: the connect is refused at
+    /// once.
+    peer: Option<Peer>,
+    /// The address the kernel would bind it to as it connects.
     local: SocketAddr,
+    /// Whether its connect started: only then is it bound.
+    connected: std::sync::atomic::AtomicBool,
+    opened_for: SocketAddr,
     clock: crate::time::ManualClock,
     /// When a peer that answers late answers.
     ready_at: Option<Instant>,
     wire: Conversation,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl FakeSocket {
+    /// Its peer; nothing is heard from an address without one.
+    fn peer(&self) -> Peer {
+        self.peer.unwrap_or(Peer::Silent)
+    }
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -844,7 +885,7 @@ impl Socket for FakeSocket {
                 later: None,
             };
         }
-        let mut now = match (self.peer, self.ready_at) {
+        let mut now = match (self.peer(), self.ready_at) {
             (Peer::HangsUp, _) => {
                 return Readiness::Known {
                     now: Events::OUT | Events::HUP,
@@ -859,7 +900,7 @@ impl Socket for FakeSocket {
             }
             (Peer::AcceptsAfter(_) | Peer::RefusesAfter(_) | Peer::Silent, _) => Events::NONE,
         };
-        let refuses = matches!(self.peer, Peer::Refuses | Peer::RefusesAfter(_));
+        let refuses = matches!(self.peer(), Peer::Refuses | Peer::RefusesAfter(_));
         if now == Events::OUT && !refuses && wire.readable() {
             now = now | Events::IN;
         }
@@ -872,7 +913,7 @@ impl Socket for FakeSocket {
     }
 
     fn take_error(&self) -> io::Result<Option<io::Error>> {
-        Ok(match self.peer {
+        Ok(match self.peer() {
             Peer::Refuses | Peer::RefusesAfter(_) => {
                 Some(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED))
             }
@@ -880,8 +921,44 @@ impl Socket for FakeSocket {
         })
     }
 
+    /// Bound as its connect starts: unbound before, and after one
+    /// refused at once.
     fn local_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.local)
+        if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(self.local);
+        }
+        Ok(match self.local {
+            SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)),
+            SocketAddr::V6(_) => SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, 0)),
+        })
+    }
+
+    fn set(&self, option: SocketOption) -> io::Result<()> {
+        let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
+        let free = wire.options.iter_mut().find(|o| o.is_none());
+        *free.expect("a test sets few options") = Some(option);
+        Ok(())
+    }
+
+    fn set_nonblocking(&self) -> io::Result<()> {
+        let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
+        wire.nonblocking_after = Some(wire.options.iter().flatten().count());
+        Ok(())
+    }
+
+    /// Its peer is the one at the address it was opened for, which it
+    /// must connect to.
+    fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
+        assert_eq!(
+            addr, self.opened_for,
+            "a fake socket connects where it was opened for"
+        );
+        if self.peer.is_none() {
+            return Err(io::Error::from_raw_os_error(libc_errno::ECONNREFUSED));
+        }
+        self.connected
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(Connect::InProgress)
     }
 
     fn recv(&self, buf: &mut [u8]) -> io::Result<Recv> {
@@ -889,7 +966,7 @@ impl Socket for FakeSocket {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         wire.reads += 1;
         wire.last_read_room = buf.len();
-        if wire.hung_up || self.peer == Peer::HangsUp {
+        if wire.hung_up || self.peer() == Peer::HangsUp {
             return Ok(Recv::Eof);
         }
         while wire.answered < wire.replies.len() {
@@ -969,6 +1046,47 @@ mod libc_errno {
     pub(super) const EPIPE: i32 = 32;
 }
 
+/// A fake network the test reaches while the multi holds it.
+#[cfg(test)]
+pub(crate) struct SharedNet(pub(crate) std::sync::Arc<std::sync::Mutex<FakeNet>>);
+
+#[cfg(test)]
+impl Net for SharedNet {
+    fn poll(
+        &mut self,
+        sockets: &mut [SocketPoll<'_>],
+        fds: &mut [PollFd<'_>],
+        timeout: Duration,
+    ) -> io::Result<u32> {
+        self.0.lock().unwrap().poll(sockets, fds, timeout)
+    }
+
+    fn open(&mut self, addr: SocketAddr) -> io::Result<Box<dyn Socket>> {
+        self.0.lock().unwrap().open(addr)
+    }
+
+    fn close(&mut self, socket: Sock) {
+        self.0.lock().unwrap().close(socket);
+    }
+
+    fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+        self.0.lock().unwrap().resolve(name, family)
+    }
+
+    fn link_local_scope(&mut self) -> Option<NonZeroU32> {
+        self.0.lock().unwrap().link_local_scope()
+    }
+}
+
+/// A socket opened on `net` for `at`, its connect started, for tests that
+/// need one connecting.
+#[cfg(test)]
+pub(crate) fn dial(net: &mut dyn Net, at: SocketAddr) -> Box<dyn Socket> {
+    let socket = net.open(at).expect("a test's socket opens");
+    socket.connect(at).expect("a test's connect starts");
+    socket
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write as _;
@@ -1011,9 +1129,7 @@ mod tests {
     #[test]
     fn sockets_and_descriptors_are_polled_together() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let (socket, _) = SystemNet
-            .connect(listener.local_addr().unwrap(), SocketOptions::default())
-            .unwrap();
+        let socket = dial(&mut SystemNet, listener.local_addr().unwrap());
         let (mut a, b) = UnixStream::pair().unwrap();
         a.write_all(b"x").unwrap();
         let mut sockets = [SocketPoll::new(&*socket, Events::OUT)];
@@ -1038,12 +1154,8 @@ mod tests {
     #[test]
     fn more_than_fit_on_the_stack_are_polled() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let (one, _) = SystemNet
-            .connect(listener.local_addr().unwrap(), SocketOptions::default())
-            .unwrap();
-        let (two, _) = SystemNet
-            .connect(listener.local_addr().unwrap(), SocketOptions::default())
-            .unwrap();
+        let one = dial(&mut SystemNet, listener.local_addr().unwrap());
+        let two = dial(&mut SystemNet, listener.local_addr().unwrap());
         let pairs: Vec<_> = (0..9).map(|_| UnixStream::pair().unwrap()).collect();
         (&pairs[8].0).write_all(b"x").unwrap();
         let mut sockets = [
@@ -1073,8 +1185,7 @@ mod tests {
         let clock = crate::time::ManualClock::new().unwrap();
         let at = SocketAddr::from(([127, 0, 0, 1], 1));
         let mut net = FakeNet::new(clock).with_peer(at, Peer::Accepts);
-        let (socket, _) = net.connect(at, SocketOptions::default()).unwrap();
-        drop(Sock::new(socket, Closer::System));
+        drop(Sock::new(dial(&mut net, at), Closer::System));
     }
 
     /// Fake sockets get the lowest free number, and a fake peer's answer
@@ -1088,11 +1199,17 @@ mod tests {
             .with_peer(at(1), Peer::Accepts)
             .with_peer(at(2), Peer::Refuses)
             .with_peer(at(3), Peer::Silent);
-        let err = net.connect(at(9), SocketOptions::default()).unwrap_err();
+        let nobody = net.open(at(9)).unwrap();
+        let err = nobody.connect(at(9)).unwrap_err();
         assert_eq!(err.raw_os_error(), Some(111), "no peer: refused at once");
-        let (a, _) = net.connect(at(1), SocketOptions::default()).unwrap();
-        let (b, _) = net.connect(at(2), SocketOptions::default()).unwrap();
-        let (c, _) = net.connect(at(3), SocketOptions::default()).unwrap();
+        let unbound = SocketAddr::from(([0, 0, 0, 0], 0));
+        assert_eq!(nobody.local_addr().unwrap(), unbound, "never bound");
+        net.close(Sock::new(nobody, Closer::System));
+        let a = net.open(at(1)).unwrap();
+        assert_eq!(a.local_addr().unwrap(), unbound, "bound as it connects");
+        assert_eq!(a.connect(at(1)).unwrap(), Connect::InProgress);
+        assert_eq!(a.local_addr().unwrap(), at(40000));
+        let (b, c) = (dial(&mut net, at(2)), dial(&mut net, at(3)));
         assert_eq!(
             [a.key(), b.key(), c.key()].map(SocketKey::get),
             [1000, 1001, 1002]
@@ -1124,10 +1241,26 @@ mod tests {
         );
         assert_eq!(clock.now().since(start), Duration::from_secs(5));
         net.close(Sock::new(b, Closer::System));
-        let (d, _) = net.connect(at(1), SocketOptions::default()).unwrap();
+        let d = dial(&mut net, at(1));
         assert_eq!(d.key().get(), 1001, "the lowest free number again");
         for s in [a, c, d] {
             net.close(Sock::new(s, Closer::System));
         }
+    }
+
+    /// A fake socket keeps the options it was set to, in order.
+    #[test]
+    fn a_fake_socket_keeps_its_options() {
+        let clock = crate::time::ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], 1));
+        let mut net = FakeNet::new(clock).with_peer(at, Peer::Accepts);
+        let s = net.open(at).unwrap();
+        s.set(SocketOption::NoDelay).unwrap();
+        s.set(SocketOption::KeepIdle(5)).unwrap();
+        assert_eq!(
+            net.socket_options(s.key()),
+            [SocketOption::NoDelay, SocketOption::KeepIdle(5)]
+        );
+        net.close(Sock::new(s, Closer::System));
     }
 }

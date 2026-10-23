@@ -28,6 +28,7 @@ use crate::ffi::{
 use crate::gate::{EasyCall, EasyStack, Frame, MultiCall, MultiStack, Reach, Recursive};
 use crate::multi::{ShimEvents, ShimMulti};
 use crate::share::ShimShare;
+use crate::sockets::CSockets;
 
 /// C's `CURLEASY_MAGIC_NUMBER`, which tells a live handle.
 const MAGIC: u32 = 0xc0de_dbad;
@@ -51,6 +52,9 @@ pub(crate) struct ShimEasy {
     /// The trees a POST may send and the form chain, made the first time
     /// one is set: few handles post either.
     posted: OnceCell<Box<crate::mime::Posted>>,
+    /// The application's socket functions and data, made the first time
+    /// one is set: few handles set any.
+    sockets: OnceCell<Box<Cell<CSockets>>>,
     /// `CURLOPT_ERRORBUFFER`.
     pub(crate) errbuf: Cell<*mut c_char>,
     /// The share the application gave (`CURLOPT_SHARE`), whose core the
@@ -151,6 +155,20 @@ impl ShimEasy {
         Ok(self.posted().expect("made above"))
     }
 
+    /// The application's socket functions and data.
+    pub(crate) fn sockets(&self) -> CSockets {
+        self.sockets.get().map_or(CSockets::NONE, |c| c.get())
+    }
+
+    /// Room for the socket functions, made now if not yet.
+    pub(crate) fn sockets_room(&self) -> Result<&Cell<CSockets>, OutOfMemory> {
+        if self.sockets.get().is_none() {
+            let made = try_box(Cell::new(CSockets::NONE))?;
+            assert!(self.sockets.set(made).is_ok(), "not made yet");
+        }
+        Ok(self.sockets.get().expect("made above"))
+    }
+
     /// A multi's own handle, which no call may use.
     pub(crate) fn internal() -> ShimEasy {
         ShimEasy::empty(true, CCallbacks::new(), CSettings::new())
@@ -167,6 +185,7 @@ impl ShimEasy {
             post: RefCell::new(callbacks::Post::new()),
             post_body: Cell::new(PostBody::Own),
             posted: OnceCell::new(),
+            sockets: OnceCell::new(),
             errbuf: Cell::new(ptr::null_mut()),
             share: Cell::new(None),
             private: Cell::new(None),
@@ -445,6 +464,12 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         Ok(dup) => dup,
         Err(OutOfMemory) => return ptr::null_mut(),
     };
+    // The copy's socket functions call through it.
+    if copy_sockets(easy, dup).is_err() {
+        // SAFETY: just made, and handed to no one.
+        unsafe { curl_easy_cleanup(dup.as_ptr().cast()) };
+        return ptr::null_mut();
+    }
     // The copy posts a copy of the tree, its own (`Curl_mime_duppart`).
     if crate::mime::duplicate(easy, dup).is_err() {
         // SAFETY: just made, and handed to no one.
@@ -454,6 +479,20 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
     dup.as_ptr().cast()
 }
 const _: ffi::proto::curl_easy_duphandle = curl_easy_duphandle;
+
+/// The socket functions of `easy`, set on its copy `dup`, whose opener
+/// and configurer call through the copy.
+fn copy_sockets(easy: &ShimEasy, dup: NonNull<ShimEasy>) -> Result<(), OutOfMemory> {
+    let c = easy.sockets();
+    if easy.sockets.get().is_none() {
+        return Ok(());
+    }
+    // SAFETY: just made, and reached only through this pointer.
+    let copy = unsafe { dup.as_ref() };
+    copy.sockets_room()?.set(c);
+    let synced = copy.with_options(|o| crate::sockets::sync(o, dup, &c));
+    synced.expect("a copy is in no callback")
+}
 
 /// # Safety
 ///
@@ -479,6 +518,9 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     }
     crate::mime::forget_post_state(easy);
     easy.errbuf.set(ptr::null_mut());
+    if let Some(sockets) = easy.sockets.get() {
+        sockets.set(CSockets::NONE);
+    }
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as
     // C's cannot.

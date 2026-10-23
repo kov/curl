@@ -109,3 +109,20 @@ witness: curl-core multi::socket_tests::an_attempt_failing_in_a_drive_is_removed
 --- new
         let _ = me;
         self.step.rest.net.close(socket);
+
+=== a copy's socket functions call through the handle it was copied from
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::socket_functions_are_called_as_c_calls_them
+features: debug-hooks
+--- old
+    if copy_sockets(easy, dup).is_err() {
+--- new
+    if false {
+
+=== a reset handle keeps its socket functions for the next data set
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi handle_tests::socket_functions_are_called_as_c_calls_them
+features: debug-hooks
+--- old
+        sockets.set(CSockets::NONE);
+--- new

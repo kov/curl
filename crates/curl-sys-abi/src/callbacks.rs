@@ -378,7 +378,7 @@ unsafe impl Send for Adapter {}
 unsafe impl Sync for Adapter {}
 
 impl Adapter {
-    fn easy(&self) -> &ShimEasy {
+    pub(crate) fn easy(&self) -> &ShimEasy {
         // SAFETY: the handle outlives the options that hold its adapters:
         // it is freed only after its `Easy` is dropped, and a copy of the
         // options is given its own adapters.

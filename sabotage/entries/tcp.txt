@@ -73,3 +73,64 @@ witness: curl-core proto::http::tests::tcp_trace::a_redial_closes_the_socket_as_
             cx.of(Component::H1Proxy, format_args!("destroy"));
 --- new
             let _ = Component::H1Proxy;
+
+=== a socket the application opened is left blocking
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::an_opener_may_change_the_address
+--- old
+        if opened.by_application
+            && let Err(error) = socket.set_nonblocking()
+--- new
+        if false
+            && let Err(error) = socket.set_nonblocking()
+
+=== a socket the application connected is connected again
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_socket_already_connected_wins_as_it_opens
+--- old
+            Configured::AlreadyConnected => true,
+--- new
+            Configured::AlreadyConnected => false,
+
+=== a socket the configurer failed closes through the system, not the application's closer
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_configurer_failing_a_socket_aborts_as_c
+--- old
+            Configured::Abort => {
+                cx.net().close(Sock::new(socket, self.closer.clone()));
+--- new
+            Configured::Abort => {
+                cx.net().close(Sock::new(socket, Closer::System));
+
+=== an attempt connects to the address it had before the opener changed it
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::an_opener_may_change_the_address
+--- old
+        let opened = cx.open_socket(&mut remote);
+--- new
+        let opened = cx.open_socket(&mut remote.clone());
+
+=== keepalive's times and count are set with keepalive off
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::sockets_are_set_as_the_options_say
+--- old
+    if !alive.on {
+        return;
+    }
+--- new
+
+=== an opener out of memory fails the transfer for memory
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::an_opener_out_of_memory_fails_its_attempt
+--- old
+            Err(error) if !opened.by_application && error.kind() == io::ErrorKind::OutOfMemory => {
+--- new
+            Err(error) if error.kind() == io::ErrorKind::OutOfMemory => {
+
+=== the setup's failure is a refused connect whatever the last attempt's was
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tcp_trace::a_configurer_failing_a_socket_aborts_as_c
+--- old
+    let why = failure.message();
+--- new
+    let why = ErrorKind::CouldntConnect.message();

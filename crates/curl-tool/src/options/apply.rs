@@ -266,6 +266,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) retry_max_time_ms: u64,
     /// `--retry-all-errors`: any failure is tried again.
     pub(crate) retry_all_errors: bool,
+    /// `--retry-connrefused`: a connection refused is tried again.
+    pub(crate) retry_connrefused: bool,
     /// `--location` and `--follow`.
     pub(crate) follow: Follow,
     /// `--location-trusted`.
@@ -1090,6 +1092,7 @@ pub(crate) fn apply<'a>(
         Opt::RetryDelay => line.current().retry_delay_ms = value.millis().min(i32::MAX as u64),
         Opt::RetryMaxTime => line.current().retry_max_time_ms = value.millis(),
         Opt::RetryAllErrors => line.current().retry_all_errors = value.toggle(),
+        Opt::RetryConnrefused => line.current().retry_connrefused = value.toggle(),
         Opt::DisallowUsernameInUrl => line.current().disallow_username = value.toggle(),
         // Each fills the other in when not given (`opt_unum`).
         Opt::SpeedLimit => {
@@ -1445,7 +1448,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyTlsv1
         | Opt::Pubkey
         | Opt::Quote
-        | Opt::RetryConnrefused
         | Opt::SaslAuthzid
         | Opt::SaslIr
         | Opt::ServiceName

@@ -1546,6 +1546,8 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             return kind;
         }
         ConnectError::Failed(failure) => {
+            let (Failure::Immediate { error, .. } | Failure::Attempt { error, .. }) = &failure;
+            cx.report_mut().set_connect_error(error.kind());
             trace_failure(cx, failure);
             // No attempt running, and no address left.
             trace::of(

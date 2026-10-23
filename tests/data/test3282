@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+--retry
+--retry-connrefused
+</keywords>
+</info>
+
+# Client-side
+<client>
+<features>
+http
+</features>
+<name>
+--retry-connrefused tries a refused connection again
+</name>
+<command>
+http://%HOSTIP:%NOLISTENPORT/%TESTNUMBER --retry 1 --retry-delay 1 --retry-connrefused -s -w "%{num_retries}\n"
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+# 7 == CURLE_COULDNT_CONNECT, after the one retry allowed
+<verify>
+<errorcode>
+7
+</errorcode>
+<stdout>
+1
+</stdout>
+</verify>
+</testcase>

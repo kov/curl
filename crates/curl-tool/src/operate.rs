@@ -886,6 +886,7 @@ fn backoff(last: u64) -> u64 {
 enum Reason {
     AllErrors,
     Timeout,
+    ConnRefused,
     Http,
 }
 
@@ -894,6 +895,7 @@ impl Reason {
         match self {
             Reason::AllErrors => b"(retrying all errors)",
             Reason::Timeout => b": timeout",
+            Reason::ConnRefused => b": connection refused",
             Reason::Http => b": HTTP error",
         }
     }
@@ -901,14 +903,16 @@ impl Reason {
 
 /// Why an attempt that ended with `result`, its last response `code` over
 /// `protocol`, would be tried again, if it would (`retrycheck`): a failure
-/// that may pass, an HTTP response saying so, or with `--retry-all-errors`
-/// any failure. An FTP 4xx (`RETRY_FTP`) and a refused connection
-/// (`RETRY_CONNREFUSED`) join with FTP and `--retry-connrefused`.
+/// that may pass, a connection refused (`connect_error` says why
+/// connecting failed) with `--retry-connrefused`, an HTTP response saying
+/// so, or with `--retry-all-errors` any failure. An FTP 4xx (`RETRY_FTP`)
+/// joins with FTP.
 fn reason(
     op: &Operation<'_>,
     result: Result<(), ErrorKind>,
     protocol: Option<Protocol>,
     code: Option<u16>,
+    connect_error: Option<std::io::ErrorKind>,
 ) -> Option<Reason> {
     let passing = matches!(
         result,
@@ -920,6 +924,9 @@ fn reason(
     let failed_http = op.fail != Fail::Off && result == Err(ErrorKind::HttpReturnedError);
     let reason = if passing {
         Some(Reason::Timeout)
+    } else if op.retry_connrefused && result == Err(ErrorKind::CouldntConnect) {
+        (connect_error == Some(std::io::ErrorKind::ConnectionRefused))
+            .then_some(Reason::ConnRefused)
     } else if (result.is_ok() || failed_http)
         && protocol == Some(Protocol::Http)
         && matches!(code, Some(408 | 429 | 500 | 502 | 503 | 504 | 522 | 524))
@@ -961,7 +968,13 @@ impl Retrying {
             return Again::No(result);
         }
         let report = easy.report();
-        let Some(reason) = reason(op, result, report.protocol(), report.response_code()) else {
+        let Some(reason) = reason(
+            op,
+            result,
+            report.protocol(),
+            report.response_code(),
+            report.connect_error(),
+        ) else {
             return Again::No(result);
         };
         // `retry_sleep`: what the server asks for, or the wait given, or
@@ -1953,25 +1966,54 @@ mod tests {
         let mut op = Operation::default();
         let http = Some(Protocol::Http);
         let timed_out = Err(ErrorKind::OperationTimedout);
-        assert_eq!(reason(&op, timed_out, None, None), Some(Reason::Timeout));
+        assert_eq!(
+            reason(&op, timed_out, None, None, None),
+            Some(Reason::Timeout)
+        );
         let resolve = Err(ErrorKind::CouldntResolveHost);
-        assert_eq!(reason(&op, resolve, None, None), Some(Reason::Timeout));
+        assert_eq!(
+            reason(&op, resolve, None, None, None),
+            Some(Reason::Timeout)
+        );
         for code in [408, 429, 500, 502, 503, 504, 522, 524] {
-            assert_eq!(reason(&op, Ok(()), http, Some(code)), Some(Reason::Http));
+            assert_eq!(
+                reason(&op, Ok(()), http, Some(code), None),
+                Some(Reason::Http)
+            );
         }
         for code in [200, 404, 501, 505, 523] {
-            assert_eq!(reason(&op, Ok(()), http, Some(code)), None, "{code}");
+            assert_eq!(reason(&op, Ok(()), http, Some(code), None), None, "{code}");
         }
-        assert_eq!(reason(&op, Ok(()), None, Some(503)), None);
+        assert_eq!(reason(&op, Ok(()), None, Some(503), None), None);
         let failed = Err(ErrorKind::HttpReturnedError);
-        assert_eq!(reason(&op, failed, http, Some(503)), None);
+        assert_eq!(reason(&op, failed, http, Some(503), None), None);
         op.fail = Fail::WithoutBody;
-        assert_eq!(reason(&op, failed, http, Some(503)), Some(Reason::Http));
+        assert_eq!(
+            reason(&op, failed, http, Some(503), None),
+            Some(Reason::Http)
+        );
         let refused = Err(ErrorKind::CouldntConnect);
-        assert_eq!(reason(&op, refused, http, None), None);
+        assert_eq!(reason(&op, refused, http, None, None), None);
+        // Refused, with `--retry-connrefused`; and not otherwise.
+        let why = Some(std::io::ErrorKind::ConnectionRefused);
+        assert_eq!(reason(&op, refused, http, None, why), None);
+        op.retry_connrefused = true;
+        assert_eq!(
+            reason(&op, refused, http, None, why),
+            Some(Reason::ConnRefused)
+        );
+        let timed_out_connect = Some(std::io::ErrorKind::TimedOut);
+        assert_eq!(reason(&op, refused, http, None, timed_out_connect), None);
+        assert_eq!(
+            reason(&op, Ok(()), http, Some(503), why),
+            Some(Reason::Http)
+        );
         op.retry_all_errors = true;
-        assert_eq!(reason(&op, refused, http, None), Some(Reason::AllErrors));
-        assert_eq!(reason(&op, Ok(()), http, Some(404)), None);
+        assert_eq!(
+            reason(&op, refused, http, None, None),
+            Some(Reason::AllErrors)
+        );
+        assert_eq!(reason(&op, Ok(()), http, Some(404), None), None);
     }
 
     /// No wait given: a second, then doubled, up to ten minutes.

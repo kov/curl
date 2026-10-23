@@ -111,6 +111,9 @@ pub struct TransferReport {
     /// The method the last request authenticated with to the proxy, or
     /// was chosen for the next (`info.proxyauthpicked`).
     proxy_auth_used: AuthMethods,
+    /// Why the last attempt to connect failed, when connecting failed
+    /// (`state.os_errno`, as a connect sets it).
+    connect_error: Option<std::io::ErrorKind>,
 }
 
 impl TransferReport {
@@ -386,6 +389,17 @@ impl TransferReport {
 
     pub(crate) fn set_redirect_url(&mut self, url: Vec<u8>) {
         self.redirect_url = Some(url);
+    }
+
+    /// Why the last attempt to connect failed, when the transfer failed
+    /// to connect: refused, unreachable, timed out (`CURLINFO_OS_ERRNO`
+    /// after `CURLE_COULDNT_CONNECT`).
+    pub fn connect_error(&self) -> Option<std::io::ErrorKind> {
+        self.connect_error
+    }
+
+    pub(crate) fn set_connect_error(&mut self, kind: std::io::ErrorKind) {
+        self.connect_error = Some(kind);
     }
 
     /// Why the transfer failed, in the words of the first reason given.

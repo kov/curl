@@ -1153,3 +1153,11 @@ witness: curl-tool output::tests::links_a_location_as_c_does
     matches!(&scheme[..], b"http" | b"https" | b"ftp" | b"ftps").then_some(target)
 --- new
     Some(target)
+
+=== a refused connection is tried again without --retry-connrefused
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::retries_for_c_reasons
+--- old
+    } else if op.retry_connrefused && result == Err(ErrorKind::CouldntConnect) {
+--- new
+    } else if result == Err(ErrorKind::CouldntConnect) {

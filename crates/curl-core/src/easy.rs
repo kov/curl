@@ -1022,7 +1022,8 @@ mod tests {
     }
 
     /// Over the system's network: a closed port refuses with C's words,
-    /// and a listening one is connected to, both traced as C traces them.
+    /// and the refusal is reported; a listening one is connected to, both
+    /// traced as C traces them.
     #[test]
     fn connects_over_loopback() {
         let traced = |url: &str| {
@@ -1039,13 +1040,14 @@ mod tests {
                 .map(|(_, l)| String::from_utf8(l.clone()).unwrap())
                 .filter(|l| !l.starts_with("!!!") && !l.starts_with("This is a debug build"))
                 .collect();
-            (result, text)
+            (result, text, e.report().connect_error())
         };
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = closed.local_addr().unwrap().port();
         drop(closed);
-        let (result, text) = traced(&format!("tcp://127.0.0.1:{port}/"));
+        let (result, text, why) = traced(&format!("tcp://127.0.0.1:{port}/"));
         assert_eq!(result, Err(ErrorKind::CouldntConnect));
+        assert_eq!(why, Some(std::io::ErrorKind::ConnectionRefused));
         assert_eq!(text[0], format!("  Trying 127.0.0.1:{port}...\n"));
         let refused = format!("connect to 127.0.0.1 port {port} from 127.0.0.1 port ");
         assert!(text[1].starts_with(&refused), "{text:?}");
@@ -1063,8 +1065,8 @@ mod tests {
 
         let listening = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listening.local_addr().unwrap().port();
-        let (result, text) = traced(&format!("tcp://127.0.0.1:{port}/"));
-        assert_eq!(result, Ok(()));
+        let (result, text, why) = traced(&format!("tcp://127.0.0.1:{port}/"));
+        assert_eq!((result, why), (Ok(()), None));
         let (accepted, from) = listening.accept().unwrap();
         drop(accepted);
         let established = format!(

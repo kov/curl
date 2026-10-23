@@ -1751,7 +1751,7 @@ pub struct TlsOptions {
 impl ColdGroup for TlsOptions {
     const UNSET: &'static TlsOptions = &TlsOptions::NONE;
     const NONE: TlsOptions = TlsOptions {
-        min_version: TlsMinVersion::Default,
+        min_version: TlsMinVersion::Tls1_2,
         max_version: TlsMaxVersion::None,
         ssl_options: SslOptions::NONE,
         verify_status: false,
@@ -1863,16 +1863,16 @@ impl CaSetting {
     }
 }
 
-/// The oldest TLS version a transfer allows (`CURL_SSLVERSION_*`).
+/// The oldest TLS version a transfer allows (`CURL_SSLVERSION_*`). C
+/// keeps `CURL_SSLVERSION_DEFAULT` as TLS 1.2 (`Curl_setopt_SSLVERSION`),
+/// so a transfer that asks for 1.2 matches one that asks for nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TlsMinVersion {
-    /// The library's own floor.
-    #[default]
-    Default,
     /// Any TLS 1.x (`CURL_SSLVERSION_TLSv1`).
     Tls1,
     Tls1_0,
     Tls1_1,
+    #[default]
     Tls1_2,
     Tls1_3,
 }

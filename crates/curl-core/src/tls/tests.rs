@@ -29,7 +29,7 @@ fn every_setting_tells_two_identities_apart() {
         ("verify_peer", |i| i.verify_peer = false),
         ("verify_host", |i| i.verify_host = false),
         ("min_version", |i| {
-            i.options.min_version = TlsMinVersion::Tls1_2
+            i.options.min_version = TlsMinVersion::Tls1_3
         }),
         ("max_version", |i| {
             i.options.max_version = TlsMaxVersion::Default

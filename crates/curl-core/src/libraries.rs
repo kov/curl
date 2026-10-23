@@ -1,14 +1,16 @@
 //! What the C libraries bound beside the core do for a handle: the
-//! content codings they undo and the signatures they make. The core links
-//! none of them; whoever builds a handle (the shim, the tool) gives it one
-//! `&'static Libraries` naming what its build has.
+//! content codings they undo, the signatures they make and the TLS they
+//! speak. The core links none of them; whoever builds a handle (the shim,
+//! the tool) gives it one `&'static Libraries` naming what its build has.
 
 use std::fmt;
 
 use crate::coding::Decoders;
+use crate::tls::TlsBackend;
 
 /// The libraries a handle uses. A handle without any is given
-/// `Libraries::NONE`: it undoes no coding and signs no Ed25519.
+/// `Libraries::NONE`: it undoes no coding, signs no Ed25519 and speaks no
+/// TLS.
 #[derive(Clone, Copy, Debug)]
 pub struct Libraries {
     /// The content codings it undoes.
@@ -17,12 +19,16 @@ pub struct Libraries {
     /// does: without it, they are refused as in a C build whose TLS
     /// library lacks it.
     pub ed25519: Option<&'static dyn Ed25519>,
+    /// The TLS library, if any: without it, no scheme that needs TLS is
+    /// built in, as in a C build without one.
+    pub tls: Option<&'static dyn TlsBackend>,
 }
 
 impl Libraries {
     pub const NONE: Libraries = Libraries {
         decoders: Decoders::none(),
         ed25519: None,
+        tls: None,
     };
 }
 
@@ -114,6 +120,9 @@ mod tests {
             ..Libraries::NONE
         };
         let printed = format!("{libraries:?}");
-        assert!(printed.ends_with("ed25519: Some(Ed25519) }"), "{printed}");
+        assert!(
+            printed.ends_with("ed25519: Some(Ed25519), tls: None }"),
+            "{printed}"
+        );
     }
 }

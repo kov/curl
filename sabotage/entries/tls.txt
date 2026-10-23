@@ -9,3 +9,138 @@ witness: curl-core conn::tests::routes_compare_their_tls
             && *verify_host == other.verify_host
 --- new
         *verify_host == other.verify_host
+
+=== the bytes past a proxy's answer are not read first by the TLS session
+file: crates/curl-core/src/tls.rs
+witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_followed_its_answer_first
+--- old
+        if let Some(n) = std::num::NonZeroUsize::new(self.early.len().min(buf.len())) {
+--- new
+        if let Some(n) = std::num::NonZeroUsize::new(self.early.len().min(buf.len())).filter(|_| false) {
+
+=== the bytes past a proxy's answer stay with the stream, not the TLS layer
+file: crates/curl-core/src/conn/stream.rs
+witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_followed_its_answer_first
+--- old
+        let layer = layer(self.rx.take())?;
+--- new
+        let layer = layer(Vec::new())?;
+
+=== the origin's TLS is made before the PROXY protocol's line
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::the_proxy_protocol_s_line_goes_before_tls
+--- old
+    if c.lease.sends_preface() && !made.has(Made::PREFACE) {
+        return Some(Due::Preface);
+    }
+    if c.route.tls.is_some() && !made.has(Made::TLS) {
+        return Some(Due::Tls);
+    }
+--- new
+    if c.route.tls.is_some() && !made.has(Made::TLS) {
+        return Some(Due::Tls);
+    }
+    if c.lease.sends_preface() && !made.has(Made::PREFACE) {
+        return Some(Due::Preface);
+    }
+
+=== a TLS route's connection is not dialed for its handshake
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
+--- old
+        if self.route.handshakes() || setup.haproxy || self.route.tls.is_some() {
+--- new
+        if self.route.handshakes() || setup.haproxy {
+
+=== a read waiting on TLS to write waits to read
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::a_read_waits_to_write_what_tls_still_has_to_send
+--- old
+            TlsWait::Send => Events::OUT,
+--- new
+            TlsWait::Send => wanted,
+
+=== a TLS handshake's pollset ignores what its layer waits for
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_handshake_waits_to_write_while_it_reads
+--- old
+            Handshake::Tls => lease.handshake_pollset(),
+--- new
+            Handshake::Tls => Events::NONE,
+
+=== the TLS layer asks its session for less than the caller's length
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::a_read_asks_the_session_for_the_transfer_s_length
+--- old
+        session.recv(&mut io, buf)
+--- new
+        let n = buf.len().min(4096);
+        session.recv(&mut io, &mut buf[..n])
+
+=== bytes a TLS session holds are not pending
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::tls::bytes_tls_holds_are_read_without_waiting
+--- old
+        !self.early.is_empty() || self.session.pending() || below.data_pending()
+--- new
+        !self.early.is_empty() || below.data_pending()
+
+=== a TLS layer's shutdown says no goodbye
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core multi::shutdown_tests::a_tls_connection_says_goodbye_as_it_closes
+--- old
+        session.shutdown(&mut io)
+--- new
+        Ok(Handshake::Done)
+
+=== https is built in without a TLS library
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::http::tests::tls::https_without_a_tls_library_is_not_supported
+--- old
+            b"https" if cx.easy().libraries().tls.is_some() => ProtoState::Http(
+--- new
+            b"https" => ProtoState::Http(
+
+=== https goes whole to an HTTP proxy rather than through a tunnel
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_followed_its_answer_first
+--- old
+    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some() || secured) {
+--- new
+    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some()) {
+
+=== https's default port is HTTP's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::tls::https_through_a_proxy_reads_what_followed_its_answer_first
+--- old
+        if self.secured() { 443 } else { 80 }
+--- new
+        80
+
+=== an https connection marks no app connect time
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::an_https_get_goes_through_its_tls_layer
+--- old
+    if c.route.tls.is_some() {
+        let now = cx.now();
+--- new
+    if false {
+        let now = cx.now();
+
+=== the chain shows no TLS filter
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::setup_trace::an_https_setup_is_traced_as_c
+--- old
+        if added.tls {
+            push(Component::Ssl);
+        }
+--- new
+
+=== a secure cookie goes over TLS only to this host
+file: crates/curl-core/src/proto/http/cookies.rs
+witness: curl-core proto::http::tests::tls::secure_cookies_go_over_tls
+--- old
+        self.secured
+            || self.host.eq_ignore_ascii_case(b"localhost")
+--- new
+        self.host.eq_ignore_ascii_case(b"localhost")

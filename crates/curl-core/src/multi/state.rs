@@ -31,6 +31,7 @@ use crate::share::Kind;
 
 mod haproxy;
 mod socks;
+mod tls;
 mod tunnel;
 use crate::components::Component;
 use crate::proto::http1::follow;
@@ -166,7 +167,8 @@ pub(crate) struct Connecting {
     handshake: Option<Box<Handshake>>,
 }
 
-/// A handshake with a proxy, over the connection to it.
+/// A handshake over the connection to the first hop: a proxy's, or the
+/// origin's TLS.
 #[derive(Debug)]
 enum Handshake {
     Socks(socks::Socks),
@@ -174,6 +176,9 @@ enum Handshake {
     Connect(tunnel::Tunnel),
     /// The PROXY protocol's line, once the connection is up.
     Haproxy(haproxy::Preface),
+    /// The origin's TLS, whose state is the layer on the connection's
+    /// stream.
+    Tls,
 }
 
 impl Handshake {
@@ -183,15 +188,18 @@ impl Handshake {
             Handshake::Socks(_) => Component::Socks,
             Handshake::Connect(_) => Component::HttpProxy,
             Handshake::Haproxy(_) => Component::Haproxy,
+            Handshake::Tls => Component::Ssl,
         }
     }
 
-    /// What it waits for on the connection's socket.
-    fn interest(&self) -> Events {
+    /// What it waits for on the connection's socket, which `lease`
+    /// holds: TLS's, what its layer says.
+    fn interest(&self, lease: &ConnLease) -> Events {
         match self {
             Handshake::Socks(s) => s.interest(),
             Handshake::Connect(t) => t.interest(),
             Handshake::Haproxy(p) => p.interest(),
+            Handshake::Tls => lease.handshake_pollset(),
         }
     }
 }
@@ -531,7 +539,7 @@ impl TransferState {
                 // too, as the socket's filter, connected but not yet in
                 // use, adds (`cf_socket_adjust_pollset`).
                 let events = match c.handshake.as_ref() {
-                    Some(h) => h.interest() | Events::IN,
+                    Some(h) => h.interest(&c.lease) | Events::IN,
                     None => Events::OUT,
                 };
                 for s in c.lease.sockets() {
@@ -1350,11 +1358,13 @@ fn connecting<H: Host>(
                 kind,
                 format_args!("Proxy CONNECT aborted due to timeout"),
             ),
-            Some(Handshake::Socks(_) | Handshake::Haproxy(_)) | None => trace::fail(
-                cx,
-                kind,
-                format_args!("Connection timed out after {ms} milliseconds"),
-            ),
+            Some(Handshake::Socks(_) | Handshake::Haproxy(_) | Handshake::Tls) | None => {
+                trace::fail(
+                    cx,
+                    kind,
+                    format_args!("Connection timed out after {ms} milliseconds"),
+                )
+            }
         };
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
@@ -1457,6 +1467,14 @@ fn enter_setup<H: Host>(
             trace::of(cx, Component::Setup, format_args!("added HAPROXY filter"));
             Component::Haproxy
         }
+        Due::Tls => {
+            trace::of(
+                cx,
+                Component::Setup,
+                format_args!("added SSL filter for origin"),
+            );
+            Component::Ssl
+        }
     };
     // The tunnel's filter installs its HTTP/1.1 one as it first connects.
     entry(cx, chain(reached, Some(filter), false));
@@ -1474,6 +1492,7 @@ fn connect_once<H: Host>(
         Some(Handshake::Socks(_)) => return socks::step(c, cx),
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
         Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
+        Some(Handshake::Tls) => return tls::step(c, cx),
         None => {}
     }
     if let Some(SetupPoint::Dialed(_)) = c.lease.reached() {
@@ -1577,8 +1596,8 @@ fn connect_once<H: Host>(
 
 /// Connected to the first hop, or a handshake over it made: the next
 /// handshake starts, in cf-setup.c's order, which is decided here alone:
-/// the SOCKS proxy's, (the HTTP proxy's TLS, with stage 4), the HTTP
-/// proxy's tunnel, the PROXY protocol's line, (the origin's TLS). With
+/// the SOCKS proxy's, (the HTTP proxy's TLS, with step 43), the HTTP
+/// proxy's tunnel, the PROXY protocol's line, the origin's TLS. With
 /// none left, the connection is open.
 fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let made = c.lease.dialed().made();
@@ -1586,6 +1605,7 @@ fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Transf
         Some(Due::Socks(version)) => return socks::dialed(c, cx, version),
         Some(Due::Tunnel) => return tunnel::dialed(c, cx),
         Some(Due::Preface) => return haproxy::start(c, cx),
+        Some(Due::Tls) => return tls::start(c, cx),
         None => {}
     }
     let preface = c.lease.sends_preface();
@@ -1603,6 +1623,7 @@ enum Due {
     Socks(crate::conn::socks::Version),
     Tunnel,
     Preface,
+    Tls,
 }
 
 /// The handshake to make next over a connection that made `made`, in
@@ -1618,6 +1639,9 @@ fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     }
     if c.lease.sends_preface() && !made.has(Made::PREFACE) {
         return Some(Due::Preface);
+    }
+    if c.route.tls.is_some() && !made.has(Made::TLS) {
+        return Some(Due::Tls);
     }
     None
 }
@@ -1821,6 +1845,13 @@ fn up<H: Host>(
     at: Instant,
     preface: bool,
 ) -> (TransferState, Wake) {
+    // Its TLS is up now, and its socket was when it connected
+    // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects).
+    if c.route.tls.is_some() {
+        let now = cx.now();
+        let marked = cx.report_mut().timings_mut().mark(Timer::AppConnect, now);
+        mstate::marked(cx, Timer::AppConnect, marked);
+    }
     let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
     mstate::marked(cx, Timer::Connect, marked);
     cx.report_mut().set_primary(Ends { remote, local });
@@ -2593,7 +2624,8 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         Ok(via) => via,
         Err(e) => return TransferState::Init.fail(e),
     };
-    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some()) {
+    let secured = proto.secured();
+    let proxy = match choose_proxy(cx, &origin, &scheme, via.is_some() || secured) {
         Ok(proxy) => proxy,
         Err(e) => return TransferState::Init.fail(e),
     };
@@ -2609,12 +2641,22 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         }
         _ => origin,
     };
+    // The settings its TLS is made with, which a connection must share
+    // to serve it (`Curl_ssl_filter_config_tmp_init`).
+    let tls = if secured {
+        match crate::tls::TlsIdentity::of(&cx.easy().options().tls) {
+            Ok(identity) => Some(identity),
+            Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
+        }
+    } else {
+        None
+    };
     let route = Tcp {
         origin,
         via,
         ip: cx.easy().options().ip_version,
         proxy,
-        tls: None,
+        tls,
     };
     setup(cx, Plan { proto, route })
 }
@@ -2623,13 +2665,13 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
 /// (`Curl_proxy_init_conn`): the options', or else the one the
 /// environment names for `scheme`, unless the no-proxy list names the
 /// origin's host; behind the SOCKS pre-proxy if one is set, which alone
-/// is the proxy. Through a connect-to peer (`via`), an HTTP proxy would
-/// tunnel.
+/// is the proxy. Through a connect-to peer, or to a secured origin
+/// (`tunnels`), an HTTP proxy would tunnel.
 fn choose_proxy<H: Host>(
     cx: &mut StepCx<'_, H>,
     origin: &Peer,
     scheme: &[u8],
-    via: bool,
+    tunnels: bool,
 ) -> Result<Option<ProxyRoute>, ErrorKind> {
     let options = &cx.easy().options().proxy;
     let no_proxy = match &options.no_proxy {
@@ -2692,9 +2734,9 @@ fn choose_proxy<H: Host>(
         return Ok(Some(ProxyRoute::new(kind, peer, creds, false, auth_only)));
     }
     // A request goes to an HTTP proxy whole, unless it is asked to
-    // tunnel, or reaches the origin through another peer; HTTP is the
-    // only scheme here, and it is not secured.
-    let tunnel = cx.easy().options().proxy.tunnel || via;
+    // tunnel, or reaches the origin through another peer, or is secured;
+    // HTTP's schemes are the only ones here.
+    let tunnel = cx.easy().options().proxy.tunnel || tunnels;
     let route = ProxyRoute::new(kind, peer, creds, !tunnel, auth_only);
     Ok(Some(match pre {
         Some((kind, peer, creds)) => route

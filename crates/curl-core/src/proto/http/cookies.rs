@@ -30,13 +30,16 @@ pub(super) struct Site<'a> {
     pub(super) host: &'a [u8],
     /// The URL's path, without its query.
     pub(super) path: &'a [u8],
+    /// The request goes over TLS.
+    pub(super) secured: bool,
 }
 
 impl Site<'_> {
     /// Whether secure cookies go and may be set: over a secure
     /// connection, or to this host (`Curl_secure_context`).
     fn secure(&self) -> bool {
-        self.host.eq_ignore_ascii_case(b"localhost")
+        self.secured
+            || self.host.eq_ignore_ascii_case(b"localhost")
             || self.host == b"127.0.0.1"
             || self.host == b"::1"
     }
@@ -408,7 +411,21 @@ mod tests {
             (b"::2", false),
             (b"localhost.example", false),
         ] {
-            let site = Site { host, path: b"/" };
+            let site = Site {
+                host,
+                path: b"/",
+                secured: false,
+            };
+            assert_eq!(site.secure(), secure, "{}", host.escape_ascii());
+            let site = Site {
+                secured: true,
+                ..site
+            };
+            assert!(site.secure(), "{}", host.escape_ascii());
+            let site = Site {
+                secured: false,
+                ..site
+            };
             assert_eq!(site.secure(), secure, "{}", host.escape_ascii());
         }
     }
@@ -430,6 +447,7 @@ mod tests {
         let site = Site {
             host: b"example.com",
             path: b"/",
+            secured: false,
         };
         let mut held = held();
         let (mut value, mut count, mut full) = (Vec::new(), 0, false);

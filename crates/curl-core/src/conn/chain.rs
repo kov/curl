@@ -23,9 +23,9 @@ pub(crate) enum SetupPoint {
     Dialed(Made),
 }
 
-/// The most filters a chain holds: two DNS, SETUP, HAPROXY, HTTP-PROXY,
-/// H1-PROXY, SOCKS, HAPPY-EYEBALLS and TCP.
-const MOST: usize = 9;
+/// The most filters a chain holds: two DNS, SETUP, SSL, HAPROXY,
+/// HTTP-PROXY, H1-PROXY, SOCKS, HAPPY-EYEBALLS and TCP.
+const MOST: usize = 10;
 
 /// A chain of filters, top first, each connected or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,11 +79,13 @@ impl Chain {
             socks: added(Made::SOCKS, Component::Socks),
             tunnel: added(Made::TUNNEL, Component::HttpProxy),
             preface: added(Made::PREFACE, Component::Haproxy),
+            tls: added(Made::TLS, Component::Ssl),
         };
         let connected = |filter| match filter {
             Component::Socks => made.has(Made::SOCKS),
             Component::HttpProxy | Component::H1Proxy => made.has(Made::TUNNEL),
             Component::Haproxy => made.has(Made::PREFACE),
+            Component::Ssl => made.has(Made::TLS),
             Component::HappyEyeballs | Component::Tcp => true,
             _ => false,
         };
@@ -98,6 +100,7 @@ impl Chain {
             socks: route.socks().is_some(),
             tunnel: route.proxy.as_ref().is_some_and(|p| p.tunnels()),
             preface: haproxy,
+            tls: route.tls.is_some(),
         };
         Chain::dialed(route, added, true, |_| true)
     }
@@ -116,6 +119,11 @@ impl Chain {
             push(Component::Dns);
         }
         push(Component::Setup);
+        // Each filter the setup adds goes right below it, so the last,
+        // TLS's, is on top.
+        if added.tls {
+            push(Component::Ssl);
+        }
         if added.preface {
             push(Component::Haproxy);
         }
@@ -162,6 +170,7 @@ struct Handshakes {
     socks: bool,
     tunnel: bool,
     preface: bool,
+    tls: bool,
 }
 
 /// A filter that is only there while the chain connects (`CF_TYPE_SETUP`).

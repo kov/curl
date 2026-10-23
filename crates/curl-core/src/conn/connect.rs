@@ -92,7 +92,8 @@ pub(crate) struct Dialed {
 /// The handshakes made over a dialed connection, each once, in
 /// cf-setup.c's order: SOCKS's and the tunnel's stay in C's chain as
 /// filters that pass the bytes (`[H1-PROXY][SOCKS][TCP]`); the PROXY
-/// line's filter goes once the chain is connected.
+/// line's filter goes once the chain is connected; the origin's TLS stays
+/// as the layer on top (`[SSL][TCP]`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Made(u8);
 
@@ -100,6 +101,7 @@ impl Made {
     pub(crate) const SOCKS: Made = Made(1);
     pub(crate) const TUNNEL: Made = Made(2);
     pub(crate) const PREFACE: Made = Made(4);
+    pub(crate) const TLS: Made = Made(8);
 
     pub(crate) fn has(self, which: Made) -> bool {
         self.0 & which.0 != 0
@@ -529,6 +531,15 @@ impl ConnectMachine {
         }
     }
 
+    /// What the layers on the connection to the first hop wait for, as
+    /// they handshake, wanting nothing else.
+    pub(crate) fn handshake_pollset(&self) -> Events {
+        match &self.stage {
+            Stage::Dialed(d) => d.stream.adjust_pollset(Events::NONE),
+            Stage::Resolving | Stage::Racing(_) => panic!("no handshake is made"),
+        }
+    }
+
     /// The connection to the first hop, while its handshakes are made.
     pub(crate) fn dialed(&mut self) -> &mut Dialed {
         match &mut self.stage {
@@ -823,7 +834,7 @@ impl ConnectMachine {
         for a in r.attempts.drain(..) {
             discard(cx, a.socket);
         }
-        if self.route.handshakes() || setup.haproxy {
+        if self.route.handshakes() || setup.haproxy || self.route.tls.is_some() {
             // The connection is the first hop's; the handshakes over it
             // are still to be made.
             let answer = r.eyeballs.answer.clone();

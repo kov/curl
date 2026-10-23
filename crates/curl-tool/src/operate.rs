@@ -2978,6 +2978,8 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Brotli, curl_brotli::decoder)
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: Some(&curl_openssl::ED25519),
+        // OpenSSL's TLS comes with its layer.
+        tls: None,
     }
 };
 

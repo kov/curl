@@ -18,6 +18,7 @@ pub(crate) mod proxy;
 pub(crate) mod shutdown;
 pub(crate) mod socks;
 mod stream;
+pub(crate) mod tls;
 
 pub(crate) use connect::{
     Asked, ConnCx, ConnectError, Found, MAX_ATTEMPTS, Made, Opened, Progress, Setup, SocketSetup,

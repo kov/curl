@@ -22,6 +22,11 @@ impl RecvBuf {
         self.bytes.drain(..n);
     }
 
+    /// What is waiting, taken out whole, leaving it empty: no copy.
+    pub(crate) fn take(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
+
     /// Read up to `max` bytes behind what is waiting, with `read`, which
     /// is given that much room and says how much of it it filled. A read
     /// that says it filled more than its room is the socket's error, and

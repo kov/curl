@@ -20,7 +20,7 @@ use crate::time::Instant;
 
 /// What a layer's handshake, or its shutdown, came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Handshake {
+pub enum Handshake {
     Done,
     /// It waits for the socket.
     Waiting,
@@ -85,8 +85,8 @@ impl LayerCx for Silent {
 /// A layer that works on a connection's bytes (C's `Curl_cftype`). Its
 /// `destroy` is `Drop`; its `cntrl` codes are methods of their own.
 pub(crate) trait Layer: Send + fmt::Debug {
-    /// Move its handshake on. None has one yet: TLS's comes with it.
-    #[expect(dead_code, reason = "TLS's handshake, step 43")]
+    /// Move its handshake on: TLS's, which may take more than one pass.
+    /// A layer that has none is connected at once.
     fn connect(
         &mut self,
         _cx: &mut dyn LayerCx,
@@ -147,6 +147,15 @@ pub(crate) struct Below<'a> {
 }
 
 impl Below<'_> {
+    /// The same layers and socket, for one call that leaves them to the
+    /// caller after.
+    pub(crate) fn reborrow(&mut self) -> Below<'_> {
+        Below {
+            layers: &mut *self.layers,
+            socket: self.socket,
+        }
+    }
+
     pub(crate) fn recv(self, cx: &mut dyn LayerCx, buf: &mut [u8]) -> io::Result<Recv> {
         match self.layers.split_last_mut() {
             Some((top, layers)) => top.recv(cx, Below { layers, ..self }, buf),
@@ -228,16 +237,27 @@ impl LayerStack {
     }
 
     /// Put `layer` on top.
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "TLS pushes its layer, step 43; tests push theirs")
-    )]
     pub(crate) fn push(&mut self, layer: Box<dyn Layer>) -> Result<(), OutOfMemory> {
         let layers = match &mut self.layers {
             Some(layers) => layers,
             None => self.layers.insert(try_box(Vec::new())?),
         };
         layers.try_push(layer)
+    }
+
+    /// Move the top layer's handshake on over the layers below it and
+    /// `socket`, as the setup adds and connects one filter at a time;
+    /// with no layer, there is none to make.
+    pub(crate) fn connect(
+        &mut self,
+        socket: &dyn Socket,
+        cx: &mut dyn LayerCx,
+    ) -> Result<Handshake, ErrorKind> {
+        let Below { layers, socket } = self.over(socket);
+        match layers.split_last_mut() {
+            Some((top, layers)) => top.connect(cx, Below { layers, socket }),
+            None => Ok(Handshake::Done),
+        }
     }
 
     /// What the transfer is to wait for, given what it wants, each layer

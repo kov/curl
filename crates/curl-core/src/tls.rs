@@ -1,10 +1,183 @@
-//! TLS, as the core asks it of the library bound beside it: the settings
-//! a connection's handshake is made with, which decide which connections
-//! a transfer may reuse.
+//! TLS, as the core asks it of the library bound beside it (C's
+//! `vtls`): the settings a connection's handshake is made with, which
+//! decide which connections a transfer may reuse, and the seam a TLS
+//! library implements. The library makes a session for each connection
+//! (`TlsBackend`), and the core drives it as a layer over the
+//! connection's stream (`TlsSession`), handing it the layers below to
+//! read and write through (`TlsIo`). The core names no library's types.
+
+use std::fmt;
+use std::io;
+use std::net::Ipv4Addr;
 
 use curl_alloc::{OutOfMemory, TryArc};
 
+use crate::components::Component;
+use crate::conn::Peer;
+use crate::conn::io::{Recv, Sent};
+use crate::conn::layer::{Below, LayerCx};
+use crate::error::ErrorKind;
 use crate::options::{Tls, TlsOptions};
+
+pub use crate::conn::layer::Handshake;
+
+/// A test double: a TLS library of text lines and scrambled records.
+#[cfg(any(test, feature = "test-util"))]
+pub mod fake;
+
+/// A TLS library (C's `struct Curl_ssl`). Whoever builds a handle names
+/// one in its `Libraries`; without one, no scheme that needs TLS is
+/// built in.
+pub trait TlsBackend: Send + Sync {
+    /// A client session for one connection to `peer`, made with the
+    /// settings `identity` holds (C's `ssl_connect_data` and its
+    /// backend's context, made as the SSL filter is added).
+    fn session(
+        &self,
+        identity: &TlsIdentity,
+        peer: &TlsPeer<'_>,
+    ) -> Result<Box<dyn TlsSession>, ErrorKind>;
+}
+
+impl fmt::Debug for dyn TlsBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TlsBackend")
+    }
+}
+
+/// One connection's TLS, which the core drives (C's SSL filter): the
+/// handshake, then the records both ways, then the goodbye. Each call
+/// reads and writes the connection through `io` as it needs, and says
+/// what it waits for when it cannot go on.
+pub trait TlsSession: Send {
+    /// Move the handshake on: done, or waiting for what `waits` says.
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
+
+    /// Read into `buf`, which is not empty, at most its length of what
+    /// the peer sent.
+    fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv>;
+
+    /// Send from `bytes`, which is not empty.
+    fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent>;
+
+    /// Move the goodbye on (close_notify, and the peer's).
+    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
+
+    /// What its last call that could not go on waits for on the socket
+    /// (C's `io_need`): to read, or to write, which it may need while it
+    /// reads.
+    fn waits(&self) -> TlsWait;
+
+    /// It holds bytes it read and has not given out, which a poll of the
+    /// socket cannot see.
+    fn pending(&self) -> bool;
+}
+
+/// What a TLS session waits for on the socket.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TlsWait {
+    /// Nothing: what the transfer wants goes as it is.
+    #[default]
+    Nothing,
+    /// To read, whatever the transfer wants.
+    Recv,
+    /// To write, whatever the transfer wants: its reads wait on it.
+    Send,
+}
+
+/// Who a TLS session talks to: the origin as the URL names it (C's
+/// `ssl_peer`), whose name the handshake sends and checks the
+/// certificate against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TlsPeer<'a> {
+    /// The host, an IPv6 address without its brackets.
+    pub name: &'a [u8],
+    pub port: u16,
+    pub kind: TlsPeerKind,
+}
+
+/// What a TLS peer's name is: an address names no server (no SNI).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsPeerKind {
+    Name,
+    Ipv4,
+    Ipv6,
+}
+
+impl<'a> TlsPeer<'a> {
+    pub(crate) fn of(peer: &'a Peer) -> TlsPeer<'a> {
+        let name = peer.name();
+        let kind = if peer.ipv6() {
+            TlsPeerKind::Ipv6
+        } else if std::str::from_utf8(name).is_ok_and(|n| n.parse::<Ipv4Addr>().is_ok()) {
+            TlsPeerKind::Ipv4
+        } else {
+            TlsPeerKind::Name
+        };
+        TlsPeer {
+            name,
+            port: peer.port(),
+            kind,
+        }
+    }
+}
+
+/// What a TLS session reaches while it works, for the one call it is
+/// given to: the layers below it, down to the socket, and the transfer
+/// it works for. The bytes the connection received before the session
+/// was made, after a proxy's answer, are read first.
+pub struct TlsIo<'a> {
+    below: Below<'a>,
+    cx: &'a mut dyn LayerCx,
+    early: &'a mut Vec<u8>,
+    component: Component,
+}
+
+impl TlsIo<'_> {
+    /// Read into `buf`, which is not empty, from what came before the
+    /// session, else from below.
+    pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<Recv> {
+        assert!(!buf.is_empty(), "a receive needs room");
+        if let Some(n) = std::num::NonZeroUsize::new(self.early.len().min(buf.len())) {
+            buf[..n.get()].copy_from_slice(&self.early[..n.get()]);
+            self.early.drain(..n.get());
+            return Ok(Recv::Data(n));
+        }
+        self.below.reborrow().recv(self.cx, buf)
+    }
+
+    /// Send from `bytes`, which is not empty, through the layers below.
+    pub fn send(&mut self, bytes: &[u8]) -> io::Result<Sent> {
+        self.below.reborrow().send(self.cx, bytes)
+    }
+
+    /// Trace a line of the layer's (`CURL_TRC_CF`), if its component is
+    /// traced.
+    pub fn trace(&mut self, line: fmt::Arguments<'_>) {
+        self.cx.of(self.component, line);
+    }
+
+    /// A line of the transfer's verbose output (`infof`).
+    pub fn info(&mut self, line: fmt::Arguments<'_>) {
+        self.cx.info(line);
+    }
+}
+
+impl<'a> TlsIo<'a> {
+    pub(crate) fn new(
+        below: Below<'a>,
+        cx: &'a mut dyn LayerCx,
+        early: &'a mut Vec<u8>,
+        component: Component,
+    ) -> TlsIo<'a> {
+        TlsIo {
+            below,
+            cx,
+            early,
+            component,
+        }
+    }
+}
 
 /// Every setting a connection's TLS handshake was made with that a
 /// transfer must share to reuse the connection (C's `ssl_filter_config`,
@@ -23,10 +196,6 @@ pub struct TlsIdentity {
 impl TlsIdentity {
     /// The identity the transfer's options `tls` make, shared by its
     /// route and the connection set up for it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the https scheme makes one, next")
-    )]
     pub(crate) fn of(tls: &Tls) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
         TryArc::try_new(TlsIdentity {
             verify_peer: tls.verify_peer,

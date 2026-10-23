@@ -1,7 +1,7 @@
 //! The protocols a transfer can speak, each a state the transfer holds
 //! while it exchanges data.
 //!
-//! `file:` and `http:` are built in. Tests have three more, networkless: `null:`, which
+//! `file:`, `http:` and, with a TLS library, `https:` are built in. Tests have three more, networkless: `null:`, which
 //! completes at once, `stall:`, which never does, and `script:`, which
 //! delivers the pieces of its transfer's `Options::script`; and `tcp:`,
 //! which connects to its URL's host and port and completes once
@@ -114,7 +114,13 @@ impl ProtoState {
         Ok(Some(match scheme {
             b"file" => ProtoState::File(file::Request::open(url, cx)?),
             b"http" => ProtoState::Http(
-                curl_alloc::try_box(http::Request::new(url, before, cx)?)
+                curl_alloc::try_box(http::Request::new(url, false, before, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
+            // Over TLS, if the handle has a TLS library: without one, it
+            // is a scheme the build leaves out, as in C built without.
+            b"https" if cx.easy().libraries().tls.is_some() => ProtoState::Http(
+                curl_alloc::try_box(http::Request::new(url, true, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
             ),
             #[cfg(any(test, feature = "test-util"))]
@@ -155,6 +161,14 @@ impl ProtoState {
                 };
                 Ok(Some(url_peer(scheme, host, port, url, scope)?))
             }
+        }
+    }
+
+    /// The request goes over TLS (C's `PROTOPT_SSL`).
+    pub(crate) fn secured(&self) -> bool {
+        match self {
+            ProtoState::Http(r) => r.secured(),
+            _ => false,
         }
     }
 

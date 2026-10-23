@@ -130,9 +130,10 @@ curl-tool     drives transfers through the Rust API
 `curl-os` exposes safe functions; it does not implement `curl-core` traits (that would be a
 dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net` trait in safe
 code. The libraries the core does not depend on (libpsl, the decoders, the Ed25519 signer, and
-from step 43 the TLS backend) are handed to a handle by whoever builds it: the shim and the
-tool. The decoders and the signer come as one `&'static Libraries` (`curl_core::libraries`), a
-static of each; a handle given none has `Libraries::NONE`. Each initialises OpenSSL as C's
+the TLS library) are handed to a handle by whoever builds it: the shim and the tool. The
+decoders, the signer and the TLS library come as one `&'static Libraries`
+(`curl_core::libraries`), a static of each; a handle given none has `Libraries::NONE`. The TLS
+library is OpenSSL's from 43e1; until then the statics name none. Each initialises OpenSSL as C's
 global init does (`OPENSSL_init_ssl` with the configuration and the built-in engines): the shim
 at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
 program that never called `curl_global_init` signs the same.
@@ -161,14 +162,16 @@ curl-core/src/
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
   libraries.rs               Libraries, Ed25519: what the bound C libraries do for a handle
+  tls.rs, tls/               TlsIdentity, the seam a TLS library implements (TlsBackend,
+                             TlsSession, TlsIo, TlsPeer, TlsWait); fake.rs: FakeTls (test-util)
   hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
   save.rs                    a file written whole under a name of its own, then renamed
   multi/
     mod.rs                   Multi<H>, Host, Slot, ConnLimits, the public API
     state.rs                 Run, TransferState and its variant structs, StepCx, the steps;
-                             state/tunnel.rs, state/socks.rs, state/haproxy.rs: the
-                             CONNECT and SOCKS handshakes and the PROXY line a transfer
-                             makes
+                             state/tunnel.rs, state/socks.rs, state/haproxy.rs,
+                             state/tls.rs: the CONNECT and SOCKS handshakes, the PROXY
+                             line and the origin's TLS handshake a transfer makes
     mstate.rs                MState: where a transfer is in C's states, for the trace
     sched.rs                 RowSet (the dirty set), Counts, Tally
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
@@ -192,6 +195,8 @@ curl-core/src/
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
     stream.rs                Stream: a socket, its layers and its receive buffer
     layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
+    tls.rs                   TlsLayer: the layer over a TLS library's session
+    shutdown.rs, shutdown/   ShutdownSet, ConnSettings: connections saying goodbye
     chain.rs                 Chain: C's filter chain rendered for the trace from how
                              far the setup got, the handshake under way and the route
   deliver/                   BodyAccountant, ClientOut; held.rs: HeldOutput;
@@ -217,10 +222,8 @@ curl-core/src/
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: `conn/mux.rs`; for TLS (step 43, §4.9) `tls.rs` (the public seam a
-backend implements), `tls/cache.rs` (the session cache), `conn/tls.rs` (the layer over a
-backend's session) and `conn/shutdown.rs` (`ShutdownSet`, §4.6); a `Resolver` for names the
-cache and the shortcuts do not answer; and `DebugNet`.
+Planned, not built: `conn/mux.rs`; `tls/cache.rs`, TLS's session cache (step 43h, §4.9); a
+`Resolver` for names the cache and the shortcuts do not answer; and `DebugNet`.
 
 ### 2.3 Ids and the arena
 
@@ -1381,14 +1384,25 @@ transfer's context keeps in its report as C's socket filter keeps `os_errno` (cf
 a silent one drops; the report starts over without it with each transfer. A layer asks another layer something only through `query`. Only
 `conn::*` and `multi::wait` call `Net`.
 
-No layer is pushed outside the tests until TLS: a test's transfer names one
-(`Options::layer`, `cfg(test)`) that each connection it makes puts on its stream once up, and
-`conn::layer::testing` holds those that arm each call (`Upper`, `Holdback`, `WantsOut`,
-`Dying`). `shutdown` is called by the discard and the `ShutdownSet` (§4.6), from the top layer
-down, one at a time, a layer done never asked again; only `Lingering` (test-util, pushed on
-every connection a multi makes under `Multi::linger_connections`) has one before TLS.
-`connect` and `query` have no caller until TLS; `LayerCx`'s trace is the
-connect machine's (`ConnCx` extends it) until a layer traces.
+TLS's is the one layer pushed outside the tests (`conn::tls::TlsLayer`, §4.9): pushed by the
+setup's last handshake, connected there through `connect` (`Stream::connect`, the top layer's
+handshake over the ones below), and kept once the connection is up. A test's transfer may name
+another (`Options::layer`, `cfg(test)`) that each direct connection it makes puts on its
+stream once up, and `conn::layer::testing` holds those that arm each call (`Upper`,
+`Holdback`, `WantsOut`, `Dying`). `shutdown` is called by the discard and the `ShutdownSet`
+(§4.6), from the top layer down, one at a time, a layer done never asked again: TLS's says
+goodbye, and `Lingering` (test-util, pushed on every connection a multi makes under
+`Multi::linger_connections`) waits as one would. `query` has no caller until ALPN (43g);
+`LayerCx`'s trace is the connect machine's (`ConnCx` extends it) and, through `TlsIo`, a TLS
+library's.
+
+The bytes a tunnel's handshake read past its answer, which `rx` holds, are the first bytes the
+TLS layer pushed over that stream reads: they move into the layer once, as it is pushed
+(`Stream::push_over_received`), and its session reads them through `TlsIo` before it reads
+below. That is what C's byte-at-a-time read of the answer comes to: whatever followed the
+answer reaches the TLS handshake first, on both legs. A binding crate cannot implement
+`Layer`, which stays crate-private: the core's `TlsLayer` implements it over the public
+`curl_core::tls::TlsSession` a library makes (§4.9).
 
 Planned (step 43), settled for TLS (§4.9). `LayerCx` gains what a TLS layer reaches through
 the transfer: `bytes(kind, data)` for the SSL data a handshake and its records make (C's msg
@@ -1398,13 +1412,6 @@ neither, as C's internal handle has no debug function and no SSL_CTX callback. `
 gains `Alpn` (the protocol the peer agreed to) and `Native` (the backend's own object, the `SSL
 *` that `CURLINFO_TLS_SSL_PTR` returns), answered with `&mut dyn Any` that the shim downcasts.
 The key log is not on `LayerCx`: the shim's root and the tool own it and hand it to the backend.
-The bytes a tunnel's handshake read past its answer, which `rx` holds, are the first bytes the
-TLS layer pushed over that stream reads: they move into the layer once, as it is pushed, and its
-BIO reads them before it reads below. That is what C's byte-at-a-time read of the answer comes
-to: whatever followed the answer reaches the TLS handshake first, on both legs.
-`connect`, `query` and a real `shutdown` get their first producer in the TLS layer. A binding crate
-cannot implement `Layer`, which stays crate-private: the core's `TlsLayer` implements it over
-the public `curl_core::tls::TlsSession` a backend makes (§4.9).
 
 ### 4.4 Multiplexing
 
@@ -1439,14 +1446,14 @@ pub struct Route {
     dest: Destination,                 // host:port, or connect-to / UDS peer
     transport: TransportKind,
     proxy: Option<ProxyRoute>,         // type, peer, credentials
-    tls: Option<TryRc<TlsIdentity>>,   // every field that affects the handshake (§4.9)
+    tls: Option<TryArc<TlsIdentity>>,  // every field that affects the handshake (§4.9)
     ip: IpPrefs, local: LocalBind,
     creds: Option<CredsBinding>,       // connection-bound auth (Negotiate)
     proto: ProtoFamily, scheme: SchemeConfig,
 }
 ```
 
-Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip, proxy }`. `Peer` is C's
+Built so far: `enum Route { Local, Tcp(Tcp) }`, with `Tcp { origin, via, ip, proxy, tls }`. `Peer` is C's
 `struct Curl_peer`: the `Scheme` (the protocol's name and whether it keeps connections,
 `PROTOPT_CONN_REUSE`), the host as the URL names it, the port, the IPv6 zone and its scope (a
 numeric zone as it is, a name as its interface's index by `if_nametoindex`, one naming no
@@ -1456,26 +1463,30 @@ peer a connect-to entry names in the origin's place (C's `via_peer`, `conn/conne
 none when it names the origin itself; the setup resolves and connects to `via` if there is
 one, and the traces name it where C's do. Matching is `Route::serves`: the same origin by
 `Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its scope,
-or by its text when it has none), the same `via` or none on both, and the same `IpVersion` unless the
-transfer takes any (`url_match_conn`, `url_match_destination`). It, `ProxyRoute`'s key and
-`Peer`'s `Eq` destructure every field without `..`, so a field added later does not compile until
-it is compared; the exceptions are named where they are made (the transfer's `IpVersion::Any`;
-`auth_only`, which `Conn::serves` checks against what the connection did; a peer's host,
-compared as its name).
+or by its text when it has none), the same `via` or none on both, the same `IpVersion` unless the
+transfer takes any (`url_match_conn`, `url_match_destination`), and an equal `TlsIdentity` or
+none on both (`url_match_ssl_use`, `url_match_ssl_config`). An `https` peer is not an `http` one,
+its scheme being part of `Peer`'s `Eq`, so plain HTTP never takes a TLS connection. It,
+`ProxyRoute`'s key, `Peer`'s `Eq` and `TlsIdentity`'s `eq` destructure every field without `..`,
+so a field added later does not compile until it is compared; the exceptions are named where
+they are made (the transfer's `IpVersion::Any`; `auth_only`, which `Conn::serves` checks against
+what the connection did; a peer's host, compared as its name; whether ALPN is offered, which C
+keeps on the handle).
 
 The proxy is chosen at setup, after the connect-to entries (`Curl_proxy_init_conn`): the
 options' (`Options::proxy`), or else the one the environment names for the scheme
 (`conn/proxy.rs`, `detect`, never `HTTP_PROXY` in upper case), unless the no-proxy list names
 the origin's host (`excluded`, unit 1614's cases); an empty proxy turns the environment's off.
-`ProxyRoute { kind, peer, creds, forward }` joins the route, and two routes match only through
+`ProxyRoute { kind, peer, creds, forward, pre }` joins the route, the SOCKS pre-proxy in front of
+an HTTP one shared (`TryArc`), as few routes have one, and two routes match only through
 the same proxy, compared without its scheme, as the same user and the same way
 (`proxy_info_matches`, `origin_is_proxy`). A plain HTTP request goes whole to an HTTP proxy
 (`forward`): the route's origin is then the proxy's peer, so one connection serves any origin
 through it and the traces name the proxy, and the request names the whole URL without its
 fragment or credentials (`Request::forward`, made from the `Url` before it goes to the report)
 with `Proxy-Connection: Keep-Alive`; the response's `Proxy-Connection` keeps or closes the
-connection (`Asked::http_proxy`). A tunnel (`CURLOPT_HTTPPROXYTUNNEL`, or a connect-to peer)
-is set up with `CONNECT` (`multi/state/tunnel.rs`), SOCKS4, 4a and 5 with their handshakes
+connection (`Asked::http_proxy`). A tunnel (`CURLOPT_HTTPPROXYTUNNEL`, a connect-to peer, or
+an `https` origin, which never goes whole) is set up with `CONNECT` (`multi/state/tunnel.rs`), SOCKS4, 4a and 5 with their handshakes
 (`conn/socks.rs`, driven from `multi/state/socks.rs`), over the connection to the proxy the
 setup dialed. An HTTPS proxy fails with `NotBuiltIn` until it is built in step 43 (§4.9),
 after the origin's TLS.
@@ -1735,52 +1746,72 @@ its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ### 4.9 TLS
 
-Planned (step 43): none of this section is built but `Libraries`, which holds the decoders and
-the Ed25519 signer. MILESTONES.md step 43 lists the sub-steps that build it.
+Built (step 43d): the seam, the layer, the identity reuse compares, the `https` scheme and the
+setup's TLS stage, the goodbye through the shutdown set, all driven in the tests by a fake
+library (`tls::fake::FakeTls`). Planned: everything OpenSSL does, from **The BIO** on, and the
+seam's later methods noted below. MILESTONES.md step 43 lists the sub-steps.
 
 ```rust
 // curl_core::tls, public: the seam a TLS library implements (curl-openssl)
 pub trait TlsBackend: Send + Sync {
-    fn session(&self, config: &TlsConfig<'_>, peer: &TlsPeer<'_>, store: &mut dyn TlsStore,
-               resume: Option<&dyn TlsTicket>) -> Result<Box<dyn TlsSession>, TlsError>;
-    fn store(&self) -> Result<Box<dyn TlsStore>, OutOfMemory>;  // per multi: the CA store cache
+    fn session(&self, identity: &TlsIdentity, peer: &TlsPeer<'_>)
+        -> Result<Box<dyn TlsSession>, ErrorKind>;
+    // planned (43e1): fn store(&self) -> Result<Box<dyn TlsStore>, OutOfMemory>, the
+    // multi's CA store cache, handed to `session`; (43h) the ticket to resume.
 }
 pub trait TlsSession: Send {                       // one connection's TLS, never Sync
-    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, TlsError>;
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
     fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv>;
     fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent>;
-    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, TlsError>;
-    fn wants(&self) -> Interest;                   // what the next call waits for
+    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
+    fn waits(&self) -> TlsWait;                    // Nothing, Recv or Send: C's io_need
     fn pending(&self) -> bool;                     // decrypted bytes not yet read
-    fn alpn(&self) -> Option<Alpn>;
-    fn tickets(&mut self, out: &mut dyn FnMut(Box<dyn TlsTicket>));  // sessions to keep
-    fn native(&mut self) -> &mut dyn Any;          // the SSL *, for the application
+    // planned: fn alpn(&self) (43g); fn tickets(..) (43h); fn native(&mut self) -> &mut dyn
+    // Any, the SSL * for the application (43f)
 }
-pub struct TlsIo<'a> { /* Below<'a> and &'a mut dyn LayerCx, private */ }
-impl TlsIo<'_> {                                   // what a backend's BIO and callbacks reach
-    pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<Recv>;
+pub struct TlsIo<'a> { /* Below<'a>, &'a mut dyn LayerCx, the early bytes; private */ }
+impl TlsIo<'_> {                                   // what a library's BIO and callbacks reach
+    pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<Recv>;   // the early bytes first
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<Sent>;
     pub fn trace(&mut self, line: fmt::Arguments<'_>); pub fn info(&mut self, ..);
-    pub fn bytes(&mut self, kind: SslData, data: &[u8]);
-    pub fn ssl_ctx(&mut self, native: &mut dyn Any) -> Result<(), ErrorKind>;
+    // planned: bytes(kind, data) for the SSL data (43e1), ssl_ctx(native) (43f)
 }
-pub trait TlsTicket: Send + Sync {}                // a session to resume, opaque to the core
+pub struct TlsPeer<'a> { pub name: &'a [u8], pub port: u16, pub kind: TlsPeerKind }
+pub struct TlsIdentity { pub verify_peer: bool, pub verify_host: bool, pub options: TlsOptions }
 ```
 
 **The seam.** The dependency runs from the binding to the core, as the decoders' does, so the
-core names no OpenSSL type. `Layer` stays crate-private; the core's `conn::tls::TlsLayer`
-implements it over the `Box<dyn TlsSession>` a backend makes: its `recv` and `send` pass the
-caller's buffer and length, `adjust_pollset` asks the session what it waits for (OUT while a
-read must write), `data_pending` is the session's `pending`, `is_alive` passes down, `shutdown`
-is the session's, and `query` answers ALPN and the native object. A handle reaches its backend
-through one `&'static Libraries` (the decoders, the Ed25519 signer, the TLS backend), the
-shim's and the tool's statics, so a handle carries one pointer for all of them; `Easy: Default`
-takes `Libraries::NONE`, with which `https` is `NotBuiltIn`. One backend is built, OpenSSL 3.0
+core names no library's type. `Layer` stays crate-private; the core's `conn::tls::TlsLayer`
+implements it over the `Box<dyn TlsSession>` a library makes: `connect` is the handshake,
+`recv` and `send` pass the caller's buffer and length as they are, `adjust_pollset` replaces
+what the transfer wants with what the session waits for (`Curl_ssl_adjust_pollset`'s
+`set_out_only` and `set_in_only`: OUT while a read must write), `data_pending` is the session's
+`pending` and the early bytes, `is_alive` passes down, and `shutdown` is the session's. A
+library's error is its `ErrorKind`; the text it fails with (C's failf) comes with 43e1. A handle
+reaches its library through one `&'static Libraries` (the decoders, the Ed25519 signer, the
+TLS library), the shim's and the tool's statics, so a handle carries one pointer for all of
+them; `Easy: Default` takes `Libraries::NONE`. Without a TLS library `https` is a scheme the
+build leaves out (`Protocol "https" is disabled`, `UnsupportedProtocol`), as in C built
+without TLS: the shim and the tool name none until OpenSSL's layer is built (43e1). One library
+is built, OpenSSL 3.0
 or later, checked at build (curl-openssl's build script reads the version openssl-sys found,
 `DEP_OPENSSL_VERSION_NUMBER`, and refuses LibreSSL) and at init (`OpenSSL_version_num`): an
 older library is a backend that is not there. `curl_global_sslset` answers OK for
 `CURLSSLBACKEND_OPENSSL` or `"openssl"`, also after init, and `CURLSSLSET_UNKNOWN_BACKEND` for
 any other, with only OpenSSL available.
+
+**The stage.** `https` is HTTP over TLS (`proto::http::HTTPS`, port 443, which `Host:` and the
+signatures leave out): its route carries a `TlsIdentity`, which is what C's `PROTOPT_SSL` comes
+to here, and through an HTTP proxy it always tunnels (`Curl_proxy_init_conn`). A connection on
+such a route is dialed for its handshakes, and the origin's TLS is the last of them
+(`handshake_due`, after SOCKS, the tunnel and the PROXY line): `multi/state/tls.rs` asks the
+library for a session with the origin as the peer (no SNI for an address, `TlsPeerKind`),
+pushes its layer on the stream with the bytes the stream received and did not use, and moves
+the handshake on as the socket lets it, waiting for what the layer says beside the socket's own
+IN; the connect limit covers it (`Connection timed out after N milliseconds`). `SETUP` traces
+`added SSL filter for origin`, and the chain shows `[SSL]` right below SETUP until the setup
+filters go (`reduced to [0][SSL][TCP]`). As it is up, `TIMER_APPCONNECT` is marked, then
+`TIMER_CONNECT`. Secure cookies go over it and may be set from it (`Curl_secure_context`).
 
 **The BIO.** curl-openssl drives OpenSSL as `lib/vtls/openssl.c` does, through a BIO method of
 its own whose read and write go to the layer below, so the `SSL *` and `SSL_CTX *` the
@@ -1813,12 +1844,20 @@ The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
 result is traced and ignored (`OpenSSL verify result: 14`, `SSL certificate verification
 failed, continuing anyway!`); a pinned key (`--pinnedpubkey`) is checked after, `-k` or not (90).
 
-**Identity and reuse.** `Route` gains `tls: Option<TryRc<TlsIdentity>>`, and `ProxyRoute`
-the proxy's: every field `Curl_ssl_config_matches` compares (versions, ciphers, curves,
-signature algorithms, CA file, path and blobs, the CRL, the issuer, the pinned key, the client
-certificate and key, the verify bits, the options bits), destructured without `..` in
-`serves`, shared, so `ConnSlot` and `Slot` keep their sizes. A transfer that verifies never
-takes a connection made without (the CVE-2021-22924 class).
+**Identity and reuse.** `Tcp` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
+copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares
+(versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the
+client certificate and key with their formats and password, the cipher lists, curves,
+signature algorithms, the pinned key), made per leg, shared by the route and the connection,
+so `ConnSlot` and `Slot` keep their sizes (224 and 952 bytes measured with it, under their 232
+and 976 pins, the SOCKS pre-proxy shared to make room). Its `eq` destructures every field: the
+paths, blobs and keys exactly (`Curl_safecmp`), the lists and formats in any case
+(`curl_strequal`), the password in constant time (`Curl_timestrcmp`); ALPN is not compared.
+A transfer that verifies never takes a connection made without (the CVE-2021-22924 class). The
+CA file and path keep the build's default apart from none (`CaSetting`); a handle that names
+the default's path compares unequal to one that keeps the default, where C, which copies the
+default into the option, finds them equal: 43e1, which brings the default, resolves it before
+comparing. `ProxyRoute` gains the proxy's identity with the HTTPS proxy (43i).
 
 **The session cache** (`tls/cache.rs`) is per multi, 25 peers for `curl_multi_init` and 3 for
 `curl_easy_perform`'s private multi (multi.c:71, easy.c:805), or the share's 25 when it keeps
@@ -1858,10 +1897,12 @@ TLS, the origin's layer's `Below` being the proxy's layer; `[SSL-PROXY][TCP]` fo
 forwarded to the proxy, whose SETUP line C words `added SSL filter for origin`. The race does
 not apply to the proxy's handshake.
 
-**Shutdown.** A TLS layer's `shutdown` sends close_notify only after a completed handshake, and
-never for an aborted transfer (§4.6's discard terminates it); it then reads for the peer's,
-within the connection's 2 s, in the multi's `ShutdownSet`. The reference sends it on every graceful close: after
-the server's own close_notify, and from the cleanup's pass for a connection still kept.
+**Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
+multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s (built; the fake's says
+goodbye and waits for the peer's). OpenSSL's sends close_notify only after a completed
+handshake, and never for an aborted transfer (§4.6's discard terminates it); it then reads for
+the peer's. The reference sends it on every graceful close: after the server's own
+close_notify, and from the cleanup's pass for a connection still kept.
 
 **Errors.** The kinds `ErrorKind` kept get their producers: `SslConnectError` 35,
 `PeerFailedVerification` 60, `SslCacertBadfile` 77, `SslCipher` 59, `SslCertproblem` 58,
@@ -2747,9 +2788,9 @@ Each is either unobservable through the ABI or a fixed bug:
 | request head | once, measured before it is written | 1 MiB → TooLarge |
 | `Conn` receive buffer, head parser line | grows to the largest read and line | BUFFERSIZE, 100 KiB |
 | trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
-| planned (step 43): the TLS options (`Cold<TlsOptions>`, the SSL_CTX handler among them) | the first setopt of one | one group per handle, the proxy's in `Cold<Proxy>` |
-| planned: a route's `TlsIdentity` | the leg's route, for a TLS route | one per leg, shared with the connection it makes |
-| planned: a TLS layer (`TlsLayer` and the backend's session) and the layer stack | the handshake's start | one per TLS layer; OpenSSL's own memory is libc's, uncounted |
+| the TLS options (`Cold<TlsOptions>`; the SSL_CTX handler among them, and the proxy's in `Cold<Proxy>`, planned) | the first setopt of one | one group per handle |
+| a route's `TlsIdentity` | the leg's route, for a TLS route | one per leg, shared with the connection it makes |
+| a TLS layer (`TlsLayer` and the library's session), the layer stack, the handshake's marker | the handshake's start | one per TLS layer; OpenSSL's own memory is libc's, uncounted |
 | planned: a CA store cache entry | the first connection with that CA file and path | per CA setting, per multi, for the cache's timeout |
 | planned: session cache entries | a ticket kept | 25 peers × 2 tickets (3 peers for `perform`'s multi) |
 
@@ -2805,12 +2846,17 @@ peer gets a protocol error, not an out-of-memory one.
   scripted action through their context (pause, setopt, getinfo, sibling calls) to test
   re-entrancy. Golden call sequences for 530, 758, 1540, 1555, 2453, 3235 and 3236 come from the C
   leg's run of the libtest and are replayed against the core over `FakeNet`.
-- Planned (step 43): **`conn::layer::testing::FakeTls`** (test-util), a framed backend with a
-  handshake and a reversible cipher that arms each path of the layer (a read that must write,
-  partial records, pending bytes, an alert, a close, a shutdown that waits); curl-openssl's
+- **`tls::fake::FakeTls`** (test-util), a TLS library whose wire form a `Conversation` can
+  script: a handshake of text lines (the client's hello a request head the peer answers, the
+  server's welcome read as one record, the client's finished line), records of ROT13'd bytes
+  behind a hex length, and a goodbye each way. It arms each path of the layer (a read that must
+  write, partial records, bytes it holds, a shutdown that waits for the peer) and logs what it
+  was asked (the peer, the identity's verify bit, the room of each read); a session allocates
+  nothing past its box. `Conversation::stalling_sends_after` stalls sends mid-conversation.
+  `Lingering` (test-util), a layer whose shutdown waits a number of passes or for its peer,
+  arms the `ShutdownSet` without TLS (`multi::shutdown_tests`). Planned: curl-openssl's
   `test-util` TLS peer over `FakeNet` (memory BIOs, the test certificates), so the OpenSSL paths
-  have cargo tests. Built: `Lingering` (test-util), a layer whose shutdown waits a number of
-  passes or for its peer, arming the `ShutdownSet` before any TLS (`multi::shutdown_tests`). The C captures that pin TLS's lines and 758's callback sequence (the
+  have cargo tests. The C captures that pin TLS's lines and 758's callback sequence (the
   retry-verify pause, and the socket kept through a connection's shutdown until the multi's
   cleanup) are the goldens.
 - **Pure units**: `ResponseHeadParser`, `ChunkDecoder`, `decide_framing`, `render_h1`,

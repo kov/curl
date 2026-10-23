@@ -432,6 +432,8 @@ struct Wire {
     /// Sends still to be refused as would-block, though the socket polls
     /// writable: a full send buffer that drains by the next poll.
     stalls: usize,
+    /// The sends taken before the stalls start.
+    stalls_after: usize,
     /// The most a send takes; the rest is left to the sender.
     takes: Option<std::num::NonZeroUsize>,
     /// Each reply arrives a poll after its request: its first read
@@ -536,6 +538,17 @@ impl Conversation {
             .lock()
             .expect("no test panics holding the wire")
             .stalls = n;
+        self
+    }
+
+    /// The same peer, the `n` sends after its first `taken` refused as
+    /// would-block: a send buffer that fills mid-conversation.
+    pub fn stalling_sends_after(self, taken: usize, n: usize) -> Conversation {
+        {
+            let mut wire = self.0.lock().expect("no test panics holding the wire");
+            wire.stalls = n;
+            wire.stalls_after = taken;
+        }
         self
     }
 
@@ -1078,7 +1091,7 @@ impl Socket for FakeSocket {
         if wire.hung_up || wire.breaks_after.is_some_and(|n| wire.sends >= n) {
             return Err(io::Error::from_raw_os_error(libc_errno::EPIPE));
         }
-        if wire.stalls > 0 {
+        if wire.stalls > 0 && wire.sends >= wire.stalls_after {
             wire.stalls -= 1;
             return Ok(Sent::WouldBlock);
         }

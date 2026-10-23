@@ -7,7 +7,9 @@ use std::io;
 use std::net::SocketAddr;
 
 use super::io::{Events, Recv, Sent, Sock, Socket};
-use super::layer::{Alive, Handshake, LayerCx, LayerStack};
+use curl_alloc::OutOfMemory;
+
+use super::layer::{Alive, Handshake, Layer, LayerCx, LayerStack};
 use super::{RecvBuf, RecvFailed};
 use crate::error::ErrorKind;
 
@@ -27,13 +29,27 @@ impl Stream {
         }
     }
 
-    /// Its layers, to push one on.
-    #[cfg_attr(
-        not(any(test, feature = "test-util")),
-        expect(dead_code, reason = "TLS pushes its layer, step 43; tests push theirs")
-    )]
+    /// Its layers, for a test to push one on.
+    #[cfg(any(test, feature = "test-util"))]
     pub(crate) fn layers_mut(&mut self) -> &mut LayerStack {
         &mut self.layers
+    }
+
+    /// Put `layer` on top of its layers, handing it what was received
+    /// and not used, which the layer reads first: the bytes a proxy's
+    /// answer came with are the peer's, for the layer that reads what the
+    /// peer says next.
+    pub(crate) fn push_over_received(
+        &mut self,
+        layer: impl FnOnce(Vec<u8>) -> Result<Box<dyn Layer>, OutOfMemory>,
+    ) -> Result<(), OutOfMemory> {
+        let layer = layer(self.rx.take())?;
+        self.layers.push(layer)
+    }
+
+    /// Move its top layer's handshake on.
+    pub(crate) fn connect(&mut self, cx: &mut dyn LayerCx) -> Result<Handshake, ErrorKind> {
+        self.layers.connect(self.socket.socket(), cx)
     }
 
     pub(crate) fn socket(&self) -> &dyn Socket {

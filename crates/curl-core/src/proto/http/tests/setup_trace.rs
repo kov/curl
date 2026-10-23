@@ -341,3 +341,32 @@ fn a_socks_handshake_refused_as_it_starts_names_its_filter() {
     )));
     assert_eq!(setup_lines(&ran), want);
 }
+
+/// HTTPS: TLS's filter is added last, right below SETUP, and stays once
+/// the setup filters go (`[SETUP] added SSL filter for origin`, `reduced
+/// to [0][SSL][TCP]`), as the C build traces it with `--http1.1`; the
+/// ALPN race C puts above SETUP (`HTTPS-CONNECT`) is not traced yet.
+#[test]
+fn an_https_setup_is_traced_as_c() {
+    let (_, libraries) = super::tls::tls();
+    let welcome = crate::tls::fake::WELCOME;
+    let response = crate::tls::fake::records(OK).unwrap();
+    let (mut m, talk, _) = server(&[welcome, &response], false);
+    let mut e = tracing_setup();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("https://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
+    want.extend(expect(
+        "[SETUP] added SSL filter for origin
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [0][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+        [SETUP] removing connected setup filter
+        [SETUP] destroy
+        [MULTI] [CONNECTING] reduced to [0][SSL][TCP]",
+    ));
+    assert_eq!(setup_lines(&ran), want);
+}

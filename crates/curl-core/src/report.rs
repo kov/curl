@@ -488,10 +488,6 @@ pub(crate) enum Timer {
     PostQueue,
     NameLookup,
     Connect,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "marked by connections, from step 11")
-    )]
     AppConnect,
     /// The request is about to be sent.
     PreTransfer,

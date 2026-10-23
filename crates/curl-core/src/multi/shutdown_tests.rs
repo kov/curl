@@ -527,3 +527,105 @@ fn room_for_a_host_closes_that_host_s_closing_connection() {
     assert_eq!(m.shutdowns.len(), 1, "the one to port 1 stays");
     assert!(!matches!(m.state_of(b), state::TransferState::Pending(_)));
 }
+
+/// A multi over a server at port 4 holding `talk`, and the fake TLS
+/// library a handle speaks to it with.
+fn over_tls(talk: &Conversation) -> (Multi, Wire, &'static crate::tls::fake::FakeTls) {
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], 4));
+    let fake = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let wire = Wire(Arc::new(Mutex::new((fake, Vec::new()))));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(wire.clone()),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let backend = Box::leak(Box::new(crate::tls::fake::FakeTls::new().unwrap()));
+    (Multi::new(env).unwrap(), wire, backend)
+}
+
+/// An HTTPS transfer to port 4 by the TLS library `tls`, whose
+/// connection is closed once it is done.
+fn closing_tls(tls: &'static crate::tls::fake::FakeTls) -> Box<Easy> {
+    let libraries = Box::leak(Box::new(crate::libraries::Libraries {
+        tls: Some(tls),
+        ..crate::libraries::Libraries::NONE
+    }));
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    e.options_mut()
+        .set_url(Some(b"https://127.0.0.1:4/"))
+        .unwrap();
+    e.options_mut().limits.reuse.forbid = true;
+    Box::new(e)
+}
+
+/// The server's side of an HTTPS exchange that ends in its goodbye.
+fn tls_talk() -> Conversation {
+    use crate::tls::fake::{CLOSE, WELCOME, records};
+    Conversation::replies(&[WELCOME, &records(OK).unwrap(), CLOSE], false)
+}
+
+/// A TLS connection closed after its transfer says goodbye first, and
+/// is closed as soon as its peer says it back: here at once, in the
+/// pool's one try, so it never joins the set.
+#[test]
+fn a_tls_connection_says_goodbye_as_it_closes() {
+    let talk = tls_talk();
+    let (mut m, wire, tls) = over_tls(&talk);
+    let mut ev = Rec::default();
+    let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    assert!(talk.received().ends_with(crate::tls::fake::CLOSE));
+    assert_eq!((tls.log().closes_sent, tls.log().closes_heard), (1, 1));
+    assert_eq!(m.shutdowns.len(), 0);
+    assert_eq!(wire.closed(), [1000]);
+}
+
+/// A goodbye the peer has not said back yet waits in the multi's set,
+/// reading for it, until the peer says it.
+#[test]
+fn a_tls_goodbye_waits_in_the_set_for_the_peer_s() {
+    let talk = tls_talk().held();
+    talk.allow(2);
+    let (mut m, wire, tls) = over_tls(&talk);
+    let mut ev = Rec::default();
+    let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
+    by_perform(&mut m, id, &mut ev);
+    assert_eq!((tls.log().closes_sent, tls.log().closes_heard), (1, 0));
+    assert_eq!(m.shutdowns.len(), 1);
+    let mut waited = Vec::new();
+    m.sockets(&mut NoEvents, |s, e| waited.push((s.key().get(), e)));
+    assert_eq!(waited, [(1000, Events::IN)]);
+    assert_eq!(wire.closed(), []);
+    talk.allow(3);
+    m.perform(&mut ev).unwrap();
+    assert_eq!(tls.log().closes_heard, 1);
+    assert_eq!(m.shutdowns.len(), 0);
+    assert_eq!(wire.closed(), [1000]);
+}
+
+/// A transfer taken out before its end says no goodbye: its connection
+/// is closed at once (`cpool_discard_conn`), so the server cannot take
+/// the end for a complete one.
+#[test]
+fn an_aborted_tls_transfer_says_no_goodbye() {
+    use crate::tls::fake::WELCOME;
+    let talk = Conversation::replies(&[WELCOME], false);
+    let (mut m, wire, tls) = over_tls(&talk);
+    let mut ev = Rec::default();
+    let id = m.add(closing_tls(tls), (), &mut ev).unwrap();
+    for _ in 0..5 {
+        m.perform(&mut ev).unwrap();
+    }
+    assert!(!m.state_of(id).is_completed());
+    assert_eq!(tls.log().handshakes, 1, "its TLS up, its answer awaited");
+    m.remove(id, &mut ev).unwrap();
+    assert_eq!(tls.log().closes_sent, 0);
+    assert!(!talk.received().ends_with(crate::tls::fake::CLOSE));
+    assert_eq!(m.shutdowns.len(), 0);
+    assert_eq!(wire.closed(), [1000]);
+}

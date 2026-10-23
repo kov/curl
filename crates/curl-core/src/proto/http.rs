@@ -73,12 +73,13 @@ enum BodyKind {
     Put,
 }
 
-/// The port a URL without one means.
-const DEFAULT_PORT: u16 = 80;
-
-/// HTTP, as the connection layer knows it.
-const SCHEME: Scheme = Scheme {
+/// HTTP, as the connection layer knows it, and HTTP over TLS.
+const HTTP: Scheme = Scheme {
     name: "http",
+    reuse: true,
+};
+pub(crate) const HTTPS: Scheme = Scheme {
+    name: "https",
     reuse: true,
 };
 
@@ -390,10 +391,11 @@ impl Request {
         self.gate.trusted()
     }
 
-    /// A request for `url`, whose scheme is `http`, after the transfer's
-    /// earlier ones left it `before`.
+    /// A request for `url`, whose scheme is `http`, or `https` if
+    /// `secured`, after the transfer's earlier ones left it `before`.
     pub(crate) fn new<H: Host>(
         url: &Url,
+        secured: bool,
         before: Before<'_>,
         cx: &mut StepCx<'_, H>,
     ) -> Result<Request, ErrorKind> {
@@ -434,7 +436,8 @@ impl Request {
             Err(e) => return Err(url_error(e)),
         }
         let scope = cx.easy().options().address_scope;
-        let peer = super::url_peer(SCHEME, host, port, url, scope)?;
+        let scheme = if secured { HTTPS } else { HTTP };
+        let peer = super::url_peer(scheme, host, port, url, scope)?;
         let gate = match before.first {
             None => CredentialGate::FIRST,
             Some(first) => {
@@ -505,7 +508,18 @@ impl Request {
         let mut host = Vec::new();
         host.try_extend_from_slice(self.peer.shown())
             .map_err(|_| ErrorKind::OutOfMemory)?;
-        super::url_peer(SCHEME, host, self.peer.port(), url, scope)
+        super::url_peer(self.peer.scheme(), host, self.peer.port(), url, scope)
+    }
+
+    /// It goes over TLS: its scheme is `https` (C's `PROTOPT_SSL`).
+    pub(crate) fn secured(&self) -> bool {
+        self.peer.scheme() == HTTPS
+    }
+
+    /// The port its scheme means when a URL names none, which `Host:`
+    /// and the signatures leave out.
+    fn default_port(&self) -> u16 {
+        if self.secured() { 443 } else { 80 }
     }
 
     pub(crate) fn pipeline_mut(&mut self) -> &mut Pipeline {
@@ -696,7 +710,7 @@ impl Request {
             },
             hostname: self.peer.name(),
             host: self.peer.shown(),
-            port: (port != DEFAULT_PORT).then_some(port),
+            port: (port != self.default_port()).then_some(port),
             path,
             query,
             headers: &options.http.headers,
@@ -732,7 +746,7 @@ impl Request {
         // gives one that says anything, else the library's
         // (`httpsig_authority`).
         let port = self.peer.port();
-        let port = (port != DEFAULT_PORT).then_some(port);
+        let port = (port != self.default_port()).then_some(port);
         let mut authority = Vec::new();
         let custom = self
             .gate
@@ -1041,7 +1055,7 @@ impl Request {
             },
         };
         let port = self.peer.port();
-        let shown_port = (port != DEFAULT_PORT).then_some(port);
+        let shown_port = (port != self.default_port()).then_some(port);
         let gate = self.gate;
         let authorization = match (&self.credentials, &auth.header) {
             // Digest goes beside the application's own Authorization, as
@@ -2292,6 +2306,7 @@ fn cookie_site<'a>(
     cookies::Site {
         host: custom_host.as_deref().unwrap_or(peer.name()),
         path: target.split(|&b| b == b'?').next().unwrap_or_default(),
+        secured: peer.scheme() == HTTPS,
     }
 }
 

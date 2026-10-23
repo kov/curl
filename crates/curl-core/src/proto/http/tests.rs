@@ -4953,6 +4953,7 @@ mod sigv4;
 mod tcp_trace;
 mod time_condition;
 mod timer_trace;
+mod tls;
 mod wait_trace;
 mod write_trace;
 

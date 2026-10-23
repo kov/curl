@@ -453,7 +453,8 @@ fn a_handler_s_failure_ends_the_read() {
     for (answer, want) in [
         (Answer::Abort, Got::Abort),
         (Answer::Fail, Got::Error),
-        (Answer::TooMuch, Got::Funny),
+        // One past the room left after the part's headers.
+        (Answer::TooMuch, Got::Funny(931)),
     ] {
         let mut r = reader(tree([named("a", callback(None, false))]));
         let mut calls = Script::new([answer.clone()]);

@@ -3,10 +3,12 @@
 
 use curl_alloc::OutOfMemory;
 
+use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::proto::http1::chunked::ChunkEncoder;
+use crate::trace;
 
 use super::{Readout, Upload};
 
@@ -73,7 +75,43 @@ impl Body {
         };
         if let Some(room) = chunks.wants(dest.len()) {
             let got = self.upload.read(cx, room, pausable)?;
-            let end = if got.eos { Some(trailers(cx)?) } else { None };
+            let read = Component::Read;
+            if got.n > 0 {
+                let n = got.n;
+                trace::of(
+                    cx,
+                    read,
+                    format_args!("http_chunk, made chunk of {n} bytes -> 0"),
+                );
+            }
+            let end = if got.eos {
+                // The application's trailers, if it gives any
+                // (`add_last_chunk`).
+                let asks = cx.easy().options().callbacks.trailer.is_some();
+                let block = trailers(cx);
+                match (&block, asks) {
+                    (Ok(_), false) => {
+                        trace::of(
+                            cx,
+                            read,
+                            format_args!("http_chunk, added last, empty chunk"),
+                        );
+                    }
+                    (_, _) => {
+                        let code = trace::Code(block.as_ref().map(|_| ()).map_err(|&e| e));
+                        trace::of(
+                            cx,
+                            read,
+                            format_args!(
+                                "http_chunk, added last chunk with trailers from client -> {code}"
+                            ),
+                        );
+                    }
+                }
+                Some(block?)
+            } else {
+                None
+            };
             chunks
                 .got(got.n, end.as_deref())
                 .map_err(|_| ErrorKind::OutOfMemory)?;

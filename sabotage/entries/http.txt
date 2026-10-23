@@ -512,9 +512,9 @@ witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_goes_when_the_wait_for_a_100_runs_out
 --- old
-                    Sending::AwaitingContinue(until) if cx.now() < until => return Ok(false),
+                    Sending::AwaitingContinue(until) if cx.now() < until => {
 --- new
-                    Sending::AwaitingContinue(until) if false && cx.now() < until => return Ok(false),
+                    Sending::AwaitingContinue(until) if false && cx.now() < until => {
 
 === a 100 does not release the body
 file: crates/curl-core/src/proto/http.rs
@@ -752,12 +752,12 @@ witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_transfer_fails
 --- old
-    // request (`Curl_req_soft_reset`); a failure stands only if the next
-    // request would send it.
+        client_start(cx);
+    }
     let rewound = proto.rewind_upload(cx);
 --- new
-    // request (`Curl_req_soft_reset`); a failure stands only if the next
-    // request would send it.
+        client_start(cx);
+    }
     let rewound: Result<(), ErrorKind> = Ok(());
 
 === a failed rewind fails a redirect to GET
@@ -774,10 +774,10 @@ witness: curl-core proto::http::tests::a_redirected_body_is_rewound_or_the_trans
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_retried_request_rewinds_its_body
 --- old
-    // As for a redirect, which never switches to GET here.
+    client_start(cx);
     let rewound = proto.rewind_upload(cx);
 --- new
-    // As for a redirect, which never switches to GET here.
+    client_start(cx);
     let rewound: Result<(), ErrorKind> = Ok(());
 
 === the rewind a redirect needs goes unsaid

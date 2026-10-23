@@ -318,6 +318,15 @@ impl ProtoState {
         }
     }
 
+    /// The request's body is to be read again for the next request
+    /// (`Curl_creader_will_rewind`).
+    pub(crate) fn rewinds_upload(&self) -> bool {
+        match self {
+            ProtoState::Http(r) => r.rewinds_upload(),
+            _ => false,
+        }
+    }
+
     /// Start the request's body over, for the next request to send it
     /// again (`Curl_client_start`).
     pub(crate) fn rewind_upload<H: Host>(

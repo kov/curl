@@ -1,0 +1,81 @@
+# The read component's trace (`CURL_TRC_READ`): the readers a request's
+# body goes through and their resets, against sendf.c's client readers.
+
+=== a retry does not rewind its readers
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::read_trace::a_retried_request_keeps_its_readers_to_rewind
+features: test-util
+--- old
+    // rewinds (`Curl_retry_request`).
+    client_start(cx);
+--- new
+    // rewinds (`Curl_retry_request`).
+
+=== a followed request does not rewind its readers
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::read_trace::a_body_sent_again_is_kept_and_rewound
+features: test-util
+--- old
+    if proto.rewinds_upload() {
+        client_start(cx);
+    }
+--- new
+    if !proto.rewinds_upload() {
+        client_start(cx);
+    }
+
+=== a request's end clears the readers it is to send again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::read_trace::a_body_sent_again_is_kept_and_rewound
+features: test-util
+--- old
+                upload::trace_reset(cx, d.rewinding());
+--- new
+                upload::trace_reset(cx, false);
+
+=== a 417 while sending does not keep the body to rewind
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::a_417_while_sending_keeps_the_body_to_rewind
+features: test-util
+--- old
+                    self.head.as_mut().expect("made at DO").meta_mut().rewind();
+--- new
+
+=== a body held for a 100 is not asked for while the wait runs
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_gives_nothing_until_it_comes
+features: test-util
+--- old
+                    Sending::AwaitingContinue(until) if cx.now() < until => {
+                        self.held_back(cx);
+--- new
+                    Sending::AwaitingContinue(until) if cx.now() < until => {
+
+=== a body held for a 100 is not asked for behind the head
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::a_body_held_for_a_100_gives_nothing_until_it_comes
+features: test-util
+--- old
+                self.start_reading(cx);
+                self.held_back(cx);
+--- new
+                self.start_reading(cx);
+
+=== an upload to a file is read again past its end
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_is_read_as_c_reads_it
+features: test-util
+--- old
+            if got.eos {
+                break;
+            }
+--- new
+
+=== a last chunk with trailers is said to be empty
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core proto::http::tests::read_trace::trailers_are_said_with_the_last_chunk
+features: test-util
+--- old
+                    (Ok(_), false) => {
+--- new
+                    (Ok(_), _) => {

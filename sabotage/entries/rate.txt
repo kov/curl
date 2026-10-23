@@ -82,13 +82,15 @@ witness: curl-core proto::http::tests::a_rate_limited_transfer_times_out
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_send_limit_lets_its_rate_out_each_second
 --- old
-            Some(..=0) => return Ok(false),
+                return Ok(false);
+            }
             Some(allowed) => {
                 let room = dest
                     .len()
                     .min(usize::try_from(allowed).unwrap_or(usize::MAX));
 --- new
-            Some(..=0) => dest,
+                dest
+            }
             Some(allowed) => {
                 let room = dest
                     .len()

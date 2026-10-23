@@ -521,6 +521,12 @@ impl Request {
         self.head.as_ref().is_some_and(HeadParser::saw_http10)
     }
 
+    /// The body is to be read again for the next request
+    /// (`Curl_creader_set_rewind`).
+    pub(crate) fn rewinds_upload(&self) -> bool {
+        self.head.as_ref().is_some_and(|h| h.meta().rewinds())
+    }
+
     /// Start the body over, for the next request to send it again.
     pub(crate) fn rewind_upload<H: Host>(
         &mut self,
@@ -1070,6 +1076,8 @@ impl Request {
         self.sent = 0;
         self.body = match upload {
             Some(upload) => {
+                // The request's reader (`http_req_set_reader`).
+                upload.trace_set(cx);
                 let mut body = chain::Body::new(upload);
                 if chunked {
                     body.chunked().map_err(|_| ErrorKind::OutOfMemory)?;
@@ -1094,7 +1102,10 @@ impl Request {
             }) if self.filled < self.out.len() && !paused => {
                 self.fill(cx)?;
             }
-            AfterHead::Continue if !paused => self.start_reading(cx),
+            AfterHead::Continue if !paused => {
+                self.start_reading(cx);
+                self.held_back(cx);
+            }
             AfterHead::Body(_) | AfterHead::Continue => {}
         }
         // The engine takes the request as sent at DID if it went now;
@@ -1112,7 +1123,11 @@ impl Request {
         // Under a send limit, no more than it allows, and nothing once it
         // is spent (`Curl_client_read`).
         let dest = match cx.rate_allowance(Way::Send) {
-            Some(..=0) => return Ok(false),
+            Some(..=0) => {
+                let nothing = Ok(upload::Readout { n: 0, eos: false });
+                upload::client_read(cx, dest.len(), &nothing);
+                return Ok(false);
+            }
             Some(allowed) => {
                 let room = dest
                     .len()
@@ -1121,13 +1136,23 @@ impl Request {
             }
             None => dest,
         };
-        let got = body.read(cx, dest, pausable, trailer_block)?;
+        let len = dest.len();
+        let got = body.read(cx, dest, pausable, trailer_block);
+        upload::client_read(cx, len, &got);
+        let got = got?;
         self.filled += got.n;
         self.outgoing
             .reading_mut()
             .expect("a body being read")
             .eos_read = got.eos;
         Ok(got.n > 0 || got.eos)
+    }
+
+    /// The body is asked for, and held back for a 100: C's readers give
+    /// nothing (`cr_exp100_read`).
+    fn held_back<H: Host>(&self, cx: &mut StepCx<'_, H>) {
+        let nothing = Ok(upload::Readout { n: 0, eos: false });
+        upload::client_read(cx, self.out.len() - self.filled, &nothing);
     }
 
     /// The body is first read, or asked for: the send limit starts over
@@ -1159,7 +1184,10 @@ impl Request {
                 // A body announced with `Expect: 100-continue` waits for
                 // the 100, or until the wait runs out (`cr_exp100_read`).
                 match self.outgoing {
-                    Sending::AwaitingContinue(until) if cx.now() < until => return Ok(false),
+                    Sending::AwaitingContinue(until) if cx.now() < until => {
+                        self.held_back(cx);
+                        return Ok(false);
+                    }
                     Sending::AwaitingContinue(_) => {
                         self.release(cx);
                         trace::info(cx, format_args!("Done waiting for 100-continue"));
@@ -1233,6 +1261,7 @@ impl Request {
                         let until = cx.now().after(wait);
                         self.outgoing = Sending::AwaitingContinue(until);
                         state::trace_set(cx, TimerKind::Proto, until);
+                        self.held_back(cx);
                         return Ok(false);
                     }
                 };
@@ -1526,6 +1555,9 @@ impl Request {
             Some(HeadEvent::Line(line)) => line,
         };
         for note in line.notes.iter() {
+            if note == framing::Note::NeedRewind {
+                needs_rewind(cx);
+            }
             trace::info(cx, format_args!("{note}"));
         }
         // The document's time, if asked for; one that cannot be read is
@@ -1694,7 +1726,9 @@ impl Request {
                     .as_ref()
                     .is_some_and(|b| b.upload().needs_rewind())
                 {
+                    needs_rewind(cx);
                     trace::info(cx, format_args!("Need to rewind upload for next request"));
+                    self.head.as_mut().expect("made at DO").meta_mut().rewind();
                 }
             }
             self.expect_refused = true;
@@ -1979,6 +2013,16 @@ fn trailer_block<H: Host>(cx: &mut StepCx<'_, H>) -> Result<Vec<u8>, ErrorKind> 
             .map_err(|_| ErrorKind::OutOfMemory)?;
     }
     Ok(block)
+}
+
+/// The body was read, and must be rewound for another request to send
+/// it (`Curl_creader_needs_rewind`).
+fn needs_rewind<H: Host>(cx: &mut StepCx<'_, H>) {
+    trace::of(
+        cx,
+        Component::Read,
+        format_args!("client reader needs rewind before next request"),
+    );
 }
 
 /// A copy of `bytes`; out of memory fails the transfer.

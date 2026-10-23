@@ -603,6 +603,58 @@ fn bytes(b: &[u8]) -> UploadSource {
     UploadSource::Bytes(TryArc::try_new(b.to_vec()).unwrap())
 }
 
+/// The text lines `e` traces, `components` on.
+#[derive(Clone, Default)]
+struct Lines(Arc<Mutex<Vec<String>>>);
+
+impl crate::handler::DebugHandler for Lines {
+    fn debug(&self, _: &mut TransferCx<'_>, kind: crate::handler::DebugKind, data: &[u8]) {
+        if kind == crate::handler::DebugKind::Text {
+            let line = String::from_utf8(data.to_vec()).unwrap();
+            self.0.lock().unwrap().push(line.trim_end().to_owned());
+        }
+    }
+}
+
+fn traced(e: &mut Easy, components: &[u8]) -> Lines {
+    let lines = Lines::default();
+    e.options_mut().output.verbose = true;
+    e.options_mut().callbacks.debug = Some(Handler::debug(lines.clone()).unwrap());
+    let c = crate::components::Components::new().unwrap();
+    c.configure(components);
+    e.set_components(Some(c));
+    lines
+}
+
+/// An upload's body is read through C's readers, set as it is first read,
+/// and not read again past its end (`file_upload`, `Curl_client_read`).
+#[test]
+fn an_upload_is_read_as_c_reads_it() {
+    let s = Scratch::new("upload-read");
+    let (mut e, _) = upload(&s.url("new"), bytes(b"short"));
+    let lines = traced(&mut e, b"read");
+    let (r, _) = run(e);
+    assert_eq!(r, Ok(()));
+    let lines: Vec<_> = lines
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|l| l.starts_with("[READ] "))
+        .cloned()
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "[READ] client_reset, clear readers",
+            "[READ] add buf reader, len=5 -> 0",
+            "[READ] cr_buf_read(len=65536) -> 0, nread=5, eos=1",
+            "[READ] client_read(len=65536) -> 0, nread=5, eos=1",
+            "[READ] client_reset, clear readers",
+        ]
+    );
+}
+
 /// An upload writes the body to the file, created or emptied, in pieces of
 /// the upload buffer; progress after each piece written and at the end.
 #[test]

@@ -356,6 +356,17 @@ the `debug-hooks` feature. Not traced: C's DNS filter's own life and its reading
 c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
 and a SOCKS proxy's lookup of the destination.
 
+`READ` traces a request's body as C's client readers read it: the reader set as the request is
+built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
+buffer, the application's read handler or a mime tree (`cr_buf_read`, `cr_in_read`,
+`cr_mime_read` with its special sizes), the chunk stage around it, and `client_read` with the
+room the request's buffer had; a body held for a 100 is asked for and gives nothing. The
+readers are reset as a request starts and as it ends without error, kept to be rewound when the
+next request is to send the body again (a redirect or 417 that asks it, a retry always), and
+rewound before that request is issued. Not traced: C's rewind mechanics by name (`cr_in, rewind
+via ...`), the pause stage's unpausing and the line-ending converter, which the engine has no
+reader for.
+
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
 they are set) is handed to a `notes` closure the caller passes, line by line in the transfer's

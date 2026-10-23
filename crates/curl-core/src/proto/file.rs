@@ -341,9 +341,13 @@ impl Request {
         buf.try_reserve_exact(room)
             .map_err(|_| ErrorKind::OutOfMemory)?;
         super::http::zeros(&mut buf, room).map_err(|_| ErrorKind::OutOfMemory)?;
+        // The reader is set as the body is first read (`Curl_client_read`).
+        upload.trace_set(cx);
         loop {
             // Not pausable: a pause is a read error.
-            let got = upload.read(cx, &mut buf, false)?;
+            let got = upload.read(cx, &mut buf, false);
+            upload::client_read(cx, buf.len(), &got);
+            let got = got?;
             if got.n == 0 {
                 break;
             }
@@ -352,9 +356,11 @@ impl Request {
             let body = &buf[skipped..got.n];
             target.write_all(body).map_err(|_| ErrorKind::SendError)?;
             cx.report_mut().sizes_mut().upload += body.len() as u64;
-            // After the body's end, a read gives nothing, without asking
-            // a handler.
             progress::check(cx, false)?;
+            // Not read again past its end (`file_upload`'s `eos`).
+            if got.eos {
+                break;
+            }
         }
         progress::update(cx, false)
     }

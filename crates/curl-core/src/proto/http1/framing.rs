@@ -352,6 +352,13 @@ impl Meta {
         }
     }
 
+    /// The body is to be read again for the next request, which a 417
+    /// to an `Expect: 100-continue` asks once some of it went
+    /// (`http_perhapsrewind`).
+    pub(crate) fn rewind(&mut self) {
+        self.rewinds = true;
+    }
+
     /// The body is read again for the next request.
     pub(crate) fn rewinds(&self) -> bool {
         self.rewinds

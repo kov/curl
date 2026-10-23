@@ -38,6 +38,7 @@ use crate::proto::{Inherited, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
 use crate::trace;
+use crate::upload;
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
@@ -206,6 +207,16 @@ pub(crate) struct Done {
     next: AfterRequest,
 }
 
+impl Done {
+    /// The next request is to send the body again: a retry always rewinds
+    /// it (`Curl_retry_request`), a request the response asks for as the
+    /// protocol decided (`Curl_creader_will_rewind`).
+    fn rewinding(&self) -> bool {
+        self.next == AfterRequest::Retry
+            || self.proto.as_ref().is_some_and(ProtoState::rewinds_upload)
+    }
+}
+
 /// How far a request got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reached {
@@ -371,21 +382,41 @@ impl TransferState {
     pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
         // Past its request, the connection is in no known state
         // (`curl_multi_remove_handle`'s `streamclose`).
-        let (lease, origin, past_do) = match self {
+        let (lease, origin, past_do, rewinding) = match self {
             TransferState::Init
             | TransferState::Pending(_)
             | TransferState::Setup(_)
             | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => (c.lease, Some(c.route.origin), false),
-            TransferState::ProtoConnect(x) | TransferState::Do(x) => (x.lease, x.origin, false),
+            TransferState::Connecting(c) => (c.lease, Some(c.route.origin), false, false),
+            TransferState::ProtoConnect(x) | TransferState::Do(x) => {
+                let rewinding = x.proto.rewinds_upload();
+                (x.lease, x.origin, false, rewinding)
+            }
             TransferState::Did(x)
             | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => (x.lease, x.origin, true),
-            TransferState::Done(d) => (d.lease, d.origin, true),
+            | TransferState::RateLimiting(x) => {
+                let rewinding = x.proto.rewinds_upload();
+                (x.lease, x.origin, true, rewinding)
+            }
+            TransferState::Done(d) => {
+                let rewinding = d.rewinding();
+                (d.lease, d.origin, true, rewinding)
+            }
         };
         mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
+        upload::trace_reset(cx, rewinding);
         release(cx, lease, true, past_do, origin.as_ref());
     }
+}
+
+/// The readers kept for the next request are rewound
+/// (`Curl_client_start`).
+fn client_start<H: Host>(cx: &mut StepCx<'_, H>) {
+    trace::of(
+        cx,
+        Component::Read,
+        format_args!("client start, rewind readers"),
+    );
 }
 
 /// Give the transfer's connection back, and trace its fate
@@ -763,6 +794,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         TransferState::Setup(mut plan) => {
             // Let out of PENDING by another transfer (`multi_schedule_pending`).
             mstate::enter(cx, MState::Connect);
+            // The request starts over (`Curl_req_hard_reset`).
+            upload::trace_reset(cx, false);
             // The rest of the plan is kept, but C makes its connection
             // anew as a waiting transfer looks again, reading the IP
             // version then (`allocate_conn`, `url_match_conn`).
@@ -964,6 +997,10 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
             names.section(|dns| dns.prune(now, max_age));
             let stream_closed = d.premature && d.reached != Reached::Unmade;
+            // The request is over (`Curl_req_done`), unless it failed.
+            if d.result.is_ok() {
+                upload::trace_reset(cx, d.rewinding());
+            }
             release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
             // Held output went with the request; a pause the application
             // asked for stays.
@@ -2122,6 +2159,9 @@ fn follow_leg<H: Host>(
     // The body is started over before anything else is said of the next
     // request (`Curl_req_soft_reset`); a failure stands only if the next
     // request would send it.
+    if proto.rewinds_upload() {
+        client_start(cx);
+    }
     let rewound = proto.rewind_upload(cx);
     let shown = Bytes(&text);
     trace::info(
@@ -2179,7 +2219,9 @@ fn retry_leg<H: Host>(
         Ok(shown) => shown,
         Err(e) => return TransferState::Init.fail(url_error(e)),
     };
-    // As for a redirect, which never switches to GET here.
+    // As for a redirect, which never switches to GET here. A retry always
+    // rewinds (`Curl_retry_request`).
+    client_start(cx);
     let rewound = proto.rewind_upload(cx);
     let shown = Bytes(&shown);
     trace::info(
@@ -2300,6 +2342,8 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         trace_set(cx, kind, at);
     }
     mstate::enter(cx, MState::Connect);
+    // The request starts from nothing (`Curl_req_hard_reset`).
+    upload::trace_reset(cx, false);
     cx.mark(Timer::PostQueue);
     // Counted from nothing for each request (`Curl_init_do`).
     let (speedometer, report) = cx.progress_parts();

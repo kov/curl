@@ -7,6 +7,7 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
+use crate::components::Component;
 use crate::deliver::Lifts;
 use crate::error::ErrorKind;
 use crate::handler::{Handler, Read, ReadHandler, Rewind, RewindFailed};
@@ -44,8 +45,24 @@ pub(crate) enum Got {
     Pause,
     /// `READ_ERROR`.
     Error,
-    /// A handler gave more than its room: the transfer fails at once.
-    Funny,
+    /// A handler gave more than its room, this many: the transfer fails
+    /// at once.
+    Funny(usize),
+}
+
+impl Got {
+    /// What C's `Curl_mime_read` returns for it: the size, or one of the
+    /// sizes standing for something else (`CURL_READFUNC_ABORT`,
+    /// `CURL_READFUNC_PAUSE`, `STOP_FILLING`, `READ_ERROR`).
+    fn c_size(self) -> u64 {
+        match self {
+            Got::Bytes(n) | Got::Funny(n) => n as u64,
+            Got::Abort => 0x1000_0000,
+            Got::Pause => 0x1000_0001,
+            Got::Stop => u64::MAX - 1,
+            Got::Error => u64::MAX,
+        }
+    }
 }
 
 /// How a part's names are quoted in its `Content-Disposition`.
@@ -670,7 +687,7 @@ fn read_content(
             ContentRef::Read { handler, .. } => {
                 *hasread = true;
                 match calls.read(handler, buf) {
-                    Read::Data(n) if n.get() > buf.len() => Got::Funny,
+                    Read::Data(n) if n.get() > buf.len() => Got::Funny(n.get()),
                     Read::Data(n) => Got::Bytes(n.get()),
                     Read::Eof => Got::Bytes(0),
                     Read::Pause => Got::Pause,
@@ -689,7 +706,7 @@ fn read_content(
         Got::Pause => src.last = Last::Paused(calls.lifts()),
         Got::Bytes(0) => src.last = Last::End,
         Got::Abort => src.last = Last::Abort,
-        Got::Error | Got::Funny => src.last = Last::Error,
+        Got::Error | Got::Funny(_) => src.last = Last::Error,
         Got::Bytes(n) => {
             src.offset += n as u64;
             src.last = Last::Fine;
@@ -739,7 +756,7 @@ fn read_encoded(
         match read_content(part, &mut c.src, &mut c.enc.buf[end..], hasread, calls) {
             Got::Bytes(0) => ateof = true,
             Got::Bytes(n) => c.enc.end += n,
-            Got::Funny => return Got::Funny,
+            Got::Funny(n) => return Got::Funny(n),
             got => return some_or(cursize, got),
         }
     }
@@ -1032,7 +1049,7 @@ fn readback_part(
                         return Got::Bytes(cursize);
                     }
                     Got::Bytes(n) => sz = n,
-                    Got::Funny => return Got::Funny,
+                    Got::Funny(n) => return Got::Funny(n),
                     got => {
                         return if cursize > 0 {
                             Got::Bytes(cursize)
@@ -1101,7 +1118,7 @@ fn subparts_read(
                             mc.offset = 0;
                         }
                         Got::Bytes(n) => sz = n,
-                        Got::Funny => return Got::Funny,
+                        Got::Funny(n) => return Got::Funny(n),
                         got => {
                             return if cursize > 0 {
                                 Got::Bytes(cursize)
@@ -1326,18 +1343,14 @@ impl MimeReader {
 
     /// What the next read gives, sans-IO: `Got` as C's reader sees it.
     fn next(&mut self, buf: &mut [u8], calls: &mut dyn Calls) -> Got {
-        let mut blen = buf.len();
-        if let Some(size) = self.size {
-            let remain = size.saturating_sub(self.read);
-            blen = blen.min(usize::try_from(remain).unwrap_or(usize::MAX));
-        }
+        let blen = self.room(buf.len());
         if self.small_start < self.small_end {
             let n = (self.small_end - self.small_start).min(blen);
             buf[..n].copy_from_slice(&self.small[self.small_start..self.small_start + n]);
             self.small_start += n;
             return Got::Bytes(n);
         }
-        if blen <= 4 {
+        if self.reads_small(blen) {
             // An encoder may need more room than that for its next group.
             let mut small = [0u8; SMALL_READ];
             let got = self.mime_read(&mut small, calls);
@@ -1355,6 +1368,24 @@ impl MimeReader {
         self.mime_read(&mut buf[..blen], calls)
     }
 
+    /// What of `len` a read may fill: no more than is left of a known
+    /// size.
+    fn room(&self, len: usize) -> usize {
+        match self.size {
+            Some(size) => {
+                let remain = size.saturating_sub(self.read);
+                len.min(usize::try_from(remain).unwrap_or(usize::MAX))
+            }
+            None => len,
+        }
+    }
+
+    /// Whether a read of `blen` goes through the small buffer: nothing is
+    /// held in it, and the room is too little for an encoder's group.
+    fn reads_small(&self, blen: usize) -> bool {
+        self.small_start == self.small_end && blen <= 4
+    }
+
     /// Read into `buf`, which is not empty (`cr_mime_read`).
     pub(crate) fn read<H: Host>(
         &mut self,
@@ -1362,34 +1393,93 @@ impl MimeReader {
         buf: &mut [u8],
         pausable: bool,
     ) -> Result<Readout, ErrorKind> {
+        let len = buf.len();
+        let read = Component::Read;
         if let Some(e) = self.errored {
+            let code = e.number();
+            trace::of(
+                cx,
+                read,
+                format_args!("cr_mime_read(len={len}) is errored -> {code}, eos=0"),
+            );
             return Err(e);
         }
         if self.seen_eos {
+            trace::of(
+                cx,
+                read,
+                format_args!("cr_mime_read(len={len}) seen eos -> 0, eos=1"),
+            );
             return Ok(Readout { n: 0, eos: true });
         }
+        let blen = self.room(len);
+        if self.reads_small(blen) {
+            trace::of(
+                cx,
+                read,
+                format_args!("cr_mime_read(len={blen}), small read, using tmp"),
+            );
+        }
         let got = self.next(buf, &mut StepCalls(cx));
+        let nread = got.c_size();
+        trace::of(
+            cx,
+            read,
+            format_args!("cr_mime_read(len={blen}), mime_read() -> {nread}"),
+        );
+        let (outcome, said) = self.took(cx, got, blen, pausable);
+        if said {
+            let (code, n, eos) = match outcome {
+                Ok(Readout { n, eos }) => (trace::Code(Ok(())), n, eos),
+                Err(e) => (trace::Code(Err(e)), 0, false),
+            };
+            let total = crate::upload::Total(self.size);
+            let done = self.read;
+            trace::of(
+                cx,
+                read,
+                format_args!(
+                    "cr_mime_read(len={blen}, total={total}, read={done}) -> {code}, {n}, {}",
+                    u8::from(eos)
+                ),
+            );
+        }
+        outcome
+    }
+
+    /// What a read of `blen` that `got` comes to, and whether C traces it
+    /// (`cr_mime_read`, which returns before its trace from a short end
+    /// and from a handler giving more than its room).
+    fn took<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        got: Got,
+        blen: usize,
+        pausable: bool,
+    ) -> (Result<Readout, ErrorKind>, bool) {
         let latch = |me: &mut MimeReader, cx: &mut StepCx<'_, H>, kind, why| {
             me.errored = Some(kind);
             Err(trace::fail(cx, kind, why))
         };
-        match got {
-            Got::Bytes(0) => {
-                if let Some(size) = self.size
-                    && self.read < size
-                {
+        let said = !matches!(got, Got::Funny(_))
+            && !(got == Got::Bytes(0) && self.size.is_some_and(|size| self.read < size));
+        let outcome = match got {
+            Got::Bytes(0) => match self.size {
+                Some(size) if self.read < size => {
                     let read = self.read;
-                    return Err(trace::fail(
+                    Err(trace::fail(
                         cx,
                         ErrorKind::ReadError,
                         format_args!(
                             "client mime read EOF fail, only {read}/{size} of needed bytes read"
                         ),
-                    ));
+                    ))
                 }
-                self.seen_eos = true;
-                Ok(Readout { n: 0, eos: true })
-            }
+                _ => {
+                    self.seen_eos = true;
+                    Ok(Readout { n: 0, eos: true })
+                }
+            },
             Got::Bytes(n) => {
                 self.read += n as u64;
                 self.seen_eos = self.size.is_some_and(|size| self.read >= size);
@@ -1410,6 +1500,11 @@ impl MimeReader {
                 format_args!("Read callback asked for PAUSE when not supported"),
             )),
             Got::Pause => {
+                trace::of(
+                    cx,
+                    Component::Read,
+                    format_args!("cr_mime_read(len={blen}), paused by callback"),
+                );
                 cx.pause_mut().ask_send();
                 Ok(Readout { n: 0, eos: false })
             }
@@ -1419,13 +1514,14 @@ impl MimeReader {
                 ErrorKind::ReadError,
                 format_args!("read error getting mime data"),
             ),
-            Got::Funny => latch(
+            Got::Funny(_) => latch(
                 self,
                 cx,
                 ErrorKind::ReadError,
                 format_args!("read function returned funny value"),
             ),
-        }
+        };
+        (outcome, said)
     }
 
     /// Start the body over (`cr_mime_cntrl`'s rewind): whether it could
@@ -1500,7 +1596,7 @@ pub(crate) fn read_whole(
         match reader.mime_read(&mut buf, &mut NoCalls) {
             Got::Bytes(0) => return Ok(()),
             Got::Bytes(n) if out(&buf[..n]) == n => {}
-            Got::Bytes(_) | Got::Stop | Got::Error | Got::Funny | Got::Pause => {
+            Got::Bytes(_) | Got::Stop | Got::Error | Got::Funny(_) | Got::Pause => {
                 return Err(ErrorKind::ReadError);
             }
             Got::Abort => return Err(ErrorKind::AbortedByCallback),

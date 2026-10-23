@@ -8,6 +8,7 @@ mod tests;
 
 use curl_alloc::{TryArc, try_box};
 
+use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, Handler, LentBytes, Read, ReadHandler, Rewind};
 use crate::mime::MimeError;
@@ -120,6 +121,31 @@ impl Upload {
         }
     }
 
+    /// The reader set for a request, as C traces it
+    /// (`Curl_creader_set_buf`, `Curl_creader_set_fread`): a tree's and
+    /// nothing's are set untraced.
+    pub(crate) fn trace_set<H: Host>(&self, cx: &mut StepCx<'_, H>) {
+        match &self.source {
+            Source::Bytes(_) | Source::Lent(_) => {
+                let len = self.size().expect("bytes have a length");
+                trace::of(
+                    cx,
+                    Component::Read,
+                    format_args!("add buf reader, len={len} -> 0"),
+                );
+            }
+            Source::Read { size, .. } => {
+                let len = Total(*size);
+                trace::of(
+                    cx,
+                    Component::Read,
+                    format_args!("add fread reader, len={len} -> 0"),
+                );
+            }
+            Source::None | Source::Mime(_) => {}
+        }
+    }
+
     /// Ready to be read: a tree's handlers rewound, as it may have been
     /// read before (`Curl_creader_set_mime`); failing, SendFailRewind.
     pub(crate) fn start<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
@@ -200,7 +226,7 @@ impl Upload {
                 buf[..n].copy_from_slice(&bytes[at..at + n]);
                 self.read += n as u64;
                 let eos = at + n == bytes.len();
-                return Ok(Readout { n, eos });
+                return Ok(buf_read(cx, buf.len(), Readout { n, eos }));
             }
             Source::Lent(bytes) => {
                 let len = bytes.size();
@@ -214,10 +240,8 @@ impl Upload {
                     n
                 };
                 self.read += n as u64;
-                return Ok(Readout {
-                    n,
-                    eos: self.read == len,
-                });
+                let eos = self.read == len;
+                return Ok(buf_read(cx, buf.len(), Readout { n, eos }));
             }
             Source::Read { handler, size, .. } => (handler.clone(), *size),
         };
@@ -239,6 +263,32 @@ impl Upload {
         } else {
             Read::Eof
         };
+        let got = self.answered(cx, answer, size, room, pausable);
+        let (code, n, eos) = match got {
+            Ok(Readout { n, eos }) => (trace::Code(Ok(())), n, eos),
+            Err(e) => (trace::Code(Err(e)), 0, false),
+        };
+        let (total, read) = (Total(size), self.read);
+        trace::of(
+            cx,
+            Component::Read,
+            format_args!(
+                "cr_in_read(len={room}, total={total}, read={read}) -> {code}, nread={n}, eos={}",
+                u8::from(eos)
+            ),
+        );
+        got
+    }
+
+    /// What the read handler's `answer` to a read of `room` comes to.
+    fn answered<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        answer: Read,
+        size: Option<u64>,
+        room: usize,
+        pausable: bool,
+    ) -> Result<Readout, ErrorKind> {
         match answer {
             Read::Eof => {
                 if let Some(size) = size
@@ -269,6 +319,11 @@ impl Upload {
                 Err(trace::fail(cx, ErrorKind::ReadError, why))
             }
             Read::Pause => {
+                trace::of(
+                    cx,
+                    Component::Read,
+                    format_args!("cr_in_read, callback returned CURL_READFUNC_PAUSE"),
+                );
                 cx.pause_mut().ask_send();
                 Ok(Readout { n: 0, eos: false })
             }
@@ -325,6 +380,62 @@ impl Upload {
         self.called = false;
         Ok(())
     }
+}
+
+/// A body's size as C's readers trace it: -1 for one not known.
+pub(crate) struct Total(pub(crate) Option<u64>);
+
+impl std::fmt::Display for Total {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(size) => size.fmt(f),
+            None => f.write_str("-1"),
+        }
+    }
+}
+
+/// A read of bytes the transfer holds, into room for `len` (`cr_buf_read`).
+fn buf_read<H: Host>(cx: &mut StepCx<'_, H>, len: usize, got: Readout) -> Readout {
+    let (n, eos) = (got.n, u8::from(got.eos));
+    trace::of(
+        cx,
+        Component::Read,
+        format_args!("cr_buf_read(len={len}) -> 0, nread={n}, eos={eos}"),
+    );
+    got
+}
+
+/// A read of the request's body through its readers, for room of `len`
+/// (`Curl_client_read`).
+pub(crate) fn client_read<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    len: usize,
+    got: &Result<Readout, ErrorKind>,
+) {
+    let (code, n, eos) = match *got {
+        Ok(Readout { n, eos }) => (trace::Code(Ok(())), n, eos),
+        Err(e) => (trace::Code(Err(e)), 0, false),
+    };
+    trace::of(
+        cx,
+        Component::Read,
+        format_args!(
+            "client_read(len={len}) -> {code}, nread={n}, eos={}",
+            u8::from(eos)
+        ),
+    );
+}
+
+/// The readers are let go as a request starts or ends, unless the next
+/// request is to send the body again, when they are kept to be rewound
+/// (`Curl_client_reset`).
+pub(crate) fn trace_reset<H: Host>(cx: &mut StepCx<'_, H>, rewinding: bool) {
+    let what = if rewinding {
+        "will rewind reader"
+    } else {
+        "clear readers"
+    };
+    trace::of(cx, Component::Read, format_args!("client_reset, {what}"));
 }
 
 /// Body bytes went out: counted, and traced for a verbose transfer

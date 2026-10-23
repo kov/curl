@@ -355,10 +355,17 @@ exclude_re = [
     # Standard output's only name is `-`: globbed, or put in the output
     # directory, the output still goes to standard output, and the name
     # made is never read.
-    'curl-tool/src/operate\.rs:.*: replace match guard !to_stdout with true in transfer$',
+    'curl-tool/src/operate\.rs:.*: replace match guard !to_stdout with true in create$',
     # Asked only of an attempt `resumable` passed, a GET without `-X`:
     # only HTTP has a response code to match, and its method is GET.
     'curl-tool/src/operate\.rs:.*: replace \|\| with && in answered_resumably$',
+    # Only the flag a parallel transfer's progress handler reads makes it
+    # end aborted. The tool's other handlers never abort, but for a form
+    # part's read of standard input failing mid-transfer: standard input
+    # is read then only when it is a regular file (otherwise it was read
+    # whole as the form was parsed), and a regular file's read fails
+    # only on a fault of the disk.
+    'curl-tool/src/operate/parallel\.rs:.*: replace match guard aborted with true in Parallel<.*>::check_finished$',
     # The tool installs no signal handler, so no read is interrupted.
     'curl-tool/src/operate\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in <impl ReadHandler for UploadFile>::read$',
     'curl-tool/src/slurp\.rs:.*: replace match guard e\.kind\(\) == std::io::ErrorKind::Interrupted with false in read$',

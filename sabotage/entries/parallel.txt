@@ -13,9 +13,9 @@ witness: curl-tool parallel_transfers_keep_the_first_failure
 file: crates/curl-tool/src/operate/parallel.rs
 witness: curl-tool parallel_fail_early_stops_the_others
 --- old
-                Told::As(ABORTED)
+                Err(ErrorKind::AbortedByCallback) if aborted => Told::As(ABORTED),
 --- new
-                Told::Not
+                Err(ErrorKind::AbortedByCallback) if aborted => Told::Not,
 
 === a transfer to be tried again in parallel is never added again
 file: crates/curl-tool/src/operate/parallel.rs

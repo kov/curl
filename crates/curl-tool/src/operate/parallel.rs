@@ -386,10 +386,9 @@ impl Parallel<'_, '_, '_> {
             let mut easy = Handle(*removed.easy);
             let entry = &mut self.list[at];
             let aborted = entry.counted.gauge.abort.load(Ordering::Relaxed);
-            let told = if aborted && ended == Err(ErrorKind::AbortedByCallback) {
-                Told::As(ABORTED)
-            } else {
-                Told::Not
+            let told = match ended {
+                Err(ErrorKind::AbortedByCallback) if aborted => Told::As(ABORTED),
+                _ => Told::Not,
             };
             let per = &mut entry.per;
             let settled = settle(per.op, run, &per.url, &easy, &per.out, ended, told);

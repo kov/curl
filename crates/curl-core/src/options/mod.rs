@@ -83,6 +83,7 @@ pub struct Options {
     pub login: Cold<Login>,
     pub netrc: Cold<Netrc>,
     pub proxy: Cold<Proxy>,
+    pub schemes: Cold<Schemes>,
     pub http: Http,
     pub tls: Tls,
     /// What the test protocol `script:` plays.
@@ -417,6 +418,7 @@ impl Options {
                 })
             })?,
             proxy: self.proxy.try_clone(Proxy::try_clone)?,
+            schemes: self.schemes.try_clone(|s| Ok(*s))?,
             sockets: self.sockets.try_clone(|h| Ok(h.clone()))?,
             http: self.http.try_clone()?,
             tls: self.tls,
@@ -1226,7 +1228,6 @@ pub struct Http {
     /// Which redirects are followed (`CURLOPT_FOLLOWLOCATION`).
     pub follow: Follow,
     pub max_redirects: MaxRedirects,
-    pub redirect_protocols: RedirectProtocols,
     /// Which redirects keep a POST a POST (`CURLOPT_POSTREDIR`).
     pub post_redirect: PostRedir,
     /// A followed redirect sends the URL it came from as its referer
@@ -1520,6 +1521,13 @@ impl Default for MaxRedirects {
 pub struct Protocols(u64);
 
 impl Protocols {
+    /// Every scheme, as a transfer may use unless the application says
+    /// otherwise (`CURLPROTO_64ALL`).
+    pub const ALL: Protocols = Protocols(u64::MAX);
+
+    /// None.
+    pub const NONE: Protocols = Protocols(0);
+
     /// HTTP, HTTPS, FTP and FTPS: where a redirect may lead unless the
     /// application says otherwise (`CURLPROTO_REDIR`).
     pub const REDIRECT: Protocols = match Protocols::of(&["http", "https", "ftp", "ftps"]) {
@@ -1542,20 +1550,64 @@ impl Protocols {
         Some(Protocols(set))
     }
 
+    /// The scheme `name`, in any case, if this build speaks it; none for
+    /// one it leaves out or libcurl does not know (`Curl_getn_scheme`
+    /// and its `run`).
+    pub fn built(name: &[u8]) -> Option<Protocols> {
+        // No scheme libcurl knows is longer.
+        let mut lower = [0u8; 7];
+        let lower = lower.get_mut(..name.len())?;
+        for (to, from) in lower.iter_mut().zip(name) {
+            *to = from.to_ascii_lowercase();
+        }
+        crate::version::Protocol::of_scheme(lower)?;
+        crate::url::known_index(lower).map(|bit| Protocols(1 << bit))
+    }
+
+    /// Those in either.
+    pub const fn union(self, other: Protocols) -> Protocols {
+        Protocols(self.0 | other.0)
+    }
+
+    /// Whether there are none.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
     /// Whether `scheme`, lowercase, is one of them.
     pub fn contains(self, scheme: &[u8]) -> bool {
         crate::url::known_index(scheme).is_some_and(|bit| self.0 & 1 << bit != 0)
     }
 }
 
-/// Where a redirect may lead (`CURLOPT_REDIR_PROTOCOLS_STR`): unless set,
-/// HTTP, HTTPS, FTP and FTPS (`CURLPROTO_REDIR`).
+/// The schemes a transfer may use, which few applications limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RedirectProtocols(pub Protocols);
+pub struct Schemes {
+    /// Those any URL may have (`CURLOPT_PROTOCOLS_STR`): all unless set.
+    pub allowed: Protocols,
+    /// Those a followed redirect may lead to, as well
+    /// (`CURLOPT_REDIR_PROTOCOLS_STR`): HTTP, HTTPS, FTP and FTPS unless
+    /// set.
+    pub redirect: Protocols,
+}
 
-impl Default for RedirectProtocols {
-    fn default() -> Self {
-        RedirectProtocols(Protocols::REDIRECT)
+impl ColdGroup for Schemes {
+    const UNSET: &'static Schemes = &Schemes::NONE;
+    const NONE: Schemes = Schemes {
+        allowed: Protocols::ALL,
+        redirect: Protocols::REDIRECT,
+    };
+}
+
+impl Schemes {
+    /// Whether a URL of `scheme`, lowercase, may be used, `redirected`
+    /// there or not (`url_set_conn_scheme`). One libcurl does not know is
+    /// not theirs to refuse.
+    pub(crate) fn permit(&self, scheme: &[u8], redirected: bool) -> bool {
+        if crate::url::known_index(scheme).is_none() {
+            return true;
+        }
+        self.allowed.contains(scheme) && (!redirected || self.redirect.contains(scheme))
     }
 }
 
@@ -1601,7 +1653,6 @@ impl Http {
             keep_sending_on_error: self.keep_sending_on_error,
             follow: self.follow,
             max_redirects: self.max_redirects,
-            redirect_protocols: self.redirect_protocols,
             post_redirect: self.post_redirect,
             auto_referer: self.auto_referer,
             unrestricted_auth: self.unrestricted_auth,

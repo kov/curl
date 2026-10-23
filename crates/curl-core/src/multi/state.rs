@@ -2457,11 +2457,10 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     };
     // Known before the protocol opens anything, as C records it.
     cx.report_mut().set_protocol(Protocol::of_scheme(&scheme));
-    // A redirect goes only where the application lets it
-    // (`url_set_conn_scheme`).
+    // A URL, and a redirect the more so, goes only where the application
+    // lets it (`url_set_conn_scheme`).
     let redirected = cx.report_mut().redirects() > 0;
-    let allowed = cx.easy().options().http.redirect_protocols.0;
-    let refused = redirected && !allowed.contains(&scheme);
+    let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
     let started = if refused {
         Ok(None)
     } else {

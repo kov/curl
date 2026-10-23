@@ -656,17 +656,17 @@ witness: curl-core proto::http::tests::redirects_stop_at_the_limit
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_redirect_to_a_file_is_refused
 --- old
-    let refused = redirected && !allowed.contains(&scheme);
+    let refused = !cx.easy().options().schemes.permit(&scheme, redirected);
 --- new
     let refused = false;
 
 === the redirect protocols the application sets are not read
-file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::a_redirect_goes_only_where_the_option_lets_it
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::scheme_options_reach_the_transfer
 --- old
-    let allowed = cx.easy().options().http.redirect_protocols.0;
+            set_schemes(options, |s| &mut s.redirect, set)?;
 --- new
-    let allowed = crate::options::Protocols::REDIRECT;
+            let _ = set;
 
 === every request is the first origin's
 file: crates/curl-core/src/proto/http.rs

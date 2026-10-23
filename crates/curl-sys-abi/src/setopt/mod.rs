@@ -21,8 +21,8 @@ use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
 use curl_core::options::{
     BufferSize, ColdGroup, ContinueWait, EyeballsDelay, FileMode, Follow, HttpVersion, IpVersion,
-    Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, ProxyType, Resume, ReuseLimits,
-    Sockets, TimeCondition, UploadBufferSize, UserHeaders,
+    Lines, LowSpeed, MaxRedirects, Method, Options, PostRedir, Protocols, ProxyType, Resume,
+    ReuseLimits, Schemes, Sockets, TimeCondition, UploadBufferSize, UserHeaders,
 };
 use curl_core::time::TimeLimit;
 
@@ -207,6 +207,87 @@ fn http_version(n: c_long) -> Result<HttpVersion, Refused> {
         n if n < ffi::CURL_HTTP_VERSION_NONE => Err(Refused::Bad),
         _ => Err(Refused::Unsupported),
     }
+}
+
+/// The schemes of a `CURLPROTO_*` mask, as C's deprecated `long`
+/// options take it: a bit no scheme has is ignored, and the bit SOCKS
+/// shares names all its schemes.
+fn protocol_mask(mask: c_long) -> Protocols {
+    const BITS: &[(u32, &[&str])] = &[
+        (0, &["http"]),
+        (1, &["https"]),
+        (2, &["ftp"]),
+        (3, &["ftps"]),
+        (4, &["scp"]),
+        (5, &["sftp"]),
+        (6, &["telnet"]),
+        (7, &["ldap"]),
+        (8, &["ldaps"]),
+        (9, &["dict"]),
+        (10, &["file"]),
+        (11, &["tftp"]),
+        (12, &["imap"]),
+        (13, &["imaps"]),
+        (14, &["pop3"]),
+        (15, &["pop3s"]),
+        (16, &["smtp"]),
+        (17, &["smtps"]),
+        (18, &["rtsp"]),
+        (25, &["gopher"]),
+        (28, &["mqtt"]),
+        (29, &["gophers"]),
+        (30, &["ws"]),
+        (31, &["wss"]),
+        (32, &["mqtts"]),
+        (33, &["socks", "socks4", "socks4a", "socks5", "socks5h"]),
+    ];
+    // Widened as C widens it to `curl_prot_t`: a negative one sets all.
+    #[allow(
+        clippy::useless_conversion,
+        reason = "a `long` is 32 bits on some targets"
+    )]
+    let mask = i64::from(mask);
+    BITS.iter()
+        .filter(|(bit, _)| mask & 1 << bit != 0)
+        .map(|(_, names)| Protocols::of(names).expect("libcurl knows them"))
+        .fold(Protocols::NONE, Protocols::union)
+}
+
+/// The schemes a `CURLOPT_PROTOCOLS_STR` list names, separated by
+/// commas, or `all` alone (`protocol2num`): one this build leaves out
+/// is refused, as is a list that names none.
+fn protocol_list(list: &[u8]) -> Result<Protocols, Refused> {
+    if list.eq_ignore_ascii_case(b"all") {
+        return Ok(Protocols::ALL);
+    }
+    let mut set = Protocols::NONE;
+    for name in list.split(|&b| b == b',').filter(|name| !name.is_empty()) {
+        set = set.union(Protocols::built(name).ok_or(Refused::Unsupported)?);
+    }
+    if set.is_empty() {
+        return Err(Refused::Bad);
+    }
+    Ok(set)
+}
+
+/// Set the schemes `field` names to `set`, or to their default for none
+/// (`CURLOPT_PROTOCOLS_STR` and its kin given NULL).
+fn set_schemes(
+    options: &mut Options,
+    field: fn(&mut Schemes) -> &mut Protocols,
+    set: Option<Protocols>,
+) -> Result<(), Refused> {
+    match set {
+        Some(set) => *field(options.schemes.make_mut()?) = set,
+        // A group never made holds the defaults already.
+        None => {
+            if let Some(schemes) = options.schemes.made_mut() {
+                let mut defaults = Schemes::NONE;
+                *field(schemes) = *field(&mut defaults);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A copy of the string at `p`, or none for NULL.
@@ -479,6 +560,12 @@ fn apply(
                 3 => Follow::FirstOnly,
                 _ => return Err(Refused::Bad),
             };
+        }
+        (ffi::CURLOPT_PROTOCOLS, Long(n)) => {
+            set_schemes(options, |s| &mut s.allowed, Some(protocol_mask(n)))?;
+        }
+        (ffi::CURLOPT_REDIR_PROTOCOLS, Long(n)) => {
+            set_schemes(options, |s| &mut s.redirect, Some(protocol_mask(n)))?;
         }
         (ffi::CURLOPT_MAXREDIRS, Long(n)) => {
             // Below -1 refused, -1 no limit, past 32767 taken as it
@@ -916,6 +1003,16 @@ fn apply(
             Some(source) => options.resolve.set_source(source)?,
             None => options.resolve.set([])?,
         },
+        (ffi::CURLOPT_PROTOCOLS_STR, Ptr(p)) => {
+            // SAFETY: as above.
+            let set = unsafe { string(p) }?.map(protocol_list).transpose()?;
+            set_schemes(options, |s| &mut s.allowed, set)?;
+        }
+        (ffi::CURLOPT_REDIR_PROTOCOLS_STR, Ptr(p)) => {
+            // SAFETY: as above.
+            let set = unsafe { string(p) }?.map(protocol_list).transpose()?;
+            set_schemes(options, |s| &mut s.redirect, set)?;
+        }
         (ffi::CURLOPT_DEFAULT_PROTOCOL, Ptr(p)) => {
             // SAFETY: as above.
             options.set_default_protocol(unsafe { string(p) }?)?;
@@ -1240,6 +1337,62 @@ mod tests {
             assert!(known::KNOWN.binary_search(&id.0).is_ok(), "{}", id.0);
         }
         assert!(known::KNOWN.binary_search(&9999).is_err());
+    }
+
+    /// A scheme list names schemes this build speaks, in any case, or is
+    /// `all` alone; anything else is unsupported, and naming none a bad
+    /// argument (`protocol2num`, test 1597).
+    #[test]
+    fn reads_scheme_lists_as_c() {
+        let http = Protocols::of(&["http"]).unwrap();
+        let both = Protocols::of(&["file", "http"]).unwrap();
+        for (list, want) in [
+            (&b"http"[..], Some(http)),
+            (b"HTTP,,http,", Some(http)),
+            (b",file,Http", Some(both)),
+            (b"ALL", Some(Protocols::ALL)),
+        ] {
+            assert_eq!(protocol_list(list).ok(), want, "{list:?}");
+        }
+        for list in [
+            &b"goobar"[..],
+            b"http ",
+            b" http",
+            b"https",
+            b"http,all",
+            b"http,ft",
+        ] {
+            assert!(
+                matches!(protocol_list(list), Err(Refused::Unsupported)),
+                "{list:?}"
+            );
+        }
+        for list in [&b""[..], b",,"] {
+            assert!(matches!(protocol_list(list), Err(Refused::Bad)), "{list:?}");
+        }
+    }
+
+    /// A `CURLPROTO_*` mask names its schemes by C's bits, the ones past
+    /// 32 among them; a bit no scheme has names nothing.
+    #[test]
+    fn reads_scheme_masks_as_c() {
+        assert_eq!(
+            protocol_mask(ffi::CURLPROTO_HTTP),
+            Protocols::of(&["http"]).unwrap()
+        );
+        assert_eq!(
+            protocol_mask(ffi::CURLPROTO_FILE | ffi::CURLPROTO_GOPHERS),
+            Protocols::of(&["file", "gophers"]).unwrap()
+        );
+        assert_eq!(protocol_mask(ffi::CURLPROTO_RTMP), Protocols::NONE);
+        assert_eq!(protocol_mask(1 << 32), Protocols::of(&["mqtts"]).unwrap());
+        let socks = protocol_mask(1 << 33);
+        assert!(socks.contains(b"socks5h") && !socks.contains(b"http"));
+        let all = protocol_mask(-1);
+        for scheme in [&b"http"[..], b"wss", b"socks4a", b"tftp"] {
+            assert!(all.contains(scheme), "{scheme:?}");
+        }
+        assert_eq!(protocol_mask(0), Protocols::NONE);
     }
 
     #[test]

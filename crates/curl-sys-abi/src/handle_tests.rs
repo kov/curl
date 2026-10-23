@@ -1176,6 +1176,59 @@ fn strings_are_copied_and_bounded() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The scheme options set what a URL and a redirect may use: a refused
+/// list keeps the one before, NULL brings back the default, and the
+/// deprecated masks take C's bits.
+#[test]
+fn scheme_options_reach_the_transfer() {
+    use curl_core::options::{ColdGroup, Protocols, Schemes};
+    let c = curl_easy_init();
+    let schemes = |c| options(c, |o| (o.schemes.allowed, o.schemes.redirect));
+    let defaults = (Schemes::NONE.allowed, Schemes::NONE.redirect);
+    assert_eq!(schemes(c), defaults);
+    let file = Protocols::of(&["file"]).unwrap();
+    let http = Protocols::of(&["http"]).unwrap();
+    for (o, list, want) in [
+        (ffi::CURLOPT_PROTOCOLS_STR, c"file", CURLE_OK),
+        (ffi::CURLOPT_REDIR_PROTOCOLS_STR, c"HTTP", CURLE_OK),
+        (
+            ffi::CURLOPT_PROTOCOLS_STR,
+            c"https",
+            ffi::CURLE_UNSUPPORTED_PROTOCOL,
+        ),
+        (
+            ffi::CURLOPT_REDIR_PROTOCOLS_STR,
+            c",",
+            CURLE_BAD_FUNCTION_ARGUMENT,
+        ),
+    ] {
+        assert_eq!(pointer(c, o, list.as_ptr().cast_mut()), want, "{list:?}");
+    }
+    assert_eq!(schemes(c), (file, http));
+    let null = ptr::null_mut::<c_char>();
+    assert_eq!(pointer(c, ffi::CURLOPT_PROTOCOLS_STR, null), CURLE_OK);
+    assert_eq!(schemes(c), (Protocols::ALL, http));
+    assert_eq!(pointer(c, ffi::CURLOPT_REDIR_PROTOCOLS_STR, null), CURLE_OK);
+    assert_eq!(schemes(c), defaults);
+    assert_eq!(
+        long(c, ffi::CURLOPT_PROTOCOLS, ffi::CURLPROTO_FILE),
+        CURLE_OK
+    );
+    assert_eq!(long(c, ffi::CURLOPT_REDIR_PROTOCOLS, 0), CURLE_OK);
+    assert_eq!(schemes(c), (file, Protocols::NONE));
+    // An http URL is then refused before anything connects.
+    let url = c"http://127.0.0.1:1/";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    // SAFETY: a live handle.
+    let performed = unsafe { curl_easy_perform(c) };
+    assert_eq!(performed, ffi::CURLE_UNSUPPORTED_PROTOCOL);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// The request's strings are copied and NULL takes them away; an empty
 /// `CURLOPT_ACCEPT_ENCODING` asks for every coding; a `CURLU` handle
 /// takes the URL's place.

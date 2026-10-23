@@ -2144,9 +2144,10 @@ the connection first, then `follow_leg` checks the limit (past it, FOLLOW_FAKE's
 the transfer fails TooManyRedirects), counts the redirect in the report (C's
 `state.followlocation`, which is also what "this is a follow" means), resolves the location as
 FOLLOW_REDIR does and starts the next leg through `next_leg`, the tail it shares with a retry.
-That leg's URL replaces `Run::url` whole (C's `state.url`). A redirect reaches only the schemes
-`Options::http.redirect_protocols` holds: C's default, `CURLPROTO_REDIR` (HTTP, HTTPS, FTP,
-FTPS), unless set (the shim does not take `CURLOPT_REDIR_PROTOCOLS_STR` yet). `Run::first` holds the first leg's origin (`state.initial_origin`):
+That leg's URL replaces `Run::url` whole (C's `state.url`). Every leg's scheme must be in
+`Options::schemes.allowed` (`CURLOPT_PROTOCOLS_STR`, all unless set), and a redirect's in
+`Options::schemes.redirect` too (`CURLOPT_REDIR_PROTOCOLS_STR`, C's `CURLPROTO_REDIR` unless set:
+HTTP, HTTPS, FTP, FTPS), checked as the leg starts (`url_set_conn_scheme`). `Run::first` holds the first leg's origin (`state.initial_origin`):
 each request's `CredentialGate` is fixed when the request is made, from that origin and its own.
 The gate holds back what the application said; credentials in the request's own URL go to its
 origin regardless (`Trusted::own_url`), as C takes them per leg in `url_set_data_creds`. Each

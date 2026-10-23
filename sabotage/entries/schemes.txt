@@ -1,0 +1,62 @@
+# The schemes a URL and a redirect may use (`url_set_conn_scheme`,
+# `protocol2num`, `proto2num`).
+
+=== a URL of a scheme the application does not allow is used
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::a_url_goes_only_where_the_option_lets_it
+--- old
+        self.allowed.contains(scheme) && (!redirected || self.redirect.contains(scheme))
+--- new
+        !redirected || self.redirect.contains(scheme)
+
+=== a redirect needs only the allowed list, not the redirect one
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core proto::http::tests::a_redirect_goes_only_where_the_option_lets_it
+--- old
+        self.allowed.contains(scheme) && (!redirected || self.redirect.contains(scheme))
+--- new
+        self.allowed.contains(scheme)
+
+=== a scheme list may name a scheme this build leaves out
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi setopt::tests::reads_scheme_lists_as_c
+--- old
+        crate::version::Protocol::of_scheme(lower)?;
+--- new
+        let _ = crate::version::Protocol::of_scheme(lower);
+
+=== a scheme list is read case-sensitively
+file: crates/curl-core/src/options/mod.rs
+witness: curl-sys-abi setopt::tests::reads_scheme_lists_as_c
+--- old
+            *to = from.to_ascii_lowercase();
+--- new
+            *to = *from;
+
+=== a scheme list that names none is taken
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::reads_scheme_lists_as_c
+--- old
+    if set.is_empty() {
+        return Err(Refused::Bad);
+    }
+    Ok(set)
+--- new
+    Ok(set)
+
+=== a scheme mask ignores the bits past 32
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::reads_scheme_masks_as_c
+--- old
+    let mask = i64::from(mask);
+--- new
+    let mask = i64::from(mask) & 0xffff_ffff;
+
+=== NULL leaves a scheme list as it was
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::scheme_options_reach_the_transfer
+--- old
+                *field(schemes) = *field(&mut defaults);
+--- new
+                let _ = field(&mut defaults);
+

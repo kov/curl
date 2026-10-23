@@ -13,8 +13,8 @@ use crate::handler::{
 use crate::id::ArenaPolicy;
 use crate::multi::{Env, Multi, NoEvents, PauseRequest, TransferCx, drive_to_completion};
 use crate::options::{
-    AuthMethods, BufferSize, Follow, MaxRedirects, Method, Options, PostRedir, Protocols,
-    RedirectProtocols, Resume, UploadSource, UserHeaders,
+    AuthMethods, BufferSize, ColdGroup, Follow, MaxRedirects, Method, Options, PostRedir,
+    Protocols, Resume, Schemes, UploadSource, UserHeaders,
 };
 use crate::proto::http1::{fixture, framing};
 use crate::report::ResponseVersion;
@@ -1911,7 +1911,7 @@ fn a_redirect_to_a_file_is_refused() {
 /// among them only if it says so.
 #[test]
 fn a_redirect_goes_only_where_the_option_lets_it() {
-    let defaults = RedirectProtocols::default().0;
+    let defaults = Schemes::NONE.redirect;
     for scheme in [&b"http"[..], b"https", b"ftp", b"ftps"] {
         assert!(defaults.contains(scheme));
     }
@@ -1919,7 +1919,7 @@ fn a_redirect_goes_only_where_the_option_lets_it() {
     assert_eq!(Protocols::of(&["http", "nonsense"]), None);
     let ran = run("/a", &moved("/b", false), false, |o| {
         o.http.follow = Follow::All;
-        o.http.redirect_protocols = RedirectProtocols(Protocols::of(&["ftp"]).unwrap());
+        o.schemes.make_mut().unwrap().redirect = Protocols::of(&["ftp"]).unwrap();
     });
     assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
     let text = ran.seen.text();
@@ -1927,6 +1927,70 @@ fn a_redirect_goes_only_where_the_option_lets_it() {
         text.contains(&"Protocol \"http\" is disabled (in redirect)\n".to_string()),
         "{text:?}"
     );
+}
+
+/// A URL reaches only the schemes the application allows, the first as
+/// much as one a redirect leads to; a redirect needs both lists.
+#[test]
+fn a_url_goes_only_where_the_option_lets_it() {
+    let http = Protocols::of(&["http"]).unwrap();
+    let ftp = Protocols::of(&["ftp"]).unwrap();
+    // The first URL is refused, before anything is sent.
+    let ran = run("/a", OK, false, |o| {
+        o.schemes.make_mut().unwrap().allowed = ftp;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    let text = ran.seen.text();
+    assert!(
+        text.contains(&"Protocol \"http\" is disabled\n".to_string()),
+        "{text:?}"
+    );
+    // Allowed, the first goes, and a redirect allowed there too.
+    let (mut m, talk, _) = server(&[&moved("/b", false), OK], false);
+    let ran = get(&mut m, "/a", talk, |o| {
+        o.http.follow = Follow::All;
+        o.schemes.make_mut().unwrap().allowed = http;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"ok\n");
+    // A redirect the redirect list allows is refused if the other does
+    // not.
+    let ran = run("/a", &moved("/b", false), false, |o| {
+        o.http.follow = Follow::All;
+        let schemes = o.schemes.make_mut().unwrap();
+        schemes.allowed = ftp.union(http);
+        schemes.redirect = ftp;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+    // None allowed refuses any URL.
+    assert!(Protocols::NONE.is_empty() && !http.is_empty());
+    let ran = run("/a", OK, false, |o| {
+        o.schemes.make_mut().unwrap().allowed = Protocols::NONE;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::UnsupportedProtocol));
+}
+
+/// The schemes this build speaks are named in any case; one it leaves
+/// out, or no scheme at all, is not.
+#[test]
+fn built_schemes_are_named_in_any_case() {
+    let http = Protocols::of(&["http"]).unwrap();
+    assert_eq!(Protocols::built(b"http"), Some(http));
+    assert_eq!(Protocols::built(b"HtTp"), Some(http));
+    assert_eq!(Protocols::built(b"FILE"), Protocols::of(&["file"]));
+    for name in [
+        &b"https"[..],
+        b"ftp",
+        b"goobar",
+        b"http ",
+        b"",
+        b"h",
+        b"telnetx",
+    ] {
+        assert_eq!(Protocols::built(name), None, "{name:?}");
+    }
+    assert_eq!(http.union(Protocols::NONE), http);
+    assert!(Protocols::ALL.contains(b"gopher") && !Protocols::ALL.contains(b"nonsense"));
 }
 
 /// The application's Authorization and Cookie go only to the origin the

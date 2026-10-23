@@ -11,7 +11,7 @@ use std::time::Duration;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use super::chain::SetupPoint;
-use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
+use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Made, Progress, Setup};
 use super::dns::Answer;
 use super::io::{Closer, Events, Net, Socket};
 use super::layer::{Alive, Silent};
@@ -103,6 +103,27 @@ impl ConnLease {
         match self.slot() {
             ConnSlot::Connecting(machine) => Some(machine.reached()),
             ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
+    /// The PROXY protocol's line is sent over the connection to the first
+    /// hop, as was decided once the proxies' handshakes were made; false
+    /// before, and once set up.
+    pub(crate) fn sends_preface(&self) -> bool {
+        match self.slot() {
+            ConnSlot::Connecting(machine) => machine.sends_preface(),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => false,
+        }
+    }
+
+    /// The proxy's handshake `which` is made over the connection to the
+    /// first hop; `haproxy` is read once the route's are all made
+    /// (`ConnectMachine::proxied`).
+    pub(crate) fn proxied(&mut self, which: Made, haproxy: impl FnOnce() -> bool) {
+        let id = self.id;
+        match self.slot_mut() {
+            ConnSlot::Connecting(machine) => machine.proxied(which, haproxy),
+            _ => panic!("{id:?} is not setting up"),
         }
     }
 

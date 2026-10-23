@@ -315,12 +315,12 @@ witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_repla
         if false {
 
 === a new connection sends no PROXY line
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_new_connection_sends_the_proxy_protocol_s_line_first
 --- old
-    if cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
+        matches!(&self.stage, Stage::Dialed(d) if d.preface == Some(true))
 --- new
-    if !cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
+        matches!(&self.stage, Stage::Dialed(d) if d.preface == Some(false))
 
 === the PROXY line's family ignores the address given
 file: crates/curl-core/src/multi/state/haproxy.rs
@@ -605,3 +605,19 @@ features: test-util
 const READ_SIZE: usize = 16384;
 --- new
 const READ_SIZE: usize = 1;
+
+=== the PROXY line is decided as the connection is dialed, before a tunnel
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_proxy_protocol_is_read_once_its_stage_is_reached
+--- old
+                preface: (!self.route.handshakes()).then_some(setup.haproxy),
+--- new
+                preface: Some(setup.haproxy),
+
+=== the PROXY line is never decided after a proxy's handshake
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::the_proxy_protocol_is_read_once_its_stage_is_reached
+--- old
+            d.preface = Some(haproxy());
+--- new
+            d.preface = Some(false);

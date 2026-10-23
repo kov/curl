@@ -384,7 +384,8 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
             cx,
             format_args!("CONNECT tunnel established, response {code}"),
         );
-        c.lease.dialed().mark_made(Made::TUNNEL);
+        c.lease
+            .proxied(Made::TUNNEL, || cx.easy().options().proxy.haproxy);
         return Ok(Ran::Through);
     }
     // What the challenges lead to (`Curl_http_auth_act`).

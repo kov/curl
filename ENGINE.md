@@ -1205,8 +1205,12 @@ socket before its connect.
   to the `Conn`. Reuse compares the pre-proxy too.
 - A new connection sends the PROXY protocol's line over `Dialed`, after any proxy's handshake,
   if the transfer asks (`multi/state/haproxy.rs`, `cf-haproxy.c`), with the addresses of the
-  socket to the first hop, before it is open and traced as established. A reused one sends
-  none, and reuse does not ask, as in C.
+  socket to the first hop, before it is open and traced as established. Whether it asks is
+  read once, as the setup reaches that stage, as `cf_setup_add_haproxy` reads it: as the
+  attempt wins for a route without a proxy's handshake (`Setup::haproxy`), else as the last of
+  them is made (`ConnLease::proxied`); `Dialed` carries the answer to the handshake chosen
+  next, the chain traced and the chain left once up. A reused one sends none, and reuse does
+  not ask, as in C.
 - A proxy that closes the connection on its 407 starts the setup over from resolving
   (`ConnLease::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
   the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.

@@ -168,12 +168,12 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<bool, Erro
 /// handshake follows.
 fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let authenticated = socks(&mut c.handshake).authenticated();
-    let dialed = c.lease.dialed();
     if authenticated {
-        dialed.socks5_authenticated();
+        c.lease.dialed().socks5_authenticated();
     }
-    dialed.mark_made(Made::SOCKS);
-    let (remote, local) = dialed.ends();
+    c.lease
+        .proxied(Made::SOCKS, || cx.easy().options().proxy.haproxy);
+    let (remote, local) = c.lease.dialed().ends();
     let (lip, lport) = local.map_or((None, 0), |l| (Some(l.ip()), l.port()));
     let proxy = c.route.proxy.as_ref().expect("dialed through a proxy");
     let to = proxy

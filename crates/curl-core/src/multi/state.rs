@@ -1430,7 +1430,7 @@ fn enter_setup<H: Host>(
     let (SetupPoint::Dialed(made), None) = (reached, under_way) else {
         return Some(chain(reached, under_way, true));
     };
-    let Some(due) = handshake_due(c, cx, made) else {
+    let Some(due) = handshake_due(c, made) else {
         return Some(chain(reached, None, true));
     };
     let filter = match due {
@@ -1553,7 +1553,7 @@ fn connect_once<H: Host>(
         }
         Ok(Connected::Established { remote, local, at }) => {
             eyeballs_won(cx, &c.route, remote);
-            up(c, cx, remote, local, at)
+            up(c, cx, remote, local, at, false)
         }
         // A reused connection is up: nothing to trace or time
         // (`Curl_conn_connect` returns before `conn_connect_trace`).
@@ -1577,16 +1577,17 @@ fn connect_once<H: Host>(
 /// none left, the connection is open.
 fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let made = c.lease.dialed().made();
-    match handshake_due(&c, cx, made) {
+    match handshake_due(&c, made) {
         Some(Due::Socks(version)) => return socks::dialed(c, cx, version),
         Some(Due::Tunnel) => return tunnel::dialed(c, cx),
         Some(Due::Preface) => return haproxy::start(c, cx),
         None => {}
     }
+    let preface = c.lease.sends_preface();
     match c.lease.handshaken() {
         Connected::Established {
             remote, local, at, ..
-        } => up(c, cx, remote, local, at),
+        } => up(c, cx, remote, local, at, preface),
         _ => unreachable!("the handshakes make the connection"),
     }
 }
@@ -1601,7 +1602,7 @@ enum Due {
 
 /// The handshake to make next over a connection that made `made`, in
 /// cf-setup.c's order; none once they are all made.
-fn handshake_due<H: Host>(c: &Connecting, cx: &StepCx<'_, H>, made: Made) -> Option<Due> {
+fn handshake_due(c: &Connecting, made: Made) -> Option<Due> {
     if let Some(version) = c.route.socks().map(|leg| leg.version)
         && !made.has(Made::SOCKS)
     {
@@ -1610,7 +1611,7 @@ fn handshake_due<H: Host>(c: &Connecting, cx: &StepCx<'_, H>, made: Made) -> Opt
     if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
         return Some(Due::Tunnel);
     }
-    if cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
+    if c.lease.sends_preface() && !made.has(Made::PREFACE) {
         return Some(Due::Preface);
     }
     None
@@ -1774,13 +1775,15 @@ pub(crate) fn trace_timer<H: Host>(
     trace::of(cx, Component::Timer, format_args!("[{name}] {args}"));
 }
 
-/// The connection is set up (`conn_connect_trace`): timed and traced.
+/// The connection is set up (`conn_connect_trace`): timed and traced;
+/// `preface` if the PROXY protocol's line was sent over it.
 fn up<H: Host>(
     c: Connecting,
     cx: &mut StepCx<'_, H>,
     remote: SocketAddr,
     local: Option<SocketAddr>,
     at: Instant,
+    preface: bool,
 ) -> (TransferState, Wake) {
     let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
     mstate::marked(cx, Timer::Connect, marked);
@@ -1799,8 +1802,7 @@ fn up<H: Host>(
     );
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
-    let haproxy = cx.easy().options().proxy.haproxy;
-    let connected = Chain::connected(&c.route, haproxy);
+    let connected = Chain::connected(&c.route, preface);
     mstate::trace(cx, format_args!("connected {connected}"));
     for filter in connected.going() {
         trace::of(cx, filter, format_args!("removing connected setup filter"));

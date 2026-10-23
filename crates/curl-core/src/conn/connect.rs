@@ -80,6 +80,10 @@ pub(crate) struct Dialed {
     socks5_authenticated: bool,
     /// The handshakes made over it so far.
     made: Made,
+    /// The PROXY protocol's line is to be sent over it, decided once the
+    /// proxies' handshakes are made, as C reads the option once as its
+    /// setup reaches that stage (`cf_setup_add_haproxy`); `None` before.
+    preface: Option<bool>,
 }
 
 /// The handshakes made over a dialed connection, each once, in
@@ -475,6 +479,29 @@ impl ConnectMachine {
         }
     }
 
+    /// The PROXY protocol's line is sent over the connection to the first
+    /// hop, as was decided once the proxies' handshakes were made; false
+    /// before.
+    pub(crate) fn sends_preface(&self) -> bool {
+        matches!(&self.stage, Stage::Dialed(d) if d.preface == Some(true))
+    }
+
+    /// The proxy's handshake `which` is made over the dialed connection.
+    /// Once the route's are all made, whether the PROXY protocol's line
+    /// follows is decided, `haproxy` read then and only then.
+    pub(crate) fn proxied(&mut self, which: Made, haproxy: impl FnOnce() -> bool) {
+        let Stage::Dialed(d) = &mut self.stage else {
+            panic!("no handshake is made");
+        };
+        d.mark_made(which);
+        let route = &self.route;
+        let socks = route.socks().is_some() && !d.made.has(Made::SOCKS);
+        let tunnel = route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !d.made.has(Made::TUNNEL);
+        if !socks && !tunnel && d.preface.is_none() {
+            d.preface = Some(haproxy());
+        }
+    }
+
     /// The addresses the name resolved to, once it has.
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         match &self.stage {
@@ -798,6 +825,9 @@ impl ConnectMachine {
                 target,
                 socks5_authenticated: false,
                 made: Made::default(),
+                // With no proxy's handshake to make first, the stage is
+                // reached now.
+                preface: (!self.route.handshakes()).then_some(setup.haproxy),
             });
             return Ok(Drove::Connecting(self, Progress::Dialed));
         }

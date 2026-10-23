@@ -3513,3 +3513,114 @@ fn a_connection_s_slot_and_a_transfer_s_stay_their_size() {
     assert!(conn <= 232, "a connection's slot takes {conn} bytes");
     assert!(slot <= 976, "a transfer's slot takes {slot} bytes");
 }
+
+/// Turns the PROXY protocol on as the proxy's answer to `CONNECT` comes.
+struct HaproxyOnInTheTunnel;
+
+impl crate::handler::HeaderHandler for HaproxyOnInTheTunnel {
+    fn header(
+        &self,
+        cx: &mut crate::multi::TransferCx<'_>,
+        _: &[u8],
+        origin: crate::handler::HeaderOrigin,
+    ) -> crate::handler::Write {
+        if origin == crate::handler::HeaderOrigin::Connect {
+            let me = cx.me();
+            let options = cx.options_mut(me).expect("the transfer's own");
+            options.proxy.make_mut().unwrap().haproxy = true;
+        }
+        crate::handler::Write::Accepted
+    }
+}
+
+/// Turns the PROXY protocol off as its filter is traced as added.
+struct HaproxyOffOnceAdded;
+
+impl crate::handler::DebugHandler for HaproxyOffOnceAdded {
+    fn debug(
+        &self,
+        cx: &mut crate::multi::TransferCx<'_>,
+        _: crate::handler::DebugKind,
+        data: &[u8],
+    ) {
+        if data.windows(20).any(|w| w == b"added HAPROXY filter") {
+            let me = cx.me();
+            let options = cx.options_mut(me).expect("the transfer's own");
+            options.proxy.make_mut().unwrap().haproxy = false;
+        }
+    }
+}
+
+/// Through a tunnel to `origin.example`, with `set` done to the handle:
+/// what the proxy was sent after the tunnel's `CONNECT`.
+fn sent_through_a_tunnel(set: impl FnOnce(&mut Easy)) -> Vec<u8> {
+    use crate::conn::io::{Conversation, Peer};
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 3128));
+    let talk = Conversation::replies(
+        &[
+            b"HTTP/1.1 200 Fine\r\n\r\n",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        ],
+        false,
+    )
+    .per_send();
+    let net = FakeNet::new(clock.clone())
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let mut e = Easy::new();
+    let o = e.options_mut();
+    o.set_url(Some(b"http://origin.example/a")).unwrap();
+    let proxy = o.proxy.make_mut().unwrap();
+    proxy.url = Some(b"127.0.0.1:3128".to_vec());
+    proxy.tunnel = true;
+    set(&mut e);
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    let sent = talk.received();
+    assert!(sent.starts_with(b"CONNECT origin.example:80 "));
+    let tunnel_end = sent.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+    sent[tunnel_end..].to_vec()
+}
+
+/// Whether a connection sends the PROXY protocol's line is read as the
+/// setup reaches it, after the proxy's handshakes, and only then
+/// (`cf_setup_add_haproxy`): the option turned on as the tunnel's answer
+/// comes sends the line; turned off as the filter is traced as added, it
+/// still goes. The C build sends the line in both.
+#[test]
+fn the_proxy_protocol_is_read_once_its_stage_is_reached() {
+    let sent = sent_through_a_tunnel(|e| {
+        let header = crate::handler::Handler::header(HaproxyOnInTheTunnel).unwrap();
+        e.options_mut().callbacks.header = Some(header);
+    });
+    assert!(
+        sent.starts_with(b"PROXY TCP4 127.0.0.1 127.0.0.1 "),
+        "{}",
+        String::from_utf8_lossy(&sent)
+    );
+    let sent = sent_through_a_tunnel(|e| {
+        let components = crate::components::Components::new().unwrap();
+        components.configure(b"setup");
+        e.set_components(Some(components));
+        let o = e.options_mut();
+        o.output.verbose = true;
+        o.proxy.make_mut().unwrap().haproxy = true;
+        o.callbacks.debug = Some(crate::handler::Handler::debug(HaproxyOffOnceAdded).unwrap());
+    });
+    let line = sent.split(|&b| b == b'\n').next().unwrap();
+    assert!(
+        line.starts_with(b"PROXY TCP4 127.0.0.1 127.0.0.1 "),
+        "{}",
+        String::from_utf8_lossy(&sent)
+    );
+    assert!(sent.windows(17).any(|w| w == b"GET /a HTTP/1.1\r\n"));
+}

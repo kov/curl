@@ -525,17 +525,6 @@ witness: curl-core proto::http::tests::a_connection_is_not_open_until_its_proxy_
         if self.route.handshakes() {
             // The connection is the first hop's; the handshakes over it
 
-=== the PROXY line goes before the tunnel it is to go through
-file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::the_proxy_protocol_s_line_goes_through_a_tunnel
---- old
-    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
---- new
-    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels())
-        && !made.has(Made::TUNNEL)
-        && (!cx.easy().options().proxy.haproxy || made.has(Made::PREFACE))
-    {
-
 === a transfer removed mid-connect gives back its connection as open
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_transfer_removed_mid_connect_leaves_no_connection_to_reuse

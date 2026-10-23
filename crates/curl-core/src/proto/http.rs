@@ -382,7 +382,13 @@ impl Request {
             .ok()
             .and_then(|p| p.parse().ok())
             .ok_or(ErrorKind::UrlMalformat)?;
-        let mut target = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
+        // The path goes out encoded, the query as it was given, as C reads
+        // them for `state.up` (`CURLU_URLENCODE` on the path alone).
+        let encoded = GetOptions {
+            url_encode: true,
+            ..GetOptions::NONE
+        };
+        let mut target = url.get(Part::Path, encoded).map_err(url_error)?;
         // An empty query keeps its `?`, as C asks with `CURLU_GET_EMPTY`.
         let query = GetOptions {
             get_empty: true,

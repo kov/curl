@@ -322,3 +322,28 @@ witness: curl-core url::tests::sets_parts_as_c_does
         if (self.punycode && !ascii) || (self.puny2idn && ascii) {
 --- new
         if false {
+
+=== a part read with url_encode comes back as stored
+file: crates/curl-core/src/url/mod.rs
+witness: curl-core url::tests::a_transfer_s_path_reads_encoded
+--- old
+                encode::reencode(&mut enc, &out, query)?;
+                out = enc;
+--- new
+                encode::reencode(&mut enc, &out, query)?;
+
+=== an escape with lowercase hex is taken as needing nothing done
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::reencodes_to_itself_as_reencode_says
+--- old
+                && (lower(s[i + 1]) || lower(s[i + 2])))
+--- new
+                && false)
+
+=== a space is taken as needing nothing done
+file: crates/curl-core/src/url/encode.rs
+witness: curl-core url::encode::tests::reencodes_to_itself_as_reencode_says
+--- old
+        (b'!'..0x7f).contains(&b)
+--- new
+        (b' '..0x7f).contains(&b)

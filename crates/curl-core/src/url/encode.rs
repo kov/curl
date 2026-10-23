@@ -33,7 +33,7 @@ pub(super) fn bad_octets(s: &[u8], allow_space: bool) -> bool {
 }
 
 /// Whether a re-encoded part may turn `?` into the start of a query.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Query {
     /// Not a query: a space is `%20`.
     No,
@@ -107,6 +107,18 @@ pub(super) fn reencode(
         }
     }
     Ok(())
+}
+
+/// Whether `reencode` would give `s` back unchanged, whatever its query
+/// state: no byte it encodes and no escape with lowercase hex.
+pub(super) fn reencodes_to_itself(s: &[u8]) -> bool {
+    s.iter().enumerate().all(|(i, &b)| {
+        let lower = |c: u8| c.is_ascii_lowercase();
+        (b'!'..0x7f).contains(&b)
+            && !(b == b'%'
+                && escaped_byte(&s[i..]).is_some()
+                && (lower(s[i + 1]) || lower(s[i + 2])))
+    })
 }
 
 /// `s` onto `out` with every byte but letters, digits and `-._~` escaped,
@@ -249,6 +261,44 @@ mod tests {
             b"%zz%",
             "invalid escapes stay"
         );
+    }
+
+    /// The shortcut agrees with `reencode` on every string it waves
+    /// through and every one it does not, in each query state.
+    #[test]
+    fn reencodes_to_itself_as_reencode_says() {
+        let cases: &[&[u8]] = &[
+            b"",
+            b"/a/b?c=d",
+            b"%2F%C3",
+            b"%2f",
+            b"%C3%a9",
+            b"%zz%",
+            b"%",
+            b"%a",
+            b"a%",
+            b" ",
+            b"a b",
+            b"\x01",
+            b"\x7f",
+            b"\xc3\xa9",
+            b"%%2f",
+            b"~!$&'()*+,;=:@[]",
+        ];
+        for &s in cases {
+            for query in [Query::No, Query::Yes, Query::NotYet] {
+                assert_eq!(
+                    encode_unchanged(s, query),
+                    reencodes_to_itself(s),
+                    "{:?} in {query:?}",
+                    String::from_utf8_lossy(s)
+                );
+            }
+        }
+    }
+
+    fn encode_unchanged(s: &[u8], query: Query) -> bool {
+        reencoded(s, query) == s
     }
 
     #[test]

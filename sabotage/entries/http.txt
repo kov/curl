@@ -1381,3 +1381,11 @@ witness: curl-core proto::http::tests::a_read_takes_the_buffer_s_size
             let max = self.read_size(cx.easy().options().limits.buffer_size.get());
 --- new
             let max = self.read_size(16384);
+
+=== the request line carries the URL's path as it was given, not encoded
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::the_path_is_sent_encoded_and_the_query_as_given
+--- old
+        let mut target = url.get(Part::Path, encoded).map_err(url_error)?;
+--- new
+        let mut target = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;

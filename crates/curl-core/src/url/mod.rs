@@ -865,14 +865,17 @@ impl Url {
             out = encode::decode(&out)?.ok_or(UrlErrorKind::Urldecode)?;
         }
         if opts.url_encode {
-            let mut enc = Bytes::new();
-            let query = if what == Part::Query {
-                Query::Yes
-            } else {
-                Query::No
-            };
-            encode::reencode(&mut enc, &out, query)?;
-            out = enc;
+            // Most parts need nothing done: they keep their one copy.
+            if !encode::reencodes_to_itself(&out) {
+                let mut enc = Bytes::new();
+                let query = if what == Part::Query {
+                    Query::Yes
+                } else {
+                    Query::No
+                };
+                encode::reencode(&mut enc, &out, query)?;
+                out = enc;
+            }
         } else if what == Part::Host {
             opts.idn(part)?;
         }
@@ -2012,6 +2015,32 @@ mod tests {
         assert_eq!(
             g.get(u, GetOptions::NONE).unwrap(),
             b"http://example.com/a/b"
+        );
+    }
+
+    /// A URL parsed as a transfer parses it, its path read encoded and its
+    /// query not (`url.c` filling `state.up`): bytes past ASCII encoded,
+    /// lowercase hex made uppercase, a bad escape and `+` left alone, and
+    /// the query's bytes as they came.
+    #[test]
+    fn a_transfer_s_path_reads_encoded() {
+        let u = Url::parse(
+            b"http://h/\xc3\xa9/%c3%a9/%zz/+?q=\xc3\xa9&%c3",
+            ParseOptions::NONE,
+        )
+        .unwrap();
+        let encoded = GetOptions {
+            url_encode: true,
+            ..GetOptions::NONE
+        };
+        assert_eq!(u.get(Part::Path, encoded).unwrap(), b"/%C3%A9/%C3%A9/%zz/+");
+        assert_eq!(
+            u.get(Part::Path, GetOptions::NONE).unwrap(),
+            b"/\xc3\xa9/%c3%a9/%zz/+"
+        );
+        assert_eq!(
+            u.get(Part::Query, GetOptions::NONE).unwrap(),
+            b"q=\xc3\xa9&%c3"
         );
     }
 

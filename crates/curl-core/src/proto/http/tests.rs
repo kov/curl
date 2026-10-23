@@ -2951,6 +2951,18 @@ fn a_shared_url_is_read_as_each_transfer_starts() {
     assert!(fixture::find(&ran.request, b"GET /two HTTP/1.1\r\n").is_some());
 }
 
+/// The request line carries the path percent-encoded, its lowercase hex
+/// made uppercase, and the query as it was given (`url.c` reads the path
+/// with `CURLU_URLENCODE`, the query without).
+#[test]
+fn the_path_is_sent_encoded_and_the_query_as_given() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get(&mut m, "/é/%c3%a9?q=é&%c3%a9", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let line = "GET /%C3%A9/%C3%A9?q=é&%c3%a9 HTTP/1.1\r\n";
+    assert!(ran.request.starts_with(line.as_bytes()));
+}
+
 /// The application's port goes over the first URL's and a relative
 /// redirect's, not over the port of an absolute one.
 #[test]

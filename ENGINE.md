@@ -470,9 +470,12 @@ buffer, the application's read handler or a mime tree (`cr_buf_read`, `cr_in_rea
 room the request's buffer had; a body held for a 100 is asked for and gives nothing. The
 readers are reset as a request starts and as it ends without error, kept to be rewound when the
 next request is to send the body again (a redirect or 417 that asks it, a retry always), and
-rewound before that request is issued. Not traced: C's rewind mechanics by name (`cr_in, rewind
-via ...`), the pause stage's unpausing and the line-ending converter, which the engine has no
-reader for.
+rewound before that request is issued. A pause the read handler or a tree's part asked for,
+lifted, is told to each reader C would stack, by name from the network's side (`unpausing
+chunked/cr-exp100/cr-in|cr-mime -> 0`, `Curl_creader_unpause`): the slot keeps which those are,
+set as HTTP makes the body and let go with the readers, since the lift mostly comes from a
+handler while the run is out. Not traced: C's rewind mechanics by name (`cr_in, rewind via
+...`) and the line-ending converter, which the engine has no reader for.
 
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
@@ -556,6 +559,7 @@ struct Slot<H: Host> {
     judge_pause: bool,               // its own handler paused while it was out
     speedometer: Speedometer,        // beside the pause, which starts it over
     run: Option<Run>,                // see below
+    readers: Option<Readers>,        // C's readers of the body, for the unpause trace
 }
 pub(crate) struct Run {              // created at add, dropped at removal
     state: TransferState,
@@ -2271,7 +2275,8 @@ over the last five one-second records. The handler is called, or the meter drawn
   two before DO and three after it;
 - at each wake of `RateLimiting`, with the low-speed check;
 - a last call from the `Done` step, shown whatever the time but only if the request is done or a
-  second has passed, unless the outcome is AbortedByCallback. An `Abort` there fails a transfer
+  second has passed, unless the outcome is AbortedByCallback or the request never got past
+  connecting (C's `mstate > MSTATE_CONNECTING`): a failed resolve or connect shows nothing. An `Abort` there fails a transfer
   that had succeeded. "Done" is C's `req.done`: the exchange ran to its end (`Reached::Exchanged`).
   A request with nothing to exchange, as file://'s, never is, so a quick one draws its meter once.
 An unpause of a direction starts the records over; any unpause that leaves the transfer

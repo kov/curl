@@ -31,10 +31,10 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core proto::file::tests::a_file_is_its_headers_then_its_body
 --- old
         if self.reach == Reach::Network {
-            cx.report_mut().headers_mut().push(line, origin)?;
+            let pushed = cx.report_mut().headers_mut().push(line, origin);
 --- new
         if true {
-            cx.report_mut().headers_mut().push(line, origin)?;
+            let pushed = cx.report_mut().headers_mut().push(line, origin);
 
 === a local protocol's write may pause
 file: crates/curl-core/src/deliver/mod.rs

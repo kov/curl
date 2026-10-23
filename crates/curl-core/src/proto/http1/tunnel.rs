@@ -290,14 +290,22 @@ impl Answer {
                 Body::Chunked(decoder) => {
                     // Read no further than the body's end.
                     let mut counted = 0;
-                    let (n, _) = decoder
-                        .feed(&input[used..], &mut counted)
-                        .map_err(AnswerError::BadChunks)?;
-                    used += n;
-                    if decoder.is_done() {
-                        self.body = Body::Done;
-                        self.chunks_read = true;
-                        return Ok((used, Read::Done));
+                    loop {
+                        let (n, event) = decoder
+                            .feed(&input[used..], &mut counted)
+                            .map_err(AnswerError::BadChunks)?;
+                        let event = event.is_some();
+                        used += n;
+                        if decoder.is_done() {
+                            self.body = Body::Done;
+                            self.chunks_read = true;
+                            return Ok((used, Read::Done));
+                        }
+                        // Each chunk's start and data are given out, and
+                        // go: the body is read only to find its end.
+                        if !event {
+                            break;
+                        }
                     }
                     // Short of its end the decoder takes all it is given;
                     // what it might leave is offered again.

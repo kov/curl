@@ -7,7 +7,8 @@ checked against test 1538, give every code of CURLcode, CURLMcode,
 CURLSHcode and CURLUcode with its message. From them:
 
   crates/curl-core/src/error/kinds.rs: one enum per API, a variant per
-  code that is an error, its message as `Display`;
+  code that is an error, its message as `Display`; for `ErrorKind`, also
+  the code's number, which trace lines print as C's do;
 
   crates/curl-sys-abi/src/error_codes.rs: each variant's code, with a
   `match` that has no wildcard, and each code's string for `*_strerror`,
@@ -72,6 +73,17 @@ impl fmt::Display for {rust} {{
 impl std::error::Error for {rust} {{}}
 """
 
+NUMBER_TEMPLATE = """\
+impl {rust} {{
+    /// The number of its C code, as trace lines print it (`-> %d`):
+    /// its place in the C enum, which counts from 0 for success.
+    pub(crate) fn number(self) -> u16 {{
+        match self {{
+{numbers}        }}
+    }}
+}}
+"""
+
 SHIM_TEMPLATE = """\
 /// The `{cenum}` of an error kind.
 pub(crate) fn {short}_code(kind: {rust}) -> {cenum} {{
@@ -133,6 +145,13 @@ def generate():
         core.append(CORE_TEMPLATE.format(
             doc=DOCS[rust], rust=rust, variants=doc_variants,
             all=all_variants, messages=message_arms))
+        if rust == "ErrorKind":
+            # The enum declares no values: each member's is its place.
+            check(members[0] == "CURLE_OK", "CURLcode starts at CURLE_OK")
+            number_arms = "".join(
+                f"            {rust}::{v} => {members.index(m)},\n"
+                for m, v, _ in variants)
+            core.append(NUMBER_TEMPLATE.format(rust=rust, numbers=number_arms))
         code_arms = "".join(f"        {rust}::{v} => {m},\n"
                             for m, v, _ in variants)
         str_arms = "".join(f"        {m} => c{literal(msg)},\n"

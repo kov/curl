@@ -13,8 +13,17 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             cookies::set_by_server(cx, value, &site)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
+        // What reading its transfer codings did, traced before the line, as
+        // C reads them as it handles it (`http_header_t`).
+        if let Some(tale) = line.codings {
+            trace_codings(cx, tale);
+        }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
 --- new
+        let early = line.early.map_err(|e| head_failed(cx, &e));
+        if let Some(tale) = line.codings {
+            trace_codings(cx, tale);
+        }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
@@ -22,7 +31,6 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
             let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
             cookies::set_by_server(cx, value, &site)?;
         }
-        let early = line.early.map_err(|e| head_failed(cx, &e));
 
 === the application's cookies go without the jar's
 file: crates/curl-core/src/proto/http/cookies.rs

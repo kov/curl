@@ -42,8 +42,11 @@ enum State {
 /// What a feed produced.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ChunkEvent<'a> {
-    /// Body bytes, from the input.
-    Data(&'a [u8]),
+    /// A chunk of this many bytes starts.
+    Start(u64),
+    /// Body bytes, from the input, and what is left of their chunk after
+    /// them. Raw, they are given too, though already passed on.
+    Data { data: &'a [u8], left: u64 },
     /// A trailer line, verified, to be delivered as a header, then `then`
     /// raised.
     Trailer {
@@ -61,6 +64,8 @@ pub(crate) enum ChunkError {
     NotHex(u8),
     BadSize([u8; MAX_HEX], usize),
     Malformed,
+    /// Something else than the LF that ends the body, after its last CR.
+    BadEnd(u8),
     BadTrailer(BadLine),
     TrailerTooLong,
     TrailerLimit(HeadError),
@@ -76,6 +81,7 @@ impl ChunkError {
             | ChunkError::NotHex(_)
             | ChunkError::BadSize(..)
             | ChunkError::Malformed
+            | ChunkError::BadEnd(_)
             | ChunkError::TrailerLimit(_) => ErrorKind::RecvError,
             ChunkError::BadTrailer(_) => ErrorKind::WeirdServerReply,
             ChunkError::TrailerTooLong => ErrorKind::TooLarge,
@@ -94,6 +100,7 @@ impl ChunkError {
             | ChunkError::BadTrailer(_)
             | ChunkError::TrailerLimit(_) => Some(Reason(self)),
             ChunkError::Malformed
+            | ChunkError::BadEnd(_)
             | ChunkError::TrailerTooLong
             | ChunkError::Outstanding
             | ChunkError::OutOfMemory => None,
@@ -131,7 +138,9 @@ impl fmt::Display for ChunkError {
             ChunkError::NotHex(_) | ChunkError::BadSize(..) => {
                 "Illegal or missing hexadecimal sequence"
             }
-            ChunkError::Malformed | ChunkError::BadTrailer(_) => "Malformed encoding found",
+            ChunkError::Malformed | ChunkError::BadEnd(_) | ChunkError::BadTrailer(_) => {
+                "Malformed encoding found"
+            }
             // C's buffer refuses the byte as too large, which the decoder
             // reports as it reports an allocation failing.
             ChunkError::TrailerTooLong => "Out of memory",
@@ -158,8 +167,8 @@ pub(crate) struct ChunkDecoder {
     /// `trailer` was given out, and goes at the next feed.
     given: bool,
     /// The bytes are passed on as they came (`CURLOPT_HTTP_TRANSFER_DECODING`
-    /// off): no data or trailers are given out, though the body is still
-    /// read to its end.
+    /// off): no trailers are given out, though the body is still read to
+    /// its end.
     raw: bool,
     /// Lines in the final head, which decides whether a blank-led trailer
     /// continues one.
@@ -233,14 +242,15 @@ impl ChunkDecoder {
                     }
                 }
                 State::Lf => {
-                    if b == b'\n' {
-                        self.state = if self.left == 0 {
-                            State::Trailer
-                        } else {
-                            State::Data
-                        };
-                    }
                     used += 1;
+                    if b == b'\n' {
+                        if self.left == 0 {
+                            self.state = State::Trailer;
+                        } else {
+                            self.state = State::Data;
+                            return Ok((used, Some(ChunkEvent::Start(self.left))));
+                        }
+                    }
                 }
                 State::Data => {
                     let rest = &input[used..];
@@ -252,9 +262,8 @@ impl ChunkDecoder {
                     }
                     let data = &rest[..piece];
                     used += piece;
-                    if !self.raw {
-                        return Ok((used, Some(ChunkEvent::Data(data))));
-                    }
+                    let left = self.left;
+                    return Ok((used, Some(ChunkEvent::Data { data, left })));
                 }
                 State::PostLf => {
                     if b == b'\n' {
@@ -325,7 +334,7 @@ impl ChunkDecoder {
                 }
                 State::Stop => {
                     if b != b'\n' {
-                        return Err(ChunkError::Malformed);
+                        return Err(ChunkError::BadEnd(b));
                     }
                     self.state = State::Done;
                     return Ok((used + 1, Some(ChunkEvent::Done)));
@@ -520,7 +529,10 @@ mod tests {
                         }
                     };
                     match event {
-                        Some(ChunkEvent::Data(d)) => got.body.extend_from_slice(d),
+                        Some(ChunkEvent::Data { data, .. }) if !raw => {
+                            got.body.extend_from_slice(data);
+                        }
+                        Some(ChunkEvent::Data { .. } | ChunkEvent::Start(_)) => {}
                         Some(ChunkEvent::Trailer { line, then }) => {
                             got.trailers.push(line.to_vec());
                             then.unwrap();
@@ -660,7 +672,7 @@ mod tests {
             (b"abc".to_vec(), true, 5)
         );
         assert_eq!(body(b"3\r\nabcX").error, Some(ChunkError::Malformed));
-        assert_eq!(body(b"0\r\n\r\r").error, Some(ChunkError::Malformed));
+        assert_eq!(body(b"0\r\n\r\r").error, Some(ChunkError::BadEnd(b'\r')));
         assert_eq!(body(b"0\r\nA: b\rx").error, Some(ChunkError::Malformed));
         assert_eq!(body(b"0\nA: b\n\n").trailers, vec![b"A: b\r\n".to_vec()]);
         assert_eq!(
@@ -852,7 +864,8 @@ mod tests {
                 };
                 assert!(used <= piece.len(), "used more than given");
                 match event {
-                    Some(ChunkEvent::Data(data)) => got.body.extend_from_slice(data),
+                    Some(ChunkEvent::Data { data, .. }) if !raw => got.body.extend_from_slice(data),
+                    Some(ChunkEvent::Data { .. } | ChunkEvent::Start(_)) => {}
                     Some(ChunkEvent::Trailer { line, then }) => {
                         assert!(line.len() <= MAX_TRAILER, "a trailer kept past C's buffer");
                         got.trailers.push((line.to_vec(), then));

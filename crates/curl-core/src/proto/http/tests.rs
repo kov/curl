@@ -4622,6 +4622,7 @@ mod coding;
 mod range;
 mod sigv4;
 mod time_condition;
+mod write_trace;
 
 /// `Proxy-Connection:` counts only on a connection through an HTTP
 /// proxy (`http_header_p`'s `http_proxy.peer`): a server's says nothing.

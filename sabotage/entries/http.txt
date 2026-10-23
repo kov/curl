@@ -37,17 +37,19 @@ witness: curl-core proto::http::tests::responses_end_as_c_ends_them
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::chunks_are_read_to_their_end
 --- old
-                    if let Err(e) = pipeline.header(cx, line, HeaderOrigin::Trailer) {
+                    let written = pipeline.header(cx, line, HeaderOrigin::Trailer);
 --- new
-                    if let Err(e) = pipeline.header(cx, line, HeaderOrigin::Header) {
+                    let written = pipeline.header(cx, line, HeaderOrigin::Header);
 
 === raw chunks are decoded
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::chunks_are_read_to_their_end
 --- old
-        if cx.easy().options().http.raw {
+        if raw {
+            pipeline.decoded(cx, input)?;
 --- new
         if false {
+            pipeline.decoded(cx, input)?;
 
 === a body after a bodyless head is dropped unjudged
 file: crates/curl-core/src/proto/http.rs
@@ -194,8 +196,16 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_head_s_end_fails_around_its_blank_line
 --- old
         let early = line.early.map_err(|e| head_failed(cx, &e));
+        // What reading its transfer codings did, traced before the line, as
+        // C reads them as it handles it (`http_header_t`).
+        if let Some(tale) = line.codings {
+            trace_codings(cx, tale);
+        }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
 --- new
+        if let Some(tale) = line.codings {
+            trace_codings(cx, tale);
+        }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
         let early = line.early.map_err(|e| head_failed(cx, &e));
 
@@ -340,9 +350,11 @@ witness: curl-core proto::http::tests::a_paused_last_piece_waits_to_be_delivered
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::bytes_after_the_chunks_are_left_over
 --- old
-                Some(ChunkEvent::Data(data)) => pipeline.decoded(cx, data)?,
+                    if !raw {
+                        pipeline.decoded(cx, data)?;
 --- new
-                Some(ChunkEvent::Data(data)) => pipeline.body(cx, data)?,
+                    if !raw {
+                        pipeline.body(cx, data)?;
 
 === trailers are left out of the header size
 file: crates/curl-core/src/proto/http.rs

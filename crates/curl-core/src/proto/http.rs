@@ -5,11 +5,12 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
-use crate::coding::{AcceptEncoding, Coding, Decoder, Identity, Named, Unrecognized};
+use crate::coding::{AcceptEncoding, Coding, Decoder, Decoders, Identity, Named, Unrecognized};
+use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{ConnLease, Peer, RecvFailed};
 use crate::date::{HttpDate, OutOfRange};
-use crate::deliver::{Expect, Pause, Pipeline, Reach};
+use crate::deliver::{self, Expect, Pause, Pipeline, Reach, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind};
 use crate::handler::{DebugKind, HeaderOrigin, TrailerLines, Trailers};
 use crate::mime::read::MakeError;
@@ -26,7 +27,7 @@ use crate::upload::{self, Upload};
 use crate::url::{GetOptions, Part, SetOptions, Url};
 
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
-use super::http1::framing::{self, Asked, Framing, Left, Unsent};
+use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
     self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
     Typed,
@@ -1367,7 +1368,9 @@ impl Request {
                         self.upload_done(cx, true);
                         cx.mark(Timer::PostTransfer);
                     }
-                    self.end(cx)?;
+                    let ended = self.end(cx);
+                    deliver::write_resp(cx, 0, true, ended);
+                    ended?;
                     self.stage = Stage::Done;
                 }
                 Ok(Recv::Data(_)) => {
@@ -1376,6 +1379,7 @@ impl Request {
                     let all = rx.filled().len();
                     rx.consume(all);
                     *lease.get().rx_mut() = rx;
+                    deliver::write_resp(cx, all, false, fed);
                     fed?;
                 }
                 Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
@@ -1478,9 +1482,17 @@ impl Request {
         let bodyless = head.meta().bodyless();
         let sent_all = matches!(outgoing, Sending::Done | Sending::Aborted);
         let unsent = Self::left_to_send(body.as_ref(), sent_all, *body_sent);
-        let (used, event) = head
-            .feed(input, &mut cx.report_mut().sizes_mut().header, unsent)
-            .map_err(|e| head_failed(cx, &e))?;
+        let fed = head.feed(input, &mut cx.report_mut().sizes_mut().header, unsent);
+        let (used, event) = match fed {
+            Ok(fed) => fed,
+            Err(e) => {
+                // A list refused is traced as far as it was read.
+                if let Some(tale) = head.failed_codings() {
+                    trace_codings(cx, tale);
+                }
+                return Err(head_failed(cx, &e));
+            }
+        };
         let rest = &input[used..];
         let line = match event {
             None => return Ok(rest),
@@ -1530,6 +1542,11 @@ impl Request {
             cookies::set_by_server(cx, value, &site)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
+        // What reading its transfer codings did, traced before the line, as
+        // C reads them as it handles it (`http_header_t`).
+        if let Some(tale) = line.codings {
+            trace_codings(cx, tale);
+        }
         trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
         let origin = if *interim {
             HeaderOrigin::Interim
@@ -1542,7 +1559,7 @@ impl Request {
             LineKind::Status(status) => {
                 *interim = (100..200).contains(&status.code);
                 cx.report_mut().set_response(status.code, status.version);
-                pipeline.status(cx, line.bytes)?;
+                pipeline.status(cx, line.bytes, *interim)?;
             }
             LineKind::Header => {
                 if let Some(wait) = framing::retry_after(line.bytes, cx.unix_time()) {
@@ -1733,31 +1750,72 @@ impl Request {
         cx: &mut StepCx<'_, H>,
         input: &'i [u8],
     ) -> Result<&'i [u8], ErrorKind> {
+        let raw = cx.easy().options().http.raw;
+        let read = self.chunks(cx, input, raw);
+        // As C writes it all at once to the chain the chunked decoder is in
+        // (`Curl_client_write`).
+        deliver::client_write(cx, WriteType::BODY, input.len(), read);
+        read.map(|()| &[][..])
+    }
+
+    /// `chunked_input`'s reading of the chunks in `input`.
+    fn chunks<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        input: &[u8],
+        raw: bool,
+    ) -> Result<(), ErrorKind> {
         let Request {
             pipeline, stage, ..
         } = self;
         let Stage::Body(Body::Chunked(decoder)) = stage else {
             unreachable!("reading chunks");
         };
-        if cx.easy().options().http.raw {
-            // Passed on as it came; the decoder only finds the end.
-            pipeline.body(cx, input)?;
-        } else {
-            // Traced as it came, chunk lines, trailers and what follows the
-            // last chunk with it, as C traces it before decoding.
-            pipeline.trace_raw(cx, input);
+        // Traced as it came, chunk lines, trailers and what follows the
+        // last chunk with it, as C traces it before decoding; raw, it is
+        // passed on as it came too, and the decoder only finds the end.
+        pipeline.trace_raw(cx, input);
+        if raw {
+            pipeline.decoded(cx, input)?;
         }
         let mut piece = input;
         while !piece.is_empty() {
             let header_size = &mut cx.report_mut().sizes_mut().header;
             let (used, event) = match decoder.feed(piece, header_size) {
                 Ok(fed) => fed,
-                Err(e) => return Err(chunks_failed(cx, &e)),
+                Err(e) => {
+                    if let ChunkError::BadEnd(b) = e {
+                        write_trace(
+                            cx,
+                            format_args!("http_chunk error, expected 0x0a, seeing 0x{b}x"),
+                        );
+                    }
+                    return Err(chunks_failed(cx, &e));
+                }
             };
             match event {
-                Some(ChunkEvent::Data(data)) => pipeline.decoded(cx, data)?,
+                Some(ChunkEvent::Start(size)) => write_trace(
+                    cx,
+                    format_args!("http_chunked, chunk start of {size} bytes"),
+                ),
+                Some(ChunkEvent::Data { data, left }) => {
+                    if !raw {
+                        pipeline.decoded(cx, data)?;
+                    }
+                    write_trace(
+                        cx,
+                        format_args!(
+                            "http_chunked, write {} body bytes, {left} bytes in chunk remain",
+                            data.len()
+                        ),
+                    );
+                }
                 Some(ChunkEvent::Trailer { line, then }) => {
-                    if let Err(e) = pipeline.header(cx, line, HeaderOrigin::Trailer) {
+                    let written = pipeline.header(cx, line, HeaderOrigin::Trailer);
+                    if trace::traces(cx, Component::Write) {
+                        write_trace_with(cx, &[b"wrote trailer '", line, b"'"]);
+                    }
+                    if let Err(e) = written {
                         return Err(trace::fail(
                             cx,
                             e,
@@ -1767,18 +1825,19 @@ impl Request {
                     then.map_err(|e| chunks_failed(cx, &e))?;
                 }
                 Some(ChunkEvent::Done) => {
+                    write_trace(cx, format_args!("http_chunk, response complete"));
                     let left = piece.len() - used;
                     if left > 0 {
                         trace::info(cx, format_args!("Leftovers after chunking: {left} bytes"));
                     }
                     *stage = Stage::Done;
-                    return Ok(&[]);
+                    return Ok(());
                 }
                 None => {}
             }
             piece = &piece[used..];
         }
-        Ok(&[])
+        Ok(())
     }
 
     /// The connection closed: the response must be whole
@@ -1936,7 +1995,9 @@ fn content_codings<H: Host>(
     list: &[u8],
 ) -> Result<(), ErrorKind> {
     for name in framing::coding_names(list) {
+        write_trace_with(cx, &[b"looking for content decoder: ", name]);
         if cx.easy().options().http.raw_content {
+            write_trace_with(cx, &[b"decoder not requested, ignored: ", name]);
             return Ok(());
         }
         if pipeline.decoders() >= MAX_CONTENT_CODINGS {
@@ -1948,9 +2009,57 @@ fn content_codings<H: Host>(
                 ),
             ));
         }
-        pipeline.add_decoder(decoder_for(cx, Named::of(name))?)?;
+        let named = Named::of(name);
+        let decoder = decoder_for(cx, named)?;
+        let decoders = cx.easy().decoders();
+        write_trace(
+            cx,
+            format_args!(
+                "added content decoder {} -> 0",
+                decoder_name(Some(named), &decoders)
+            ),
+        );
+        pipeline.add_decoder(decoder)?;
     }
     Ok(())
+}
+
+/// What reading a `Transfer-Encoding` list did with each name
+/// (`Curl_build_unencoding_stack`).
+fn trace_codings<H: Host>(cx: &mut StepCx<'_, H>, tale: CodingTale<'_>) {
+    if !trace::traces(cx, Component::Write) {
+        return;
+    }
+    let decoders = cx.easy().decoders();
+    tale.retell(|step| match step {
+        CodingStep::Looking(name) => {
+            write_trace_with(cx, &[b"looking for transfer decoder: ", name]);
+        }
+        CodingStep::Ignored(name) => {
+            write_trace_with(cx, &[b"decoder not requested, ignored: ", name]);
+        }
+        CodingStep::Duplicate => {
+            write_trace(cx, format_args!("ignoring duplicate 'chunked' decoder"));
+        }
+        CodingStep::Added(named) => write_trace(
+            cx,
+            format_args!(
+                "added transfer decoder {} -> 0",
+                decoder_name(named, &decoders)
+            ),
+        ),
+    });
+}
+
+/// The name of the decoder C stacks for a coding, chunked for none: its
+/// writer's, the error writer's for one the handle cannot undo.
+fn decoder_name(named: Option<Named>, decoders: &Decoders) -> &'static str {
+    match named {
+        None => "chunked",
+        Some(Named::Identity) => "identity",
+        Some(Named::Coding(coding)) if decoders.maker(coding).is_some() => coding.name(),
+        Some(Named::Coding(_) | Named::Unknown) => "ce-error",
+    }
 }
 
 /// A decoder for a coding a response names: one passing the body by for
@@ -2018,3 +2127,13 @@ fn chunks_failed<H: Host>(cx: &mut StepCx<'_, H>, e: &ChunkError) -> ErrorKind {
 mod suite;
 #[cfg(test)]
 mod tests;
+
+/// A line of the write trace (`CURL_TRC_WRITE`).
+fn write_trace<H: Host>(cx: &mut StepCx<'_, H>, args: std::fmt::Arguments<'_>) {
+    trace::of(cx, Component::Write, args);
+}
+
+/// `write_trace` with a line made of `parts`, which need not be text.
+fn write_trace_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
+    trace::of_with(cx, Component::Write, parts);
+}

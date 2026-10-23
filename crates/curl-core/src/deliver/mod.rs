@@ -12,13 +12,14 @@ pub(crate) use pause::{Directions, Pause, RecvPause, SendPause};
 use curl_alloc::TryVec;
 
 use crate::coding::{Decoder, Sink};
+use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin, Write};
 use crate::multi::state::StepCx;
 use crate::multi::{Host, TransferCx};
 use crate::progress::rate::Way;
 use crate::report::Timer;
-use crate::trace;
+use crate::trace::{self, Code};
 use decode::{Gate, Onward};
 use held::{HeldOutput, OutKind};
 
@@ -116,24 +117,31 @@ impl Pipeline {
         self.reach == Reach::Network
     }
 
-    /// Replay held output, unless a handler holds it still.
+    /// Replay held output, unless a handler holds it still: the gate's,
+    /// then the handlers', as C flushes its writers in the chain's order.
     pub(crate) fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         let pausable = self.pausable();
-        self.out.flush(cx, pausable)?;
-        let Some(Codings {
+        if let Some(Codings {
             gate: Some(gate),
             content,
             ..
         }) = self.codings.as_deref_mut()
-        else {
-            return Ok(());
-        };
-        gate.flush(&mut Past {
-            cx,
-            decoders: content,
-            out: &mut self.out,
-            pausable,
-        })
+        {
+            gate.flush(&mut Past {
+                cx,
+                decoders: content,
+                out: &mut self.out,
+                pausable,
+            })?;
+        }
+        self.out.flush(cx, pausable)
+    }
+
+    /// The request's output is over (`Curl_cw_out_done`): what is held
+    /// goes with the request.
+    pub(crate) fn done<H: Host>(cx: &mut StepCx<'_, H>) {
+        write_trace(cx, format_args!("[OUT] done"));
+        write_trace(cx, format_args!("client_flush() -> 0"));
     }
 
     /// Whether output is held: the request cannot be over until it is
@@ -208,7 +216,9 @@ impl Pipeline {
         bytes: &[u8],
     ) -> Result<(), ErrorKind> {
         self.trace_raw(cx, bytes);
-        self.decoded(cx, bytes)
+        let result = self.decoded(cx, bytes);
+        client_write(cx, WriteType::BODY, bytes.len(), result);
+        result
     }
 
     /// Trace body bytes as they came, before a decoder takes them
@@ -245,6 +255,14 @@ impl Pipeline {
         self.accountant.body_started(cx);
         if expect.no_body && !bytes.is_empty() {
             // The body goes; the response is fine if a head came.
+            write_trace(
+                cx,
+                format_args!(
+                    "download_write body(type={}, blen={}), did not want a BODY",
+                    WriteType::BODY,
+                    bytes.len()
+                ),
+            );
             self.accountant.close = true;
             self.accountant.done = true;
             return if expect.no_head {
@@ -260,7 +278,19 @@ impl Pipeline {
         }
         let max_filesize = cx.easy().options().limits.max_filesize;
         let allowed = self.accountant.allowed(wanted, max_filesize);
-        self.onward(cx, OutKind::Body, &bytes[..allowed])?;
+        if allowed > 0 {
+            let result = self.onward(cx, OutKind::Body, &bytes[..allowed]);
+            write_trace(
+                cx,
+                format_args!(
+                    "download_write body(type={}, blen={}) -> {}",
+                    WriteType::BODY,
+                    bytes.len(),
+                    Code(result)
+                ),
+            );
+            result?;
+        }
         // Counted once the handlers are done with it: inside them, the
         // download size leaves out the write in progress.
         self.accountant.counted(cx, allowed);
@@ -290,8 +320,15 @@ impl Pipeline {
     }
 
     /// The response ended (`CLIENTWRITE_EOS`): a body of a known size must
-    /// be whole.
+    /// be whole. The end is traced as body of no bytes (`cw_raw_write`).
     pub(crate) fn end<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+        self.trace_raw(cx, &[]);
+        let result = self.ended(cx);
+        client_write(cx, WriteType::BODY.eos(), 0, result);
+        result
+    }
+
+    fn ended<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
         self.accountant.body_started(cx);
         let expect = self.accountant.expect;
         let bytecount = self.accountant.bytecount;
@@ -303,7 +340,18 @@ impl Pipeline {
                     format_args!("end of response with {} bytes missing", size - bytecount),
                 ))
             }
-            _ => Ok(()),
+            _ => {
+                // What ends the body goes through to the handlers, with
+                // nothing to write.
+                if !expect.ignore {
+                    let eos = WriteType::BODY.eos();
+                    write_trace(
+                        cx,
+                        format_args!("download_write body(type={eos}, blen=0) -> 0"),
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
@@ -317,19 +365,50 @@ impl Pipeline {
         origin: HeaderOrigin,
     ) -> Result<(), ErrorKind> {
         if self.reach == Reach::Network {
-            cx.report_mut().headers_mut().push(line, origin)?;
+            let pushed = cx.report_mut().headers_mut().push(line, origin);
+            let stored = match origin {
+                HeaderOrigin::Header => 1,
+                HeaderOrigin::Trailer => 2,
+                HeaderOrigin::Connect => 4,
+                HeaderOrigin::Interim => 8,
+            };
+            write_trace(
+                cx,
+                format_args!(
+                    "header_collect pushed(type={stored:x}, len={}) -> {}",
+                    line.len(),
+                    Code(pushed)
+                ),
+            );
+            pushed?;
         }
-        self.head_line(cx, line, origin)
+        let kind = OutKind::Header(origin);
+        let result = self.head_line(cx, line, kind);
+        // A trailer comes from the chunked decoder, past the chain's
+        // start.
+        if origin != HeaderOrigin::Trailer {
+            client_write(cx, WriteType::of(kind), line.len(), result);
+        }
+        result
     }
 
-    /// Deliver a response's status line, as a header line the store does
-    /// not keep (`CLIENTWRITE_STATUS`).
+    /// Deliver a response's status line, of an informational response
+    /// (1xx) or not, as a header line the store does not keep
+    /// (`CLIENTWRITE_STATUS`).
     pub(crate) fn status<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         line: &[u8],
+        interim: bool,
     ) -> Result<(), ErrorKind> {
-        self.head_line(cx, line, HeaderOrigin::Header)
+        let origin = match interim {
+            true => HeaderOrigin::Interim,
+            false => HeaderOrigin::Header,
+        };
+        let kind = OutKind::Status(origin);
+        let result = self.head_line(cx, line, kind);
+        client_write(cx, WriteType::of(kind), line.len(), result);
+        result
     }
 
     /// Deliver a proxy's answer to `CONNECT`'s status line, which the
@@ -339,21 +418,109 @@ impl Pipeline {
         cx: &mut StepCx<'_, H>,
         line: &[u8],
     ) -> Result<(), ErrorKind> {
-        self.head_line(cx, line, HeaderOrigin::Connect)
+        let kind = OutKind::Status(HeaderOrigin::Connect);
+        let result = self.head_line(cx, line, kind);
+        client_write(cx, WriteType::of(kind), line.len(), result);
+        result
     }
 
     fn head_line<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         line: &[u8],
-        origin: HeaderOrigin,
+        kind: OutKind,
     ) -> Result<(), ErrorKind> {
-        if origin != HeaderOrigin::Connect {
+        if kind.origin() != Some(HeaderOrigin::Connect) {
             self.accountant.response_started(cx);
         } else if cx.easy().options().proxy.suppress_connect_headers {
             return Ok(());
         }
-        self.onward(cx, OutKind::Header(origin), line)
+        let result = self.onward(cx, kind, line);
+        write_trace(
+            cx,
+            format_args!(
+                "download_write header(type={}, blen={}) -> {}",
+                WriteType::of(kind),
+                line.len(),
+                Code(result)
+            ),
+        );
+        result
+    }
+}
+
+/// A line of the write trace (`CURL_TRC_WRITE`).
+fn write_trace<H: Host>(cx: &mut StepCx<'_, H>, args: std::fmt::Arguments<'_>) {
+    trace::of(cx, Component::Write, args);
+}
+
+/// What a write at the chain's start came to (`Curl_client_write`).
+pub(crate) fn client_write<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    kind: WriteType,
+    len: usize,
+    result: Result<(), ErrorKind>,
+) {
+    write_trace(
+        cx,
+        format_args!("client_write(type={kind}, len={len}) -> {}", Code(result)),
+    );
+}
+
+/// What a protocol's read of the response came to (`Curl_xfer_write_resp`).
+pub(crate) fn write_resp<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    len: usize,
+    eos: bool,
+    result: Result<(), ErrorKind>,
+) {
+    write_trace(
+        cx,
+        format_args!(
+            "xfer_write_resp(len={len}, eos={}) -> {}",
+            u8::from(eos),
+            Code(result)
+        ),
+    );
+}
+
+/// What kind of output a write is, as C's client writers mark it
+/// (`CLIENTWRITE_*`): only printed, by the write trace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WriteType(u16);
+
+impl WriteType {
+    pub(crate) const BODY: WriteType = WriteType(1 << 0);
+    const HEADER: u16 = 1 << 2;
+    const STATUS: u16 = 1 << 3;
+    const CONNECT: u16 = 1 << 4;
+    const INTERIM: u16 = 1 << 5;
+    const TRAILER: u16 = 1 << 6;
+    const EOS: u16 = 1 << 7;
+
+    pub(crate) fn of(kind: OutKind) -> WriteType {
+        let origin = |origin| match origin {
+            HeaderOrigin::Header => 0,
+            HeaderOrigin::Connect => Self::CONNECT,
+            HeaderOrigin::Interim => Self::INTERIM,
+            HeaderOrigin::Trailer => Self::TRAILER,
+        };
+        match kind {
+            OutKind::Body => Self::BODY,
+            OutKind::Header(o) => WriteType(Self::HEADER | origin(o)),
+            OutKind::Status(o) => WriteType(Self::HEADER | Self::STATUS | origin(o)),
+        }
+    }
+
+    /// The same, the last of the response (`CLIENTWRITE_EOS`).
+    pub(crate) fn eos(self) -> WriteType {
+        WriteType(self.0 | Self::EOS)
+    }
+}
+
+impl std::fmt::Display for WriteType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}", self.0)
     }
 }
 
@@ -391,16 +558,20 @@ impl<H: Host> Onward for Past<'_, '_, H> {
         handler_paused(self.cx)
     }
 
+    fn trace(&mut self, args: std::fmt::Arguments<'_>) {
+        write_trace(self.cx, args);
+    }
+
     fn take(&mut self, kind: OutKind, bytes: &[u8]) -> Result<(), ErrorKind> {
         let (cx, out, pausable) = (&mut *self.cx, &mut *self.out, self.pausable);
         match kind {
             OutKind::Body => decode::run(self.decoders, bytes, &mut Client { cx, out, pausable }),
-            OutKind::Header(origin) => {
+            OutKind::Header(_) | OutKind::Status(_) => {
                 // An included line is body, to be held and replayed with it.
                 if cx.easy().options().output.include_header {
                     out.body(cx, bytes, pausable)?;
                 }
-                out.header(cx, bytes, origin, pausable)
+                out.header(cx, bytes, kind, pausable)
             }
         }
     }
@@ -569,16 +740,19 @@ impl ClientOut {
         &mut self,
         cx: &mut StepCx<'_, H>,
         line: &[u8],
-        origin: HeaderOrigin,
+        kind: OutKind,
         pausable: bool,
     ) -> Result<(), ErrorKind> {
-        let result = self.write(cx, OutKind::Header(origin), line, pausable);
+        let result = self.write(cx, kind, line, pausable);
         self.fail_on(result)
     }
 
     /// Replay held output until it is all delivered or a handler pauses
     /// again (`cw_out_flush_chain`).
     fn flush<H: Host>(&mut self, cx: &mut StepCx<'_, H>, pausable: bool) -> Result<(), ErrorKind> {
+        if matches!(self, ClientOut::Held(_)) && !handler_paused(cx) {
+            write_trace(cx, format_args!("[OUT] flush"));
+        }
         let result = self.replay(cx, pausable);
         self.fail_on(result)
     }
@@ -590,9 +764,17 @@ impl ClientOut {
         bytes: &[u8],
         pausable: bool,
     ) -> Result<(), ErrorKind> {
+        // Output of another kind than the last held tries what is held
+        // first (`cw_out_do_write`).
+        if let ClientOut::Held(held) = self
+            && held.last_kind().map(is_body) != Some(is_body(kind))
+        {
+            self.replay(cx, pausable)?;
+        }
         match self {
             ClientOut::Failed => Err(ErrorKind::WriteError),
             ClientOut::Held(held) => {
+                buffering(cx, bytes.len(), held.held());
                 held.append(kind, bytes)?;
                 self.replay(cx, pausable)
             }
@@ -600,6 +782,7 @@ impl ClientOut {
                 let delivered = deliver(cx, kind, bytes, pausable)?;
                 if delivered < bytes.len() {
                     let mut held = HeldOutput::default();
+                    buffering(cx, bytes.len() - delivered, 0);
                     held.append(kind, &bytes[delivered..])?;
                     *self = ClientOut::Held(held);
                 }
@@ -642,6 +825,41 @@ impl ClientOut {
     }
 }
 
+fn is_body(kind: OutKind) -> bool {
+    kind == OutKind::Body
+}
+
+/// The handlers paused, so `len` more bytes are held after `held`.
+fn buffering<H: Host>(cx: &mut StepCx<'_, H>, len: usize, held: usize) {
+    write_trace(
+        cx,
+        format_args!(
+            "[OUT] paused, buffering {len} more bytes ({held}/{})",
+            held::MAX_HELD
+        ),
+    );
+}
+
+/// What a handler's answer comes to as C's callback returns it, traced
+/// after each call (`cw_out_cb_write`): the bytes it took, or
+/// `CURL_WRITEFUNC_PAUSE` or `CURL_WRITEFUNC_ERROR`.
+fn wrote<H: Host>(cx: &mut StepCx<'_, H>, kind: OutKind, len: usize, w: Write) {
+    let (what, otype) = match kind {
+        OutKind::Body => ("body", 1),
+        OutKind::Header(_) | OutKind::Status(_) => ("header", 3),
+    };
+    let took: u64 = match w {
+        Write::Accepted => len as u64,
+        Write::Took(took) => took as u64,
+        Write::Pause => 0x1000_0001,
+        Write::Fail => 0xffff_ffff,
+    };
+    write_trace(
+        cx,
+        format_args!("[OUT] wrote {len} {what} bytes, type={otype:x} -> {took}"),
+    );
+}
+
 /// Give `bytes` to the handler for `kind`, body in pieces, until a handler
 /// pauses; how much it took. A paused piece is not taken: it is given
 /// again, whole, when the transfer goes on (`cw_out_ptr_flush`).
@@ -653,12 +871,13 @@ fn deliver<H: Host>(
 ) -> Result<usize, ErrorKind> {
     match kind {
         OutKind::Body => deliver_body(cx, bytes, pausable),
-        OutKind::Header(origin) => {
+        OutKind::Header(origin) | OutKind::Status(origin) => {
             let Some(handler) = cx.easy().options().callbacks.header.clone() else {
                 return Ok(bytes.len());
             };
             let reasons = cx.easy().report().reasons();
             let w = handler.header(&mut TransferCx::new(cx), bytes, origin);
+            wrote(cx, kind, bytes.len(), w);
             Ok(if verdict(cx, w, bytes.len(), reasons, pausable)? {
                 bytes.len()
             } else {
@@ -694,6 +913,7 @@ fn deliver_body<H: Host>(
         }
         let reasons = cx.easy().report().reasons();
         let w = handler.write(&mut TransferCx::new(cx), piece);
+        wrote(cx, OutKind::Body, piece.len(), w);
         if !verdict(cx, w, piece.len(), reasons, pausable)? {
             break;
         }
@@ -728,6 +948,7 @@ fn verdict<H: Host>(
         )),
         Write::Pause => {
             cx.pause_mut().recv = RecvPause::Held;
+            write_trace(cx, format_args!("[OUT] PAUSE requested by client"));
             Ok(false)
         }
         Write::Fail if cx.easy().report().reasons() != reasons => Err(ErrorKind::WriteError),

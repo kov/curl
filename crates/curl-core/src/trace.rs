@@ -45,6 +45,54 @@ pub(crate) fn info_with<H: Host>(cx: &mut StepCx<'_, H>, parts: &[&[u8]]) {
     text(cx, line.bytes());
 }
 
+/// Whether a verbose transfer traces `component`'s lines
+/// (`Curl_trc_ft_is_verbose`, `Curl_trc_cf_is_verbose`): a caller with
+/// work to do for a line asks first.
+pub(crate) fn traces<H: Host>(cx: &StepCx<'_, H>, component: Component) -> bool {
+    let easy = cx.easy();
+    easy.options().output.verbose && easy.components().is_some_and(|c| c.traces(component))
+}
+
+/// A line of `component`'s (`CURL_TRC_WRITE`, `CURL_TRC_CF` and their
+/// kind), after its name: traced when the transfer is verbose and the
+/// component is on.
+pub(crate) fn of<H: Host>(cx: &mut StepCx<'_, H>, component: Component, args: fmt::Arguments<'_>) {
+    if !traces(cx, component) {
+        return;
+    }
+    let mut line = start_line(cx);
+    line.push_fmt(format_args!("[{}] ", component.name()));
+    line.push_fmt(args);
+    end_line(&mut line);
+    text(cx, line.bytes());
+}
+
+/// `of` with a line made of `parts`, which need not be text.
+pub(crate) fn of_with<H: Host>(cx: &mut StepCx<'_, H>, component: Component, parts: &[&[u8]]) {
+    if !traces(cx, component) {
+        return;
+    }
+    let mut line = start_line(cx);
+    line.push_fmt(format_args!("[{}] ", component.name()));
+    for part in parts {
+        line.push_clipped(part);
+    }
+    end_line(&mut line);
+    text(cx, line.bytes());
+}
+
+/// A result as C's trace lines print a `CURLcode` (`-> %d`).
+pub(crate) struct Code(pub(crate) Result<(), ErrorKind>);
+
+impl fmt::Display for Code {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Ok(()) => f.write_str("0"),
+            Err(kind) => kind.number().fmt(f),
+        }
+    }
+}
+
 /// What every line starts with: the transfer's and its connection's
 /// numbers, when the ids are on (`trc_print_ids`).
 fn start_line<H: Host>(cx: &StepCx<'_, H>) -> Text<LINE_MAX> {

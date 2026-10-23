@@ -296,12 +296,20 @@ shows in transfers already running. `Easy` holds it outside its options, kept th
 by a copy of the handle; without one, only lines of no component are traced. The shim gives every
 handle the process's, a static `Levels` beside its root that `curl_global_trace` sets (and the
 debug build's `CURL_DEBUG` after it); the tool owns one, set by `--trace-config` and each `v`
-past the first of `-vv`. A
-component's line is traced when the transfer is verbose and the component is on,
-after `[NAME] `. With `LIB-IDS` on, every line but a failure's reason starts with `[T-C] ` (`x` for
+past the first of `-vv`. A component's line is traced when the transfer is verbose and the
+component is on, after `[NAME] `. With `LIB-IDS` on, every line but a failure's reason starts with `[T-C] ` (`x` for
 a number the transfer has none of), and so does what `trace::bytes` (`Curl_debug`) gives the
 debug handler, when it fits a trace line. Not traced: what C traces on the multi's internal handle,
 verbose only under `CURL_DEBUG`, and the source line number C's debug build adds to a state change.
+
+`WRITE` follows a response through C's writer chain, which the pipeline (`deliver/`) stands
+for: each write at the chain's start (`client_write`, `xfer_write_resp`), the transfer and
+content decoders stacked as their header is read, the chunked decoder's chunks and trailers, the
+header store (`header_collect`), the download writer (`download_write`), the gate in front of
+the content decoders (`[PAUSE]`) and the handlers (`[OUT]`), with C's numeric write types and
+results. A `Transfer-Encoding` list is read by the head parser, which has no context to trace
+in; the line it hands out carries a `CodingTale` the protocol retells, before the line, as C
+traces while it reads. Not traced: the C debug build's `DEBUGF` lines.
 
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as

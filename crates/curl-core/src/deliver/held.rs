@@ -18,6 +18,18 @@ pub(crate) enum OutKind {
     Body,
     /// The header handler, one line per entry.
     Header(HeaderOrigin),
+    /// The header handler, a status line (`CLIENTWRITE_STATUS`).
+    Status(HeaderOrigin),
+}
+
+impl OutKind {
+    /// Whose head a line is of; none for body.
+    pub(crate) fn origin(self) -> Option<HeaderOrigin> {
+        match self {
+            OutKind::Body => None,
+            OutKind::Header(origin) | OutKind::Status(origin) => Some(origin),
+        }
+    }
 }
 
 /// Held output: ranges into one buffer, each run of body one entry, each
@@ -134,9 +146,14 @@ impl HeldOutput {
         self.held == 0
     }
 
-    #[cfg(test)]
+    /// Bytes held, not yet delivered.
     pub(crate) fn held(&self) -> usize {
         self.held
+    }
+
+    /// What the last entry held goes to, if any is held.
+    pub(crate) fn last_kind(&self) -> Option<OutKind> {
+        self.entries[self.first..].last().map(|e| e.kind)
     }
 }
 

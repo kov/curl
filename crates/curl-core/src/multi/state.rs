@@ -876,6 +876,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 d.result = Err(e);
                 premature |= is_premature(d.result);
             }
+            crate::deliver::Pipeline::done(cx);
             let max_age = cx.easy().options().limits.reuse.dns_max_age;
             let now = cx.rest.now;
             let kept = cx.rest.kept(cx.me, Kind::Names);

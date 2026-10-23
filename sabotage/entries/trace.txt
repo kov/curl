@@ -141,3 +141,74 @@ witness: curl-core multi::tests::the_ids_start_each_line_but_a_failure
     push_ids(cx, &mut line);
 --- new
     let _ = &mut line;
+
+=== a transfer coding's decoder is traced after its header line
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::write_trace::a_chunked_body_is_traced_through_its_writers_as_c
+--- old
+        if let Some(tale) = line.codings {
+            trace_codings(cx, tale);
+        }
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+--- new
+        trace::bytes(cx, DebugKind::HeaderIn, line.bytes);
+        if let Some(tale) = line.codings {
+            trace_codings(cx, tale);
+        }
+
+=== a transfer coding list refused is not traced
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::write_trace::each_coding_is_looked_for_and_its_decoder_named_as_c
+--- old
+                if let Some(tale) = head.failed_codings() {
+--- new
+                if let Some(tale) = head.failed_codings().filter(|_| false) {
+
+=== a second Transfer-Encoding line is told from nothing stacked
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::write_trace::each_coding_is_looked_for_and_its_decoder_named_as_c
+--- old
+        let mut count = self.before;
+--- new
+        let mut count = (false, 0);
+
+=== the chunked writer is traced with the bytes it passed on
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::write_trace::a_chunked_body_is_traced_through_its_writers_as_c
+--- old
+        deliver::client_write(cx, WriteType::BODY, input.len(), read);
+--- new
+        deliver::client_write(cx, WriteType::BODY, 0, read);
+
+=== a chunk's start is not traced
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::write_trace::a_chunked_body_is_traced_through_its_writers_as_c
+--- old
+                    format_args!("http_chunked, chunk start of {size} bytes"),
+--- new
+                    format_args!("http_chunked, chunk start of {} bytes", size + 1),
+
+=== a bad end of chunks prints its byte in hex
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::write_trace::a_bad_end_of_chunks_is_traced_as_c
+--- old
+                            format_args!("http_chunk error, expected 0x0a, seeing 0x{b}x"),
+--- new
+                            format_args!("http_chunk error, expected 0x0a, seeing 0x{b:x}x"),
+
+=== output held at a pause is not traced
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::write_trace::a_paused_body_is_traced_as_it_is_held_and_flushed
+--- old
+                    buffering(cx, bytes.len() - delivered, 0);
+--- new
+
+=== input held at the gate is traced before it is counted
+file: crates/curl-core/src/deliver/decode.rs
+witness: curl-core proto::http::tests::write_trace::a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed
+--- old
+            WriteType::of(kind),
+            self.held.held(),
+--- new
+            WriteType::of(kind),
+            self.held.held() - bytes.len(),

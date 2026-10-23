@@ -8,7 +8,7 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields::{self, BadLine, MAX_HEADERS};
-use super::framing::{Asked, Framing, FramingError, Meta, Notes, Unsent};
+use super::framing::{Asked, CodingTale, Framing, FramingError, Meta, Notes, Unsent};
 use crate::error::ErrorKind;
 
 /// The most one assembled line may be, the byte C's buffer keeps for
@@ -52,6 +52,8 @@ pub(crate) struct Line<'a> {
     pub(crate) early: Result<(), HeadError>,
     /// A failure C finds after it delivered the line.
     pub(crate) then: Result<(), HeadError>,
+    /// The codings a `Transfer-Encoding` line was read for.
+    pub(crate) codings: Option<CodingTale<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,6 +212,8 @@ pub(crate) struct HeadParser {
     meta: Meta,
     /// The body's framing, once the final head ended.
     framing: Option<Framing>,
+    /// The last header line was refused for what it said.
+    refused: bool,
 }
 
 impl HeadParser {
@@ -230,6 +234,7 @@ impl HeadParser {
             interim_bytes: 0,
             meta: Meta::default(),
             framing: None,
+            refused: false,
         }
     }
 
@@ -471,11 +476,11 @@ impl HeadParser {
             if kind == LineKind::Header {
                 let status = self.status.expect("headers follow their status line");
                 let following = self.meta.follow().is_some();
-                note = Notes::one(
-                    self.meta
-                        .on_header(&self.line, status, &self.exchange.asked)
-                        .map_err(HeadError::Framing)?,
-                );
+                let heard = self
+                    .meta
+                    .on_header(&self.line, status, &self.exchange.asked);
+                self.refused = heard.is_err();
+                note = Notes::one(heard.map_err(HeadError::Framing)?);
                 // A location to follow (`http_header_l`).
                 if !following && self.meta.follow().is_some() {
                     self.meta.perhaps_rewind(sending, &mut note);
@@ -489,17 +494,29 @@ impl HeadParser {
         }
         // Below 200, C writes the line before it looks at the code.
         let then = counted.and_then(|()| (!bad_code).then_some(()).ok_or(HeadError::BadCode));
+        let codings = match kind {
+            LineKind::Header => self.meta.coding_tale(&self.line, &self.exchange.asked),
+            _ => None,
+        };
         Ok(HeadEvent::Line(Line {
             bytes: &self.line,
             kind,
             notes: note,
             early: first,
             then,
+            codings,
         }))
     }
 
     fn count(&mut self, len: u64, transfer_bytes: &mut u64) -> Result<(), HeadError> {
         count_head(len, &mut self.request_bytes, transfer_bytes)
+    }
+
+    /// The codings of the header line a feed refused, if it was a
+    /// `Transfer-Encoding` list that was read.
+    pub(crate) fn failed_codings(&self) -> Option<CodingTale<'_>> {
+        let tale = self.meta.coding_tale(&self.line, &self.exchange.asked);
+        tale.filter(|_| self.refused)
     }
 
     /// Lines of the final head given out, its status line among them.

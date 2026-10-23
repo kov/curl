@@ -50,14 +50,14 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_header_line_goes_out_whole
 --- old
         OutKind::Body => deliver_body(cx, bytes, pausable),
-        OutKind::Header(origin) => {
+        OutKind::Header(origin) | OutKind::Status(origin) => {
 --- new
         OutKind::Body => deliver_body(cx, bytes, pausable),
-        OutKind::Header(origin) if bytes.len() > MAX_WRITE => {
+        OutKind::Header(_) | OutKind::Status(_) if bytes.len() > MAX_WRITE => {
             deliver(cx, kind, &bytes[..MAX_WRITE], pausable)?;
             deliver(cx, kind, &bytes[MAX_WRITE..], pausable)
         }
-        OutKind::Header(origin) => {
+        OutKind::Header(origin) | OutKind::Status(origin) => {
 
 === an included header line reaches the header handler first
 file: crates/curl-core/src/deliver/mod.rs
@@ -66,9 +66,9 @@ witness: curl-core deliver::tests::included_header_lines_go_to_the_write_handler
                 if cx.easy().options().output.include_header {
                     out.body(cx, bytes, pausable)?;
                 }
-                out.header(cx, bytes, origin, pausable)
+                out.header(cx, bytes, kind, pausable)
 --- new
-                out.header(cx, bytes, origin, pausable)?;
+                out.header(cx, bytes, kind, pausable)?;
                 if cx.easy().options().output.include_header {
                     out.body(cx, bytes, pausable)?;
                 }
@@ -114,11 +114,10 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::a_verbose_transfer_traces_the_body_as_received
 --- old
         self.trace_raw(cx, bytes);
-        self.decoded(cx, bytes)
+        let result = self.decoded(cx, bytes);
 --- new
-        let delivered = self.decoded(cx, bytes);
+        let result = self.decoded(cx, bytes);
         self.trace_raw(cx, bytes);
-        delivered
 
 === a pause asked for inside a replay stops it
 file: crates/curl-core/src/deliver/mod.rs
@@ -161,18 +160,14 @@ file: crates/curl-core/src/deliver/mod.rs
 witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
 --- old
             ClientOut::Held(held) => {
-                held.append(kind, bytes)?;
-                self.replay(cx, pausable)
-            }
+                buffering(cx, bytes.len(), held.held());
 --- new
-            ClientOut::Held(held) if cx.pause().recv != RecvPause::Held => {
+            ClientOut::Held(_) if cx.pause().recv != RecvPause::Held => {
                 deliver(cx, kind, bytes, pausable)?;
                 self.replay(cx, pausable)
             }
             ClientOut::Held(held) => {
-                held.append(kind, bytes)?;
-                self.replay(cx, pausable)
-            }
+                buffering(cx, bytes.len(), held.held());
 
 === an unpause waits for the next step to replay
 file: crates/curl-core/src/multi/mod.rs
@@ -407,3 +402,22 @@ witness: curl-core deliver::tests::a_short_count_fails_with_c_s_reason
         Write::Took(took) if took == len => Ok(true),
 --- new
         Write::Took(_) => Ok(true),
+
+=== the handlers' held output is replayed before the gate's
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::write_trace::a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed
+--- old
+        let pausable = self.pausable();
+        if let Some(Codings {
+--- new
+        let pausable = self.pausable();
+        self.out.flush(cx, pausable)?;
+        if let Some(Codings {
+
+=== output of another kind is queued behind what is held
+file: crates/curl-core/src/deliver/mod.rs
+witness: curl-core proto::http::tests::write_trace::a_coded_body_held_at_the_gate_is_traced_as_it_is_held_and_flushed
+--- old
+            && held.last_kind().map(is_body) != Some(is_body(kind))
+--- new
+            && false

@@ -30,9 +30,13 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::coding::a_coded_body_is_undone_when_asked_for
 --- old
         if cx.easy().options().http.raw_content {
+            write_trace_with(cx, &[b"decoder not requested, ignored: ", name]);
             return Ok(());
         }
 --- new
+        if false {
+            return Ok(());
+        }
 
 === a response may stack six codings
 file: crates/curl-core/src/proto/http.rs
@@ -159,6 +163,6 @@ witness: curl-core proto::http::tests::coding::a_transfer_coded_body_is_undone_b
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::coding::a_transfer_coded_body_is_undone_before_it_is_counted
 --- old
-                    *slot.expect("no more than the most codings") = Some(Named::of(name));
+                *slot.expect("no more than the most codings") = Some(named);
 --- new
-                    *slot.expect("no more than the most codings") = None;
+                *slot.expect("no more than the most codings") = None;

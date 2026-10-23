@@ -894,7 +894,10 @@ fn a_decoder_is_given_the_body_in_pieces_of_4_kib() {
 
 /// Behind a decoder, a handler's pause holds what is yet to be decoded,
 /// header lines among it in the order they came: what the handlers take
-/// once unpaused is what they would have taken unpaused.
+/// once unpaused is what they would have taken unpaused, but for body
+/// pieces joined. The gate is replayed first, and what it decodes joins
+/// the body the handlers hold, as it joins C's (`Curl_cwriter_unpause`
+/// flushes the chain from its start; `cw_out_append`).
 #[test]
 fn output_held_before_a_decoder_is_replayed_in_the_order_it_came() {
     let decoded = || {
@@ -902,8 +905,19 @@ fn output_held_before_a_decoder_is_replayed_in_the_order_it_came() {
         pieces.extend(response());
         pieces
     };
+    // Each handler's calls in a row, joined.
+    let joined = |taken: Vec<(&'static str, Vec<u8>)>| {
+        let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+        for (to, bytes) in taken {
+            match out.last_mut() {
+                Some((last, held)) if *last == to && to == "write" => held.extend(bytes),
+                _ => out.push((to, bytes)),
+            }
+        }
+        out
+    };
     for include_header in [false, true] {
-        let straight = paused_play(decoded(), include_header, &[]);
+        let straight = joined(paused_play(decoded(), include_header, &[]));
         for pause_on in [
             &[0][..],
             &[2],
@@ -913,7 +927,7 @@ fn output_held_before_a_decoder_is_replayed_in_the_order_it_came() {
             &[3, 4, 5, 6, 7, 8],
         ] {
             assert_eq!(
-                paused_play(decoded(), include_header, pause_on),
+                joined(paused_play(decoded(), include_header, pause_on)),
                 straight,
                 "-i {include_header}, pausing on {pause_on:?}"
             );

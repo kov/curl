@@ -260,6 +260,11 @@ pub(crate) struct Meta {
     chunked: bool,
     /// Transfer decoders stacked, chunked among them.
     codings: u8,
+    /// `chunked` and `codings` before the last `Transfer-Encoding` line,
+    /// for its trace to be told again.
+    codings_before: (bool, u8),
+    /// The last header line was a `Transfer-Encoding` list, read.
+    walked: bool,
     /// The transfer codings other than chunked, in the order listed.
     transfer: [Option<Named>; MAX_CODINGS as usize],
     /// A transfer coding other than chunked makes `Content-Length` void.
@@ -373,6 +378,7 @@ impl Meta {
         status: Status,
         asked: &Asked,
     ) -> Result<Option<Note>, FramingError> {
+        self.walked = false;
         if !self.bodyless
             && !asked.ignore_length
             && !self.length_void
@@ -412,6 +418,8 @@ impl Meta {
             && !asked.head
             && let Some(v) = value_of(line, b"Transfer-Encoding:")
         {
+            self.codings_before = (self.chunked, self.codings);
+            self.walked = true;
             self.codings(v, asked)?;
             if !self.chunked {
                 // Only the close ends a body coded otherwise.
@@ -526,39 +534,31 @@ impl Meta {
 
     /// `Transfer-Encoding`'s codings, stacked as decoders.
     fn codings(&mut self, list: &[u8], asked: &Asked) -> Result<(), FramingError> {
-        let mut chunked_here = false;
-        for name in coding_names(list) {
-            let is_chunked = name.eq_ignore_ascii_case(b"chunked");
-            if !asked.decode_codings && !is_chunked {
-                if asked.raw_codings {
-                    return Ok(());
-                }
-                if chunked_here {
-                    return Err(FramingError::ListedAfterChunked(copy(name)?));
-                }
-                if name.eq_ignore_ascii_case(b"identity") {
-                    continue;
-                }
-                return Err(FramingError::Unsolicited(copy(name)?));
+        let mut count = (self.chunked, self.codings);
+        let transfer = &mut self.transfer;
+        let walked = walk_codings(list, asked, &mut count, |step| {
+            if let CodingStep::Added(Some(named)) = step {
+                let slot = transfer.iter_mut().find(|t| t.is_none());
+                *slot.expect("no more than the most codings") = Some(named);
             }
-            if self.codings >= MAX_CODINGS {
-                return Err(FramingError::TooManyCodings);
-            }
-            if !is_chunked && self.chunked {
-                return Err(FramingError::ChunkedNotLast);
-            }
-            // A second chunked is ignored.
-            if !(is_chunked && self.chunked) {
-                if !is_chunked {
-                    let slot = self.transfer.iter_mut().find(|t| t.is_none());
-                    *slot.expect("no more than the most codings") = Some(Named::of(name));
-                }
-                self.codings += 1;
-                self.chunked |= is_chunked;
-            }
-            chunked_here |= is_chunked;
-        }
-        Ok(())
+        });
+        (self.chunked, self.codings) = count;
+        walked
+    }
+
+    /// What the header `line` just read did with its codings, if it was a
+    /// `Transfer-Encoding` list that was read.
+    pub(crate) fn coding_tale<'a>(
+        &self,
+        line: &'a [u8],
+        asked: &'a Asked,
+    ) -> Option<CodingTale<'a>> {
+        let list = value_of(line, b"Transfer-Encoding:").filter(|_| self.walked)?;
+        Some(CodingTale {
+            list,
+            asked,
+            before: self.codings_before,
+        })
     }
 
     /// The final head ended: how its body is framed, as the request asked.
@@ -765,6 +765,89 @@ fn says(line: &[u8], name: &[u8], token: &[u8]) -> bool {
 fn skip_blanks(v: &[u8]) -> &[u8] {
     let n = v.iter().take_while(|&&b| b == b' ' || b == b'\t').count();
     &v[n..]
+}
+
+/// What reading one name of a `Transfer-Encoding` list did, as C traces
+/// it (`Curl_build_unencoding_stack`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CodingStep<'a> {
+    /// A name is looked for.
+    Looking(&'a [u8]),
+    /// It is not to be undone.
+    Ignored(&'a [u8]),
+    /// A second `chunked`, ignored.
+    Duplicate,
+    /// A decoder is stacked for it: chunked's, or a coding's.
+    Added(Option<Named>),
+}
+
+/// A `Transfer-Encoding` list as it was read, to tell again what reading
+/// each name did.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CodingTale<'a> {
+    list: &'a [u8],
+    asked: &'a Asked,
+    before: (bool, u8),
+}
+
+impl PartialEq for CodingTale<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        (self.list, self.before) == (other.list, other.before)
+    }
+}
+
+impl Eq for CodingTale<'_> {}
+
+impl<'a> CodingTale<'a> {
+    pub(crate) fn retell(&self, step: impl FnMut(CodingStep<'a>)) {
+        let mut count = self.before;
+        // What it found wrong was raised when it was read.
+        let _ = walk_codings(self.list, self.asked, &mut count, step);
+    }
+}
+
+/// Read a `Transfer-Encoding` list after `count`'s codings, chunked
+/// first, telling `step` what is done with each name.
+fn walk_codings<'a>(
+    list: &'a [u8],
+    asked: &Asked,
+    count: &mut (bool, u8),
+    mut step: impl FnMut(CodingStep<'a>),
+) -> Result<(), FramingError> {
+    let (chunked, codings) = count;
+    let mut chunked_here = false;
+    for name in coding_names(list) {
+        step(CodingStep::Looking(name));
+        let is_chunked = name.eq_ignore_ascii_case(b"chunked");
+        if !asked.decode_codings && !is_chunked {
+            step(CodingStep::Ignored(name));
+            if asked.raw_codings {
+                return Ok(());
+            }
+            if chunked_here {
+                return Err(FramingError::ListedAfterChunked(copy(name)?));
+            }
+            if name.eq_ignore_ascii_case(b"identity") {
+                continue;
+            }
+            return Err(FramingError::Unsolicited(copy(name)?));
+        }
+        if *codings >= MAX_CODINGS {
+            return Err(FramingError::TooManyCodings);
+        }
+        if !is_chunked && *chunked {
+            return Err(FramingError::ChunkedNotLast);
+        }
+        if is_chunked && *chunked {
+            step(CodingStep::Duplicate);
+        } else {
+            step(CodingStep::Added((!is_chunked).then(|| Named::of(name))));
+            *codings += 1;
+            *chunked |= is_chunked;
+        }
+        chunked_here |= is_chunked;
+    }
+    Ok(())
 }
 
 /// The names in a list of codings: between commas, leading blanks gone,

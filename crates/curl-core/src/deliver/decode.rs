@@ -3,9 +3,11 @@
 //! a decoder may make far more than it is given, so paused output is kept
 //! as it came, and handed on in small pieces.
 
+use super::WriteType;
 use super::held::{HeldOutput, OutKind};
 use crate::coding::{Decoder, Sink};
 use crate::error::ErrorKind;
+use crate::trace::Code;
 
 /// The most body a decoder is given at once behind the gate
 /// (`CW_PAUSE_DEC_WRITE_CHUNK`).
@@ -51,6 +53,8 @@ pub(crate) trait Onward {
     /// A handler paused: nothing more goes on (`Curl_cwriter_is_paused`).
     fn paused(&self) -> bool;
     fn take(&mut self, kind: OutKind, bytes: &[u8]) -> Result<(), ErrorKind>;
+    /// A line of the write trace (`CURL_TRC_WRITE`).
+    fn trace(&mut self, args: std::fmt::Arguments<'_>);
 }
 
 /// Output held in front of the decoders while a handler pauses
@@ -88,7 +92,17 @@ impl Gate {
                 return Ok(());
             }
         }
-        self.held.append(kind, bytes)
+        // Counted before the trace: the debug handler may unpause, and
+        // the replay take what is held, before this returns.
+        let held = self.held.append(kind, bytes);
+        onward.trace(format_args!(
+            "[PAUSE] buffer {} more bytes of type {}, total={} -> {}",
+            bytes.len(),
+            WriteType::of(kind),
+            self.held.held(),
+            Code(held)
+        ));
+        held
     }
 
     /// Hand on what is held, in the order it came, until it is all gone
@@ -99,7 +113,14 @@ impl Gate {
                 break;
             };
             let n = piece(kind, bytes.len());
-            onward.take(kind, &bytes[..n])?;
+            let total = self.held.held();
+            let taken = onward.take(kind, &bytes[..n]);
+            onward.trace(format_args!(
+                "[PAUSE] flushed {n}/{total} bytes, type={} -> {}",
+                WriteType::of(kind),
+                Code(taken)
+            ));
+            taken?;
             self.held.consume(n);
         }
         Ok(())
@@ -115,6 +136,6 @@ impl Gate {
 fn piece(kind: OutKind, len: usize) -> usize {
     match kind {
         OutKind::Body => len.min(GATE_PIECE),
-        OutKind::Header(_) => len,
+        OutKind::Header(_) | OutKind::Status(_) => len,
     }
 }

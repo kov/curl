@@ -1037,7 +1037,7 @@ One `Stream` type, owned by `Dialed` and then by the `Conn` it becomes, gives on
 `recv(max)` fills `rx` (`RecvBuf::fill`, where a read that reports more than the room it had is
 an error from the socket, `InvalidData`, not an assertion), `send` writes; `Conn::recv` adds
 only that the end of input marks the connection `close`. Planned (step 40): the stream's
-`Sock` and layers; today it holds the socket and `rx`. A connection's multiplexing (`Session`,
+layers; today it holds its `Sock` and `rx`. A connection's multiplexing (`Session`,
 `Mux`, §4.4) comes with stage 5, and until then `Use::Leased(n)` is asserted to be 1.
 `Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
 

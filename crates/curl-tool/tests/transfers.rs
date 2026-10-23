@@ -500,6 +500,66 @@ fn reports_output_it_cannot_write_when_stdio_would() {
     assert_eq!(s.read("w"), b"23");
 }
 
+/// An output file whose every write goes but whose close fails is a
+/// write error: C's tool says so when `fclose` fails (`post_per_transfer`,
+/// "Failed writing body").
+///
+/// It needs a file system that takes writes and fails the close of a file
+/// they did not fit, which sshfs does: it sends its writes without
+/// waiting for the answers and reports their failure when the file is
+/// closed. The test runs only when `CURL_TEST_CLOSE_FAILS_DIR` names a
+/// directory on such a mount; it fills the mount, so the mount must be
+/// small. As root, then as the user who runs the tests:
+///
+/// ```text
+/// mkdir -p /tmp/small /tmp/late
+/// mount -t tmpfs -o size=64k,uid=$(id -u),gid=$(id -g) tmpfs /tmp/small
+/// sshfs localhost:/tmp/small /tmp/late    # a key for localhost in ssh's agent
+/// CURL_TEST_CLOSE_FAILS_DIR=/tmp/late cargo test -p curl-tool --test transfers close_fails
+/// fusermount -u /tmp/late; umount /tmp/small
+/// ```
+#[test]
+fn reports_an_output_whose_close_fails() {
+    use std::io::Write as _;
+    let Some(dir) = std::env::var_os("CURL_TEST_CLOSE_FAILS_DIR") else {
+        eprintln!("CURL_TEST_CLOSE_FAILS_DIR is not set: not run");
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let name = |what: &str| dir.join(format!("curl-tool-{}-{what}", std::process::id()));
+    // Fill the mount: a filler whose close fails did not fit.
+    let mut fillers = Vec::new();
+    loop {
+        assert!(
+            fillers.len() < 4096,
+            "the mount takes over 16 MiB: too large"
+        );
+        let path = name(&format!("fill{}", fillers.len()));
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(&[b'f'; 4096]).unwrap();
+        fillers.push(path);
+        // `sync_all` reports what the close would.
+        if f.sync_all().is_err() {
+            break;
+        }
+    }
+    let s = Scratch::new("close-fails");
+    // Under stdio's buffer, the mount's 4096-byte block: written at the
+    // close in one write, which goes, as nothing failed before it. A body
+    // written in more than one would fail at its second, sshfs reporting
+    // there the failure of the first.
+    s.write("small", &[b'x'; 3000]);
+    let out = name("out");
+    let r = curl(&s, &["-sS", "-o", out.to_str().unwrap(), &s.url("small")]);
+    for path in fillers.iter().chain([&out]) {
+        std::fs::remove_file(path).unwrap();
+    }
+    assert_eq!(
+        (r.code, &r.stderr[..]),
+        (23, "curl: curl: (23) Failed writing body\n")
+    );
+}
+
 /// `--skip-existing` leaves an output file there alone, and says so when
 /// tracing; `--write-out` is still written.
 #[test]

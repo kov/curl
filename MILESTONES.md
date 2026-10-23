@@ -571,7 +571,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       the connection is open, SOCKS and the tunnel recorded as made on the dialed connection,
       the order decided in one place.
     - **h. The chain's trace:** SETUP's lines and `cf_setup_connect`, `connected`, `reduced
-      to` and `failed to connect`, rendered from the machine's stage.
+      to` and `failed to connect`, rendered from the machine's stage. **Done.** A step drives
+      the setup for as long as one call of C's connect goes on; a connect under way is polled
+      at the next run.
     - **i. The TCP socket's trace** (`cf_socket_open`, local address, `connected`,
       `adjust_pollset`, `poll/select error`, `destroy`) and `Curl_multi_will_close`.
     - **j. The trace of `wait`:** pollsets, `expires in`, `gives multi timeout` and

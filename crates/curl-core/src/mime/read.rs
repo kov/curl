@@ -1514,5 +1514,11 @@ pub(crate) mod testing {
         pub(crate) fn start_for_test(&mut self, calls: &mut dyn Calls) -> bool {
             rewind_parts(&self.mime, calls)
         }
+
+        /// A reader of the tree whole, its headers first, as
+        /// `read_whole` makes it.
+        pub(crate) fn whole_for_test(mime: TryArc<Mime>) -> MimeReader {
+            MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, false).unwrap()
+        }
     }
 }

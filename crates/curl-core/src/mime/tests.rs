@@ -997,7 +997,10 @@ fn a_rewind_leaves_a_part_not_reached() {
 fn oracle_data(name: &str) -> Vec<u8> {
     let pattern = |n: usize| (0..n).map(|i| ((i * 37 + 11) % 256) as u8).collect();
     match name {
+        "bin57" => pattern(57),
+        "bin114" => pattern(114),
         "bin200" => pattern(200),
+        "bin1000" => pattern(1000),
         "bin3000" => pattern(3000),
         "qp1" => [
             &b"a=b \r\nc\td \r\x80"[..],
@@ -1125,6 +1128,72 @@ fn the_pieces_are_c_s() {
         (Some(Encoder::Binary), Src::Fed(300), "bin3000", false, 100, None, "100x31 79", None),
         (Some(Encoder::Binary), Src::Fed(300), "bin3000", false, 1024, None, "381 256x10 184 54", None),
         (None, Src::Fed(3000), "bin3000", false, 1024, None, "1024x3 18 54", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin57", false, 5, Some(255), "5x25 4x19 5x10 4", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin57", false, 8, Some(255), "8x15 5 8x16 2", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin57", false, 76, Some(255), "76 73 76 30", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin57", false, 1024, Some(255), "255", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin57", false, 5, None, "5x25 4x19 5x10 4", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin57", false, 8, None, "8x15 5 8x9 4 8x6 6", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin57", false, 76, None, "76 57 8 12 8x2 12 8x2 4 54", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin57", false, 1024, None, "133 8 12 8x2 12 8x2 4 54", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin57", false, 5, None, "5x25 4x19 5x10 4", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin57", false, 8, None, "8x15 5 8x16 2", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin57", false, 76, None, "76 73 76 30", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin57", false, 1024, None, "201 54", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin114", false, 5, Some(333), "5x25 4x19 2 4x19 5x10 4", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin114", false, 8, Some(333), "8x15 5 8x9 6 8x16 2", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin114", false, 76, Some(333), "76 73 74 76 34", None),
+        (Some(Encoder::Base64), Src::Bytes, "bin114", false, 1024, Some(333), "333", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin114", false, 5, None, "5x25 4x19 2 4x19 5x10 4", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin114", false, 8, None, "8x15 5 8x9 6 8x9 4 8x6 6", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin114", false, 76, None, "76 57 8 12 8x2 12 8x2 14 8x2 12 8x2 12 8 4 54", None),
+        (Some(Encoder::Base64), Src::Fed(7), "bin114", false, 1024, None, "133 8 12 8x2 12 8x2 14 8x2 12 8x2 12 8 4 54", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin114", false, 5, None, "5x25 4x19 2 4x19 5x10 4", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin114", false, 8, None, "8x15 5 8x9 6 8x16 2", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin114", false, 76, None, "76 73 74 76 34", None),
+        (Some(Encoder::Base64), Src::Fed(57), "bin114", false, 1024, None, "201 78 54", None),
+        (Some(Encoder::Binary), Src::Fed(1), "bin1000", false, 5, None, "5x25 1x1000 5x10 4", None),
+        (Some(Encoder::Binary), Src::Fed(1), "bin1000", false, 7, None, "7x18 1x999 7x7 5", None),
+        (Some(Encoder::Binary), Src::Fed(1), "bin1000", false, 50, None, "50x2 26 1x999 50 4", None),
+        (Some(Encoder::Binary), Src::Fed(1), "bin1000", false, 100, None, "100 26 1x999 54", None),
+        (Some(Encoder::Binary), Src::Fed(1), "bin1000", false, 255, None, "126 1x999 54", None),
+        (Some(Encoder::Binary), Src::Fed(1), "bin1000", false, 256, None, "126 1x999 54", None),
+        (Some(Encoder::Binary), Src::Fed(1), "bin1000", false, 257, None, "126 1x999 54", None),
+        (Some(Encoder::Binary), Src::Fed(3), "bin1000", false, 5, None, "5x25 3x333 1 5x10 4", None),
+        (Some(Encoder::Binary), Src::Fed(3), "bin1000", false, 7, None, "7x18 5 3x331 1 7x7 5", None),
+        (Some(Encoder::Binary), Src::Fed(3), "bin1000", false, 50, None, "50x2 28 3x332 1 50 4", None),
+        (Some(Encoder::Binary), Src::Fed(3), "bin1000", false, 100, None, "100 28 3x332 1 54", None),
+        (Some(Encoder::Binary), Src::Fed(3), "bin1000", false, 255, None, "128 3x332 1 54", None),
+        (Some(Encoder::Binary), Src::Fed(3), "bin1000", false, 256, None, "128 3x332 1 54", None),
+        (Some(Encoder::Binary), Src::Fed(3), "bin1000", false, 257, None, "128 3x332 1 54", None),
+        (Some(Encoder::Binary), Src::Fed(100), "bin1000", false, 5, None, "5x235 4", None),
+        (Some(Encoder::Binary), Src::Fed(100), "bin1000", false, 7, None, "7x168 3", None),
+        (Some(Encoder::Binary), Src::Fed(100), "bin1000", false, 50, None, "50x23 29", None),
+        (Some(Encoder::Binary), Src::Fed(100), "bin1000", false, 100, None, "100x11 79", None),
+        (Some(Encoder::Binary), Src::Fed(100), "bin1000", false, 255, None, "225 100x9 54", None),
+        (Some(Encoder::Binary), Src::Fed(100), "bin1000", false, 256, None, "225 100x9 54", None),
+        (Some(Encoder::Binary), Src::Fed(100), "bin1000", false, 257, None, "225 100x9 54", None),
+        (Some(Encoder::Binary), Src::Fed(255), "bin1000", false, 5, None, "5x235 4", None),
+        (Some(Encoder::Binary), Src::Fed(255), "bin1000", false, 7, None, "7x168 3", None),
+        (Some(Encoder::Binary), Src::Fed(255), "bin1000", false, 50, None, "50x23 29", None),
+        (Some(Encoder::Binary), Src::Fed(255), "bin1000", false, 100, None, "100x11 79", None),
+        (Some(Encoder::Binary), Src::Fed(255), "bin1000", false, 255, None, "255x4 159", None),
+        (Some(Encoder::Binary), Src::Fed(255), "bin1000", false, 256, None, "256x4 155", None),
+        (Some(Encoder::Binary), Src::Fed(255), "bin1000", false, 257, None, "257x4 151", None),
+        (Some(Encoder::Binary), Src::Fed(256), "bin1000", false, 5, None, "5x235 4", None),
+        (Some(Encoder::Binary), Src::Fed(256), "bin1000", false, 7, None, "7x168 3", None),
+        (Some(Encoder::Binary), Src::Fed(256), "bin1000", false, 50, None, "50x23 29", None),
+        (Some(Encoder::Binary), Src::Fed(256), "bin1000", false, 100, None, "100x11 79", None),
+        (Some(Encoder::Binary), Src::Fed(256), "bin1000", false, 255, None, "255x4 159", None),
+        (Some(Encoder::Binary), Src::Fed(256), "bin1000", false, 256, None, "256x4 155", None),
+        (Some(Encoder::Binary), Src::Fed(256), "bin1000", false, 257, None, "257x4 151", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin1000", false, 5, None, "5x235 4", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin1000", false, 7, None, "7x168 3", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin1000", false, 50, None, "50x23 29", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin1000", false, 100, None, "100x11 79", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin1000", false, 255, None, "255x4 159", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin1000", false, 256, None, "256x4 155", None),
+        (Some(Encoder::Binary), Src::Fed(300), "bin1000", false, 257, None, "257x4 151", None),
     ];
     let mut bodies: Vec<(Kind, Vec<u8>)> = Vec::new();
     for &(encoder, src, data, trail, room, size, want, end) in cases {
@@ -1263,4 +1332,15 @@ fn a_rewind_drops_what_the_encoder_held() {
     }
     assert!(r.restart_for_test(&mut Script::default()));
     assert_eq!(all(&mut r, &mut Script::default()), whole);
+}
+
+/// The tree read whole starts over with its own headers.
+#[test]
+fn a_tree_read_whole_starts_over_with_its_headers() {
+    let mut r =
+        MimeReader::whole_for_test(TryArc::try_new(tree([named("a", bytes(b"x"))])).unwrap());
+    let first = all(&mut r, &mut Script::default());
+    assert!(first.starts_with(b"Content-Type: multipart/form-data; boundary="));
+    assert!(r.restart_for_test(&mut Script::default()));
+    assert_eq!(all(&mut r, &mut Script::default()), first);
 }

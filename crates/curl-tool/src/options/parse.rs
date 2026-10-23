@@ -765,11 +765,16 @@ mod tests {
             Ok((2, None, None))
         );
         assert_eq!(run(&["--", "--bogus"]), Ok((1, None, None)));
+        // Deprecated: warned of, and nothing more, their argument taken.
+        assert_eq!(
+            run(&["--random-file", "f", "--egd-file", "e", "x"]),
+            Ok((1, None, None))
+        );
         assert_eq!(run(&["-hfoo", "http://a/"]), Ok((1, None, None)));
         // A recognised option without its meaning is recorded, not run.
         assert_eq!(
-            run(&["--retry-connrefused", "x"]),
-            Ok((1, Some("retry-connrefused"), None))
+            run(&["--interface", "lo", "x"]),
+            Ok((1, Some("interface"), None))
         );
         // Each operation has its own URLs and options.
         assert_eq!(
@@ -1147,6 +1152,34 @@ mod tests {
         assert_eq!(refused("-2"), Some(ParamError::BadNumeric));
         assert_eq!(refused("1x"), Some(ParamError::BadNumeric));
         assert_eq!(refused(""), Some(ParamError::BadNumeric));
+    }
+
+    /// `--speed-limit` and `--speed-time` each fill in the other when it
+    /// is not given, as `opt_unum` does: 30 seconds, 1 byte a second.
+    #[test]
+    fn fills_in_the_low_speed_as_c() {
+        let low = |args: &[&str]| {
+            let op = &line(args).operations[0];
+            (op.low_speed_limit, op.low_speed_time)
+        };
+        assert_eq!(low(&["x"]), (0, 0));
+        assert_eq!(low(&["x", "-Y", "100"]), (100, 30));
+        assert_eq!(low(&["x", "-y", "5"]), (1, 5));
+        assert_eq!(low(&["x", "-y", "5", "-Y", "100"]), (100, 5));
+        assert_eq!(low(&["x", "-Y", "100", "-y", "5"]), (100, 5));
+        assert_eq!(low(&["x", "--speed-time", "0"]), (1, 0));
+        let op = &line(&[
+            "x",
+            "--create-file-mode",
+            "0640",
+            "--disallow-username-in-url",
+        ]);
+        let op = &op.operations[0];
+        assert_eq!((op.create_file_mode, op.disallow_username), (0o640, true));
+        assert_eq!(
+            run(&["x", "--create-file-mode", "1000"]),
+            Err(ParamError::NumberTooLarge)
+        );
     }
 
     /// `--remote-name` names the first node without an output;

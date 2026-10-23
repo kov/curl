@@ -300,6 +300,14 @@ pub(crate) struct Operation<'a> {
     pub(crate) request_target: Option<&'a [u8]>,
     /// `--ipfs-gateway`.
     pub(crate) ipfs_gateway: Option<&'a [u8]>,
+    /// `--disallow-username-in-url`.
+    pub(crate) disallow_username: bool,
+    /// `--speed-limit`, in bytes a second; 0 is none.
+    pub(crate) low_speed_limit: u64,
+    /// `--speed-time`, in seconds; 0 is none.
+    pub(crate) low_speed_time: u64,
+    /// `--create-file-mode`; 0 leaves the library's default.
+    pub(crate) create_file_mode: u16,
 }
 
 /// The addresses `--ipv4` and `--ipv6` limit a name to.
@@ -1069,6 +1077,26 @@ pub(crate) fn apply<'a>(
         Opt::RetryDelay => line.current().retry_delay_ms = value.millis().min(i32::MAX as u64),
         Opt::RetryMaxTime => line.current().retry_max_time_ms = value.millis(),
         Opt::RetryAllErrors => line.current().retry_all_errors = value.toggle(),
+        Opt::DisallowUsernameInUrl => line.current().disallow_username = value.toggle(),
+        // Each fills the other in when not given (`opt_unum`).
+        Opt::SpeedLimit => {
+            let op = line.current();
+            op.low_speed_limit = value.number();
+            if op.low_speed_time == 0 {
+                op.low_speed_time = 30;
+            }
+        }
+        Opt::SpeedTime => {
+            let op = line.current();
+            op.low_speed_time = value.number();
+            if op.low_speed_limit == 0 {
+                op.low_speed_limit = 1;
+            }
+        }
+        Opt::CreateFileMode => {
+            let mode = number::octal(value.text(), 0o777)?;
+            line.current().create_file_mode = u16::try_from(mode).expect("at most 0o777");
+        }
         Opt::Location | Opt::LocationTrusted => {
             let on = value.toggle();
             let op = line.current();
@@ -1281,6 +1309,8 @@ pub(crate) fn apply<'a>(
         // Only meaningful first, where reading the configuration file
         // already took it into account.
         Opt::Disable => {}
+        // Deprecated: the parser warns of them and applies nothing.
+        Opt::EgdFile | Opt::RandomFile => unreachable!("a deprecated option is not applied"),
         #[cfg(feature = "debug-hooks")]
         Opt::TestDuphandle => line.not_implemented(spec, "--"),
         #[cfg(feature = "debug-hooks")]
@@ -1297,14 +1327,12 @@ pub(crate) fn apply<'a>(
         | Opt::CertType
         | Opt::Ciphers
         | Opt::CompressedSsh
-        | Opt::CreateFileMode
         | Opt::Crlf
         | Opt::Crlfile
         | Opt::Curves
         | Opt::Delegation
         | Opt::DisableEprt
         | Opt::DisableEpsv
-        | Opt::DisallowUsernameInUrl
         | Opt::DnsInterface
         | Opt::DnsIpv4Addr
         | Opt::DnsIpv6Addr
@@ -1313,7 +1341,6 @@ pub(crate) fn apply<'a>(
         | Opt::DohInsecure
         | Opt::DohUrl
         | Opt::Ech
-        | Opt::EgdFile
         | Opt::Engine
         | Opt::Eprt
         | Opt::Epsv
@@ -1396,7 +1423,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyTlsv1
         | Opt::Pubkey
         | Opt::Quote
-        | Opt::RandomFile
         | Opt::Rate
         | Opt::RetryConnrefused
         | Opt::SaslAuthzid
@@ -1408,8 +1434,6 @@ pub(crate) fn apply<'a>(
         | Opt::Socks5Gssapi
         | Opt::Socks5GssapiNec
         | Opt::Socks5GssapiService
-        | Opt::SpeedLimit
-        | Opt::SpeedTime
         | Opt::Ssl
         | Opt::SslAllowBeast
         | Opt::SslAutoClientCert

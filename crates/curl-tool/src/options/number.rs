@@ -62,6 +62,27 @@ pub(crate) fn offset(s: &[u8]) -> Result<u64, ParamError> {
     }
 }
 
+/// An octal number at most `max`, as `oct2nummax` reads it: only octal
+/// digits, at least one.
+pub(crate) fn octal(s: &[u8], max: u64) -> Result<u64, ParamError> {
+    let digits = s.iter().take_while(|b| (b'0'..=b'7').contains(b)).count();
+    if digits == 0 {
+        return Err(ParamError::BadNumeric);
+    }
+    // Too large is found before anything after the digits.
+    let mut n: u64 = 0;
+    for &d in &s[..digits] {
+        n = n * 8 + u64::from(d - b'0');
+        if n > max {
+            return Err(ParamError::NumberTooLarge);
+        }
+    }
+    if digits != s.len() {
+        return Err(ParamError::BadNumeric);
+    }
+    Ok(n)
+}
+
 /// A number of seconds with an optional fraction, in milliseconds, as
 /// `secs2ms` reads it. Anything after the number is ignored, as in C.
 pub(crate) fn seconds_as_millis(s: &[u8]) -> Result<u64, ParamError> {
@@ -214,6 +235,28 @@ mod tests {
         assert_eq!(offset(b"-1"), Err(ParamError::BadNumeric));
         assert_eq!(offset(b"1k"), Err(ParamError::BadNumeric));
         assert_eq!(offset(b""), Err(ParamError::BadNumeric));
+    }
+
+    /// `oct2nummax`, as the C tool reads `--create-file-mode`.
+    #[test]
+    fn octal_like_c() {
+        use ParamError::*;
+        for (given, read) in [
+            ("0777", Ok(0o777)),
+            ("644", Ok(0o644)),
+            ("0", Ok(0)),
+            ("0000000000000000000000000000007", Ok(7)),
+            ("1000", Err(NumberTooLarge)),
+            ("10000x", Err(NumberTooLarge)),
+            ("0778", Err(BadNumeric)),
+            ("7a", Err(BadNumeric)),
+            ("8", Err(BadNumeric)),
+            ("-1", Err(BadNumeric)),
+            (" 7", Err(BadNumeric)),
+            ("", Err(BadNumeric)),
+        ] {
+            assert_eq!(octal(given.as_bytes(), 0o777), read, "{given}");
+        }
     }
 
     #[test]

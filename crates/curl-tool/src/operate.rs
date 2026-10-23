@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::{IsTerminal as _, Read as _, Seek as _, SeekFrom, Write as _};
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use std::ops::{Deref, DerefMut};
 use std::time::{Duration, Instant};
 
@@ -1265,8 +1265,14 @@ fn configure(
         }
     }
     o.url_rules.path_as_is = op.path_as_is;
+    o.url_rules.disallow_user = op.disallow_username;
     http.fail_on_error = op.fail == Fail::WithoutBody;
     o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
+    o.limits.low_speed = low_speed(op.low_speed_limit, op.low_speed_time);
+    if op.create_file_mode != 0 {
+        o.new_file_mode =
+            options::FileMode::new(op.create_file_mode).expect("read as at most 0o777");
+    }
     o.limits.max_recv_speed = NonZeroU64::new(op.limit_rate);
     o.limits.max_send_speed = NonZeroU64::new(op.limit_rate);
     o.limits.buffer_size = buffer_size(op.limit_rate);
@@ -1288,6 +1294,16 @@ fn configure(
         http_options(o, op)?;
     }
     Ok(())
+}
+
+/// The speed `--speed-limit` and `--speed-time` ask a transfer to keep
+/// up, if both are set. A time longer than the library keeps, some 18
+/// hours, is taken as that.
+fn low_speed(limit: u64, time: u64) -> Option<options::LowSpeed> {
+    Some(options::LowSpeed {
+        limit: NonZeroU64::new(limit)?,
+        time: NonZeroU16::new(u16::try_from(time).unwrap_or(u16::MAX))?,
+    })
 }
 
 /// Reads of 100 KiB, or of a receive rate `limit_rate` under that, so a

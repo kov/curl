@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+FILE
+--create-file-mode
+</keywords>
+</info>
+
+# Client-side
+<client>
+<server>
+file
+</server>
+<name>
+--create-file-mode sets the permissions of a file:// upload
+</name>
+<command option="no-include">
+file://localhost%FILE_PWD/%LOGDIR/result%TESTNUMBER.txt -T %LOGDIR/upload%TESTNUMBER.txt --create-file-mode 0640
+</command>
+<file name="%LOGDIR/upload%TESTNUMBER.txt">
+data
+</file>
+</client>
+
+# Verify data after the test has been "shot"
+# 0640 is left as it is by the usual umasks, and differs from the default
+# 0644.
+<verify>
+<file name="%LOGDIR/result%TESTNUMBER.txt">
+data
+</file>
+<postcheck>
+%PERL -e 'exit(((stat($ARGV[0]))[2] & 0777) != 0640)' %LOGDIR/result%TESTNUMBER.txt
+</postcheck>
+</verify>
+</testcase>

@@ -117,3 +117,90 @@ impl Drop for DigestCx {
         unsafe { openssl_sys::EVP_MD_CTX_free(self.0.as_ptr()) };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use core::ffi::{c_char, c_int, c_void};
+    use core::sync::atomic::{AtomicIsize, Ordering};
+
+    use super::*;
+
+    /// The library's allocations not yet freed, once `count_allocations`
+    /// has installed its functions.
+    static LIVE: AtomicIsize = AtomicIsize::new(0);
+
+    type Malloc = extern "C" fn(usize, *const c_char, c_int) -> *mut c_void;
+    type Realloc = extern "C" fn(*mut c_void, usize, *const c_char, c_int) -> *mut c_void;
+    type Free = extern "C" fn(*mut c_void, *const c_char, c_int);
+
+    // SAFETY: the declarations are `crypto.h`'s and the C library's.
+    unsafe extern "C" {
+        fn CRYPTO_set_mem_functions(m: Malloc, r: Realloc, f: Free) -> c_int;
+        fn malloc(size: usize) -> *mut c_void;
+        fn realloc(p: *mut c_void, size: usize) -> *mut c_void;
+        fn free(p: *mut c_void);
+    }
+
+    extern "C" fn counted_malloc(size: usize, _: *const c_char, _: c_int) -> *mut c_void {
+        // SAFETY: the C library's own.
+        let p = unsafe { malloc(size) };
+        if !p.is_null() {
+            LIVE.fetch_add(1, Ordering::Relaxed);
+        }
+        p
+    }
+
+    extern "C" fn counted_realloc(
+        p: *mut c_void,
+        size: usize,
+        file: *const c_char,
+        line: c_int,
+    ) -> *mut c_void {
+        if p.is_null() {
+            return counted_malloc(size, file, line);
+        }
+        if size == 0 {
+            counted_free(p, file, line);
+            return ptr::null_mut();
+        }
+        // SAFETY: `p` came from `counted_malloc` or here, and is live.
+        unsafe { realloc(p, size) }
+    }
+
+    extern "C" fn counted_free(p: *mut c_void, _: *const c_char, _: c_int) {
+        if !p.is_null() {
+            LIVE.fetch_sub(1, Ordering::Relaxed);
+        }
+        // SAFETY: `p` is null or came from the functions above, and is
+        // freed once, as the library frees it.
+        unsafe { free(p) };
+    }
+
+    /// Each signing frees what it made, its key and its context: the
+    /// library's allocations are counted, in a process of their own as
+    /// the functions counting them must be installed before the library
+    /// allocates anything.
+    #[test]
+    fn signing_frees_what_it_made() {
+        crate::sys::tests::in_a_child("sign::tests::counted_signing", "/dev/null".as_ref());
+    }
+
+    #[test]
+    #[ignore = "run by signing_frees_what_it_made"]
+    fn counted_signing() {
+        // SAFETY: the functions are a matching set over the C library's
+        // allocator, installed before the library allocates.
+        let set =
+            unsafe { CRYPTO_set_mem_functions(counted_malloc, counted_realloc, counted_free) };
+        assert_eq!(set, 1, "installed before the library allocated");
+        for _ in 0..3 {
+            ED25519.sign(&[1; 32], b"message").unwrap();
+        }
+        let before = LIVE.load(Ordering::Relaxed);
+        assert!(before > 0, "the library's allocations are counted");
+        for _ in 0..50 {
+            ED25519.sign(&[1; 32], b"message").unwrap();
+        }
+        assert_eq!(LIVE.load(Ordering::Relaxed), before);
+    }
+}

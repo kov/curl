@@ -273,16 +273,6 @@ witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_t
             self.trace_pollset_now(id, now, ev);
         }
 
-=== a transfer taken out is said gone before event handling hears it
-file: crates/curl-core/src/multi/mod.rs
-witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_traced_as_c
---- old
-        let _ = self.tell_wants(id, Wants::NONE, ev);
-        self.trace_membership(id, "removed from", ev);
---- new
-        self.trace_membership(id, "removed from", ev);
-        let _ = self.tell_wants(id, Wants::NONE, ev);
-
 === a socket action does not say it runs a dirty transfer
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::http::tests::wait_trace::a_transfer_run_by_events_is_traced_as_c

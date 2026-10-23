@@ -247,9 +247,45 @@ exclude_re = [
     # before it is read again (`+=` elsewhere in it is pinned by the
     # pieces C gives).
     'mime/read\.rs:.*: replace (\| with \^|\+= with \*=) in base64$',
-    # Only `read_whole`'s reader sends the tree's own headers, or has no
-    # handlers to call, and it never starts over.
-    'mime/read\.rs:.*: (delete field body_only from struct PartRef expression in MimeReader::restart|replace <impl Calls for NoCalls>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\))$',
+    # A group cut short only returns early: `read_encoded` calls the
+    # encoder again with the room left. And the input is moved to the
+    # buffer's start before each read, the flush following the read that
+    # finds the end, so what is held there starts at 0 (`end - beg`
+    # elsewhere in it is pinned by the pieces C gives).
+    'mime/read\.rs:.*: replace (-= with /=|- with \+) in base64$',
+    # A debug form nothing reads.
+    'options/mod\.rs:.*: replace <impl fmt::Debug for Cold<T>>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    # The methods are disjoint bits: `|` and `^` agree.
+    'options/mod\.rs:.*: replace \| with \^ in AuthMethods::single$',
+    # No tokens is no debt: the wait is the step's rest either way; and a
+    # step's end reached exactly rounds up to no wait.
+    'progress/rate\.rs:.*: (replace < with <= in Bucket::wait_ms|replace > with >= in Bucket::next_step_ms)$',
+    # Zeroing a key and a signature as they are freed: nothing safe can
+    # read them after.
+    'proto/http/httpsig\.rs:.*: replace <impl Drop for (Secret|Mac)>::drop with \(\)$',
+    # A reservation size, and nibbles joined at disjoint bits.
+    'proto/http/httpsig\.rs:.*: replace (/ with (%|\*)|\| with \^) in decode_hex_key$',
+    # Lent bytes give none at their end, which ends the loop as reaching
+    # it does; and nibbles joined at disjoint bits.
+    'proto/http/sigv4\.rs:.*: (replace < with <= in post_fields_hash|replace \| with \^ in normalize)$',
+    # A reservation size: a short one only makes a push grow the name.
+    'save\.rs:.*: replace \+ with (-|\*) in replace$',
+    # Counting no bytes adds nothing, and the update the bucket's drain
+    # makes earns no more than the next would.
+    'deliver/mod\.rs:.*: replace > with >= in BodyAccountant::counted$',
+    # Echo is turned off on the controlling terminal, which a test run has
+    # none of to own: opening `/dev/tty`, its settings, reading from it
+    # and putting them back are reached only from a terminal, by hand.
+    'curl-os/src/terminal\.rs:.*Unechoed',
+    # glibc's `strerror_r` writes a text for every number, known or not:
+    # the fallback for one that writes none is never taken either way.
+    'curl-os/src/error\.rs:.*: replace != with == in ErrorText::of_code$',
+    # `close` of a descriptor owned and open fails only where the file
+    # system reports a held write's error then, which no test has.
+    'curl-os/src/fs\.rs:.*: (replace close -> io::Result<\(\)> with Ok\(\(\)\)|replace < with > in close)$',
+    # Only `read_whole`'s reader has no handlers to call, and it never
+    # starts over.
+    'mime/read\.rs:.*: replace <impl Calls for NoCalls>::rewind -> Result<\(\), RewindFailed> with Ok\(\(\)\)$',
     # A pool section closes connections and never resolves a name.
     'multi/cx\.rs:.*: replace <impl Net for CloseLater<._>>::resolve -> Result<Vec<IpAddr>, ResolveFailure> with Ok\(vec!\[\]\)$',
     # A transfer is in `Done` only inside a step, while its run is out of

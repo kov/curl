@@ -667,7 +667,14 @@ fn stores_where_a_download_came_from() {
         all.extend_from_slice(args);
         let run = curl_columns(&all, Some("1000"));
         done.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(reader.join().unwrap().len(), if warned { 6 } else { 5 });
+        let wrote = reader.join().unwrap();
+        assert_eq!(
+            wrote.len(),
+            if warned { 6 } else { 5 },
+            "{args:?}: exit {}, {}",
+            run.code,
+            run.stderr
+        );
         let warning = format!(
             "Warning: Error setting extended attributes on '{name}': Operation not permitted\n"
         );

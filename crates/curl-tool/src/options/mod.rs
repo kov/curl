@@ -79,6 +79,52 @@ pub(crate) fn every_option() -> impl Iterator<Item = (&'static str, ArgKind)> {
     OPTIONS.iter().map(|s| (s.long, s.kind))
 }
 
+/// Where `--help <option>` finds an option's text in the manual
+/// (`tool_help`): the line it starts with, and what ends it.
+pub(crate) struct HelpSearch {
+    start: [u8; 40],
+    len: usize,
+    pub(crate) end: &'static [u8],
+}
+
+impl HelpSearch {
+    pub(crate) fn start(&self) -> &[u8] {
+        &self.start[..self.len]
+    }
+}
+
+/// What to look for in the manual for `topic`: `--name`, `--no-name` for
+/// a boolean, or `-x`; `None` for no option.
+pub(crate) fn help_search(topic: &[u8]) -> Option<HelpSearch> {
+    let spec = match topic {
+        [b'-', b'-', name @ ..] => match name.strip_prefix(b"no-") {
+            Some(name) => find_long(name).filter(|s| s.kind == ArgKind::Bool),
+            None => find_long(name),
+        },
+        [b'-', letter] => find_short(*letter),
+        _ => None,
+    }?;
+    let letter = spec.short.map(|l| [l]);
+    let parts: [&[u8]; 3] = match &letter {
+        Some(letter) => [b"\n    -", letter, b", --"],
+        None if spec.short_negates => [b"\n    --no-", spec.long.as_bytes(), b""],
+        None => [b"\n    ", topic, b""],
+    };
+    let mut start = [0u8; 40];
+    let mut len = 0;
+    for part in parts {
+        start[len..len + part.len()].copy_from_slice(part);
+        len += part.len();
+    }
+    // The last option's text ends where the files are described.
+    let end: &[u8] = if spec.opt == Opt::Xattr {
+        b"\nFILES"
+    } else {
+        b"\n    -"
+    };
+    Some(HelpSearch { start, len, end })
+}
+
 /// The option named `name`, as `findlongopt` finds it.
 fn find_long(name: &[u8]) -> Option<&'static Spec> {
     OPTIONS
@@ -114,6 +160,32 @@ mod tests {
                 .iter()
                 .all(|s| find_long(s.long.as_bytes()).is_some_and(|f| f.opt == s.opt))
         );
+    }
+
+    /// `--help <option>` looks for the option's line as C's does.
+    #[test]
+    fn searches_the_manual_as_c_does() {
+        let start = |t: &str| help_search(t.as_bytes()).map(|h| h.start().to_vec());
+        assert_eq!(start("--verbose"), Some(b"\n    -v, --".to_vec()));
+        assert_eq!(start("-v"), Some(b"\n    -v, --".to_vec()));
+        assert_eq!(start("--no-clobber"), Some(b"\n    --no-clobber".to_vec()));
+        assert_eq!(start("--clobber"), Some(b"\n    --no-clobber".to_vec()));
+        assert_eq!(start("--compressed"), Some(b"\n    --compressed".to_vec()));
+        assert_eq!(
+            start("--no-compressed"),
+            Some(b"\n    --no-compressed".to_vec())
+        );
+        assert_eq!(start("--no-url"), None, "not a boolean");
+        assert_eq!(start("--badone"), None);
+        assert_eq!(start("-vv"), None);
+        assert_eq!(start("verbose"), None);
+        assert_eq!(help_search(b"--xattr").unwrap().end, b"\nFILES");
+        assert_eq!(help_search(b"--url").unwrap().end, b"\n    -");
+        // Every option's fits the manual's search.
+        for s in OPTIONS {
+            let h = help_search(format!("--{}", s.long).as_bytes()).unwrap();
+            assert!(h.len < 40, "{}", s.long);
+        }
     }
 
     #[test]

@@ -18,7 +18,10 @@ mod easysrc;
 mod form;
 mod glob;
 mod help;
+mod hugehelp;
 mod ipfs;
+#[rustfmt::skip]
+mod manual;
 mod msgs;
 mod operate;
 mod options;
@@ -193,7 +196,7 @@ pub(crate) fn os_message(e: &std::io::Error) -> curl_os::error::ErrorText {
 fn show(request: Request<'_>, msgs: &Messages) -> ExitCode {
     match request {
         Request::Version => version_info(),
-        Request::Manual => msgs.warn(&[b"built-in manual was disabled at build-time"]),
+        Request::Manual => hugehelp::show_all(),
         Request::Help(topic) => help::show(topic, msgs.columns()),
         // Nothing is embedded: a build without an embedded CA bundle prints
         // nothing.

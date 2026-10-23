@@ -2,7 +2,6 @@
 
 use std::io::Write as _;
 
-use crate::msgs::MANUAL;
 use crate::options::{CATEGORIES, HELP, HelpLine};
 
 /// Show the help for `topic`: the default page without one, every option
@@ -19,12 +18,10 @@ pub(crate) fn show(topic: Option<&[u8]>, columns: usize) {
                   Use \"--help category\" to get an overview of all categories, which are:",
             );
             categories_list(&mut out, columns);
-            out.line(if MANUAL {
+            out.line(
                 b"Use \"--help all\" to list all options\n\
-                  Use \"--help [option]\" to view documentation for a given option"
-            } else {
-                b"Use \"--help all\" to list all options"
-            });
+                  Use \"--help [option]\" to view documentation for a given option",
+            );
         }
         Some(topic) if topic.eq_ignore_ascii_case(b"all") => {
             print_category(&mut out, None, columns)
@@ -33,8 +30,13 @@ pub(crate) fn show(topic: Option<&[u8]>, columns: usize) {
         Some(topic) if topic.first() == Some(&b'-') => {
             // Help on one option is read from the built-in manual.
             out.flush();
-            let _ = std::io::stderr()
-                .write_all(b"Cannot comply. This curl was built without built-in manual\n");
+            match crate::options::help_search(topic) {
+                Some(search) => crate::hugehelp::show_option(search.start(), search.end),
+                None => {
+                    let _ = std::io::stderr()
+                        .write_all(b"Incorrect option name to show help for, see curl -h\n");
+                }
+            }
         }
         Some(topic) => match CATEGORIES
             .iter()

@@ -7,10 +7,6 @@
 
 use std::io::Write as _;
 
-/// Whether this build has the built-in manual. It has not: `--manual` says
-/// so, and the hint after an error does not offer it.
-pub(crate) const MANUAL: bool = false;
-
 /// The width used when the terminal's is unknown, as C's.
 const DEFAULT_COLUMNS: usize = 79;
 
@@ -87,11 +83,7 @@ impl Messages {
             }
             out.push(b"\n");
         }
-        out.push(if MANUAL {
-            b"curl: try 'curl --help' or 'curl --manual' for more information\n"
-        } else {
-            b"curl: try 'curl --help' for more information\n"
-        });
+        out.push(b"curl: try 'curl --help' or 'curl --manual' for more information\n");
         emit(out.bytes());
     }
 

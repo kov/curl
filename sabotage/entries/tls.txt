@@ -144,3 +144,13 @@ witness: curl-core conn::tls::tests::the_layer_says_what_its_session_holds_and_w
         !self.early.is_empty() || self.session.pending() || below.data_pending()
 --- new
         !self.early.is_empty() || below.data_pending()
+
+=== an HTTPS GET allocates past its budget
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core an_https_get_stays_within_its_allocation_budget
+--- old
+        Ok(try_box(TlsLayer { session, early })?)
+--- new
+        let spare = try_box(0u8)?;
+        drop(spare);
+        Ok(try_box(TlsLayer { session, early })?)

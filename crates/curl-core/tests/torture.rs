@@ -21,6 +21,7 @@ use curl_core::handler::{
     ProgressVerdict, Write, WriteHandler,
 };
 use curl_core::id::ArenaPolicy;
+use curl_core::libraries::Libraries;
 use curl_core::multi::Multi;
 use curl_core::multi::{
     Abort, AddError, Env, EventCx, MultiEvents, NoEvents, NoHost, Notification, NotifyCx,
@@ -29,6 +30,7 @@ use curl_core::multi::{
 use curl_core::options::script::{Piece, Script};
 use curl_core::options::{Options, Progress, UploadSource};
 use curl_core::time::{Clock, ManualClock, TimeLimit};
+use curl_core::tls::fake::{self, FakeTls};
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -70,6 +72,18 @@ fn main() {
         (
             "a_get_stays_within_its_allocation_budget",
             a_get_stays_within_its_allocation_budget,
+        ),
+        (
+            "an_https_get_survives_every_allocation_failing",
+            an_https_get_survives_every_allocation_failing,
+        ),
+        (
+            "an_https_get_takes_no_refusal_for_success",
+            an_https_get_takes_no_refusal_for_success,
+        ),
+        (
+            "an_https_get_stays_within_its_allocation_budget",
+            an_https_get_stays_within_its_allocation_budget,
         ),
         (
             "a_share_s_connection_survives_every_allocation_failing",
@@ -493,6 +507,29 @@ fn get_through(
     request: &[u8],
     set: fn(&mut Options) -> Result<(), OutOfMemory>,
 ) -> Result<Got, OutOfMemory> {
+    let wire = Wire {
+        libraries: &Libraries::NONE,
+        sent: <[u8]>::to_vec,
+    };
+    get_over(clock, net, talk, (url, request), set, wire)
+}
+
+/// What a GET speaks to its server with: the libraries its handle has,
+/// and how what the server was sent reads as the request.
+struct Wire {
+    libraries: &'static Libraries,
+    sent: fn(&[u8]) -> Vec<u8>,
+}
+
+/// As `get_through`, by a handle speaking as `wire` says.
+fn get_over(
+    clock: ManualClock,
+    net: FakeNet,
+    talk: &Conversation,
+    (url, request): (&[u8], &[u8]),
+    set: fn(&mut Options) -> Result<(), OutOfMemory>,
+    wire: Wire,
+) -> Result<Got, OutOfMemory> {
     let env = Env {
         clock: try_box(clock)?,
         net: try_box(net)?,
@@ -501,6 +538,7 @@ fn get_through(
     };
     let mut m: Multi = Multi::new(env)?;
     let mut easy = Easy::new();
+    easy.set_libraries(wire.libraries);
     let o = easy.options_mut();
     o.set_url(Some(url))?;
     o.http.user_agent = Some(b"curl/test".to_vec_fallible()?);
@@ -522,7 +560,7 @@ fn get_through(
         track::untracked(|| panic!("the GET ended with {result:?}"));
     }
     if result.is_ok() {
-        track::untracked(|| assert_eq!(talk.received(), request, "the request sent"));
+        track::untracked(|| assert_eq!((wire.sent)(&talk.received()), request, "the request sent"));
     }
     m.remove(id, &mut NoEvents).expect("in the multi");
     Ok(Got {
@@ -707,6 +745,98 @@ fn a_get_takes_no_refusal_for_success() {
 /// receive buffer, the head parser's line, the header store and the
 /// content type.
 const GET_BUDGET: u64 = 46;
+
+/// The fake TLS library and the libraries naming it, made once and
+/// untracked: the test's, not the library's to account for.
+fn fake_tls() -> &'static Libraries {
+    static LIBRARIES: std::sync::OnceLock<&'static Libraries> = std::sync::OnceLock::new();
+    LIBRARIES.get_or_init(|| {
+        track::untracked(|| {
+            let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::new().expect("memory")));
+            &*Box::leak(Box::new(Libraries {
+                tls: Some(backend),
+                ..Libraries::NONE
+            }))
+        })
+    })
+}
+
+/// A server at port 443 speaking the fake TLS, answering test 1's reply
+/// and saying goodbye back at once, made untracked: the connection,
+/// closed as the multi goes, is shut down in the one try it gets.
+fn test_1_tls_server() -> (ManualClock, FakeNet, Conversation) {
+    track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 443));
+        let records = fake::records(REPLY).expect("memory");
+        let talk = Conversation::replies(&[fake::WELCOME, &records, fake::CLOSE], false);
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        (clock, net, talk)
+    })
+}
+
+/// What the server of an HTTPS GET was sent, read as the request: the
+/// handshake's lines taken off, the records read.
+fn sent_over_tls(wire: &[u8]) -> Vec<u8> {
+    let read = fake::read_client(wire).expect("memory");
+    let lines = [fake::HELLO, fake::FINISHED].concat();
+    read.strip_prefix(&lines[..]).unwrap_or(&read).to_vec()
+}
+
+/// A GET of test 1's URL over HTTPS through the fake TLS library.
+fn https_get_scenario() -> Result<Got, OutOfMemory> {
+    let (clock, net, talk) = test_1_tls_server();
+    let wire = Wire {
+        libraries: fake_tls(),
+        sent: sent_over_tls,
+    };
+    let url = b"https://127.0.0.1/1?q";
+    get_over(clock, net, &talk, (url, REQUEST), |_| Ok(()), wire)
+}
+
+fn an_https_get_survives_every_allocation_failing() {
+    fake_tls();
+    let full = Got {
+        result: Ok(()),
+        body: 6,
+        headers: REPLY.len() as u64 - 6,
+    };
+    torture(https_get_scenario, Ok(full));
+}
+
+fn an_https_get_takes_no_refusal_for_success() {
+    fake_tls();
+    refused_alone(https_get_scenario, |got| {
+        matches!(
+            got,
+            Err(OutOfMemory)
+                | Ok(Got {
+                    result: Err(ErrorKind::OutOfMemory),
+                    ..
+                })
+        )
+    });
+}
+
+/// What an HTTPS GET allocates over the fake TLS library, the core's
+/// own beside the plain GET's 46: the route's TLS identity (shared with
+/// the connection), the handshake under way, the library's session, its
+/// layer, and the stream's layer stack and its list. The fake's session
+/// is one box; a real library's own memory is its own.
+const HTTPS_FAKE_GET_BUDGET: u64 = GET_BUDGET + 6;
+
+fn an_https_get_stays_within_its_allocation_budget() {
+    fake_tls();
+    let (got, n) = track::count_allocations(https_get_scenario);
+    assert_eq!(got.expect("nothing refused").result, Ok(()));
+    track::untracked(|| eprintln!("budget: an HTTPS GET over the fake made {n} allocations"));
+    assert!(
+        n <= HTTPS_FAKE_GET_BUDGET,
+        "an HTTPS GET over the fake made {n} allocations, over its {HTTPS_FAKE_GET_BUDGET}"
+    );
+}
 
 fn a_get_stays_within_its_allocation_budget() {
     let (clock, net, talk) = test_1_server();

@@ -2820,12 +2820,18 @@ peer gets a protocol error, not an out-of-memory one.
   attempts; the socket; the request head; the receive buffer; the head parser's line; the
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
-- Planned (step 43): `HTTPS_GET_BUDGET` beside `GET_BUDGET`, over the cargo TLS peer, listed
-  allocation by allocation the same way: the GET's, plus the TLS layer, the layer stack, the
-  route's `TlsIdentity` and the multi's CA store entry on first use, and the session tickets
-  kept. SNI, the ALPN list and trace text are on the stack. `GET_BUDGET` stays 46: a plain GET
-  makes no TLS group, identity or store entry. The HTTPS scenarios are harness-free binaries
-  under `crates/curl-openssl/tests/`, as the core cannot depend on the binding.
+- The core's own part of an HTTPS GET is pinned over the fake TLS library
+  (`HTTPS_FAKE_GET_BUDGET`, 52): the plain GET's 46, then the route's `TlsIdentity` (shared with
+  the connection), the handshake under way, the library's session (the fake's one box), its
+  layer, and the stream's layer stack and its list. The same GET is run with each allocation
+  refused in turn and alone; its server says goodbye back at once, so the connection's shutdown,
+  as the multi goes, finishes in its one try and joins no set. `GET_BUDGET` stays 46: a plain
+  GET makes no TLS group, identity or layer.
+- Planned (step 43): `HTTPS_GET_BUDGET` over curl-openssl's cargo TLS peer, listed the same way:
+  the fake's, with the multi's CA store entry on first use and the session tickets kept in
+  place of the fake's session. SNI, the ALPN list and trace text are on the stack. Those
+  scenarios are harness-free binaries under `crates/curl-openssl/tests/`, as the core cannot
+  depend on the binding.
 - Test 1's 140-allocation and 136000-byte limit is whole-process (argv, option parsing, output
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.

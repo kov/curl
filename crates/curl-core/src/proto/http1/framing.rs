@@ -797,14 +797,6 @@ pub(crate) struct CodingTale<'a> {
     before: (bool, u8),
 }
 
-impl PartialEq for CodingTale<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        (self.list, self.before) == (other.list, other.before)
-    }
-}
-
-impl Eq for CodingTale<'_> {}
-
 impl<'a> CodingTale<'a> {
     pub(crate) fn retell(&self, step: impl FnMut(CodingStep<'a>)) {
         let mut count = self.before;

@@ -253,7 +253,10 @@ fn a_reply_without_a_status_line_is_http_0_9() {
     assert_eq!(got.error, Some(HeadError::InvalidStatusLine), "after a 1xx");
     // `HTT` could still become a status line; nothing is decided.
     let mut p = HeadParser::new(allowed);
-    assert_eq!(p.feed(b"HTT", &mut 0, Unsent::default()), Ok((3, None)));
+    assert!(matches!(
+        p.feed(b"HTT", &mut 0, Unsent::default()),
+        Ok((3, None))
+    ));
 }
 
 /// An interim response's head is followed by the next response's.

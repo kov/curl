@@ -40,7 +40,7 @@ pub(crate) struct Exchange {
 
 /// One line of the head, to be delivered whole, then `then` to be raised:
 /// the line counts against the limits only once the handlers have it.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct Line<'a> {
     pub(crate) bytes: &'a [u8],
     pub(crate) kind: LineKind,
@@ -68,7 +68,7 @@ pub(crate) enum LineKind {
 }
 
 /// What a feed produced.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum HeadEvent<'a> {
     Line(Line<'a>),
     /// No HTTP: these bytes and all that follow are an HTTP/0.9 body.

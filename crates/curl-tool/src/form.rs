@@ -1032,6 +1032,24 @@ mod tests {
         }
     }
 
+    /// A zero byte in a file of headers ends its line, and nothing else:
+    /// the rest of that line is dropped, and the lines after it are read.
+    /// C's `get_line` (`src/tool_parsecfg.c`) reads in 128-byte `fgets`
+    /// pieces and stops a piece at its zero: the rest of the piece is
+    /// lost, its newline with it, and the next line is glued on (`X-A:
+    /// 1X-B: 2`); a piece starting with a zero ends the file there, every
+    /// later header unread. Measured against the C build (DIVERGENCE.md).
+    #[test]
+    fn a_zero_byte_ends_its_header_line_alone() {
+        let file = scratch("zero", b"X-A: 1\0zz\nX-B: 2\nX-C: 3\n\0\nX-D: 4\n");
+        let f = form(&[&format!("a=b;headers=@{}", file.display())]);
+        assert_eq!(
+            headers(&f.parts[0]),
+            [&b"X-A: 1"[..], b"X-B: 2", b"X-C: 3", b"X-D: 4"]
+        );
+        std::fs::remove_file(file).unwrap();
+    }
+
     /// POSIX `basename`, which C's tool names a file part with.
     #[test]
     fn basename_is_posix_s() {

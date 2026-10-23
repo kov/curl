@@ -104,6 +104,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   starts with a zero ends the file there, every later line unread. Pinned by
   `a_zero_byte_ends_its_line_alone` (`crates/curl-tool/src/config.rs`).
 
+- **A zero byte in a `-F` header file line ends that line, and nothing else.** The file a form
+  part's `headers=@file` names is read with the same `get_line` as a config file
+  (`read_field_headers`, `src/tool_formparse.c`), and the rewrite reads it as it reads a config
+  file: the rest of a line after a zero is dropped, and the next line is a header of its own.
+  In C, `-F 'a=b;headers=@file'` with `X-A: 1` NUL `zz`, then `X-B: 2` sends one header
+  `X-A: 1X-B: 2`, and a line starting with a zero ends the file: the headers after it are not
+  sent. Measured against the C build. Pinned by `a_zero_byte_ends_its_header_line_alone`
+  (`crates/curl-tool/src/form.rs`).
+
 - **Blanks after the last signed component are blanks.** `--httpsig-headers "method  "`
   (`CURLOPT_HTTPSIG_HEADERS`), with more than one blank after its last component, fails in C
   with `httpsig: too many signature components (max 16)`: `parse_components`

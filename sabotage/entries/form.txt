@@ -23,3 +23,13 @@ witness: curl-tool form::tests::a_string_is_taken_as_it_is
         } else if contp.first() == Some(&b'@') && !literal {
 --- new
         } else if contp.first() == Some(&b'@') {
+
+=== a zero byte in a header file is sent as part of its line
+file: crates/curl-tool/src/form.rs
+witness: curl-tool form::tests::a_zero_byte_ends_its_header_line_alone
+--- old
+        // C reads the line as a string.
+        let line = &line[..line.iter().position(|&b| b == 0).unwrap_or(line.len())];
+        // Comments and blank lines (`my_get_line`).
+--- new
+        // Comments and blank lines (`my_get_line`).

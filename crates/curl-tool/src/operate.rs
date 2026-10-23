@@ -444,7 +444,7 @@ fn transfer(
         Some(Resume::At(n)) => n > 0,
         None => false,
     };
-    if method == tool::Method::Post && resumed {
+    if matches!(method, tool::Method::Post | tool::Method::Mime) && resumed {
         msgs.error(&[b"(43) HTTP upload cannot be resumed"]);
         return Step::Failed(ErrorKind::BadFunctionArgument);
     }
@@ -678,12 +678,24 @@ fn transfer(
     } else {
         None
     };
+    // The tree `--form` gives, made for this transfer (`setopt_post`).
+    let form = match (&op.form, method) {
+        (Some(form), tool::Method::Mime) => match form.mime(&msgs) {
+            Ok(mime) => match curl_alloc::TryArc::try_new(mime) {
+                Ok(mime) => Some(mime),
+                Err(OutOfMemory) => return failed(&easy, ErrorKind::OutOfMemory),
+            },
+            Err(e) => return failed(&easy, e),
+        },
+        _ => None,
+    };
     let config = Config {
         url,
         http,
         resume,
         upload: upload.is_some(),
         post,
+        form,
         method,
         terminal,
         bar: bar.as_ref(),
@@ -1063,6 +1075,8 @@ struct Config<'a> {
     upload: bool,
     /// What `--data` gives, unless `--get` put it in the query.
     post: Option<&'a [u8]>,
+    /// The tree `--form` gives.
+    form: Option<TryArc<curl_core::mime::Mime>>,
     /// The HTTP method the options chose for it.
     method: tool::Method,
     /// Standard output is a terminal, and the output goes there.
@@ -1116,8 +1130,15 @@ fn configure(
         body.try_extend_from_slice(post)?;
         o.method = Method::Post;
         o.upload = options::UploadSource::Bytes(TryArc::try_new(body)?);
+    } else if let Some(form) = &config.form {
+        o.method = Method::Post;
+        let tree = curl_core::mime::Fixed(form.clone());
+        o.upload = options::UploadSource::Mime(Handler::mime(tree)?);
     } else if op.no_body {
         o.method = Method::Head;
+    }
+    if op.form_escape {
+        o.mime.make_mut()?.form_escape = true;
     }
     o.resume = config.resume;
     o.range = op.range.as_deref().map(copy).transpose()?;

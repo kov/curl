@@ -14,6 +14,7 @@ use curl_core::version::version;
 
 mod bar;
 mod config;
+mod form;
 mod glob;
 mod help;
 mod ipfs;

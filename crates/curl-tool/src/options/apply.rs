@@ -283,6 +283,10 @@ pub(crate) struct Operation<'a> {
     /// What `--data` and its kin give, joined: the body a POST sends (C's
     /// `postdata`), empty if they gave nothing.
     pub(crate) post: Option<Vec<u8>>,
+    /// `--form` and `--form-string`: the parts of a multipart POST.
+    pub(crate) form: Option<crate::form::Form>,
+    /// `--form-escape`: names are escaped with backslashes.
+    pub(crate) form_escape: bool,
     /// `--json` was given: the request is typed and accepts JSON.
     pub(crate) json: bool,
     /// `--get`: what `--data` gives goes in the URL's query, asked for
@@ -318,6 +322,8 @@ pub(crate) enum Method {
     Unset,
     Get,
     Head,
+    /// `--form`'s multipart POST.
+    Mime,
     Post,
     Put,
 }
@@ -329,6 +335,7 @@ impl Method {
             Method::Unset => b"",
             Method::Get => b"GET (-G, --get)",
             Method::Head => b"HEAD (-I, --head)",
+            Method::Mime => b"multipart formpost (-F, --form)",
             Method::Post => b"POST (-d, --data)",
             Method::Put => b"PUT (-T, --upload-file)",
         }
@@ -340,7 +347,7 @@ impl Method {
         match self {
             Method::Unset | Method::Get => b"GET",
             Method::Head => b"HEAD",
-            Method::Post => b"POST",
+            Method::Mime | Method::Post => b"POST",
             Method::Put => b"PUT",
         }
     }
@@ -1145,6 +1152,22 @@ pub(crate) fn apply<'a>(
             op.fail = if on { this } else { Fail::Off };
         }
         Opt::Buffer => line.current().no_buffer = !value.toggle(),
+        Opt::Form | Opt::FormString => {
+            // "form data" simulation: the parts are read now, the tree made
+            // for each transfer.
+            let op = line.current();
+            let form = op.form.get_or_insert_with(crate::form::Form::default);
+            if form
+                .add(value.text(), spec.opt == Opt::FormString, msgs)
+                .is_err()
+            {
+                return Err(ParamError::BadUse);
+            }
+            op.method
+                .choose(Method::Mime, msgs)
+                .map_err(|()| ParamError::BadUse)?;
+        }
+        Opt::FormEscape => line.current().form_escape = value.toggle(),
         Opt::Stderr => crate::output::redirect_stderr(value.text(), msgs),
         Opt::Data
         | Opt::DataAscii
@@ -1282,9 +1305,6 @@ pub(crate) fn apply<'a>(
         | Opt::Epsv
         | Opt::FailEarly
         | Opt::FalseStart
-        | Opt::Form
-        | Opt::FormEscape
-        | Opt::FormString
         | Opt::FtpAccount
         | Opt::FtpAlternativeToUser
         | Opt::FtpCreateDirs

@@ -1,0 +1,25 @@
+# The tool's --form (crates/curl-tool/src/form.rs), against tool_formparse.c.
+
+=== a type stops at the first semicolon
+file: crates/curl-tool/src/form.rs
+witness: curl-tool form::tests::a_type_runs_on_to_the_next_setting
+--- old
+        } else if type_open {
+--- new
+        } else if false {
+
+=== files after one @ are parts of the form each
+file: crates/curl-tool/src/form.rs
+witness: curl-tool form::tests::files_and_levels_nest_as_given
+--- old
+                        let g = given.sep == b',';
+--- new
+                        let g = false;
+
+=== a form string is read for files
+file: crates/curl-tool/src/form.rs
+witness: curl-tool form::tests::a_string_is_taken_as_it_is
+--- old
+        } else if contp.first() == Some(&b'@') && !literal {
+--- new
+        } else if contp.first() == Some(&b'@') {

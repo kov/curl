@@ -430,7 +430,7 @@ witness: curl-tool takes_one_method
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool sends_the_method_asked_for
 --- old
-    if method == tool::Method::Post && resumed {
+    if matches!(method, tool::Method::Post | tool::Method::Mime) && resumed {
 --- new
     if false && resumed {
 

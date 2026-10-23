@@ -37,12 +37,12 @@ witness: curl-core easy::tests::a_failure_says_why
 
 === every transfer warns of the debug build
 file: crates/curl-core/src/multi/mod.rs
-witness: curl-core easy::tests::a_failure_says_why
+witness: curl-core multi::tests::the_debug_build_warns_as_the_first_transfer_comes
 features: debug-hooks
 --- old
-            run.warn = !self.warned;
+        if !std::mem::replace(&mut self.warned, true) {
 --- new
-            run.warn = true;
+        if { self.warned = true; true } {
 
 === the tool's result line gives the kind, not the reason
 file: crates/curl-tool/src/operate.rs

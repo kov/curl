@@ -66,10 +66,6 @@ pub(crate) struct Run {
     retries: u8,
     /// What the next request takes from the ones before it.
     inherited: Inherited,
-    /// The first transfer added to its multi says that the library is a
-    /// debug build (`multi_warn_debug`).
-    #[cfg(feature = "debug-hooks")]
-    pub(crate) warn: bool,
 }
 
 impl Run {
@@ -80,8 +76,6 @@ impl Run {
             url: Vec::new(),
             retries: 0,
             inherited: Inherited::new(Method::Get),
-            #[cfg(feature = "debug-hooks")]
-            warn: false,
         }
     }
 }
@@ -2008,14 +2002,6 @@ fn is_premature(result: Result<(), ErrorKind>) -> bool {
 /// C's pretransfer, once per transfer: the option's URL parsed for the
 /// first request.
 fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, ErrorKind> {
-    #[cfg(feature = "debug-hooks")]
-    if std::mem::take(&mut run.warn) {
-        trace::info(cx, format_args!("!!! WARNING !!!"));
-        trace::info(
-            cx,
-            format_args!("This is a debug build of libcurl, do not use in production."),
-        );
-    }
     // The application's own URL goes first, as it is now: one that
     // cannot be read back is none (`Curl_pretransfer`).
     let shared = cx.easy().options().shared_url().map(|shared| {

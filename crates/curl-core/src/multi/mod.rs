@@ -340,13 +340,6 @@ impl<H: Host> Multi<H> {
             return refuse(MultiErrorKind::OutOfMemory, easy);
         }
         let run = Run::new();
-        #[cfg(feature = "debug-hooks")]
-        let run = {
-            let mut run = run;
-            run.warn = !self.warned;
-            self.warned = true;
-            run
-        };
         let slot = curl_alloc::try_box_or_back(Slot {
             owner,
             easy,
@@ -378,6 +371,21 @@ impl<H: Host> Multi<H> {
         easy.report_mut().set_transfer(number);
         self.dirty.insert(id.index());
         ev.added(id, &self.slots.get(id).expect("just added").owner);
+        // The debug build says what it is, once for the multi, as the
+        // first transfer comes (`multi_warn_debug`).
+        #[cfg(feature = "debug-hooks")]
+        if !std::mem::replace(&mut self.warned, true) {
+            let now = self.clock.now();
+            let mut cx = StepCx {
+                me: id,
+                rest: self.rest(now, ev),
+            };
+            crate::trace::info(&mut cx, format_args!("!!! WARNING !!!"));
+            crate::trace::info(
+                &mut cx,
+                format_args!("This is a debug build of libcurl, do not use in production."),
+            );
+        }
         // Inside the add, as C, so the application hears of the 0 ms run.
         if let Err(kind) = self.update_timer(ev) {
             let slot = self.slots.remove(id).expect("just added");

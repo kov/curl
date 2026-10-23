@@ -1470,6 +1470,35 @@ fn trace_of(lines: &TextLines) -> Vec<String> {
         .collect()
 }
 
+/// The debug build says what it is as the multi's first transfer comes,
+/// whether or not it runs, and not for the next (`multi_warn_debug` in
+/// `curl_multi_add_handle`).
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn the_debug_build_warns_as_the_first_transfer_comes() {
+    let (mut m, _clock) = multi();
+    let (a, a_lines) = traced("null://a");
+    let (b, b_lines) = traced("null://b");
+    m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    m.add(Box::new(b), (), &mut NoEvents).unwrap();
+    let a_lines = a_lines.0.lock().unwrap().clone();
+    assert_eq!(
+        a_lines[..2],
+        [
+            "!!! WARNING !!!\n",
+            "This is a debug build of libcurl, do not use in production.\n"
+        ]
+    );
+    assert!(
+        b_lines
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|l| !l.contains("WARNING"))
+    );
+}
+
 /// A host name longer than 65535 bytes is refused before it is looked up,
 /// as `Curl_peer_from_url` refuses it (test 399).
 #[test]

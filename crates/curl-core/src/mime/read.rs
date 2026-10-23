@@ -62,6 +62,8 @@ pub(crate) enum MakeError {
     /// A name or file name with a CR or LF, which a backslash cannot
     /// quote.
     BadName,
+    /// The source could not read a file the tree was to send.
+    Unreadable,
 }
 
 impl From<OutOfMemory> for MakeError {
@@ -76,6 +78,7 @@ impl MakeError {
             MakeError::OutOfMemory => ErrorKind::OutOfMemory,
             MakeError::TooLarge => ErrorKind::TooLarge,
             MakeError::BadName => ErrorKind::BadFunctionArgument,
+            MakeError::Unreadable => ErrorKind::ReadError,
         }
     }
 }
@@ -1165,6 +1168,9 @@ fn rewind_handlers(m: &Mime, calls: &mut dyn Calls) -> bool {
 #[derive(Debug)]
 pub(crate) struct MimeReader {
     mime: TryArc<Mime>,
+    /// The tree's own headers are the request's, not the body's
+    /// (`MIME_BODY_ONLY`).
+    body_only: bool,
     top: PartCursor,
     size: Option<u64>,
     /// Bytes given since the start or the last rewind (`read_len`).
@@ -1185,7 +1191,23 @@ impl MimeReader {
         request: &UserHeaders,
         escaping: Escape,
     ) -> Result<MimeReader, MakeError> {
-        let mut top = cursor(PartRef::top(&mime), 0)?;
+        MimeReader::make(mime, request, escaping, true)
+    }
+
+    /// A reader of `mime`, its headers made for `request`, that gives
+    /// them first unless `body_only`.
+    fn make(
+        mime: TryArc<Mime>,
+        request: &UserHeaders,
+        escaping: Escape,
+        body_only: bool,
+    ) -> Result<MimeReader, MakeError> {
+        let top_ref = |mime| {
+            let mut top = PartRef::top(mime);
+            top.body_only = body_only;
+            top
+        };
+        let mut top = cursor(top_ref(&mime), 0)?;
         // The application's Content-Type types the body, which is a form
         // unless it says otherwise.
         let given = request.line_replacing(b"Content-Type").map(|l| {
@@ -1196,7 +1218,7 @@ impl MimeReader {
         let content_type = given.or(Some(b"multipart/form-data"));
         let user = |name: &[u8]| search(request.lines(), name);
         prepare(
-            PartRef::top(&mime),
+            top_ref(&mime),
             &mut top,
             content_type,
             None,
@@ -1204,9 +1226,10 @@ impl MimeReader {
             escaping,
             0,
         )?;
-        let size = part_size(PartRef::top(&mime), &mut top);
+        let size = part_size(top_ref(&mime), &mut top);
         Ok(MimeReader {
             mime,
+            body_only,
             top,
             size,
             read: 0,
@@ -1249,13 +1272,12 @@ impl MimeReader {
     fn mime_read(&mut self, buf: &mut [u8], calls: &mut dyn Calls) -> Got {
         loop {
             let mut hasread = false;
-            let got = readback_part(
-                PartRef::top(&self.mime),
-                &mut self.top,
-                buf,
-                &mut hasread,
-                calls,
-            );
+            let top = PartRef::top(&self.mime);
+            let top = PartRef {
+                body_only: self.body_only,
+                ..top
+            };
+            let got = readback_part(top, &mut self.top, buf, &mut hasread, calls);
             if got != Got::Stop {
                 return got;
             }
@@ -1369,7 +1391,11 @@ impl MimeReader {
     /// Start the body over (`cr_mime_cntrl`'s rewind): whether it could
     /// be.
     fn restart(&mut self, calls: &mut dyn Calls) -> bool {
-        let ok = rewind_part(PartRef::top(&self.mime), &mut self.top, calls);
+        let top = PartRef {
+            body_only: self.body_only,
+            ..PartRef::top(&self.mime)
+        };
+        let ok = rewind_part(top, &mut self.top, calls);
         if ok {
             self.read = 0;
             self.seen_eos = false;
@@ -1396,6 +1422,45 @@ impl MimeReader {
             ErrorKind::SendFailRewind,
             format_args!("rewind of client reader 'cr-mime' failed: 65"),
         ))
+    }
+}
+
+/// No handlers to call: a tree read outside a transfer has none that can
+/// be.
+struct NoCalls;
+
+impl Calls for NoCalls {
+    fn read(&mut self, _: &Handler<dyn ReadHandler>, _: &mut [u8]) -> Read {
+        Read::Fail
+    }
+
+    fn rewind(&mut self, _: &Handler<dyn Rewind>) -> Result<(), RewindFailed> {
+        Err(RewindFailed)
+    }
+}
+
+/// The tree whole, as `curl_formget` reads it (`Curl_mime_read` of a top
+/// part that is not `MIME_BODY_ONLY`): the headers that type it as a form,
+/// a blank line and its body, to `out` in the pieces C reads, at most
+/// 8 KiB each. A part a handler reads fails it, as no transfer is there
+/// to call the handler with. `out` taking less than it was given fails it
+/// too.
+pub(crate) fn read_whole(
+    mime: TryArc<Mime>,
+    out: &mut dyn FnMut(&[u8]) -> usize,
+) -> Result<(), ErrorKind> {
+    let mut reader =
+        MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, false).map_err(MakeError::kind)?;
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.mime_read(&mut buf, &mut NoCalls) {
+            Got::Bytes(0) => return Ok(()),
+            Got::Bytes(n) if out(&buf[..n]) == n => {}
+            Got::Bytes(_) | Got::Stop | Got::Error | Got::Funny | Got::Pause => {
+                return Err(ErrorKind::ReadError);
+            }
+            Got::Abort => return Err(ErrorKind::AbortedByCallback),
+        }
     }
 }
 

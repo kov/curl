@@ -110,7 +110,7 @@ file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi mime::tests::the_post_options_say_which_post
 --- old
             shim.post.borrow_mut().fields = fields;
-            shim.post_mime.set(false);
+            shim.post_body.set(PostBody::Own);
 --- new
             shim.post.borrow_mut().fields = fields;
 
@@ -122,3 +122,11 @@ witness: curl-core a_file_part_s_long_name_is_read_without_a_copy
 --- new
             std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(path))
                 .map_err(|_| FileError::Unreadable)?;
+
+=== a tree read whole leaves out its own headers
+file: crates/curl-core/src/mime/read.rs
+witness: curl-core mime::tests::a_tree_read_whole_starts_with_its_headers
+--- old
+        MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, false).map_err(MakeError::kind)?;
+--- new
+        MimeReader::make(mime, &UserHeaders::NONE, Escape::Form, true).map_err(MakeError::kind)?;

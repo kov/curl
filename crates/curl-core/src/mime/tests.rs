@@ -635,3 +635,40 @@ proptest! {
         r.restart_for_test(&mut calls);
     }
 }
+
+/// Read whole, as `curl_formget` reads it, the tree is its headers, a
+/// blank line and the body a request sends; a part a handler reads, which
+/// no transfer is there to call, and a piece not taken whole fail it.
+#[test]
+fn a_tree_read_whole_starts_with_its_headers() {
+    let form = || TryArc::try_new(tree([named("fake", bytes(b"party"))])).unwrap();
+    let mut got = Vec::new();
+    let mut pieces = 0;
+    read_whole(form(), &mut |b| {
+        pieces += 1;
+        got.extend_from_slice(b);
+        b.len()
+    })
+    .unwrap();
+    let want = [
+        &b"Content-Type: multipart/form-data; boundary="[..],
+        LINE,
+        b"\r\n\r\n--",
+        LINE,
+        b"\r\nContent-Disposition: form-data; name=\"fake\"\r\n\r\nparty\r\n--",
+        LINE,
+        b"--\r\n",
+    ]
+    .concat();
+    assert_eq!(got, want);
+    assert_eq!(pieces, 1, "bytes in memory are read in one fill");
+    assert_eq!(
+        read_whole(form(), &mut |b| b.len() - 1),
+        Err(crate::error::ErrorKind::ReadError)
+    );
+    let handled = TryArc::try_new(tree([named("f", callback(Some(1), false))])).unwrap();
+    assert_eq!(
+        read_whole(handled, &mut |b| b.len()),
+        Err(crate::error::ErrorKind::ReadError)
+    );
+}

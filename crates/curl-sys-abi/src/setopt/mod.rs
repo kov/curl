@@ -26,7 +26,7 @@ use curl_core::options::{
 use curl_core::time::TimeLimit;
 
 use crate::callbacks::{self, CCallbacks, CSettings, PostFields};
-use crate::easy::{self, ShimEasy};
+use crate::easy::{self, PostBody, ShimEasy};
 use crate::ffi::{
     self, CURL, CURLE_BAD_FUNCTION_ARGUMENT, CURLE_NOT_BUILT_IN, CURLE_OK, CURLE_OUT_OF_MEMORY,
     CURLE_RECURSIVE_API_CALL, CURLE_UNKNOWN_OPTION, CURLcode, CURLoption, curl_off_t,
@@ -393,7 +393,7 @@ fn apply(
         (ffi::CURLOPT_POST, Long(n)) => {
             options.method = if n != 0 { Method::Post } else { Method::Get };
             // SAFETY: the handle is alive while its options are set.
-            unsafe { me.as_ref() }.post_mime.set(false);
+            unsafe { me.as_ref() }.post_body.set(PostBody::Own);
             callbacks::sync_upload(options, me, set)?;
         }
         (ffi::CURLOPT_MIMEPOST, Ptr(p)) => {
@@ -403,9 +403,22 @@ fn apply(
                 Ok(()) => {}
                 Err(crate::mime::Refused::Attached) => return Err(Refused::Bad),
                 Err(crate::mime::Refused::Rewind) => return Err(Refused::Rewind),
+                Err(crate::mime::Refused::OutOfMemory) => return Err(Refused::OutOfMemory),
             }
             // SAFETY: as above.
-            unsafe { me.as_ref() }.post_mime.set(true);
+            let shim = unsafe { me.as_ref() };
+            shim.post_body.set(PostBody::Mime);
+            crate::mime::forget_form(shim);
+            options.method = Method::Post;
+            callbacks::sync_upload(options, me, set)?;
+        }
+        (ffi::CURLOPT_HTTPPOST, Ptr(p)) => {
+            // SAFETY: the handle is alive while its options are set.
+            let shim = unsafe { me.as_ref() };
+            // Made a tree again at the next request, even if the same.
+            crate::mime::forget_form(shim);
+            shim.posted_or_make()?.chain.set(p.cast());
+            shim.post_body.set(PostBody::Form);
             options.method = Method::Post;
             callbacks::sync_upload(options, me, set)?;
         }
@@ -428,7 +441,7 @@ fn apply(
             // SAFETY: the handle is alive while its options are set.
             let shim = unsafe { me.as_ref() };
             shim.post.borrow_mut().fields = fields;
-            shim.post_mime.set(false);
+            shim.post_body.set(PostBody::Own);
             options.method = Method::Post;
             callbacks::sync_upload(options, me, set)?;
         }
@@ -440,7 +453,7 @@ fn apply(
             // a size was set, or NULL.
             let copied = unsafe { copy_post_fields(p, size) }?;
             shim.post.borrow_mut().fields = copied;
-            shim.post_mime.set(false);
+            shim.post_body.set(PostBody::Own);
             options.method = Method::Post;
             callbacks::sync_upload(options, me, set)?;
         }

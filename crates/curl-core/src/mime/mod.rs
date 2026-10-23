@@ -274,12 +274,30 @@ pub enum MimeError {
     OutOfMemory,
     /// It nests more than `MAX_LEVELS` deep.
     TooDeep,
+    /// A file it was to send could not be read when it was made.
+    Unreadable,
 }
 
 impl From<OutOfMemory> for MimeError {
     fn from(_: OutOfMemory) -> MimeError {
         MimeError::OutOfMemory
     }
+}
+
+/// The tree whole, as `curl_formget` gives it: the headers that type it as
+/// a form (`Content-Type: multipart/form-data; boundary=...`), a blank
+/// line, then the body a request would send, handed to `out` a piece at a
+/// time, at most 8 KiB each, as it is read. Each piece must be taken
+/// whole: `out` says how much of it it took.
+///
+/// Outside a transfer there is no context to call a handler with, so a
+/// part whose content a handler reads fails it with ReadError, as does a
+/// file that cannot be read or a piece `out` did not take whole.
+pub fn read_whole(
+    mime: TryArc<Mime>,
+    out: &mut dyn FnMut(&[u8]) -> usize,
+) -> Result<(), crate::error::ErrorKind> {
+    read::read_whole(mime, out)
 }
 
 /// A source that gives the same tree each time.

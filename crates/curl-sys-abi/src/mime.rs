@@ -24,7 +24,7 @@ use curl_core::mime::{
 use curl_core::multi::TransferCx;
 
 use crate::callbacks::Adapter;
-use crate::easy::ShimEasy;
+use crate::easy::{PostBody, ShimEasy};
 use crate::ffi::{
     self, CURL, CURL_READFUNC_ABORT, CURL_READFUNC_PAUSE, CURL_SEEKFUNC_OK,
     CURLE_BAD_FUNCTION_ARGUMENT, CURLE_OK, CURLE_OUT_OF_MEMORY, CURLE_READ_ERROR,
@@ -577,7 +577,9 @@ pub unsafe extern "C" fn curl_mime_free(mime: *mut curl_mime) {
     match unsafe { m.as_ref() }.parent {
         Parent::Easy(easy) | Parent::OwnedBy(easy) => {
             // SAFETY: a handle a tree is attached to is live.
-            unsafe { easy.as_ref() }.mimepost.set(None);
+            if let Some(posted) = unsafe { easy.as_ref() }.posted() {
+                posted.mime.set(None);
+            }
         }
         Parent::Part(mut p) => {
             // SAFETY: a part subparts are attached to is live; its content
@@ -595,6 +597,7 @@ const _: ffi::proto::curl_mime_free = curl_mime_free;
 pub(crate) enum Refused {
     /// The tree is attached elsewhere already.
     Attached,
+    OutOfMemory,
     /// A part read before could not be rewound.
     Rewind,
 }
@@ -609,7 +612,8 @@ pub(crate) unsafe fn set_post(easy: NonNull<ShimEasy>, mime: *mut c_void) -> Res
     // SAFETY: the handle is live while its options are set.
     let shim = unsafe { easy.as_ref() };
     let mime = NonNull::new(mime.cast::<ShimMime>());
-    if let (Some(have), Some(m)) = (shim.mimepost.get(), mime)
+    let have = shim.posted().and_then(|p| p.mime.get());
+    if let (Some(have), Some(m)) = (have, mime)
         && have == m
     {
         return Ok(());
@@ -618,6 +622,7 @@ pub(crate) unsafe fn set_post(easy: NonNull<ShimEasy>, mime: *mut c_void) -> Res
     let Some(m) = mime else {
         return Ok(());
     };
+    let posted = shim.posted_or_make().map_err(|_| Refused::OutOfMemory)?;
     // SAFETY: as the caller guarantees.
     let tree = unsafe { &mut *m.as_ptr() };
     if tree.parent != Parent::None {
@@ -627,14 +632,14 @@ pub(crate) unsafe fn set_post(easy: NonNull<ShimEasy>, mime: *mut c_void) -> Res
         return Err(Refused::Rewind);
     }
     tree.parent = Parent::Easy(easy);
-    shim.mimepost.set(Some(m));
+    posted.mime.set(Some(m));
     Ok(())
 }
 
 /// Let go of what the handle posts: the application's tree unbound, the
 /// handle's own copy freed.
 pub(crate) fn detach(shim: &ShimEasy) {
-    let Some(m) = shim.mimepost.take() else {
+    let Some(m) = shim.posted().and_then(|p| p.mime.take()) else {
         return;
     };
     // SAFETY: a tree a handle posts is live until freed, which takes it
@@ -677,7 +682,7 @@ pub(crate) enum DupError {
 /// Give `to`, a copy of `from`, a copy of the tree `from` posts
 /// (`Curl_mime_duppart`).
 pub(crate) fn duplicate(from: &ShimEasy, to: NonNull<ShimEasy>) -> Result<(), DupError> {
-    let Some(m) = from.mimepost.get() else {
+    let Some(m) = from.posted().and_then(|p| p.mime.get()) else {
         return Ok(());
     };
     // SAFETY: a tree a handle posts is live.
@@ -686,11 +691,14 @@ pub(crate) fn duplicate(from: &ShimEasy, to: NonNull<ShimEasy>) -> Result<(), Du
     if 1 + depth(tree) > MAX_LEVELS {
         return Err(DupError::TooDeep);
     }
+    // SAFETY: the copy is live.
+    let posted = unsafe { to.as_ref() }
+        .posted_or_make()
+        .map_err(|_| DupError::OutOfMemory)?;
     let copy = copy_tree(tree).ok_or(DupError::OutOfMemory)?;
     // SAFETY: just made, attached to nothing.
     unsafe { (*copy.as_ptr()).parent = Parent::OwnedBy(to) };
-    // SAFETY: the copy is live.
-    unsafe { to.as_ref() }.mimepost.set(Some(copy));
+    posted.mime.set(Some(copy));
     Ok(())
 }
 
@@ -763,6 +771,28 @@ fn duplicate_list(list: *mut curl_slist) -> Option<*mut curl_slist> {
     Some(copy)
 }
 
+/// What a handle may post besides its own body.
+pub(crate) struct Posted {
+    /// The tree a MIME POST sends (`CURLOPT_MIMEPOST`).
+    pub(crate) mime: Cell<Option<NonNull<ShimMime>>>,
+    /// The chain a form POST sends (`CURLOPT_HTTPPOST`), the
+    /// application's.
+    pub(crate) chain: Cell<*mut ffi::curl_httppost>,
+    /// The tree made of that chain for the first request that sent it,
+    /// the handle's own, until the chain is set again (`state.formp`).
+    pub(crate) form: Cell<Option<NonNull<ShimMime>>>,
+}
+
+impl Posted {
+    pub(crate) fn new() -> Posted {
+        Posted {
+            mime: Cell::new(None),
+            chain: Cell::new(ptr::null_mut()),
+            form: Cell::new(None),
+        }
+    }
+}
+
 /// The tree a handle posts, as the core reads it: built from the
 /// application's nodes each time a request is.
 pub(crate) struct MimeTree(pub(crate) NonNull<ShimEasy>);
@@ -777,17 +807,118 @@ impl MimeSource for MimeTree {
     fn mime(&self) -> Result<Option<TryArc<Mime>>, MimeError> {
         // SAFETY: the handle outlives the options that hold its adapters.
         let shim = unsafe { self.0.as_ref() };
-        let Some(m) = shim.mimepost.get() else {
+        let tree = match shim.post_body.get() {
+            PostBody::Mime => shim.posted().and_then(|p| p.mime.get()),
+            PostBody::Form => form_tree(shim)?,
+            PostBody::Own => None,
+        };
+        let Some(m) = tree else {
             return Ok(None);
         };
+        let easy = self.0;
+        let mut handlers = |part: NonNull<ShimPart>, cb: &Callback| -> Result<Content, MimeError> {
+            Ok(Content::Read {
+                handler: Handler::read(PartAdapter { part, easy })?,
+                rewind: Some(Handler::rewind(PartAdapter { part, easy })?),
+                size: cb.size,
+            })
+        };
         // SAFETY: a tree a handle posts is live.
-        let mime = build(unsafe { m.as_ref() }, self.0, 1)?;
+        let mime = build(unsafe { m.as_ref() }, &mut handlers, 1)?;
         Ok(Some(TryArc::try_new(mime)?))
     }
 }
 
-/// The core's tree of the application's, `depth` levels down.
-fn build(from: &ShimMime, easy: NonNull<ShimEasy>, depth: usize) -> Result<Mime, MimeError> {
+/// The tree the handle made of its form chain, made now if not yet
+/// (`set_post_reader`'s `Curl_getformdata`), its streams read by the read
+/// function set now; kept until the chain is set again.
+fn form_tree(shim: &ShimEasy) -> Result<Option<NonNull<ShimMime>>, MimeError> {
+    // Made when the chain was set.
+    let Some(posted) = shim.posted() else {
+        return Ok(None);
+    };
+    if let Some(tree) = posted.form.get() {
+        return Ok(Some(tree));
+    }
+    let read = shim.ccb.get().read.or(Some(crate::callbacks::fread));
+    // SAFETY: the application keeps the chain it set alive and unchanged
+    // while the handle may post it, as C requires.
+    match unsafe { crate::formdata::tree_of(posted.chain.get(), read) } {
+        Ok(tree) => {
+            posted.form.set(tree);
+            Ok(tree)
+        }
+        Err(crate::formdata::NotConverted(CURLE_OUT_OF_MEMORY)) => Err(MimeError::OutOfMemory),
+        // A file it names cannot be read.
+        Err(_) => Err(MimeError::Unreadable),
+    }
+}
+
+/// Let go of the tree the handle made of its form chain.
+pub(crate) fn forget_form(shim: &ShimEasy) {
+    if let Some(tree) = shim.posted().and_then(|p| p.form.take()) {
+        // SAFETY: the handle's own, which nothing else names.
+        unsafe { free_tree(tree) };
+    }
+}
+
+/// The core's tree of `tree`, outside any transfer (`curl_formget`): a
+/// part a function reads is read whole now, as there is no transfer to
+/// call it in later. Failing, the code to return.
+pub(crate) fn whole(tree: &ShimMime) -> Result<TryArc<Mime>, CURLcode> {
+    let mut failed = CURLE_OK;
+    let mut read_now = |part: NonNull<ShimPart>, cb: &Callback| -> Result<Content, MimeError> {
+        let mut bytes = Vec::new();
+        let mut buf = [0u8; 8192];
+        loop {
+            let room = match cb.size {
+                Some(size) => (size.saturating_sub(bytes.len() as u64)).min(buf.len() as u64),
+                None => buf.len() as u64,
+            } as usize;
+            if room == 0 {
+                break;
+            }
+            // SAFETY: the part is live while its tree is.
+            unsafe { part.as_ref() }.read.set(true);
+            // SAFETY: `buf` has room for `room` bytes; the function takes
+            // its argument.
+            let got = unsafe { (cb.read)(buf.as_mut_ptr().cast(), 1, room, cb.arg) };
+            if got == 0 {
+                break;
+            }
+            if got > room {
+                failed = if got == CURL_READFUNC_ABORT as usize {
+                    ffi::CURLE_ABORTED_BY_CALLBACK
+                } else {
+                    CURLE_READ_ERROR
+                };
+                return Err(MimeError::Unreadable);
+            }
+            bytes.try_extend_from_slice(&buf[..got])?;
+        }
+        Ok(Content::Bytes(TryArc::try_new(bytes)?))
+    };
+    let built = build(tree, &mut read_now, 1).and_then(|m| Ok(TryArc::try_new(m)?));
+    match built {
+        Ok(mime) => Ok(mime),
+        Err(_) if failed != CURLE_OK => Err(failed),
+        Err(MimeError::OutOfMemory) => Err(CURLE_OUT_OF_MEMORY),
+        Err(MimeError::TooDeep) => Err(ffi::CURLE_TOO_LARGE),
+        Err(MimeError::Unreadable) => Err(CURLE_READ_ERROR),
+    }
+}
+
+/// What a part a function reads holds in the core's tree.
+type CallbackContent<'a> =
+    dyn FnMut(NonNull<ShimPart>, &Callback) -> Result<Content, MimeError> + 'a;
+
+/// The core's tree of the application's, `depth` levels down, the content
+/// of a part a function reads made by `callback`.
+fn build(
+    from: &ShimMime,
+    callback: &mut CallbackContent<'_>,
+    depth: usize,
+) -> Result<Mime, MimeError> {
     // Deeper than the core makes: refused before it would be.
     if depth > MAX_LEVELS + 1 {
         return Err(MimeError::TooDeep);
@@ -800,14 +931,10 @@ fn build(from: &ShimMime, easy: NonNull<ShimEasy>, depth: usize) -> Result<Mime,
             PartContent::None => Content::None,
             PartContent::Data(d) => Content::Bytes(d.clone()),
             PartContent::File(f) => Content::File(f.try_clone()?),
-            PartContent::Callback(cb) => Content::Read {
-                handler: Handler::read(PartAdapter { part: p, easy })?,
-                rewind: Some(Handler::rewind(PartAdapter { part: p, easy })?),
-                size: cb.size,
-            },
+            PartContent::Callback(cb) => callback(p, cb)?,
             PartContent::Subparts(sub) => {
                 // SAFETY: a part's subparts live as long as it does.
-                Content::Parts(build(unsafe { sub.as_ref() }, easy, depth + 1)?)
+                Content::Parts(build(unsafe { sub.as_ref() }, callback, depth + 1)?)
             }
         };
         let mut headers = Vec::new();
@@ -1015,7 +1142,13 @@ mod tests {
             );
         }
         assert_eq!(mime(), (false, true));
-        assert!(posted(c).is_some(), "still the handle's");
+        assert!(posted(c).is_none(), "the core is given none");
+        let kept = easy.posted().and_then(|p| p.mime.get());
+        assert_eq!(
+            kept.map(NonNull::as_ptr),
+            Some(m.cast()),
+            "still the handle's"
+        );
         assert_eq!(post(c, m), CURLE_OK);
         assert_eq!(mime(), (true, true));
         // SAFETY: a live handle, and a `long` option.

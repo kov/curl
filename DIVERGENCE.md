@@ -82,6 +82,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   with `(nil)=x`. Pinned by `canonical_queries_as_unit_1980`
   (`crates/curl-core/src/proto/http/sigv4/tests.rs`).
 
+- **The form API refuses or leaves empty what C dereferences as NULL.** `curl_formadd` given a
+  NULL `CURLFORM_FILENAME` or `CURLFORM_BUFFER` returns `CURL_FORMADD_NULL`, as it does for
+  other NULL values; C takes the length of the NULL and crashes. A `CURLFORM_CONTENTTYPE` given
+  after a field's last `CURLFORM_FILE` makes a part with that type and no file; sending the
+  form, or `curl_formget`, then gives it no content, where C compares the missing file name
+  with `-` and crashes. Both crashes measured against the C build. Pinned by
+  `formadd_refuses_as_c_does` and `a_type_past_the_last_file_is_a_part_without_content`
+  (`crates/curl-sys-abi/src/formdata.rs`).
+
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

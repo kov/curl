@@ -1543,7 +1543,19 @@ pub(crate) struct MimeReader { mime: TryArc<Mime>, cursor: Cursor /* a tree besi
 - **Allocation.** The tree, the cursors and the prepared headers are fallible, made when the
   reader is; reading allocates nothing. A handle pays little for MIME it does not use: the core's
   `UploadSource::Mime` is a pointer, `CURLOPT_MIME_OPTIONS` lives in a `Cold` group, and the
-  shim's handle holds a pointer to the tree and a flag for `HTTPREQ_POST_MIME`.
+  shim's handle holds a pointer to the tree and which body a POST sends (`PostBody`: its own,
+  the MIME tree or the form chain, C's `HTTPREQ_POST`, `_POST_MIME` and `_POST_FORM`).
+- **The form API is a tree made from a chain.** `curl_formadd` builds the application's
+  `curl_httppost` chain from the allocator it installed, with C's checks and codes
+  (`curl-sys-abi/src/formdata.rs`); `curl_formfree` frees it. `CURLOPT_HTTPPOST` keeps the
+  chain's pointer; the first request that sends it makes a `curl_mime` tree of it through the
+  tree's own API (`Curl_getformdata`), a stream part reading with the read function set then,
+  and the handle keeps that tree until the chain is set again, `CURLOPT_MIMEPOST` is set or
+  the handle goes (C's `state.formp`), so contents lent by pointer are copied at that request.
+- **Read outside a transfer.** `mime::read_whole` reads a tree as one part that is not
+  `MIME_BODY_ONLY`, its own headers first, in C's pieces, for `curl_formget`; with no transfer to
+  call a handler in, the shim reads a callback part whole first, and the core fails one it
+  meets.
 
 ### 5.5 Progress and timings
 

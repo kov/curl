@@ -81,6 +81,7 @@ impl Upload {
                 Ok(None) => Source::None,
                 Err(MimeError::OutOfMemory) => return Err(MakeError::OutOfMemory),
                 Err(MimeError::TooDeep) => return Err(MakeError::TooLarge),
+                Err(MimeError::Unreadable) => return Err(MakeError::Unreadable),
             },
             UploadSource::None => Source::None,
             UploadSource::Bytes(bytes) => Source::Bytes(bytes.clone()),

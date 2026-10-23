@@ -30,7 +30,7 @@ const TOGGLES: &[(&str, bool)] = &[
     ("wakeup", true),
     ("headers-api", true),
     ("xattr", false),
-    ("form-api", false),
+    ("form-api", true),
     // `time_t` and `curl_off_t` are 64 bits wide.
     ("large-time", true),
     ("large-size", true),

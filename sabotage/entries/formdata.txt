@@ -1,0 +1,38 @@
+# The form API (crates/curl-sys-abi/src/formdata.rs), against formdata.c.
+
+=== a chain set again is not made a tree again
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi formdata::tests::a_chain_is_made_a_tree_once_each_time_it_is_set
+--- old
+            // Made a tree again at the next request, even if the same.
+            crate::mime::forget_form(shim);
+--- new
+            // Made a tree again at the next request, even if the same.
+
+=== a chain is made a tree at each request
+file: crates/curl-sys-abi/src/mime.rs
+witness: curl-sys-abi formdata::tests::a_chain_is_made_a_tree_once_each_time_it_is_set
+--- old
+    if let Some(tree) = posted.form.get() {
+--- new
+    if let Some(tree) = posted.form.get().filter(|_| false) {
+
+=== a NULL file name to show is taken
+file: crates/curl-sys-abi/src/formdata.rs
+witness: curl-sys-abi formdata::tests::formadd_refuses_as_c_does
+--- old
+                    // C reads the length of NULL; it is refused here.
+                    CURL_FORMADD_NULL
+--- new
+                    // C reads the length of NULL; it is refused here.
+                    CURL_FORMADD_OK
+
+=== a part with a type and no file fails the form
+file: crates/curl-sys-abi/src/formdata.rs
+witness: curl-sys-abi formdata::tests::a_type_past_the_last_file_is_a_part_without_content
+--- old
+            // has no content.
+            CURLE_OK
+--- new
+            // has no content.
+            ffi::CURLE_READ_ERROR

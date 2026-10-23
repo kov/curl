@@ -8,7 +8,7 @@
 
 #![allow(unsafe_code)]
 
-use core::cell::{Cell, RefCell, UnsafeCell};
+use core::cell::{Cell, OnceCell, RefCell, UnsafeCell};
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr::{self, NonNull};
 
@@ -46,12 +46,11 @@ pub(crate) struct ShimEasy {
     pub(crate) set: Cell<CSettings>,
     /// What a POST sends, if not read from the read function.
     pub(crate) post: RefCell<callbacks::Post>,
-    /// The POST sends the tree `CURLOPT_MIMEPOST` gave, or none
-    /// (`HTTPREQ_POST_MIME`), until another option makes it a POST of
-    /// its own.
-    pub(crate) post_mime: Cell<bool>,
-    /// The tree a MIME POST sends (`CURLOPT_MIMEPOST`).
-    pub(crate) mimepost: Cell<Option<NonNull<crate::mime::ShimMime>>>,
+    /// Which body a POST sends, until another option chooses another.
+    pub(crate) post_body: Cell<PostBody>,
+    /// The trees a POST may send and the form chain, made the first time
+    /// one is set: few handles post either.
+    posted: OnceCell<Box<crate::mime::Posted>>,
     /// `CURLOPT_ERRORBUFFER`.
     pub(crate) errbuf: Cell<*mut c_char>,
     /// The share the application gave (`CURLOPT_SHARE`), whose core the
@@ -66,6 +65,18 @@ pub(crate) struct ShimEasy {
     pub(crate) string_infos: RefCell<Option<Box<StringInfos>>>,
     /// What `curl_easy_header` and `curl_easy_nextheader` hand out.
     pub(crate) headers_out: [crate::headers::HeaderOut; 2],
+}
+
+/// The body a POST sends (C's `HTTPREQ_POST`, `HTTPREQ_POST_MIME` and
+/// `HTTPREQ_POST_FORM`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PostBody {
+    /// Its own: the post fields, or what the read function reads.
+    Own,
+    /// The tree `CURLOPT_MIMEPOST` gave, or none.
+    Mime,
+    /// The chain `CURLOPT_HTTPPOST` gave, as a tree.
+    Form,
 }
 
 /// What the string infos point to, each ended by a zero byte: replaced
@@ -102,17 +113,21 @@ impl ShimEasy {
         ccb: CCallbacks,
         set: CSettings,
         post: callbacks::Post,
-        post_mime: bool,
+        post_body: PostBody,
+        httppost: *mut ffi::curl_httppost,
         errbuf: *mut c_char,
     ) -> Result<NonNull<ShimEasy>, OutOfMemory> {
         let mut easy = try_box(easy)?;
         let shim = try_box(ShimEasy::empty(false, ccb, set))?;
+        if !httppost.is_null() {
+            shim.posted_or_make()?.chain.set(httppost);
+        }
         let shim = NonNull::from(Box::leak(shim));
         // SAFETY: just made, and reached only through this pointer.
         let me = unsafe { shim.as_ref() };
         me.errbuf.set(errbuf);
         *me.post.borrow_mut() = post;
-        me.post_mime.set(post_mime);
+        me.post_body.set(post_body);
         if let Err(e) = callbacks::install(easy.options_mut(), shim, &set, &ccb, errbuf) {
             // SAFETY: made above by `Box::leak`, used nowhere else.
             drop(unsafe { Box::from_raw(shim.as_ptr()) });
@@ -120,6 +135,20 @@ impl ShimEasy {
         }
         *me.home.borrow_mut() = Home::Detached(easy);
         Ok(shim)
+    }
+
+    /// The trees and the chain the handle posts, if it was ever given one.
+    pub(crate) fn posted(&self) -> Option<&crate::mime::Posted> {
+        self.posted.get().map(|p| &**p)
+    }
+
+    /// The same, made now if not yet.
+    pub(crate) fn posted_or_make(&self) -> Result<&crate::mime::Posted, OutOfMemory> {
+        if self.posted.get().is_none() {
+            let made = try_box(crate::mime::Posted::new())?;
+            assert!(self.posted.set(made).is_ok(), "not made yet");
+        }
+        Ok(self.posted().expect("made above"))
     }
 
     /// A multi's own handle, which no call may use.
@@ -136,8 +165,8 @@ impl ShimEasy {
             ccb: Cell::new(ccb),
             set: Cell::new(set),
             post: RefCell::new(callbacks::Post::new()),
-            post_mime: Cell::new(false),
-            mimepost: Cell::new(None),
+            post_body: Cell::new(PostBody::Own),
+            posted: OnceCell::new(),
             errbuf: Cell::new(ptr::null_mut()),
             share: Cell::new(None),
             private: Cell::new(None),
@@ -321,7 +350,8 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
         CCallbacks::new(),
         CSettings::new(),
         callbacks::Post::new(),
-        false,
+        PostBody::Own,
+        ptr::null_mut(),
         ptr::null_mut(),
     ) {
         Ok(easy) => easy.as_ptr().cast(),
@@ -363,6 +393,7 @@ pub unsafe extern "C" fn curl_easy_cleanup(curl: *mut CURL) {
     crate::share::unlink(easy).expect("the handle is its own");
     // The tree it posts is the application's again, or freed if its own.
     crate::mime::detach(easy);
+    crate::mime::forget_form(easy);
     drop(entry);
     let private = easy.private.take();
     easy.magic.set(0);
@@ -406,7 +437,8 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         easy.ccb.get(),
         easy.set.get(),
         post,
-        easy.post_mime.get(),
+        easy.post_body.get(),
+        easy.posted().map_or(ptr::null_mut(), |p| p.chain.get()),
         easy.errbuf.get(),
     ) {
         Ok(dup) => dup,
@@ -439,8 +471,12 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     easy.ccb.set(ccb);
     easy.set.set(set);
     *easy.post.borrow_mut() = callbacks::Post::new();
-    easy.post_mime.set(false);
+    easy.post_body.set(PostBody::Own);
     crate::mime::detach(easy);
+    if let Some(posted) = easy.posted() {
+        posted.chain.set(ptr::null_mut());
+    }
+    crate::mime::forget_form(easy);
     easy.errbuf.set(ptr::null_mut());
     // The write adapter stays, reading the reset callbacks; the defaults
     // need no other, so a reset allocates nothing, and cannot fail, as

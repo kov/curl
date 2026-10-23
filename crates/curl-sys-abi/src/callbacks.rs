@@ -304,7 +304,7 @@ pub(crate) fn sync_upload(
             let post = unsafe { easy.as_ref() }.post.borrow();
             let size = u64::try_from(post.size).ok();
             // SAFETY: as above.
-            if unsafe { easy.as_ref() }.post_mime.get() {
+            if unsafe { easy.as_ref() }.post_body.get() != crate::easy::PostBody::Own {
                 options.upload = UploadSource::Mime(Handler::mime(crate::mime::MimeTree(easy))?);
                 return Ok(());
             }
@@ -412,7 +412,12 @@ unsafe extern "C" fn fwrite(ptr: *mut c_char, size: usize, n: usize, stream: *mu
 }
 
 /// `fread` with C's argument order, the default read function.
-unsafe extern "C" fn fread(ptr: *mut c_char, size: usize, n: usize, stream: *mut c_void) -> usize {
+pub(crate) unsafe extern "C" fn fread(
+    ptr: *mut c_char,
+    size: usize,
+    n: usize,
+    stream: *mut c_void,
+) -> usize {
     if stream.is_null() {
         return 0;
     }

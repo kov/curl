@@ -40,7 +40,9 @@ pub(crate) struct Bucket {
     tokens: i64,
     /// The last update; `never()` before the first. C's bucket starts
     /// zeroed, its time at the monotonic clock's origin, long enough ago
-    /// that the first update fills it to its burst.
+    /// that the first update fills it to its burst. Its first step then
+    /// ends at the clock's next whole second; here it is a whole step
+    /// (DIVERGENCE.md).
     ts: Instant,
     /// A step's length: a second, or as tuned, under 2 s.
     step_us: u32,

@@ -238,3 +238,39 @@ fn a_receive_limit_s_waits_are_traced_as_c() {
         "{text:?}"
     );
 }
+
+/// A limit's first step is a whole one from the first look at it, the
+/// clock wherever it is. C's bucket is never initialised
+/// (`Curl_rlimit_init` has no caller): its time is the monotonic clock's
+/// origin, so its first step ends at the clock's next whole second, here
+/// 700 ms on (DIVERGENCE.md).
+#[test]
+fn a_limit_s_first_step_is_a_whole_one() {
+    let (mut m, _talks, clock) = endless_clocked(1);
+    clock.advance(Duration::from_millis(5_300));
+    let seen = Seen::default();
+    let (mut e, drops) = endless_get(|o| {
+        o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE);
+        o.output.verbose = true;
+        o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    });
+    let c = Components::new().unwrap();
+    c.configure(b"timer,multi");
+    e.set_components(Some(c));
+    m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    until_body(&mut m, &drops);
+    let text: Vec<_> = seen
+        .text()
+        .into_iter()
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let at = text
+        .iter()
+        .position(|l| l == "[MULTI] [DID] -> [PERFORMING]")
+        .unwrap_or_else(|| panic!("{text:?}"));
+    let first = text[at..]
+        .iter()
+        .find(|l| l.starts_with("[TIMER] [TOOFAST] set for "))
+        .unwrap_or_else(|| panic!("{text:?}"));
+    assert_eq!(first, "[TIMER] [TOOFAST] set for 1000000us");
+}

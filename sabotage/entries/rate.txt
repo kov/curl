@@ -101,3 +101,14 @@ witness: curl-core proto::http::tests::a_send_limit_lets_its_rate_out_each_secon
 --- old
     cx.rate_drain(Way::Send, body.len());
 --- new
+
+=== a limit's first step ends at the clock's next whole second
+file: crates/curl-core/src/progress/rate.rs
+witness: curl-core proto::http::tests::timer_trace::a_limit_s_first_step_is_a_whole_one
+features: test-util
+--- old
+        let elapsed_steps = if self.ts == never() {
+            self.spare_us = 0;
+--- new
+        let elapsed_steps = if self.ts == never() {
+            self.spare_us = u32::try_from(micros_since(now, Instant::EPOCH) % self.step_us()).unwrap();

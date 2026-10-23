@@ -95,6 +95,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   command-line corpus. Pinned by `bytes_after_a_tunnel_s_answer_are_read_first`
   (`crates/curl-core/src/proto/http/tests.rs`).
 
+## Waits C times from the clock's origin
+
+- **A speed limit's first step is a whole second from the first look at it.** Before the body
+  starts (`Curl_rlimit_start`), a transfer under `--limit-rate` or `CURLOPT_MAX_RECV_SPEED_LARGE`
+  arms its `TOOFAST` timer for the limit's next tokens a second on. C's bucket is never
+  initialised (`Curl_rlimit_init`, `lib/ratelimit.c`, has no caller): its time is zero, the origin
+  of `CLOCK_MONOTONIC_RAW`, so the first step's end falls at the clock's next whole second, a
+  wait anywhere from 0 to 1000 ms that depends on how long the machine has been up (measured
+  against the C build: each run's first wait was 1 s less the raw clock's fraction of a second).
+  Once the body starts, both buckets start afresh and agree. Matching it would mean timing every
+  multi from the raw clock's origin. Pinned by `a_limit_s_first_step_is_a_whole_one`
+  (`crates/curl-core/src/proto/http/tests/timer_trace.rs`).
+
 ## Input C misreads
 
 - **A zero byte in a config file line ends that line, and nothing else.** C's `get_line`

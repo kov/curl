@@ -338,7 +338,8 @@ fn part(
 /// Add the headers of the file `name` to `headers` (`read_field_headers`):
 /// a line by line, comments and blank lines passed over, a line starting
 /// with a space joined to the one before. A file that cannot be opened is
-/// warned of and passed over.
+/// warned of and passed over; one whose reading fails ends there, as C's
+/// `fgets` ends it.
 fn header_file(name: &[u8], headers: &mut Vec<Vec<u8>>, msgs: &Messages) -> Result<(), Refused> {
     let mut file = match curl_os::fs::with_c_name(name, curl_os::fs::open_read) {
         Ok(file) => file,
@@ -350,9 +351,9 @@ fn header_file(name: &[u8], headers: &mut Vec<Vec<u8>>, msgs: &Messages) -> Resu
     };
     let mut text = Vec::new();
     let mut buf = [0u8; 4096];
-    let read_failed = loop {
+    loop {
         match file.read(&mut buf) {
-            Ok(0) => break false,
+            Ok(0) => break,
             Ok(n) => {
                 if text.try_extend_from_slice(&buf[..n]).is_err() {
                     msgs.error(&[b"Out of memory for field headers"]);
@@ -360,9 +361,9 @@ fn header_file(name: &[u8], headers: &mut Vec<Vec<u8>>, msgs: &Messages) -> Resu
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => break true,
+            Err(_) => break,
         }
-    };
+    }
     for line in text.split_inclusive(|&b| b == b'\n') {
         // A line and its newline fit the buffer C reads it into.
         if line.len() >= HEADER_LINE {
@@ -394,10 +395,6 @@ fn header_file(name: &[u8], headers: &mut Vec<Vec<u8>>, msgs: &Messages) -> Resu
             msgs.error(&[b"Out of memory for field headers"]);
             return Err(Refused);
         }
-    }
-    if read_failed {
-        msgs.error(&[b"Failed to read field headers"]);
-        return Err(Refused);
     }
     Ok(())
 }
@@ -831,6 +828,18 @@ mod tests {
         let mut f = Form::default();
         assert_eq!(f.add(b"=)", false, &quiet()), Err(Refused));
         assert_eq!(f.add(b"novalue", false, &quiet()), Err(Refused));
+    }
+
+    /// A file of headers whose reading fails, a directory here, ends
+    /// where it fails: C's `fgets` reads that as the end of the file,
+    /// and the part is taken without them.
+    #[test]
+    fn a_header_file_that_cannot_be_read_ends_there() {
+        let dir = std::env::temp_dir();
+        let arg = format!("a=b;headers=@{}", dir.display());
+        let f = form(&[&arg]);
+        assert_eq!(data(&f.parts[0]), b"b");
+        assert!(f.parts[0].headers.is_empty());
     }
 
     /// `--form-string` takes the value as it is.

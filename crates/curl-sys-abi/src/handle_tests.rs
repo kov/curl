@@ -192,7 +192,7 @@ fn mime_options_take_the_form_escape_bit() {
 #[test]
 fn a_request_target_is_kept() {
     let c = curl_easy_init();
-    let target = |c| options(c, |o| o.http.request_target.clone());
+    let target = |c| options(c, |o| o.http.custom.target.clone());
     let mut given = *b"*\0";
     assert_eq!(
         pointer(c, ffi::CURLOPT_REQUEST_TARGET, given.as_mut_ptr()),
@@ -240,7 +240,7 @@ fn a_range_is_kept() {
 #[test]
 fn speed_limits_are_kept_and_copied() {
     let c = curl_easy_init();
-    let speeds = |c| options(c, |o| (o.limits.max_recv_speed, o.limits.max_send_speed));
+    let speeds = |c| options(c, |o| (o.flow.max_recv_speed, o.flow.max_send_speed));
     let n = std::num::NonZeroU64::new;
     assert_eq!(off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 20000), CURLE_OK);
     assert_eq!(off(c, ffi::CURLOPT_MAX_SEND_SPEED_LARGE, 30000), CURLE_OK);
@@ -437,7 +437,7 @@ fn http_options_reach_the_request() {
     let strings = |c| {
         options(c, |o| {
             (
-                o.http.referer.clone(),
+                o.http.custom.referer.clone(),
                 o.http.user_agent.clone(),
                 o.http
                     .headers
@@ -881,7 +881,7 @@ fn limits_are_checked_as_in_c() {
     }
     let low = |c| {
         options(c, |o| {
-            o.limits.low_speed.map(|l| (l.limit.get(), l.time.get()))
+            o.flow.low_speed.map(|l| (l.limit.get(), l.time.get()))
         })
     };
     assert_eq!(long(c, ffi::CURLOPT_LOW_SPEED_LIMIT, 10), CURLE_OK);
@@ -904,7 +904,7 @@ fn limits_are_checked_as_in_c() {
     assert_eq!(low(c), Some((10, 65535)));
     assert_eq!(long(c, ffi::CURLOPT_LOW_SPEED_LIMIT, 0), CURLE_OK);
     assert_eq!(low(c), None);
-    let max = |c| options(c, |o| o.limits.max_filesize.map(|m| m.get()));
+    let max = |c| options(c, |o| o.flow.max_filesize.map(|m| m.get()));
     assert_eq!(long(c, ffi::CURLOPT_MAXFILESIZE, 7), CURLE_OK);
     assert_eq!(max(c), Some(7));
     assert_eq!(
@@ -1212,7 +1212,7 @@ fn request_strings_reach_the_transfer() {
         options(c, |o| {
             let k = &o.http.cookies;
             (
-                o.http.custom_method.clone(),
+                o.http.custom.method.clone(),
                 k.send.clone(),
                 k.files.iter().map(<[u8]>::to_vec).collect::<Vec<_>>(),
                 k.save_to.clone(),
@@ -4843,8 +4843,9 @@ fn a_handle_costs_no_more_than_cs() {
 
 /// Clearing a string or list option of a group never made allocates
 /// nothing, as C's setopt frees nothing and copies nothing for a NULL:
-/// the group is made only by a value. Clearing one in a group made
-/// still clears it.
+/// the group is made only by a value. A size or speed limit set to 0,
+/// none, makes nothing either. Clearing one in a group made still
+/// clears it.
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn clearing_an_option_makes_no_group() {
@@ -4865,6 +4866,9 @@ fn clearing_an_option_makes_no_group() {
         ffi::CURLOPT_NETRC_FILE,
         ffi::CURLOPT_COOKIE,
         ffi::CURLOPT_COOKIEFILE,
+        ffi::CURLOPT_REFERER,
+        ffi::CURLOPT_CUSTOMREQUEST,
+        ffi::CURLOPT_REQUEST_TARGET,
     ];
     let c = curl_easy_init();
     for option in cleared {
@@ -4872,6 +4876,35 @@ fn clearing_an_option_makes_no_group() {
         assert_eq!(code, CURLE_OK, "{option:?}");
         assert_eq!(cost.allocations, 0, "{option:?} made its group");
     }
+    let longs = [
+        ffi::CURLOPT_LOW_SPEED_LIMIT,
+        ffi::CURLOPT_LOW_SPEED_TIME,
+        ffi::CURLOPT_MAXFILESIZE,
+    ];
+    for option in longs {
+        let (code, cost) = measure(|| long(c, option, 0));
+        assert_eq!((code, cost.allocations), (CURLE_OK, 0), "{option:?}");
+    }
+    let offs = [
+        ffi::CURLOPT_MAXFILESIZE_LARGE,
+        ffi::CURLOPT_MAX_RECV_SPEED_LARGE,
+        ffi::CURLOPT_MAX_SEND_SPEED_LARGE,
+    ];
+    for option in offs {
+        let (code, cost) = measure(|| off(c, option, 0));
+        assert_eq!((code, cost.allocations), (CURLE_OK, 0), "{option:?}");
+    }
+    // A limit set makes the group, once; 0 then clears it.
+    let (code, cost) = measure(|| off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 1000));
+    assert_eq!((code, cost.allocations), (CURLE_OK, 1));
+    let (code, cost) = measure(|| off(c, ffi::CURLOPT_MAXFILESIZE_LARGE, 5));
+    assert_eq!((code, cost.allocations), (CURLE_OK, 0));
+    off(c, ffi::CURLOPT_MAX_RECV_SPEED_LARGE, 0);
+    assert_eq!(options(c, |o| o.flow.max_recv_speed), None);
+    assert_eq!(
+        options(c, |o| o.flow.max_filesize.map(|n| n.get())),
+        Some(5)
+    );
     pointer(c, ffi::CURLOPT_PROXY, c"http://p".as_ptr().cast_mut());
     pointer(
         c,

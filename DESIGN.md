@@ -166,12 +166,13 @@ arguments read by a small C helper (`csrc/va_fetch.c`), unless the shim is built
     checked as setopt.c checks it. The ids libcurl knows are generated from
     `inventory/options.json` (`gen/setopt.py`), so an id the shim lacks answers
     `CURLE_NOT_BUILT_IN` and an unknown one `CURLE_UNKNOWN_OPTION`.
-  - A group most transfers never set (the proxy, the login, `.netrc`, the cookies) is a
-    `Cold<T>`: made, fallibly, the first time one of its options is set, so the setopt that
-    makes it is the one that can run out of memory, and read as the group's defaults until
-    then; clearing an option of a group never made makes nothing (`Cold::set`). Every handle pays only for the hot groups and a pointer per cold one; a new option
-    of a seldom-used kind joins a cold group. A handle's memory is pinned below C's (libtest
-    751's thousand handles; the shim's `a_handle_costs_no_more_than_cs`).
+  - A group most transfers never set (the proxy, the login, `.netrc`, the cookies, the size and
+    speed limits, a request's custom method, target and referer) is a `Cold<T>`: made, fallibly,
+    the first time one of its options is set, so the setopt that makes it is the one that can run
+    out of memory, and read as the group's defaults until then; clearing an option of a group never
+    made makes nothing (`Cold::set`). Every handle pays only for the hot groups and a pointer per
+    cold one; a new option of a seldom-used kind joins a cold group. A handle's memory is pinned
+    below C's (libtest 751's thousand handles; the shim's `a_handle_costs_no_more_than_cs`).
 - **Errors:** one error kind per API that can fail in the core (easy, multi, URL), with a
   variant per way the core fails; the easy `Error` also carries an optional detail message.
   - The codes only the C API produces (an unknown option, a bad handle, a call from a

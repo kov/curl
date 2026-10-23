@@ -531,7 +531,7 @@ fn a_transfer_too_slow_for_too_long_times_out() {
         Piece::Yield,
         Piece::Yield,
     ]);
-    e.options_mut().limits.low_speed = slow(1000, 2);
+    e.options_mut().flow.make_mut().unwrap().low_speed = slow(1000, 2);
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let mut ended = None;
     for second in 0..10 {
@@ -556,7 +556,7 @@ fn a_transfer_fast_enough_is_not_stopped() {
         pieces.push(Piece::Yield);
     }
     let mut e = script(pieces);
-    e.options_mut().limits.low_speed = slow(1000, 2);
+    e.options_mut().flow.make_mut().unwrap().low_speed = slow(1000, 2);
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..6 {
         m.perform(&mut NoEvents).unwrap();
@@ -585,7 +585,7 @@ fn a_paused_transfer_is_not_too_slow() {
         Piece::Yield,
         Piece::Yield,
     ]);
-    e.options_mut().limits.low_speed = slow(1000, 2);
+    e.options_mut().flow.make_mut().unwrap().low_speed = slow(1000, 2);
     e.options_mut().callbacks.write = Some(Handler::write(Pausing).unwrap());
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     for _ in 0..5 {
@@ -654,7 +654,7 @@ fn an_unpause_forgets_the_slow_time() {
     let mut pieces = vec![body(10)];
     pieces.extend((0..8).map(|_| Piece::Yield));
     let mut e = script(pieces);
-    e.options_mut().limits.low_speed = slow(1000, 2);
+    e.options_mut().flow.make_mut().unwrap().low_speed = slow(1000, 2);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
     clock.advance(Duration::from_secs(1));
@@ -696,7 +696,7 @@ fn slow_until(act: impl FnOnce(&mut Multi, TransferId)) -> Option<u64> {
     let mut pieces = vec![body(10000)];
     pieces.extend((0..20).map(|_| Piece::Yield));
     let mut e = script(pieces);
-    e.options_mut().limits.low_speed = slow(1000, 3);
+    e.options_mut().flow.make_mut().unwrap().low_speed = slow(1000, 3);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let mut act = Some(act);
     for second in 0..15 {

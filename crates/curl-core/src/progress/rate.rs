@@ -12,7 +12,7 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use crate::deliver::Pause;
-use crate::options::Limits;
+use crate::options::Flow;
 use crate::time::Instant;
 
 const US_PER_SEC: i64 = 1_000_000;
@@ -297,10 +297,10 @@ pub(crate) struct RateLimits {
 
 impl RateLimits {
     /// The bucket for `way`, on the options' rate.
-    fn bucket(&mut self, way: Way, limits: &Limits) -> &mut Bucket {
+    fn bucket(&mut self, way: Way, flow: &Flow) -> &mut Bucket {
         let (bucket, rate) = match way {
-            Way::Recv => (&mut self.recv, limits.max_recv_speed),
-            Way::Send => (&mut self.send, limits.max_send_speed),
+            Way::Recv => (&mut self.recv, flow.max_recv_speed),
+            Way::Send => (&mut self.send, flow.max_send_speed),
         };
         bucket.sync(rate);
         bucket
@@ -309,8 +309,8 @@ impl RateLimits {
     /// Start `way` afresh at `now`, tuned for `total` bytes if known:
     /// the body's first bytes for receiving, the first read of the
     /// upload for sending, and either way an unpause.
-    pub(crate) fn start(&mut self, way: Way, limits: &Limits, now: Instant, total: Option<u64>) {
-        self.bucket(way, limits).start(now, total);
+    pub(crate) fn start(&mut self, way: Way, flow: &Flow, now: Instant, total: Option<u64>) {
+        self.bucket(way, flow).start(now, total);
     }
 
     /// How many bytes `way` may move now, if it is limited: none while
@@ -318,42 +318,35 @@ impl RateLimits {
     pub(crate) fn allowance(
         &mut self,
         way: Way,
-        limits: &Limits,
+        flow: &Flow,
         pause: Pause,
         now: Instant,
     ) -> Option<i64> {
         if paused(way, pause) {
             return Some(0);
         }
-        let bucket = self.bucket(way, limits);
+        let bucket = self.bucket(way, flow);
         bucket.active().then(|| bucket.avail(now))
     }
 
     /// `n` bytes moved `way` (`Curl_rlimit_drain`).
-    pub(crate) fn drain(
-        &mut self,
-        way: Way,
-        limits: &Limits,
-        pause: Pause,
-        n: usize,
-        now: Instant,
-    ) {
+    pub(crate) fn drain(&mut self, way: Way, flow: &Flow, pause: Pause, n: usize, now: Instant) {
         if !paused(way, pause) {
-            self.bucket(way, limits).drain(n, now);
+            self.bucket(way, flow).drain(n, now);
         }
     }
 
     /// Whether the transfer waits for tokens, and if not, when the next
     /// come (`mspeed_check`): the longer wait of the two directions, or
     /// the sooner of their next steps.
-    pub(crate) fn verdict(&mut self, limits: &Limits, pause: Pause, now: Instant) -> Verdict {
+    pub(crate) fn verdict(&mut self, flow: &Flow, pause: Pause, now: Instant) -> Verdict {
         let mut wait = [0; 2];
         let mut next = [0; 2];
         for (i, way) in [Way::Send, Way::Recv].into_iter().enumerate() {
             if paused(way, pause) {
                 continue;
             }
-            let bucket = self.bucket(way, limits);
+            let bucket = self.bucket(way, flow);
             wait[i] = bucket.wait_ms(now);
             next[i] = bucket.next_step_ms(now);
         }

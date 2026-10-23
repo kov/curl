@@ -427,7 +427,7 @@ fn a_body_past_the_size_limit_is_not_written() {
     let reply = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n\
         5\r\nhello\r\n7\r\n world\n\r\n0\r\n\r\n";
     let (ran, lines) = written(writing(), reply, |o| {
-        o.limits.max_filesize = NonZeroU64::new(5);
+        o.flow.make_mut().unwrap().max_filesize = NonZeroU64::new(5);
     });
     assert_eq!(ran.result, Err(ErrorKind::FilesizeExceeded));
     let bodies: Vec<_> = lines

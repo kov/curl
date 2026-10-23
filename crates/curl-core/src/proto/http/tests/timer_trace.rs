@@ -151,8 +151,8 @@ fn the_speed_timers_are_armed_with_their_waits() {
     let (mut m, _talks, _clock) = endless_clocked(1);
     let seen = Seen::default();
     let (mut e, drops) = endless_get(|o| {
-        o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE);
-        o.limits.low_speed = Some(crate::options::LowSpeed {
+        o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE);
+        o.flow.make_mut().unwrap().low_speed = Some(crate::options::LowSpeed {
             limit: NonZeroU64::new(1).unwrap(),
             time: std::num::NonZeroU16::new(5).unwrap(),
         });

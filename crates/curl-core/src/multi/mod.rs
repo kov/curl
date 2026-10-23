@@ -1145,8 +1145,8 @@ fn pause_transfer<H: Host>(
         slot.speedometer.start_over();
     }
     for (way, _) in resumed.into_iter().filter(|&(_, r)| r) {
-        let limits = &slot.easy.options().limits;
-        slot.rate.start(way, limits, rest.now, None);
+        let flow = &slot.easy.options().flow;
+        slot.rate.start(way, flow, rest.now, None);
     }
     // Unless paused every way it moves bytes, the transfer runs again, and
     // is not slow for the time it was not (easy.c:1222). The ways are its

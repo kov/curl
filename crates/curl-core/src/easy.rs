@@ -122,7 +122,7 @@ impl Easy {
     /// even where a redirect stopped sending it, or the one the request
     /// had.
     pub fn effective_method(&self) -> &[u8] {
-        if let Some(custom) = &self.options.http.custom_method {
+        if let Some(custom) = &self.options.http.custom.method {
             return custom;
         }
         self.report.method().name()
@@ -1024,7 +1024,7 @@ mod tests {
         easy.options_mut().limits.total = TimeLimit::from_millis(5);
         let http = &mut easy.options_mut().http;
         http.user_agent = Some(b"me".to_vec());
-        http.referer = Some(b"r".to_vec());
+        http.custom.make_mut().unwrap().referer = Some(b"r".to_vec());
         http.headers = crate::options::UserHeaders::new([&b"X-A: 1"[..]]).unwrap();
         http.fail_on_error = true;
         let copy = easy.try_clone().unwrap();
@@ -1032,7 +1032,7 @@ mod tests {
         assert_eq!(copy.options().limits.total, TimeLimit::from_millis(5));
         let http = &copy.options().http;
         assert_eq!(
-            (http.user_agent.as_deref(), http.referer.as_deref()),
+            (http.user_agent.as_deref(), http.custom.referer.as_deref()),
             (Some(&b"me"[..]), Some(&b"r"[..]))
         );
         assert!(http.headers.lines().eq([&b"X-A: 1"[..]]));

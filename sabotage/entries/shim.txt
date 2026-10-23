@@ -100,9 +100,9 @@ witness: curl-core options::tests::auth_methods_are_sets
 file: crates/curl-sys-abi/src/setopt/mod.rs
 witness: curl-sys-abi handle_tests::a_request_target_is_kept
 --- old
-            options.http.request_target = unsafe { owned(p) }?;
+            options.http.custom.set(|g| &mut g.target, value)?;
 --- new
-            let _ = unsafe { owned(p) }?;
+            drop(value);
 
 === the debug build's time is made seconds for a double
 file: crates/curl-sys-abi/src/getinfo.rs
@@ -157,3 +157,21 @@ witness: curl-sys-abi handle_tests::the_multi_counts_running_and_waiting_transfe
         let Some(run) = &slots.get(id).expect("just found").run else {
             unreachable!("every run is in its slot");
         };
+
+=== a send speed limit of 0 makes the options' flow group
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::clearing_an_option_makes_no_group
+features: debug-hooks
+--- old
+            options.flow.set(|g| &mut g.max_send_speed, speed(n)?)?
+--- new
+            options.flow.make_mut()?.max_send_speed = speed(n)?
+
+=== a NULL custom method makes the custom request group
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::clearing_an_option_makes_no_group
+features: debug-hooks
+--- old
+            options.http.custom.set(|g| &mut g.method, value)?;
+--- new
+            options.http.custom.make_mut()?.method = value;

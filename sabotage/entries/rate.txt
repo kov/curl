@@ -53,9 +53,9 @@ witness: curl-core proto::http::tests::a_receive_limit_lets_its_rate_through_eac
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core proto::http::tests::an_unpause_starts_the_receive_limit_over
 --- old
-        slot.rate.start(way, limits, rest.now, None);
+        slot.rate.start(way, flow, rest.now, None);
 --- new
-        let _ = (way, limits);
+        let _ = (way, flow);
 
 === a transfer over its limit does not wait for its timer
 file: crates/curl-core/src/multi/state.rs

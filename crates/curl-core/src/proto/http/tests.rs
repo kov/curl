@@ -558,7 +558,7 @@ fn a_head_s_end_fails_around_its_blank_line() {
     };
     assert_eq!(
         order(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc", |o| {
-            o.limits.max_filesize = std::num::NonZeroU64::new(10);
+            o.flow.make_mut().unwrap().max_filesize = std::num::NonZeroU64::new(10);
         }),
         (Err(ErrorKind::FilesizeExceeded), true)
     );
@@ -1567,7 +1567,7 @@ fn the_upload_buffer_is_the_size_set() {
 #[test]
 fn a_custom_method_is_sent_with_the_body_kept() {
     let ran = with_body(Method::Post, b"a=b", |o| {
-        o.http.custom_method = Some(b"PATCH".to_vec());
+        o.http.custom.make_mut().unwrap().method = Some(b"PATCH".to_vec());
     });
     assert_eq!(ran.result, Ok(()));
     assert!(ran.request.starts_with(b"PATCH /p HTTP/1.1\r\n"));
@@ -1580,7 +1580,7 @@ fn a_custom_method_is_sent_with_the_body_kept() {
 fn a_request_target_replaces_only_the_request_line_s() {
     let (mut m, talk, _) = server(&[DIGEST_CHALLENGE, OK], false);
     let ran = get(&mut m, "/a?q", talk, |o| {
-        o.http.request_target = Some(b"*".to_vec());
+        o.http.custom.make_mut().unwrap().target = Some(b"*".to_vec());
         *o.login.make_mut().unwrap() = crate::options::Login::from_pair(b"u:p").unwrap();
         o.http.auth = crate::options::HttpAuth(AuthMethods::DIGEST);
     });
@@ -2449,7 +2449,8 @@ fn a_redirect_turns_a_post_into_a_get_as_c_does() {
 /// code is obeyed; asking it only of the first URL drops it at once.
 #[test]
 fn a_custom_method_follows_as_the_mode_says() {
-    let custom = |o: &mut Options| o.http.custom_method = Some(b"DELETE".to_vec());
+    let custom =
+        |o: &mut Options| o.http.custom.make_mut().unwrap().method = Some(b"DELETE".to_vec());
     let ran = redirected(303, Method::Get, b"", custom);
     assert!(second_request(&ran).starts_with("DELETE /b "));
     assert!(
@@ -2506,10 +2507,12 @@ impl DebugHandler for ChangesOn {
 #[test]
 fn a_custom_method_set_while_a_redirect_is_traced_stands() {
     let ran = redirected(303, Method::Get, b"", |o| {
-        o.http.custom_method = Some(b"DELETE".to_vec());
+        o.http.custom.make_mut().unwrap().method = Some(b"DELETE".to_vec());
         let change = ChangesOn {
             at: b"Stick to DELETE instead of GET",
-            change: Box::new(|o| o.http.custom_method = Some(b"PATCH".to_vec())),
+            change: Box::new(|o| {
+                o.http.custom.make_mut().unwrap().method = Some(b"PATCH".to_vec())
+            }),
         };
         o.callbacks.debug = Some(Handler::debug(change).unwrap());
     });
@@ -2918,7 +2921,7 @@ fn a_followed_redirect_refers_to_where_it_came_from() {
             o.set_url(Some(url.as_bytes())).unwrap();
             o.http.follow = Follow::All;
             o.http.auto_referer = auto;
-            o.http.referer = Some(b"given".to_vec());
+            o.http.custom.make_mut().unwrap().referer = Some(b"given".to_vec());
         });
         assert_eq!(ran.result, Ok(()));
         let text = String::from_utf8_lossy(&ran.request).into_owned();
@@ -5491,7 +5494,8 @@ fn until_body(m: &mut Multi, drops: &Drops) {
 #[test]
 fn a_receive_limit_lets_its_rate_through_each_second() {
     let (mut m, talks, clock) = endless_clocked(1);
-    let (e, drops) = endless_get(|o| o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE));
+    let (e, drops) =
+        endless_get(|o| o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE));
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     until_body(&mut m, &drops);
     // The first step's tokens all came in the pass that started the body:
@@ -5541,7 +5545,8 @@ fn a_receive_limit_spreads_a_known_size() {
         waker: None,
     };
     let mut m: Multi = Multi::new(env).unwrap();
-    let (e, drops) = endless_get(|o| o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE));
+    let (e, drops) =
+        endless_get(|o| o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE));
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     until_body(&mut m, &drops);
     assert_eq!(drops.0.get(), 59_400);
@@ -5562,7 +5567,8 @@ fn a_receive_limit_spreads_a_known_size() {
 #[test]
 fn an_unpause_starts_the_receive_limit_over() {
     let (mut m, _talks, clock) = endless_clocked(1);
-    let (e, drops) = endless_get(|o| o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE));
+    let (e, drops) =
+        endless_get(|o| o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE));
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     until_body(&mut m, &drops);
     assert_eq!(drops.0.get(), RECV_RATE);
@@ -5585,7 +5591,7 @@ fn a_rate_limited_transfer_times_out() {
     let (mut m, _talks, _clock) = endless_clocked(1);
     let seen = Seen::default();
     let (e, drops) = endless_get(|o| {
-        o.limits.max_recv_speed = NonZeroU64::new(RECV_RATE);
+        o.flow.make_mut().unwrap().max_recv_speed = NonZeroU64::new(RECV_RATE);
         o.limits.total = crate::time::TimeLimit::from_millis(2500);
         o.output.verbose = true;
         o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
@@ -5631,7 +5637,7 @@ fn a_send_limit_lets_its_rate_out_each_second() {
         .unwrap();
     o.method = Method::Post;
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
-    o.limits.max_send_speed = NonZeroU64::new(RATE);
+    o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(RATE);
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     let body = |talk: &Conversation| {
         let got = talk.received();
@@ -6027,7 +6033,7 @@ fn a_body_held_for_a_100_earns_from_the_head() {
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
     o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
     o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(3));
-    o.limits.max_send_speed = NonZeroU64::new(RATE);
+    o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(RATE);
     o.output.verbose = true;
     o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
@@ -6066,7 +6072,7 @@ fn a_head_goes_beside_a_second_s_worth_of_the_body() {
             .unwrap();
         o.method = Method::Post;
         o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
-        o.limits.max_send_speed = NonZeroU64::new(rate);
+        o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(rate);
         o.output.verbose = true;
         o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
         m.add(Box::new(e), (), &mut NoEvents).unwrap();

@@ -296,7 +296,7 @@ fn run(test: u32) -> Result<Result<(), String>, Skip> {
     let o: &mut Options = e.options_mut();
     o.set_url(Some(&c.url)).unwrap();
     o.limits.total = TimeLimit::from_millis(10_000);
-    o.limits.max_filesize = c.max_filesize;
+    o.flow.make_mut().unwrap().max_filesize = c.max_filesize;
     if c.head {
         o.method = Method::Head;
     }

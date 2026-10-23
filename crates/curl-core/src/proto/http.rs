@@ -680,7 +680,7 @@ impl Request {
     /// The method the request line names: the application's own, unless
     /// a follow dropped it.
     fn method_line<'o>(&self, http: &'o Http) -> &'o [u8] {
-        let custom = http.custom_method.as_deref().filter(|_| self.custom);
+        let custom = http.custom.method.as_deref().filter(|_| self.custom);
         custom.unwrap_or(self.method.name())
     }
 
@@ -970,7 +970,7 @@ impl Request {
             method,
             // The application's target replaces only the request line's
             // (`http_target`).
-            target: match &http.request_target {
+            target: match &http.custom.target {
                 Some(target) => target,
                 None => self
                     .forward_target
@@ -1018,7 +1018,7 @@ impl Request {
             asked: Asked {
                 head: self.method == Method::Head,
                 ignore_length: http.ignore_content_length,
-                max_filesize: options.limits.max_filesize,
+                max_filesize: options.flow.max_filesize,
                 decode_codings: http.transfer_encoding,
                 raw_codings: http.raw,
                 fail_on_error: http.fail_on_error,
@@ -1216,7 +1216,7 @@ impl Request {
                 _ => 0,
             };
             let body = self.filled - self.sent - head;
-            let end = match cx.easy().options().limits.max_send_speed {
+            let end = match cx.easy().options().flow.max_send_speed {
                 Some(max) if body as u64 > max.get() => {
                     self.sent + head + usize::try_from(max.get()).expect("under a length")
                 }

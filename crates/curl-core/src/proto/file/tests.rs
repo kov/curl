@@ -693,7 +693,7 @@ fn an_upload_writes_the_file() {
 fn a_send_limit_does_not_cut_an_upload_short() {
     let s = Scratch::new("uplimit");
     let (mut e, _) = upload(&s.url("f"), fed(70000));
-    e.options_mut().limits.max_send_speed = std::num::NonZeroU64::new(1000);
+    e.options_mut().flow.make_mut().unwrap().max_send_speed = std::num::NonZeroU64::new(1000);
     let (r, _) = run(e);
     assert_eq!(r, Ok(()));
     assert_eq!(s.read("f"), [b'u'; 70000]);

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::deliver::RecvPause;
+use crate::options::ColdGroup as _;
 
 fn at(us: u64) -> Instant {
     Instant::EPOCH.after(Duration::from_micros(us))
@@ -149,11 +150,11 @@ fn a_bucket_never_started_has_its_burst() {
     assert_eq!(never.next_step_ms(at(START)), 0);
 }
 
-fn limits(recv: u64, send: u64) -> Limits {
-    Limits {
+fn limits(recv: u64, send: u64) -> Flow {
+    Flow {
         max_recv_speed: NonZeroU64::new(recv),
         max_send_speed: NonZeroU64::new(send),
-        ..Limits::default()
+        ..Flow::NONE
     }
 }
 

@@ -1318,7 +1318,7 @@ features: test-util
 --- old
             uri: &self.target,
 --- new
-            uri: http.request_target.as_deref().unwrap_or(&self.target),
+            uri: http.custom.target.as_deref().unwrap_or(&self.target),
 
 === a NETRC or HOME set empty names the file
 file: crates/curl-core/src/netrc.rs

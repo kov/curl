@@ -592,19 +592,23 @@ fn apply(
                 return Err(Refused::Bad);
             }
             set.low_speed_limit = n;
-            options.limits.low_speed = low_speed(set);
+            options.flow.set(|g| &mut g.low_speed, low_speed(set))?;
         }
         (ffi::CURLOPT_LOW_SPEED_TIME, Long(n)) => {
             if n < 0 {
                 return Err(Refused::Bad);
             }
             set.low_speed_time = n.min(c_long::from(u16::MAX));
-            options.limits.low_speed = low_speed(set);
+            options.flow.set(|g| &mut g.low_speed, low_speed(set))?;
         }
         (ffi::CURLOPT_MAXFILESIZE, Long(n)) => {
-            options.limits.max_filesize = max_filesize(wide(n))?;
+            options
+                .flow
+                .set(|g| &mut g.max_filesize, max_filesize(wide(n))?)?;
         }
-        (ffi::CURLOPT_MAXFILESIZE_LARGE, Off(n)) => options.limits.max_filesize = max_filesize(n)?,
+        (ffi::CURLOPT_MAXFILESIZE_LARGE, Off(n)) => options
+            .flow
+            .set(|g| &mut g.max_filesize, max_filesize(n)?)?,
         (ffi::CURLOPT_BUFFERSIZE, Long(n)) => {
             let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
             options.limits.buffer_size = BufferSize::clamped(n);
@@ -613,8 +617,12 @@ fn apply(
             let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
             options.limits.upload_buffer = UploadBufferSize::clamped(n);
         }
-        (ffi::CURLOPT_MAX_RECV_SPEED_LARGE, Off(n)) => options.limits.max_recv_speed = speed(n)?,
-        (ffi::CURLOPT_MAX_SEND_SPEED_LARGE, Off(n)) => options.limits.max_send_speed = speed(n)?,
+        (ffi::CURLOPT_MAX_RECV_SPEED_LARGE, Off(n)) => {
+            options.flow.set(|g| &mut g.max_recv_speed, speed(n)?)?
+        }
+        (ffi::CURLOPT_MAX_SEND_SPEED_LARGE, Off(n)) => {
+            options.flow.set(|g| &mut g.max_send_speed, speed(n)?)?
+        }
         (ffi::CURLOPT_RESUME_FROM, Long(n)) => options.resume = resume(wide(n))?,
         (ffi::CURLOPT_RESUME_FROM_LARGE, Off(n)) => options.resume = resume(n)?,
         (ffi::CURLOPT_RANGE, Ptr(p)) => {
@@ -656,7 +664,8 @@ fn apply(
         }
         (ffi::CURLOPT_REFERER, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            options.http.referer = unsafe { owned(p) }?;
+            let value = unsafe { owned(p) }?;
+            options.http.custom.set(|g| &mut g.referer, value)?;
         }
         // The user and the password; the Bearer token stays, as in C.
         (ffi::CURLOPT_USERPWD, Ptr(p)) => {
@@ -783,7 +792,8 @@ fn apply(
         }
         (ffi::CURLOPT_CUSTOMREQUEST, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            options.http.custom_method = unsafe { owned(p) }?;
+            let value = unsafe { owned(p) }?;
+            options.http.custom.set(|g| &mut g.method, value)?;
         }
         (ffi::CURLOPT_AWS_SIGV4, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
@@ -843,7 +853,8 @@ fn apply(
         }
         (ffi::CURLOPT_REQUEST_TARGET, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
-            options.http.request_target = unsafe { owned(p) }?;
+            let value = unsafe { owned(p) }?;
+            options.http.custom.set(|g| &mut g.target, value)?;
         }
         (ffi::CURLOPT_COOKIE, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.

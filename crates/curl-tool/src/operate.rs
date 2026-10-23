@@ -1526,7 +1526,9 @@ fn setopts(
         },
     )?;
     s.offt("CURLOPT_MAXFILESIZE_LARGE", long(op.max_filesize), |o| {
-        o.limits.max_filesize = NonZeroU64::new(op.max_filesize);
+        o.flow
+            .set(|g| &mut g.max_filesize, NonZeroU64::new(op.max_filesize))
+            .map_err(oom)?;
         Ok(())
     })?;
     let (ip_version, resolve) = match op.ip_version {
@@ -1841,7 +1843,8 @@ fn credentials_and_headers(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(),
         Ok(())
     })?;
     s.str("CURLOPT_REFERER", op.referer, |o| {
-        o.http.referer = op.referer.map(copy).transpose().map_err(oom)?;
+        let value = op.referer.map(copy).transpose().map_err(oom)?;
+        o.http.custom.set(|g| &mut g.referer, value).map_err(oom)?;
         Ok(())
     })?;
     let default_agent;
@@ -1881,7 +1884,8 @@ fn transfer_setopts(
         Ok(())
     })?;
     s.str("CURLOPT_REQUEST_TARGET", op.request_target, |o| {
-        o.http.request_target = op.request_target.map(copy).transpose().map_err(oom)?;
+        let value = op.request_target.map(copy).transpose().map_err(oom)?;
+        o.http.custom.set(|g| &mut g.target, value).map_err(oom)?;
         Ok(())
     })?;
     s.long("CURLOPT_UPLOAD", i64::from(config.upload), |o| {
@@ -1928,15 +1932,24 @@ fn transfer_setopts(
     }
     s.long("CURLOPT_LOW_SPEED_LIMIT", long(op.low_speed_limit), nothing)?;
     s.long("CURLOPT_LOW_SPEED_TIME", long(op.low_speed_time), |o| {
-        o.limits.low_speed = low_speed(op.low_speed_limit, op.low_speed_time);
+        o.flow
+            .set(
+                |g| &mut g.low_speed,
+                low_speed(op.low_speed_limit, op.low_speed_time),
+            )
+            .map_err(oom)?;
         Ok(())
     })?;
     s.offt("CURLOPT_MAX_SEND_SPEED_LARGE", long(op.limit_rate), |o| {
-        o.limits.max_send_speed = NonZeroU64::new(op.limit_rate);
+        o.flow
+            .set(|g| &mut g.max_send_speed, NonZeroU64::new(op.limit_rate))
+            .map_err(oom)?;
         Ok(())
     })?;
     s.offt("CURLOPT_MAX_RECV_SPEED_LARGE", long(op.limit_rate), |o| {
-        o.limits.max_recv_speed = NonZeroU64::new(op.limit_rate);
+        o.flow
+            .set(|g| &mut g.max_recv_speed, NonZeroU64::new(op.limit_rate))
+            .map_err(oom)?;
         Ok(())
     })?;
     // An upload resumed where the peer's file ends is -1.
@@ -1983,7 +1996,8 @@ fn transfer_setopts(
     )?;
     s.offt("CURLOPT_TIMEVALUE_LARGE", time, nothing)?;
     s.str("CURLOPT_CUSTOMREQUEST", op.custom_request, |o| {
-        o.http.custom_method = op.custom_request.map(copy).transpose().map_err(oom)?;
+        let value = op.custom_request.map(copy).transpose().map_err(oom)?;
+        o.http.custom.set(|g| &mut g.method, value).map_err(oom)?;
         Ok(())
     })?;
     // `customrequest_helper`.

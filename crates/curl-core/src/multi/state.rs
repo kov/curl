@@ -23,7 +23,7 @@ use crate::conn::{
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind};
-use crate::options::{Follow, Limits, Method, Options, ProxyType, ResolveList};
+use crate::options::{Flow, Follow, Method, Options, ProxyType, ResolveList};
 use crate::progress::rate::{RateLimits, Verdict, Way};
 use crate::progress::{self, Speedometer};
 use crate::proto::http::Challenged;
@@ -816,7 +816,7 @@ impl<H: Host> StepCx<'_, H> {
 
     /// The speed limits' buckets, with the limits and the pause they are
     /// read with.
-    fn rate_parts(&mut self) -> (&mut RateLimits, &Limits, Pause, Instant) {
+    fn rate_parts(&mut self) -> (&mut RateLimits, &Flow, Pause, Instant) {
         let now = self.rest.now;
         let slot = self
             .rest
@@ -824,7 +824,7 @@ impl<H: Host> StepCx<'_, H> {
             .slots
             .get_mut(self.me)
             .expect("the stepping transfer");
-        (&mut slot.rate, &slot.easy.options().limits, slot.pause, now)
+        (&mut slot.rate, &slot.easy.options().flow, slot.pause, now)
     }
 
     /// How many bytes `way` may move now, if it is limited
@@ -2030,7 +2030,7 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
     let (want, proxy_want) = (options.http.auth.0, options.proxy.auth.0);
     cx.easy_mut().auth.start(want, proxy_want);
     // The application's referer, until a redirect gives another.
-    if let Some(given) = &cx.easy().options().http.referer {
+    if let Some(given) = &cx.easy().options().http.custom.referer {
         let mut referer = Vec::new();
         referer
             .try_extend_from_slice(given)
@@ -2325,7 +2325,7 @@ fn follow_leg<H: Host>(
         format_args!("Issue another request to this URL: '{shown}'"),
     );
     let http = &cx.easy().options().http;
-    let custom = http.custom_method.is_some();
+    let custom = http.custom.method.is_some();
     if http.follow == Follow::FirstOnly && custom && !run.inherited.ignore_custom {
         run.inherited.ignore_custom = true;
         trace::info(
@@ -2407,7 +2407,7 @@ fn referer_of(url: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// custom method dropped only if the redirect's code is obeyed.
 fn switch_to_get<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, code: u16) {
     let http = &cx.easy().options().http;
-    let custom = http.custom_method.as_deref();
+    let custom = http.custom.method.as_deref();
     let inherited = &mut run.inherited;
     // Formatted before it is traced, as the debug handler may set the
     // custom method, and the next request uses what it sets.

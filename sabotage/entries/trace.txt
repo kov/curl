@@ -69,9 +69,11 @@ witness: curl-core proto::http::tests::a_custom_method_set_while_a_redirect_is_t
     }
 --- new
     if let Some(said) = said {
-        let custom = cx.easy_mut().options_mut().http.custom_method.take();
+        let custom = cx.easy_mut().options_mut().http.custom.made_mut().and_then(|c| c.method.take());
         trace::info_line(cx, &said);
-        cx.easy_mut().options_mut().http.custom_method = custom;
+        if let Some(c) = cx.easy_mut().options_mut().http.custom.made_mut() {
+            c.method = custom;
+        }
     }
 
 === the cookie files are out of the options while one is warned of

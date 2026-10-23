@@ -219,7 +219,7 @@ pub(crate) fn check<H: Host>(
     done: bool,
 ) -> Result<Option<Duration>, ErrorKind> {
     update(cx, done)?;
-    let Some(low) = cx.easy().options().limits.low_speed else {
+    let Some(low) = cx.easy().options().flow.low_speed else {
         return Ok(None);
     };
     // A paused transfer is not judged on its speed.

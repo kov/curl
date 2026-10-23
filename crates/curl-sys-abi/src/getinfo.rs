@@ -162,7 +162,7 @@ fn string(p: Result<*const c_char, OutOfMemory>) -> Value {
 /// application's custom one if it set one, as `Easy::effective_method`.
 fn effective_method(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
     let custom = easy.with_options(|o| {
-        let custom = o.http.custom_method.as_deref();
+        let custom = o.http.custom.method.as_deref();
         custom.map(|c| string(kept(easy, |i| &mut i.method, c)))
     })?;
     match custom {

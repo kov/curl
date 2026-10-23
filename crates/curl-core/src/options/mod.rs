@@ -48,6 +48,9 @@ pub struct Options {
     /// The remote file is transferred only if its time meets this.
     pub time_condition: Option<TimeCondition>,
     pub limits: Limits,
+    /// The limits on how much a transfer delivers and how fast it goes,
+    /// which few transfers set.
+    pub flow: Cold<Flow>,
     /// Which of a name's addresses a connection may use
     /// (`CURLOPT_IPRESOLVE`).
     pub ip_version: IpVersion,
@@ -395,6 +398,7 @@ impl Options {
             filetime: self.filetime,
             time_condition: self.time_condition,
             limits: self.limits,
+            flow: self.flow.try_clone(|f| Ok(*f))?,
             ip_version: self.ip_version,
             address_scope: self.address_scope,
             port: self.port,
@@ -1019,6 +1023,20 @@ pub struct Limits {
     pub total: Option<TimeLimit>,
     /// Each connection (`CURLOPT_CONNECTTIMEOUT_MS`); five minutes if none.
     pub connect: Option<TimeLimit>,
+    /// The most one read from the connection takes.
+    pub buffer_size: BufferSize,
+    /// The most of a body read at once, and the room a request's head
+    /// and body share.
+    pub upload_buffer: UploadBufferSize,
+    /// Which idle connections the transfer may reuse.
+    pub reuse: ReuseLimits,
+    pub eyeballs: EyeballsDelay,
+}
+
+/// How much a transfer may deliver, and how fast it must and may go;
+/// none set unless the application sets them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Flow {
     /// The most body bytes a transfer may deliver
     /// (`CURLOPT_MAXFILESIZE_LARGE`).
     pub max_filesize: Option<NonZeroU64>,
@@ -1032,14 +1050,16 @@ pub struct Limits {
     /// The most bytes a second a transfer sends of its body, with any
     /// framing (`CURLOPT_MAX_SEND_SPEED_LARGE`).
     pub max_send_speed: Option<NonZeroU64>,
-    /// The most one read from the connection takes.
-    pub buffer_size: BufferSize,
-    /// The most of a body read at once, and the room a request's head
-    /// and body share.
-    pub upload_buffer: UploadBufferSize,
-    /// Which idle connections the transfer may reuse.
-    pub reuse: ReuseLimits,
-    pub eyeballs: EyeballsDelay,
+}
+
+impl ColdGroup for Flow {
+    const UNSET: &'static Flow = &Flow::NONE;
+    const NONE: Flow = Flow {
+        max_filesize: None,
+        low_speed: None,
+        max_recv_speed: None,
+        max_send_speed: None,
+    };
 }
 
 /// The most bytes one read from the connection takes, and one read of a
@@ -1192,15 +1212,8 @@ pub struct Http {
     /// Content codings are passed on as they came, not decoded
     /// (`CURLOPT_HTTP_CONTENT_DECODING` off).
     pub raw_content: bool,
-    /// `CURLOPT_REFERER`.
-    pub referer: Option<Vec<u8>>,
-    /// The request's method as sent, in place of the one `method` implies,
-    /// which still decides the body (`CURLOPT_CUSTOMREQUEST`).
-    pub custom_method: Option<Vec<u8>>,
-    /// The request line's target, in place of the URL's path and query,
-    /// or of the whole URL to a proxy; nothing else reads it
-    /// (`CURLOPT_REQUEST_TARGET`).
-    pub request_target: Option<Vec<u8>>,
+    /// The parts of a request the application writes itself.
+    pub custom: Cold<Custom>,
     /// A response code of 400 or more fails the transfer at the end of
     /// its head (`CURLOPT_FAILONERROR`).
     pub fail_on_error: bool,
@@ -1225,6 +1238,39 @@ pub struct Http {
     pub cookies: Cold<Cookies>,
     /// What a request is signed with.
     pub signing: Cold<Signing>,
+}
+
+/// The parts of a request the application writes itself, which few do.
+#[derive(Debug)]
+pub struct Custom {
+    /// `CURLOPT_REFERER`.
+    pub referer: Option<Vec<u8>>,
+    /// The request's method as sent, in place of the one `method` implies,
+    /// which still decides the body (`CURLOPT_CUSTOMREQUEST`).
+    pub method: Option<Vec<u8>>,
+    /// The request line's target, in place of the URL's path and query,
+    /// or of the whole URL to a proxy; nothing else reads it
+    /// (`CURLOPT_REQUEST_TARGET`).
+    pub target: Option<Vec<u8>>,
+}
+
+impl ColdGroup for Custom {
+    const UNSET: &'static Custom = &Custom::NONE;
+    const NONE: Custom = Custom {
+        referer: None,
+        method: None,
+        target: None,
+    };
+}
+
+impl Custom {
+    fn try_clone(&self) -> Result<Custom, OutOfMemory> {
+        Ok(Custom {
+            referer: self.referer.as_deref().map(copy).transpose()?,
+            method: self.method.as_deref().map(copy).transpose()?,
+            target: self.target.as_deref().map(copy).transpose()?,
+        })
+    }
 }
 
 /// What a request is signed with, by the methods that sign it in place
@@ -1503,9 +1549,7 @@ impl Http {
                 }
             },
             raw_content: self.raw_content,
-            referer: self.referer.as_deref().map(copy).transpose()?,
-            custom_method: self.custom_method.as_deref().map(copy).transpose()?,
-            request_target: self.request_target.as_deref().map(copy).transpose()?,
+            custom: self.custom.try_clone(Custom::try_clone)?,
             fail_on_error: self.fail_on_error,
             continue_wait: self.continue_wait,
             keep_sending_on_error: self.keep_sending_on_error,

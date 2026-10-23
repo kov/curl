@@ -276,7 +276,7 @@ impl Pipeline {
             self.accountant.counted(cx, wanted);
             return Ok(());
         }
-        let max_filesize = cx.easy().options().limits.max_filesize;
+        let max_filesize = cx.easy().options().flow.max_filesize;
         let allowed = self.accountant.allowed(wanted, max_filesize);
         if allowed > 0 {
             let result = self.onward(cx, OutKind::Body, &bytes[..allowed]);
@@ -901,7 +901,7 @@ fn deliver_body<H: Host>(
         // Body bytes delivered, included header lines among them (C's
         // `progress.deliver`).
         let so_far = easy.report().sizes().delivered();
-        if let Some(max) = easy.options().limits.max_filesize
+        if let Some(max) = easy.options().flow.max_filesize
             && piece.len() as u64 > max.get().saturating_sub(so_far)
         {
             let kind = ErrorKind::FilesizeExceeded;

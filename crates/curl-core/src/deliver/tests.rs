@@ -474,18 +474,18 @@ fn limit(n: u64) -> Option<NonZeroU64> {
 #[test]
 fn a_body_over_the_size_limit_is_cut_at_the_limit() {
     let (result, seen) = played(vec![Piece::Body(bytes(40000))], |o, _| {
-        o.limits.max_filesize = limit(20000);
+        o.flow.make_mut().unwrap().max_filesize = limit(20000);
     });
     assert_eq!(result, Err(ErrorKind::FilesizeExceeded));
     assert_eq!(lengths(&seen, "write"), [16384, 3616]);
     let (result, seen) = played(vec![Piece::Body(bytes(20000))], |o, _| {
-        o.limits.max_filesize = limit(20000);
+        o.flow.make_mut().unwrap().max_filesize = limit(20000);
     });
     assert_eq!(result, Ok(()), "exactly the limit");
     assert_eq!(lengths(&seen, "write"), [16384, 3616]);
     let (result, seen) = played(
         vec![Piece::Body(bytes(15000)), Piece::Body(bytes(15000))],
-        |o, _| o.limits.max_filesize = limit(20000),
+        |o, _| o.flow.make_mut().unwrap().max_filesize = limit(20000),
     );
     assert_eq!(result, Err(ErrorKind::FilesizeExceeded));
     assert_eq!(
@@ -504,7 +504,7 @@ fn included_headers_count_against_the_size_limit() {
         vec![Piece::Header(header_line(100)), Piece::Body(bytes(100))],
         |o, _| {
             o.output.include_header = true;
-            o.limits.max_filesize = limit(150);
+            o.flow.make_mut().unwrap().max_filesize = limit(150);
         },
     );
     assert_eq!(result, Err(ErrorKind::FilesizeExceeded));

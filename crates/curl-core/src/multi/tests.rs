@@ -852,7 +852,9 @@ impl Net for BrokenNet {
         Err(std::io::Error::from_raw_os_error(9))
     }
 
-    fn close(&mut self, _: Box<dyn crate::conn::io::Socket>) {}
+    fn close(&mut self, socket: crate::conn::io::Sock) {
+        socket.close_with(drop);
+    }
 
     fn resolve(
         &mut self,
@@ -1327,7 +1329,7 @@ impl Net for Patient {
         Ok((socket, connect))
     }
 
-    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+    fn close(&mut self, socket: crate::conn::io::Sock) {
         self.net.close(socket);
     }
 
@@ -1862,7 +1864,7 @@ impl Net for Closes {
         self.0.connect(addr, options)
     }
 
-    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+    fn close(&mut self, socket: crate::conn::io::Sock) {
         self.1.fetch_add(1, Ordering::Relaxed);
         self.0.close(socket);
     }
@@ -1902,7 +1904,7 @@ impl Net for OneNet {
         self.0.lock().unwrap().connect(addr, options)
     }
 
-    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+    fn close(&mut self, socket: crate::conn::io::Sock) {
         self.0.lock().unwrap().close(socket);
     }
 
@@ -1978,6 +1980,73 @@ fn a_share_keeps_connections_across_handles() {
     // The watch held a clone of it.
     drop((e, told, share));
     assert_eq!(closed.load(Ordering::Relaxed), 2, "closed with the share");
+}
+
+/// Records the sockets it is given to close.
+struct Closer(std::sync::Arc<std::sync::Mutex<Vec<i32>>>);
+
+impl crate::handler::SocketCloser for Closer {
+    fn close(&self, socket: crate::conn::io::SocketKey) {
+        self.0.lock().unwrap().push(socket.get());
+    }
+}
+
+/// The application's closer closes every socket a connection opens,
+/// exactly once: an attempt that lost the race as it loses, and the
+/// connection's own when it closes, a share's at the share's cleanup and
+/// a multi's at the multi's, though the handle that made it is gone, as C
+/// keeps the closer on the connection (url.c:1167). Nothing is left open
+/// for the system to close.
+#[test]
+fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
+    use crate::conn::io::Peer;
+    use crate::share::{Kind, Share};
+    let clock = ManualClock::new().unwrap();
+    let closed = std::sync::Arc::new(AtomicU32::new(0));
+    let (v6, v4) = ("[::1]:1".parse().unwrap(), "127.0.0.1:1".parse().unwrap());
+    let fake = FakeNet::new(clock.clone())
+        .with_name("two.test", &[v6, v4].map(|a: std::net::SocketAddr| a.ip()))
+        .with_peer(v6, Peer::Silent)
+        .with_peer(v4, Peer::Accepts);
+    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(fake, closed.clone())));
+    let env = || Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(OneNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let told = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let made = || {
+        let mut e = easy("tcp://two.test:1/");
+        let closer = crate::handler::Handler::socket_closer(Closer(told.clone())).unwrap();
+        e.options_mut().socket_hooks.make_mut().unwrap().close = Some(closer);
+        e
+    };
+    let told_now = || std::mem::take(&mut *told.lock().unwrap());
+    let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let mut m: Multi = Multi::new(env()).unwrap();
+    let mut e = made();
+    e.set_share(Some(share.clone()));
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    assert_eq!(told_now(), [1000], "the attempt that lost");
+    drop((m, e));
+    assert_eq!(told_now(), [], "the share keeps the connection");
+    drop(share);
+    assert_eq!(told_now(), [1001], "closed with the share");
+    let mut m: Multi = Multi::new(env()).unwrap();
+    let mut e = made();
+    e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
+    assert_eq!(told_now(), [1000]);
+    drop(e);
+    drop(m);
+    assert_eq!(told_now(), [1001], "closed with the multi");
+    assert_eq!(
+        closed.load(Ordering::Relaxed),
+        4,
+        "each through the network"
+    );
+    assert_eq!(net.lock().unwrap().0.open_sockets(), 0);
 }
 
 /// A connection of a share's pool that a transfer does not give back,
@@ -2992,7 +3061,7 @@ impl Net for SharedNet {
         self.0.lock().unwrap().connect(addr, options)
     }
 
-    fn close(&mut self, socket: Box<dyn crate::conn::io::Socket>) {
+    fn close(&mut self, socket: crate::conn::io::Sock) {
         self.0.lock().unwrap().close(socket);
     }
 
@@ -3259,11 +3328,13 @@ fn connections_are_reused_within_a_scope() {
 /// A connection's slot is held inline by the lease, in the transfer's
 /// state, in its slot, which every handle added to a multi pays for: a
 /// field that grows them grows every handle (`a_handle_costs_no_more_than_cs`
-/// in the shim holds the whole). Their sizes, as they are.
+/// in the shim holds the whole). Their sizes, as they are: the socket's
+/// closer, which a connection keeps from the transfer that made it, is a
+/// pointer of them.
 #[test]
 fn a_connection_s_slot_and_a_transfer_s_stay_their_size() {
     let conn = size_of::<crate::conn::ConnSlot>();
     let slot = size_of::<super::Slot<super::NoHost>>();
-    assert!(conn <= 224, "a connection's slot takes {conn} bytes");
-    assert!(slot <= 968, "a transfer's slot takes {slot} bytes");
+    assert!(conn <= 232, "a connection's slot takes {conn} bytes");
+    assert!(slot <= 976, "a transfer's slot takes {slot} bytes");
 }

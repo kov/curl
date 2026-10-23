@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use curl_alloc::{TryVec, try_box};
 
+use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
 
 pub use curl_os::net::{Connect, Recv, Sent, SocketOptions};
@@ -54,6 +55,77 @@ pub trait Socket: fmt::Debug + Send {
 
     /// Send from `buf`, which is not empty.
     fn send(&self, buf: &[u8]) -> io::Result<Sent>;
+
+    /// Let go of the descriptor without closing it, for the application's
+    /// closer to close: its number.
+    fn release(self: Box<Self>) -> SocketKey;
+}
+
+/// A socket open, and how it is to be closed: the closer the connection
+/// it belongs to was made with. Only `Net::close` takes one; one dropped
+/// unclosed is a bug, caught in debug builds.
+pub struct Sock {
+    /// None only as it closes.
+    socket: Option<Box<dyn Socket>>,
+    closer: Closer,
+}
+
+/// How a connection's sockets are closed: by the system, or by the
+/// application's `SocketCloser` (`CURLOPT_CLOSESOCKETFUNCTION`), which C
+/// keeps on the connection (url.c:1167) and calls whoever closes it.
+#[derive(Clone, Debug, Default)]
+pub enum Closer {
+    #[default]
+    System,
+    Hook(Handler<dyn SocketCloser>),
+}
+
+impl Sock {
+    pub(crate) fn new(socket: Box<dyn Socket>, closer: Closer) -> Sock {
+        Sock {
+            socket: Some(socket),
+            closer,
+        }
+    }
+
+    pub fn socket(&self) -> &dyn Socket {
+        self.socket.as_deref().expect("open until closed")
+    }
+
+    pub fn key(&self) -> SocketKey {
+        self.socket().key()
+    }
+
+    /// Close it: through the system with `close`, which takes the socket,
+    /// or through the application's closer, given the number of the
+    /// descriptor the socket let go of. What the closer says is not
+    /// asked, as C ignores it (`socket_close`).
+    pub fn close_with(mut self, close: impl FnOnce(Box<dyn Socket>)) {
+        let socket = self.socket.take().expect("open until closed");
+        match &self.closer {
+            Closer::System => close(socket),
+            Closer::Hook(closer) => closer.close(socket.release()),
+        }
+    }
+}
+
+impl fmt::Debug for Sock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sock")
+            .field("socket", &self.socket)
+            .field("closer", &self.closer)
+            .finish()
+    }
+}
+
+impl Drop for Sock {
+    fn drop(&mut self) {
+        debug_assert!(
+            self.socket.is_none() || std::thread::panicking(),
+            "{:?} was dropped, not closed",
+            self.socket.as_ref().map(|s| s.key())
+        );
+    }
 }
 
 /// How a socket's readiness is learned.
@@ -110,8 +182,8 @@ pub trait Net {
         options: SocketOptions,
     ) -> io::Result<(Box<dyn Socket>, Connect)>;
 
-    /// Close a socket the network opened.
-    fn close(&mut self, socket: Box<dyn Socket>);
+    /// Close a socket the network opened, through its closer.
+    fn close(&mut self, socket: Sock);
 
     /// The addresses of `name`, of `family`, as the system's resolver
     /// finds them, waiting for its answer (C's synchronous resolver).
@@ -146,6 +218,10 @@ impl Socket for curl_os::net::TcpSocket {
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         curl_os::net::TcpSocket::send(self, buf)
     }
+
+    fn release(self: Box<Self>) -> SocketKey {
+        SocketKey(self.into_raw())
+    }
 }
 
 /// The operating system's network.
@@ -172,8 +248,8 @@ impl Net for SystemNet {
         Ok((socket, connect))
     }
 
-    fn close(&mut self, socket: Box<dyn Socket>) {
-        drop(socket);
+    fn close(&mut self, socket: Sock) {
+        socket.close_with(drop);
     }
 
     fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
@@ -687,13 +763,14 @@ impl Net for FakeNet {
         Ok((socket, Connect::InProgress))
     }
 
-    fn close(&mut self, socket: Box<dyn Socket>) {
+    fn close(&mut self, socket: Sock) {
         let row = usize::try_from(socket.key().0 - FIRST_FAKE).expect("a fake socket's number");
         assert!(
             self.open[row].take().is_some(),
             "{:?} closed twice",
             socket.key()
         );
+        socket.close_with(drop);
     }
 
     fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
@@ -825,6 +902,10 @@ impl Socket for FakeSocket {
         })
     }
 
+    fn release(self: Box<Self>) -> SocketKey {
+        self.key
+    }
+
     fn send(&self, buf: &[u8]) -> io::Result<Sent> {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         let n = std::num::NonZeroUsize::new(buf.len()).expect("a send needs bytes");
@@ -919,7 +1000,7 @@ mod tests {
             .unwrap();
         assert!(sockets[0].revents().contains(Events::OUT));
         assert!(socket.take_error().unwrap().is_none());
-        SystemNet.close(socket);
+        SystemNet.close(Sock::new(socket, Closer::System));
     }
 
     /// More sockets and descriptors than fit on the stack are polled all
@@ -949,8 +1030,21 @@ mod tests {
         assert_eq!(ready, 1);
         assert!(fds[8].revents().contains(Events::IN));
         assert!(fds[..8].iter().all(|f| f.revents().is_empty()));
-        SystemNet.close(one);
-        SystemNet.close(two);
+        SystemNet.close(Sock::new(one, Closer::System));
+        SystemNet.close(Sock::new(two, Closer::System));
+    }
+
+    /// A socket goes only through its closer: one dropped unclosed is a
+    /// bug, caught in debug builds.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic = "was dropped, not closed"]
+    fn a_dropped_socket_is_caught() {
+        let clock = crate::time::ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], 1));
+        let mut net = FakeNet::new(clock).with_peer(at, Peer::Accepts);
+        let (socket, _) = net.connect(at, SocketOptions::default()).unwrap();
+        drop(Sock::new(socket, Closer::System));
     }
 
     /// Fake sockets get the lowest free number, and a fake peer's answer
@@ -998,11 +1092,11 @@ mod tests {
             0
         );
         assert_eq!(clock.now().since(start), Duration::from_secs(5));
-        net.close(b);
+        net.close(Sock::new(b, Closer::System));
         let (d, _) = net.connect(at(1), SocketOptions::default()).unwrap();
         assert_eq!(d.key().get(), 1001, "the lowest free number again");
         for s in [a, c, d] {
-            net.close(s);
+            net.close(Sock::new(s, Closer::System));
         }
     }
 }

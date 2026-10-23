@@ -280,6 +280,7 @@ fn a_full_pool_closes_its_oldest_idle_connection() {
         &mut net,
         clock.now(),
     );
+    pool.close_idle(&mut net);
 }
 
 /// A new connection is made within the host and total limits, closing
@@ -476,6 +477,7 @@ fn room_is_made_by_the_connection_idle_longest() {
         [kept(tcp(1)), kept(tcp(4)), kept(mapped())],
         [false, true, true]
     );
+    pool.close_idle(&mut net);
 }
 
 /// A setup tries its address, waits, and is established in the slot it
@@ -1153,6 +1155,7 @@ fn a_silent_peer_takes_what_it_is_sent() {
         &mut net,
         now,
     );
+    pool.close_idle(&mut net);
 }
 
 /// A connection serves a route to the same peer however its host is
@@ -1202,4 +1205,5 @@ fn a_host_in_capitals_reuses_the_connection() {
         &mut net,
         now,
     );
+    pool.close_idle(&mut net);
 }

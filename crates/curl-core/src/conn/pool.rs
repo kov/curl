@@ -12,7 +12,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use super::connect::{ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
 use super::dns::Answer;
-use super::io::{Events, Net, Socket, SocketPoll};
+use super::io::{Closer, Events, Net, Socket, SocketPoll};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::share::Share;
@@ -445,7 +445,7 @@ impl Pool {
         {
             return Ok(Acquired::Reused(lease));
         }
-        self.add(here, route, limits, net, now)
+        self.add(here, route, Closer::System, limits, net, now)
     }
 
     /// A new connection for `route`, within `limits`, or none, for want
@@ -455,6 +455,7 @@ impl Pool {
         &mut self,
         here: &Home,
         route: Route,
+        closer: Closer,
         limits: AddLimits,
         net: &mut dyn Net,
         now: Instant,
@@ -485,7 +486,7 @@ impl Pool {
                 seen_version: None,
                 close: false,
             }),
-            Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(number, tcp, now)),
+            Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer)),
         };
         let id = self.conns.reserve()?.fill(Place::Leased(leased));
         self.next_number += 1;

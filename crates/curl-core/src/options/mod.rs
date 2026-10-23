@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::handler::{
     DebugHandler, Handler, HeaderHandler, LentBytes, LineSource, ProgressHandler, ReadHandler,
-    Rewind, TextSink, TrailerHandler, WriteHandler,
+    Rewind, SocketCloser, SocketConfigurer, SocketOpener, TextSink, TrailerHandler, WriteHandler,
 };
 use crate::mime::MimeSource;
 use crate::mime::read::Escape;
@@ -57,6 +57,9 @@ pub struct Options {
     /// What each TCP socket is set to before it connects: by default
     /// `TCP_NODELAY`, as C sets it (`CURLOPT_TCP_NODELAY`).
     pub socket: crate::conn::io::SocketOptions,
+    /// What opens, sets and closes a transfer's sockets in place of the
+    /// system; few transfers set any.
+    pub socket_hooks: Cold<SocketHooks>,
     /// The port the first URL is reached on, whatever it says, and any a
     /// relative redirect leads to (`CURLOPT_PORT`).
     pub port: Option<NonZeroU16>,
@@ -409,6 +412,7 @@ impl Options {
                 })
             })?,
             proxy: self.proxy.try_clone(Proxy::try_clone)?,
+            socket_hooks: self.socket_hooks.try_clone(|h| Ok(h.clone()))?,
             http: self.http.try_clone()?,
             tls: self.tls,
             #[cfg(any(test, feature = "test-util"))]
@@ -562,6 +566,26 @@ pub struct MimeOptions {
 impl ColdGroup for MimeOptions {
     const UNSET: &'static MimeOptions = &MimeOptions::NONE;
     const NONE: MimeOptions = MimeOptions { form_escape: false };
+}
+
+/// The application's own handling of a transfer's sockets, each in place
+/// of the system's (`CURLOPT_OPENSOCKETFUNCTION`, `CURLOPT_SOCKOPTFUNCTION`,
+/// `CURLOPT_CLOSESOCKETFUNCTION`). The closer is kept by each connection
+/// the transfer makes, and closes its sockets whoever closes them.
+#[derive(Clone, Debug)]
+pub struct SocketHooks {
+    pub open: Option<Handler<dyn SocketOpener>>,
+    pub configure: Option<Handler<dyn SocketConfigurer>>,
+    pub close: Option<Handler<dyn SocketCloser>>,
+}
+
+impl ColdGroup for SocketHooks {
+    const UNSET: &'static SocketHooks = &SocketHooks::NONE;
+    const NONE: SocketHooks = SocketHooks {
+        open: None,
+        configure: None,
+        close: None,
+    };
 }
 
 impl ColdGroup for Netrc {

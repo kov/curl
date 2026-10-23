@@ -98,7 +98,7 @@ impl Net for Counting {
         self.0.connect(addr, options)
     }
 
-    fn close(&mut self, socket: Box<dyn Socket>) {
+    fn close(&mut self, socket: crate::conn::io::Sock) {
         self.1.set(self.1.get() + 1);
         self.0.close(socket);
     }

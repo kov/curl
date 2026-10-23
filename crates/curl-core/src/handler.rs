@@ -5,11 +5,13 @@
 //! handler is called through `&self` and keeps its state in cells.
 
 use std::fmt;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
+use crate::conn::io::{Socket, SocketKey};
 use crate::multi::TransferCx;
 
 /// What a write or header handler did with what it was given.
@@ -200,6 +202,40 @@ pub trait HeaderHandler: Send + Sync {
     fn header(&self, cx: &mut TransferCx<'_>, line: &[u8], origin: HeaderOrigin) -> Write;
 }
 
+/// Opens the sockets a transfer connects over, in place of the system
+/// (`CURLOPT_OPENSOCKETFUNCTION`): a socket for `address`'s family, not
+/// connected yet, or none, which fails the attempt as a refused open does.
+pub trait SocketOpener: Send + Sync {
+    fn open(&self, address: SocketAddr) -> Option<Box<dyn Socket>>;
+}
+
+/// Told of each socket a transfer opens, before it connects
+/// (`CURLOPT_SOCKOPTFUNCTION`).
+pub trait SocketConfigurer: Send + Sync {
+    fn configure(&self, socket: SocketKey) -> Configured;
+}
+
+/// What a `SocketConfigurer` made of a socket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Configured {
+    /// The socket connects as usual.
+    Ok,
+    /// The application connected it already: the connect is skipped
+    /// (`CURL_SOCKOPT_ALREADY_CONNECTED`).
+    AlreadyConnected,
+    /// The transfer fails with AbortedByCallback.
+    Abort,
+}
+
+/// Closes the sockets of the connections a transfer makes, in place of
+/// the system (`CURLOPT_CLOSESOCKETFUNCTION`): each is given its
+/// descriptor, which it now owns. It is kept with the connection and
+/// called whoever closes it, a share's cleanup too, so it is given no
+/// transfer.
+pub trait SocketCloser: Send + Sync {
+    fn close(&self, socket: SocketKey);
+}
+
 /// A handler as a transfer holds it: shared by every copy of the `Easy`.
 pub struct Handler<T: ?Sized>(TryArc<Box<T>>);
 
@@ -212,6 +248,12 @@ impl<T: ?Sized> Handler<T> {
     /// Whether `a` and `b` are the same handler.
     pub fn ptr_eq(a: &Handler<T>, b: &Handler<T>) -> bool {
         TryArc::ptr_eq(&a.0, &b.0)
+    }
+}
+
+impl Handler<dyn SocketCloser> {
+    pub fn socket_closer(handler: impl SocketCloser + 'static) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
     }
 }
 

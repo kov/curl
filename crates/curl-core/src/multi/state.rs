@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec, try_box};
 
-use crate::conn::io::{Events, ResolveFailure};
+use crate::conn::io::{Closer, Events, ResolveFailure};
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
@@ -2818,8 +2818,14 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     let acquired = match found {
         Some(lease) => Acquired::Reused(lease),
         None => {
+            // The connection closes its sockets as the transfer making it
+            // says, whoever closes them (url.c's `fclosesocket`).
+            let closer = match &cx.easy().options().socket_hooks.close {
+                Some(close) => Closer::Hook(close.clone()),
+                None => Closer::System,
+            };
             let (added, members) = cx.rest.pool_section(cx.me, &home, |pool, net, here| {
-                pool.add(here, route, add, net, now)
+                pool.add(here, route, closer, add, net, now)
                     .map(|added| (added, pool.len()))
             })?;
             if let Acquired::New(lease) = &added {

@@ -8,7 +8,7 @@
 use std::io::{self, Read as _, Write as _};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::os::fd::{AsFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 /// How a connect started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -254,6 +254,12 @@ impl TcpSocket {
         self.0.local_addr()
     }
 
+    /// Let go of the descriptor without closing it: the caller closes
+    /// it, as an application's own closer does.
+    pub fn into_raw(self) -> RawFd {
+        self.0.into_raw_fd()
+    }
+
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
     }
@@ -307,6 +313,18 @@ mod tests {
             let (s, _) = connect(addr, SocketOptions { nodelay }).unwrap();
             assert_eq!(s.0.nodelay().unwrap(), nodelay);
         }
+    }
+
+    /// A socket let go of stays open until its new owner closes it.
+    #[test]
+    fn a_socket_let_go_of_stays_open() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (s, _peer) = connected(&listener);
+        let fd = s.into_raw();
+        // SAFETY: `fd` was let go of above and is owned by nothing else.
+        let s = TcpSocket(TcpStream::from(unsafe { OwnedFd::from_raw_fd(fd) }));
+        assert_eq!(s.fd().as_raw_fd(), fd);
+        assert_eq!(s.peer_addr().unwrap(), listener.local_addr().unwrap());
     }
 
     #[test]

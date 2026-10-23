@@ -6,17 +6,17 @@
 use std::io;
 use std::net::SocketAddr;
 
-use super::io::{Recv, Sent, Socket};
+use super::io::{Recv, Sent, Sock, Socket};
 use super::{RecvBuf, RecvFailed};
 
 #[derive(Debug)]
 pub(crate) struct Stream {
-    socket: Box<dyn Socket>,
+    socket: Sock,
     rx: RecvBuf,
 }
 
 impl Stream {
-    pub(crate) fn new(socket: Box<dyn Socket>) -> Stream {
+    pub(crate) fn new(socket: Sock) -> Stream {
         Stream {
             socket,
             rx: RecvBuf::default(),
@@ -24,24 +24,24 @@ impl Stream {
     }
 
     pub(crate) fn socket(&self) -> &dyn Socket {
-        &*self.socket
+        self.socket.socket()
     }
 
     /// The socket, for closing.
-    pub(crate) fn into_socket(self) -> Box<dyn Socket> {
+    pub(crate) fn into_socket(self) -> Sock {
         self.socket
     }
 
     /// Read once, up to `max` bytes, behind what was received and not
     /// used.
     pub(crate) fn recv(&mut self, max: usize) -> Result<Recv, RecvFailed> {
-        let socket = &*self.socket;
+        let socket = self.socket.socket();
         self.rx.fill(max, |room| socket.recv(room))
     }
 
     /// Send from `bytes`, which is not empty, what the network takes now.
     pub(crate) fn send(&mut self, bytes: &[u8]) -> io::Result<Sent> {
-        self.socket.send(bytes)
+        self.socket.socket().send(bytes)
     }
 
     /// What was received and not used.
@@ -60,6 +60,6 @@ impl Stream {
 
     /// The connection's end here, if the system says.
     pub(crate) fn local_addr(&self) -> Option<SocketAddr> {
-        self.socket.local_addr().ok()
+        self.socket.socket().local_addr().ok()
     }
 }

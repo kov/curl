@@ -9,7 +9,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use crate::conn::io::{
-    Connect, Family, Net, PollFd, ResolveFailure, Socket, SocketKey, SocketPoll,
+    Connect, Family, Net, PollFd, ResolveFailure, Sock, Socket, SocketKey, SocketPoll,
 };
 use crate::conn::{Caches, Home, Names, Pool};
 use crate::deliver::PauseRequest;
@@ -171,7 +171,7 @@ impl Kept {
 /// closes at once.
 struct CloseLater<'n> {
     net: &'n mut dyn Net,
-    sockets: Vec<Box<dyn Socket>>,
+    sockets: Vec<Sock>,
 }
 
 impl<'n> CloseLater<'n> {
@@ -208,7 +208,7 @@ impl Net for CloseLater<'_> {
         self.net.connect(addr, options)
     }
 
-    fn close(&mut self, socket: Box<dyn Socket>) {
+    fn close(&mut self, socket: Sock) {
         if self.sockets.try_reserve(1).is_err() {
             self.net.close(socket);
             return;
@@ -254,7 +254,7 @@ impl<H: Host> Net for Announcing<'_, H> {
         self.net.connect(addr, options)
     }
 
-    fn close(&mut self, socket: Box<dyn Socket>) {
+    fn close(&mut self, socket: Sock) {
         self.forget(socket.key());
         self.net.close(socket);
     }

@@ -304,6 +304,9 @@ mod tests {
         fn send(&self, _: &[u8]) -> std::io::Result<Sent> {
             unreachable!()
         }
+        fn release(self: Box<Self>) -> SocketKey {
+            unreachable!()
+        }
     }
 
     /// A socket added again waits for both; one added for nothing is not

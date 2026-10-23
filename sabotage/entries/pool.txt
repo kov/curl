@@ -405,3 +405,35 @@ witness: curl-core conn::pool::tests::a_lease_goes_back_only_to_its_home
             home.is(here),
 --- new
             true,
+
+=== a socket closes by the system though its connection has a closer
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer
+--- old
+            Closer::Hook(closer) => closer.close(socket.release()),
+--- new
+            Closer::Hook(_) => close(socket),
+
+=== an attempt's socket is not given the connection's closer
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer
+--- old
+                    let socket = Sock::new(socket, self.closer.clone());
+--- new
+                    let socket = Sock::new(socket, Closer::System);
+
+=== a connection is not given its maker's closer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_connection_closes_its_sockets_through_its_maker_s_closer
+--- old
+                Some(close) => Closer::Hook(close.clone()),
+--- new
+                Some(_) => Closer::System,
+
+=== a socket dropped unclosed goes unnoticed
+file: crates/curl-core/src/conn/io.rs
+witness: curl-core conn::io::tests::a_dropped_socket_is_caught
+--- old
+            self.socket.is_none() || std::thread::panicking(),
+--- new
+            true,

@@ -19,7 +19,9 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 #[cfg(test)]
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
-use super::io::{Connect, Events, Family, Net, ResolveFailure, Socket, SocketOptions, SocketPoll};
+use super::io::{
+    Closer, Connect, Events, Family, Net, ResolveFailure, Sock, Socket, SocketOptions, SocketPoll,
+};
 use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::options::IpVersion;
 use crate::time::Instant;
@@ -35,6 +37,8 @@ pub(crate) struct ConnectMachine {
     /// The setup was started over, for a proxy that closed the connection
     /// when asking for credentials (`retry_count`).
     redials: u8,
+    /// What closes each socket it opens: the creating transfer's.
+    closer: Closer,
 }
 
 #[derive(Debug)]
@@ -205,7 +209,7 @@ impl Eyeballs {
 #[derive(Debug)]
 struct Attempt {
     remote: SocketAddr,
-    socket: Box<dyn Socket>,
+    socket: Sock,
 }
 
 /// What a drive did.
@@ -286,13 +290,21 @@ pub(crate) enum Unresolved {
 }
 
 impl ConnectMachine {
-    pub(crate) fn new(number: ConnNumber, route: Tcp, created: Instant) -> ConnectMachine {
+    /// The setup of connection `number` over `route`, whose sockets close
+    /// through `closer`.
+    pub(crate) fn new(
+        number: ConnNumber,
+        route: Tcp,
+        created: Instant,
+        closer: Closer,
+    ) -> ConnectMachine {
         ConnectMachine {
             number,
             route,
             created,
             stage: Stage::Resolving,
             redials: 0,
+            closer,
         }
     }
 
@@ -311,7 +323,7 @@ impl ConnectMachine {
             Stage::Racing(r) => (&r.attempts[..], None),
             Stage::Tunnel(d) => (&[][..], Some(d.stream.socket())),
         };
-        running.iter().map(|a| &*a.socket).chain(dialed)
+        running.iter().map(|a| a.socket.socket()).chain(dialed)
     }
 
     /// The addresses the name resolved to, once it has.
@@ -401,10 +413,10 @@ impl ConnectMachine {
             let a = &r.attempts[i];
             // Writable once the connect is decided, either way
             // (`SOCKET_WRITABLE(sock, 0)`).
-            let mut watch = [SocketPoll::new(&*a.socket, Events::OUT)];
+            let mut watch = [SocketPoll::new(a.socket.socket(), Events::OUT)];
             let error = match net.poll(&mut watch, &mut [], Duration::ZERO) {
                 Ok(_) if watch[0].revents().is_empty() => continue,
-                Ok(_) => match a.socket.take_error() {
+                Ok(_) => match a.socket.socket().take_error() {
                     Ok(None) => {
                         let won = r.attempts.remove(i);
                         r.close_all(net);
@@ -459,6 +471,7 @@ impl ConnectMachine {
             r.last_start = Some(now);
             return match net.connect(remote, setup.socket) {
                 Ok((socket, Connect::InProgress | Connect::Done)) => {
+                    let socket = Sock::new(socket, self.closer.clone());
                     r.attempts
                         .try_push(Attempt { remote, socket })
                         .expect("reserved");
@@ -584,7 +597,7 @@ impl Attempt {
     /// The attempt failed with `error`: its socket is closed, its local
     /// address read first, as C reads it for the trace.
     fn fail(self, net: &mut dyn Net, error: io::Error) -> Result<Failure, ConnectError> {
-        let local = self.socket.local_addr().ok();
+        let local = self.socket.socket().local_addr().ok();
         net.close(self.socket);
         if error.kind() == io::ErrorKind::OutOfMemory {
             return Err(ConnectError::OutOfMemory);
@@ -774,7 +787,7 @@ mod tests {
             ip,
             proxy: None,
         };
-        let mut m = ConnectMachine::new(ConnNumber(0), route, start);
+        let mut m = ConnectMachine::new(ConnNumber(0), route, start, Closer::System);
         m.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(
                 TryArc::try_new(Answer::new(b"abc.test", addrs).unwrap()).unwrap(),
@@ -850,7 +863,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
         };
-        let mut m = ConnectMachine::new(ConnNumber(0), route, clock.now());
+        let mut m = ConnectMachine::new(ConnNumber(0), route, clock.now(), Closer::System);
         let he = Duration::from_millis(200);
         let mut dns = DnsCache::default();
         let conn = loop {

@@ -1346,8 +1346,7 @@ pub(crate) struct Sock { socket: Box<dyn Socket>, closer: Closer }   // closed o
 pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
 ```
 
-Planned (step 40): `Sock` and `Closer`; today `SystemNet::close` is a `drop`. `Pool::get_conn`
-is dead code.
+`Pool::get_conn` is dead code.
 
 - A transfer searches before it adds (`find`, `Curl_cpool_find`), unless the transfer wants a fresh
   connection (`CURLOPT_FRESH_CONNECT`, but for a redirect's request): at most once a second it first prunes
@@ -1468,7 +1467,7 @@ its internal one. A share's idle connections close when its last clone drops.
 pub(crate) trait ConnCx: LayerCx {         // the connection context C's admin handle stands in for
     fn net(&mut self) -> &mut dyn Net;
     fn names(&mut self) -> Names<'_>;       // the multi's DnsCache, or the share's under its lock
-    fn hooks(&mut self) -> &mut dyn SocketHooks;    // OPENSOCKET, SOCKOPT, CLOSESOCKET
+    fn hooks(&self) -> &SocketHooks;        // OPENSOCKET, SOCKOPT, CLOSESOCKET
 }
 ```
 
@@ -2299,9 +2298,12 @@ adapters are its own, installed in place of the ones it was cloned with.
 - **Non-copied POSTFIELDS**: a shim `LentBytes` over the app's pointer and POSTFIELDSIZE, read at
   transfer time (SAFETY: the CURLOPT_POSTFIELDS contract keeps the buffer alive). Setting it after
   `add_handle` takes effect (1531).
-- **Sockets**: OPEN/SOCKOPT/CLOSESOCKETFUNCTION as a `SocketHooks` impl, called as transfer
-  callbacks (api.c:111, 117, 121); the shim makes a `Socket` from the application's fd in
-  `curl-os`. Planned (step 40): the options are known but answer NOT_BUILT_IN.
+- **Sockets**: OPEN/SOCKOPT/CLOSESOCKETFUNCTION as the core's `SocketOpener`,
+  `SocketConfigurer` and `SocketCloser` handlers, kept in the options' cold `SocketHooks`
+  group, called as transfer callbacks (api.c:111, 117, 121); the shim makes a `Socket` from the
+  application's fd in `curl-os`. The closer gets no context: a share's cleanup calls it with no
+  handle. Planned (step 40): the core calls only the closer, and the options are known but
+  answer NOT_BUILT_IN.
 
 ### 7.7 setopt, getinfo, headers, errors
 

@@ -5,7 +5,7 @@
 file: crates/curl-core/src/report.rs
 witness: curl-core report::tests::phases_add_up_across_a_redirect
 --- old
-            Timer::StartTransfer if self.starttransfer_added => return,
+            Timer::StartTransfer if self.starttransfer_added => return Marked::Ignored,
 --- new
 
 === a phase counts from the transfer's start, not its request's
@@ -20,9 +20,9 @@ witness: curl-core report::tests::phases_add_up_across_a_redirect
 file: crates/curl-core/src/report.rs
 witness: curl-core report::tests::a_phase_reached_at_its_start_counts_a_microsecond
 --- old
-        *phase += since_single.max(1);
+        let added = since_single.max(1);
 --- new
-        *phase += since_single;
+        let added = since_single;
 
 === queue time is not summed over requests
 file: crates/curl-core/src/report.rs

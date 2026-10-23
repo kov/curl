@@ -32,13 +32,14 @@ mod socks;
 mod tunnel;
 use crate::proto::http1::follow;
 use crate::proto::{Inherited, ProtoState, ProtoStep};
-use crate::report::{Ends, Starts, Timer, TransferReport};
+use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
 use crate::trace;
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
 use super::cx::{EngineRest, TransferCalls};
+use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::Pollset;
 use super::timers::{Deadlines, Phase, TimeLeft, TimerKind, wait_ms};
@@ -339,32 +340,62 @@ impl TransferState {
         }
     }
 
+    /// Where the transfer is in C's states, when the engine's say: a
+    /// request ended otherwise than whole stays where it ended, as it is
+    /// done with there.
+    fn c_state(&self) -> Option<MState> {
+        Some(match self {
+            TransferState::Init => return None,
+            TransferState::Pending(_) => MState::Pending,
+            TransferState::Setup(_) => MState::Connect,
+            TransferState::Connecting(_) => MState::Connecting,
+            TransferState::ProtoConnect(_) => MState::ProtoConnect,
+            TransferState::Do(_) => MState::Do,
+            TransferState::Did(_) => MState::Did,
+            TransferState::Exchanging(_) => MState::Performing,
+            TransferState::RateLimiting(_) => MState::RateLimiting,
+            TransferState::Done(d)
+                if d.result.is_ok() && matches!(d.next, AfterRequest::Complete) =>
+            {
+                MState::Done
+            }
+            TransferState::Done(_) | TransferState::Completed(_) => return None,
+        })
+    }
+
     /// Take the transfer out of the multi before it completed: give back
     /// its connection, as a premature end (`curl_multi_remove_handle`).
     pub(crate) fn abandon<H: Host>(self, cx: &mut StepCx<'_, H>) {
-        let (lease, origin) = match self {
+        // Past its request, the connection is in no known state
+        // (`curl_multi_remove_handle`'s `streamclose`).
+        let (lease, origin, past_do) = match self {
             TransferState::Init
             | TransferState::Pending(_)
             | TransferState::Setup(_)
             | TransferState::Completed(_) => return,
-            TransferState::Connecting(c) => (c.lease, Some(c.route.origin)),
-            TransferState::ProtoConnect(x)
-            | TransferState::Do(x)
-            | TransferState::Did(x)
+            TransferState::Connecting(c) => (c.lease, Some(c.route.origin), false),
+            TransferState::ProtoConnect(x) | TransferState::Do(x) => (x.lease, x.origin, false),
+            TransferState::Did(x)
             | TransferState::Exchanging(x)
-            | TransferState::RateLimiting(x) => (x.lease, x.origin),
-            TransferState::Done(d) => (d.lease, d.origin),
+            | TransferState::RateLimiting(x) => (x.lease, x.origin, true),
+            TransferState::Done(d) => (d.lease, d.origin, true),
         };
-        release(cx, lease, true, origin.as_ref());
+        mstate::trace(cx, format_args!("multi_done: status: 0 prem: 1 done: 0"));
+        release(cx, lease, true, past_do, origin.as_ref());
     }
 }
 
 /// Give the transfer's connection back, and trace its fate
 /// (`Curl_cpool_return`, `cpool_conn_close`).
+///
+/// `stream_closed` says the transfer marked the connection for closing
+/// as it failed past its request (`streamclose`), which only the trace
+/// tells: a premature end closes it anyway.
 fn release<H: Host>(
     cx: &mut StepCx<'_, H>,
     lease: ConnLease,
     premature: bool,
+    stream_closed: bool,
     origin: Option<&Origin>,
 ) {
     let finish = Finish {
@@ -382,9 +413,25 @@ fn release<H: Host>(
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
     }
     let home = lease.home().cloned();
+    let closes = lease.closes() || stream_closed;
     let released = cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
         pool.release(lease, finish, limit, net, now)
     });
+    // No connection carries more than one transfer.
+    mstate::trace(cx, format_args!("multi_done_locked, in use=0"));
+    if let Released::Closed(n) | Released::Terminated(n) = &released {
+        // A connection to no host, a file's, has an empty name.
+        let (host, port) = origin.map_or((Bytes(b""), 0), |o| (Bytes(o.name()), o.port()));
+        mstate::trace(
+            cx,
+            format_args!(
+                "multi_done, terminating conn {n} to {host}:{port}, forbid={}, close={}, premature={}, conn_multiplex=0",
+                u8::from(finish.forbid_reuse),
+                u8::from(closes),
+                u8::from(finish.premature)
+            ),
+        );
+    }
     if let Released::Idle {
         full: Some(full), ..
     }
@@ -626,7 +673,23 @@ impl<H: Host> StepCx<'_, H> {
 
     pub(crate) fn mark(&mut self, timer: Timer) {
         let now = self.rest.now;
-        self.report_mut().timings_mut().mark(timer, now);
+        let marked = self.report_mut().timings_mut().mark(timer, now);
+        mstate::marked(self, timer, marked);
+    }
+
+    /// Where the transfer is in C's states.
+    pub(crate) fn mstate(&self) -> MState {
+        self.rest
+            .tell
+            .slots
+            .get(self.me)
+            .expect("the stepping transfer")
+            .mstate
+    }
+
+    pub(super) fn set_mstate(&mut self, state: MState) {
+        let slot = self.rest.tell.slots.get_mut(self.me);
+        slot.expect("the stepping transfer").mstate = state;
     }
 }
 
@@ -681,16 +744,22 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             cx.report_mut().restart(now);
             *cx.speedometer_mut() = Speedometer::default();
             let next = match pretransfer(run, cx) {
-                Ok(url) => start_leg(run, cx, url),
+                Ok(url) => {
+                    mstate::enter(cx, MState::Setup);
+                    cx.mark(Timer::StartOp);
+                    start_leg(run, cx, url)
+                }
                 Err(kind) => TransferState::Init.fail(kind),
             };
             if next.is_completed() {
-                enter_completed(cx.report_mut(), now, true);
+                complete(cx, now, true);
             }
             (next, Wake::Again)
         }
         TransferState::Pending(plan) => pending(run, plan, cx),
         TransferState::Setup(mut plan) => {
+            // Let out of PENDING by another transfer (`multi_schedule_pending`).
+            mstate::enter(cx, MState::Connect);
             // The rest of the plan is kept, but C makes its connection
             // anew as a waiting transfer looks again, reading the IP
             // version then (`allocate_conn`, `url_match_conn`).
@@ -707,7 +776,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                 TimeLeft::Remaining(_) | TimeLeft::Unlimited => setup(cx, plan),
             };
             if next.is_completed() {
-                enter_completed(cx.report_mut(), now, true);
+                complete(cx, now, true);
             }
             (next, Wake::Again)
         }
@@ -718,6 +787,7 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             Ok(()) => {
                 // About to send; sent already, with no body
                 // (`mstate_enter_did`).
+                mstate::enter(cx, MState::Did);
                 cx.mark(Timer::PreTransfer);
                 let send = x.proto.wants_send(cx.easy().options());
                 if !send {
@@ -865,6 +935,14 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             // ended, not by the protocol's last word (`multi_done`), which
             // comes first.
             let mut premature = d.premature || is_premature(d.result);
+            mstate::trace(
+                cx,
+                format_args!(
+                    "multi_done: status: {} prem: {} done: 0",
+                    trace::Code(d.result),
+                    u8::from(premature)
+                ),
+            );
             if let Some(proto) = d.proto.as_mut() {
                 d.result = proto.done(cx, &mut d.lease, d.result, premature, &d.next);
             }
@@ -882,7 +960,8 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             let kept = cx.rest.kept(cx.me, Kind::Names);
             let (_, mut names) = cx.rest.net_names(cx.me, kept.as_ref());
             names.section(|dns| dns.prune(now, max_age));
-            release(cx, d.lease, premature, d.origin.as_ref());
+            let stream_closed = d.premature && d.reached != Reached::Unmade;
+            release(cx, d.lease, premature, stream_closed, d.origin.as_ref());
             // Held output went with the request; a pause the application
             // asked for stays.
             let pause = cx.pause_mut();
@@ -907,11 +986,11 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
             };
             if let Some(next) = leg {
                 if next.is_completed() {
-                    enter_completed(cx.report_mut(), now, true);
+                    complete(cx, now, true);
                 }
                 (next, Wake::Again)
             } else {
-                enter_completed(cx.report_mut(), now, d.reached == Reached::Unmade);
+                complete(cx, now, d.reached == Reached::Unmade);
                 let completed = TransferState::Completed(Completed {
                     outcome: d.result,
                     message: Message::Unread,
@@ -922,6 +1001,15 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         s @ TransferState::Completed(_) => (s, Wake::Idle),
     };
     let (next, wake) = progress_after_step(next, wake, cx);
+    if next.is_completed() {
+        // Its message is ready at once (`handle_completed`).
+        if cx.mstate() != MState::MsgSent {
+            mstate::enter(cx, MState::Completed);
+            mstate::enter(cx, MState::MsgSent);
+        }
+    } else if let Some(state) = next.c_state() {
+        mstate::enter(cx, state);
+    }
     run.state = next;
     wake
 }
@@ -1117,6 +1205,10 @@ fn connecting<H: Host>(
         }
         Err(e) => {
             let kind = connect_failed(cx, &c.route, e);
+            mstate::trace(
+                cx,
+                format_args!("connect failed -> {}", trace::Code(Err(kind))),
+            );
             (TransferState::Connecting(c).fail(kind), Wake::Again)
         }
     }
@@ -1170,7 +1262,8 @@ fn up<H: Host>(
     local: Option<SocketAddr>,
     at: Instant,
 ) -> (TransferState, Wake) {
-    cx.report_mut().timings_mut().mark(Timer::Connect, at);
+    let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+    mstate::marked(cx, Timer::Connect, marked);
     cx.report_mut().set_primary(Ends { remote, local });
     // `CURL_CONN_HOST_DISPNAME`.
     let host = Bytes(c.route.destination().shown());
@@ -1449,16 +1542,39 @@ fn timed_out<H: Host>(cx: &mut StepCx<'_, H>) -> ErrorKind {
 }
 
 /// The report of a transfer completing, from before the request was
-/// about to be sent or not (`mstate_enter_completed`, `Curl_pgrsCompleted`).
-fn enter_completed(report: &mut TransferReport, now: Instant, before_did: bool) {
+/// about to be sent or not (`mstate_enter_completed`, `Curl_pgrsCompleted`):
+/// the times it took, if any.
+fn enter_completed(
+    report: &mut TransferReport,
+    now: Instant,
+    before_did: bool,
+) -> [Option<(Timer, Marked)>; 3] {
     let t = report.timings_mut();
+    let mut marks = [None; 3];
     if before_did {
         // The times a jump to the end skipped.
-        t.mark(Timer::PreTransfer, now);
-        t.mark(Timer::PostTransfer, now);
-        t.mark(Timer::StartTransfer, now);
+        let skipped = [
+            Timer::PreTransfer,
+            Timer::PostTransfer,
+            Timer::StartTransfer,
+        ];
+        for (mark, timer) in marks.iter_mut().zip(skipped) {
+            *mark = Some((timer, t.mark(timer, now)));
+        }
     }
     t.completed(now);
+    marks
+}
+
+/// `enter_completed` as the transfer steps, traced in COMPLETED.
+fn complete<H: Host>(cx: &mut StepCx<'_, H>, now: Instant, before_did: bool) {
+    mstate::enter(cx, MState::Completed);
+    for (timer, marked) in enter_completed(cx.report_mut(), now, before_did)
+        .into_iter()
+        .flatten()
+    {
+        mstate::marked(cx, timer, marked);
+    }
 }
 
 /// A transfer that never ran, ended by its multi: its report starts and
@@ -1521,7 +1637,6 @@ fn pretransfer<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<Url, Er
             .map_err(|_| ErrorKind::OutOfMemory)?;
         cx.report_mut().set_referer(referer);
     }
-    cx.mark(Timer::StartOp);
     crate::proto::http::cookies::load(cx)?;
     read_resolve(cx)?;
     // Taken as it is parsed, its text not read again.
@@ -1926,6 +2041,7 @@ fn next_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, url: Url) -> Transfe
     let sizes = cx.report_mut().sizes_mut();
     sizes.download_expected = None;
     sizes.upload_expected = None;
+    mstate::enter(cx, MState::Setup);
     start_leg(run, cx, url)
 }
 
@@ -1974,6 +2090,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     }
     cx.report_mut().set_method(run.inherited.method);
     cx.mark(Timer::StartSingle);
+    mstate::enter(cx, MState::Connect);
     cx.mark(Timer::PostQueue);
     // Counted from nothing for each request (`Curl_init_do`).
     let (speedometer, report) = cx.progress_parts();
@@ -2319,11 +2436,15 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
                     format_args!("No connections available, total of {max} reached."),
                 ),
             }
+            mstate::enter(cx, MState::Pending);
             return TransferState::Pending(plan);
         }
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
     cx.report_mut().set_used_proxy(plan.route.proxy.is_some());
+    if !lease.is_up() {
+        mstate::trace(cx, format_args!("Curl_conn_setup() -> 0"));
+    }
     let Plan { proto, route } = plan;
     TransferState::Connecting(Connecting {
         lease,
@@ -2437,9 +2558,22 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     };
     let mut acquired = match found {
         Some(lease) => Acquired::Reused(lease),
-        None => cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
-            pool.add(route, add, net, now)
-        })?,
+        None => {
+            let (added, members) = cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
+                pool.add(route, add, net, now)
+                    .map(|added| (added, pool.len()))
+            })?;
+            if let Acquired::New(lease) = &added {
+                let n = lease.number().get();
+                mstate::trace(
+                    cx,
+                    format_args!(
+                        "[CPOOL] added connection {n}. The cache now contains {members} members"
+                    ),
+                );
+            }
+            added
+        }
     };
     if let (Some(share), Acquired::Reused(lease) | Acquired::New(lease)) = (home, &mut acquired) {
         lease.set_home(share);

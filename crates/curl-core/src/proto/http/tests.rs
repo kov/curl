@@ -4619,6 +4619,7 @@ fn an_origin_s_digest_is_answered_through_a_proxy() {
 }
 
 mod coding;
+mod multi_trace;
 mod range;
 mod sigv4;
 mod time_condition;

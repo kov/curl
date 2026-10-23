@@ -449,6 +449,35 @@ pub(crate) enum Timer {
     Redirect,
 }
 
+impl Timer {
+    /// Its name in the trace (`pgrs_timer_names`).
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Timer::StartOp => "PGRS-STARTOP",
+            Timer::StartSingle => "PGRS-STARTSINGLE",
+            Timer::PostQueue => "PGRS-POSTQUEUE",
+            Timer::NameLookup => "PGRS-NAMELOOKUP",
+            Timer::Connect => "PGRS-CONNECT",
+            Timer::AppConnect => "PGRS-APPCONNECT",
+            Timer::PreTransfer => "PGRS-PRETRANSFER",
+            Timer::StartTransfer => "PGRS-STARTTRANSFER",
+            Timer::PostTransfer => "PGRS-POSTRANSFER",
+            Timer::Redirect => "PGRS-REDIRECT",
+        }
+    }
+}
+
+/// What taking a time did, as C traces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Marked {
+    /// A point in time was kept.
+    Set,
+    /// A phase grew by this many µs.
+    Added(u64),
+    /// The first response byte was counted already.
+    Ignored,
+}
+
 /// How long a transfer took to reach each point (`struct Progress`'s
 /// `delta` and `total`). Each phase sums over every request of the
 /// transfer, counted from that request's start, and is at least a
@@ -494,7 +523,7 @@ impl Timings {
     }
 
     /// Take the time of `timer` as `now` (`Curl_pgrsTimeWas`).
-    pub(crate) fn mark(&mut self, timer: Timer, now: Instant) {
+    pub(crate) fn mark(&mut self, timer: Timer, now: Instant) -> Marked {
         let since_start = self.since_start(now);
         let since_single = since_start.saturating_sub(self.since_single_start());
         let phase = match timer {
@@ -504,7 +533,7 @@ impl Timings {
                     single: now,
                 });
                 self.startqueue = since_start;
-                return;
+                return Marked::Set;
             }
             Timer::StartSingle => {
                 self.starts
@@ -512,20 +541,20 @@ impl Timings {
                     .expect("a request starts after its transfer")
                     .single = now;
                 self.starttransfer_added = false;
-                return;
+                return Marked::Set;
             }
             Timer::PostQueue => {
                 // Queue time sums over every request.
                 self.queued += since_start.saturating_sub(self.startqueue);
-                return;
+                return Marked::Set;
             }
             Timer::Redirect => {
                 self.startredirect = since_start;
                 // The transfer queues again.
                 self.startqueue = since_start;
-                return;
+                return Marked::Set;
             }
-            Timer::StartTransfer if self.starttransfer_added => return,
+            Timer::StartTransfer if self.starttransfer_added => return Marked::Ignored,
             Timer::StartTransfer => {
                 self.starttransfer_added = true;
                 &mut self.starttransfer
@@ -536,7 +565,9 @@ impl Timings {
             Timer::PreTransfer => &mut self.pretransfer,
             Timer::PostTransfer => &mut self.posttransfer,
         };
-        *phase += since_single.max(1);
+        let added = since_single.max(1);
+        *phase += added;
+        Marked::Added(added)
     }
 
     /// The transfer is over (`Curl_pgrsCompleted`), or a progress pass

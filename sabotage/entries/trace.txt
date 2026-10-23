@@ -212,3 +212,83 @@ witness: curl-core proto::http::tests::write_trace::a_coded_body_held_at_the_gat
 --- new
             WriteType::of(kind),
             self.held.held() - bytes.len(),
+
+=== a change of C's state is traced in the state it enters
+file: crates/curl-core/src/multi/mstate.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
+--- old
+    trace(cx, format_args!("-> [{}]", next.name()));
+    cx.set_mstate(next);
+--- new
+    cx.set_mstate(next);
+    trace(cx, format_args!("-> [{}]", next.name()));
+
+=== the request's start is timed before SETUP
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
+--- old
+                    mstate::enter(cx, MState::Setup);
+                    cx.mark(Timer::StartOp);
+--- new
+                    cx.mark(Timer::StartOp);
+                    mstate::enter(cx, MState::Setup);
+
+=== the request is timed as sent before DID
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
+--- old
+                mstate::enter(cx, MState::Did);
+                cx.mark(Timer::PreTransfer);
+--- new
+                cx.mark(Timer::PreTransfer);
+                mstate::enter(cx, MState::Did);
+
+=== a failed request goes through DONE
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_failed_response_closes_its_connection_in_performing
+--- old
+                if d.result.is_ok() && matches!(d.next, AfterRequest::Complete) =>
+--- new
+                if matches!(d.next, AfterRequest::Complete) =>
+
+=== a request failed past its request leaves its connection unmarked
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_failed_response_closes_its_connection_in_performing
+--- old
+            let stream_closed = d.premature && d.reached != Reached::Unmade;
+--- new
+            let stream_closed = false;
+
+=== the times a failure skipped are taken before COMPLETED
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_refused_connect_is_done_with_where_it_failed
+--- old
+    mstate::enter(cx, MState::Completed);
+    for (timer, marked) in enter_completed(cx.report_mut(), now, before_did)
+--- new
+    for (timer, marked) in enter_completed(cx.report_mut(), now, before_did)
+
+=== a redirect's request starts over from CONNECT
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_setup
+--- old
+    sizes.upload_expected = None;
+    mstate::enter(cx, MState::Setup);
+--- new
+    sizes.upload_expected = None;
+
+=== a connection reused is set up again
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_redirect_starts_over_from_setup
+--- old
+    if !lease.is_up() {
+--- new
+    if true {
+
+=== the multi's count leaves its internal handle out
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
+--- old
+        let total = current + 1;
+--- new
+        let total = current;

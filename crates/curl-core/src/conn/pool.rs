@@ -123,6 +123,17 @@ impl ConnLease {
         }
     }
 
+    /// The connection is up: set up already, as one reused is.
+    pub(crate) fn is_up(&self) -> bool {
+        matches!(self.slot(), ConnSlot::Open(_))
+    }
+
+    /// The connection is up and to close after its request
+    /// (`bits.close`).
+    pub(crate) fn closes(&self) -> bool {
+        matches!(self.slot(), ConnSlot::Open(conn) if conn.close)
+    }
+
     /// The connection, once up, to use.
     pub(crate) fn get(&mut self) -> &mut Conn {
         let id = self.id;
@@ -619,7 +630,6 @@ impl Pool {
     }
 
     /// Connections in the pool, busy or idle.
-    #[cfg(test)]
     pub(crate) fn len(&self) -> u32 {
         self.conns.len()
     }

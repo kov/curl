@@ -154,6 +154,7 @@ curl-core/src/
                              state/tunnel.rs, state/socks.rs, state/haproxy.rs: the
                              CONNECT and SOCKS handshakes and the PROXY line a transfer
                              makes
+    mstate.rs                MState: where a transfer is in C's states, for the trace
     sched.rs                 RowSet (the dirty set), Counts, Tally
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
     sockets.rs               SocketTable, pollset diff, announce
@@ -310,6 +311,17 @@ the content decoders (`[PAUSE]`) and the handlers (`[OUT]`), with C's numeric wr
 results. A `Transfer-Encoding` list is read by the head parser, which has no context to trace
 in; the line it hands out carries a `CodingTale` the protocol retells, before the line, as C
 traces while it reads. Not traced: the C debug build's `DEBUGF` lines.
+
+`MULTI` follows C's state machine (`multi/mstate.rs`): each slot keeps the `MState` C would be
+in, which every multi line names, and a change is traced in the state left. The engine's states
+fold several of C's (INIT runs C's INIT and SETUP and starts its CONNECT), so the step enters C's
+at the points C passes them, and after each step the state is brought to the one the engine's
+names; a request that failed stays where it failed, as C's is done with there. Traced: the
+changes, the times taken (`[PGRS-*]`), the transfer's coming and going, `[CPOOL]`'s new
+connection, `Curl_conn_setup`, a failed connect and `multi_done`'s lines. Not traced: lines on
+C's connection filters and its pollset and `multi_wait` internals, the credentials line
+(`Curl_creds_trace`), `xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; a transfer let out of PENDING
+by another is traced entering CONNECT at its next step rather than as it is let.
 
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as

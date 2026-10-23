@@ -818,11 +818,11 @@ witness: curl-core proto::http::tests::a_followed_redirect_refers_to_where_it_ca
 --- old
         cx.report_mut().set_referer(referer);
     }
-    cx.mark(Timer::StartOp);
+    crate::proto::http::cookies::load(cx)?;
 --- new
         let _ = referer;
     }
-    cx.mark(Timer::StartOp);
+    crate::proto::http::cookies::load(cx)?;
 
 === a URL's own credentials pass the gate
 file: crates/curl-core/src/proto/http/auth.rs

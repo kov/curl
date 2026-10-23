@@ -10,6 +10,7 @@
 #[cfg(debug_assertions)]
 mod check;
 mod cx;
+pub(crate) mod mstate;
 mod notify;
 mod sched;
 mod sockets;
@@ -172,6 +173,8 @@ struct Slot<H: Host> {
     rate: RateLimits,
     /// Out only while the transfer is being stepped.
     run: Option<Run>,
+    /// Where it is in C's states, for the trace.
+    mstate: mstate::MState,
 }
 
 /// An `Easy` the multi did not take, and why.
@@ -352,6 +355,7 @@ impl<H: Host> Multi<H> {
             speedometer: Speedometer::default(),
             rate: RateLimits::default(),
             run: Some(run),
+            mstate: mstate::MState::Init,
         });
         let slot = match slot {
             Ok(slot) => slot,
@@ -381,7 +385,28 @@ impl<H: Host> Multi<H> {
             self.counts.add_undone();
             return refuse(kind, slot.easy);
         }
+        self.trace_membership(id, "added to", ev);
         Ok(id)
+    }
+
+    /// That transfer `id` came or goes (`curl_multi_add_handle`,
+    /// `curl_multi_remove_handle`), as C numbers its transfers: its
+    /// internal handle first, and counted.
+    fn trace_membership(&mut self, id: TransferId, what: &str, ev: &mut dyn MultiEvents<H>) {
+        let Counts {
+            running, current, ..
+        } = self.counts.get();
+        let total = current + 1;
+        let now = self.clock.now();
+        let mut cx = StepCx {
+            me: id,
+            rest: self.rest(now, ev),
+        };
+        let mid = id.index() + 1;
+        mstate::trace(
+            &mut cx,
+            format_args!("{what} multi, mid={mid}, running={running}, total={total}"),
+        );
     }
 
     /// Take a transfer out, completed or not, and give its `Easy` back
@@ -407,6 +432,9 @@ impl<H: Host> Multi<H> {
             .expect("no transfer is out while the multi is called");
         self.counts.removed(run.state.is_completed());
         self.abandon(id, run, ev);
+        // Whatever its state, it is traced as completed.
+        self.slots.get_mut(id).expect("still in the multi").mstate = mstate::MState::Completed;
+        self.trace_membership(id, "removed from", ev);
         // Waiting on nothing now; C does not mind the callback's answer
         // (`Curl_multi_ev_xfer_done`).
         let _ = self.tell_wants(id, Wants::NONE, ev);

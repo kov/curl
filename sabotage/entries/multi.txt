@@ -287,6 +287,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
             speedometer: Speedometer::default(),
             rate: RateLimits::default(),
             run: Some(run),
+            mstate: mstate::MState::Init,
         });
 --- new
         let slot = Ok::<Box<Slot<H>>, Slot<H>>(Box::new(Slot {
@@ -297,6 +298,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
             speedometer: Speedometer::default(),
             rate: RateLimits::default(),
             run: Some(run),
+            mstate: mstate::MState::Init,
         }));
 
 === notifications get less room than a pass can queue
@@ -389,9 +391,9 @@ witness: curl-core multi::tests::a_paused_transfer_does_not_connect
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::removing_a_connecting_transfer_closes_its_socket
 --- old
-        release(cx, lease, true, origin.as_ref());
+        release(cx, lease, true, past_do, origin.as_ref());
 --- new
-        let _ = origin;
+        let _ = (origin, past_do);
         let home = lease.home().cloned();
         let now = cx.rest.now;
         let finish = Finish { premature: true, forbid_reuse: false };

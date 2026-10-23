@@ -266,6 +266,7 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used())),
         ffi::CURLINFO_PROXYAUTH_AVAIL => Value::Long(auth_mask(r.proxy_auth_offered())),
         ffi::CURLINFO_PROXY_ERROR => Value::Long(r.proxy_error().map_or(0, proxy_code)),
+        ffi::CURLINFO_OS_ERRNO => Value::Long(r.os_errno().map_or(0, |e| c_long::from(e.get()))),
         ffi::CURLINFO_PROXYAUTH_USED => Value::Long(auth_mask(r.proxy_auth_used())),
         ffi::CURLINFO_REQUEST_SIZE => {
             Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))

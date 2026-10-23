@@ -28,6 +28,27 @@ pub struct Ends {
     pub local: Option<SocketAddr>,
 }
 
+/// An operating system error number (`errno`), never 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OsErrno(std::num::NonZeroI32);
+
+impl OsErrno {
+    /// The error numbered `n`; None for 0, which is no error.
+    pub fn new(n: i32) -> Option<OsErrno> {
+        std::num::NonZeroI32::new(n).map(OsErrno)
+    }
+
+    /// The number, as the system gives it.
+    pub fn get(self) -> i32 {
+        self.0.get()
+    }
+
+    /// What kind of error the number is.
+    pub fn kind(self) -> std::io::ErrorKind {
+        std::io::Error::from_raw_os_error(self.get()).kind()
+    }
+}
+
 /// The HTTP version a status line says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResponseVersion {
@@ -111,9 +132,9 @@ pub struct TransferReport {
     /// The method the last request authenticated with to the proxy, or
     /// was chosen for the next (`info.proxyauthpicked`).
     proxy_auth_used: AuthMethods,
-    /// Why the last attempt to connect failed, when connecting failed
-    /// (`state.os_errno`, as a connect sets it).
-    connect_error: Option<std::io::ErrorKind>,
+    /// The error number of the last socket call that failed: a connect,
+    /// a send or a receive (`state.os_errno`).
+    os_errno: Option<OsErrno>,
 }
 
 impl TransferReport {
@@ -391,15 +412,21 @@ impl TransferReport {
         self.redirect_url = Some(url);
     }
 
-    /// Why the last attempt to connect failed, when the transfer failed
-    /// to connect: refused, unreachable, timed out (`CURLINFO_OS_ERRNO`
-    /// after `CURLE_COULDNT_CONNECT`).
-    pub fn connect_error(&self) -> Option<std::io::ErrorKind> {
-        self.connect_error
+    /// The operating system's error number for the last socket call of
+    /// the transfer that failed: an attempt to connect, a send or a
+    /// receive, whether or not the transfer failed with it
+    /// (`CURLINFO_OS_ERRNO`). None before one fails.
+    pub fn os_errno(&self) -> Option<OsErrno> {
+        self.os_errno
     }
 
-    pub(crate) fn set_connect_error(&mut self, kind: std::io::ErrorKind) {
-        self.connect_error = Some(kind);
+    /// A socket call failed with `e` (`data->state.os_errno = sockerr`).
+    /// An error without a number, or numbered 0, leaves what was kept, as
+    /// C sets it only from a socket's error.
+    pub(crate) fn socket_failed(&mut self, e: &std::io::Error) {
+        if let Some(n) = e.raw_os_error().and_then(OsErrno::new) {
+            self.os_errno = Some(n);
+        }
     }
 
     /// Why the transfer failed, in the words of the first reason given.

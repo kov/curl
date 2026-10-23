@@ -238,11 +238,3 @@ witness: curl-core version::tests::version_matches_its_parts
             write!(f, " {library}")?;
 --- new
             write!(f, "{library}")?;
-
-=== a failed connect does not report why
-file: crates/curl-core/src/multi/state.rs
-witness: curl-core easy::tests::connects_over_loopback
---- old
-            cx.report_mut().set_connect_error(error.kind());
---- new
-            let _ = error;

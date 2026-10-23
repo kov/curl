@@ -4610,6 +4610,61 @@ fn post_fields_are_read_in_place_and_rewound() {
     assert_eq!(pieces, [&b"ab"[..], b"cd", b"abcd", b"ef"]);
 }
 
+/// `CURLINFO_OS_ERRNO` is the number of the last socket call that failed:
+/// a connect refused, a receive the peer reset; and 0 again once the
+/// handle's next transfer starts (`easy_perform`).
+#[test]
+fn the_os_errno_is_the_last_socket_failure_s() {
+    let c = curl_easy_init();
+    long(c, ffi::CURLOPT_TIMEOUT, 10);
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_OS_ERRNO), 0);
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = std::ffi::CString::new(format!(
+        "http://127.0.0.1:{}/",
+        closed.local_addr().unwrap().port()
+    ))
+    .unwrap();
+    drop(closed);
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    assert_eq!(
+        info::<c_long>(c, ffi::CURLINFO_OS_ERRNO),
+        c_long::from(libc::ECONNREFUSED)
+    );
+
+    // A peer that closes with the request unread resets the connection.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut some = [0; 1];
+        peer.peek(&mut some).unwrap();
+        drop(peer);
+    });
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_RECV_ERROR);
+    server.join().unwrap();
+    assert_eq!(
+        info::<c_long>(c, ffi::CURLINFO_OS_ERRNO),
+        c_long::from(libc::ECONNRESET)
+    );
+
+    let (port, server) = serve(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"]);
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut());
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, CURLE_OK);
+    server.join().unwrap();
+    assert_eq!(info::<c_long>(c, ffi::CURLINFO_OS_ERRNO), 0);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// A SOCKS5 proxy's failure is reported as its `CURLproxycode`, and an
 /// HTTP proxy's refusal of a tunnel by its code.
 #[test]

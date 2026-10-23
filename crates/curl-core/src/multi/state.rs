@@ -707,6 +707,10 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
     fn info(&mut self, line: std::fmt::Arguments<'_>) {
         trace::info(self, line);
     }
+
+    fn socket_failed(&mut self, e: &std::io::Error) {
+        self.report_mut().socket_failed(e);
+    }
 }
 
 /// What a step needs: the transfer it steps, whose `Run` is out of its
@@ -1836,9 +1840,8 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
             }
             return kind;
         }
-        ConnectError::Failed(error, kind) => {
-            // The drive traced the failure.
-            cx.report_mut().set_connect_error(error.kind());
+        ConnectError::Failed(_, kind) => {
+            // The drive traced the failure, and kept its number.
             // No attempt running, and no address left.
             trace::of(
                 cx,

@@ -20,7 +20,7 @@ use curl_core::error::{ErrorKind, UrlErrorKind};
 use curl_core::handler::{Handler, HeaderOrigin, Read, ReadHandler, Rewind, RewindFailed};
 use curl_core::multi::TransferCx;
 use curl_core::options::{self, Method, Progress, UploadSource};
-use curl_core::report::Request as HeaderRequest;
+use curl_core::report::{OsErrno, Request as HeaderRequest};
 use curl_core::share::{Kind, Share};
 use curl_core::time::TimeLimit;
 use curl_core::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
@@ -1175,8 +1175,8 @@ impl Reason {
 
 /// Why an attempt that ended with `result`, its last response `code` over
 /// `protocol`, would be tried again, if it would (`retrycheck`): a failure
-/// that may pass, a connection refused (`connect_error` says why
-/// connecting failed) with `--retry-connrefused`, an HTTP response saying
+/// that may pass, a connection refused (the last socket error, `os_errno`,
+/// says why connecting failed) with `--retry-connrefused`, an HTTP response saying
 /// so, or with `--retry-all-errors` any failure. An FTP 4xx (`RETRY_FTP`)
 /// joins with FTP.
 fn reason(
@@ -1184,7 +1184,7 @@ fn reason(
     result: Result<(), ErrorKind>,
     protocol: Option<Protocol>,
     code: Option<u16>,
-    connect_error: Option<std::io::ErrorKind>,
+    os_errno: Option<OsErrno>,
 ) -> Option<Reason> {
     let passing = matches!(
         result,
@@ -1197,7 +1197,7 @@ fn reason(
     let reason = if passing {
         Some(Reason::Timeout)
     } else if op.retry_connrefused && result == Err(ErrorKind::CouldntConnect) {
-        (connect_error == Some(std::io::ErrorKind::ConnectionRefused))
+        (os_errno.map(OsErrno::kind) == Some(std::io::ErrorKind::ConnectionRefused))
             .then_some(Reason::ConnRefused)
     } else if (result.is_ok() || failed_http)
         && protocol == Some(Protocol::Http)
@@ -1245,7 +1245,7 @@ impl Retrying {
             result,
             report.protocol(),
             report.response_code(),
-            report.connect_error(),
+            report.os_errno(),
         ) else {
             return Again::No(result);
         };
@@ -2874,14 +2874,15 @@ mod tests {
         let refused = Err(ErrorKind::CouldntConnect);
         assert_eq!(reason(&op, refused, http, None, None), None);
         // Refused, with `--retry-connrefused`; and not otherwise.
-        let why = Some(std::io::ErrorKind::ConnectionRefused);
+        // As Linux numbers them.
+        let why = OsErrno::new(111);
         assert_eq!(reason(&op, refused, http, None, why), None);
         op.retry_connrefused = true;
         assert_eq!(
             reason(&op, refused, http, None, why),
             Some(Reason::ConnRefused)
         );
-        let timed_out_connect = Some(std::io::ErrorKind::TimedOut);
+        let timed_out_connect = OsErrno::new(110);
         assert_eq!(reason(&op, refused, http, None, timed_out_connect), None);
         assert_eq!(
             reason(&op, Ok(()), http, Some(503), why),

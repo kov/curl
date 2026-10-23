@@ -1,0 +1,89 @@
+# The operating system's error number a transfer keeps (`os_errno`,
+# CURLINFO_OS_ERRNO), against cf-socket.c, easy.c and multi.c.
+
+=== a failed receive keeps no number
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
+--- old
+            None => self.socket.recv(buf).inspect_err(|e| cx.socket_failed(e)),
+--- new
+            None => self.socket.recv(buf),
+
+=== a failed send keeps no number
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer
+features: test-util
+--- old
+            None => self.socket.send(bytes).inspect_err(|e| cx.socket_failed(e)),
+--- new
+            None => self.socket.send(bytes),
+
+=== an attempt refused once polled keeps no number
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::os_errno::a_refused_attempt_s_number_outlives_the_next_s_success
+features: test-util
+--- old
+        cx.socket_failed(&error);
+        let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
+--- new
+        let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
+
+=== a connect refused at once keeps no number
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::os_errno::an_immediate_refusal_keeps_its_number
+features: test-util
+--- old
+                cx.socket_failed(&error);
+                let why = OsError(&error);
+--- new
+                let why = OsError(&error);
+
+=== the transfer's context drops the number
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer
+features: test-util
+--- old
+    fn socket_failed(&mut self, e: &std::io::Error) {
+        self.report_mut().socket_failed(e);
+    }
+--- new
+    fn socket_failed(&mut self, _e: &std::io::Error) {}
+
+=== the drive's context drops the number
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core proto::http::tests::os_errno::a_refused_connect_keeps_its_number
+features: test-util
+--- old
+    fn socket_failed(&mut self, e: &std::io::Error) {
+        LayerCx::socket_failed(&mut *self.step, e);
+    }
+--- new
+    fn socket_failed(&mut self, _e: &std::io::Error) {}
+
+=== a new transfer starts with the last one's number
+file: crates/curl-core/src/report.rs
+witness: curl-core proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer
+features: test-util
+--- old
+            transfer: self.transfer,
+            ..TransferReport::default()
+--- new
+            transfer: self.transfer,
+            os_errno: self.os_errno,
+            ..TransferReport::default()
+
+=== the getinfo answers 0 whatever the number
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
+--- old
+        ffi::CURLINFO_OS_ERRNO => Value::Long(r.os_errno().map_or(0, |e| c_long::from(e.get()))),
+--- new
+        ffi::CURLINFO_OS_ERRNO => Value::Long(0),
+
+=== --retry-connrefused retries whatever the connect failed with
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::retries_for_c_reasons
+--- old
+        (os_errno.map(OsErrno::kind) == Some(std::io::ErrorKind::ConnectionRefused))
+--- new
+        (os_errno.is_some())

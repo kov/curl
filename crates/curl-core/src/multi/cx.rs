@@ -217,6 +217,10 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
     fn info(&mut self, line: fmt::Arguments<'_>) {
         LayerCx::info(&mut *self.step, line);
     }
+
+    fn socket_failed(&mut self, e: &std::io::Error) {
+        LayerCx::socket_failed(&mut *self.step, e);
+    }
 }
 
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {

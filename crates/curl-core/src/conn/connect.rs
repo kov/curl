@@ -403,8 +403,14 @@ pub(crate) enum Progress {
 pub(crate) enum ConnectError {
     /// The name has no address to try.
     Unresolved(Unresolved),
-    /// The last attempt failed, with its error, as `.1` says it.
-    Failed(io::Error, ErrorKind),
+    /// The last attempt failed, with its error, as `.1` says it. The
+    /// transfer took the error's number from the drive's context as each
+    /// attempt failed (`LayerCx::socket_failed`); the machine's tests,
+    /// which have no transfer, read it here.
+    Failed(
+        #[cfg_attr(not(test), expect(dead_code, reason = "read by the tests"))] io::Error,
+        ErrorKind,
+    ),
     /// Memory ran out: no failure of the peer's.
     OutOfMemory,
 }
@@ -703,6 +709,9 @@ impl ConnectMachine {
                 Ok(Drove::Connecting(self, tried))
             }
             Err(error) => {
+                // The socket was opened before its connect failed, and
+                // never got a local address (`cf_tcp_connect`).
+                cx.socket_failed(&error);
                 let why = OsError(&error);
                 cx.info(format_args!(
                     "Immediate connect fail for {}: {why}",
@@ -956,6 +965,7 @@ impl Attempt {
         if error.kind() == io::ErrorKind::OutOfMemory {
             return Err(ConnectError::OutOfMemory);
         }
+        cx.socket_failed(&error);
         let (lip, lport) = (Ip(local.map(|l| l.ip())), local.map_or(0, |l| l.port()));
         let why = OsError(&error);
         let remote = self.remote;

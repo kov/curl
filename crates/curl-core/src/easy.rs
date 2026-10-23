@@ -1061,7 +1061,7 @@ mod tests {
                 .map(|(_, l)| String::from_utf8(l.clone()).unwrap())
                 .filter(|l| !l.starts_with("!!!") && !l.starts_with("This is a debug build"))
                 .collect();
-            (result, text, e.report().connect_error())
+            (result, text, e.report().os_errno().map(|n| n.kind()))
         };
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = closed.local_addr().unwrap().port();

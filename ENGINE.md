@@ -1245,6 +1245,7 @@ pub(crate) trait LayerCx {
     fn now(&self) -> Instant;
     fn of(&mut self, c: Component, line: fmt::Arguments<'_>);   // CURL_TRC_CF
     fn info(&mut self, line: fmt::Arguments<'_>);                // infof
+    fn socket_failed(&mut self, e: &io::Error) {}                // state.os_errno
 }
 ```
 
@@ -1276,7 +1277,10 @@ input pending on an idle HTTP/1 connection makes it unhealthy (1701).
 
 `LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE` and its
 dangling-easy class. Inside a step it is the transfer's (`ConnCx`, §4.7, extends it); a pool
-section has a silent one. A layer asks another layer something only through `query`. Only
+section has a silent one. A call on the socket that fails, a receive or a send at the bottom of
+`Below`, or an attempt to connect in the drive, is told to `socket_failed`, which the
+transfer's context keeps in its report as C's socket filter keeps `os_errno` (cf-socket.c), and
+a silent one drops; the report starts over without it with each transfer. A layer asks another layer something only through `query`. Only
 `conn::*` and `multi::wait` call `Net`.
 
 No layer is pushed outside the tests until TLS: a test's transfer names one

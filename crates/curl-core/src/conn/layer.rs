@@ -61,6 +61,11 @@ pub(crate) trait LayerCx {
 
     /// A line of the transfer's verbose output (`infof`).
     fn info(&mut self, line: fmt::Arguments<'_>);
+
+    /// A call on the socket failed with `e`: a connect, a send or a
+    /// receive; the transfer keeps its number (`state.os_errno`). Work
+    /// done for no transfer keeps nothing.
+    fn socket_failed(&mut self, _e: &io::Error) {}
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's
@@ -145,14 +150,14 @@ impl Below<'_> {
     pub(crate) fn recv(self, cx: &mut dyn LayerCx, buf: &mut [u8]) -> io::Result<Recv> {
         match self.layers.split_last_mut() {
             Some((top, layers)) => top.recv(cx, Below { layers, ..self }, buf),
-            None => self.socket.recv(buf),
+            None => self.socket.recv(buf).inspect_err(|e| cx.socket_failed(e)),
         }
     }
 
     pub(crate) fn send(self, cx: &mut dyn LayerCx, bytes: &[u8]) -> io::Result<Sent> {
         match self.layers.split_last_mut() {
             Some((top, layers)) => top.send(cx, Below { layers, ..self }, bytes),
-            None => self.socket.send(bytes),
+            None => self.socket.send(bytes).inspect_err(|e| cx.socket_failed(e)),
         }
     }
 

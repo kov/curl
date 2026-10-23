@@ -930,7 +930,7 @@ fn a_share_s_search_holds_every_closing_socket_it_closes() {
 /// as `CURL_GRACEFUL_SHUTDOWN` says (`Curl_cshutdn_destroy`), in waits of
 /// at most a second (`cshutdn_wait`), and not at all with none shutting
 /// down; read in a child of this binary given it, as the environment is
-/// the whole process's.
+/// the whole process's. C reads `1500ms` as 1500.
 #[cfg(feature = "debug-hooks")]
 #[test]
 fn the_debug_build_s_cleanup_waits_as_told() {
@@ -941,7 +941,7 @@ fn the_debug_build_s_cleanup_waits_as_told() {
             "--test-threads=1",
         ])
         .env("CURL_CORE_CHILD", "graceful")
-        .env("CURL_GRACEFUL_SHUTDOWN", "1500")
+        .env("CURL_GRACEFUL_SHUTDOWN", "1500ms")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -975,4 +975,26 @@ fn graceful_cleanup_in_a_child() {
     m.close_connections(&mut ev);
     assert_eq!(clock.now().since(start), Duration::from_millis(1500));
     assert_eq!(wire.closed(), [1000]);
+}
+
+/// `CURL_GRACEFUL_SHUTDOWN` is read as `curlx_str_number` reads it: its
+/// leading digits, what follows them ignored, up to `INT_MAX`; with no
+/// digit first there is no number.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn the_graceful_time_is_read_as_c_reads_it() {
+    assert_eq!(leading_ms(b"1500"), Some(1500));
+    assert_eq!(leading_ms(b"1500ms"), Some(1500));
+    assert_eq!(leading_ms(b"007"), Some(7));
+    assert_eq!(leading_ms(b"2147483647"), Some(2147483647));
+    assert_eq!(leading_ms(b"2147483648"), None);
+    assert_eq!(leading_ms(b"99999999999"), None);
+    for none in [&b""[..], b"+5", b" 5", b"-1", b"x1"] {
+        assert_eq!(
+            leading_ms(none),
+            None,
+            "{:?}",
+            String::from_utf8_lossy(none)
+        );
+    }
 }

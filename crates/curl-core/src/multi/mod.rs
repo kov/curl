@@ -1353,13 +1353,31 @@ fn graceful_shutdown() -> Duration {
     {
         let mut buf = [0u8; 32];
         if let Some(given) = curl_os::env::var_into(b"CURL_GRACEFUL_SHUTDOWN", &mut buf)
-            && let Ok(ms) = std::str::from_utf8(given).unwrap_or("").parse::<u32>()
-            && ms <= i32::MAX as u32
+            && let Some(ms) = leading_ms(given)
         {
             return Duration::from_millis(u64::from(ms));
         }
     }
     Duration::ZERO
+}
+
+/// The number `text` starts with, what follows it ignored, if it starts
+/// with one no greater than `INT_MAX` (`curlx_str_number`).
+#[cfg(feature = "debug-hooks")]
+fn leading_ms(text: &[u8]) -> Option<u32> {
+    let digits = text.iter().take_while(|b| b.is_ascii_digit());
+    let mut n: Option<u32> = None;
+    for &d in digits {
+        let next = n
+            .unwrap_or(0)
+            .checked_mul(10)?
+            .checked_add(u32::from(d - b'0'))?;
+        if next > i32::MAX.unsigned_abs() {
+            return None;
+        }
+        n = Some(next);
+    }
+    n
 }
 
 /// Wait up to `wait` for the sockets the connections in `set` wait on

@@ -567,8 +567,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       are given first.
     - **f. A drive's context.** **Done.** `ConnCx`, over the step's context, given to each
       drive; the lines step 39 traces still reported through `Progress`.
-    - **g. Handshakes in C's order** over the `Dialed` stream: the PROXY line before the
-      connection is open, SOCKS and the tunnel recorded as kinds on the stream.
+    - **g. Handshakes in C's order** over the `Dialed` stream. **Done.** The PROXY line before
+      the connection is open, SOCKS and the tunnel recorded as made on the dialed connection,
+      the order decided in one place.
     - **h. The chain's trace:** SETUP's lines and `cf_setup_connect`, `connected`, `reduced
       to` and `failed to connect`, rendered from the machine's stage.
     - **i. The TCP socket's trace** (`cf_socket_open`, local address, `connected`,

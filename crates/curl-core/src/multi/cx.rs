@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::conn::io::{
     Connect, Family, Net, PollFd, ResolveFailure, Socket, SocketKey, SocketPoll,
 };
-use crate::conn::{Caches, Names, Pool};
+use crate::conn::{Caches, Home, Names, Pool};
 use crate::deliver::PauseRequest;
 use crate::easy::Easy;
 use crate::error::ErrorKind;
@@ -91,16 +91,16 @@ impl<H: Host> EngineRest<'_, H> {
         })
     }
 
-    /// Run `section` for transfer `who` on the pool of `home`, with the
-    /// network to use: that share's, under its lock with the application
-    /// told around it, or with none the multi's own. The sockets the
-    /// section closes are closed once the share's lock is let go, as
-    /// closing one tells the socket callback.
+    /// Run `section` for transfer `who` on the pool `home` names, with the
+    /// network to use and `home` itself, which leases made there carry: a
+    /// share's, under its lock with the application told around it, or
+    /// the multi's own. The sockets the section closes are closed once the
+    /// share's lock is let go, as closing one tells the socket callback.
     pub(crate) fn pool_section<R>(
         &mut self,
         who: TransferId,
-        home: Option<&Share>,
-        section: impl FnOnce(&mut Pool, &mut dyn Net) -> R,
+        home: &Home,
+        section: impl FnOnce(&mut Pool, &mut dyn Net, &Home) -> R,
     ) -> R {
         let watch = self
             .tell
@@ -116,12 +116,13 @@ impl<H: Host> EngineRest<'_, H> {
             events: &mut *self.events,
             who,
         };
-        let Some(share) = home else {
-            return section(&mut self.caches.pool, &mut net);
+        let share = match home {
+            Home::Multi => return section(&mut self.caches.pool, &mut net, home),
+            Home::Share(share) => share,
         };
         watched(watch.as_deref(), share, Kind::Connections, || {
             let mut later = CloseLater::new(&mut net);
-            let r = section(&mut share.pool(), &mut later);
+            let r = section(&mut share.pool(), &mut later, home);
             later.close();
             r
         })

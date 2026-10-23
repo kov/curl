@@ -4,9 +4,9 @@
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
-    let home = cx.rest.kept(cx.me, Kind::Connections).map(|k| k.share);
+        Some(kept) => Home::Share(kept.share),
 --- new
-    let home: Option<crate::share::Share> = None;
+        Some(_) => Home::Multi,
 
 === a share leaves its idle connections open
 file: crates/curl-core/src/share.rs
@@ -33,12 +33,12 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
         watched(watch.as_deref(), share, Kind::Connections, || {
             let mut later = CloseLater::new(&mut net);
-            let r = section(&mut share.pool(), &mut later);
+            let r = section(&mut share.pool(), &mut later, home);
 --- new
         let mut held = share.pool();
         watched(watch.as_deref(), share, Kind::Connections, || {
             let mut later = CloseLater::new(&mut net);
-            let r = section(&mut held, &mut later);
+            let r = section(&mut held, &mut later, home);
 
 === a transfer's jar ignores its share's
 file: crates/curl-core/src/proto/http/cookies.rs

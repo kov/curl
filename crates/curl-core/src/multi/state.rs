@@ -17,8 +17,9 @@ use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::{
     Acquired, Answer, Asked, BadEntry, BadVia, ConnLease, ConnectError, Connected, Failure, Finish,
-    Found, Full, Limit, ListEntry, Peer, PoolNote, PreProxy, Progress, ProxyCreds, ProxyRoute,
-    Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry, queries,
+    Found, Full, Home, Limit, ListEntry, Peer, PoolNote, PreProxy, Progress, ProxyCreds,
+    ProxyRoute, Released, ReuseRules, Route, Setup, Tcp, Unresolved, WaitReason, parse_entry,
+    queries,
 };
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
@@ -446,10 +447,10 @@ fn release<H: Host>(
         let kept = cx.rest.kept(cx.me, Kind::Names);
         cx.rest.net_names(cx.me, kept.as_ref()).1.release();
     }
-    let home = lease.home().cloned();
+    let home = lease.home().clone();
     let closes = lease.closes() || stream_closed;
-    let released = cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
-        pool.release(lease, finish, limit, net, now)
+    let released = cx.rest.pool_section(cx.me, &home, |pool, net, here| {
+        pool.release(here, lease, finish, limit, net, now)
     });
     // No connection carries more than one transfer.
     mstate::trace(cx, format_args!("multi_done_locked, in use=0"));
@@ -2803,19 +2804,22 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     let add = cx.rest.tell.limits.add();
     // The search and the addition, each a use of the pool of its own
     // (`Curl_cpool_find`, `Curl_cpool_add`).
-    let home = cx.rest.kept(cx.me, Kind::Connections).map(|k| k.share);
+    let home = match cx.rest.kept(cx.me, Kind::Connections) {
+        Some(kept) => Home::Share(kept.share),
+        None => Home::Multi,
+    };
     let found = if pool::searches(&route, rules) {
-        cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
-            pool.find(&route, rules, net, now, &mut notes)
+        cx.rest.pool_section(cx.me, &home, |pool, net, here| {
+            pool.find(here, &route, rules, net, now, &mut notes)
         })?
     } else {
         None
     };
-    let mut acquired = match found {
+    let acquired = match found {
         Some(lease) => Acquired::Reused(lease),
         None => {
-            let (added, members) = cx.rest.pool_section(cx.me, home.as_ref(), |pool, net| {
-                pool.add(route, add, net, now)
+            let (added, members) = cx.rest.pool_section(cx.me, &home, |pool, net, here| {
+                pool.add(here, route, add, net, now)
                     .map(|added| (added, pool.len()))
             })?;
             if let Acquired::New(lease) = &added {
@@ -2830,9 +2834,6 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
             added
         }
     };
-    if let (Some(share), Acquired::Reused(lease) | Acquired::New(lease)) = (home, &mut acquired) {
-        lease.set_home(share);
-    }
     // The transfer's connection from now on (`Curl_attach_connection`).
     if let Acquired::Reused(lease) | Acquired::New(lease) = &acquired {
         cx.report_mut().set_conn(Some(lease.number()));

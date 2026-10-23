@@ -32,7 +32,11 @@ impl<H: Host> Multi<H> {
             if !run.state.is_completed() {
                 running += 1;
             }
-            if run.state.lease().is_some_and(|l| l.home().is_none()) {
+            if run
+                .state
+                .lease()
+                .is_some_and(|l| matches!(l.home(), crate::conn::Home::Multi))
+            {
                 own_leases += 1;
             }
             assert!(

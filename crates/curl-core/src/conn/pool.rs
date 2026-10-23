@@ -28,8 +28,29 @@ pub(crate) struct ConnLease {
     id: ConnId,
     /// None only as the pool takes it back.
     conn: Option<ConnSlot>,
-    /// The share whose pool it is from; none for the multi's own.
-    home: Option<Share>,
+    /// The pool it is from, and goes back to.
+    home: Home,
+}
+
+/// The pool a lease is from: the multi's own, or a share's. Ids alone
+/// cannot tell, as a share's table and a multi's hand out equal ones. A
+/// multi's pool is not told from another multi's: a lease never leaves
+/// the multi that holds it, but a share's lease is run by any multi.
+#[derive(Clone, Debug)]
+pub(crate) enum Home {
+    Multi,
+    Share(Share),
+}
+
+impl Home {
+    /// Whether the two name the same pool: a share by its identity.
+    fn is(&self, other: &Home) -> bool {
+        match (self, other) {
+            (Home::Multi, Home::Multi) => true,
+            (Home::Share(a), Home::Share(b)) => a.is(b),
+            (Home::Multi | Home::Share(_), Home::Multi | Home::Share(_)) => false,
+        }
+    }
 }
 
 impl ConnLease {
@@ -182,25 +203,18 @@ impl ConnLease {
 
 impl ConnLease {
     /// The lease taken apart, as only the pool does.
-    fn into_parts(mut self) -> (ConnId, ConnSlot) {
+    fn into_parts(mut self) -> (ConnId, ConnSlot, Home) {
         let conn = self.conn.take().expect("held until given back");
-        let home = self.home.take();
+        let home = std::mem::replace(&mut self.home, Home::Multi);
         let id = self.id;
         // Taken apart, not dropped: it held nothing more.
         std::mem::forget(self);
-        drop(home);
-        (id, conn)
+        (id, conn, home)
     }
 
-    /// The share whose pool the lease is from; none for the multi's own.
-    pub(crate) fn home(&self) -> Option<&Share> {
-        self.home.as_ref()
-    }
-
-    /// The lease is from `share`'s pool, given it by the multi that took
-    /// it from there.
-    pub(crate) fn set_home(&mut self, share: Share) {
-        self.home = Some(share);
+    /// The pool the lease is from, and is given back to.
+    pub(crate) fn home(&self) -> &Home {
+        &self.home
     }
 
     fn slot(&self) -> &ConnSlot {
@@ -341,11 +355,11 @@ enum Place {
     /// Kept for another transfer; always open.
     Idle(ConnSlot),
     /// Leased: its lease has it.
-    Away(Away),
+    Leased(Leased),
 }
 
 /// What the pool knows of a connection leased: enough to count it.
-struct Away {
+struct Leased {
     route: Route,
 }
 
@@ -357,7 +371,7 @@ impl Place {
                 ConnSlot::Open(conn) => Some(conn),
                 _ => unreachable!("an idle connection is open"),
             },
-            Place::Away(_) => None,
+            Place::Leased(_) => None,
         }
     }
 
@@ -365,11 +379,11 @@ impl Place {
     fn destination(&self) -> Option<&Peer> {
         match self {
             Place::Idle(slot) => slot.destination(),
-            Place::Away(Away {
+            Place::Leased(Leased {
                 route: Route::Tcp(tcp),
                 ..
             }) => Some(tcp.destination()),
-            Place::Away(_) => None,
+            Place::Leased(_) => None,
         }
     }
 }
@@ -415,8 +429,10 @@ impl Pool {
     /// search did is added to `notes`. A pool others share is searched,
     /// and added to, one under its lock at a time, as C does.
     #[cfg(test)]
+    #[expect(clippy::too_many_arguments, reason = "what `find` and `add` take")]
     pub(crate) fn acquire(
         &mut self,
+        here: &Home,
         route: Route,
         rules: ReuseRules,
         limits: AddLimits,
@@ -425,17 +441,19 @@ impl Pool {
         notes: &mut Vec<PoolNote>,
     ) -> Result<Acquired, OutOfMemory> {
         if searches(&route, rules)
-            && let Some(lease) = self.find(&route, rules, net, now, notes)?
+            && let Some(lease) = self.find(here, &route, rules, net, now, notes)?
         {
             return Ok(Acquired::Reused(lease));
         }
-        self.add(route, limits, net, now)
+        self.add(here, route, limits, net, now)
     }
 
     /// A new connection for `route`, within `limits`, or none, for want
-    /// of room (`Curl_cpool_add`).
+    /// of room (`Curl_cpool_add`); its lease is from `here`, the pool this
+    /// is.
     pub(crate) fn add(
         &mut self,
+        here: &Home,
         route: Route,
         limits: AddLimits,
         net: &mut dyn Net,
@@ -449,7 +467,7 @@ impl Pool {
             return Ok(Acquired::Wait(reason));
         }
         let number = ConnNumber(self.next_number);
-        let away = Away {
+        let leased = Leased {
             route: route.clone(),
         };
         let slot = match route {
@@ -469,21 +487,23 @@ impl Pool {
             }),
             Route::Tcp(tcp) => ConnSlot::Connecting(ConnectMachine::new(number, tcp, now)),
         };
-        let id = self.conns.reserve()?.fill(Place::Away(away));
+        let id = self.conns.reserve()?.fill(Place::Leased(leased));
         self.next_number += 1;
         Ok(Acquired::New(ConnLease {
             id,
             conn: Some(slot),
-            home: None,
+            home: here.clone(),
         }))
     }
 
     /// The search for an idle connection to reuse (`Curl_cpool_find`,
     /// `url_match_conn`): a prune of the dead ones at most once a second,
     /// then the first match in the table's order. A match too old or not
-    /// healthy is closed and the search goes on.
+    /// healthy is closed and the search goes on. The lease is from
+    /// `here`, the pool this is.
     pub(crate) fn find(
         &mut self,
+        here: &Home,
         route: &Route,
         rules: ReuseRules,
         net: &mut dyn Net,
@@ -522,12 +542,12 @@ impl Pool {
             };
             match verdict {
                 Ok(()) => {
-                    let away = Away {
+                    let leased = Leased {
                         route: conn.route.clone(),
                     };
                     let Some(Place::Idle(mut slot)) = self
                         .conns
-                        .replace_with(id, |place| (Place::Away(away), place))
+                        .replace_with(id, |place| (Place::Leased(leased), place))
                     else {
                         unreachable!("just found idle");
                     };
@@ -538,7 +558,7 @@ impl Pool {
                     return Ok(Some(ConnLease {
                         id,
                         conn: Some(slot),
-                        home: None,
+                        home: here.clone(),
                     }));
                 }
                 Err(sick) => {
@@ -579,18 +599,24 @@ impl Pool {
     /// Take a lease back and decide the connection's fate as
     /// `multi_done_locked` does: kept idle if its protocol allows reuse
     /// and the transfer finished with it, else closed. A connection kept
-    /// may leave the pool over its limit (`cpool_conn_now_idle`).
+    /// may leave the pool over its limit (`cpool_conn_now_idle`). The
+    /// lease must be from `here`, the pool this is.
     pub(crate) fn release(
         &mut self,
+        here: &Home,
         lease: ConnLease,
         finish: Finish,
         limit: Limit,
         net: &mut dyn Net,
         now: Instant,
     ) -> Released {
-        let (id, mut slot) = lease.into_parts();
+        let (id, mut slot, home) = lease.into_parts();
         assert!(
-            matches!(self.conns.get(id), Some(Place::Away(_))),
+            home.is(here),
+            "a lease on {id:?} from {home:?} given back to {here:?}"
+        );
+        assert!(
+            matches!(self.conns.get(id), Some(Place::Leased(_))),
             "a lease on {id:?}, which the pool no longer has"
         );
         if let ConnSlot::Open(conn) = &mut slot
@@ -645,7 +671,7 @@ impl Pool {
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            leased += usize::from(matches!(self.conns.get(id), Some(Place::Away(_))));
+            leased += usize::from(matches!(self.conns.get(id), Some(Place::Leased(_))));
         }
         leased
     }
@@ -819,7 +845,7 @@ fn close(conns: &mut Arena<Place, ConnSlot>, id: ConnId, net: &mut dyn Net) {
             ConnSlot::Open(conn) => close_transport(conn.transport, net),
             _ => unreachable!("an idle connection is open"),
         },
-        Some(Place::Away(_)) => panic!("{id:?} is leased"),
+        Some(Place::Leased(_)) => panic!("{id:?} is leased"),
         None => unreachable!("closing {id:?}, which the pool no longer has"),
     }
 }

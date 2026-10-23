@@ -1346,9 +1346,8 @@ pub(crate) struct Sock { socket: Box<dyn Socket>, closer: Closer }   // closed o
 pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
 ```
 
-Planned (step 40): `Home`, `Sock` and `Closer`. Today the lease holds `Option<Share>`, set by
-the caller after the pool section (`set_home`), so `release` cannot check it; the leased place
-is called `Away`; `Pool::get_conn` is dead code; and `SystemNet::close` is a `drop`.
+Planned (step 40): `Sock` and `Closer`; today `SystemNet::close` is a `drop`. `Pool::get_conn`
+is dead code.
 
 - A transfer searches before it adds (`find`, `Curl_cpool_find`), unless the transfer wants a fresh
   connection (`CURLOPT_FRESH_CONNECT`, but for a redirect's request): at most once a second it first prunes
@@ -1389,7 +1388,7 @@ is called `Away`; `Pool::get_conn` is dead code; and `SystemNet::close` is a `dr
   is maintained by those same functions; a dangling id in it is an assertion, never repaired.
 - A debug-build drop check on `ConnLease` asserts it was released (internal invariant).
 - **A lease knows its home.** `find` and `add` stamp the lease with the pool they run in,
-  inside the pool section, and `release` asserts the lease's `Home` is the pool it is given back
+  which `EngineRest::pool_section` hands its section beside the pool, and `release` asserts the lease's `Home` is the pool it is given back
   to, shares compared by pointer. Ids alone cannot tell: a share's arena and a multi's hand out
   equal ids. `Home` allocates nothing; an identity by counter would be global mutable state, and
   by address would move with the multi.

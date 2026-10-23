@@ -125,6 +125,11 @@ impl Share {
         TryArc::count(&self.0)
     }
 
+    /// Whether `other` is this share, not another one.
+    pub(crate) fn is(&self, other: &Share) -> bool {
+        TryArc::ptr_eq(&self.0, &other.0)
+    }
+
     fn idle(&self) -> Result<(), InUse> {
         if self.holders() > 1 {
             return Err(InUse);

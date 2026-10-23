@@ -297,6 +297,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
             rate: RateLimits::default(),
             run: Some(run),
             mstate: mstate::MState::Init,
+            readers: None,
         });
 --- new
         let slot = Ok::<Box<Slot<H>>, Slot<H>>(Box::new(Slot {
@@ -308,6 +309,7 @@ witness: curl-core add_perform_remove_survives_every_allocation_failing
             rate: RateLimits::default(),
             run: Some(run),
             mstate: mstate::MState::Init,
+            readers: None,
         }));
 
 === notifications get less room than a pass can queue

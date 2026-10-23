@@ -105,3 +105,47 @@ features: test-util
                         state::trace_set(cx, TimerKind::Proto, until);
                         self.held_back(cx, Held::Starts);
                         return Ok(false);
+
+=== a lifted pause a reader asked for is told to no reader
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::read_trace::a_lifted_pause_is_told_to_each_reader
+features: test-util
+--- old
+        readers.trace_unpause(&mut cx);
+--- new
+        let _ = readers;
+
+=== a lifted pause of the application's own is told to the readers
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::http::tests::read_trace::an_application_s_pause_is_told_to_no_reader
+features: test-util
+--- old
+    let unpaused = (was.send == SendPause::Asked && slot.pause.send == SendPause::Running)
+--- new
+    let unpaused = (was.send != SendPause::Running && slot.pause.send == SendPause::Running)
+
+=== the readers are told of a lift from the source's side first
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core proto::http::tests::read_trace::a_lifted_pause_is_told_to_each_reader
+features: test-util
+--- old
+        let stack = [
+            self.chunked.then_some("chunked"),
+            self.exp100.then_some("cr-exp100"),
+            Some(client),
+        ];
+--- new
+        let stack = [
+            Some(client),
+            self.exp100.then_some("cr-exp100"),
+            self.chunked.then_some("chunked"),
+        ];
+
+=== the 100's wait is left out of the readers a lift is told to
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::a_lifted_pause_is_told_to_each_reader
+features: test-util
+--- old
+                    exp100: announced,
+--- new
+                    exp100: false,

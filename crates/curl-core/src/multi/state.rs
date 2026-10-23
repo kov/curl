@@ -40,7 +40,7 @@ use crate::proto::{Before, Ended, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
 use crate::trace::{self, Bytes, Ip, OsError};
-use crate::upload;
+use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
@@ -785,6 +785,17 @@ impl<H: Host> StepCx<'_, H> {
             .get(self.me)
             .expect("the stepping transfer")
             .pause
+    }
+
+    /// The readers C would stack for the request's body.
+    pub(crate) fn readers_mut(&mut self) -> &mut Option<Readers> {
+        &mut self
+            .rest
+            .tell
+            .slots
+            .get_mut(self.me)
+            .expect("the stepping transfer")
+            .readers
     }
 
     pub(crate) fn pause_mut(&mut self) -> &mut Pause {

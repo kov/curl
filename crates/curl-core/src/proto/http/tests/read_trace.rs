@@ -428,3 +428,213 @@ fn a_body_paused_from_the_start_is_not_asked_for() {
         .collect();
     assert_eq!(lines, Vec::<String>::new());
 }
+
+/// A read handler that pauses at its first call, then gives `data` and
+/// ends.
+struct PausesFirst {
+    calls: Arc<std::sync::atomic::AtomicU32>,
+    data: &'static [u8],
+    paused: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl crate::handler::ReadHandler for PausesFirst {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> crate::handler::Read {
+        use std::sync::atomic::Ordering;
+        match self.calls.fetch_add(1, Ordering::Relaxed) {
+            0 => {
+                self.paused.store(true, Ordering::Relaxed);
+                crate::handler::Read::Pause
+            }
+            1 => {
+                buf[..self.data.len()].copy_from_slice(self.data);
+                crate::handler::Read::Data(std::num::NonZeroUsize::new(self.data.len()).unwrap())
+            }
+            _ => crate::handler::Read::Eof,
+        }
+    }
+}
+
+/// A progress handler lifting a read handler's pause at every call once
+/// the handler has paused, as the tool's `tool_readbusy_cb` does: a lift
+/// with no pause a reader asked for is told to none.
+struct LiftsThePause(Arc<std::sync::atomic::AtomicBool>);
+
+impl crate::handler::ProgressHandler for LiftsThePause {
+    fn progress(
+        &self,
+        cx: &mut TransferCx<'_>,
+        _: crate::handler::ProgressNow,
+    ) -> crate::handler::ProgressVerdict {
+        if self.0.load(std::sync::atomic::Ordering::Relaxed) {
+            let me = cx.me();
+            cx.pause(me, PauseRequest::CONT).unwrap();
+        }
+        crate::handler::ProgressVerdict::Continue
+    }
+}
+
+/// A handler pausing at its first read and giving `data` after, its pause
+/// lifted by the progress handler; and that handler.
+fn paused_first(
+    data: &'static [u8],
+) -> (
+    Handler<dyn crate::handler::ReadHandler>,
+    crate::options::Progress,
+) {
+    let paused = Arc::<std::sync::atomic::AtomicBool>::default();
+    let read = PausesFirst {
+        calls: Arc::default(),
+        data,
+        paused: paused.clone(),
+    };
+    let lift = Handler::progress(LiftsThePause(paused)).unwrap();
+    (
+        Handler::read(read).unwrap(),
+        crate::options::Progress::Handler(lift),
+    )
+}
+
+/// The read lines from the read handler's pause to the read after its
+/// lift.
+fn around_the_pause(ran: &Ran) -> Vec<String> {
+    let lines = read_lines(ran);
+    let from = lines
+        .iter()
+        .position(|l| l.ends_with("CURL_READFUNC_PAUSE") || l.ends_with("paused by callback"))
+        .expect("the handler paused");
+    let lifted = lines[from..]
+        .iter()
+        .position(|l| l.starts_with("[READ] unpausing"))
+        .map_or(lines.len(), |at| from + at);
+    let to = lines[lifted..]
+        .iter()
+        .position(|l| !l.starts_with("[READ] unpausing"))
+        .map_or(lines.len(), |at| lifted + at + 1);
+    lines[from..to].to_vec()
+}
+
+/// A pause a read handler asked for, lifted, is told to each of C's
+/// readers, from the network's side: for `-T -`, the chunk stage, the
+/// 100's wait, then the handler's reader, after the read that paused and
+/// before the next. The C build traces the same for `curl -T .` reading
+/// a pipe with nothing in it yet.
+#[test]
+fn a_lifted_pause_is_told_to_each_reader() {
+    let continued = [&b"HTTP/1.1 100 Continue\r\n\r\n"[..], OK].concat();
+    let (mut m, talk, _) = server(&[&continued], false);
+    let talk = talk.late_replies();
+    let (handler, lift) = paused_first(b"hello");
+    let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
+        o.method = Method::Upload;
+        o.upload = UploadSource::Read {
+            handler,
+            rewind: None,
+            size: None,
+        };
+        o.progress = lift;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        around_the_pause(&ran),
+        [
+            "[READ] cr_in_read, callback returned CURL_READFUNC_PAUSE",
+            "[READ] cr_in_read(len=65524, total=-1, read=0) -> 0, nread=0, eos=0",
+            "[READ] client_read(len=65536) -> 0, nread=0, eos=0",
+            "[READ] unpausing chunked -> 0",
+            "[READ] unpausing cr-exp100 -> 0",
+            "[READ] unpausing cr-in -> 0",
+            "[READ] cr_in_read(len=65524, total=-1, read=5) -> 0, nread=5, eos=0",
+        ]
+    );
+}
+
+/// A POST of a known size from a handler has its reader only (the C
+/// build's `lib1533`).
+#[test]
+fn a_lifted_pause_of_a_sized_post_is_told_to_its_reader() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let (handler, lift) = paused_first(b"aaa");
+    let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = UploadSource::Read {
+            handler,
+            rewind: None,
+            size: Some(3),
+        };
+        o.progress = lift;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        around_the_pause(&ran),
+        [
+            "[READ] cr_in_read, callback returned CURL_READFUNC_PAUSE",
+            "[READ] cr_in_read(len=3, total=3, read=0) -> 0, nread=0, eos=0",
+            &format!(
+                "[READ] client_read(len={}) -> 0, nread=0, eos=0",
+                room_after(ran.request.len() - 3)
+            ),
+            "[READ] unpausing cr-in -> 0",
+            "[READ] cr_in_read(len=3, total=3, read=3) -> 0, nread=3, eos=1",
+        ]
+    );
+}
+
+/// A tree's part pausing is lifted through the tree's reader (the C
+/// build's `lib670`).
+#[test]
+fn a_lifted_pause_of_a_tree_is_told_to_its_reader() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let (handler, lift) = paused_first(b"abc");
+    let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
+        o.method = Method::Post;
+        o.upload = mime_source(mime_tree(crate::mime::Content::Read {
+            handler,
+            rewind: None,
+            size: Some(3),
+        }));
+        o.progress = lift;
+    });
+    assert_eq!(ran.result, Ok(()));
+    let lines = read_lines(&ran);
+    let lifts: Vec<_> = lines.iter().filter(|l| l.contains("unpausing")).collect();
+    assert_eq!(lifts, ["[READ] unpausing cr-mime -> 0"], "{lines:?}");
+}
+
+/// A pause the application set and lifted, no reader having asked for
+/// one, is told to none (`Curl_creader_is_paused` false).
+#[test]
+fn an_application_s_pause_is_told_to_no_reader() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let mut e = tracing_read();
+    let seen = PausesOnTrying::default();
+    let o = e.options_mut();
+    o.set_url(Some(format!("http://127.0.0.1:{PORT}/").as_bytes()))
+        .unwrap();
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
+    o.method = Method::Post;
+    let read = PausesFirst {
+        calls: Arc::new(std::sync::atomic::AtomicU32::new(1)),
+        data: b"abc",
+        paused: Arc::default(),
+    };
+    o.upload = UploadSource::Read {
+        handler: Handler::read(read).unwrap(),
+        rewind: None,
+        size: Some(3),
+    };
+    let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    for _ in 0..5 {
+        m.perform(&mut NoEvents).unwrap();
+    }
+    m.pause(id, PauseRequest::CONT, &mut NoEvents).unwrap();
+    let result = drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+    assert_eq!(result, Ok(()));
+    assert!(talk.received().ends_with(b"abc"), "the body went");
+    let lines = seen.0.text();
+    assert!(
+        lines.iter().any(|l| l.starts_with("[READ] cr_in_read")),
+        "{lines:?}"
+    );
+    assert!(!lines.iter().any(|l| l.contains("unpausing")), "{lines:?}");
+}

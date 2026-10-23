@@ -1187,6 +1187,11 @@ impl Request {
             Some(upload) => {
                 // The request's reader (`http_req_set_reader`).
                 upload.trace_set(cx);
+                *cx.readers_mut() = upload.pausing().map(|client| upload::Readers {
+                    chunked,
+                    exp100: announced,
+                    client,
+                });
                 let mut body = chain::Body::new(upload);
                 if chunked {
                     body.chunked().map_err(|_| ErrorKind::OutOfMemory)?;

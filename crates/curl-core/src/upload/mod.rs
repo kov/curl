@@ -166,6 +166,15 @@ impl Upload {
         Ok(upload)
     }
 
+    /// Whether the source can pause the body, and as which of C's readers.
+    pub(crate) fn pausing(&self) -> Option<Pausing> {
+        match &self.source {
+            Source::Read { .. } => Some(Pausing::Handler),
+            Source::Mime(_) => Some(Pausing::Mime),
+            Source::None | Source::Bytes(_) | Source::Lent(_) => None,
+        }
+    }
+
     /// The header lines the request sends to type the body: a tree's.
     pub(crate) fn head(&self) -> Option<&[Vec<u8>]> {
         match &self.source {
@@ -382,6 +391,47 @@ impl Upload {
     }
 }
 
+/// The readers C stacks for a request's body (`data->req.reader.stack`)
+/// whose source can pause it, from the network's side: the chunk stage,
+/// the 100's wait, then the source. Set as the request's body is, and let
+/// go with C's stack (`Curl_client_reset`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Readers {
+    pub(crate) chunked: bool,
+    /// The head said `Expect: 100-continue`: C's reader for it stays for
+    /// the request, the 100 come or not.
+    pub(crate) exp100: bool,
+    pub(crate) client: Pausing,
+}
+
+/// A source that can pause the body, by C's name for its reader.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pausing {
+    /// The application's read handler (`cr-in`).
+    Handler,
+    /// A tree's (`cr-mime`).
+    Mime,
+}
+
+impl Readers {
+    /// The pause a reader asked for is lifted: each reader is told, its
+    /// name traced as it is (`Curl_creader_unpause`). None of them fails.
+    pub(crate) fn trace_unpause<H: Host>(self, cx: &mut StepCx<'_, H>) {
+        let client = match self.client {
+            Pausing::Handler => "cr-in",
+            Pausing::Mime => "cr-mime",
+        };
+        let stack = [
+            self.chunked.then_some("chunked"),
+            self.exp100.then_some("cr-exp100"),
+            Some(client),
+        ];
+        for name in stack.into_iter().flatten() {
+            trace::of(cx, Component::Read, format_args!("unpausing {name} -> 0"));
+        }
+    }
+}
+
 /// A body's size as C's readers trace it: -1 for one not known.
 pub(crate) struct Total(pub(crate) Option<u64>);
 
@@ -436,6 +486,9 @@ pub(crate) fn trace_reset<H: Host>(cx: &mut StepCx<'_, H>, rewinding: bool) {
         "clear readers"
     };
     trace::of(cx, Component::Read, format_args!("client_reset, {what}"));
+    if !rewinding {
+        *cx.readers_mut() = None;
+    }
 }
 
 /// Body bytes went out: counted, and traced for a verbose transfer

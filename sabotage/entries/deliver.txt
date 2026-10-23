@@ -173,12 +173,9 @@ witness: curl-core deliver::tests::output_written_while_held_goes_behind_it
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core deliver::tests::a_sibling_s_unpause_replays_at_once
 --- old
-    if was_held
-        && slot.pause.recv == RecvPause::Running
+    let replay = if was_held && slot.pause.recv == RecvPause::Running {
 --- new
-    if false
-        && was_held
-        && slot.pause.recv == RecvPause::Running
+    let replay = if false && was_held && slot.pause.recv == RecvPause::Running {
 
 === a paused transfer reads on
 file: crates/curl-core/src/proto/script.rs

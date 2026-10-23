@@ -26,7 +26,7 @@ use curl_alloc::{OutOfMemory, TryArc};
 use crate::conn::io::{Events, Net, Socket, SocketKey, Waker};
 use crate::conn::shutdown::{ShutdownSet, WithSet};
 use crate::conn::{AddLimits, Caches};
-use crate::deliver::{Pause, RecvPause};
+use crate::deliver::{Pause, RecvPause, SendPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, MultiErrorKind};
 use crate::id::{Arena, ArenaPolicy, Key};
@@ -34,6 +34,7 @@ use crate::progress::Speedometer;
 use crate::progress::rate::{RateLimits, Way};
 use crate::share::{Kind, watched};
 use crate::time::{Clock, Instant};
+use crate::upload::Readers;
 
 pub use crate::deliver::PauseRequest;
 use cx::{Announcing, EngineRest, Telling};
@@ -176,6 +177,9 @@ struct Slot<H: Host> {
     run: Option<Run>,
     /// Where it is in C's states, for the trace.
     mstate: mstate::MState,
+    /// The readers C would stack for the request's body, for the trace of
+    /// a lift of the pause one of them asked for.
+    readers: Option<Readers>,
 }
 
 /// An `Easy` the multi did not take, and why.
@@ -376,6 +380,7 @@ impl<H: Host> Multi<H> {
             rate: RateLimits::default(),
             run: Some(run),
             mstate: mstate::MState::Init,
+            readers: None,
         });
         let slot = match slot {
             Ok(slot) => slot,
@@ -1226,6 +1231,11 @@ fn pause_transfer<H: Host>(
     let was = slot.pause;
     let was_held = was.recv == RecvPause::Held;
     slot.pause.apply(req);
+    // A pause a reader asked for is lifted: each reader hears of it
+    // (`Curl_creader_unpause`).
+    let unpaused = (was.send == SendPause::Asked && slot.pause.send == SendPause::Running)
+        .then_some(slot.readers)
+        .flatten();
     // A direction that goes on measures its speed afresh, and its limit
     // starts over, the time paused earning nothing (`Curl_rlimit_block`).
     let resumed = [
@@ -1251,10 +1261,19 @@ fn pause_transfer<H: Host>(
         }
         None => slot.judge_pause = true,
     }
-    if was_held
-        && slot.pause.recv == RecvPause::Running
-        && let Some(mut run) = slot.run.take()
-    {
+    let replay = if was_held && slot.pause.recv == RecvPause::Running {
+        slot.run.take()
+    } else {
+        None
+    };
+    if let Some(readers) = unpaused {
+        let mut cx = StepCx {
+            me: id,
+            rest: rest.reborrow(),
+        };
+        readers.trace_unpause(&mut cx);
+    }
+    if let Some(mut run) = replay {
         let mut cx = StepCx {
             me: id,
             rest: rest.reborrow(),

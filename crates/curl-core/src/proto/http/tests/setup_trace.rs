@@ -275,3 +275,41 @@ fn a_refused_tunnel_names_the_chain_that_failed() {
     let connect_failed = "[MULTI] [CONNECTING] connect failed -> 7\n";
     assert!(ran.seen.text().iter().any(|l| l == connect_failed));
 }
+
+/// A tunnel whose `CONNECT` cannot be sent fails in the call that added
+/// its filter, which the chain it failed with holds.
+#[test]
+fn a_tunnel_failing_as_it_starts_names_its_filter() {
+    let talk = Conversation::replies(&[TUNNEL_UP], false).breaking_after(0);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_with(&mut m, tracing_setup(), "/", talk, tunneled);
+    assert!(ran.result.is_err());
+    let mut want = expect(&raced("proxy", &format!("127.0.0.1:{PORT}")));
+    want.extend(expect(
+        "[SETUP] added HTTP proxy tunnel filter
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]",
+    ));
+    assert_eq!(setup_lines(&ran), want);
+}
+
+/// A SOCKS5 handshake refused as it starts, the name too long for the
+/// proxy to be given, names the chain with its filter.
+#[test]
+fn a_socks_handshake_refused_as_it_starts_names_its_filter() {
+    let talk = Conversation::replies(&[], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let name = "a".repeat(256);
+    let url = format!("http://{name}/a");
+    let ran = get_with(&mut m, tracing_setup(), "/", talk, |o| {
+        through_socks(o, "socks5h", url.as_bytes());
+    });
+    assert_eq!(ran.result, Err(ErrorKind::Proxy));
+    let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
+    want.extend(expect(&format!(
+        "[SETUP] added SOCKS filter to {name}:80
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!SOCKS][HAPPY-EYEBALLS][TCP]"
+    )));
+    assert_eq!(setup_lines(&ran), want);
+}

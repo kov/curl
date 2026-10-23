@@ -27,7 +27,7 @@ witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_a
 
 === a handshake failing as it starts names the chain without its filter
 file: crates/curl-core/src/multi/state.rs
-witness: curl-core proto::http::tests::setup_trace::a_refused_tunnel_names_the_chain_that_failed
+witness: curl-core proto::http::tests::setup_trace::a_socks_handshake_refused_as_it_starts_names_its_filter
 --- old
     Some(chain(reached, Some(filter), true))
 }

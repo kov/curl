@@ -1630,6 +1630,20 @@ fn setopts(
             o.connect_to.set(op.connect_to.iter().copied()).map_err(oom)
         })?;
     }
+    if let Some(set) = op.protocols {
+        let list = set.list().map_err(oom)?;
+        s.str("CURLOPT_PROTOCOLS_STR", Some(&list), |o| {
+            o.schemes.make_mut().map_err(oom)?.allowed = set.schemes();
+            Ok(())
+        })?;
+    }
+    if let Some(set) = op.redirect_protocols {
+        let list = set.list().map_err(oom)?;
+        s.str("CURLOPT_REDIR_PROTOCOLS_STR", Some(&list), |o| {
+            o.schemes.make_mut().map_err(oom)?.redirect = set.schemes();
+            Ok(())
+        })?;
+    }
     let default = op.default_protocol;
     s.str(
         "CURLOPT_DEFAULT_PROTOCOL",

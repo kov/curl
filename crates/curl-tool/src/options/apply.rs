@@ -896,12 +896,10 @@ pub(crate) fn apply<'a>(
         Opt::Proto => {
             let set = protocols::parse(Protocols::all(), value.text(), msgs)?;
             line.current().protocols = Some(set);
-            line.not_implemented(spec, "--");
         }
         Opt::ProtoRedir => {
             let set = protocols::parse(Protocols::redirect_default(), value.text(), msgs)?;
             line.current().redirect_protocols = Some(set);
-            line.not_implemented(spec, "--");
         }
         Opt::ProtoDefault => {
             let name = value.text();

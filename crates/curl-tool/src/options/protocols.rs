@@ -1,6 +1,8 @@
 //! Lists of protocols, as `--proto` and `--proto-redir` take them and
 //! `proto2num` in `src/tool_paramhlp.c` reads them.
 
+use curl_alloc::{OutOfMemory, TryVec as _};
+use curl_core::options;
 use curl_core::version::{Protocol, version};
 
 use super::ParamError;
@@ -34,6 +36,38 @@ impl Protocols {
             .into_iter()
             .filter_map(bit)
             .fold(Protocols(0), |set, b| Protocols(set.0 | b))
+    }
+}
+
+impl Protocols {
+    /// The protocols, in the order the library lists them: by name, as
+    /// `proto2num` sorts them.
+    fn iter(self) -> impl Iterator<Item = Protocol> {
+        built_in()
+            .iter()
+            .enumerate()
+            .filter(move |&(i, _)| self.0 & 1 << i != 0)
+            .map(|(_, &p)| p)
+    }
+
+    /// The names, separated by commas, as `CURLOPT_PROTOCOLS_STR` takes
+    /// them.
+    pub(crate) fn list(self) -> Result<Vec<u8>, OutOfMemory> {
+        let mut list = Vec::new();
+        for (i, p) in self.iter().enumerate() {
+            if i > 0 {
+                list.try_push(b',')?;
+            }
+            list.try_extend_from_slice(p.name().as_bytes())?;
+        }
+        Ok(list)
+    }
+
+    /// The library's set of them.
+    pub(crate) fn schemes(self) -> options::Protocols {
+        self.iter()
+            .map(|p| options::Protocols::built(p.name().as_bytes()).expect("the library speaks it"))
+            .fold(options::Protocols::NONE, options::Protocols::union)
     }
 }
 
@@ -129,6 +163,21 @@ mod tests {
         ] {
             assert_eq!(parse(Protocols::all(), list, &msgs), want, "{list:?}");
         }
+    }
+
+    /// A set goes to the library as its names, sorted, and as the
+    /// library's own set.
+    #[test]
+    fn sets_go_to_the_library_by_name() {
+        let (file, http, both) = (Protocols(1), Protocols(2), Protocols(3));
+        assert_eq!(both.list().unwrap(), b"file,http");
+        assert_eq!(http.list().unwrap(), b"http");
+        assert_eq!(Protocols(0).list().unwrap(), b"");
+        assert_eq!(file.schemes(), options::Protocols::of(&["file"]).unwrap());
+        assert_eq!(
+            both.schemes(),
+            options::Protocols::of(&["file", "http"]).unwrap()
+        );
     }
 
     /// A list that leaves no protocol is rejected, whatever it starts

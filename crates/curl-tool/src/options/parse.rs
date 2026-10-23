@@ -916,10 +916,7 @@ mod tests {
             Ok((2, None, None))
         );
         assert_eq!(run(&["x", "--remove-on-error"]), Ok((1, None, None)));
-        assert_eq!(
-            run(&["x", "--proto", "=file"]),
-            Ok((1, Some("proto"), None))
-        );
+        assert_eq!(run(&["x", "--use-ascii"]), Ok((1, Some("use-ascii"), None)));
         assert_eq!(
             run(&["-T", ".", "x"]),
             Ok((1, Some("uploading standard input without blocking"), None))

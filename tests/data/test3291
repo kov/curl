@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+--proto
+</keywords>
+</info>
+
+# Server-side
+<reply>
+<data nocheck="yes">
+HTTP/1.1 200 OK
+Content-Length: 6
+
+hello
+</data>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<features>
+http
+file
+</features>
+<name>
+--proto without http refuses an http URL before it connects
+</name>
+<command>
+http://%HOSTIP:%HTTPPORT/%TESTNUMBER --proto =file -sS
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<protocol>
+</protocol>
+<stderr mode="text">
+curl: (1) Protocol "http" is disabled
+</stderr>
+<errorcode>
+1
+</errorcode>
+</verify>
+</testcase>

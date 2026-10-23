@@ -60,3 +60,16 @@ witness: curl-sys-abi handle_tests::scheme_options_reach_the_transfer
 --- new
                 let _ = field(&mut defaults);
 
+
+=== the tool hands the library its protocols unsorted
+file: crates/curl-tool/src/options/protocols.rs
+witness: curl-tool options::protocols::tests::sets_go_to_the_library_by_name
+--- old
+            .filter(move |&(i, _)| self.0 & 1 << i != 0)
+            .map(|(_, &p)| p)
+--- new
+            .filter(move |&(i, _)| self.0 & 1 << i != 0)
+            .map(|(_, &p)| p)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()

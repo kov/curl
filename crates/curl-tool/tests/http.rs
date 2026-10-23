@@ -1257,8 +1257,13 @@ fn curl_typing(args: &[&str], typed: &[u8]) -> Run {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    // One write, so one read takes all of it.
-    child.stdin.take().unwrap().write_all(typed).unwrap();
+    // One write, so one read takes all of it. A tool that asks for
+    // nothing may exit before the write, which is then a broken pipe,
+    // not a failure of the test.
+    match child.stdin.take().unwrap().write_all(typed) {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => panic!("typing: {e}"),
+        _ => {}
+    }
     let out = child.wait_with_output().unwrap();
     Run {
         code: out.status.code().unwrap(),

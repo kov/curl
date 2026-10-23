@@ -346,6 +346,8 @@ struct Hooks {
     fail: Option<i32>,
     dial: bool,
     configured: crate::handler::Configured,
+    /// The option the configurer sets, if any.
+    mark: Option<crate::conn::io::SocketOption>,
     /// The port the URL names, if not the server's.
     url_port: Option<u16>,
     set: Arc<Mutex<Vec<i32>>>,
@@ -379,6 +381,9 @@ impl crate::handler::SocketConfigurer for Hooks {
         socket: crate::handler::SocketToSet<'_>,
     ) -> crate::handler::Configured {
         self.set.lock().unwrap().push(socket.key().get());
+        if let Some(option) = self.mark {
+            socket.set(option).unwrap();
+        }
         self.configured
     }
 }
@@ -423,6 +428,7 @@ fn hooked(peer: Peer, hooks: impl FnOnce(&mut Hooks)) -> Hooked {
         fail: None,
         dial: false,
         configured: crate::handler::Configured::Ok,
+        mark: None,
         url_port: None,
         set: Arc::clone(&set),
         closed: Arc::clone(&closed),
@@ -567,6 +573,21 @@ fn a_socket_already_connected_wins_as_it_opens() {
         Some(1),
         "after the options set"
     );
+}
+
+/// A configurer sets its socket's options after the library's, and the
+/// application's socket is made nonblocking after both
+/// (`cf_socket_open`).
+#[test]
+fn a_configurer_sets_its_socket_s_options() {
+    use crate::conn::io::SocketOption;
+    let h = hooked(Peer::Accepts, |h| h.mark = Some(SocketOption::Priority(3)));
+    assert_eq!(h.ran.result, Ok(()));
+    assert_eq!(
+        h.talk.options(),
+        [SocketOption::NoDelay, SocketOption::Priority(3)]
+    );
+    assert_eq!(h.talk.made_nonblocking_after(), Some(2));
 }
 
 /// An opener may change the address, which the attempt then connects to

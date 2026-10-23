@@ -773,6 +773,22 @@ mod tests {
         assert_eq!(net.0.open_sockets(), 0);
     }
 
+    /// The most a lease given back closes, each attempt of a setup and
+    /// the idle connection the pool closes over its limit, is held
+    /// without room made.
+    #[test]
+    fn a_lease_given_back_closes_without_room_made() {
+        let n = crate::conn::MAX_ATTEMPTS + 1;
+        let (mut net, socks) = opened(n);
+        let mut later = CloseLater::new(&mut net);
+        for s in socks {
+            Net::close(&mut later, s);
+        }
+        later.close();
+        assert_eq!(net.1.len(), n);
+        assert_eq!(net.0.open_sockets(), 0);
+    }
+
     /// A section closing more sockets than room was made for is a bug,
     /// caught as it is made rather than closed under the share's lock.
     #[test]

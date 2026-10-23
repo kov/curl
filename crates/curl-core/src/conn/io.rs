@@ -590,6 +590,16 @@ impl Conversation {
             .nonblocking_after
     }
 
+    /// The options its socket was set to, in order.
+    pub fn options(&self) -> Vec<SocketOption> {
+        let wire = self.0.lock().expect("no test panics holding the wire");
+        let mut set = Vec::new();
+        for &option in wire.options.iter().flatten() {
+            set.try_push(option).expect("a test's options fit");
+        }
+        set
+    }
+
     /// What the peer was sent so far.
     pub fn received(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -722,13 +732,7 @@ impl FakeNet {
     /// The options the open socket `key` was set to, in order.
     pub fn socket_options(&self, key: SocketKey) -> Vec<SocketOption> {
         let row = usize::try_from(key.0 - FIRST_FAKE).expect("a fake socket's number");
-        let wire = self.open[row].as_ref().expect("an open socket");
-        let wire = wire.0.lock().expect("no test panics holding the wire");
-        let mut set = Vec::new();
-        for &option in wire.options.iter().flatten() {
-            set.try_push(option).expect("a test's options fit");
-        }
-        set
+        self.open[row].as_ref().expect("an open socket").options()
     }
 
     /// How many fake sockets are open.
@@ -1246,6 +1250,53 @@ mod tests {
         for s in [a, c, d] {
             net.close(Sock::new(s, Closer::System));
         }
+    }
+
+    /// A conversation waits for a connection to a peer: a socket to its
+    /// address refused for want of one leaves it to the next.
+    #[test]
+    fn a_refused_socket_leaves_the_conversation() {
+        let clock = crate::time::ManualClock::new().unwrap();
+        let at = SocketAddr::from(([127, 0, 0, 1], 1));
+        let talk = Conversation::new(b"", false);
+        let mut net = FakeNet::new(clock).with_conversation(at, talk.clone());
+        let refused = net.open(at).unwrap();
+        assert!(refused.connect(at).is_err(), "no peer yet");
+        net.close(Sock::new(refused, Closer::System));
+        let mut net = net.with_peer(at, Peer::Accepts);
+        let s = dial(&mut net, at);
+        s.send(b"hi").unwrap();
+        assert_eq!(talk.received(), b"hi");
+        net.close(Sock::new(s, Closer::System));
+    }
+
+    /// The system's socket is set, and made nonblocking, through the
+    /// library's view of it.
+    #[test]
+    fn a_system_socket_is_set_through_the_trait() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Blocking, as an application's opener may give it.
+        let s: Box<dyn Socket> = Box::new(open(addr, Protocol::Tcp, false).unwrap());
+        let Readiness::Poll(fd) = s.readiness() else {
+            panic!("a system socket is polled");
+        };
+        let flags = || {
+            let info =
+                std::fs::read_to_string(format!("/proc/self/fdinfo/{}", s.key().get())).unwrap();
+            let line = info.lines().find(|l| l.starts_with("flags:")).unwrap();
+            u32::from_str_radix(line["flags:".len()..].trim(), 8).unwrap()
+        };
+        const O_NONBLOCK: u32 = 0o4000;
+        assert_eq!(flags() & O_NONBLOCK, 0);
+        s.set_nonblocking().unwrap();
+        assert_ne!(flags() & O_NONBLOCK, 0);
+        let view = std::net::TcpStream::from(fd.try_clone_to_owned().unwrap());
+        assert!(!view.nodelay().unwrap());
+        s.set(SocketOption::NoDelay).unwrap();
+        assert!(view.nodelay().unwrap());
+        // An idle time the kernel refuses is an error.
+        assert!(s.set(SocketOption::KeepIdle(0)).is_err());
     }
 
     /// A fake socket keeps the options it was set to, in order.

@@ -94,6 +94,26 @@ not a difference: it is tracked in `MILESTONES.md`.
   download at 20000 bytes a second takes 3 s on a handle and none on its copy. Pinned by
   `speed_limits_are_kept_and_copied` (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## State C carries across transfers
+
+- **`--etag-compare` sends one `If-None-Match:` a transfer.** Each transfer of a URL pattern
+  reads the file again and sends its ETag once. C's `etag_compare` (`src/tool_operate.c`) adds
+  the header to the operation's own list, `add2list(&config->headers, header)`, for every
+  transfer it makes, so the n-th transfer of `curl 'http://h/{x,y}' --etag-compare f` sends n
+  of them, the earlier files' ETags first. Measured against the C build. Pinned by
+  `each_transfer_compares_one_etag` (`crates/curl-tool/tests/http.rs`).
+
+- **An `--etag-save` file that does not open passes over its operation.** The warning is
+  given, the rest of the operation's URLs are not transferred, and the next operation runs as
+  given; with none, `no transfer performed` and exit 26 as in C. C's `single_transfer` breaks
+  out leaving the operation's URL walk (`state->urlnode`) where it was: the next operation's
+  options are applied to this one's URL, and its own URLs are not reached. `curl --etag-save
+  nowhere/t http://a/ --next http://b/` warns, then fetches `http://a/` with the next
+  operation's options and says `(3) URL using bad/illegal format or missing URL` instead of
+  fetching `http://b/`; with a pattern, `http://a/{x,y}`, it exits 3 without a word. Measured against the C build.
+  Pinned by `an_etag_file_that_does_not_open_passes_over_its_urls`
+  (`crates/curl-tool/tests/http.rs`).
+
 ## Reads C makes smaller
 
 - **A proxy's answer to `CONNECT` is read in bulk.** The tunnel reads what the socket holds, up

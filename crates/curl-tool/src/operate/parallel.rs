@@ -203,6 +203,10 @@ impl<'a, 'l> Parallel<'_, 'a, 'l> {
                 Made::Ready(per, easy) => (per, easy, None),
                 Made::Unfinished(per, easy, ended) => (per, easy, Some(ended)),
                 Made::Failed(e) => return Err(e),
+                Made::Abandoned => {
+                    self.transfers.abandon();
+                    continue;
+                }
             };
             self.terminal = per.terminal;
             let skip = per.skip;

@@ -2235,3 +2235,183 @@ fn parallel_transfers_share_cookies_and_connections() {
     let second = requests.rsplit("GET / ").next().unwrap();
     assert!(second.contains("\r\nCookie: a=1\r\n"), "{requests}");
 }
+
+/// A response that says its ETag with blanks around it, and closes.
+const TAGGED: &[u8] =
+    b"HTTP/1.1 200 OK\r\nETag:  \"new\" \t\r\nContent-Length: 3\r\nConnection: close\r\n\r\nok\n";
+
+/// The `If-None-Match:` lines of `request`.
+fn if_none_match(request: &str) -> Vec<&str> {
+    request
+        .split("\r\n")
+        .filter(|l| l.starts_with("If-None-Match:"))
+        .collect()
+}
+
+/// `--etag-compare` sends the file's bytes without their line ends and
+/// zero bytes, after the other headers, and `""` for a file that is empty
+/// or does not open, which is said; a file of line ends alone makes a
+/// header without a value, not sent. `--etag-save` writes the ETag without
+/// the blanks around it, emptying the file first, after the file to
+/// compare is read: one file serves both.
+#[test]
+fn compares_and_saves_etags() {
+    let dir = scratch("etags");
+    let tag = dir.join("tag");
+    std::fs::write(&tag, b"\"a\"\r\nb\0\nc").unwrap();
+    let tag = tag.display().to_string();
+    let s = Server::new(TAGGED);
+    let run = curl(&[
+        "-s",
+        "-A",
+        "",
+        "-H",
+        "X: 1",
+        "--etag-compare",
+        &tag,
+        "--etag-save",
+        &tag,
+        &s.url(),
+    ]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"ok\n"[..]));
+    assert_eq!(
+        s.request(),
+        "GET / HTTP/1.1\r\nHost: 127.0.0.1:PORT\r\nAccept: */*\r\nX: 1\r\n\
+         If-None-Match: \"a\"bc\r\n\r\n"
+    );
+    assert_eq!(std::fs::read(&tag).unwrap(), b"\"new\"\n");
+
+    let missing = dir.join("missing").display().to_string();
+    let empty = dir.join("empty");
+    std::fs::write(&empty, b"").unwrap();
+    let blank = dir.join("blank");
+    std::fs::write(&blank, b"\r\n\0").unwrap();
+    let s = Server::new(OK);
+    let blank = blank.display().to_string();
+    let run = curl(&["-s", "--etag-compare", &blank, &s.url()]);
+    assert_eq!(run.code, 0);
+    assert!(if_none_match(&s.request()).is_empty());
+    for (file, said) in [
+        (
+            missing.clone(),
+            format!("Warning: Failed to open {missing}: No such file or directory\n"),
+        ),
+        (empty.display().to_string(), String::new()),
+    ] {
+        let s = Server::new(OK);
+        let run = curl_columns(
+            &["--no-progress-meter", "--etag-compare", &file, &s.url()],
+            Some("500"),
+        );
+        assert_eq!((run.code, &run.stderr[..]), (0, &said[..]));
+        assert_eq!(if_none_match(&s.request()), ["If-None-Match: \"\""]);
+    }
+
+    // To standard output, as the header comes; a response without one
+    // leaves the file as it was.
+    let s = Server::new(TAGGED);
+    let run = curl(&["-s", "--etag-save", "-", &s.url()]);
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"\"new\"\nok\n"[..]));
+    drop(s.request());
+    std::fs::write(&tag, b"kept\n").unwrap();
+    let s = Server::new(OK);
+    let run = curl(&["-s", "--etag-save", &tag, &s.url()]);
+    assert_eq!(run.code, 0);
+    drop(s.request());
+    assert_eq!(std::fs::read(&tag).unwrap(), b"kept\n");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Each transfer of a pattern sends one `If-None-Match:`, of the file as
+/// it is then: the second sends the ETag the first saved. C adds the
+/// header to the operation's list for every transfer, so its second
+/// sends both (DIVERGENCE.md); this test fails on its tool.
+#[test]
+fn each_transfer_compares_one_etag() {
+    let dir = scratch("etag-glob");
+    let tag = dir.join("tag");
+    std::fs::write(&tag, b"\"old\"").unwrap();
+    let tag = tag.display().to_string();
+    let s = Server::script(vec![vec![TAGGED.to_vec()], vec![TAGGED.to_vec()]]);
+    let url = format!("{}{{x,y}}", s.url());
+    let run = curl(&["-s", "--etag-compare", &tag, "--etag-save", &tag, &url]);
+    assert_eq!(run.code, 0);
+    let request = s.request();
+    assert_eq!(
+        if_none_match(&request),
+        ["If-None-Match: \"old\"", "If-None-Match: \"new\""]
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// An `--etag-save` file that does not open passes over the rest of its
+/// operation, said; with nothing else to do no transfer is made, an
+/// error reading a file. C goes on with the next operation's options
+/// and the URLs left of this one (DIVERGENCE.md), so the last part of
+/// this test fails on its tool.
+#[test]
+fn an_etag_file_that_does_not_open_passes_over_its_urls() {
+    let dir = scratch("etag-unopened");
+    let nowhere = dir.join("nowhere/tag").display().to_string();
+    let run = curl_columns(
+        &["--etag-save", &nowhere, "http://127.0.0.1:1/"],
+        Some("500"),
+    );
+    assert_eq!(run.code, 26);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "Warning: Failed creating file for saving etags: \"{nowhere}\". Skip this \
+             transfer\ncurl: no transfer performed\n"
+        )
+    );
+    let s = Server::new(OK);
+    let run = curl_columns(
+        &[
+            "--no-progress-meter",
+            "--etag-save",
+            &nowhere,
+            "http://127.0.0.1:1/{a,b}",
+            "--next",
+            &s.url(),
+        ],
+        Some("500"),
+    );
+    assert_eq!((run.code, &run.stdout[..]), (0, &b"-foo-\n"[..]));
+    assert_eq!(
+        run.stderr,
+        format!(
+            "Warning: Failed creating file for saving etags: \"{nowhere}\". Skip this \
+             transfer\n"
+        )
+    );
+    drop(s.request());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A 304 leaves the output file as it was, or not made, whatever asked
+/// for it: C's `CURLINFO_CONDITION_UNMET` says the condition was unmet.
+#[test]
+fn a_304_leaves_the_output_alone() {
+    let dir = scratch("not-modified");
+    const NOT_MODIFIED: &[u8] = b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n";
+    let kept = dir.join("kept");
+    std::fs::write(&kept, b"old\n").unwrap();
+    let absent = dir.join("absent");
+    for out in [&kept, &absent] {
+        let s = Server::new(NOT_MODIFIED);
+        let run = curl(&[
+            "-s",
+            "-H",
+            "If-None-Match: \"x\"",
+            "-o",
+            &out.display().to_string(),
+            &s.url(),
+        ]);
+        assert_eq!(run.code, 0);
+        drop(s.request());
+    }
+    assert_eq!(std::fs::read(&kept).unwrap(), b"old\n");
+    assert!(!absent.exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

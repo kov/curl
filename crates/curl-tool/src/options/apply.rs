@@ -856,7 +856,6 @@ pub(crate) fn apply<'a>(
             } else {
                 op.etag_compare = Some(file);
             }
-            line.not_implemented(spec, "--");
         }
         Opt::ContinueAt => {
             let op = line.current();

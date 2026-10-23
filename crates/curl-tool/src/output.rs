@@ -71,6 +71,8 @@ pub(crate) struct Stream {
     server_named: bool,
     /// `--dump-header`: where header lines are written too.
     dump: Option<Dump>,
+    /// `--etag-save`: where the ETag of a 2xx or 3xx response is written.
+    pub(crate) etag_save: Option<EtagSave>,
     /// Header lines with a colon in the last response's head
     /// (`per->num_headers`).
     num_headers: u64,
@@ -111,6 +113,79 @@ enum Naming {
     /// It goes on as any header line.
     Shown,
     Failed,
+}
+
+/// Where `--etag-save` writes the ETag: standard output for `-`, or a
+/// file, opened to add to and emptied before each ETag is written.
+pub(crate) enum EtagSave {
+    Stdout(Stdout),
+    File(File),
+}
+
+impl EtagSave {
+    /// The file `name`, `-` for standard output, opened as `etag_store`
+    /// opens it, or `None` once said (`Failed creating file for saving
+    /// etags`).
+    pub(crate) fn open(name: &[u8], stdout: &Stdout, msgs: &Messages) -> Option<EtagSave> {
+        if name == b"-" {
+            return Some(EtagSave::Stdout(stdout.clone()));
+        }
+        match fs::with_c_name(name, |c| fs::open_write(c, Keep::Everything, NEW_FILE_MODE)) {
+            Ok(file) => Some(EtagSave::File(file)),
+            Err(_) => {
+                msgs.warn(&[
+                    b"Failed creating file for saving etags: \"",
+                    name,
+                    b"\". Skip this transfer",
+                ]);
+                None
+            }
+        }
+    }
+
+    /// Write the ETag in `value`, what follows `ETag:` in a whole header
+    /// line, without the blanks around it and a newline after it, a file
+    /// emptied first (`save_etag`). `false` if emptying it failed.
+    fn save(&mut self, value: &[u8]) -> bool {
+        let Some((&b'\n', _)) = value.split_last() else {
+            return true;
+        };
+        let last = value.len() - 1;
+        let start = value[..last].iter().take_while(|&&b| is_blank(b)).count();
+        let Some(end) = value.iter().rposition(|&b| !is_space(b)) else {
+            return true;
+        };
+        if end < start {
+            return true;
+        }
+        let etag = &value[start..=end];
+        // C does not check these writes.
+        match self {
+            EtagSave::Stdout(out) => {
+                out.fwrite(etag);
+                out.fwrite(b"\n");
+                drop(out.flush());
+            }
+            EtagSave::File(file) => {
+                // A regular file is emptied of the ETag before.
+                if file.metadata().is_ok_and(|m| m.is_file()) && file.set_len(0).is_err() {
+                    return false;
+                }
+                drop(file.write_all(etag));
+                drop(file.write_all(b"\n"));
+            }
+        }
+        true
+    }
+}
+
+fn is_blank(b: u8) -> bool {
+    b == b' ' || b == b'\t'
+}
+
+/// C's `ISSPACE`.
+fn is_space(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)
 }
 
 /// Where `--dump-header` writes, and the name it was given.
@@ -204,6 +279,7 @@ impl Output {
             name_from_header: None,
             server_named: false,
             dump: None,
+            etag_save: None,
             num_headers: 0,
             after_blank: true,
             msgs,
@@ -635,11 +711,21 @@ impl Stream {
         if dumped != Write::Accepted {
             return dumped;
         }
-        // A name is taken from a 2xx or 3xx response only.
+        // An ETag is saved, and a name taken, from a 2xx or 3xx response
+        // only; an ETag saved is not looked at for a name.
         let http = protocol == Some(Protocol::Http);
+        let answered = code.is_some_and(|c| matches!(c / 100, 2 | 3));
         let mut named = false;
-        if http && self.name_from_header.is_some() && code.is_some_and(|c| matches!(c / 100, 2 | 3))
+        let etag = line.len() >= 5 && line[..5].eq_ignore_ascii_case(b"etag:");
+        if http
+            && answered
+            && etag
+            && let Some(save) = &mut self.etag_save
         {
+            if !save.save(&line[5..]) {
+                return Write::Fail;
+            }
+        } else if http && self.name_from_header.is_some() && answered {
             match self.name_from(line, code.unwrap_or(0)) {
                 Naming::Held => return Write::Accepted,
                 Naming::Failed => return Write::Fail,

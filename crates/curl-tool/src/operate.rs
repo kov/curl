@@ -55,6 +55,9 @@ enum Step {
     /// Its upload could not be opened: nothing more runs, and the result
     /// is the last failure's (C's failed `pre_transfer`).
     Unopened(ErrorKind),
+    /// Its `--etag-save` file could not be opened: the rest of its
+    /// operation is passed over.
+    Abandoned,
 }
 
 /// Ask for the missing passwords, then run every operation's transfers
@@ -210,14 +213,23 @@ fn run_all(line: &CommandLine<'_>, run: &Shared<'_, '_>) -> Ending {
     let mut transfers = Transfers::new(&line.operations, run.msgs);
     // The result of the last transfer that ran.
     let mut last = Ok(());
+    // Whether any transfer was made (`serial_transfers`'s `added`).
+    let mut made = false;
     loop {
         match transfers.advance() {
             Ok(true) => {}
-            Ok(false) => return last,
+            Ok(false) if made => return last,
+            Ok(false) => {
+                run.msgs.error(&[b"no transfer performed"]);
+                return Err(ErrorKind::ReadError);
+            }
             Err(ending) => return ending,
         }
         rate_wait(run.global.ms_per_transfer, run.started.get(), run.msgs);
-        match transfer(run, transfers.item()) {
+        let step = transfer(run, transfers.item());
+        made |= !matches!(step, Step::Abandoned);
+        match step {
+            Step::Abandoned => transfers.abandon(),
             Step::Ran(result) => {
                 last = result;
                 if ends_run(result, run.global.fail_early) {
@@ -393,6 +405,15 @@ impl<'a, 'l> Transfers<'a, 'l> {
         }
     }
 
+    /// Pass over what is left of the operation walked (C's
+    /// `create_transfer` once `single_transfer` breaks its loop).
+    fn abandon(&mut self) {
+        self.op += 1;
+        self.node = None;
+        self.walk = None;
+        self.ready = false;
+    }
+
     /// The transfer `advance` made ready.
     fn item(&self) -> Item<'a, '_, 'l> {
         let op: &'a Operation<'l> = &self.ops[self.op];
@@ -552,6 +573,31 @@ fn joined(dir: &[u8], name: &[u8]) -> Result<Vec<u8>, OutOfMemory> {
     Ok(path)
 }
 
+/// The `If-None-Match:` header for the ETag in file `name`, its bytes
+/// without line ends and zero bytes, or `""` for a file that does not
+/// open, cannot be read or is empty (`etag_compare`). One that does not
+/// open is said. A file of line ends alone gives the header no value,
+/// which is not sent: C's `file2string` has a string for it, empty.
+fn etag_header(name: &[u8], msgs: &Messages) -> Result<Vec<u8>, OutOfMemory> {
+    let read = match fs::with_c_name(name, fs::open_read) {
+        Ok(mut file) => crate::slurp::read_from(&mut file, crate::slurp::As::Binary).ok(),
+        Err(e) => {
+            let why = crate::os_message(&e);
+            msgs.warn(&[b"Failed to open ", name, b": ", why.as_bytes()]);
+            None
+        }
+    };
+    let mut header = Vec::new();
+    header.try_extend_from_slice(b"If-None-Match: ")?;
+    match read.filter(|bytes| !bytes.is_empty()) {
+        Some(bytes) => bytes
+            .split(|&b| matches!(b, b'\r' | b'\n' | 0))
+            .try_for_each(|part| header.try_extend_from_slice(part))?,
+        None => header.try_extend_from_slice(b"\"\"")?,
+    }
+    Ok(header)
+}
+
 /// Errors after which nothing more is tried (`is_fatal_error`). C's also
 /// has `CURLE_UNKNOWN_OPTION`, which only libcurl's C API returns.
 fn fatal(e: ErrorKind) -> bool {
@@ -600,6 +646,7 @@ fn transfer(run: &Shared<'_, '_>, item: Item<'_, '_, '_>) -> Step {
             Step::Failed(per.end(run, &easy, ended).expect_err("a failure stays one"))
         }
         Made::Failed(e) => Step::Failed(e),
+        Made::Abandoned => Step::Abandoned,
     }
 }
 
@@ -630,6 +677,8 @@ enum Made<'a, 'l> {
     /// It failed before: there is nothing to end (C's failed
     /// `create_transfer`).
     Failed(ErrorKind),
+    /// Its `--etag-save` file could not be opened, and that was said.
+    Abandoned,
 }
 
 /// Why an attempt could not start (`pre_transfer`).
@@ -769,6 +818,30 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     } = item;
     let msgs = run.msgs;
     let url = given.text;
+    // The ETag to compare and where to save the new one
+    // (`setup_etag_files`), before anything else.
+    let etag = match op.etag_compare.map(|name| etag_header(name, &msgs)) {
+        Some(Ok(header)) => Some(header),
+        Some(Err(OutOfMemory)) => {
+            msgs.error(&[b"Failed to allocate memory for custom etag header"]);
+            return Made::Failed(ErrorKind::OutOfMemory);
+        }
+        None => None,
+    };
+    let etag_save = match op.etag_save {
+        Some(name) => {
+            if op.create_dirs
+                && let Err(e) = create_dirs(name, &msgs)
+            {
+                return Made::Failed(e);
+            }
+            match output::EtagSave::open(name, run.stdout, &msgs) {
+                Some(save) => Some(save),
+                None => return Made::Abandoned,
+            }
+        }
+        None => None,
+    };
     // The data of `--data` makes a POST, an upload a PUT, and no other
     // method may be chosen with either (`single_transfer`,
     // `create_single`).
@@ -1002,6 +1075,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         stream.binary_ok = node.output == Output::File(b"-");
         stream.no_buffer = op.no_buffer;
         stream.clobber = op.clobber;
+        stream.etag_save = etag_save;
         // `--remote-header-name` names only a file `--remote-name` names
         // (`setup_header_cb`).
         if op.remote_header_name && output_is_remote {
@@ -1042,6 +1116,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let config = Config {
         url,
         proto,
+        etag: etag.as_deref(),
         resume,
         upload: upload.is_some(),
         post,
@@ -1391,6 +1466,9 @@ enum Ended {
 /// What one transfer is set up with, beyond its operation's options.
 struct Config<'a> {
     url: &'a [u8],
+    /// The `If-None-Match:` header `--etag-compare` makes, after the
+    /// others.
+    etag: Option<&'a [u8]>,
     /// What the URL is taken for: HTTP's options are set for HTTP's.
     proto: UrlProto,
     resume: Option<options::Resume>,
@@ -1511,7 +1589,7 @@ fn setopts(
     })?;
     s.ptr("CURLOPT_HEADERDATA", Object, nothing)?;
     proxy_setopts(s, op)?;
-    credentials_and_headers(s, op)?;
+    credentials_and_headers(s, op, config.etag)?;
     transfer_setopts(s, op, run, config)?;
     if let UrlProto::Http { tls } = config.proto {
         http_setopts(s, op, tls, &run.msgs)?;
@@ -1790,7 +1868,11 @@ fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind
 }
 
 /// Who the transfer is, and its headers (`credentials_and_headers_setopts`).
-fn credentials_and_headers(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+fn credentials_and_headers(
+    s: &mut Setopt<'_>,
+    op: &Operation<'_>,
+    etag: Option<&[u8]>,
+) -> Result<(), ErrorKind> {
     s.str("CURLOPT_XOAUTH2_BEARER", op.bearer, |o| {
         if let Some(token) = op.bearer {
             o.login.make_mut().map_err(oom)?.bearer = Some(copy(token).map_err(oom)?);
@@ -1847,9 +1929,10 @@ fn credentials_and_headers(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(),
     .map(|(name, line)| (op.json && !in_list(&op.headers, name)).then_some(line));
     let mut headers = Vec::new();
     headers
-        .try_reserve_exact(op.headers.len() + 2)
+        .try_reserve_exact(op.headers.len() + 3)
         .map_err(|_| ErrorKind::OutOfMemory)?;
-    for line in op.headers.iter().copied().chain(json.into_iter().flatten()) {
+    let lines = op.headers.iter().copied().chain(json.into_iter().flatten());
+    for line in lines.chain(etag) {
         headers.try_push(line).map_err(oom)?;
     }
     s.slist("CURLOPT_HTTPHEADER", &headers, |o| {
@@ -2445,8 +2528,8 @@ fn settle(
         ]);
     }
     // A successful transfer that wrote nothing still leaves its output
-    // file, empty, unless a time condition kept the file from coming:
-    // then the file is not even replaced.
+    // file, empty, unless a time condition kept the file from coming or
+    // the server answered 304: then the file is not even replaced.
     if result.is_ok() && !easy.report().condition_unmet() && !stream.create() {
         result = Err(ErrorKind::WriteError);
     }
@@ -3081,6 +3164,7 @@ mod tests {
         });
         let config = Config {
             url: url.as_bytes(),
+            etag: None,
             proto: url_proto(url.as_bytes(), None).unwrap().0,
             resume: match op.resume {
                 Some(Resume::At(n)) => NonZeroU64::new(n).map(options::Resume::At),

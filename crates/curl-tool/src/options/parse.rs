@@ -938,8 +938,8 @@ mod tests {
         );
         // Each operation has its own URLs and options.
         assert_eq!(
-            run(&["x", "--etag-save", "e", "--next", "y", "z", "-C", "1"]),
-            Ok((2, Some("etag-save"), None))
+            run(&["x", "--interface", "e", "--next", "y", "z", "-C", "1"]),
+            Ok((2, Some("interface"), None))
         );
         assert_eq!(
             run(&["x", "-C", "1", "--clobber", "--no-remove-on-error"]),
@@ -994,9 +994,8 @@ mod tests {
         // A pattern of files to upload.
         assert_eq!(run(&["-T", "a[1-2]", "x"]), Ok((1, None, None)));
         // One URL can save its ETag.
-        let etag = Some("etag-save");
-        assert_eq!(run(&["--etag-save", "e", "x"]), Ok((1, etag, None)));
-        assert_eq!(run(&["x", "--etag-save", "e"]), Ok((1, etag, None)));
+        assert_eq!(run(&["--etag-save", "e", "x"]), Ok((1, None, None)));
+        assert_eq!(run(&["x", "--etag-save", "e"]), Ok((1, None, None)));
     }
 
     /// `--fail` and `--fail-with-body` are one choice, the last said; off,

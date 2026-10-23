@@ -1244,3 +1244,27 @@ witness: curl-tool form::tests::a_header_file_that_cannot_be_read_is_refused
             }
 --- new
             Err(_) => break,
+
+=== a saved ETag is added to what the file held
+file: crates/curl-tool/src/output.rs
+witness: curl-tool compares_and_saves_etags
+--- old
+                if file.metadata().is_ok_and(|m| m.is_file()) && file.set_len(0).is_err() {
+--- new
+                if file.metadata().is_ok_and(|m| m.is_file()) && false && file.set_len(0).is_err() {
+
+=== an ETag file that does not open passes over one URL only
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool an_etag_file_that_does_not_open_passes_over_its_urls
+--- old
+            Step::Abandoned => transfers.abandon(),
+--- new
+            Step::Abandoned => {}
+
+=== the ETag to compare is sent with the first transfer only
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool each_transfer_compares_one_etag
+--- old
+    let etag = match op.etag_compare.map(|name| etag_header(name, &msgs)) {
+--- new
+    let etag = match op.etag_compare.filter(|_| first).map(|name| etag_header(name, &msgs)) {

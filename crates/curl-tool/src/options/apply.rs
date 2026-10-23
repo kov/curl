@@ -238,6 +238,10 @@ pub(crate) struct Operation<'a> {
     pub(crate) proxy_basic: bool,
     /// `--proxy-digest`.
     pub(crate) proxy_digest: bool,
+    /// `--socks5-basic` and `--socks5-gssapi`: the SOCKS5 methods asked
+    /// for, the library's default if neither.
+    pub(crate) socks5_basic: bool,
+    pub(crate) socks5_gssapi: bool,
     /// `--junk-session-cookies`.
     pub(crate) cookie_session: bool,
     /// `--http1.0` and `--http1.1`.
@@ -1018,6 +1022,8 @@ pub(crate) fn apply<'a>(
         Opt::ProxyAnyauth => line.current().proxy_anyauth = value.toggle(),
         Opt::ProxyBasic => line.current().proxy_basic = value.toggle(),
         Opt::ProxyDigest => line.current().proxy_digest = value.toggle(),
+        Opt::Socks5Basic => line.current().socks5_basic = value.toggle(),
+        Opt::Socks5Gssapi => line.current().socks5_gssapi = value.toggle(),
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
@@ -1534,8 +1540,6 @@ pub(crate) fn apply<'a>(
         | Opt::ServiceName
         | Opt::Sessionid
         | Opt::SignatureAlgorithms
-        | Opt::Socks5Basic
-        | Opt::Socks5Gssapi
         | Opt::Socks5GssapiNec
         | Opt::Socks5GssapiService
         | Opt::Ssl

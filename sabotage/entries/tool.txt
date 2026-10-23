@@ -1298,3 +1298,19 @@ witness: curl-tool options::parse::tests::deprecated_options_are_warned_of_and_a
             long.is_none() && !attached && at < letters.len() && !used_next && !spec.deprecated;
 --- new
             long.is_none() && !attached && at < letters.len() && !used_next;
+
+=== `--no-socks5-basic` does not switch Basic off
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool sets_the_socks5_methods_asked_for
+--- old
+        Opt::Socks5Basic => line.current().socks5_basic = value.toggle(),
+--- new
+        Opt::Socks5Basic => line.current().socks5_basic = true,
+
+=== `--socks5-gssapi` does not ask for GSS-API
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool sets_the_socks5_methods_asked_for
+--- old
+            gssapi: op.socks5_gssapi,
+--- new
+            gssapi: false,

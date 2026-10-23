@@ -10,7 +10,7 @@
 use curl_alloc::{OutOfMemory, TryVec as _, try_format};
 use curl_core::easy::Easy;
 use curl_core::error::ErrorKind;
-use curl_core::options::{AuthMethods, Options, ProxyType};
+use curl_core::options::{AuthMethods, Options, ProxyType, Socks5Auth};
 
 use crate::msgs::Messages;
 use crate::stdout::Stdout;
@@ -126,6 +126,9 @@ pub(crate) type Bits = &'static [(&'static str, u64)];
 /// `CURLAUTH_*` bits.
 const AUTH_BASIC: u64 = 1;
 const AUTH_DIGEST: u64 = 1 << 1;
+/// `CURLAUTH_GSSAPI`, which C names `CURLAUTH_GSSNEGOTIATE` in a
+/// program.
+const AUTH_GSSAPI: u64 = 1 << 2;
 const AUTH_DIGEST_IE: u64 = 1 << 4;
 const AUTH_BEARER: u64 = 1 << 6;
 const AUTH_AWS_SIGV4: u64 = 1 << 7;
@@ -140,7 +143,7 @@ pub(crate) const AUTH: Bits = &[
     ("CURLAUTH_ANYSAFE", AUTH_ANY & !AUTH_BASIC),
     ("CURLAUTH_BASIC", AUTH_BASIC),
     ("CURLAUTH_DIGEST", AUTH_DIGEST),
-    ("CURLAUTH_GSSNEGOTIATE", 1 << 2),
+    ("CURLAUTH_GSSNEGOTIATE", AUTH_GSSAPI),
     ("CURLAUTH_NTLM", 1 << 3),
     ("CURLAUTH_DIGEST_IE", AUTH_DIGEST_IE),
     ("CURLAUTH_ONLY", AUTH_ONLY),
@@ -167,6 +170,22 @@ pub(crate) fn auth_mask(methods: AuthMethods) -> u64 {
     }
     if methods.contains(AuthMethods::OTHER) {
         mask |= AUTH_ANY & !named.iter().fold(0, |all, (_, bit)| all | bit);
+    }
+    mask
+}
+
+/// The `CURLAUTH_*` mask C's tool passes for the SOCKS5 methods `auth`
+/// (`CURLOPT_SOCKS5_AUTH`).
+pub(crate) fn socks5_mask(auth: Socks5Auth) -> u64 {
+    let mut mask = 0;
+    for (on, bit) in [
+        (auth.basic, AUTH_BASIC),
+        (auth.gssapi, AUTH_GSSAPI),
+        (auth.only, AUTH_ONLY),
+    ] {
+        if on {
+            mask |= bit;
+        }
     }
     mask
 }

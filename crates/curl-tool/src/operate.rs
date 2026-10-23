@@ -1618,6 +1618,19 @@ fn setopts(
         o.ip_version = ip_version;
         Ok(())
     })?;
+    // Set only if one is asked for, as C's mask is set only if not 0.
+    if op.socks5_basic || op.socks5_gssapi {
+        let auth = options::Socks5Auth {
+            basic: op.socks5_basic,
+            gssapi: op.socks5_gssapi,
+            only: false,
+        };
+        let mask = easysrc::socks5_mask(auth);
+        s.bitmask("CURLOPT_SOCKS5_AUTH", easysrc::AUTH, mask, |o| {
+            o.proxy.make_mut().map_err(oom)?.socks5_auth = auth;
+            Ok(())
+        })?;
+    }
     s.long(
         "CURLOPT_IGNORE_CONTENT_LENGTH",
         i64::from(op.ignore_content_length),

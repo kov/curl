@@ -1475,3 +1475,39 @@ fn parallel_transfer_failing_as_it_is_made() {
         "curl: cannot open 'nodir/x'\ncurl: (23) Failed writing received data to disk/application\n"
     );
 }
+
+/// `--socks5-basic` and `--socks5-gssapi` set the SOCKS5 methods to those
+/// asked for, and nothing when neither is left on (test 3310, 3311).
+#[test]
+fn sets_the_socks5_methods_asked_for() {
+    let s = Scratch::new("socks5");
+    s.write("f", b"x");
+    let set = |args: &[&str]| {
+        let r = curl(
+            &s,
+            &[&["-s", "-o", "out", "--libcurl", "-"], args, &[&s.url("f")]].concat(),
+        );
+        assert_eq!(r.code, 0, "{args:?}");
+        let program = String::from_utf8(r.stdout).unwrap();
+        let at = program.find("CURLOPT_SOCKS5_AUTH, ");
+        at.map(|at| {
+            let line = &program[at..];
+            line[..line.find(";\n").unwrap()]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+    };
+    let basic = "CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_BASIC)";
+    let gssapi = "CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_GSSNEGOTIATE)";
+    let both = "CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_BASIC | (long)CURLAUTH_GSSNEGOTIATE)";
+    assert_eq!(set(&["--socks5-basic"]).as_deref(), Some(basic));
+    assert_eq!(set(&["--socks5-gssapi"]).as_deref(), Some(gssapi));
+    assert_eq!(
+        set(&["--socks5-gssapi", "--socks5-basic"]).as_deref(),
+        Some(both)
+    );
+    assert_eq!(set(&["--socks5-basic", "--no-socks5-basic"]), None);
+    assert_eq!(set(&["--no-socks5-gssapi"]), None);
+    assert_eq!(set(&[]), None);
+}

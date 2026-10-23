@@ -42,7 +42,8 @@ numbers are those of `SCOPE.md`.
    through one `Stream` (the socket, its layers and its receive buffer), owned first by
    `Dialed` and then by the `Conn`. The layers are a pull chain, as C's filters are (§4.3).
    Where a connection is, is its place in its pool: `Leased` by one transfer or `Idle`, and
-   later `Closing`, `Reserved` and `Attached` (§4.6). A lease names its home pool and is given
+   later `Reserved` and `Attached`; one shutting down is `Closing` in its multi's `ShutdownSet`
+   (§4.6). A lease names its home pool and is given
    back only to it; every socket carries the closer it was opened with.
 7. **Generational ids everywhere**: `TransferId`, `ConnId` (whose generation is the
    "Connection #N" number), `ResolveId`, `HeaderCursor`. A stale id fails its own lookup.
@@ -119,14 +120,17 @@ curl-core     #![forbid(unsafe_code)]; depends on curl-alloc and curl-os ("net",
 curl-psl      libpsl, the public suffixes cookies are checked against
 curl-zlib     zlib's inflate, curl-brotli brotli's decoder, curl-zstd zstd's decoder: the
               content codings, behind `curl_core::coding::Decoder`
+curl-openssl  OpenSSL through openssl-sys's declarations: the TLS backend behind
+              `curl_core::tls`, and Ed25519 for HTTP signatures (planned, step 43; §4.9)
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```
 
 `curl-os` exposes safe functions; it does not implement `curl-core` traits (that would be a
 dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net` trait in safe
-code. The libraries the core does not depend on (libpsl and the decoders) are handed to a
-handle by whoever builds it: the shim and the tool.
+code. The libraries the core does not depend on (libpsl and the decoders, and from step 43 the
+TLS backend and the Ed25519 signer) are handed to a handle by whoever builds it: the shim and
+the tool.
 
 ### 2.2 `curl-core` modules
 
@@ -207,9 +211,10 @@ curl-core/src/
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: `conn/mux.rs`; `conn/shutdown.rs`
-(ShutdownSet, with TLS); a `Resolver` for names the cache and the shortcuts do not answer; and
-`DebugNet`.
+Planned, not built: `conn/mux.rs`; for TLS (step 43, §4.9) `tls.rs` (the public seam a
+backend implements), `tls/cache.rs` (the session cache), `conn/tls.rs` (the layer over a
+backend's session) and `conn/shutdown.rs` (`ShutdownSet`, §4.6); a `Resolver` for names the
+cache and the shortcuts do not answer; and `DebugNet`.
 
 ### 2.3 Ids and the arena
 
@@ -371,7 +376,8 @@ lines, which the pool's check makes with a silent context where C traces them on
 looking for a connection. Not traced: the receive
 C tries before its first poll in PERFORMING, which the engine does not make; a tunnel's and
 SOCKS handshake's reads and writes, as C reads a proxy's answer to `CONNECT` a byte at a time
-from the socket, where the engine reads what is there; and `query ALPN`, which comes with TLS.
+from the socket, where the engine reads what is there; and `query ALPN`, which comes with TLS
+(below).
 
 `SETUP` traces cf-setup.c's lines as the transfer's step meets the points C passes: `added` as
 a new connection's setup starts, `happy eyeballing to origin|proxy H:P` as the race starts,
@@ -421,6 +427,32 @@ the `debug-hooks` feature. Not traced: C's DNS filter's own life (`created DNS f
 answer (`get Nth result`), the chain's connect result C traces under the top filter's name
 (`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
 and a SOCKS proxy's lookup of the destination.
+
+Planned (step 43): the TLS components, as the reference build traces them on the transfer.
+`SSL` (the origin's layer) and `SSL-PROXY` (the proxy's) trace the handshake as it is driven
+(`cf_connect()`, `ossl_connect, step1|2|3`, `SSL_connect() -> err=-1, detail=2`, `want recv`,
+`cf_connect() -> R, done=D`, `ossl_connect, done`), each read and write its BIO makes on the
+layer below with the length OpenSSL asked for (`ossl_bio_cf_in_read(len=5) -> 81, 0`, under the
+`TCP` line of the same call), each receive with the caller's length and what OpenSSL still holds
+(`ossl_recv(len=102400) -> 0, 44 (in_pending=1)`), `configuring OpenSSL's x509 trust store` at
+the first read, and `adjust_pollset, POLLIN fd=N` above the socket's `adjust_pollset, !active,
+POLLIN fd=N`. `SSLS` traces the session cache: each lookup with the peer's key (`find peer slot
+for K among 25 slots`, `peer not found`, `no cached session`, `took session`) and each ticket kept
+(`added session for K [proto=0x304, valid_secs=7200, alpn=(nil), earlydata=0, quic_tp=no], peer
+has N sessions now`). Without a component, as text lines: `ALPN: curl offers …`, `SSL
+connection using …`, `ALPN: server did not agree on a protocol. Uses default.`, the `Server
+certificate:` (or `Proxy certificate:`) block, the trust anchors, the verification's lines,
+`SSL reusing session with ALPN '-'`; and the msg callback's handshake lines (`TLSv1.3 (OUT), TLS
+handshake, Client hello (1):`) beside the record bytes as SSL data. `HTTPS-CONNECT`, the ALPN
+race C puts above SETUP for an `https` origin without a forwarding proxy, is rendered in the
+chain (`[0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]`) and traces `added`, `connect, init`, `HTTPS-RR
+not available`, `1st attempt uses h1 from wanted versions` and its `connect -> R, done=D` and
+`adjust_pollset` lines. `query ALPN` is traced by the top of the chain each time a filter asks
+it: by `SETUP` (or `HAPPY-EYEBALLS` and `SSL-PROXY` under a tunnel's `CONNECT`) as a setup
+completes, and by the top layer as HTTP starts on a new connection (`http_check_new_conn`),
+plain TCP included (`[TCP] query ALPN`, `[SOCKS] query ALPN`, `[H1-PROXY] query ALPN`); a TLS
+layer adds what it answers (`query ALPN: returning '(nil)'`). C's `[SHUTDOWN]` lines and a
+shutdown's TLS lines are its internal handle's, so not traced (§4.6).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
 built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
@@ -819,6 +851,21 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   stored apart from the protocol's state, it is derived after every step from
   `TransferState::wake_at`, as `Directions` is, and armed or cleared there. One kind serves
   every protocol, as a transfer runs one at a time.
+- Planned (step 43): `AlpnEyeballs` and `Shutdown` get producers. `AlpnEyeballs`
+  (EXPIRE_ALPN_EYEBALLS, 100 ms) is armed as the HTTPS-CONNECT race starts while its ballers
+  are not complete: with a second baller, or with the host's HTTPS-RR answer still to come. With
+  C's defaults there is one baller, so the reference build arms it exactly for a host name whose
+  HTTPS-RR query is outstanding as the attempt starts (`localhost`, which 758 uses), never for an
+  IP literal, which makes no query, nor for a name whose answer is cached, even a negative one
+  (the second connection of a run). Once armed it is not cleared when the race is won: it stays
+  in the transfer's pollset lines through PERFORMING until `[TIMEOUT] all cleared` at
+  COMPLETED. The engine resolves no HTTPS-RR yet, so it arms the timer where C's query would be
+  outstanding (a host name not answered from the cache), to keep the timer callback's sequence;
+  the HTTPS-RR lookup itself waits for c-ares. `Shutdown` is the multi's, not a transfer's:
+  C arms EXPIRE_SHUTDOWN on its internal handle for the earliest deadline of the connections
+  shutting down (cshutdn.c:359–367). The multi gets one row of its own in `Deadlines` and
+  `TimerQueue`, reserved at `Multi::new`, which `multi_timeout` and the timer announcement read
+  with the transfers' and which nothing traces.
 - **`TimerQueue`** is an indexed binary min-heap with one entry per transfer, holding
   `deadlines.wake_at()` of that transfer, keyed by its `Key` with the position index by row.
   Capacity is reserved at `add`, and `update(key, Option<Instant>)` is O(log n) with no
@@ -1284,11 +1331,13 @@ pub(crate) trait LayerCx {
 Layers form a **pull chain**, as C's filters do (cfilters.h:217–232, cfilters.c:186–222): a
 read asks the top layer for at most the caller's length, and each layer reads from the one
 below it as it needs, down to the socket. C's `destroy` is `Drop`, and its `cntrl` codes are
-typed methods. Pulling keeps the sizes the caller asked for at every level (`SSL_read(len)`),
-on which decision 20's read cap and the eleven-read loop (§3.2) depend; a push chain with a
-buffer between layers would not keep them. `Below` is the stack split at the layer being
-called, ending at the socket, so a TLS layer's BIO reads and writes the layer below without
-aliasing its own state.
+typed methods. Pulling keeps the sizes the caller asked for down to the layer that reframes
+the bytes (`SSL_read(len)` is the caller's length; below it, the lengths are those OpenSSL's
+BIO asks for: a record's 5-byte header and then the record during the handshake, the room
+of its own buffer after), on which decision 20's read cap and the eleven-read loop (§3.2)
+depend; a push chain with a buffer between layers would not keep them. `Below` is the stack
+split at the layer being called, ending at the socket, so a TLS layer's BIO reads and writes
+the layer below without aliasing its own state.
 
 `LayerStack` holds the layers that work on the bytes, boxed, behind one pointer, as every
 transfer's state holds its connection inline (§8.2); for TCP, a SOCKS proxy or a tunnel it is
@@ -1321,16 +1370,21 @@ No layer is pushed outside the tests until TLS: a test's transfer names one
 `Dying`). `connect`, `shutdown` and `query` have no caller until TLS; `LayerCx`'s trace is the
 connect machine's (`ConnCx` extends it) until a layer traces.
 
-Open, to be settled with TLS (step 43): what `LayerCx` carries for TLS: the SSL_CTX callback,
-the SSL_DATA debug lines and the key log; and the bytes a tunnel's handshake reads past its
-answer, which `rx` gives to the protocol, above any layer: under an origin's TLS they are the
-TLS layer's, so that handshake reads no further than its answer (as C reads it a byte at a
-time) or hands them below the layer it pushes. That much fixes `LayerCx` as a trait object whose
-implementation reaches the transfer's handlers.
-
-TLS (stage 4) drives OpenSSL as `lib/vtls/openssl.c` does: a custom BIO method whose read and
-write go to the layer below (`Below`), so the `SSL *` and `SSL_CTX *` handed to the application
-look as they do in C.
+Planned (step 43), settled for TLS (§4.9). `LayerCx` gains what a TLS layer reaches through
+the transfer: `bytes(kind, data)` for the SSL data a handshake and its records make (C's msg
+callback, `CURLINFO_SSL_DATA_IN`/`OUT`), and `ssl_ctx(native)`, the application's SSL_CTX
+handler, called through the transfer's context; the silent context of a pool section has
+neither, as C's internal handle has no debug function and no SSL_CTX callback. `LayerQuery`
+gains `Alpn` (the protocol the peer agreed to) and `Native` (the backend's own object, the `SSL
+*` that `CURLINFO_TLS_SSL_PTR` returns), answered with `&mut dyn Any` that the shim downcasts.
+The key log is not on `LayerCx`: the shim's root and the tool own it and hand it to the backend.
+The bytes a tunnel's handshake read past its answer, which `rx` holds, are the first bytes the
+TLS layer pushed over that stream reads: they move into the layer once, as it is pushed, and its
+BIO reads them before it reads below. That is what C's byte-at-a-time read of the answer comes
+to: whatever followed the answer reaches the TLS handshake first, on both legs.
+`connect`, `shutdown` and `query` get their first producer in the TLS layer. A binding crate
+cannot implement `Layer`, which stays crate-private: the core's `TlsLayer` implements it over
+the public `curl_core::tls::TlsSession` a backend makes (§4.9).
 
 ### 4.4 Multiplexing
 
@@ -1365,7 +1419,7 @@ pub struct Route {
     dest: Destination,                 // host:port, or connect-to / UDS peer
     transport: TransportKind,
     proxy: Option<ProxyRoute>,         // type, peer, credentials
-    tls: Option<TlsIdentity>,          // every field that affects the handshake
+    tls: Option<TryRc<TlsIdentity>>,   // every field that affects the handshake (§4.9)
     ip: IpPrefs, local: LocalBind,
     creds: Option<CredsBinding>,       // connection-bound auth (Negotiate)
     proto: ProtoFamily, scheme: SchemeConfig,
@@ -1403,7 +1457,8 @@ with `Proxy-Connection: Keep-Alive`; the response's `Proxy-Connection` keeps or 
 connection (`Asked::http_proxy`). A tunnel (`CURLOPT_HTTPPROXYTUNNEL`, or a connect-to peer)
 is set up with `CONNECT` (`multi/state/tunnel.rs`), SOCKS4, 4a and 5 with their handshakes
 (`conn/socks.rs`, driven from `multi/state/socks.rs`), over the connection to the proxy the
-setup dialed. An HTTPS proxy fails with `NotBuiltIn` until TLS is built.
+setup dialed. An HTTPS proxy fails with `NotBuiltIn` until it is built in step 43 (§4.9),
+after the origin's TLS.
 
 `Route` is computed once per leg from the `Target` and options and never mutated. Matching is
 `candidate.route.reusable_for(&needle)`: `Eq` on each sub-struct plus the deliberate
@@ -1440,7 +1495,6 @@ impl Pool {
 enum Place {                               // where a connection in the table is
     Idle(ConnSlot),                        // kept for another transfer; always open
     Leased(Leased),                        // its one lease has it
-    Closing(Box<Closing>),                 // shutting down, owned by the pool (step 43)
     Reserved(..),                          // CONNECT_ONLY, kept for its handle (later)
     Attached { users: .. },                // multiplexed, leased by several (before stage 5)
 }
@@ -1491,16 +1545,42 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   to, shares compared by pointer. Ids alone cannot tell: a share's arena and a multi's hand out
   equal ids. `Home` allocates nothing; an identity by counter would be global mutable state, and
   by address would move with the multi.
-- **Places.** Built: `Leased` and `Idle`. `Closing`, with the multi's `ShutdownSet`, the
-  SHUTDOWN timer and connection-owned sockets (`SocketOwner::Conn`, §4.7), comes with TLS as
-  step 43's first sub-step. Plain TCP has no producer for it: C's TCP shutdown finishes in one
-  call (cf-socket.c:1094–1114), so no TCP connection waits in its shutdown list, and the
-  SHUTDOWN timer and `[SHUTDOWN]` lines of one that does belong to C's internal handle
-  (cshutdn.c:56–58, 366–367), which is not traced (§2.5); a transfer arms the timer itself only
-  in TLS's and FTP's shutdowns (vtls.c:1572; ftp.c:562, through `Curl_xfer_set_shutdown`). `Reserved` comes with CONNECT_ONLY (3231, 3232, 3234): the connection kept for
-  its handle's `curl_easy_send` and `curl_easy_recv` after the transfer. `Attached { users }`
-  comes before stage 5, for a connection several transfers lease at once (a pool place, not the
-  transfer state of §3.1 that holds a lease). Until then every lease count is asserted to be 1.
+- **Places.** Built: `Leased` and `Idle`. `Reserved` comes with CONNECT_ONLY (3231, 3232,
+  3234): the connection kept for its handle's `curl_easy_send` and `curl_easy_recv` after the
+  transfer. `Attached { users }` comes before stage 5, for a connection several transfers lease
+  at once (a pool place, not the transfer state of §3.1 that holds a lease). Until then every
+  lease count is asserted to be 1. A connection shutting down is in no pool: it is `Closing` in
+  its multi's `ShutdownSet` (below).
+- **Shutting down** (planned, step 43, `conn/shutdown.rs`). Every path on which a connection
+  leaves a pool (given back to close, evicted, found dead or too old, pruned, closed for room,
+  a cleanup) goes through one discard, shaped as `cpool_discard_conn` (conncache.c:187–247): an
+  aborted transfer's or a CONNECT_ONLY connection is terminated at once, as a shutdown would
+  tell the server the transfer succeeded; else it gets one `Layer::shutdown` try with the
+  silent context (`Curl_cshutdn_try_once`); done, it is closed (with the 1 KB drain below);
+  not done, it joins the `ShutdownSet` of the releasing transfer's multi, whichever pool it
+  came from, a share's included (conncache.c:242), and is terminated when there is no multi
+  (a share's cleanup). The set is its one owner, holding the connection with its stream,
+  settings and closer. It is capped as C caps it: the multi's `max_total` less the
+  connections in the pool, 1 when none is left, and with no limit `max(n / 4, 128)` for `n`
+  in the pool; past the cap the oldest closing connection is terminated. Closing connections
+  count toward the host and total limits a new connection is checked against
+  (`cpool_check_limits`): after the oldest idle ones, the oldest closing ones to the same
+  destination, then any, are terminated to make room, and only what cannot be closed makes the
+  transfer wait. Each connection's deadline is its `ConnSettings`' shutdown timeout, always
+  C's default of 2 s (`set.shutdowntimeout` is set by no option); the earliest is the multi's
+  SHUTDOWN row (§3.4). `perform` and `socket_action` drive the set (`Curl_cshutdn_perform`),
+  `wait`, `fdset` and `waitfds` include its sockets, and a multi's cleanup gives it one
+  best-effort pass (timeout 0), or with `debug-hooks` waits `CURL_GRACEFUL_SHUTDOWN` ms. Its
+  sockets are owned by the connection (`SocketOwner::Conn`, §4.7): as a connection moves into
+  the set its socket stays registered, its transfer gone from it (C's `removed transfer,
+  total=0/1 (xfer/conn)`) and no socket callback made; the callback hears `remove` when the
+  set closes it, through the internal `CURL *` (§7.5), at the latest at the multi's cleanup
+  (758's sequence). Nothing of it is traced: C's `[SHUTDOWN]` lines and the shutdown's TLS
+  lines are on its internal handle. A kept-alive TLS connection sends its close_notify from
+  the cleanup's pass, as the reference does. Plain TCP never waits in the set: C's TCP shutdown
+  finishes in one call (cf-socket.c:1094–1114). A transfer arms SHUTDOWN itself only for a TLS
+  or FTP shutdown it makes on its own connection (vtls.c:1572; ftp.c:562, through
+  `Curl_xfer_set_shutdown`), with STARTTLS and FTP.
 - On a share's pool, `find`, `add` and `release` are each one use of it under its lock, and a
   transfer joining its multi is one more with nothing done (`Curl_cpool_xfer_init`). Test 1554
   pins this sequence (SHARE, CONNECT ×3 on first perform; CONNECT on return), so these four
@@ -1511,10 +1591,8 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   each non-aborted close (`cpool_discard_conn`): given back to close (`Released::Closed`),
   evicted, found dead or too old, pruned, closed for room, or closed at a multi's or share's
   cleanup. A setup's sockets are closed without it, as C's socket filter is not connected yet.
-  From step 43 a connection that shuts down gracefully (TLS
-  close_notify, the scheme's disconnect handler once) becomes `Closing` in the multi's
-  `ShutdownSet` instead, or is terminated at once (aborted, CONNECT_ONLY, share-owned pool), and
-  closing connections count toward host and total limits, as in C.
+  A connection whose layers shut down gracefully (TLS's close_notify) is `Closing` instead
+  until they are done (above).
 - **The closer is carried from creation.** `Pool::add` captures the creating transfer's
   closer (CLOSESOCKETFUNCTION and its data, else the system's) and the connect machine gives it
   to every socket the connection opens, the attempts included, as C copies it onto the
@@ -1587,7 +1665,7 @@ per connection at creation, from the creating transfer's options and the multi's
 `ConnSettings`, instead of C's `Curl_get_admin` copying the last caller's settings; the closer
 is captured the same way (§4.6). The reuse limits (max idle, max age) are the searching
 transfer's, passed to `find`. Connection-owned sockets appear in the `SocketTable` with a
-`SocketOwner::Conn(ConnId)` user, with the `Closing` place (step 43).
+`SocketOwner::Conn(ConnId)` user while the connection is `Closing` (step 43, §4.6).
 
 Built: `ConnCx` and `DriveCx`; the tests drive with `Plain`, which traces nothing and has no
 hooks. The closer is not a call-out: it is captured with the connection (§4.6). Planned: `ConnSettings` and `SocketOwner::Conn` (step 43). Only transfers own
@@ -1627,6 +1705,145 @@ starts, once for each time the list is set (`Options::resolve` carries a stamp, 
 stamp it last read), as its source has them then; a list set while one is read, from the
 debug handler, is taken as read too, as C clears `state.resolve` after reading. They are permanent unless given with `+`, and `*` answers for any name on
 its port. A transfer's end prunes what has gone stale (`multi_done`).
+
+### 4.9 TLS
+
+Planned (step 43): none of this section is built. MILESTONES.md step 43 lists the sub-steps that
+build it.
+
+```rust
+// curl_core::tls, public: the seam a TLS library implements (curl-openssl)
+pub trait TlsBackend: Send + Sync {
+    fn session(&self, config: &TlsConfig<'_>, peer: &TlsPeer<'_>, store: &mut dyn TlsStore,
+               resume: Option<&dyn TlsTicket>) -> Result<Box<dyn TlsSession>, TlsError>;
+    fn store(&self) -> Result<Box<dyn TlsStore>, OutOfMemory>;  // per multi: the CA store cache
+}
+pub trait TlsSession: Send {                       // one connection's TLS, never Sync
+    fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, TlsError>;
+    fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv>;
+    fn send(&mut self, io: &mut TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent>;
+    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, TlsError>;
+    fn wants(&self) -> Interest;                   // what the next call waits for
+    fn pending(&self) -> bool;                     // decrypted bytes not yet read
+    fn alpn(&self) -> Option<Alpn>;
+    fn tickets(&mut self, out: &mut dyn FnMut(Box<dyn TlsTicket>));  // sessions to keep
+    fn native(&mut self) -> &mut dyn Any;          // the SSL *, for the application
+}
+pub struct TlsIo<'a> { /* Below<'a> and &'a mut dyn LayerCx, private */ }
+impl TlsIo<'_> {                                   // what a backend's BIO and callbacks reach
+    pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<Recv>;
+    pub fn send(&mut self, bytes: &[u8]) -> io::Result<Sent>;
+    pub fn trace(&mut self, line: fmt::Arguments<'_>); pub fn info(&mut self, ..);
+    pub fn bytes(&mut self, kind: SslData, data: &[u8]);
+    pub fn ssl_ctx(&mut self, native: &mut dyn Any) -> Result<(), ErrorKind>;
+}
+pub trait TlsTicket: Send + Sync {}                // a session to resume, opaque to the core
+```
+
+**The seam.** The dependency runs from the binding to the core, as the decoders' does, so the
+core names no OpenSSL type. `Layer` stays crate-private; the core's `conn::tls::TlsLayer`
+implements it over the `Box<dyn TlsSession>` a backend makes: its `recv` and `send` pass the
+caller's buffer and length, `adjust_pollset` asks the session what it waits for (OUT while a
+read must write), `data_pending` is the session's `pending`, `is_alive` passes down, `shutdown`
+is the session's, and `query` answers ALPN and the native object. A handle reaches its backend
+through one `&'static Libraries` (the decoders, the Ed25519 signer, the TLS backend), the
+shim's and the tool's statics, so a handle carries one pointer for all of them; `Easy: Default`
+takes `Libraries::NONE`, with which `https` is `NotBuiltIn`. One backend is built, OpenSSL 3.0
+or later, checked at build (openssl-sys's `ossl300` cfg) and at init (`OpenSSL_version_num`):
+an older library is a backend that is not there. `curl_global_sslset` answers OK for
+`CURLSSLBACKEND_OPENSSL` or `"openssl"`, also after init, and `CURLSSLSET_UNKNOWN_BACKEND` for
+any other, with only OpenSSL available.
+
+**The BIO.** curl-openssl drives OpenSSL as `lib/vtls/openssl.c` does, through a BIO method of
+its own whose read and write go to the layer below, so the `SSL *` and `SSL_CTX *` the
+application is handed look as they do in C, and the trace shows OpenSSL's own read pattern.
+For the length of each `SSL_*` call the BIO's data points at a slot on the stack holding the
+`TlsIo` and the call's result; the trampolines read through it, set the retry flags and note the
+peer's close; the slot is set before the call and cleared after, and the callbacks run only
+inside those calls, on that thread (the SAFETY invariant of `bio.rs`). No callback touches the
+session's own fields while the `SSL_*` call holds them. The X509 store is set up at the first
+read, as C does, so the ClientHello goes out before the CA file is read (`recv(len=5) -> 81`,
+then `configuring OpenSSL's x509 trust store`). No option C does not set (read-ahead among
+them), so the record pattern is the same library's on both legs. `ERR_clear_error` precedes
+each call; `SSL_ERROR_WANT_*` is would-block, `ZERO_RETURN` the end, `SYSCALL` the socket's
+error; a NULL from a constructor is `OutOfMemory`. OpenSSL allocates from libc, outside the
+debug tracker, as in C: `CRYPTO_set_mem_functions` is process-wide and fails once the
+application has used OpenSSL, so it is not called.
+
+**Verification.** The CA default is decided at build time as CMake decides it
+(CMakeLists.txt:1475): `CURL_CA_BUNDLE` from the environment, else the first of its five paths
+that exists (`/etc/ssl/certs/ca-certificates.crt` here); `CURL_CA_PATH` only when no bundle was
+found; no fallback to OpenSSL's own paths. They are `&'static str`, so a handle holds no CA
+string until the application sets one and `CURLINFO_CAINFO` returns the constant. The tool
+reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c does. The CA store
+is cached per multi, keyed by file and path, for `CURLOPT_CA_CACHE_TIMEOUT` (24 h), which
+decides whether `SSL Trust Anchors:` and `CAfile:` are traced again for the next connection.
+The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
+(`subjectAltName: "localhost" matches cert's "localhost"`); the failure texts are C's
+(`SSL certificate problem: …`, `CURLINFO_SSL_VERIFYRESULT`). With the peer unverified
+(`-k`) no CA is loaded, even one given (`SSL Trust: peer verification disabled`), and OpenSSL's
+result is traced and ignored (`OpenSSL verify result: 14`, `SSL certificate verification
+failed, continuing anyway!`); a pinned key (`--pinnedpubkey`) is checked after, `-k` or not (90).
+
+**Identity and reuse.** `Route` gains `tls: Option<TryRc<TlsIdentity>>`, and `ProxyRoute`
+the proxy's: every field `Curl_ssl_config_matches` compares (versions, ciphers, curves,
+signature algorithms, CA file, path and blobs, the CRL, the issuer, the pinned key, the client
+certificate and key, the verify bits, the options bits), destructured without `..` in
+`serves`, shared, so `ConnSlot` and `Slot` keep their sizes. A transfer that verifies never
+takes a connection made without (the CVE-2021-22924 class).
+
+**The session cache** (`tls/cache.rs`) is per multi, 25 peers for `curl_multi_init` and 3 for
+`curl_easy_perform`'s private multi (multi.c:71, easy.c:805), or the share's 25 when it keeps
+`Kind::SslSessions` (`CURL_LOCK_DATA_SSL_SESSION`); two tickets per peer. Its key is
+`Curl_ssl_peer_key_make`'s, as `SSLS` traces it: `https:localhost:18443:KEY-V3:TLSVER-6-0:
+CA-58:<CA file>:IMPL-13:OpenSSL/3.5.9:G`, with `NO-VRFY-PEER:NO-VRFY-HOST` in place of the CA
+for an unverified one. A ticket is a backend's `Box<dyn TlsTicket>`, kept as TLS 1.3's
+NewSessionTicket messages arrive, which they do once the transfer is reading its response; the
+next connection to the peer takes one (`SSL reusing session with ALPN '-'`).
+`CURLOPT_SSL_SESSIONID_CACHE` off makes no lookup. `curl_easy_ssls_import` and `export` answer
+`CURLE_NOT_BUILT_IN`, as a C build without `USE_SSLS_EXPORT`, and `SSLS-EXPORT` is not reported.
+
+**The application's hands on OpenSSL.** `CURLOPT_SSL_CTX_FUNCTION` is a transfer call-out (api.c's
+`easy_fsslctx`), so it is a handler in the TLS options' cold group, called through the
+transfer's context (`TlsIo::ssl_ctx`, `LayerCx::ssl_ctx`) with the backend's context as `&mut
+dyn Any`; the shim downcasts it to curl-openssl's and calls the C function with its `CURL *` and
+`SSL_CTX *`. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` reach the leased connection's session
+through `LayerQuery::Native` the same way. `SSL_ERROR_WANT_RETRY_VERIFY` (a verify callback that
+asks to retry, as lib758's does) traces `SSL_connect() -> want retry_verify` and pauses the
+transfer's receiving, its pollset empty (`paused 0/1 (r/w)`) and its socket removed, until
+`curl_easy_pause(CURLPAUSE_CONT)` resumes the handshake. The SSL data (`CURLINFO_SSL_DATA_IN`,
+`OUT`) and the msg callback's text lines go through `TlsIo::bytes` and `info`. `SSLKEYLOGFILE`
+is read once by the shim's root and by the tool, each owning its key log (an opened file
+behind a mutex) and handing it to the backend value: never a process global in the core.
+
+**ALPN.** Until HTTP/2 (stage 5) the offer is a C build's without nghttp2: `http/1.1` alone,
+one baller (`1st attempt uses h1 from wanted versions`); the reference offers `h2,http/1.1`, so
+the goldens are its `--http1.1` runs. `ENABLE_ALPN` off offers none. The HTTPS-CONNECT race and
+its timer are rendered and armed as §2.5 and §3.4 say; SNI is sent for a host name, never for an
+IP literal.
+
+**The chain.** The origin's TLS is the last handshake (`handshake_due`), pushed as a layer over
+the stream once the others are made: `[SSL][TCP]`, `[SSL][SOCKS][TCP]`, `[SSL][H1-PROXY][TCP]`.
+An HTTPS proxy's TLS is made after the eyeballs race and any SOCKS pre-proxy, before the
+proxy's `CONNECT`, and stays a layer: `[SSL][H1-PROXY][SSL-PROXY][TCP]` through a tunnel, TLS in
+TLS, the origin's layer's `Below` being the proxy's layer; `[SSL-PROXY][TCP]` for a request
+forwarded to the proxy, whose SETUP line C words `added SSL filter for origin`. The race does
+not apply to the proxy's handshake.
+
+**Shutdown.** A TLS layer's `shutdown` sends close_notify only after a completed handshake, and
+never for an aborted transfer (§4.6's discard terminates it); it then reads for the peer's,
+within the connection's 2 s, in `Closing`. The reference sends it on every graceful close: after
+the server's own close_notify, and from the cleanup's pass for a connection still kept.
+
+**Errors.** The kinds `ErrorKind` kept get their producers: `SslConnectError` 35,
+`PeerFailedVerification` 60, `SslCacertBadfile` 77, `SslCipher` 59, `SslCertproblem` 58,
+`SslClientcert` 98, `SslPinnedpubkeynotmatch` 90, `SslInvalidcertstatus` 91, `SslCrlBadfile`
+82, `SslIssuerError` 83, the engine's 53, 54 and 66, `RecvError` 56 and `SendError` 55 from TLS
+I/O, `OperationTimedout` 28 for a handshake past the connect limit. They come as C's do: a
+server that wants a client certificate the client lacks fails the first send, not the
+handshake, under TLS 1.3 (`OpenSSL SSL_write: … Connection reset by peer, errno 104`, 55), and
+OpenSSL 3.5 loads `--engine` as a provider (`Failed to initialize provider: …`, 53; `--engine
+list` lists `dynamic`).
 
 ---
 
@@ -2499,6 +2716,11 @@ Each is either unobservable through the ABI or a fixed bug:
 | request head | once, measured before it is written | 1 MiB → TooLarge |
 | `Conn` receive buffer, head parser line | grows to the largest read and line | BUFFERSIZE, 100 KiB |
 | trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
+| planned (step 43): the TLS options (`Cold<TlsOptions>`, the SSL_CTX handler among them) | the first setopt of one | one group per handle, the proxy's in `Cold<Proxy>` |
+| planned: a route's `TlsIdentity` | the leg's route, for a TLS route | one per leg, shared with the connection it makes |
+| planned: a TLS layer (`TlsLayer` and the backend's session) and the layer stack | the handshake's start | one per TLS layer; OpenSSL's own memory is libc's, uncounted |
+| planned: a CA store cache entry | the first connection with that CA file and path | per CA setting, per multi, for the cache's timeout |
+| planned: session cache entries | a ticket kept | 25 peers × 2 tickets (3 peers for `perform`'s multi) |
 
 Nothing allocates per chunk. Peer-sized reservations happen after the limit check, so a hostile
 peer gets a protocol error, not an out-of-memory one.
@@ -2526,6 +2748,12 @@ peer gets a protocol error, not an out-of-memory one.
   attempts; the socket; the request head; the receive buffer; the head parser's line; the
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
+- Planned (step 43): `HTTPS_GET_BUDGET` beside `GET_BUDGET`, over the cargo TLS peer, listed
+  allocation by allocation the same way: the GET's, plus the TLS layer, the layer stack, the
+  route's `TlsIdentity` and the multi's CA store entry on first use, and the session tickets
+  kept. SNI, the ALPN list and trace text are on the stack. `GET_BUDGET` stays 46: a plain GET
+  makes no TLS group, identity or store entry. The HTTPS scenarios are harness-free binaries
+  under `crates/curl-openssl/tests/`, as the core cannot depend on the binding.
 - Test 1's 140-allocation and 136000-byte limit is whole-process (argv, option parsing, output
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.
@@ -2546,6 +2774,14 @@ peer gets a protocol error, not an out-of-memory one.
   scripted action through their context (pause, setopt, getinfo, sibling calls) to test
   re-entrancy. Golden call sequences for 530, 758, 1540, 1555, 2453, 3235 and 3236 come from the C
   leg's run of the libtest and are replayed against the core over `FakeNet`.
+- Planned (step 43): **`conn::layer::testing::FakeTls`** (test-util), a framed backend with a
+  handshake and a reversible cipher that arms each path of the layer (a read that must write,
+  partial records, pending bytes, an alert, a close, a shutdown that waits); curl-openssl's
+  `test-util` TLS peer over `FakeNet` (memory BIOs, the test certificates), so the OpenSSL paths
+  have cargo tests; and `Lingering`, a layer whose shutdown waits for its peer, for `Closing`
+  before any TLS. The C captures that pin TLS's lines and 758's callback sequence (the
+  retry-verify pause, and the socket kept through a connection's shutdown until the multi's
+  cleanup) are the goldens.
 - **Pure units**: `ResponseHeadParser`, `ChunkDecoder`, `decide_framing`, `render_h1`,
   `UserHeaders`, `Url` and the `Pipeline`, fed whole, one byte at a time, and at every split point.
 - **A fixture runner reading `tests/data`** for the HTTP milestone set
@@ -2578,7 +2814,7 @@ peer gets a protocol error, not an out-of-memory one.
 
 ## 9. Choices made for compatibility
 
-- **TLS** uses a custom BIO method over the layer below, as C does (section 4.3).
+- **TLS** uses a custom BIO method over the layer below, as C does (section 4.9).
 - **getinfo is live** during a transfer, and the header store spans it (sections 5.5, 6.3).
 - **Total timeout**: C's two anchors are kept (section 3.4).
 - **Read cap** at the response's remaining size is kept (section 5.1).

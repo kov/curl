@@ -17,6 +17,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-zlib` | zlib's inflate, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-zstd` | zstd's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
+| `curl-openssl` | Planned (step 43): OpenSSL, behind `curl_core::tls`, and Ed25519 for HTTP signatures. | yes: it is a binding |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);
@@ -34,6 +35,15 @@ denies `unsafe_code`, and each module allowed to use it opts in by name and is l
 Each backend category is a trait in `curl-core`. The crate binding the C library implements
 it, and a Rust crate may implement the same trait. Selection happens at build time through
 Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`).
+
+TLS is the pair `curl_core::tls::TlsBackend` (a client session from a configuration and a
+peer) and `TlsSession` (one connection's handshake, records and shutdown, over the layer
+below), which the core's own layer drives; the core names no TLS library's types, and the
+application's hands on the library (`CURLOPT_SSL_CTX_FUNCTION`, `CURLINFO_TLS_SSL_PTR`) reach it
+as `&mut dyn Any` that the shim downcasts. This build has one backend, the reference build's:
+OpenSSL 3.0 or later, the system's library, linked as the reference links it (never
+openssl-sys's `vendored` copy), checked at build and at init. The CA default is the one CMake
+detects at build time, kept as static strings. `curl_global_sslset` knows only OpenSSL.
 
 ## Execution model
 
@@ -264,7 +274,11 @@ that. Allocation is therefore always explicit and always fallible:
   copy a name of 384 bytes or more to the heap infallibly: `curl_os::fs` takes it as a C string.
 - **Third-party Rust crates are vetted for this before use.** A crate that allocates
   infallibly on a path we call cannot be used there. The C libraries we bind report allocation
-  failure as an error themselves.
+  failure as an error themselves. OpenSSL is bound through `openssl-sys`, which declares the
+  functions and the macros' equivalents and allocates nothing; the `openssl` crate is not used,
+  as it allocates infallibly on paths we would call (its error stack, its stream BIO's state,
+  its getters' `String`s) and its stream owns the stream it wraps. OpenSSL's own allocations
+  are libc's, as in C, which the debug tracker does not count.
 - **Peer-chosen sizes are bounded first.** Lengths, chunk sizes and header counts are checked
   against limits at the trust boundary before anything is reserved for them, so a hostile peer
   gets a protocol error, not an out-of-memory one.

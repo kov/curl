@@ -1289,6 +1289,7 @@ mod tests {
             via: None,
             ip,
             proxy: None,
+            tls: None,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
@@ -1378,6 +1379,7 @@ mod tests {
             via: None,
             ip: IpVersion::Any,
             proxy: None,
+            tls: None,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),

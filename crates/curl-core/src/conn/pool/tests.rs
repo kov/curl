@@ -73,6 +73,7 @@ fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
         via: None,
         ip: IpVersion::Any,
         proxy: None,
+        tls: None,
     })
 }
 

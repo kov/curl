@@ -1,0 +1,11 @@
+# The TLS identity a connection is matched by (crates/curl-core/src/tls.rs), and
+# the layer and stage that make TLS over a connection.
+
+=== a connection made without verifying its peer serves a transfer that verifies
+file: crates/curl-core/src/tls.rs
+witness: curl-core conn::tests::routes_compare_their_tls
+--- old
+        *verify_peer == other.verify_peer
+            && *verify_host == other.verify_host
+--- new
+        *verify_host == other.verify_host

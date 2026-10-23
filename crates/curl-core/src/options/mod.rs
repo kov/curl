@@ -421,7 +421,7 @@ impl Options {
             schemes: self.schemes.try_clone(|s| Ok(*s))?,
             sockets: self.sockets.try_clone(|h| Ok(h.clone()))?,
             http: self.http.try_clone()?,
-            tls: self.tls,
+            tls: self.tls.try_clone()?,
             #[cfg(any(test, feature = "test-util"))]
             script: self.script.clone(),
             #[cfg(test)]
@@ -1663,14 +1663,16 @@ impl Http {
     }
 }
 
-/// How a TLS peer is checked. No TLS layer reads these yet; they are kept
-/// as an application sets them, for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// How a transfer's TLS is set up and its peer checked. The verify bits
+/// every handle carries; the rest few transfers set, so they are a group
+/// of their own.
+#[derive(Debug)]
 pub struct Tls {
     /// The peer's certificate must verify (`CURLOPT_SSL_VERIFYPEER`).
     pub verify_peer: bool,
     /// The certificate must name the host (`CURLOPT_SSL_VERIFYHOST`).
     pub verify_host: bool,
+    pub options: Cold<TlsOptions>,
 }
 
 impl Default for Tls {
@@ -1678,7 +1680,244 @@ impl Default for Tls {
         Tls {
             verify_peer: true,
             verify_host: true,
+            options: Cold::new(),
         }
+    }
+}
+
+impl Tls {
+    fn try_clone(&self) -> Result<Tls, OutOfMemory> {
+        Ok(Tls {
+            verify_peer: self.verify_peer,
+            verify_host: self.verify_host,
+            options: self.options.try_clone(TlsOptions::try_clone)?,
+        })
+    }
+}
+
+/// The TLS options few transfers set: what to trust, who to be, which
+/// versions and algorithms to allow, and the bits of `CURLOPT_SSL_OPTIONS`
+/// (C's `ssl_filter_config`, but for the verify bits, which `Tls` holds).
+/// Each text is as the application gave it; none is not set.
+#[derive(Debug, PartialEq, Eq)]
+pub struct TlsOptions {
+    /// The versions allowed (`CURLOPT_SSLVERSION`).
+    pub min_version: TlsMinVersion,
+    pub max_version: TlsMaxVersion,
+    pub ssl_options: SslOptions,
+    /// The peer's certificate status must be checked, by OCSP stapling
+    /// (`CURLOPT_SSL_VERIFYSTATUS`).
+    pub verify_status: bool,
+    /// The certificates the peer is checked against
+    /// (`CURLOPT_CAINFO`), and the directory of them (`CURLOPT_CAPATH`).
+    pub ca_file: CaSetting,
+    pub ca_path: CaSetting,
+    /// The same, given in memory (`CURLOPT_CAINFO_BLOB`).
+    pub ca_blob: Option<Vec<u8>>,
+    /// The revocation list (`CURLOPT_CRLFILE`).
+    pub crl_file: Option<Vec<u8>>,
+    /// The certificate the peer's must be issued by (`CURLOPT_ISSUERCERT`,
+    /// `CURLOPT_ISSUERCERT_BLOB`).
+    pub issuer_cert: Option<Vec<u8>>,
+    pub issuer_cert_blob: Option<Vec<u8>>,
+    /// The client's certificate and its format (`CURLOPT_SSLCERT`,
+    /// `CURLOPT_SSLCERT_BLOB`, `CURLOPT_SSLCERTTYPE`).
+    pub cert: Option<Vec<u8>>,
+    pub cert_blob: Option<Vec<u8>>,
+    pub cert_type: Option<Vec<u8>>,
+    /// The client's private key, its format and its password
+    /// (`CURLOPT_SSLKEY`, `CURLOPT_SSLKEY_BLOB`, `CURLOPT_SSLKEYTYPE`,
+    /// `CURLOPT_KEYPASSWD`).
+    pub key: Option<Vec<u8>>,
+    pub key_blob: Option<Vec<u8>>,
+    pub key_type: Option<Vec<u8>>,
+    pub key_password: Option<Vec<u8>>,
+    /// The cipher lists, before TLS 1.3 and for it
+    /// (`CURLOPT_SSL_CIPHER_LIST`, `CURLOPT_TLS13_CIPHERS`), the curves
+    /// (`CURLOPT_SSL_EC_CURVES`) and the signature algorithms
+    /// (`CURLOPT_SSL_SIGNATURE_ALGORITHMS`).
+    pub ciphers: Option<Vec<u8>>,
+    pub tls13_ciphers: Option<Vec<u8>>,
+    pub curves: Option<Vec<u8>>,
+    pub signature_algorithms: Option<Vec<u8>>,
+    /// The public key the peer's must be (`CURLOPT_PINNEDPUBLICKEY`): a
+    /// file, or `sha256//` hashes.
+    pub pinned_key: Option<Vec<u8>>,
+    /// ALPN is offered (`CURLOPT_SSL_ENABLE_ALPN`). C keeps it on the
+    /// handle, not in the TLS settings a connection is matched by.
+    pub alpn: bool,
+}
+
+impl ColdGroup for TlsOptions {
+    const UNSET: &'static TlsOptions = &TlsOptions::NONE;
+    const NONE: TlsOptions = TlsOptions {
+        min_version: TlsMinVersion::Default,
+        max_version: TlsMaxVersion::None,
+        ssl_options: SslOptions::NONE,
+        verify_status: false,
+        ca_file: CaSetting::Default,
+        ca_path: CaSetting::Default,
+        ca_blob: None,
+        crl_file: None,
+        issuer_cert: None,
+        issuer_cert_blob: None,
+        cert: None,
+        cert_blob: None,
+        cert_type: None,
+        key: None,
+        key_blob: None,
+        key_type: None,
+        key_password: None,
+        ciphers: None,
+        tls13_ciphers: None,
+        curves: None,
+        signature_algorithms: None,
+        pinned_key: None,
+        alpn: true,
+    };
+}
+
+impl TlsOptions {
+    pub(crate) fn try_clone(&self) -> Result<TlsOptions, OutOfMemory> {
+        let text = |t: &Option<Vec<u8>>| t.as_deref().map(copy).transpose();
+        // Every field by name, so one added is copied too.
+        let TlsOptions {
+            min_version,
+            max_version,
+            ssl_options,
+            verify_status,
+            ca_file,
+            ca_path,
+            ca_blob,
+            crl_file,
+            issuer_cert,
+            issuer_cert_blob,
+            cert,
+            cert_blob,
+            cert_type,
+            key,
+            key_blob,
+            key_type,
+            key_password,
+            ciphers,
+            tls13_ciphers,
+            curves,
+            signature_algorithms,
+            pinned_key,
+            alpn,
+        } = self;
+        Ok(TlsOptions {
+            min_version: *min_version,
+            max_version: *max_version,
+            ssl_options: *ssl_options,
+            verify_status: *verify_status,
+            ca_file: ca_file.try_clone()?,
+            ca_path: ca_path.try_clone()?,
+            ca_blob: text(ca_blob)?,
+            crl_file: text(crl_file)?,
+            issuer_cert: text(issuer_cert)?,
+            issuer_cert_blob: text(issuer_cert_blob)?,
+            cert: text(cert)?,
+            cert_blob: text(cert_blob)?,
+            cert_type: text(cert_type)?,
+            key: text(key)?,
+            key_blob: text(key_blob)?,
+            key_type: text(key_type)?,
+            key_password: text(key_password)?,
+            ciphers: text(ciphers)?,
+            tls13_ciphers: text(tls13_ciphers)?,
+            curves: text(curves)?,
+            signature_algorithms: text(signature_algorithms)?,
+            pinned_key: text(pinned_key)?,
+            alpn: *alpn,
+        })
+    }
+}
+
+impl Default for TlsOptions {
+    fn default() -> Self {
+        TlsOptions::NONE
+    }
+}
+
+/// Where certificates to trust are read from: the place the build found,
+/// none, or the application's.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub enum CaSetting {
+    /// The TLS library's default, found as the library was built (C
+    /// stores a copy of it in the option at the handle's start).
+    #[default]
+    Default,
+    /// None: the application set it to nothing.
+    Unset,
+    Given(Vec<u8>),
+}
+
+impl CaSetting {
+    fn try_clone(&self) -> Result<CaSetting, OutOfMemory> {
+        Ok(match self {
+            CaSetting::Default => CaSetting::Default,
+            CaSetting::Unset => CaSetting::Unset,
+            CaSetting::Given(text) => CaSetting::Given(copy(text)?),
+        })
+    }
+}
+
+/// The oldest TLS version a transfer allows (`CURL_SSLVERSION_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TlsMinVersion {
+    /// The library's own floor.
+    #[default]
+    Default,
+    /// Any TLS 1.x (`CURL_SSLVERSION_TLSv1`).
+    Tls1,
+    Tls1_0,
+    Tls1_1,
+    Tls1_2,
+    Tls1_3,
+}
+
+/// The newest TLS version a transfer allows (`CURL_SSLVERSION_MAX_*`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TlsMaxVersion {
+    /// None set (`CURL_SSLVERSION_MAX_NONE`).
+    #[default]
+    None,
+    /// The library's newest (`CURL_SSLVERSION_MAX_DEFAULT`).
+    Default,
+    Tls1_0,
+    Tls1_1,
+    Tls1_2,
+    Tls1_3,
+}
+
+/// The bits of `CURLOPT_SSL_OPTIONS`, as C keeps them for a connection's
+/// TLS: the low eight.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SslOptions(u8);
+
+impl SslOptions {
+    pub const NONE: SslOptions = SslOptions(0);
+    /// Allow the BEAST flaw's workaround off (`CURLSSLOPT_ALLOW_BEAST`).
+    pub const ALLOW_BEAST: SslOptions = SslOptions(1 << 0);
+    pub const NO_REVOKE: SslOptions = SslOptions(1 << 1);
+    pub const NO_PARTIALCHAIN: SslOptions = SslOptions(1 << 2);
+    pub const REVOKE_BEST_EFFORT: SslOptions = SslOptions(1 << 3);
+    pub const NATIVE_CA: SslOptions = SslOptions(1 << 4);
+    pub const AUTO_CLIENT_CERT: SslOptions = SslOptions(1 << 5);
+    pub const EARLYDATA: SslOptions = SslOptions(1 << 6);
+
+    /// Every bit of `other` is set.
+    pub fn contains(self, other: SslOptions) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for SslOptions {
+    type Output = SslOptions;
+
+    fn bitor(self, other: SslOptions) -> SslOptions {
+        SslOptions(self.0 | other.0)
     }
 }
 

@@ -2614,6 +2614,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         via,
         ip: cx.easy().options().ip_version,
         proxy,
+        tls: None,
     };
     setup(cx, Plan { proto, route })
 }

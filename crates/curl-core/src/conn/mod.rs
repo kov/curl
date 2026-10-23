@@ -140,12 +140,14 @@ impl Route {
                     via,
                     ip,
                     proxy,
+                    tls,
                 } = have;
                 let Tcp {
                     origin: want_origin,
                     via: want_via,
                     ip: want_ip,
                     proxy: want_proxy,
+                    tls: want_tls,
                 } = want;
                 **origin == **want_origin
                     // C compares the detours without their schemes
@@ -156,6 +158,11 @@ impl Route {
                     && (*want_ip == IpVersion::Any || want_ip == ip)
                     && proxy.as_ref().map(ProxyRoute::key)
                         == want_proxy.as_ref().map(ProxyRoute::key)
+                    // TLS made with every setting the transfer's has, or
+                    // none on both (`url_match_ssl_config`): a transfer
+                    // that verifies its peer never takes a connection
+                    // made without.
+                    && tls.as_deref() == want_tls.as_deref()
             }
             (Route::Local | Route::Tcp(..), Route::Local | Route::Tcp(..)) => false,
         }
@@ -166,13 +173,17 @@ impl Route {
 /// connection; through `via` when a connect-to entry names another peer
 /// for it (C's `via_peer`); over the addresses of `ip`; through `proxy`
 /// if there is one, which is the origin itself for a proxy the requests
-/// go to whole.
+/// go to whole; secured by TLS made with `tls`, if its scheme is (C's
+/// `PROTOPT_SSL`).
 #[derive(Clone, Debug)]
 pub(crate) struct Tcp {
     pub(crate) origin: TryArc<Peer>,
     pub(crate) via: Option<TryArc<Peer>>,
     pub(crate) ip: IpVersion,
     pub(crate) proxy: Option<ProxyRoute>,
+    /// Shared with the connection set up for it, as every connection's
+    /// slot holds its route inline.
+    pub(crate) tls: Option<TryArc<crate::tls::TlsIdentity>>,
 }
 
 impl Tcp {
@@ -789,6 +800,7 @@ mod tests {
                 ip,
                 proxy: proxy
                     .map(|host| ProxyRoute::new(ProxyType::Socks5, arc(host), None, false, false)),
+                tls: None,
             })
         };
         let have = tcp(
@@ -861,6 +873,46 @@ mod tests {
         }
     }
 
+    /// A connection made with TLS serves only a transfer whose TLS has
+    /// every setting its handshake had, and one without TLS only one
+    /// without (`url_match_ssl_use`, `url_match_ssl_config`): a transfer
+    /// that verifies its peer never takes a connection that did not, nor
+    /// the other way round (the CVE-2021-22924 class).
+    #[test]
+    fn routes_compare_their_tls() {
+        use crate::options::Tls;
+        use crate::tls::TlsIdentity;
+        let secured = |tls: Option<&Tls>| {
+            Route::Tcp(Tcp {
+                origin: TryArc::try_new(peer(b"o.example", 443, None)).unwrap(),
+                via: None,
+                ip: IpVersion::Any,
+                proxy: None,
+                tls: tls.map(|t| TlsIdentity::of(t).unwrap()),
+            })
+        };
+        let verified = Tls::default();
+        let insecure = Tls {
+            verify_peer: false,
+            verify_host: false,
+            ..Tls::default()
+        };
+        let unverified_peer = Tls {
+            verify_peer: false,
+            ..Tls::default()
+        };
+        let have = secured(Some(&verified));
+        assert!(have.serves(&secured(Some(&Tls::default()))));
+        for other in [&insecure, &unverified_peer] {
+            assert!(!have.serves(&secured(Some(other))));
+            assert!(!secured(Some(other)).serves(&have));
+        }
+        assert!(!have.serves(&secured(None)) && !secured(None).serves(&have));
+        let mut blob = Tls::default();
+        blob.options.make_mut().unwrap().ca_blob = Some(b"pem".to_vec());
+        assert!(!have.serves(&secured(Some(&blob))));
+    }
+
     fn via_proxy(host: &[u8], user: Option<&[u8]>, forward: bool) -> Route {
         let proxy = TryArc::try_new(peer(host, 3128, None)).unwrap();
         let creds = user.map(|u| {
@@ -886,6 +938,7 @@ mod tests {
                 forward,
                 false,
             )),
+            tls: None,
         })
     }
 
@@ -899,6 +952,7 @@ mod tests {
             via: None,
             ip: IpVersion::Any,
             proxy: None,
+            tls: None,
         });
         let route = via_proxy(b"proxy.example", None, true);
         assert!(route.serves(&via_proxy(b"PROXY.example", None, true)));

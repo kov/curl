@@ -220,6 +220,7 @@ mod tests {
             via: None,
             ip: IpVersion::Any,
             proxy: None,
+            tls: None,
         };
         let shown = |made, under_way| {
             Chain::of(&route, SetupPoint::Dialed(made), under_way, false).to_string()

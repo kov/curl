@@ -32,6 +32,7 @@ pub mod share;
 mod test_cell;
 mod text;
 pub mod time;
+pub mod tls;
 mod trace;
 #[cfg(test)]
 mod untrusted;

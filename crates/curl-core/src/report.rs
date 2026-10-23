@@ -771,6 +771,42 @@ mod tests {
         assert_eq!(leading_number(b"9223372036854775808"), 0);
     }
 
+    /// `CURL_TIME` and `CURL_DEBUG_SIZE` answer as their leading
+    /// numbers, read in a child of this binary given them: the
+    /// environment is the whole process's.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn the_debug_infos_are_read_from_the_environment() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "report::tests::debug_infos_in_a_child",
+                "--test-threads=1",
+            ])
+            .env("CURL_CORE_CHILD", "debug-infos")
+            .env("CURL_TIME", "123x")
+            .env("CURL_DEBUG_SIZE", "0042")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && stdout.contains("1 passed"),
+            "{stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// The child of `the_debug_infos_are_read_from_the_environment`.
+    #[cfg(feature = "debug-hooks")]
+    #[test]
+    fn debug_infos_in_a_child() {
+        if std::env::var_os("CURL_CORE_CHILD").is_none_or(|m| m != "debug-infos") {
+            return;
+        }
+        assert_eq!(debug_info::time(), Some(123));
+        assert_eq!(debug_info::size(), Some(42));
+    }
+
     /// The first reason given is kept; a new transfer starts without one.
     #[test]
     fn keeps_the_first_failure() {

@@ -734,6 +734,51 @@ fn ready_extra_descriptors_are_reported_in_their_entries() {
     assert!(extra[1].revents().contains(Events::IN));
 }
 
+/// More descriptors than fit on the stack are waited on all the same:
+/// eleven of the application's, and eleven transfers' sockets.
+#[test]
+fn a_wait_takes_more_than_fit_on_the_stack() {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    let (mut m, _clock) = multi();
+    let pairs: Vec<_> = (0..11)
+        .map(|_| std::os::unix::net::UnixStream::pair().unwrap())
+        .collect();
+    (&pairs[10].0).write_all(b"x").unwrap();
+    let mut extra: Vec<PollFd<'_>> = pairs
+        .iter()
+        .map(|(_, b)| PollFd::new(b.as_fd(), Events::IN))
+        .collect();
+    assert_eq!(
+        m.wait(&mut extra, Duration::from_secs(3), WaitMode::Wait),
+        Ok(1)
+    );
+    assert!(extra[10].revents().contains(Events::IN));
+
+    let clock = ManualClock::new().unwrap();
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 8999));
+    let mut net = FakeNet::new(clock.clone()).with_peer(at, crate::conn::io::Peer::Accepts);
+    for _ in 0..11 {
+        net = net.with_conversation(at, crate::conn::io::Conversation::replies(&[], false));
+    }
+    let env = Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(net),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env).unwrap();
+    let ev = &mut NoEvents;
+    for _ in 0..11 {
+        m.add(Box::new(easy("http://127.0.0.1:8999/")), (), ev)
+            .unwrap();
+    }
+    for _ in 0..5 {
+        m.perform(ev).unwrap();
+    }
+    assert_eq!(m.wait(&mut [], Duration::ZERO, WaitMode::Wait), Ok(0));
+}
+
 #[test]
 fn a_wake_ends_a_wait_without_counting_and_is_consumed() {
     let (mut m, clock, waker) = multi_with_waker();

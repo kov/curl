@@ -660,6 +660,17 @@ mod tests {
         assert_eq!(refused, Err(OutOfMemory));
     }
 
+    /// The process's own environment: `$NETRC` if it is set, else a
+    /// `.netrc` in a home directory.
+    #[test]
+    fn the_default_path_is_the_environment_s() {
+        let path = default_path().unwrap().expect("a home under the tests");
+        match std::env::var_os("NETRC").filter(|n| !n.is_empty()) {
+            Some(n) => assert_eq!(path, n.as_encoded_bytes()),
+            None => assert!(path.len() > 7 && path.ends_with(b"/.netrc"), "{path:?}"),
+        }
+    }
+
     const WORDS: &[&[u8]] = &[
         b"machine",
         b"default",

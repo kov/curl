@@ -2783,16 +2783,22 @@ fn a_wait_allocates_nothing() {
         assert_eq!(curl_multi_add_handle(m, c), CURLM_OK);
         // Connected and the request sent, the transfer waits to read.
         let mut peer = None;
+        let mut waits = [ffi::curl_waitfd {
+            fd: -1,
+            events: 0,
+            revents: 0,
+        }];
         for _ in 0..100 {
             assert_eq!(curl_multi_perform(m, &raw mut running), CURLM_OK);
             assert_eq!(
-                crate::multi::curl_multi_waitfds(m, ptr::null_mut(), 0, &raw mut sockets),
+                crate::multi::curl_multi_waitfds(m, waits.as_mut_ptr(), 1, &raw mut sockets),
                 CURLM_OK
             );
             if peer.is_none() {
                 peer = listener.accept().ok();
             }
-            if sockets == 1 && peer.is_some() {
+            let reading = waits[0].events == ffi::CURL_WAIT_POLLIN as i16;
+            if sockets == 1 && peer.is_some() && reading {
                 break;
             }
             std::thread::sleep(Duration::from_millis(1));

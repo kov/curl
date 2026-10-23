@@ -7,6 +7,7 @@
 //! engine's way to the network.
 
 mod buf;
+pub(crate) mod chain;
 mod connect;
 mod connect_to;
 mod dns;

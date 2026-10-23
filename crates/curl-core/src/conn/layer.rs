@@ -61,7 +61,6 @@ pub(crate) trait LayerCx {
     fn traces(&self, component: Component) -> bool;
 
     /// Trace a line of `component`'s, if it is.
-    #[expect(dead_code, reason = "the setup's trace, step 40h")]
     fn of(&mut self, component: Component, line: fmt::Arguments<'_>);
 }
 

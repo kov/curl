@@ -211,16 +211,24 @@ fn an_attempt_failing_in_a_drive_is_removed_before_it_closes() {
     assert_eq!(ev.closed.get(), 1);
 }
 
-/// A refused attempt's socket closes before the transfer is assessed, so
-/// the application never hears of it.
+/// An attempt's connect under way is polled at the transfer's next run,
+/// not in the run that started it (`cf_tcp_connect` returns at once on
+/// `EINPROGRESS`): even a peer that refuses at once has its socket
+/// announced, then removed as the next run finds it refused.
 #[test]
-fn a_socket_closed_within_a_run_is_never_announced() {
+fn a_refused_attempt_is_announced_before_it_is_found_refused() {
     let (mut m, _clock, mut ev) = networked();
-    m.add(Box::new(easy("tcp://127.0.0.1:2/")), (), &mut ev)
+    let id = m
+        .add(Box::new(easy("tcp://127.0.0.1:2/")), (), &mut ev)
         .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    assert_eq!(m.counts().running, 1);
+    assert_eq!(ev.calls, [(id.index(), 1000, Out, None, 0)]);
+    m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+        .unwrap();
     assert_eq!(m.counts().running, 0);
-    assert_eq!((ev.calls.len(), ev.closed.get()), (0, 1));
+    assert_eq!(ev.calls[1..], [(id.index(), 1000, Remove, Some(1), 0)]);
+    assert_eq!(ev.closed.get(), 1);
 }
 
 /// Taking a transfer out mid-connect removes its socket before the
@@ -388,5 +396,7 @@ fn a_notification_assigns_as_the_multi_does() {
     m.add(Box::new(easy("tcp://127.0.0.1:2/")), (), &mut ev)
         .unwrap();
     m.socket_action(SocketEvent::Timeout, &mut ev).unwrap();
+    m.socket_action(SocketEvent::Socket(SocketKey::new(1000)), &mut ev)
+        .unwrap();
     assert_eq!(ev.assigned_in_notify, [Err(UnknownSocket)]);
 }

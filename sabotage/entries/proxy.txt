@@ -186,10 +186,10 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_tunnel_redials_when_the_proxy_closes_on_its_407
 --- old
             eyeballs_won(cx, &c.route, attempt, remote);
-            handshake_next(c, cx)
+            (TransferState::Connecting(c), Wake::Again)
 --- new
             let _ = (attempt, remote);
-            handshake_next(c, cx)
+            (TransferState::Connecting(c), Wake::Again)
 
 === the answer to CONNECT is delivered though suppressed
 file: crates/curl-core/src/deliver/mod.rs
@@ -456,10 +456,10 @@ witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_fir
 file: crates/curl-core/src/conn/connect.rs
 witness: curl-core proto::http::tests::a_proxy_closing_on_the_credentials_is_connected_to_again
 --- old
-        net.close(d.stream.into_socket());
+        cx.net().close(d.stream.into_socket());
         self.stage = Stage::Racing(Racing {
 --- new
-        net.close(d.stream.into_socket());
+        cx.net().close(d.stream.into_socket());
         let _ = Stage::Racing(Racing {
 
 === a tunnel's setup traces the origin's name as found in the cache

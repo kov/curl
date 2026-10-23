@@ -221,9 +221,9 @@ witness: curl-core conn::connect::tests::the_winner_closes_the_other_attempts
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_silent_address_gives_way_after_the_eyeballs_delay
 --- old
-                Some(at) => eyeballs_due(run, cx, at),
+        Some(at) => eyeballs_due(run, cx, at),
 --- new
-                Some(_) => run.deadlines.clear(TimerKind::Eyeballs),
+        Some(_) => run.deadlines.clear(TimerKind::Eyeballs),
 
 === a connection through one peer serves a transfer through another
 file: crates/curl-core/src/conn/mod.rs

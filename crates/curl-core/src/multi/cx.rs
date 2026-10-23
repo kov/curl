@@ -68,17 +68,6 @@ impl<H: Host> EngineRest<'_, H> {
         }
     }
 
-    /// The network transfer `who` is to use: one that tells the socket
-    /// callback of a socket before it closes.
-    pub(crate) fn net(&mut self, who: TransferId) -> Announcing<'_, H> {
-        Announcing {
-            net: &mut *self.net,
-            tell: self.tell.reborrow(),
-            events: &mut *self.events,
-            who,
-        }
-    }
-
     /// Transfer `who`'s share, if it keeps `kind`, and what the
     /// application watches the share's uses with.
     pub(crate) fn kept(&self, who: TransferId, kind: Kind) -> Option<Kept> {

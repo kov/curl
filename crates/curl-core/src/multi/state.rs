@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
+use crate::conn::chain::{Chain, SetupPoint};
 use crate::conn::io::{Closer, Events, ResolveFailure};
 use crate::conn::layer::LayerCx;
 use crate::conn::pool;
@@ -171,6 +172,15 @@ enum Handshake {
 }
 
 impl Handshake {
+    /// The filter C's chain holds for it.
+    fn filter(&self) -> Component {
+        match self {
+            Handshake::Socks(_) => Component::Socks,
+            Handshake::Connect(_) => Component::HttpProxy,
+            Handshake::Haproxy(_) => Component::Haproxy,
+        }
+    }
+
     /// What it waits for on the connection's socket.
     fn interest(&self) -> Events {
         match self {
@@ -1186,11 +1196,125 @@ fn connecting<H: Host>(
     if StepCx::pause(cx).recv != RecvPause::Running {
         return (TransferState::Connecting(c), Wake::Idle);
     }
+    // One call of C's `Curl_conn_connect`: on until the setup waits, is
+    // up or fails.
+    let mut entered = false;
+    loop {
+        let chain = enter_setup(&c, cx, &mut entered);
+        let (next, wake) = connect_once(run, c, cx);
+        match next {
+            TransferState::Connecting(next) if wake == Wake::Again => c = next,
+            TransferState::Done(ref d) => {
+                let kind = d.result.expect_err("a setup is done with only as it fails");
+                if let Some(chain) = chain {
+                    mstate::trace(cx, format_args!("failed to connect {chain}"));
+                }
+                mstate::trace(
+                    cx,
+                    format_args!("connect failed -> {}", trace::Code(Err(kind))),
+                );
+                return (next, wake);
+            }
+            next => return (next, wake),
+        }
+    }
+}
+
+/// SETUP's connect is entered (`cf_setup_connect`), and traces the chain
+/// C would have: once the name is resolved, at the first connect of a
+/// call, again as it adds a filter, and as it starts over. Returns the
+/// chain as the connect goes on to, for its failure to name.
+fn enter_setup<H: Host>(
+    c: &Connecting,
+    cx: &mut StepCx<'_, H>,
+    entered: &mut bool,
+) -> Option<Chain> {
+    let reached = c.lease.reached()?;
+    let haproxy = cx.easy().options().proxy.haproxy;
+    let under_way = c.handshake.as_deref().map(Handshake::filter);
+    let chain =
+        |reached, under_way, installed| Chain::of(&c.route, haproxy, reached, under_way, installed);
+    let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
+        mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
+    };
+    match reached {
+        SetupPoint::Resolving => return Some(chain(reached, None, true)),
+        SetupPoint::Racing { started: false } => {
+            // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
+            entry(cx, chain(reached, None, true));
+            let peer = c.route.destination();
+            let to = if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
+                "proxy"
+            } else {
+                "origin"
+            };
+            let (name, port) = (Bytes(peer.name()), peer.port());
+            trace::of(
+                cx,
+                Component::Setup,
+                format_args!("happy eyeballing to {to} {name}:{port}"),
+            );
+            let racing = chain(SetupPoint::Racing { started: true }, None, true);
+            entry(cx, racing);
+            *entered = true;
+            return Some(racing);
+        }
+        SetupPoint::Racing { started: true } | SetupPoint::Dialed(_) => {}
+    }
+    if !*entered {
+        entry(cx, chain(reached, under_way, true));
+        *entered = true;
+    }
+    let (SetupPoint::Dialed(made), None) = (reached, under_way) else {
+        return Some(chain(reached, under_way, true));
+    };
+    let Some(due) = handshake_due(c, cx, made) else {
+        return Some(chain(reached, None, true));
+    };
+    let filter = match due {
+        Due::Socks(_) => {
+            let leg = c.route.socks().expect("through a SOCKS proxy");
+            let (name, port) = (Bytes(leg.to.name()), leg.to.port());
+            trace::of(
+                cx,
+                Component::Setup,
+                format_args!("added SOCKS filter to {name}:{port}"),
+            );
+            Component::Socks
+        }
+        Due::Tunnel => {
+            trace::of(
+                cx,
+                Component::Setup,
+                format_args!("added HTTP proxy tunnel filter"),
+            );
+            Component::HttpProxy
+        }
+        Due::Preface => {
+            trace::of(cx, Component::Setup, format_args!("added HAPROXY filter"));
+            Component::Haproxy
+        }
+    };
+    // The tunnel's filter installs its HTTP/1.1 one as it first connects.
+    entry(cx, chain(reached, Some(filter), false));
+    Some(chain(reached, Some(filter), true))
+}
+
+/// One step of the connection's setup within a call: a handshake's, the
+/// next handshake started, or a drive of the connect machine.
+fn connect_once<H: Host>(
+    run: &mut Run,
+    mut c: Connecting,
+    cx: &mut StepCx<'_, H>,
+) -> (TransferState, Wake) {
     match c.handshake.as_deref() {
         Some(Handshake::Socks(_)) => return socks::step(c, cx),
         Some(Handshake::Connect(_)) => return tunnel::step(c, cx),
         Some(Handshake::Haproxy(_)) => return haproxy::step(c, cx),
         None => {}
+    }
+    if let Some(SetupPoint::Dialed(_)) = c.lease.reached() {
+        return handshake_next(c, cx);
     }
     let delay = cx.easy().options().limits.eyeballs.0;
     let wildcard = cx.easy().wildcard_resolve;
@@ -1254,21 +1378,24 @@ fn connecting<H: Host>(
             remote,
             scope_found,
             first,
+            at_once,
+            until,
         })) => {
             trace_trying(cx, remote, scope_found, first);
-            (TransferState::Connecting(c), Wake::Again)
+            if at_once {
+                return (TransferState::Connecting(c), Wake::Again);
+            }
+            // A connect under way is polled at the next call.
+            waiting(run, cx, until);
+            (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Connecting(Progress::Dialed { attempt })) => {
             let (remote, _) = c.lease.dialed().ends();
             eyeballs_won(cx, &c.route, attempt, remote);
-            handshake_next(c, cx)
+            (TransferState::Connecting(c), Wake::Again)
         }
         Ok(Connected::Connecting(Progress::Waiting { until })) => {
-            match until {
-                Some(at) => eyeballs_due(run, cx, at),
-                // Nothing left to start: C never armed it.
-                None => run.deadlines.clear(TimerKind::Eyeballs),
-            }
+            waiting(run, cx, until);
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Connected::Established {
@@ -1291,10 +1418,6 @@ fn connecting<H: Host>(
         }
         Err(e) => {
             let kind = connect_failed(cx, &c.route, e);
-            mstate::trace(
-                cx,
-                format_args!("connect failed -> {}", trace::Code(Err(kind))),
-            );
             (TransferState::Connecting(c).fail(kind), Wake::Again)
         }
     }
@@ -1305,21 +1428,13 @@ fn connecting<H: Host>(
 /// the SOCKS proxy's, (the HTTP proxy's TLS, with stage 4), the HTTP
 /// proxy's tunnel, the PROXY protocol's line, (the origin's TLS). With
 /// none left, the connection is open.
-pub(super) fn handshake_next<H: Host>(
-    mut c: Connecting,
-    cx: &mut StepCx<'_, H>,
-) -> (TransferState, Wake) {
+fn handshake_next<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
     let made = c.lease.dialed().made();
-    if let Some(version) = c.route.socks().map(|leg| leg.version)
-        && !made.has(Made::SOCKS)
-    {
-        return socks::dialed(c, cx, version);
-    }
-    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
-        return tunnel::dialed(c, cx);
-    }
-    if cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
-        return haproxy::start(c, cx);
+    match handshake_due(&c, cx, made) {
+        Some(Due::Socks(version)) => return socks::dialed(c, cx, version),
+        Some(Due::Tunnel) => return tunnel::dialed(c, cx),
+        Some(Due::Preface) => return haproxy::start(c, cx),
+        None => {}
     }
     match c.lease.handshaken() {
         Connected::Established {
@@ -1327,6 +1442,31 @@ pub(super) fn handshake_next<H: Host>(
         } => up(c, cx, remote, local, at),
         _ => unreachable!("the handshakes make the connection"),
     }
+}
+
+/// A handshake still to make over a dialed connection.
+#[derive(Clone, Copy)]
+enum Due {
+    Socks(crate::conn::socks::Version),
+    Tunnel,
+    Preface,
+}
+
+/// The handshake to make next over a connection that made `made`, in
+/// cf-setup.c's order; none once they are all made.
+fn handshake_due<H: Host>(c: &Connecting, cx: &StepCx<'_, H>, made: Made) -> Option<Due> {
+    if let Some(version) = c.route.socks().map(|leg| leg.version)
+        && !made.has(Made::SOCKS)
+    {
+        return Some(Due::Socks(version));
+    }
+    if c.route.proxy.as_ref().is_some_and(|p| p.tunnels()) && !made.has(Made::TUNNEL) {
+        return Some(Due::Tunnel);
+    }
+    if cx.easy().options().proxy.haproxy && !made.has(Made::PREFACE) {
+        return Some(Due::Preface);
+    }
+    None
 }
 
 /// The name `route` connects to first was looked up in the cache, as
@@ -1406,6 +1546,16 @@ fn trace_resolved<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, asked: Result<As
         dns,
         format_args!("cached entry for {name}:{port} queries={queries}"),
     );
+}
+
+/// The setup waits for its sockets, and for the race's next attempt at
+/// `until`, if one is left.
+fn waiting<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, until: Option<Instant>) {
+    match until {
+        Some(at) => eyeballs_due(run, cx, at),
+        // Nothing left to start: C never armed it.
+        None => run.deadlines.clear(TimerKind::Eyeballs),
+    }
 }
 
 /// The race's next attempt is due at `at`: its timer armed for then, or
@@ -1505,6 +1655,17 @@ fn up<H: Host>(
             remote.port()
         ),
     );
+    // The setup filters go once the chain is connected
+    // (`Curl_conn_remove_setup_filters`).
+    let haproxy = cx.easy().options().proxy.haproxy;
+    let connected = Chain::connected(&c.route, haproxy);
+    mstate::trace(cx, format_args!("connected {connected}"));
+    for filter in connected.going() {
+        trace::of(cx, filter, format_args!("removing connected setup filter"));
+        trace::of(cx, filter, format_args!("destroy"));
+    }
+    let reduced = connected.reduced();
+    mstate::trace(cx, format_args!("reduced to {reduced}"));
     (c.attached(), Wake::Again)
 }
 
@@ -2733,6 +2894,8 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
     };
     cx.report_mut().set_used_proxy(plan.route.proxy.is_some());
     if !lease.is_up() {
+        // The setup filter starts the chain (`Curl_cf_setup_insert_after`).
+        trace::of(cx, Component::Setup, format_args!("added"));
         mstate::trace(cx, format_args!("Curl_conn_setup() -> 0"));
     }
     let Plan { proto, route } = plan;

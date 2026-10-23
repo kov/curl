@@ -1,0 +1,82 @@
+=== a call of the setup does not trace the chain as it enters
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_c
+--- old
+    if !*entered {
+        entry(cx, chain(reached, under_way, true));
+--- new
+    if false {
+        entry(cx, chain(reached, under_way, true));
+
+=== the race's start traces no chain before its happy eyeballs filter
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::setup_trace::a_redial_starts_the_chain_over
+--- old
+            // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
+            entry(cx, chain(reached, None, true));
+--- new
+            // The happy eyeballs filter is added (`cf_setup_add_ip_happy`).
+
+=== the tunnel's HTTP/1.1 filter shows as soon as the tunnel's is added
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::setup_trace::a_tunnel_s_setup_is_traced_as_c
+--- old
+    entry(cx, chain(reached, Some(filter), false));
+--- new
+    entry(cx, chain(reached, Some(filter), true));
+
+=== a handshake failing as it starts names the chain without its filter
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::setup_trace::a_refused_tunnel_names_the_chain_that_failed
+--- old
+    Some(chain(reached, Some(filter), true))
+}
+--- new
+    Some(chain(reached, under_way, true))
+}
+
+=== a SOCKS proxy given an address has no DNS filter of its own in the chain
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::setup_trace::a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c
+--- old
+        if added.socks && resolves_target(route) {
+--- new
+        if added.socks && !resolves_target(route) {
+
+=== the setup filter does not say it goes
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::setup_trace::a_direct_setup_is_traced_as_c
+--- old
+            .filter(|&f| is_setup(f) && f != Component::Dns && f != Component::HappyEyeballs)
+--- new
+            .filter(|&f| is_setup(f) && f != Component::Dns && f != Component::Setup)
+
+=== a connect under way is polled in the call that started it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_c_s_states
+--- old
+            if at_once {
+                return (TransferState::Connecting(c), Wake::Again);
+            }
+--- new
+            if !at_once {
+                return (TransferState::Connecting(c), Wake::Again);
+            }
+
+=== a failed setup is not said to fail the connect
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::setup_trace::a_refused_tunnel_names_the_chain_that_failed
+--- old
+            TransferState::Done(ref d) => {
+                let kind = d.result.expect_err("a setup is done with only as it fails");
+--- new
+            TransferState::Done(ref d) if d.result.is_ok() => {
+                let kind = d.result.expect_err("a setup is done with only as it fails");
+
+=== a redial does not say it starts over
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::setup_trace::a_redial_starts_the_chain_over
+--- old
+            format_args!("retrying connect, {n}. time"),
+--- new
+            format_args!("retrying connect"),

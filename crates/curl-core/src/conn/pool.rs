@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
+use super::chain::SetupPoint;
 use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Progress, Setup};
 use super::dns::Answer;
 use super::io::{Closer, Events, Net, Socket};
@@ -100,6 +101,14 @@ impl ConnLease {
         connected
     }
 
+    /// How far its setup got, while it is set up.
+    pub(crate) fn reached(&self) -> Option<SetupPoint> {
+        match self.slot() {
+            ConnSlot::Connecting(machine) => Some(machine.reached()),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
     /// The connection to the first hop, while its handshakes are made.
     pub(crate) fn dialed(&mut self) -> &mut Dialed {
         let id = self.id;
@@ -130,10 +139,10 @@ impl ConnLease {
 
     /// Start the setup over, as its proxy closed the connection; false if
     /// it was started over too often.
-    pub(crate) fn redial(&mut self, net: &mut dyn Net) -> bool {
+    pub(crate) fn redial(&mut self, cx: &mut dyn ConnCx) -> bool {
         let id = self.id;
         match self.slot_mut() {
-            ConnSlot::Connecting(machine) => machine.redial(net),
+            ConnSlot::Connecting(machine) => machine.redial(cx),
             _ => panic!("{id:?} is not setting up"),
         }
     }

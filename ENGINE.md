@@ -182,8 +182,8 @@ curl-core/src/
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
     stream.rs                Stream: a socket, its layers and its receive buffer
     layer.rs                 Layer, Below, LayerStack, LayerCx; the tests' layers
-    chain.rs                 Chain: C's filter chain rendered for the trace from the
-                             machine's stage and the route (step 40)
+    chain.rs                 Chain: C's filter chain rendered for the trace from how
+                             far the setup got, the handshake under way and the route
   deliver/                   BodyAccountant, ClientOut; held.rs: HeldOutput;
                              decode.rs: Gate, the decoders' chain;
                              pause.rs: Pause, PauseRequest, Directions
@@ -327,11 +327,14 @@ fold several of C's (INIT runs C's INIT and SETUP and starts its CONNECT), so th
 at the points C passes them, and after each step the state is brought to the one the engine's
 names; a request that failed stays where it failed, as C's is done with there. Traced: the
 changes, the times taken (`[PGRS-*]`), the transfer's coming and going, `[CPOOL]`'s new
-connection, `Curl_conn_setup`, a failed connect and `multi_done`'s lines. Planned (step 40):
-the chain's lines (`cf_setup_connect [0][…]`, `connected [0][…]`, `reduced to [0][…]`,
-`failed to connect [0][…]`), rendered from the connect machine's stage and the route
-(`conn/chain.rs`), as no filter object exists to name itself; `Curl_multi_will_close fd=N` as a
-socket the multi knows closes; and, from `wait` before it polls, each process transfer's
+connection, `Curl_conn_setup`, `multi_done`'s lines, and the chain C's filters make
+(`Curl_conn_trc_filters`), rendered by `conn/chain.rs` from how far the setup got, the
+handshake under way and the route, as no filter object exists to name itself: `cf_setup_connect
+[0][…]` as SETUP's connect is entered (once a call of `Curl_conn_connect` finds the name resolved,
+again as it adds a filter and as it starts over), `connected [0][…]` and `reduced to [0][…]` as
+the connection is up, and `failed to connect [0][…]` before `connect failed -> N`, for a failed
+race and a failed handshake alike. Planned (step 40): `Curl_multi_will_close fd=N` as a socket
+the multi knows closes; and, from `wait` before it polls, each process transfer's
 `pollset[…], timeouts=N` and the last one's `multi_wait(fds=N, timeout=T) tinternal=I`, the
 waker counted in `fds` (§3.6). Not traced: the credentials line (`Curl_creds_trace`),
 `xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; event mode's socket-hash lines (`multi_run_dirty`, `ev
@@ -351,13 +354,18 @@ C tries before its first poll in PERFORMING, which the engine does not make; a t
 SOCKS handshake's reads and writes, as C reads a proxy's answer to `CONNECT` a byte at a time
 from the socket, where the engine reads what is there; and `query ALPN`, which comes with TLS.
 
-`SETUP` (planned, step 40) traces cf-setup.c's lines from the connect machine's stage: `added`,
-`happy eyeballing to origin|proxy H:P`, `added SOCKS filter to H:P`, `added HTTP proxy tunnel
-filter`, `added HAPROXY filter`, `retrying connect, N. time`, and its own `removing connected
-setup filter` and `destroy`. The other setup filters' removal and destruction lines are not
-traced (`HAPPY-EYEBALLS` and `DNS` below), nor, in any step yet, the `SOCKS`, `HTTP-PROXY` and
-`H1-PROXY` components' own lines (SOCKS's state changes and `adjust pollset`, the tunnel's
-`CONNECT send`/`receive`/`response` and `new tunnel state`).
+`SETUP` traces cf-setup.c's lines as the transfer's step meets the points C passes: `added` as
+a new connection's setup starts, `happy eyeballing to origin|proxy H:P` as the race starts,
+`added SOCKS filter to H:P`, `added HTTP proxy tunnel filter` and `added HAPROXY filter` as each
+handshake starts, `retrying connect, N. time` as a 407 redials, and `removing connected setup
+filter` and `destroy` as the connection is up. `HTTP-PROXY` and `HAPROXY`, setup filters too,
+trace their removal and `destroy` with it, and the tunnel's `destroy` as a redial discards it.
+Not traced: the `HAPPY-EYEBALLS` and `DNS` filters' removal and destruction (below), and the
+`SOCKS`, `HTTP-PROXY` and `H1-PROXY` components' own lines: SOCKS's state changes, which name
+C's machine's states and source lines where the engine's sans-IO handshake has states of its
+own, and its `adjust pollset in (N)`; the tunnel's `CONNECT`, `installing subfilter`, `connect`,
+`CONNECT send`/`receive`/`response`, `new tunnel state` and its header lines, which follow C's
+two filters (HTTP-PROXY installing H1-PROXY) and its byte-at-a-time read of the answer.
 
 `TIMER` names each of a transfer's timers by C's `expire_id` (`TimerKind::name`; the protocol's
 own wait is HTTP's for a 100, the only one there is) where C arms or clears it: the leg's limits
@@ -965,9 +973,10 @@ The rules that keep this sound:
   chain's), the socket callback's REMOVE as an attempt's socket closes (`DriveCx` is the
   drive's network, and builds an `Announcing` for each close, never held across the drive),
   and the socket hooks (OPENSOCKET, SOCKOPT, CLOSESOCKET). The context reaches no pool. Built
-  so far: the time, the network with its announced closes, and the names; the lines C traces
-  from inside a connect are still reported as `Progress` for the transfer to trace after,
-  until the chain's trace (step 40h), and the hooks come with step 40k.
+  so far: the time, the network with its announced closes, the names, and the lines a drive
+  traces itself (a redial's `retrying connect`); what it reports as `Progress` the transfer
+  traces after it, where C's order allows, and the chain's lines with it; the hooks come with
+  step 40k.
 - **Outside a step** (`wait`, the timeout, `fdset`, `waitfds`, `assess`), a trace line for a
   transfer is made through a `StepCx` built for a transfer whose `Run` is in its slot, as
   `trace_membership` and `mark_expired_dirty` build one. `wait` takes the events for that, and
@@ -1088,15 +1097,18 @@ none runs or the happy eyeballs delay (`CURLOPT_HAPPY_EYEBALLS_TIMEOUT_MS`, pass
 drive) has passed since the last started; a failed attempt is traced and dropped; the first to
 connect wins and the others close. `Progress::Waiting { until }` names when the next attempt is
 due, which the transfer arms as `TimerKind::Eyeballs` and clears when the setup ends. Unit 2600's
-cases are a test of the machine over a manual clock. A drive moves the machine by at most one event and returns it, in
-place in its slot (§3.6); the transfer traces it in C's
+cases are a test of the machine over a manual clock. A drive moves the machine by at most one
+event and returns it, in place in its slot (§3.6). The transfer's step drives it again for as
+long as one call of C's `Curl_conn_connect` would go on (`multi/state.rs`'s `connecting`): through
+a name resolved, an attempt failed or connected at once and a handshake made; a connect under
+way ends the call, as `cf_tcp_connect` returns at once on `EINPROGRESS`, and the attempt is first
+polled at the transfer's next run, so its socket is waited on and announced to the socket
+callback first. The transfer traces each drive in C's
 words ("  Trying …", "connect to … from … failed: …", "Established connection to … ", then
 `failf`'s "Failed to connect to H:P after N ms: …" or "Could not resolve host: …"). The machine
 is driven in its lease, the pool not borrowed (§3.6), and reaches the transfer only through its
 `ConnCx`; `Setup` carries the transfer's settings for the drive (the eyeballs delay, the
-scope, the socket options, the names' rules). As `cf_tcp_connect` does, the socket is polled
-with a zero timeout right after its connect starts, so an answer already there is taken in the
-same pass. A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
+scope, the socket options, the names' rules). A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
 connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
 reports it ("Host H:P was resolved.", then each family's addresses), read back from the
 machine through the pool, and NAMELOOKUP is marked when it resolves. An IPv6 attempt's address
@@ -1150,11 +1162,12 @@ socket before its connect.
 - A proxy that closes the connection on its 407 starts the setup over from resolving
   (`ConnLease::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
   the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.
-- **Handshake order** is decided in one place, `handshake_next` (`multi/state.rs`), from the
+- **Handshake order** is decided in one place, `handshake_due` (`multi/state.rs`), from the
   route, the transfer's PROXY line and what `Dialed::made` records, in cf-setup.c's order
   (299–359): the eyeballs race, then SOCKS, then the proxy's TLS (stage 4), then the HTTP
   proxy's `CONNECT`, then the PROXY line, then the origin's TLS. Each handshake, once made,
-  hands on to it; with none left the connection is open. A redial starts a new `Dialed`, with
+  ends with none under way, and the step goes on to the next within the same call, tracing
+  SETUP's `added` line for it; with none left the connection is open. A redial starts a new `Dialed`, with
   nothing made. The PROXY line goes over `Dialed` before the connection is `Open`, so no `Open`
   connection exists with it unsent, and a transfer taken out mid-setup gives back a
   connection that is not open, which closes. The transfer drives each handshake, its I/O over

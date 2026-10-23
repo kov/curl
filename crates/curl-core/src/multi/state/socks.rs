@@ -5,9 +5,7 @@
 
 use curl_alloc::try_box;
 
-use super::{
-    Bytes, Connecting, Handshake, Ip, StepCx, TransferState, Wake, handshake_next, report_resolved,
-};
+use super::{Bytes, Connecting, Handshake, Ip, StepCx, TransferState, Wake, report_resolved};
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::socks::{Creds, Dest, Handshake as Exchange, Resolved, SocksError, Took, Version};
 use crate::conn::{Found, Made, RecvFailed};
@@ -192,7 +190,8 @@ fn opened<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState,
             remote.port()
         ),
     );
-    handshake_next(c, cx)
+    c.handshake = None;
+    (TransferState::Connecting(c), Wake::Again)
 }
 
 /// The handshake failed, as the proxy's error (`CURLE_PROXY`).

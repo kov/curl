@@ -18,6 +18,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
+use super::chain::SetupPoint;
 #[cfg(test)]
 use super::dns::DnsCache;
 use super::dns::{Answer, Lookup, Names};
@@ -26,6 +27,7 @@ use super::io::{
 };
 use super::layer::LayerCx;
 use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
+use crate::components::Component;
 use crate::options::IpVersion;
 use crate::time::Instant;
 
@@ -315,11 +317,16 @@ pub(crate) enum Progress {
     Resolved(Found),
     /// An attempt started on `remote`, in the scope `scope_found` took
     /// from a local interface if it has one; `first` if no other was
-    /// running.
+    /// running. Its socket connected `at_once`, or its connect is in
+    /// progress, to be polled when the transfer is next run, as C polls
+    /// it (`cf_tcp_connect` returns at once on `EINPROGRESS`); the next
+    /// attempt is due at `until`, as `Waiting` has it.
     Trying {
         remote: SocketAddr,
         scope_found: Option<NonZeroU32>,
         first: bool,
+        at_once: bool,
+        until: Option<Instant>,
     },
     /// An attempt failed, and the setup goes on.
     Failed(Failure),
@@ -412,6 +419,17 @@ impl ConnectMachine {
         running.iter().map(|a| a.socket.socket()).chain(dialed)
     }
 
+    /// How far it got, as C's filter chain shows it.
+    pub(crate) fn reached(&self) -> SetupPoint {
+        match &self.stage {
+            Stage::Resolving => SetupPoint::Resolving,
+            Stage::Racing(r) => SetupPoint::Racing {
+                started: r.last_start.is_some(),
+            },
+            Stage::Dialed(d) => SetupPoint::Dialed(d.made),
+        }
+    }
+
     /// The addresses the name resolved to, once it has.
     pub(crate) fn answer(&self) -> Option<&TryArc<Answer>> {
         match &self.stage {
@@ -451,7 +469,7 @@ impl ConnectMachine {
     /// (`cf_setup_connect` discards the chain below the name's filter,
     /// which keeps its answer). False, and nothing done, if it was started
     /// over too often.
-    pub(crate) fn redial(&mut self, net: &mut dyn Net) -> bool {
+    pub(crate) fn redial(&mut self, cx: &mut dyn ConnCx) -> bool {
         if self.redials >= MAX_REDIALS {
             return false;
         }
@@ -459,7 +477,17 @@ impl ConnectMachine {
         let Stage::Dialed(d) = std::mem::replace(&mut self.stage, Stage::Resolving) else {
             panic!("only a dialed setup is redialed");
         };
-        net.close(d.stream.into_socket());
+        let n = self.redials;
+        cx.of(
+            Component::Setup,
+            format_args!("retrying connect, {n}. time"),
+        );
+        // The chain below the setup filter is discarded: of the setup
+        // filters in it, the tunnel's says so.
+        if self.route.proxy.as_ref().is_some_and(|p| p.tunnels()) {
+            cx.of(Component::HttpProxy, format_args!("destroy"));
+        }
+        cx.net().close(d.stream.into_socket());
         self.stage = Stage::Racing(Racing {
             eyeballs: Eyeballs::new(d.answer, self.route.ip),
             attempts: Vec::new(),
@@ -563,7 +591,7 @@ impl ConnectMachine {
                 address(ip, self.route.destination(), setup.scope, cx.net());
             r.last_start = Some(now);
             return match cx.net().connect(remote, setup.socket) {
-                Ok((socket, Connect::InProgress | Connect::Done)) => {
+                Ok((socket, connect)) => {
                     let socket = Sock::new(socket, self.closer.clone());
                     r.attempts
                         .try_push(Attempt { remote, socket })
@@ -572,6 +600,8 @@ impl ConnectMachine {
                         remote,
                         scope_found,
                         first,
+                        at_once: connect == Connect::Done,
+                        until: r.next_due(delay),
                     };
                     Ok(Drove::Connecting(self, tried))
                 }
@@ -589,10 +619,7 @@ impl ConnectMachine {
                 }
             };
         }
-        let until = r
-            .last_start
-            .filter(|_| r.eyeballs.more())
-            .map(|at| at.after(delay));
+        let until = r.next_due(delay);
         Ok(Drove::Connecting(self, Progress::Waiting { until }))
     }
 
@@ -665,6 +692,13 @@ impl ConnectMachine {
 }
 
 impl Racing {
+    /// When the next attempt is due, if an address is left for one.
+    fn next_due(&self, delay: Duration) -> Option<Instant> {
+        self.last_start
+            .filter(|_| self.eyeballs.more())
+            .map(|at| at.after(delay))
+    }
+
     fn close_all(&mut self, net: &mut dyn Net) {
         for a in self.attempts.drain(..) {
             net.close(a.socket);

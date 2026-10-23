@@ -11,7 +11,7 @@ use curl_alloc::{OutOfMemory, TryVec as _};
 
 use curl_alloc::try_box;
 
-use super::{Connecting, Handshake, OsError, StepCx, TransferState, Wake, handshake_next};
+use super::{Connecting, Handshake, OsError, StepCx, TransferState, Wake};
 use crate::conn::Made;
 use crate::conn::io::{Events, Sent};
 use crate::error::ErrorKind;
@@ -133,5 +133,6 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         }
     }
     c.lease.dialed().mark_made(Made::PREFACE);
-    handshake_next(c, cx)
+    c.handshake = None;
+    (TransferState::Connecting(c), Wake::Again)
 }

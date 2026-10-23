@@ -6,12 +6,13 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
-use super::{Connecting, Handshake, StepCx, TransferState, Wake, handshake_next};
+use super::{Connecting, Handshake, StepCx, TransferState, Wake};
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{Made, Peer, RecvFailed};
 use crate::error::ErrorKind;
 use crate::handler::{DebugKind, HeaderOrigin};
 use crate::multi::Host;
+use crate::multi::cx::DriveCx;
 use crate::options::ProxyType;
 use crate::progress;
 use crate::proto::ProtoState;
@@ -187,7 +188,10 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
             (TransferState::Connecting(c), Wake::Idle)
         }
         Ok(Ran::Again) => (TransferState::Connecting(c), Wake::Again),
-        Ok(Ran::Through) => handshake_next(c, cx),
+        Ok(Ran::Through) => {
+            c.handshake = None;
+            (TransferState::Connecting(c), Wake::Again)
+        }
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
     }
 }
@@ -422,7 +426,11 @@ fn finish<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Er
     if closes {
         trace::info(cx, format_args!("Connect me again please"));
         c.handshake = None;
-        if !c.lease.redial(&mut cx.rest.net(cx.me)) {
+        let redialed = c.lease.redial(&mut DriveCx {
+            step: cx,
+            kept: None,
+        });
+        if !redialed {
             return Err(ErrorKind::CouldntConnect);
         }
         return Ok(Ran::Again);

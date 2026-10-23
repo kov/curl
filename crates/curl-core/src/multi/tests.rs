@@ -52,6 +52,13 @@ fn messages(m: &mut Multi) -> Vec<(u32, Result<(), ErrorKind>, u32)> {
     .collect()
 }
 
+/// A pass, then the next, which looks at the connects the first started:
+/// `cf_tcp_connect` polls a connect under way only when called again.
+fn perform_and_connect(m: &mut Multi) {
+    m.perform(&mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+}
+
 const SET_NOW: TimerChange = TimerChange::Set(Duration::ZERO);
 
 #[test]
@@ -1291,12 +1298,14 @@ fn events_drive_a_transfer_as_waits_do() {
     assert_eq!(run(true), waited);
 }
 
-/// A network whose peers hang up once the multi waits for them, and that
-/// fails a run polling over and over without waiting.
+/// A network whose peers hang up once the multi waits for them a second
+/// time, the first wait being for the connect, and that fails a run
+/// polling over and over without waiting.
 struct Patient {
     net: FakeNet,
     opened: Vec<crate::conn::io::SocketKey>,
     hurried: u32,
+    waited: u32,
 }
 
 impl Net for Patient {
@@ -1310,8 +1319,11 @@ impl Net for Patient {
             self.hurried += 1;
             assert!(self.hurried < 10, "polled again and again without waiting");
         } else if !sockets.is_empty() {
-            for &key in &self.opened {
-                self.net.hang_up(key);
+            self.waited += 1;
+            if self.waited > 1 {
+                for &key in &self.opened {
+                    self.net.hang_up(key);
+                }
             }
         }
         // As long as a fake clock goes.
@@ -1364,6 +1376,7 @@ fn events_wait_for_a_socket_with_nothing_due() {
             net,
             opened: Vec::new(),
             hurried: 0,
+            waited: 0,
         }),
         arena: ArenaPolicy::new(16, 0).unwrap(),
         waker: None,
@@ -1474,8 +1487,10 @@ fn a_refused_connect_fails_as_c_says() {
     let (mut m, _clock) = networked();
     let (e, lines) = traced("tcp://127.0.0.1:2/");
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    // The socket is looked at as soon as the connect starts
-    // (`cf_tcp_connect`): a refusal already there fails in the same pass.
+    // A connect under way is looked at in the next pass, as
+    // `cf_tcp_connect` returns at once on `EINPROGRESS`.
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(messages(&mut m), []);
     m.perform(&mut NoEvents).unwrap();
     assert_eq!(
         messages(&mut m),
@@ -1512,7 +1527,7 @@ fn the_ids_start_each_line_but_a_failure() {
     components.configure(b"lib-ids");
     e.set_components(Some(components.clone()));
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     let why = "Failed to connect to 127.0.0.1:2 after 0 ms: Could not connect to server";
     assert_eq!(
         trace_of(&lines),
@@ -1796,15 +1811,15 @@ fn the_next_transfer_reuses_the_connection_left() {
     let (mut m, clock) = networked();
     let (first, _) = traced("tcp://127.0.0.1:4/");
     let first = m.add(Box::new(first), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
         .unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
     clock.advance(Duration::from_millis(7));
     let (second, lines) = traced("tcp://127.0.0.1:4/");
     let second = m.add(Box::new(second), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(second.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines),
@@ -1820,7 +1835,7 @@ fn the_next_transfer_reuses_the_connection_left() {
     );
     let (third, lines) = traced("tcp://127.0.0.1:1/");
     let third = m.add(Box::new(third), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(third.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines)[0],
@@ -2101,7 +2116,7 @@ fn a_multi_closes_its_idle_connections_when_dropped() {
     let id = m
         .add(Box::new(easy("tcp://127.0.0.1:1/")), (), &mut NoEvents)
         .unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
     assert_eq!(closed.load(Ordering::Relaxed), 0, "kept");
     drop(m);
@@ -2116,7 +2131,7 @@ fn an_ipv6_host_is_named_as_c_names_it() {
     let (mut m, _clock) = networked();
     let (first, lines) = traced("tcp://[::1]:1/");
     let first = m.add(Box::new(first), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(first.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines),
@@ -2128,7 +2143,7 @@ fn an_ipv6_host_is_named_as_c_names_it() {
     );
     let (second, lines) = traced("tcp://[::1]:1/");
     let second = m.add(Box::new(second), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(second.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines),
@@ -2147,13 +2162,13 @@ fn localhost_names_are_the_loopback_addresses() {
     let (mut m, _clock) = networked();
     let (refused, lines) = traced("tcp://localhost:2/");
     let refused = m.add(Box::new(refused), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
         .unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     m.wait(&mut [], Duration::from_secs(1), WaitMode::Wait)
         .unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(
         messages(&mut m),
         [(refused.index(), Err(ErrorKind::CouldntConnect), 0)]
@@ -2173,7 +2188,7 @@ fn localhost_names_are_the_loopback_addresses() {
     assert!(trace_of(&lines)[7].starts_with("Failed to connect to localhost:2 after "));
     let (named, lines) = traced("tcp://Foo.LocalHost.:1/");
     let named = m.add(Box::new(named), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(named.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines)[..5],
@@ -2270,7 +2285,7 @@ fn a_race_with_no_attempt_left_says_so() {
     let (e, lines) = traced("tcp://127.0.0.1:2/");
     let e = tracing(e, b"happy-eyeballs");
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(
         messages(&mut m),
         [(id.index(), Err(ErrorKind::CouldntConnect), 0)]
@@ -2414,7 +2429,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
         .set([&b"foo.test:1:127.0.0.1"[..]])
         .unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines)[..6],
@@ -2431,7 +2446,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
     let e = m.remove(id, &mut NoEvents).unwrap().easy;
     lines.0.lock().unwrap().clear();
     let id = m.add(e, (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
     assert!(
         !trace_of(&lines).iter().any(|l| l.starts_with("[DNS]")),
@@ -2446,7 +2461,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
         .set([&b"foo.test:1:[::1]"[..], b"*:1:127.0.0.1"])
         .unwrap();
     let id = m.add(e, (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(
         trace_of(&lines)[..5],
         [
@@ -2466,7 +2481,7 @@ fn a_resolve_list_is_read_once_for_each_setting() {
         .set_url(Some(b"tcp://other.test:1/"))
         .unwrap();
     let id = m.add(e, (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m).last().unwrap().1, Ok(()));
     assert_eq!(
         trace_of(&lines)[..2],
@@ -2521,7 +2536,7 @@ fn the_resolver_s_answers_are_kept() {
         let (mut e, lines) = traced(url);
         e.options_mut().ip_version = ip;
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-        m.perform(&mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
         let result = messages(&mut m).last().map(|r| r.1);
         m.remove(id, &mut NoEvents).unwrap();
         (result, trace_of(&lines))
@@ -2640,8 +2655,9 @@ fn a_full_pool_is_traced_by_the_transfer_filling_it() {
     let (a, a_lines) = traced("tcp://127.0.0.1:1/");
     let (b, b_lines) = traced("tcp://localhost:1/");
     m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     m.add(Box::new(b), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(m.counts().running, 0);
     assert_eq!(
         trace_of(&a_lines).last().unwrap(),
@@ -2668,10 +2684,10 @@ fn a_connection_closed_as_it_comes_back_is_no_one_s() {
     let a = m
         .add(Box::new(easy("tcp://127.0.0.1:3/")), (), &mut NoEvents)
         .unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     let (b, lines) = traced("tcp://127.0.0.1:1/");
     let b = m.add(Box::new(b), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(b.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines).last().unwrap(),
@@ -2693,7 +2709,7 @@ fn a_transfer_can_refuse_to_share_its_connection() {
         e.options_mut().limits.reuse.forbid = forbid;
         e.options_mut().limits.reuse.fresh = fresh;
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-        m.perform(&mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
         m.remove(id, &mut NoEvents).unwrap();
         trace_of(&lines)
     };
@@ -2835,7 +2851,7 @@ fn an_idle_connection_makes_room_under_the_total_limit() {
     for url in ["tcp://127.0.0.1:1/", "tcp://localhost:1/"] {
         let (e, lines) = traced(url);
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-        m.perform(&mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
         assert_eq!(messages(&mut m), [(id.index(), Ok(()), 0)]);
         assert!(trace_of(&lines).last().unwrap().ends_with("left intact\n"));
         m.remove(id, &mut NoEvents).unwrap();
@@ -2902,7 +2918,7 @@ fn the_pool_s_limit_is_guessed_from_the_transfers() {
     let mut run = |url: &str| {
         let (e, lines) = traced(url);
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-        m.perform(&mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
         m.remove(id, &mut NoEvents).unwrap();
         clock.advance(Duration::from_secs(1));
         trace_of(&lines)
@@ -2920,7 +2936,7 @@ fn the_pool_s_limit_is_guessed_from_the_transfers() {
     );
     let (e, lines) = traced("tcp://127.0.0.1:1/");
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     m.remove(id, &mut NoEvents).unwrap();
     assert_eq!(
         trace_of(&lines)[0],
@@ -2940,7 +2956,7 @@ fn a_connection_serves_only_the_peer_it_goes_through() {
         let (mut e, lines) = traced("tcp://foo.test:9/");
         e.options_mut().connect_to.set(to.iter().copied()).unwrap();
         let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-        m.perform(&mut NoEvents).unwrap();
+        perform_and_connect(&mut m);
         let result = messages(&mut m).last().unwrap().1;
         m.remove(id, &mut NoEvents).unwrap();
         (result, trace_of(&lines))
@@ -2988,7 +3004,7 @@ fn an_ip_version_limits_the_addresses_tried() {
     let mut v4 = v4;
     v4.options_mut().ip_version = crate::options::IpVersion::V4;
     let v4 = m.add(Box::new(v4), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(v4.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines)[..5],
@@ -3002,7 +3018,7 @@ fn an_ip_version_limits_the_addresses_tried() {
     );
     let (any, lines) = traced("tcp://localhost:1/");
     let any = m.add(Box::new(any), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(any.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines)[0],
@@ -3012,7 +3028,7 @@ fn an_ip_version_limits_the_addresses_tried() {
     let mut v6 = v6;
     v6.options_mut().ip_version = crate::options::IpVersion::V6;
     let v6 = m.add(Box::new(v6), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(&mut m);
     assert_eq!(messages(&mut m), [(v6.index(), Ok(()), 0)]);
     assert_eq!(
         trace_of(&lines)[0],
@@ -3230,7 +3246,7 @@ fn scoped_net() -> (Multi, std::num::NonZeroU32) {
 /// transfer is.
 fn run_traced(m: &mut Multi, e: Easy, lines: &TextLines) -> (Result<(), ErrorKind>, Vec<String>) {
     let h = m.add(Box::new(e), (), &mut NoEvents).unwrap();
-    m.perform(&mut NoEvents).unwrap();
+    perform_and_connect(m);
     let done = messages(m);
     assert_eq!(done.len(), 1, "{done:?}");
     assert_eq!(done[0].0, h.index());

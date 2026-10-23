@@ -741,6 +741,8 @@ fn an_exchange_waits_to_read_its_socket() {
     e.options_mut().set_url(Some(url.as_bytes())).unwrap();
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
+    // The connect started in the first pass is taken in the next.
+    m.perform(&mut NoEvents).unwrap();
     let waits = |m: &Multi| {
         let mut seen = Vec::new();
         m.sockets(|_, events| seen.push(events));
@@ -765,6 +767,8 @@ fn an_exchange_waits_for_what_its_layers_want() {
     e.options_mut().set_url(Some(url.as_bytes())).unwrap();
     e.options_mut().layer = Some(wants_out);
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    // The connect started in the first pass is taken in the next.
     m.perform(&mut NoEvents).unwrap();
     let waits = |m: &Multi| {
         let mut seen = Vec::new();
@@ -2687,6 +2691,8 @@ fn a_pass_sends_one_buffer_of_the_body() {
     o.method = Method::Upload;
     o.upload = stream.source(true);
     let _id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    // The connect started in the first pass is taken in the next.
+    m.perform(&mut NoEvents).unwrap();
     let body = |r: &[u8]| {
         r.windows(4)
             .position(|w| w == b"\r\n\r\n")
@@ -4000,6 +4006,8 @@ fn a_transfer_removed_mid_connect_leaves_no_connection_to_reuse() {
     tunneled(e.options_mut());
     let id = m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
+    // The connect started in the first pass is taken in the next.
+    m.perform(&mut NoEvents).unwrap();
     assert!(silent.received().starts_with(b"CONNECT origin.example:80 "));
     m.remove(id, &mut NoEvents).unwrap();
     let ran = get(&mut m, "/", fresh.clone(), tunneled);
@@ -4268,6 +4276,8 @@ fn waiting(m: &mut Multi, set: impl FnOnce(&mut Options)) -> Vec<crate::conn::io
     e.options_mut().set_url(Some(url.as_bytes())).unwrap();
     set(e.options_mut());
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
+    m.perform(&mut NoEvents).unwrap();
+    // The connect started in the first pass is taken in the next.
     m.perform(&mut NoEvents).unwrap();
     let mut seen = Vec::new();
     m.sockets(|_, events| seen.push(events));
@@ -4770,6 +4780,7 @@ mod coding;
 mod multi_trace;
 mod range;
 mod read_trace;
+mod setup_trace;
 mod sigv4;
 mod time_condition;
 mod timer_trace;
@@ -6011,6 +6022,8 @@ fn a_body_held_for_a_100_earns_from_the_head() {
     o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
     m.add(Box::new(e), (), &mut NoEvents).unwrap();
     m.perform(&mut NoEvents).unwrap();
+    // The connect started in the first pass is taken in the next.
+    m.perform(&mut NoEvents).unwrap();
     assert_eq!(after_head(&talk.received()), 0, "held for the 100");
     clock.advance(Duration::from_secs(3));
     m.perform(&mut NoEvents).unwrap();
@@ -6047,6 +6060,8 @@ fn a_head_goes_beside_a_second_s_worth_of_the_body() {
         o.output.verbose = true;
         o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());
         m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        m.perform(&mut NoEvents).unwrap();
+        // The connect started in the first pass is taken in the next.
         m.perform(&mut NoEvents).unwrap();
         let head: Vec<usize> = seen.of("out").iter().map(Vec::len).collect();
         let sends: Vec<usize> = seen.of("dataout").iter().map(Vec::len).collect();

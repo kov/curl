@@ -74,11 +74,11 @@ witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 
 === a socket with something to read and a hang-up is taken for alive
 file: crates/curl-core/src/conn/layer.rs
-witness: curl-core conn::layer::tests::the_socket_says_whether_the_connection_is_alive
+witness: curl-core conn::layer::tests::urgent_data_is_dead_and_any_other_input_pending
 --- old
-                    Ok(_) if watch[0].revents() == Events::IN => Alive::Alive {
+        Ok(r) if r.intersects(dead) => Alive::Dead,
 --- new
-                    Ok(_) if !watch[0].revents().is_empty() => Alive::Alive {
+        Ok(r) if r.intersects(dead) && !r.contains(Events::IN) => Alive::Dead,
 
 === a layer keeping the defaults hides what the layers below hold
 file: crates/curl-core/src/conn/layer.rs
@@ -105,3 +105,19 @@ witness: curl-core conn::layer::tests::a_layer_s_defaults_ask_below
         let _ = wanted;
         Events::NONE
     }
+
+=== the health check does not ask for urgent data
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core conn::layer::tests::urgent_data_is_dead_and_any_other_input_pending
+--- old
+                let asked = Events::RDNORM | Events::IN | Events::RDBAND | Events::PRI;
+--- new
+                let asked = Events::RDNORM | Events::IN | Events::RDBAND;
+
+=== the health check takes only input alone as input pending
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core conn::layer::tests::a_real_socket_with_bytes_to_read_is_input_pending
+--- old
+        Ok(r) if r.intersects(dead) => Alive::Dead,
+--- new
+        Ok(r) if r.intersects(dead) || r != Events::IN => Alive::Dead,

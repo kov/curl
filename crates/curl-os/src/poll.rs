@@ -14,6 +14,11 @@ pub struct Events(i16);
 impl Events {
     pub const NONE: Events = Events(0);
     pub const IN: Events = Events(libc::POLLIN);
+    /// Normal data to read; Linux says it with `IN`, when asked.
+    pub const RDNORM: Events = Events(libc::POLLRDNORM);
+    /// Priority band data to read.
+    pub const RDBAND: Events = Events(libc::POLLRDBAND);
+    /// Urgent data to read, as TCP's out-of-band byte.
     pub const PRI: Events = Events(libc::POLLPRI);
     pub const OUT: Events = Events(libc::POLLOUT);
     /// Only ever reported, never asked for.
@@ -23,6 +28,11 @@ impl Events {
 
     pub fn contains(self, other: Events) -> bool {
         self.0 & other.0 == other.0
+    }
+
+    /// Any of `other` is here.
+    pub fn intersects(self, other: Events) -> bool {
+        self.0 & other.0 != 0
     }
 
     pub fn is_empty(self) -> bool {
@@ -121,6 +131,9 @@ mod tests {
         assert_eq!(Events::IN | Events::IN, Events::IN);
         assert!(Events::NONE.is_empty());
         assert!(!both.is_empty());
+        assert!(both.intersects(Events::IN | Events::PRI));
+        assert!(!both.intersects(Events::PRI | Events::HUP));
+        assert!(!Events::NONE.intersects(Events::NONE));
     }
 
     #[test]

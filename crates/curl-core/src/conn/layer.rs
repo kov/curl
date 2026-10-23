@@ -169,25 +169,36 @@ impl Below<'_> {
         }
     }
 
-    /// The socket polled at once (`cf_socket_conn_is_alive`): an error,
-    /// a hang-up or an error event is dead; anything to read, input
-    /// pending.
+    /// The socket polled at once for anything to read, priority and
+    /// urgent data among it (`cf_socket_conn_is_alive`).
     pub(crate) fn alive(self, cx: &mut dyn LayerCx) -> Alive {
         match self.layers.split_last_mut() {
             Some((top, layers)) => top.is_alive(cx, Below { layers, ..self }),
             None => {
-                let mut watch = [SocketPoll::new(self.socket, Events::IN)];
-                match poll_together(&mut watch, &mut [], Duration::ZERO) {
-                    Ok(_) if watch[0].revents().is_empty() => Alive::Alive {
-                        input_pending: false,
-                    },
-                    Ok(_) if watch[0].revents() == Events::IN => Alive::Alive {
-                        input_pending: true,
-                    },
-                    Ok(_) | Err(_) => Alive::Dead,
-                }
+                let asked = Events::RDNORM | Events::IN | Events::RDBAND | Events::PRI;
+                let mut watch = [SocketPoll::new(self.socket, asked)];
+                let polled = poll_together(&mut watch, &mut [], Duration::ZERO);
+                alive_of(polled.map(|_| watch[0].revents()))
             }
         }
+    }
+}
+
+/// What a poll of the socket for input says of the connection: a failed
+/// poll, an error, a hang-up, urgent data or a bad descriptor is dead;
+/// nothing at all is alive; anything else is input pending
+/// (`cf_socket_conn_is_alive`).
+fn alive_of(revents: io::Result<Events>) -> Alive {
+    let dead = Events::ERR | Events::HUP | Events::PRI | Events::NVAL;
+    match revents {
+        Err(_) => Alive::Dead,
+        Ok(r) if r.is_empty() => Alive::Alive {
+            input_pending: false,
+        },
+        Ok(r) if r.intersects(dead) => Alive::Dead,
+        Ok(_) => Alive::Alive {
+            input_pending: true,
+        },
     }
 }
 
@@ -450,6 +461,111 @@ mod tests {
             socket: &*refused,
         };
         assert_eq!(below.alive(&mut cx), Alive::Dead);
+    }
+
+    /// A socket that is ready for `0` now, and polls as nothing else.
+    #[derive(Debug)]
+    struct Ready(Events);
+
+    impl Socket for Ready {
+        fn key(&self) -> crate::conn::io::SocketKey {
+            crate::conn::io::SocketKey::new(3)
+        }
+        fn readiness(&self) -> crate::conn::io::Readiness<'_> {
+            crate::conn::io::Readiness::Known {
+                now: self.0,
+                later: None,
+            }
+        }
+        fn take_error(&self) -> io::Result<Option<io::Error>> {
+            unreachable!()
+        }
+        fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
+            unreachable!()
+        }
+        fn set(&self, _: crate::conn::io::SocketOption) -> io::Result<()> {
+            unreachable!()
+        }
+        fn set_nonblocking(&self) -> io::Result<()> {
+            unreachable!()
+        }
+        fn connect(&self, _: std::net::SocketAddr) -> io::Result<crate::conn::io::Connect> {
+            unreachable!()
+        }
+        fn recv(&self, _: &mut [u8]) -> io::Result<Recv> {
+            unreachable!()
+        }
+        fn send(&self, _: &[u8]) -> io::Result<Sent> {
+            unreachable!()
+        }
+        fn release(self: Box<Self>) -> crate::conn::io::SocketKey {
+            unreachable!()
+        }
+    }
+
+    /// The health check asks for urgent and priority data as well as
+    /// normal data, as C's does: urgent data, as TCP's out-of-band byte,
+    /// is dead; priority band data alone, or normal data said both ways,
+    /// is input pending (`cf_socket_conn_is_alive`).
+    #[test]
+    fn urgent_data_is_dead_and_any_other_input_pending() {
+        let alive = |ready: Events| {
+            let s = Ready(ready);
+            let below = Below {
+                layers: &mut [],
+                socket: &s,
+            };
+            below.alive(&mut Silent(ManualClock::new().unwrap().now()))
+        };
+        let pending = Alive::Alive {
+            input_pending: true,
+        };
+        assert_eq!(alive(Events::PRI), Alive::Dead);
+        assert_eq!(alive(Events::IN | Events::PRI), Alive::Dead);
+        assert_eq!(alive(Events::RDBAND), pending);
+        assert_eq!(alive(Events::IN | Events::RDNORM), pending);
+        assert_eq!(alive(Events::RDNORM), pending);
+        assert_eq!(alive(Events::IN | Events::HUP), Alive::Dead);
+        assert_eq!(alive(Events::NVAL), Alive::Dead);
+        // Ready only to send is asked nothing of.
+        assert_eq!(
+            alive(Events::OUT),
+            Alive::Alive {
+                input_pending: false
+            }
+        );
+        assert_eq!(alive_of(Err(io::ErrorKind::Other.into())), Alive::Dead);
+    }
+
+    /// A real socket with bytes to read is input pending: the kernel says
+    /// `IN` and `RDNORM` together once both are asked.
+    #[test]
+    fn a_real_socket_with_bytes_to_read_is_input_pending() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = listener.local_addr().unwrap();
+        let socket = curl_os::net::open(at, curl_os::net::Protocol::Tcp, true).unwrap();
+        socket.connect(at).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        let below = || Below {
+            layers: &mut [],
+            socket: &socket,
+        };
+        let mut cx = Silent(ManualClock::new().unwrap().now());
+        assert_eq!(
+            below().alive(&mut cx),
+            Alive::Alive {
+                input_pending: false
+            }
+        );
+        peer.write_all(b"x").unwrap();
+        // Loopback delivers before the write returns; the poll is at once.
+        assert_eq!(
+            below().alive(&mut cx),
+            Alive::Alive {
+                input_pending: true
+            }
+        );
     }
 
     /// A layer that keeps the defaults passes the question below: the

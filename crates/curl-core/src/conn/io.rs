@@ -289,12 +289,18 @@ pub(crate) fn poll_together(
             // An error, a hang-up or a bad descriptor is said unasked, as
             // `poll(2)` says it.
             let unasked = Events::ERR | Events::HUP | Events::NVAL;
-            s.revents = [Events::IN, Events::PRI, Events::OUT]
-                .into_iter()
-                .filter(|&e| s.events.contains(e))
-                .chain([Events::ERR, Events::HUP, Events::NVAL])
-                .filter(|&e| ready.contains(e) && (s.events | unasked).contains(e))
-                .fold(Events::NONE, |a, e| a | e);
+            s.revents = [
+                Events::IN,
+                Events::RDNORM,
+                Events::RDBAND,
+                Events::PRI,
+                Events::OUT,
+            ]
+            .into_iter()
+            .filter(|&e| s.events.contains(e))
+            .chain([Events::ERR, Events::HUP, Events::NVAL])
+            .filter(|&e| ready.contains(e) && (s.events | unasked).contains(e))
+            .fold(Events::NONE, |a, e| a | e);
             known += u32::from(!s.revents.is_empty());
         }
     }

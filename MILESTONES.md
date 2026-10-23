@@ -492,11 +492,15 @@ cargo-mutants run on the milestone's diff.
     (`CURLAUTH_HTTPSIG`) with HMAC-SHA256, Ed25519 refused as by a C build whose TLS backend
     lacks it; `--ipfs-gateway` (1851); the linked libraries in `curl_version` and `-V`; the
     tool's locale taken from the environment for all but numbers, as C's `LC_ALL` is.
-37. **http: multipart/MIME.** `curl_mime_*`, `CURLOPT_MIMEPOST`, `CURLOPT_HTTPPOST`
-    (`curl_formadd`), the tool's `-F` and `--form-string`; the multipart encoder with its size
-    and rewind, and the `Content-Type` boundary. The upload source becomes a source plus an
-    ordered chain of sans-IO readers, each with its own fixed buffer, as C's client readers
-    are chained; SMTP, IMAP and FTP's ASCII mode reuse it later.
+37. **http: multipart/MIME.** **Done**, but for what waits on other protocols. The upload
+    source is a source plus a chain of reader stages (ENGINE.md 5.4); the MIME tree a value in
+    the core, read again at each request, with its encoders, size, rewind and the
+    `Content-Type` boundary; `CURLOPT_MIMEPOST` and the shim's `curl_mime_*`;
+    `CURLOPT_HTTPPOST` with `curl_formadd`, `curl_formget` and `curl_formfree`; the tool's
+    `-F`, `--form-string` and `--form-escape`; `CURLOPT_UPLOAD_BUFFERSIZE`. Every MIME and
+    form test the Rust leg runs passes (49). Waiting: SMTP (646, 648, 649, 652, 1187), IMAP
+    (647, 1553, 1590), TLS (304, 1972), NTLM (170), the `crypto` gate (258, 259),
+    `--libcurl` (1404) and the manual (1708).
 38. **Matching C, and what the milestone's reviews found.** **Done.**
     - The application's lists (`HTTPHEADER`, `PROXYHEADER`, `CONNECT_TO`, `RESOLVE`) read at
       each leg, as C reads them per request, not copied at setopt; the WebKit backend's pattern
@@ -559,3 +563,7 @@ STARTTLS; the request renderer writing each part through a field sink, when HTTP
 HTTP/2 delivering a sibling stream's data to its transfer at once, as C does, rather than
 buffering it per stream; FTP's data connection as a second chain beside the control
 connection's; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
+
+The tool's `--libcurl` (`tool_easysrc.c`: the C program a command line amounts to; 1404 and the
+`--libcurl` tests) and `--manual` (the built-in manual, `tool_hugehelp.c`: 1708, and the hint
+C's error messages end with) are not yet placed in a milestone.

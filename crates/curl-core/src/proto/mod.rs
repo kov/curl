@@ -76,6 +76,17 @@ pub(crate) enum ProtoState {
     Tcp,
 }
 
+/// What a complete exchange leads to, as its protocol decides.
+#[derive(Debug)]
+pub(crate) enum Ended<'r> {
+    /// What follows the request.
+    Then(AfterRequest),
+    /// The transfer is over; where the response's `Location:`, as the
+    /// server gave it, would have led is kept for the application (C's
+    /// `FOLLOW_FAKE`).
+    Unfollowed(&'r [u8]),
+}
+
 /// What a protocol step achieved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProtoStep {
@@ -233,43 +244,36 @@ impl ProtoState {
         }
     }
 
-    /// Where the response's `Location:` points, as the server gave it.
-    pub(crate) fn location(&self) -> Option<&[u8]> {
+    /// The exchange is complete: what follows it, as the protocol
+    /// decides at its end (C's `req.newurl` and `req.location`). `url` is
+    /// the request's, `origin` the connection's peer, and `http` what
+    /// HTTP's next request takes.
+    pub(crate) fn exchanged<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        url: &[u8],
+        origin: Option<&Peer>,
+        http: &mut Inherited,
+    ) -> Result<Ended<'_>, ErrorKind> {
         match *self {
-            ProtoState::Http(ref r) => r.location(),
-            ProtoState::File(_) => None,
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
+            ProtoState::Http(ref mut r) => r.exchanged(cx, url, origin, http),
+            _ => Ok(Ended::Then(AfterRequest::Complete)),
         }
     }
 
-    /// What the final response's challenges offered and led to.
-    pub(crate) fn auth(&mut self) -> Option<http::Challenged<'_>> {
+    /// The next request is one a `code` redirect leads to, "Issue another
+    /// request" said: what the protocol changes of it, `method` among it
+    /// (`Curl_http_follow`). Whether it switched to GET.
+    pub(crate) fn redirected<H: Host>(
+        &self,
+        cx: &mut StepCx<'_, H>,
+        code: u16,
+        method: &mut Method,
+        http: &mut Inherited,
+    ) -> bool {
         match *self {
-            ProtoState::Http(ref mut r) => r.auth(),
-            ProtoState::File(_) => None,
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
-        }
-    }
-
-    pub(crate) fn follow(&self) -> Option<(&[u8], u16)> {
-        match *self {
-            ProtoState::Http(ref r) => r.follow(),
-            ProtoState::File(_) => None,
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => None,
-        }
-    }
-
-    /// A 417 refused the request's `Expect: 100-continue`: it is to be
-    /// made again without.
-    pub(crate) fn expect_refused(&self) -> bool {
-        match *self {
-            ProtoState::Http(ref r) => r.expect_refused(),
-            ProtoState::File(_) => false,
-            #[cfg(any(test, feature = "test-util"))]
-            ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => false,
+            ProtoState::Http(_) => http::redirected(cx, code, method, http),
+            _ => unreachable!("only HTTP's exchange ends in a redirect"),
         }
     }
 

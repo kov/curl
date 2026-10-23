@@ -619,7 +619,7 @@ pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Re
                          next: AfterRequest }
 enum Reached { Unmade, Made, Exchanged }  // DID's times taken; the exchange ran to its end
 pub(crate) enum AfterRequest { Complete, Retry, Follow { location: Vec<u8>, code: u16 } }
-                                                  // the protocol's done is told which
+                                                  // the protocol's `exchanged` decides it
 pub(crate) struct Completed { outcome: Result<(), ErrorKind>, message: Message }
 pub(crate) enum Message { Unread, Read }
 ```
@@ -627,9 +627,24 @@ pub(crate) enum Message { Unread, Read }
 `Pending` and `Setup` hold what the setup made before it looked for a connection, so that only
 the search is made again: the route, built once per leg, which `Connecting` keeps and reads its
 destination and target from. Its IP version alone is read again as a waiting transfer looks
-again, as C, which makes its connection anew then, reads `set.ipver`. A redirect is
-`AfterRequest::Follow`, which the protocol's `done` decides from a `Location:` (§6.4); the next
-leg's `Plan` is built from where it leads.
+again, as C, which makes its connection anew then, reads `set.ipver`.
+
+**The protocol decides what follows an exchange; the engine carries it out.** When an exchange
+is complete, the engine asks the protocol (`ProtoState::exchanged`), which answers with an
+`Ended`: `Then(next)`, the `AfterRequest` to go to `Done` with, or `Unfollowed(location)`, a
+`Location:` the engine keeps where it would have led (FOLLOW_FAKE, generic in C's multi.c too).
+HTTP's answer holds everything HTTP-specific: a 417 or an answerable 401/407 made again as a
+`Follow` to the request's own URL, the challenges applied to `Easy::auth` and the report, a
+redirect followed (§6.4); every other protocol completes. It is asked at the exchange's end,
+before the progress pass that follows the step and before `multi_done`, as C's http.c sets
+`req.newurl` while it reads the head: the progress callback sees the report already updated, and a
+failure in deciding fails the request with it, premature. A retry is the engine's own
+(`retry_request`, before the protocol is asked), and the protocol's `done` is told the
+`AfterRequest` only to leave out "Empty reply" for a retry. The engine keeps the generic
+follow mechanics of C's multi.c: the redirect limit, counting and resolving the location, the
+port's leave, rewinding the body, "Issue another request", and starting the next leg
+(`follow_leg`, `retry_leg`, `next_leg`); what a redirect changes of the next request is the
+protocol's (`ProtoState::redirected`). The leg's `Plan` is built from where it leads.
 
 **A speed limit is a state of its own** (`RateLimiting`, C's RATELIMITING), not a flag on
 `Exchanging`. `Exchanging` asks the limits (`mspeed_check`) before its step and after one that
@@ -2122,7 +2137,7 @@ credentials, or kept as given if it does not resolve, into `report.redirect_url`
 (`CURLINFO_REDIRECT_URL`); the report starts empty with each transfer.
 
 A Location is followed when it came with a 3xx and following is on (C's `req.newurl`), decided
-by the head parser as it takes the line. Its body is not delivered: on a connection that closes
+by the head parser as it takes the line and handed to the engine by HTTP's `exchanged` (§3.1). Its body is not delivered: on a connection that closes
 the response ends at its head (`Framing::Abandoned`), on a kept one the body is read and dropped.
 A complete exchange ends `Done { next: AfterRequest::Follow(location) }`; the Done step releases
 the connection first, then `follow_leg` checks the limit (past it, FOLLOW_FAKE's URL is kept and
@@ -2151,8 +2166,9 @@ HTTP/1.0 (`rcvd_min`, which makes the later requests HTTP/1.0; HTTP's `done` rec
 whether Expect was refused. A request is given them as `Before` and copies what it needs when
 it is made. Following a
 redirect, in C's order: the old request's body is rewound (`Curl_req_soft_reset`), "Issue
-another request" is said, `FIRSTONLY` drops the custom method, `follow::switches_to_get`
-decides from `(code, method, POSTREDIR)` and `switch_to_get` applies it (a HEAD stays one).
+another request" is said, then HTTP's `redirected`: `FIRSTONLY` drops the custom method,
+`follow::switches_to_get` decides from `(code, method, POSTREDIR)` and `switch_to_get` applies
+it (a HEAD stays one).
 A failed rewind fails the transfer unless the next request is a GET. A retry rewinds the same
 way. A 417 to a body sent behind `Expect: 100-continue` makes the exchange end with a Follow
 to the request's own URL, as C's `newurl` does: counted as a redirect, and with

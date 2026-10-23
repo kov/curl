@@ -23,10 +23,9 @@ use crate::conn::{
 use crate::deliver::{Directions, Pause, PauseRequest, Pipeline, RecvPause};
 use crate::easy::Easy;
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
-use crate::options::{Flow, Follow, Method, Options, ProxyType, ResolveList};
+use crate::options::{Flow, Method, Options, ProxyType, ResolveList};
 use crate::progress::rate::{RateLimits, Verdict, Way};
 use crate::progress::{self, Speedometer};
-use crate::proto::http::Challenged;
 use crate::share::Kind;
 
 mod haproxy;
@@ -35,7 +34,7 @@ mod tunnel;
 use crate::components::Component;
 use crate::proto::http1::follow;
 use crate::proto::http1::follow::Inherited;
-use crate::proto::{Before, ProtoState, ProtoStep};
+use crate::proto::{Before, Ended, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
 use crate::trace::{self, Bytes, Ip, OsError};
@@ -1103,7 +1102,11 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                                     Wake::Again,
                                 )
                             } else if done {
-                                match after_exchange(run, &mut x, cx) {
+                                // Decided as the exchange ends, before the
+                                // progress pass below, so that the report
+                                // is current when the application's
+                                // progress callback reads it.
+                                match exchanged(run, &mut x, cx) {
                                     Ok(next) => (
                                         TransferState::Done(Done {
                                             next,
@@ -2175,73 +2178,25 @@ fn read_entries<H: Host>(cx: &mut StepCx<'_, H>, list: &ResolveList) -> Result<(
     Ok(())
 }
 
-/// What follows a complete exchange: the redirect it is to follow, or
-/// none, where a `Location:` would have led kept for the application, as
-/// C's `FOLLOW_FAKE` keeps it at the end of the exchange.
-fn after_exchange<H: Host>(
+/// What follows a complete exchange, as its protocol decides; a
+/// `Location:` not followed has where it would have led kept for the
+/// application, as C's `FOLLOW_FAKE` keeps it at the end of the
+/// exchange.
+fn exchanged<H: Host>(
     run: &mut Run,
     x: &mut Attached,
     cx: &mut StepCx<'_, H>,
 ) -> Result<AfterRequest, ErrorKind> {
-    // A 417 has the request made again without `Expect`, as a redirect
-    // to its own URL.
-    if x.proto.expect_refused() {
-        run.http.no_expect = true;
-        let mut location = Vec::new();
-        location
-            .try_extend_from_slice(&run.url)
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        return Ok(AfterRequest::Follow {
-            location,
-            code: 417,
-        });
-    }
-    // A 401 or 407 whose challenge the request can answer has it made
-    // again.
-    if let Some(Challenged {
-        offered,
-        act,
-        code,
-        origin,
-    }) = x.proto.auth()
+    match x
+        .proto
+        .exchanged(cx, &run.url, x.origin.as_deref(), &mut run.http)?
     {
-        let report = cx.report_mut();
-        report.add_auth_offered(offered.host.offered);
-        report.add_proxy_auth_offered(offered.proxy.offered);
-        if let Some(picked) = act.picked.filter(|p| !p.is_empty()) {
-            report.set_auth_used(picked);
-        }
-        if let Some(picked) = act.proxy_picked.filter(|p| !p.is_empty()) {
-            report.set_proxy_auth_used(picked);
-        }
-        // The proxy's challenge is kept for the proxy, which is the
-        // connection's origin when the request went to it whole.
-        let proxy = x.origin.as_deref().expect("an HTTP request has an origin");
-        cx.easy_mut()
-            .auth
-            .apply(&act, offered, origin, proxy)
-            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-        if act.reload {
-            let mut location = Vec::new();
-            location
-                .try_extend_from_slice(&run.url)
-                .map_err(|_| ErrorKind::OutOfMemory)?;
-            return Ok(AfterRequest::Follow { location, code });
+        Ended::Then(next) => Ok(next),
+        Ended::Unfollowed(location) => {
+            keep_redirect_url(run, cx, location)?;
+            Ok(AfterRequest::Complete)
         }
     }
-    if let Some((location, code)) = x.proto.follow() {
-        let mut copy = Vec::new();
-        copy.try_extend_from_slice(location)
-            .map_err(|_| ErrorKind::OutOfMemory)?;
-        return Ok(AfterRequest::Follow {
-            location: copy,
-            code,
-        });
-    }
-    if let Some(location) = x.proto.location() {
-        keep_redirect_url(run, cx, location)?;
-    }
-    Ok(AfterRequest::Complete)
 }
 
 /// The URL of the request just made, as it was parsed for it (C's
@@ -2340,20 +2295,7 @@ fn follow_leg<H: Host>(
         cx,
         format_args!("Issue another request to this URL: '{shown}'"),
     );
-    let http = &cx.easy().options().http;
-    let custom = http.custom.method.is_some();
-    if http.follow == Follow::FirstOnly && custom && !run.http.ignore_custom {
-        run.http.ignore_custom = true;
-        trace::info(
-            cx,
-            format_args!("Drop custom request method for next request"),
-        );
-    }
-    let http = &cx.easy().options().http;
-    let switched = follow::switches_to_get(code, run.method, http.post_redirect);
-    if switched {
-        switch_to_get(run, cx, code);
-    }
+    let switched = proto.redirected(cx, code, &mut run.method, &mut run.http);
     if let Err(e) = rewound
         && !switched
     {
@@ -2417,39 +2359,6 @@ fn referer_of(url: &[u8]) -> Result<Vec<u8>, ErrorKind> {
         .and_then(|()| url.set(Part::Password, None, none))
         .and_then(|()| url.get(Part::Url, GetOptions::NONE))
         .map_err(|_| ErrorKind::OutOfMemory)
-}
-
-/// The next request asks for a GET (`http_switch_to_get`): traced and the
-/// custom method dropped only if the redirect's code is obeyed.
-fn switch_to_get<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, code: u16) {
-    let http = &cx.easy().options().http;
-    let custom = http.custom.method.as_deref();
-    let inherited = &mut run.http;
-    // Formatted before it is traced, as the debug handler may set the
-    // custom method, and the next request uses what it sets.
-    let said = if (custom.is_some() || run.method != Method::Get) && http.follow == Follow::ObeyCode
-    {
-        inherited.ignore_custom = true;
-        Some(trace::line(format_args!(
-            "Switch to GET because of {code} response"
-        )))
-    } else if let Some(custom) = custom
-        && http.follow != Follow::FirstOnly
-    {
-        let custom = Bytes(custom);
-        Some(trace::line(format_args!(
-            "Stick to {custom} instead of GET"
-        )))
-    } else {
-        None
-    };
-    if let Some(said) = said {
-        trace::info_line(cx, &said);
-    }
-    // A HEAD stays bodyless, as `CURLOPT_NOBODY` keeps it.
-    if run.method != Method::Head {
-        run.method = Method::Get;
-    }
 }
 
 /// The next request of a transfer, made again or redirected, for `url`:

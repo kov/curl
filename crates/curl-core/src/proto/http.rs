@@ -35,13 +35,13 @@ use super::http1::auth::{
     Secret, Side,
 };
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
-use super::http1::follow::Inherited;
+use super::http1::follow::{self, Inherited};
 use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
     self, Accepted, Authorization, Conditional, CredentialGate, Forwarding, RangeLine, RequestHead,
     Typed,
 };
-use super::{Before, ProtoStep};
+use super::{Before, Ended, ProtoStep};
 use crate::netrc::{self, NetrcError};
 use crate::options::AuthMethods;
 use crate::options::NetrcMode;
@@ -83,11 +83,11 @@ const SCHEME: Scheme = Scheme {
 
 /// What a final response's challenges offered and led to, its code, and
 /// the origin the request authenticated with.
-pub(crate) struct Challenged<'r> {
-    pub(crate) offered: Offered,
-    pub(crate) act: AuthAct,
-    pub(crate) code: u16,
-    pub(crate) origin: &'r Peer,
+struct Challenged<'r> {
+    offered: Offered,
+    act: AuthAct,
+    code: u16,
+    origin: &'r Peer,
 }
 
 /// Digest's client nonce.
@@ -495,19 +495,19 @@ impl Request {
     }
 
     /// Where the response's `Location:` points, as the server gave it.
-    pub(crate) fn location(&self) -> Option<&[u8]> {
+    fn location(&self) -> Option<&[u8]> {
         self.head.as_ref()?.meta().location()
     }
 
     /// Where the response redirects to, if it is followed, and its code.
-    pub(crate) fn follow(&self) -> Option<(&[u8], u16)> {
+    fn follow(&self) -> Option<(&[u8], u16)> {
         let head = self.head.as_ref()?;
         Some((head.meta().follow()?, head.status()?.code))
     }
 
     /// What the final response's challenges offered and led to; the
     /// challenges are taken out, for the handle to keep.
-    pub(crate) fn auth(&mut self) -> Option<Challenged<'_>> {
+    fn auth(&mut self) -> Option<Challenged<'_>> {
         let head = self.head.as_mut()?;
         let code = head.status()?.code;
         let act = *head.meta().auth();
@@ -519,9 +519,80 @@ impl Request {
         })
     }
 
-    /// A 417 refused the request's `Expect: 100-continue`.
-    pub(crate) fn expect_refused(&self) -> bool {
-        self.expect_refused
+    /// What the complete exchange leads to, decided at its end: a 417 to
+    /// an `Expect: 100-continue` or a challenge the request can answer
+    /// has it made again, as a redirect to `url`, its own; a redirect
+    /// followed is followed; a `Location:` not followed is left for the
+    /// engine to keep (C's `req.newurl` and `req.location`, which
+    /// `http_on_response` and `Curl_http_auth_act` set as the head
+    /// ends). The challenges go to the handle and the report: the
+    /// origin's kept for the request's origin, the proxy's for `proxy`,
+    /// the connection's peer, which is the proxy's when the request goes
+    /// to it whole.
+    pub(crate) fn exchanged<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        url: &[u8],
+        proxy: Option<&Peer>,
+        inherited: &mut Inherited,
+    ) -> Result<Ended<'_>, ErrorKind> {
+        // A 417 has the request made again without `Expect`, as a
+        // redirect to its own URL.
+        if self.expect_refused {
+            inherited.no_expect = true;
+            let mut location = Vec::new();
+            location
+                .try_extend_from_slice(url)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            return Ok(Ended::Then(AfterRequest::Follow {
+                location,
+                code: 417,
+            }));
+        }
+        // A 401 or 407 whose challenge the request can answer has it made
+        // again.
+        if let Some(Challenged {
+            offered,
+            act,
+            code,
+            origin,
+        }) = self.auth()
+        {
+            let report = cx.report_mut();
+            report.add_auth_offered(offered.host.offered);
+            report.add_proxy_auth_offered(offered.proxy.offered);
+            if let Some(picked) = act.picked.filter(|p| !p.is_empty()) {
+                report.set_auth_used(picked);
+            }
+            if let Some(picked) = act.proxy_picked.filter(|p| !p.is_empty()) {
+                report.set_proxy_auth_used(picked);
+            }
+            let proxy = proxy.expect("an HTTP request has an origin");
+            cx.easy_mut()
+                .auth
+                .apply(&act, offered, origin, proxy)
+                .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+            if act.reload {
+                let mut location = Vec::new();
+                location
+                    .try_extend_from_slice(url)
+                    .map_err(|_| ErrorKind::OutOfMemory)?;
+                return Ok(Ended::Then(AfterRequest::Follow { location, code }));
+            }
+        }
+        if let Some((location, code)) = self.follow() {
+            let mut copy = Vec::new();
+            copy.try_extend_from_slice(location)
+                .map_err(|_| ErrorKind::OutOfMemory)?;
+            return Ok(Ended::Then(AfterRequest::Follow {
+                location: copy,
+                code,
+            }));
+        }
+        Ok(match self.location() {
+            Some(location) => Ended::Unfollowed(location),
+            None => Ended::Then(AfterRequest::Complete),
+        })
     }
 
     /// The body is to be read again for the next request
@@ -1983,6 +2054,69 @@ impl Request {
             ));
         }
         Ok(())
+    }
+}
+
+/// The next request is one a `code` redirect leads to, "Issue another
+/// request" said (`Curl_http_follow`): a custom method asked only of the
+/// first URL is dropped, and the method switches to GET where the code
+/// and `CURLOPT_POSTREDIR` say (`follow_switch_get`). Whether it switched.
+pub(crate) fn redirected<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    code: u16,
+    method: &mut Method,
+    inherited: &mut Inherited,
+) -> bool {
+    let http = &cx.easy().options().http;
+    let custom = http.custom.method.is_some();
+    if http.follow == Follow::FirstOnly && custom && !inherited.ignore_custom {
+        inherited.ignore_custom = true;
+        trace::info(
+            cx,
+            format_args!("Drop custom request method for next request"),
+        );
+    }
+    let http = &cx.easy().options().http;
+    let switched = follow::switches_to_get(code, *method, http.post_redirect);
+    if switched {
+        switch_to_get(cx, code, method, inherited);
+    }
+    switched
+}
+
+/// The next request asks for a GET (`http_switch_to_get`): traced and the
+/// custom method dropped only if the redirect's code is obeyed.
+fn switch_to_get<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    code: u16,
+    method: &mut Method,
+    inherited: &mut Inherited,
+) {
+    let http = &cx.easy().options().http;
+    let custom = http.custom.method.as_deref();
+    // Formatted before it is traced, as the debug handler may set the
+    // custom method, and the next request uses what it sets.
+    let said = if (custom.is_some() || *method != Method::Get) && http.follow == Follow::ObeyCode {
+        inherited.ignore_custom = true;
+        Some(trace::line(format_args!(
+            "Switch to GET because of {code} response"
+        )))
+    } else if let Some(custom) = custom
+        && http.follow != Follow::FirstOnly
+    {
+        let custom = trace::Bytes(custom);
+        Some(trace::line(format_args!(
+            "Stick to {custom} instead of GET"
+        )))
+    } else {
+        None
+    };
+    if let Some(said) = said {
+        trace::info_line(cx, &said);
+    }
+    // A HEAD stays bodyless, as `CURLOPT_NOBODY` keeps it.
+    if *method != Method::Head {
+        *method = Method::Get;
     }
 }
 

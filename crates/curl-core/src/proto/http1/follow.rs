@@ -13,13 +13,13 @@ use crate::url::{GetOptions, ParseOptions, Part, SetOptions, Url};
 pub(crate) struct Inherited {
     /// The application's custom method is no longer sent
     /// (`state.http_ignorecustom`).
-    pub(crate) ignore_custom: bool,
+    pub(in crate::proto) ignore_custom: bool,
     /// A response said HTTP/1.0: so do the requests after it
     /// (`state.http_neg.rcvd_min`).
-    pub(crate) http10: bool,
+    pub(in crate::proto) http10: bool,
     /// A 417 refused `Expect: 100-continue`: the library adds it no more
     /// (`state.disableexpect`).
-    pub(crate) no_expect: bool,
+    pub(in crate::proto) no_expect: bool,
 }
 
 /// Where `location` leads from `base`, the request's URL, for a response

@@ -711,17 +711,17 @@ witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_d
         303 => post && !keep.post303,
 
 === a switch to GET keeps the method
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
 --- old
-        run.method = Method::Get;
+        *method = Method::Get;
 --- new
 
 === a HEAD redirected by a 303 becomes a GET
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
 --- old
-    if run.method != Method::Head {
+    if *method != Method::Head {
 --- new
     if true {
 
@@ -733,14 +733,16 @@ witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_d
 --- new
 
 === a custom method asked only of the first URL is kept
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
 --- old
-        run.http.ignore_custom = true;
+        inherited.ignore_custom = true;
+        trace::info(
 --- new
+        trace::info(
 
 === an obeyed code keeps the custom method
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_custom_method_follows_as_the_mode_says
 --- old
         inherited.ignore_custom = true;
@@ -837,12 +839,12 @@ witness: curl-core proto::http::tests::a_redirect_s_own_credentials_go_with_it
         }
 
 === a 417 is not made again
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_417_has_the_request_made_again_without_expect
 --- old
-    if x.proto.expect_refused() {
+        if self.expect_refused {
 --- new
-    if false {
+        if false {
 
 === the request made again after a 417 still expects a 100
 file: crates/curl-core/src/proto/http.rs
@@ -927,12 +929,12 @@ witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
         let again = self.follow;
 
 === a 401 to be answered is not made again
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
 --- old
-        if act.reload {
+            if act.reload {
 --- new
-        if act.reload && false {
+            if act.reload && false {
 
 === a 401 to be answered fails a request that fails on errors
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -1402,3 +1404,11 @@ witness: curl-core proto::http::tests::the_path_is_sent_encoded_and_the_query_as
         let mut target = url.get(Part::Path, encoded).map_err(url_error)?;
 --- new
         let mut target = url.get(Part::Path, GetOptions::NONE).map_err(url_error)?;
+
+=== HTTP's exchange ends without the redirect its head decided to follow
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::a_redirect_turns_a_post_into_a_get_as_c_does
+--- old
+        if let Some((location, code)) = self.follow() {
+--- new
+        if let Some((location, code)) = self.follow().filter(|_| false) {

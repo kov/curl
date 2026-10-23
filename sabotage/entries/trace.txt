@@ -61,7 +61,7 @@ witness: curl-core deliver::tests::the_first_reason_is_the_one_kept
     if let Some(sink) = cx.easy().options().callbacks.failure.clone() {
 
 === the custom method is out of the options while the switch to GET is traced
-file: crates/curl-core/src/multi/state.rs
+file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_custom_method_set_while_a_redirect_is_traced_stands
 --- old
     if let Some(said) = said {

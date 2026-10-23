@@ -561,9 +561,10 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **d. The closer.** **Done.** `Sock` and `Closer`, captured at `Pool::add` and carried by every
       socket the connection opens; a share's and a multi's idle connections close through it
       at cleanup. Then the 1 KB drain before a clean close.
-    - **e. The layer stack.** `Layer`, `Below`, `LayerStack` and `LayerCx`; the stream reads
-      and writes through it, the pollset passes through it, the health check asks `is_alive`,
-      and data pending runs the transfer again.
+    - **e. The layer stack.** **Done.** `Layer`, `Below`, `LayerStack` and `LayerCx`; the
+      stream reads and writes through it, the pollset passes through it, the health check asks
+      `is_alive`, and data pending runs the transfer again; bytes read past a tunnel's answer
+      are given first.
     - **f. A drive's context.** `ConnCx`, over the step's context, given to each drive; the
       lines step 39 traces still reported through `Progress`.
     - **g. Handshakes in C's order** over the `Dialed` stream: the PROXY line before the

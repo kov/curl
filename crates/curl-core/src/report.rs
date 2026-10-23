@@ -196,10 +196,11 @@ impl TransferReport {
         self.filetime = Some(t);
     }
 
-    /// The time condition was not met: the file was not transferred, or
-    /// the server answered 304 (`CURLINFO_CONDITION_UNMET`).
+    /// The time condition was not met, so the file was not transferred,
+    /// or the last response was a 304, whatever asked for it
+    /// (`CURLINFO_CONDITION_UNMET`).
     pub fn condition_unmet(&self) -> bool {
-        self.condition_unmet
+        self.condition_unmet || self.response_code() == Some(304)
     }
 
     pub(crate) fn set_condition_unmet(&mut self) {

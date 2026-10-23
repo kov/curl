@@ -45,12 +45,12 @@ witness: curl-core proto::http::tests::time_condition::a_time_condition_is_sent_
                 Ok(date) => true.then_some(Conditional {
 
 === a 304 from the server says nothing of the condition
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/report.rs
 witness: curl-core proto::http::tests::time_condition::a_304_says_the_condition_was_unmet
 --- old
-            if unmet || (!interim && code == 304 && options.time_condition.is_some()) {
+        self.condition_unmet || self.response_code() == Some(304)
 --- new
-            if unmet {
+        self.condition_unmet
 
 === a document ruled out keeps its own status
 file: crates/curl-core/src/proto/http.rs

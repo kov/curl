@@ -151,8 +151,9 @@ fn a_document_that_meets_the_condition_is_read() {
     );
 }
 
-/// A 304 from the server says the condition was not met, only when one
-/// was asked.
+/// A 304 from the server says the condition was not met, whether a time
+/// condition or a header of the application's asked for it: C's
+/// `CURLINFO_CONDITION_UNMET` answers 1 for any 304.
 #[test]
 fn a_304_says_the_condition_was_unmet() {
     let not_modified = b"HTTP/1.1 304 Not Modified\r\nLast-Modified: x\r\n\r\n";
@@ -164,5 +165,7 @@ fn a_304_says_the_condition_was_unmet() {
     );
     assert!(ran.easy.report().condition_unmet());
     let ran = run("/", not_modified, false, |_| {});
+    assert!(ran.easy.report().condition_unmet());
+    let ran = run("/", OK, false, |_| {});
     assert!(!ran.easy.report().condition_unmet());
 }

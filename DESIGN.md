@@ -52,8 +52,9 @@ Cargo features, and at run time where the C ABI allows it (`curl_global_sslset`)
 - **Protocols are testable without a network.** Unit tests feed bytes and a clock, with no
   sockets and no sleeps.
 - **A connection is a stack of filters.** TCP, then a proxy tunnel, then TLS, then HTTP/2, each
-  with the same sans-IO interface. This is the C tree's `cfilters` model, and it keeps the
-  combinations orthogonal.
+  with the same pull interface: a layer reads from and writes to the one below it, and only the
+  socket at the bottom touches the operating system. This is the C tree's `cfilters` model, and
+  it keeps the combinations orthogonal.
 - **A TLS backend is driven as C drives it.** The OpenSSL layer gets a custom BIO method over the
   layer below, as `lib/vtls/openssl.c` does, so the `SSL *` and `SSL_CTX *` an application is
   handed look the same as C's. A more efficient arrangement can come later as an opt-in.

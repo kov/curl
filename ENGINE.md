@@ -38,8 +38,12 @@ numbers are those of `SCOPE.md`.
 6. **A connection is `ConnSlot::{Connecting, Open, Failed}` under a stable `ConnId`.**
    `Connecting` holds a typed `ConnectMachine` (resolve, eyeballs, then the proxy's tunnel or
    SOCKS handshake over the `Dialed` connection), each stage owning the output of the one
-   before. Operations that need a handshaken connection exist only on `Open`. A `Closing`
-   state, for connections shut down gracefully, comes with TLS and the shutdown set.
+   before. Operations that need a handshaken connection exist only on `Open`. Bytes move
+   through one `Stream` (the socket, its layers and its receive buffer), owned first by
+   `Dialed` and then by the `Conn`. The layers are a pull chain, as C's filters are (§4.3).
+   Where a connection is, is its place in its pool: `Leased` by one transfer or `Idle`, and
+   later `Closing`, `Reserved` and `Attached` (§4.6). A lease names its home pool and is given
+   back only to it; every socket carries the closer it was opened with.
 7. **Generational ids everywhere**: `TransferId`, `ConnId` (whose generation is the
    "Connection #N" number), `ResolveId`, `HeaderCursor`. A stale id fails its own lookup.
 
@@ -82,8 +86,8 @@ numbers are those of `SCOPE.md`.
 16. **`Multi::add` takes the `Easy` by value and `remove` gives it back.** `Easy::perform`
     moves itself into its private multi with `mem::take` and back, so `Easy` has no
     "None during perform" field.
-17. **No admin easy.** Connection-level work takes a connection context with settings captured
-    per connection.
+17. **No admin easy.** Connection-level work, a connect drive included, takes a connection
+    context (`ConnCx`, §4.7) with settings captured per connection.
 18. **The clock is owned** (`Box<dyn Clock>`), read once per pass and passed down as `now`.
 19. **Sockets and polling live in `curl-os`** (`net.rs`, `poll.rs`, behind a `net` feature);
     `curl-core` depends on it and adapts it in safe code. Only `conn::*` and `multi::wait`
@@ -176,6 +180,10 @@ curl-core/src/
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
     io.rs                    Net, Socket, SystemNet, FakeNet (test-util)
+    stream.rs                Stream: a socket, its layers and its receive buffer (step 40)
+    layer.rs                 Layer, Below, LayerStack, LayerCx (step 40)
+    chain.rs                 Chain: C's filter chain rendered for the trace from the
+                             machine's stage and the route (step 40)
   deliver/                   BodyAccountant, ClientOut; held.rs: HeldOutput;
                              decode.rs: Gate, the decoders' chain;
                              pause.rs: Pause, PauseRequest, Directions
@@ -197,8 +205,8 @@ curl-core/src/
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: `conn/layer.rs` (Layer, LayerStack), `conn/mux.rs`, `conn/shutdown.rs`
-(ShutdownSet, with TLS), a `Resolver` for names the cache and the shortcuts do not answer, and
+Planned, not built: the three files marked step 40 above; `conn/mux.rs`; `conn/shutdown.rs`
+(ShutdownSet, with TLS); a `Resolver` for names the cache and the shortcuts do not answer; and
 `DebugNet`.
 
 ### 2.3 Ids and the arena
@@ -319,41 +327,63 @@ fold several of C's (INIT runs C's INIT and SETUP and starts its CONNECT), so th
 at the points C passes them, and after each step the state is brought to the one the engine's
 names; a request that failed stays where it failed, as C's is done with there. Traced: the
 changes, the times taken (`[PGRS-*]`), the transfer's coming and going, `[CPOOL]`'s new
-connection, `Curl_conn_setup`, a failed connect and `multi_done`'s lines. Not traced: lines on
-C's connection filters and its pollset and `multi_wait` internals, the credentials line
-(`Curl_creds_trace`), `xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; a transfer let out of PENDING
-by another is traced entering CONNECT at its next step rather than as it is let.
+connection, `Curl_conn_setup`, a failed connect and `multi_done`'s lines. Planned (step 40):
+the chain's lines (`cf_setup_connect [0][…]`, `connected [0][…]`, `reduced to [0][…]`,
+`failed to connect [0][…]`), rendered from the connect machine's stage and the route
+(`conn/chain.rs`), as no filter object exists to name itself; `Curl_multi_will_close fd=N` as a
+socket the multi knows closes; and, from `wait` before it polls, each process transfer's
+`pollset[…], timeouts=N` and the last one's `multi_wait(fds=N, timeout=T) tinternal=I`, the
+waker counted in `fds` (§3.6). Not traced: the credentials line (`Curl_creds_trace`),
+`xfer_setup`, `[RLIMIT]` and `[TIMEOUT]`; event mode's socket-hash lines (`multi_run_dirty`, `ev
+new entry`, `ev entry … added transfer`, `ev update`, `ev update call`), which no step owns yet;
+a transfer let out of PENDING by another is traced entering CONNECT at its next step rather than
+as it is let.
 
 `TCP` traces each send and receive on a transfer's connection, and the PROXY protocol's line,
-with what it asked for and what it came to. Not traced: the socket's opening, local address and
-connect, which the connect machine does without a context to trace in; the receive C tries
-before its first poll in PERFORMING, which the engine does not make; and a tunnel's and SOCKS
-handshake's reads and writes: C reads a proxy's answer to `CONNECT` a byte at a time from the
-socket, where the engine reads what is there.
+with what it asked for and what it came to. Planned (step 40, through the drive's context,
+§3.6): the socket's opening (`cf_socket_open() -> 0, fd=N`), its local address, `connected on
+fd=N`, a failed connect (`poll/select error on fd=N`), its pollset while it connects
+(`adjust_pollset, !connected, POLLOUT fd=N`) and `destroy` as it closes. Not traced: the receive
+C tries before its first poll in PERFORMING, which the engine does not make; a tunnel's and
+SOCKS handshake's reads and writes, as C reads a proxy's answer to `CONNECT` a byte at a time
+from the socket, where the engine reads what is there; and `query ALPN`, which comes with TLS.
+
+`SETUP` (planned, step 40) traces cf-setup.c's lines from the connect machine's stage: `added`,
+`happy eyeballing to origin|proxy H:P`, `added SOCKS filter to H:P`, `added HTTP proxy tunnel
+filter`, `added HAPROXY filter`, `retrying connect, N. time`, and its own `removing connected
+setup filter` and `destroy`. The other setup filters' removal and destruction lines are not
+traced (`HAPPY-EYEBALLS` and `DNS` below), nor, in any step yet, the `SOCKS`, `HTTP-PROXY` and
+`H1-PROXY` components' own lines (SOCKS's state changes and `adjust pollset`, the tunnel's
+`CONNECT send`/`receive`/`response` and `new tunnel state`).
 
 `TIMER` names each of a transfer's timers by C's `expire_id` (`TimerKind::name`; the protocol's
 own wait is HTTP's for a 100, the only one there is) where C arms or clears it: the leg's limits
 as it starts, the low-speed check, the rate limits, the next connect attempt and the wait for a
 100, each with what is left of its wait read from the clock as it is traced; the race's timer as
 its attempt connects and the 100's as it comes, runs out or the body ends. The first timer due
-is named as a socket action fires it; a perform fires it silently, as C's does. Not traced: the
-pending timers and the multi's timeout, which C lists with its pollset and in `multi_wait`.
+is named as a socket action fires it; a perform fires it silently, as C's does. Planned (step
+40): each pending timer's `[X] expires in Nus` after its transfer's pollset line, and `[X] gives
+multi timeout in Nms` on the transfer whose timer is next, both from the multi's internal
+`multi_timeout`, which `wait`, the timer update and the shim's `curl_multi_timeout` call;
+`Multi::timeout(&self)` stays untraced for Rust callers.
 
 `HAPPY-EYEBALLS` traces the connect machine's race (C's `cf_ip_ballers_run`) from what a drive
 reports: each attempt as it starts, the first or the next and its family, the start of the next
 as the delay runs out, the delay armed while an address is left, the winner by its place among
 the attempts running, the peer it connected to, and the end of a race with no attempt left. Not
-traced: the filter's own life (its creation, `adjust_pollset`, its removal and destruction) and
-the walk over the addresses (`want to do more`, `check for next`, `checked connect attempts`),
-which describe C's structures rather than a step the machine takes.
+traced: the filter's own life (`init ip ballers`, `adjust_pollset`, its removal and
+destruction) and the walk over the addresses (`want to do more`, `check for next`, `checked
+connect attempts`), which describe C's structures rather than a step the machine takes.
 
 `DNS` traces the lookup of the name a connection goes to first, from what the connect machine
 reports (`Found`, `Unresolved`): the cache looked in, found, missing, stale or holding the
 resolver's no; what answered a name it did not have, a shortcut at once or the resolver later as
 the reference build's c-ares does; the answer kept, or the no. The queries are named as the IP
 version and an address's own family make them; the debug build's `hostip_resolv` line comes with
-the `debug-hooks` feature. Not traced: C's DNS filter's own life and its reading of the answer,
-c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
+the `debug-hooks` feature. Not traced: C's DNS filter's own life (`created DNS filter`, `added`,
+`cf_dns_start`, `connected filter chain below`, its removal and destruction), its reading of the
+answer (`get Nth result`), the chain's connect result C traces under the top filter's name
+(`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
 and a SOCKS proxy's lookup of the destination.
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
@@ -642,8 +672,9 @@ it runs in the next pass without waiting on its socket, and the multi's timeout 
 A peer that sends faster than it is read thus cannot keep a pass from ending, so the time limits,
 the progress handler and the other transfers get their turn as in C. C's other exits from that
 loop: a receive limit spent ends the step without a dirty mark, the engine then waiting for
-the limit's timer (§5.3), and no layer holds
-received bytes a poll cannot see (`data_pending`; TLS will). One that asks for another request, by a location to
+the limit's timer (§5.3), and bytes held where a poll cannot see them, which run the transfer
+again (`data_pending`, §4.3: a stream's `rx` after a tunnel's answer, and TLS's decrypted bytes;
+planned, step 40). One that asks for another request, by a location to
 follow or for credentials, weighs what of the body is left (`http_perhapsrewind`, in the head
 parser, fed an `Unsent` with each piece): 2000 bytes or more, or an unknown amount, and the
 connection closes rather than carry it, the response ending at its head; less, and it goes to be
@@ -919,11 +950,23 @@ The rules that keep this sound:
   it. A `pause` reaching a transfer whose `Run` is already out (the stepping one, or one being
   flushed) finds no pipeline to flush and only changes the value; nesting is bounded by that,
   not by a counter.
-- **A connection being driven** is driven in its lease: `ConnLease::connect` replaces the
-  lease's `ConnSlot::Connecting` with the drive's result, the pool not borrowed at all, and no
-  call-out to the application happens during a drive. The socket open hooks
-  (OPENSOCKET, SOCKOPT) will be the first call-outs inside one; their context carries no pool
-  access, and they are the reason a drive may later move the machine out of its slot (§4.2).
+- **A connection being driven** is driven in its lease: `ConnLease::connect` moves the
+  machine out of the lease's `ConnSlot::Connecting`, drives it and puts the result back, the
+  pool not borrowed at all. The machine is part of the stepping transfer's `Run`, so it is one
+  of the owned values moved out. A drive takes a `&mut dyn ConnCx` (§4.7), implemented over
+  the `StepCx` (`DriveCx`), and makes call-outs through it: trace lines (`SETUP`, `TCP`, the
+  chain's), the socket callback's REMOVE as an attempt's socket closes (through an
+  `Announcing` built for that call, not held across the drive), and, planned, the socket hooks
+  (OPENSOCKET, SOCKOPT, CLOSESOCKET). The context reaches no pool. Planned (step 40): today the
+  drive takes the network and the time, and reports what C traces from inside it as `Progress`
+  for the transfer to trace after.
+- **Outside a step** (`wait`, the timeout, `fdset`, `waitfds`, `assess`), a trace line for a
+  transfer is made through a `StepCx` built for a transfer whose `Run` is in its slot, as
+  `trace_membership` and `mark_expired_dirty` build one. `wait` takes the events for that, and
+  traces in C's order: each process transfer's pollset and its timers, the transfer whose timer
+  gives the multi's timeout, `multi_wait` on the last, then the poll; the socket list is built
+  after those call-outs, so no borrow of a socket is live across a debug handler. Planned (step
+  40).
 - **Nested flushes cannot happen.** A callback of the transfer being stepped or replayed runs
   with its `Run` out, so `pause(me, Cont)` there only flips the value and marks it dirty; the
   replay under way sees it before its next entry (3235, 3236), and one that had stopped resumes
@@ -967,22 +1010,33 @@ the number still unread.
 
 ```rust
 pub(crate) enum ConnSlot { Connecting(ConnectMachine), Open(Conn), Failed(ConnNumber) }
-                           // Closing(Box<Closing>) comes with the shutdown set
 
 pub(crate) struct Conn {
-    route: Route,
-    number: ConnNumber,
-    transport: Transport,              // Tcp(Socket) | Unix(Socket) | Local | later Udp; owns the socket
-    layers: LayerStack,                // InlineVec<Box<dyn Layer>, 4>; empty for plain TCP
-    session: Session,                  // Exclusive | Mux(Box<dyn Mux>)
-    rx: RecvBuf,                       // received, not yet used; grown fallibly before a read
-    created: Instant, idle_since: Option<Instant>,
+    number: ConnNumber, route: Route,
+    transport: Transport,              // Tcp(Stream) | Local; later Unix, Udp
+    remote: Option<SocketAddr>, local: Option<SocketAddr>,   // none without a network
+    created: Instant, connected_at: Instant,
+    use_: Use,                         // Leased(n) | Idle { since }
     served: bool,                      // carried a request before (C's bits.reuse)
+    socks5_authenticated: bool,        // its SOCKS5 proxy authenticated the user
+    seen_version: Option<ResponseVersion>,                   // C's httpversion_seen
     close: bool,                       // not reusable, released as Close: the response
                                        // said so, or the peer closed (EOF read)
-    info: ConnInfo,                    // primary/local addresses, HTTP version seen
+}
+pub(crate) struct Stream {             // conn/stream.rs
+    socket: Sock,                      // the socket and the closer it was opened with (§4.6)
+    layers: LayerStack,                // empty for plain TCP (§4.3)
+    rx: RecvBuf,                       // received, not yet used; grown fallibly before a read
 }
 ```
+
+Planned (step 40): `Stream`. Today `Transport::Tcp` holds the socket, `Conn` holds `rx`, and
+`Dialed` repeats both with its own read code. One `Stream` type, owned by `Dialed` and then by
+the `Conn` it becomes, gives one read path: `recv(max)` fills `rx` through the layers
+(`RecvBuf::fill`, where a read that reports more than the room it had is an error from the
+socket, not an assertion), `send` writes through them. A connection's multiplexing (`Session`,
+`Mux`, §4.4) comes with stage 5, and until then `Use::Leased(n)` is asserted to be 1.
+`Stream` does not rule out a second stream on one `Conn`, which FTP's data connection needs.
 
 Protocols without a network (`file:`, C's PROTOPT_NONETWORK) lease a `Conn` with
 `Transport::Local`: no socket, no layers, never pooled for reuse (released as Close), with an
@@ -1008,7 +1062,7 @@ pub(crate) enum ConnectMachine {
     Socks(SocksHandshake), Tunnel(TunnelHandshake), Tls(TlsHandshake),
 }
 impl ConnectMachine {
-    fn drive(self, net: &mut dyn Net, now: Instant) -> Result<Drove, ConnectError>;
+    fn drive(self, cx: &mut dyn ConnCx, setup: Setup<'_>) -> Result<Drove, ConnectError>;
 }
 pub(crate) enum Drove { Connecting(ConnectMachine, Progress), Established(Conn) }
 pub(crate) enum Progress { Trying(SocketAddr), Waiting }
@@ -1029,8 +1083,9 @@ cases are a test of the machine over a manual clock. A drive moves the machine b
 place in its slot (§3.6); the transfer traces it in C's
 words ("  Trying …", "connect to … from … failed: …", "Established connection to … ", then
 `failf`'s "Failed to connect to H:P after N ms: …" or "Could not resolve host: …"). The machine
-never reaches a transfer, so it is driven while the pool holding it is borrowed, and the
-transfer's handlers run outside that borrow. As `cf_tcp_connect` does, the socket is polled
+is driven in its lease, the pool not borrowed (§3.6), and reaches the transfer only through its
+`ConnCx`; today it takes the network and the time and reports through `Progress` (planned, step
+40). As `cf_tcp_connect` does, the socket is polled
 with a zero timeout right after its connect starts, so an answer already there is taken in the
 same pass. A transfer whose receiving is paused is not driven (`multistate_connecting`), and the
 connect limit is judged before each drive. A resolved name is reported as `cf_dns_report`
@@ -1043,8 +1098,11 @@ its trace; an attempt that fails at once is traced as tried first, as C opens an
 socket before its connect.
 
 - Each stage owns what the previous stage produced: `Resolving` yields `DnsAnswer`, which
-  builds `Eyeballs`; the winning `Attempt`'s `Transport` builds the next stage; each handshake
-  pushes its finished `Layer`. Happy eyeballs never reads DNS sideways (C's
+  builds `Eyeballs`; the winning attempt's socket becomes the `Stream` of the next stage, and
+  every handshake runs over that `Stream`. A handshake whose layer goes on working once it is
+  done (TLS) pushes it on the stream; SOCKS and the HTTP proxy's tunnel, which only pass bytes
+  once connected, are recorded as kinds in a small inline list on the stream, not as boxed
+  layers that do nothing. Happy eyeballs never reads DNS sideways (C's
   `Curl_conn_dns_get_ai`), and the resolve record lives with the machine that started it, not
   on whichever transfer happens to call.
 - A route through a proxy that makes a handshake (`Tcp::handshakes`: SOCKS, or an HTTP proxy
@@ -1079,9 +1137,30 @@ socket before its connect.
 - A proxy that closes the connection on its 407 starts the setup over from resolving
   (`Pool::redial`, cf-setup.c's "AGAIN"), counted by the machine, at most 5. Each connection to
   the proxy counts toward `CURLINFO_NUM_CONNECTS` as it is made.
-- Socket open order is one function in `conn::io` with C's sequence: OPENSOCKET callback (or
-  `Net::open`), "Trying" trace, nodelay/keepalive, SOCKOPT callback (`AlreadyConnected` skips
-  connect; other failure is AbortedByCallback), bind, nonblock, connect.
+- **Handshake order** is derived once from the `Route`, in cf-setup.c's order (299–359): the
+  eyeballs race, then SOCKS, then the proxy's TLS (stage 4), then the HTTP proxy's `CONNECT`,
+  then the PROXY line, then the origin's TLS. The transfer drives each handshake; the drivers
+  are functions over the `Dialed` stream and the step's context, not over
+  `TransferState::Connecting`, so another stream (FTP's data connection) can be set up the same
+  way. The PROXY line goes over `Dialed` before the connection is `Open`, so no `Open`
+  connection exists with it unsent. Planned (step 40): today the order is spread over `Stage`,
+  `Handshake` and the move from `Connecting` to `Open`, and the PROXY line is sent on the
+  `Open` connection while the transfer is still connecting.
+- **C's filter chain is rendered, not built.** The setup filters (SETUP, DNS, HAPPY-EYEBALLS,
+  HTTP-PROXY, HAPROXY) exist in C only until the chain connects and are then removed
+  (`Curl_conn_remove_setup_filters`, cfilters.c:434–450); here the typed machine stands for
+  them, and `conn/chain.rs` renders the chain C would have at each point for the trace
+  (`cf_setup_connect [0][!DNS][!SETUP][!HAPPY-EYEBALLS]`, `connected [0][DNS][SETUP][HAPPY-
+  EYEBALLS][TCP]`, `reduced to [0][TCP]`), allocating nothing. The stream's kinds and layers are
+  C's reduced chain: `[TCP]`, `[SOCKS][TCP]`, `[H1-PROXY][TCP]`, `[H1-PROXY][SOCKS][TCP]` behind
+  a pre-proxy. For a SOCKS5 proxy that is not to resolve the name, C adds a second DNS filter
+  for the destination, which the rendered chain shows as `[!DNS][!DNS]` (`--socks5`, and a
+  SOCKS5 pre-proxy; `--socks5-hostname` has one).
+- **Socket open order** is one function with C's sequence: the OPENSOCKET callback (or
+  `Net::open`), the "Trying" trace, TCP_NODELAY (on by default, url.c:410, cf-socket.c:1322) and
+  keepalive, the SOCKOPT callback (`AlreadyConnected` skips the connect; any other failure is
+  AbortedByCallback), bind, non-blocking, connect. Planned (step 40): today `Net::connect(addr)`
+  opens and connects in one call and TCP_NODELAY is never set.
 - Happy-eyeballs parameters are C's: 25 ms AAAA wait, `happy_eyeballs_timeout` attempt delay, at
   most 6 concurrent attempts, IPv6 first then alternating. Unit 2600 is ported before a second
   attempt is implemented.
@@ -1089,28 +1168,63 @@ socket before its connect.
 ### 4.3 Established layers
 
 ```rust
-pub trait Layer {
-    fn handshake(&mut self, cx: &mut LayerCx<'_>, below: &mut Pipe) -> Result<Handshake, Error>;
-    fn decode(&mut self, cx: &mut LayerCx<'_>, input: &[u8], out: &mut Pipe) -> Result<usize, Error>;
-    fn encode(&mut self, cx: &mut LayerCx<'_>, input: &[u8], out: &mut Pipe) -> Result<usize, Error>;
-    fn interest(&self) -> Interest;
-    fn pending(&self) -> bool;                    // plaintext buffered inside
-    fn shutdown(&mut self, cx: &mut LayerCx<'_>, below: &mut Pipe) -> Result<Handshake, Error>;
-    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;  // ALPN, certificates, tunnel status
-    fn kind(&self) -> LayerKind;                  // Tls | HttpTunnel | Socks | HaProxy
+pub(crate) trait Layer: Send + Debug {           // conn/layer.rs; C's Curl_cftype
+    fn kind(&self) -> LayerKind;
+    fn connect(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, Error>;
+    fn recv(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, buf: &mut [u8])
+        -> Result<Recv, Error>;
+    fn send(&mut self, cx: &mut dyn LayerCx, below: Below<'_>, bytes: &[u8])
+        -> Result<Sent, Error>;
+    fn adjust_pollset(&self, poll: &mut LayerPoll);           // TLS wants OUT while reading
+    fn data_pending(&self, below: Below<'_>) -> bool;         // bytes a poll cannot see
+    fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Alive;
+    fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, Error>;
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // ALPN, certificates, the SSL *
 }
-pub struct LayerCx<'a> { now: Instant, trace: &'a mut Trace<'a>, hooks: &'a mut ConnectHooks<'a> }
+pub(crate) enum Alive { Dead, Alive { input_pending: bool } }
+pub(crate) struct Below<'a> { /* the layers under this one, then the socket: a split slice */ }
+pub(crate) struct LayerStack { pass: InlineKinds, layers: Vec<Box<dyn Layer>> }
+pub(crate) trait LayerCx {
+    fn now(&self) -> Instant;
+    fn traces(&self, c: Component) -> bool;
+    fn of(&mut self, c: Component, line: fmt::Arguments<'_>);
+}
 ```
 
-Layers are sans-IO: bytes go up `transport → layers[0].decode → … → conn.rx` and down the
-reverse way, with a small `Pipe` buffer between adjacent layers, allocated when the layer is
-pushed. With no layers, `recv` writes straight into `conn.rx`. Only `conn::*` and `multi::wait`
-call `Net`. `LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE`
-and its dangling-easy class. A layer asks another layer something only through `query`.
+Layers form a **pull chain**, as C's filters do (cfilters.h:217–232, cfilters.c:186–222): a
+read asks the top layer for at most the caller's length, and each layer reads from the one
+below it as it needs, down to the socket. C's `destroy` is `Drop`, and its `cntrl` codes are
+typed methods. Pulling keeps the sizes the caller asked for at every level (`SSL_read(len)`),
+on which decision 20's read cap and the eleven-read loop (§3.2) depend; a push chain with a
+buffer between layers would not keep them. `Below` is the stack split at the layer being
+called, ending at the socket, so a TLS layer's BIO reads and writes the layer below without
+aliasing its own state.
+
+`LayerStack` holds the pass-through kinds (SOCKS, H1-PROXY) inline and the layers that work on
+the bytes boxed; for TCP, a SOCKS proxy or a tunnel both are empty of boxes and allocate
+nothing. Only TLS pushes a layer, and pushing one allocates. The stack answers for the stream:
+`data_pending` is true while a layer holds bytes or the stream's `rx` is not empty (bytes that
+came after a tunnel's or a SOCKS proxy's answer); a read that would block while data is pending
+runs the transfer again (`sendrecv_dl` and `Curl_conn_data_pending`), and the transfer's pollset
+passes through each layer's `adjust_pollset`. The pool's health check asks `is_alive` down the
+chain, as `Curl_conn_is_alive` does (cf-socket.c:1811–1846, conncache.c:1041–1068); input
+pending on an idle HTTP/1 connection makes it unhealthy (1701).
+
+`LayerCx` is an argument, never stored, which removes C's `CF_DATA_SAVE/RESTORE` and its
+dangling-easy class. Inside a step it is the transfer's (`ConnCx`, §4.7, extends it); a pool
+section has a silent one. A layer asks another layer something only through `query`. Only
+`conn::*` and `multi::wait` call `Net`.
+
+Planned (step 40): none of this is built. `Conn::recv` and `Dialed::recv` each read the socket
+into their own `rx`, and the pool's health check polls the raw socket.
+
+Open, to be settled with TLS (step 43): what `LayerCx` carries for TLS: the SSL_CTX callback,
+the SSL_DATA debug lines and the key log. That much fixes `LayerCx` as a trait object whose
+implementation reaches the transfer's handlers.
 
 TLS (stage 4) drives OpenSSL as `lib/vtls/openssl.c` does: a custom BIO method whose read and
-write go to the layer below (here, the layer's input and output `Pipe`s), so the `SSL *` and
-`SSL_CTX *` handed to the application look as they do in C.
+write go to the layer below (`Below`), so the `SSL *` and `SSL_CTX *` handed to the application
+look as they do in C.
 
 ### 4.4 Multiplexing
 
@@ -1200,24 +1314,37 @@ health-checked before reuse; input pending on an idle HTTP/1 connection makes it
 
 ```rust
 #[must_use]
-pub struct ConnLease { id: ConnId, conn: Option<ConnSlot>, home: Option<Share> }  // no Clone/Copy
+pub struct ConnLease { id: ConnId, conn: Option<ConnSlot>, home: Home }  // no Clone/Copy
+pub enum Home { Multi, Share(Share) }      // the pool the lease came from and goes back to
 impl ConnLease {
-    pub fn connect(&mut self, net: &mut dyn Net, now: Instant, setup: Setup<'_>)
+    pub fn connect(&mut self, cx: &mut dyn ConnCx, setup: Setup<'_>)
         -> Result<Connected, ConnectError>;                     // Connecting, Established, AlreadyUp
     pub fn get(&mut self) -> &mut Conn;                                         // once up
-    pub fn home(&self) -> Option<&Share>;                     // the share whose pool it is from
+    pub fn home(&self) -> &Home;
 }
 impl Pool {
-    pub fn find(&mut self, route: &Route, rules: ReuseRules, net: &mut dyn Net, now: Instant,
-                notes: &mut Vec<PoolNote>) -> Result<Option<ConnLease>, OutOfMemory>;
-    pub fn add(&mut self, route: Route, limits: AddLimits, net: &mut dyn Net, now: Instant)
-        -> Result<Acquired, OutOfMemory>;
-    pub fn release(&mut self, lease: ConnLease, finish: Finish, limit: Limit, net: &mut dyn Net,
-                   now: Instant) -> Released;
-    pub fn get_conn(&self, id: ConnId) -> Option<&Conn>;               // idle only; stale: None
+    pub fn find(&mut self, here: &Home, route: &Route, rules: ReuseRules, net: &mut dyn Net,
+                now: Instant, notes: &mut Vec<PoolNote>) -> Result<Option<ConnLease>, OutOfMemory>;
+    pub fn add(&mut self, here: &Home, route: Route, closer: Closer, limits: AddLimits,
+               net: &mut dyn Net, now: Instant) -> Result<Acquired, OutOfMemory>;
+    pub fn release(&mut self, here: &Home, lease: ConnLease, finish: Finish, limit: Limit,
+                   net: &mut dyn Net, now: Instant) -> Released;
     pub fn close_idle(&mut self, net: &mut dyn Net);                            // multi drop
 }
+enum Place {                               // where a connection in the table is
+    Idle(ConnSlot),                        // kept for another transfer; always open
+    Leased(Leased),                        // its one lease has it
+    Closing(Box<Closing>),                 // shutting down, owned by the pool (step 43)
+    Reserved(..),                          // CONNECT_ONLY, kept for its handle (later)
+    Attached { users: .. },                // multiplexed, leased by several (before stage 5)
+}
+pub(crate) struct Sock { socket: Box<dyn Socket>, closer: Closer }   // closed only by Net::close
+pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
 ```
+
+Planned (step 40): `Home`, `Sock` and `Closer`. Today the lease holds `Option<Share>`, set by
+the caller after the pool section (`set_home`), so `release` cannot check it; the leased place
+is called `Away`; `Pool::get_conn` is dead code; and `SystemNet::close` is a `drop`.
 
 - A transfer searches before it adds (`find`, `Curl_cpool_find`), unless the transfer wants a fresh
   connection (`CURLOPT_FRESH_CONNECT`, but for a redirect's request): at most once a second it first prunes
@@ -1252,33 +1379,61 @@ impl Pool {
   `Use::{Leased(n), Idle { since }}`.
 - The connection table starts empty and doubles from 16 when full (`ArenaPolicy::DOUBLING`), as
   `Curl_cpool_add` grows its table.
-- The pool owns every connection, busy or idle. It is the only issuer and consumer of leases,
-  so it counts them itself; a connection's lease count, its `Session` users and the transfer's
+- The pool knows every connection by its place. An idle one is in the pool; a leased one's
+  slot is in its lease, which the pool alone issues and consumes, so it counts the leases itself; a connection's lease count, its `Session` users and the transfer's
   variant cannot disagree because only `acquire` and `release` change them. The per-route index
   is maintained by those same functions; a dangling id in it is an assertion, never repaired.
 - A debug-build drop check on `ConnLease` asserts it was released (internal invariant).
+- **A lease knows its home.** `find` and `add` stamp the lease with the pool they run in,
+  inside the pool section, and `release` asserts the lease's `Home` is the pool it is given back
+  to, shares compared by pointer. Ids alone cannot tell: a share's arena and a multi's hand out
+  equal ids. `Home` allocates nothing; an identity by counter would be global mutable state, and
+  by address would move with the multi.
+- **Places.** Built: `Leased` and `Idle`. `Closing`, with the multi's `ShutdownSet`, the
+  SHUTDOWN timer and connection-owned sockets (`SocketOwner::Conn`, §4.7), comes with TLS as
+  step 43's first sub-step. Plain TCP has no producer for it: C's TCP shutdown finishes in one
+  call (cf-socket.c:1094–1114), so no TCP connection waits in its shutdown list, and the
+  SHUTDOWN timer and `[SHUTDOWN]` lines of one that does belong to C's internal handle
+  (cshutdn.c:56–58, 366–367), which is not traced (§2.5); a transfer arms the timer itself only
+  in TLS's and FTP's shutdowns (vtls.c:1572; ftp.c:562, through `Curl_xfer_set_shutdown`). `Reserved` comes with CONNECT_ONLY (3231, 3232, 3234): the connection kept for
+  its handle's `curl_easy_send` and `curl_easy_recv` after the transfer. `Attached { users }`
+  comes before stage 5, for a connection several transfers lease at once (a pool place, not the
+  transfer state of §3.1 that holds a lease). Until then every lease count is asserted to be 1.
 - On a share's pool, `find`, `add` and `release` are each one use of it under its lock, and a
   transfer joining its multi is one more with nothing done (`Curl_cpool_xfer_init`). Test 1554
   pins this sequence (SHARE, CONNECT ×3 on first perform; CONNECT on return), so these four
   never merge or split.
-- Leaving the pool, a connection is closed at once. Planned with TLS: it becomes `Closing` in
-  the multi's `ShutdownSet` (graceful TLS close_notify, TCP drain of up to 1 KB, scheme
-  disconnect handler once) or is terminated at once (aborted, CONNECT_ONLY, share-owned pool),
-  and closing connections count toward host and total limits, as in C.
+- Leaving the pool, a connection is closed at once. A clean close (`Released::Closed`,
+  `Evicted`) first drains up to 1 KB from the socket (cf-socket.c:1102–1110); a terminated one
+  does not (planned, step 40). From step 43 a connection that shuts down gracefully (TLS
+  close_notify, the scheme's disconnect handler once) becomes `Closing` in the multi's
+  `ShutdownSet` instead, or is terminated at once (aborted, CONNECT_ONLY, share-owned pool), and
+  closing connections count toward host and total limits, as in C.
+- **The closer is carried from creation.** `Pool::add` captures the creating transfer's
+  closer (CLOSESOCKETFUNCTION and its data, else the system's) and the connect machine gives it
+  to every socket the connection opens, the attempts included, as C copies it onto the
+  connection (url.c:1167) for `socket_close` to use whoever closes (cf-socket.c:535–556; its
+  return is ignored, and an accepted socket is closed without it). A socket is a `Sock`, which
+  only `Net::close` consumes; dropping one unclosed is a debug-build assertion.
 - **Socket close order** is enforced by the network the pool is handed: inside a multi it is
-  `Announcing` (`EngineRest::net`, `EngineRest::pool_section`), whose `close` forgets the socket in the `SocketTable`
-  first (socket callback REMOVE if the application was told of it, C's
-  `Curl_multi_will_close`), then closes it through `Net::close`, where the shim is to call CLOSESOCKETFUNCTION once the
-  socket hooks land (the option is not wired yet). Every pool path that closes a socket goes through it, so none can skip
-  the order.
+  `Announcing` (`EngineRest::net`, `EngineRest::pool_section`), whose `close` forgets the socket
+  in the `SocketTable` first (socket callback REMOVE if the application was told of it, C's
+  `Curl_multi_will_close`), then closes it through its closer. Every pool path that closes a
+  socket goes through it, so none can skip the order. A share's pool section holds the sockets
+  it closes (`CloseLater`) and closes them once the lock is let go, so neither the socket
+  callback nor the closer runs under a share's lock. Planned (step 40): `CloseLater` allocates
+  for each socket it holds, and closes inside the lock when that allocation fails.
 
 ### 4.6.1 The share
 
 `Share` (`share.rs`, `CURLSH`) keeps what it is asked to (`Share::keep`, `CURLSHOPT_SHARE`):
 idle connections (`Kind::Connections`), names (`Kind::Names`), cookies (`Kind::Cookies`), each
 behind a mutex of its own, and the network its idle connections close through at the end, as
-C's share closes them through its own internal handle, and so, it is assumed, never through
-CLOSESOCKETFUNCTION: not yet checked against C, to be tested when the socket hooks land. What it
+C's share closes them through its own internal handle. Each closes through the closer its
+socket was opened with (§4.6): the CLOSESOCKETFUNCTION, with its CLOSESOCKETDATA, of the
+transfer that made the connection, even once that handle is gone, as C keeps both on the
+connection (url.c:1167) and `curl_share_cleanup` closes through them; so does a multi's
+cleanup for its own pool, and an easy handle's cleanup for its private multi's. What it
 keeps cannot change while a handle holds it (`Share::holders`). A handle holds its share
 (`Easy::set_share`, C's `data->share`): kept through `reset`, not copied by `try_clone`, as C's
 `duphandle` links none. Each transfer uses its share's pool, names or jar where the share keeps
@@ -1306,12 +1461,25 @@ its internal one. A share's idle connections close when its last clone drops.
 
 ### 4.7 No admin easy
 
-Pruning, health checks, upkeep, shutdown and shutdown pollsets take
-`ConnCx { now, net, trace, limits: &ConnLimits }`. `ConnLimits` (shutdown timeout, no_signal) are
-captured per connection at creation from the creating transfer's options and the multi's
-options, instead of C's `Curl_get_admin` copying the last caller's settings. The reuse limits
-(max idle, max age) are the searching transfer's, passed to `acquire`.
-Connection-owned sockets appear in the `SocketTable` with a `SocketOwner::Conn(ConnId)` user.
+```rust
+pub(crate) trait ConnCx: LayerCx {         // the connection context C's admin handle stands in for
+    fn net(&mut self) -> &mut dyn Net;
+    fn names(&mut self) -> Names<'_>;       // the multi's DnsCache, or the share's under its lock
+    fn hooks(&mut self) -> &mut dyn SocketHooks;    // OPENSOCKET, SOCKOPT, CLOSESOCKET
+}
+```
+
+Connection-level work takes a `ConnCx`: a connect drive (`DriveCx`, over the stepping
+transfer's `StepCx`, §3.6), and pruning, health checks, upkeep, shutdown and shutdown pollsets.
+The settings a connection needs after its transfer (shutdown timeout, no_signal) are captured
+per connection at creation, from the creating transfer's options and the multi's, as
+`ConnSettings`, instead of C's `Curl_get_admin` copying the last caller's settings; the closer
+is captured the same way (§4.6). The reuse limits (max idle, max age) are the searching
+transfer's, passed to `find`. Connection-owned sockets appear in the `SocketTable` with a
+`SocketOwner::Conn(ConnId)` user, with the `Closing` place (step 43).
+
+Planned: `ConnCx` and `DriveCx` (step 40), `ConnSettings` and `SocketOwner::Conn` (step 43).
+Only transfers own sockets today.
 
 ### 4.8 Resolver
 
@@ -1358,10 +1526,11 @@ A protocol reaches its connection through `StepCx::conn(&lease)`; `do_it`, `step
 are given the lease the transfer's state holds. Inside an `Exchanging` step of `http:`:
 1. what is left of the request's head is sent (`Conn::send`, traced as HEADER_OUT as it goes);
    the request owns its send buffer, as C's `req.sendbuf` is per request;
-2. reads follow until one would block, the response is over or receiving pauses: each
-   `Conn::recv` reads into `conn.rx`, which the step takes out (`mem::take`), feeds whole to the
-   head parser, the body and the chunk decoder, and puts back emptied. C's cap of 11 reads per
-   pass is not kept: a readable socket is read until it would block;
+2. reads follow until one would block, the response is over, receiving pauses or eleven reads
+   were made (`sendrecv_dl`'s `maxloops`, §3.2): each `Conn::recv` reads into `conn.rx`, which
+   the step takes out (`mem::take`), feeds whole to the head parser, the body and the chunk
+   decoder, and puts back emptied. A read that would block while the stream has data pending
+   runs the transfer again (§4.3; planned, step 40);
 3. EOF decides: a head cut short with a size known is "transfer closed with N bytes remaining to
    read" (18), a short body "end of response with N bytes missing" (18), unfinished chunks
    "transfer closed with outstanding read data remaining" (18), an `UntilClose` body ends. A
@@ -2127,8 +2296,9 @@ adapters are its own, installed in place of the ones it was cloned with.
 - **Non-copied POSTFIELDS**: a shim `LentBytes` over the app's pointer and POSTFIELDSIZE, read at
   transfer time (SAFETY: the CURLOPT_POSTFIELDS contract keeps the buffer alive). Setting it after
   `add_handle` takes effect (1531).
-- **Sockets**: OPEN/SOCKOPT/CLOSESOCKETFUNCTION as a `SocketHooks` impl; the shim makes a
-  `Socket` from the application's fd in `curl-os`.
+- **Sockets**: OPEN/SOCKOPT/CLOSESOCKETFUNCTION as a `SocketHooks` impl, called as transfer
+  callbacks (api.c:111, 117, 121); the shim makes a `Socket` from the application's fd in
+  `curl-os`. Planned (step 40): the options are known but answer NOT_BUILT_IN.
 
 ### 7.7 setopt, getinfo, headers, errors
 
@@ -2215,11 +2385,15 @@ peer gets a protocol error, not an out-of-memory one.
   that what is refused is the library's.
 - Budgets count allocations on the test's thread (`curl_alloc::track::count_allocations`). They
   are set as each scenario lands, at what this design calls for: the first, a plain GET over
-  `FakeNet`, is fixed beside the test at 38: the multi, the easy's URL, user agent and
-  handlers, the transfer's place in the multi, then the URL as fetched and its parts, the
-  protocol's state, the destination, the socket, the request head, the receive buffer, the
-  head parser's line, the header store and the content type. The host is copied three times
-  (the request, the origin, the destination), two more than one owner needs.
+  `FakeNet`, is fixed beside the test (`GET_BUDGET`) at 46, some of these taking more than one: the multi; the easy's URL, user
+  agent and handlers; the transfer's place in the multi and its slot, boxed so the table's
+  empty rows cost little, as C's hold pointers; the URL as fetched and its parts; the URL read
+  back once parsed, as C reads it back; the target grown by its query; the protocol's state;
+  the peer; the effective URL kept for the report; the answer for the host kept in the DNS
+  cache (its name, its addresses, the answer shared, the cache's table); the list of connect
+  attempts; the socket; the request head; the receive buffer; the head parser's line; the
+  header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
+  `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - Test 1's 140-allocation and 136000-byte limit is whole-process (argv, option parsing, output
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.

@@ -284,7 +284,7 @@ yet meet.
 15. **tool: run HTTP transfers.** **Done.** The tool maps `-H`, `-A`, `-e`, `-0`/`--http1.0`/
     `--http1.1`/`--http0.9`, `-D`, `--raw`, `--ignore-content-length`, `--max-filesize`, `-I`,
     `-f` and `-N`, checked against the C tool by `crates/curl-tool/tests/http.rs`; the library
-    gained the referer and failing on error codes. `--tr-encoding` and `-H @file` stay refused.
+    gained the referer and failing on error codes. `--tr-encoding` and `-H @file` came later.
     Test 1 as runtests.pl runs it makes 60 allocations and 41357 bytes at most (the C tool 95
     and 126805), within its 140/136000.
 16. **version: report http.** **Done.** `curl -V` lists `http`; the tool shows HTTP headers
@@ -600,10 +600,53 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     The protocol decides what follows an exchange as it ends (`ProtoState::exchanged`), and
     what a redirect changes of the next request (`redirected`); the engine keeps C's generic
     follow mechanics. The redirect schemes come from an option with C's default list.
-43. **TLS**, its first sub-step the pool's `Closing` place, with the multi's `ShutdownSet`,
-    the SHUTDOWN timer and sockets owned by a connection (ENGINE.md 4.6); Ed25519 HTTP signatures on the OpenSSL
-    binding it creates (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025). With it the trace
-    of ALPN: the ALPN_EYEBALLS timer, `query ALPN`, and 758.
+43. **TLS through OpenSSL** (ENGINE.md 4.9 and 4.6's shutdown set). In progress.
+    - **a. Captures, the red list and the design.** **Done.** The reference build's traces of
+      HTTPS against stunnel and `openssl s_server` (`-k`, verified, a verify failure, wrong
+      names, mTLS, pinning, reuse, a resumed session, close_notify, CONNECT and HTTPS proxies,
+      engines), each also with `--http1.1`, and lib758's callback sequence; the red list below;
+      ENGINE.md and DESIGN.md written for the design.
+    - **b. curl-openssl and Ed25519 signatures.** openssl-sys 0.9.117, declarations only, never
+      `vendored`; OpenSSL 3.0 or later, checked at build and at init; httpsig signs Ed25519
+      through the handle's `Libraries` (5000, 5001, 5003–5007, 5011–5014, 5018, 5021–5025).
+    - **c. `Closing`.** The multi's `ShutdownSet`, its SHUTDOWN row, sockets owned by a
+      connection and announced with the internal `CURL *`, every discard through one path;
+      armed with a test layer whose shutdown waits. No runtests change.
+    - **d. TLS in the core.** `curl_core::tls`, `TlsLayer`, the TLS options, `TlsIdentity` on
+      `Route`, the `https` scheme and the origin's handshake stage, the bytes past a tunnel's
+      answer; over a fake backend. No runtests change.
+    - **e1. The OpenSSL layer and the flip.** The BIO, the context, verification and hostcheck
+      (1397), the CA default and store cache, the tool's `-k`, `--cacert`, `--capath`, version
+      and cipher options, `curl_global_sslset`; `https`, `SSL` and `OpenSSL/3.5.9` reported.
+    - **e2. Client certificates, pinning, CRL, issuer, OCSP stapling, certinfo, engines.**
+    - **f. The application's hands on OpenSSL.** `SSL_CTX_FUNCTION`, `TLS_SSL_PTR` and
+      `TLS_SESSION`, the retry-verify pause; close_notify as `Closing`'s first producer.
+    - **g. ALPN's trace.** HTTPS-CONNECT in the chain, ALPN_EYEBALLS armed where C's
+      outstanding HTTPS-RR query arms it (sabotage: arm it for an IP literal or a cached
+      name), `query ALPN` on every new connection (step 40's goldens updated), SSL's lines.
+    - **h. The session cache**, the share's `SSL_SESSION` kind, `--no-sessionid`, the key log.
+    - **i. HTTPS proxy.** `SSL-PROXY`, TLS in TLS, the proxy's TLS options; `HTTPS-proxy`
+      reported (1630–1632, 3401).
+    - **j. Closing the step.** Torture against the C build on a subset, the budgets, the sweep
+      and cargo-mutants.
+
+    Green at the flip (e1) means no test that passed before fails. Measured 2026-10-23 with
+    the tool claiming `https`, `SSL` and `OpenSSL/3.5.9`, over the 199 tests that need TLS or
+    name it: 1244, 1939, 1941, 1945, 2824 and 4657 then pass already and must stay green, with
+    1827, which passes today. The 52 that run and fail, each with what closes it:
+    - e1: 94, 300–306, 309–312, 325, 364, 410, 414, 474, 560, 1561, 1562, 1849, 2009–2011,
+      2118, 2885, 3000, 3001, 3102, 3106, 3208, 3305, 3611, 5029;
+    - e2: 308, 313, 417, 2034, 2035, 2037, 2038, 2041, 2042, 2048, 2088, 2089;
+    - f: 758, 1587. h: 2090, 3207. Step 46 (`--libcurl`): 1481, 1679.
+
+    Skipped at the flip by their prechecks: 678 (`CAINFO_BLOB`, e1), 2095 (`SSLCERT_BLOB`,
+    e2), 307 (engines, skipped on the C leg too). Skipped for what is built elsewhere: HSTS
+    (446, 780–783, 1586, 3109), alt-svc (358, 359) and DoH (2100, 2117), stage 7; Unix sockets
+    (1470), step 46; GSS-API (1582) and `crypto` (1647, 1933–1938 and 14 more), step 44;
+    `HTTPS-proxy` (1630–1632, 3401) until i; HTTP/2 and HTTP/3, stage 5; the FTP, mail, MQTT
+    and Gopher servers and their TLS forms, stage 6; NTLM, Schannel, ECH, `SSLS-EXPORT` (1678)
+    and 4656, not in this build. Every one of the 199 that runs on the C leg passes there
+    (2095 failed once in that run, 56, and passes alone).
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
     claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
 45. **The tool's options that need no new engine work,** built alongside step 40. **Done.**
@@ -617,7 +660,11 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     `--xattr` (644, 687, 688), and `--parallel` (the tool driving a multi handle; 496). After
     step 40: `--interface` and `--local-port` (a bind before the connect: 1045, 1046,
     1082–1085) and `--unix-socket` and `--abstract-unix-socket` (a connect that is not TCP:
-    1268, 1435, 1436). `--doh-url` waits for TLS.
+    1268, 1435, 1436). The options still refused that need neither TLS nor a missing
+    protocol: `-T .` (uploading standard input without blocking, 1498), `--test-duphandle`,
+    `--socks5-basic` and `--socks5-gssapi` (wired to the SOCKS5 methods), `--crlf`,
+    `--doh-url` (2101) and the `--dns-*` options (c-ares). Done: `-H @file`,
+    `--etag-compare` and `--etag-save`.
 
 After this milestone: **a corpus of real command lines**, as compatibility guidance. Some
 thousands of curl invocations sampled from public shell scripts, Dockerfiles, CI configurations
@@ -635,4 +682,13 @@ HTTP/2 delivering a sibling stream's data to its transfer at once, as C does, ra
 buffering it per stream; FTP's data connection as a second chain beside the control
 connection's, and its FTP_ACCEPT and SERVER_RESPONSE timers traced; `CURLOPT_CONNECT_ONLY`
 with the pool's `Reserved` place (3231, 3232, 3234); the pool's `Attached` place for a
-connection several transfers lease, before stage 5; `curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
+connection several transfers lease, before stage 5; with it and HTTP/2, `CURLOPT_PIPEWAIT`:
+with `-Z`, C's transfers to one host wait for a connection that may multiplex ("Found pending
+candidate for reuse and CURLOPT_PIPEWAIT is set") where the engine opens connections side by
+side, `--parallel-immediate` does nothing yet, and C lets one waiting transfer retry per
+perform where the engine lets several; ALPN offering `h2`, and TLS early data, with HTTP/2;
+`curl_easy_ssls_import` and `export` (`SSLS-EXPORT`, 1678) with stage 7's shared state;
+`curl_multi_assign` from a transfer's own handler, if the corpus shows it used.
+
+After the port, as an addition: a rustls backend behind the same `curl_core::tls` traits, to
+shrink the C the library depends on.

@@ -311,7 +311,7 @@ yet meet.
 
 ## Milestone 2: more than one leg, the resolver, and the rest of HTTP/1.1
 
-Status: **in progress**. The rest of SCOPE stage 3: what a transfer needs to make a second
+Status: **done**. The rest of SCOPE stage 3: what a transfer needs to make a second
 request (redirects, retries, authentication), names resolved and connections limited, request
 bodies, cookies, proxies and compression, with the tool's T1 ring and its multi-URL and event
 modes. Each step opens with the change to the engine it stands on, then the features, then the

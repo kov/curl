@@ -304,6 +304,22 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
     fn socket_failed(&mut self, e: &std::io::Error) {
         LayerCx::socket_failed(&mut *self.step, e);
     }
+
+    fn fails(
+        &mut self,
+        kind: crate::error::ErrorKind,
+        why: fmt::Arguments<'_>,
+    ) -> crate::error::ErrorKind {
+        LayerCx::fails(&mut *self.step, kind, why)
+    }
+
+    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+        LayerCx::bytes(&mut *self.step, kind, bytes);
+    }
+
+    fn debugs(&self) -> bool {
+        LayerCx::debugs(&*self.step)
+    }
 }
 
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {

@@ -23,7 +23,10 @@ use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
-use super::{Handshake, TlsBackend, TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession, TlsWait};
+use super::{
+    Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession,
+    TlsWait,
+};
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
 
@@ -35,6 +38,9 @@ pub const WELCOME: &[u8] = b"FAKETLS WELCOME\r\n\r\n";
 pub const FINISHED: &[u8] = b"FAKETLS FINISHED\n";
 /// Either side's goodbye (close_notify).
 pub const CLOSE: &[u8] = b"FAKETLS CLOSE\r\n\r\n";
+
+/// The file of certificates the fake trusts when a transfer names none.
+pub const CA_FILE: &str = "/fake/ca-bundle.crt";
 
 /// The most bytes a record carries.
 pub const RECORD: usize = 4096;
@@ -114,10 +120,18 @@ impl FakeTls {
 }
 
 impl TlsBackend for FakeTls {
+    fn ca_defaults(&self) -> CaDefaults {
+        CaDefaults {
+            file: Some(CA_FILE),
+            path: None,
+        }
+    }
+
     fn session(
         &self,
-        identity: &TlsIdentity,
+        identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
+        _alpn: Alpn,
     ) -> Result<Box<dyn TlsSession>, ErrorKind> {
         {
             let mut log = self.log.lock().expect("no test panics holding the log");

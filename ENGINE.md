@@ -1754,11 +1754,12 @@ seam's later methods noted below. MILESTONES.md step 43 lists the sub-steps.
 ```rust
 // curl_core::tls, public: the seam a TLS library implements (curl-openssl)
 pub trait TlsBackend: Send + Sync {
-    fn session(&self, identity: &TlsIdentity, peer: &TlsPeer<'_>)
+    fn session(&self, identity: &TryArc<TlsIdentity>, peer: &TlsPeer<'_>, alpn: Alpn)
         -> Result<Box<dyn TlsSession>, ErrorKind>;
-    // planned (43e1): fn store(&self) -> Result<Box<dyn TlsStore>, OutOfMemory>, the
-    // multi's CA store cache, handed to `session`; (43h) the ticket to resume.
+    fn ca_defaults(&self) -> CaDefaults;           // the build's CA file and path
+    // planned (43h): the ticket to resume.
 }
+pub enum Alpn { None, Http11, Http10 }             // the offer, from the HTTP version
 pub trait TlsSession: Send {                       // one connection's TLS, never Sync
     fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
     fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv>;
@@ -1774,10 +1775,14 @@ impl TlsIo<'_> {                                   // what a library's BIO and c
     pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<Recv>;   // the early bytes first
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<Sent>;
     pub fn trace(&mut self, line: fmt::Arguments<'_>); pub fn info(&mut self, ..);
-    // planned: bytes(kind, data) for the SSL data (43e1), ssl_ctx(native) (43f)
+    pub fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind; // failf
+    pub fn record(&mut self, way: TlsWay, bytes: &[u8]); // CURLINFO_SSL_DATA_IN/OUT
+    pub fn debugs(&self) -> bool;                  // a debug handler is set (fdebug)
+    // planned: ssl_ctx(native) (43f)
 }
 pub struct TlsPeer<'a> { pub name: &'a [u8], pub port: u16, pub kind: TlsPeerKind }
-pub struct TlsIdentity { pub verify_peer: bool, pub verify_host: bool, pub options: TlsOptions }
+pub struct TlsIdentity { pub verify_peer: bool, pub verify_host: bool, pub options: TlsOptions,
+                         pub ca_defaults: CaDefaults }
 ```
 
 **The seam.** The dependency runs from the binding to the core, as the decoders' does, so the
@@ -1787,7 +1792,10 @@ implements it over the `Box<dyn TlsSession>` a library makes: `connect` is the h
 what the transfer wants with what the session waits for (`Curl_ssl_adjust_pollset`'s
 `set_out_only` and `set_in_only`: OUT while a read must write), `data_pending` is the session's
 `pending` and the early bytes, `is_alive` passes down, and `shutdown` is the session's. A
-library's error is its `ErrorKind`; the text it fails with (C's failf) comes with 43e1. A handle
+library's error is its `ErrorKind`, and it gives the text it fails with itself (`TlsIo::fail`,
+C's failf), as C's filters each give theirs: a read or a send through a session that said why
+it failed is not said for again by HTTP, and a socket failing under a session is said first,
+as the socket says it (`Recv failure:`, `Send failure:`). A handle
 reaches its library through one `&'static Libraries` (the decoders, the Ed25519 signer, the
 TLS library), the shim's and the tool's statics, so a handle carries one pointer for all of
 them; `Easy: Default` takes `Libraries::NONE`. Without a TLS library `https` is a scheme the
@@ -1830,10 +1838,14 @@ debug tracker, as in C: `CRYPTO_set_mem_functions` is process-wide and fails onc
 application has used OpenSSL, so it is not called.
 
 **Verification.** The CA default is decided at build time as CMake decides it
-(CMakeLists.txt:1475): `CURL_CA_BUNDLE` from the environment, else the first of its five paths
-that exists (`/etc/ssl/certs/ca-certificates.crt` here); `CURL_CA_PATH` only when no bundle was
-found; no fallback to OpenSSL's own paths. They are `&'static str`, so a handle holds no CA
-string until the application sets one and `CURLINFO_CAINFO` returns the constant. The tool
+(CMakeLists.txt:1475), by curl-openssl's build script: `CURL_CA_BUNDLE` and `CURL_CA_PATH`
+from the environment (`none`, `auto` or a path), else found on the building machine unless it
+builds for another: the first of CMake's five bundles that exists
+(`/etc/ssl/certs/ca-certificates.crt` here), and `/etc/ssl/certs` as the path if it holds
+hashed certificates (`xxxxxxxx.0`; none here); one set explicitly stops the other being looked
+for; no fallback to OpenSSL's own paths. They are `&'static str` (`TlsBackend::ca_defaults`),
+so a handle holds no CA string until the application sets one, and `CURLINFO_CAINFO` returns
+the constant whatever the handle set, as C's does. The tool
 reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c does. The CA store
 is cached per multi, keyed by file and path, for `CURLOPT_CA_CACHE_TIMEOUT` (24 h), which
 decides whether `SSL Trust Anchors:` and `CAfile:` are traced again for the next connection.
@@ -1854,10 +1866,10 @@ and 976 pins, the SOCKS pre-proxy shared to make room). Its `eq` destructures ev
 paths, blobs and keys exactly (`Curl_safecmp`), the lists and formats in any case
 (`curl_strequal`), the password in constant time (`Curl_timestrcmp`); ALPN is not compared.
 A transfer that verifies never takes a connection made without (the CVE-2021-22924 class). The
-CA file and path keep the build's default apart from none (`CaSetting`); a handle that names
-the default's path compares unequal to one that keeps the default, where C, which copies the
-default into the option, finds them equal: 43e1, which brings the default, resolves it before
-comparing. `ProxyRoute` gains the proxy's identity with the HTTPS proxy (43i).
+CA file and path keep the build's default apart from none (`CaSetting`), and the identity
+carries the library's defaults, so it compares the file and path they resolve to: a handle that
+names the default's path matches one that keeps the default, as C finds them, having copied the
+default into the setting (`Curl_ssl_filter_config_tmp_init`). `ProxyRoute` gains the proxy's identity with the HTTPS proxy (43i).
 
 **The session cache** (`tls/cache.rs`) is per multi, 25 peers for `curl_multi_init` and 3 for
 `curl_easy_perform`'s private multi (multi.c:71, easy.c:805), or the share's 25 when it keeps

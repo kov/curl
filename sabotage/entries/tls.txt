@@ -154,3 +154,27 @@ witness: curl-core an_https_get_stays_within_its_allocation_budget
         let spare = try_box(0u8)?;
         drop(spare);
         Ok(try_box(TlsLayer { session, early })?)
+
+=== a TLS identity compares the CA file as set, so naming the default differs from keeping it
+file: crates/curl-core/src/tls.rs
+witness: curl-core tls::tests::the_ca_default_compares_as_the_file_it_names
+--- old
+            && self.ca_file() == other.ca_file()
+--- new
+            && self.options.ca_file == other.options.ca_file
+
+=== a layer that said why its read failed is said for again by HTTP
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::tls::a_session_s_reason_for_a_failed_read_is_the_transfer_s
+--- old
+                Err(RecvFailed::Os(_)) if cx.easy().report().reasons() > said => {
+--- new
+                Err(RecvFailed::Os(_)) if false => {
+
+=== a socket failing under a TLS session is not said as the socket says it
+file: crates/curl-core/src/tls.rs
+witness: curl-core proto::http::tests::tls::a_socket_failing_under_a_session_is_said_first
+--- old
+                .fails(ErrorKind::SendError, format_args!("Send failure: {why}"));
+--- new
+                .fails(ErrorKind::SendError, format_args!("{why}"));

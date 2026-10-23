@@ -1378,10 +1378,13 @@ impl Request {
             if eos {
                 trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
             }
+            let said = cx.easy().report().reasons();
             let sent = lease.get().send(cx, &self.out[self.sent..end]);
             // The failure is said before the send is traced
-            // (`cf_socket_send`).
+            // (`cf_socket_send`), unless a layer said why already, as
+            // TLS does.
             let failed = match &sent {
+                Err(_) if cx.easy().report().reasons() > said => Some(ErrorKind::SendError),
                 Err(e) => {
                     let why = OsError(e);
                     Some(trace::fail(
@@ -1595,6 +1598,7 @@ impl Request {
                 None => max,
             };
             reads += 1;
+            let said = cx.easy().report().reasons();
             let got = lease.get().recv(cx, max);
             trace::received(cx, max, &got);
             match got {
@@ -1624,6 +1628,11 @@ impl Request {
                     fed?;
                 }
                 Err(RecvFailed::OutOfMemory) => return Err(ErrorKind::OutOfMemory),
+                // A layer that said why it failed, as TLS does, is not
+                // said for again (C's filters each `failf` their own).
+                Err(RecvFailed::Os(_)) if cx.easy().report().reasons() > said => {
+                    return Err(ErrorKind::RecvError);
+                }
                 Err(RecvFailed::Os(e)) => {
                     let why = OsError(&e);
                     return Err(trace::fail(

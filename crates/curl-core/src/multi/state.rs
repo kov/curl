@@ -733,6 +733,18 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
     fn socket_failed(&mut self, e: &std::io::Error) {
         self.report_mut().socket_failed(e);
     }
+
+    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+        trace::fail(self, kind, why)
+    }
+
+    fn bytes(&mut self, kind: crate::handler::DebugKind, bytes: &[u8]) {
+        trace::bytes(self, kind, bytes);
+    }
+
+    fn debugs(&self) -> bool {
+        self.easy().options().callbacks.debug.is_some()
+    }
 }
 
 /// What a step needs: the transfer it steps, whose `Run` is out of its
@@ -2644,7 +2656,13 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     // The settings its TLS is made with, which a connection must share
     // to serve it (`Curl_ssl_filter_config_tmp_init`).
     let tls = if secured {
-        match crate::tls::TlsIdentity::of(&cx.easy().options().tls) {
+        let defaults = cx
+            .easy()
+            .libraries()
+            .tls
+            .expect("a secured scheme is one a TLS library speaks")
+            .ca_defaults();
+        match crate::tls::TlsIdentity::of(&cx.easy().options().tls, defaults) {
             Ok(identity) => Some(identity),
             Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
         }

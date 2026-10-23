@@ -6,6 +6,10 @@ fn identity(change: impl FnOnce(&mut TlsIdentity)) -> TlsIdentity {
         verify_peer: true,
         verify_host: true,
         options: TlsOptions::NONE,
+        ca_defaults: CaDefaults {
+            file: Some("/default/ca.pem"),
+            path: None,
+        },
     };
     change(&mut id);
     id
@@ -108,6 +112,28 @@ fn lists_match_in_any_case_and_paths_exactly() {
     assert_eq!(password("secret"), password("secret"));
 }
 
+/// The CA file and path compare as they apply: a transfer that names
+/// the library's default file matches one that keeps the default, as in
+/// C, which copies the default into the setting; one that sets none
+/// matches neither. Defaults the library does not have resolve to none.
+#[test]
+fn the_ca_default_compares_as_the_file_it_names() {
+    let kept = identity(|_| {});
+    let named = identity(|i| i.options.ca_file = CaSetting::Given(b"/default/ca.pem".to_vec()));
+    let none = identity(|i| i.options.ca_file = CaSetting::Unset);
+    assert_eq!(kept, named);
+    assert_ne!(kept, none);
+    assert_ne!(named, none);
+    assert_eq!(kept.ca_file(), Some(&b"/default/ca.pem"[..]));
+    assert_eq!(none.ca_file(), None);
+    // No default path: keeping it is having none.
+    let no_path = identity(|i| i.options.ca_path = CaSetting::Unset);
+    assert_eq!(kept, no_path);
+    assert_eq!(kept.ca_path(), None);
+    let other_default = identity(|i| i.ca_defaults.file = Some("/other/ca.pem"));
+    assert_ne!(kept, other_default);
+}
+
 /// Whether ALPN is offered is the handle's, not the connection's: C
 /// matches no connection by it.
 #[test]
@@ -121,7 +147,7 @@ fn alpn_does_not_tell_identities_apart() {
 fn an_identity_copies_the_options() {
     let mut tls = Tls::default();
     tls.options.make_mut().unwrap().ca_blob = text("pem");
-    let id = TlsIdentity::of(&tls).unwrap();
+    let id = TlsIdentity::of(&tls, CaDefaults::default()).unwrap();
     tls.options.make_mut().unwrap().ca_blob = text("other");
     tls.verify_peer = false;
     assert_eq!(id.options.ca_blob, text("pem"));

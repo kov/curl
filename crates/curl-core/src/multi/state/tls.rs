@@ -11,7 +11,8 @@ use crate::conn::Made;
 use crate::conn::tls::TlsLayer;
 use crate::error::ErrorKind;
 use crate::multi::Host;
-use crate::tls::{Handshake as Shake, TlsPeer};
+use crate::options::HttpVersion;
+use crate::tls::{Alpn, Handshake as Shake, TlsPeer};
 
 /// The handshakes before it are made: the session is made and its layer
 /// put on the stream, taking the bytes the stream received and did not
@@ -22,8 +23,14 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
         .libraries()
         .tls
         .expect("a route has TLS only with a TLS library");
-    let identity = c.route.tls.as_deref().expect("a TLS route");
-    let session = match backend.session(identity, &TlsPeer::of(&c.route.origin)) {
+    let identity = c.route.tls.as_ref().expect("a TLS route");
+    let options = cx.easy().options();
+    let alpn = match (options.tls.options.alpn, options.http.version) {
+        (false, _) => Alpn::None,
+        (true, HttpVersion::Http10) => Alpn::Http10,
+        (true, HttpVersion::Http11) => Alpn::Http11,
+    };
+    let session = match backend.session(identity, &TlsPeer::of(&c.route.origin), alpn) {
         Ok(session) => session,
         Err(kind) => return (TransferState::Connecting(c).fail(kind), Wake::Again),
     };

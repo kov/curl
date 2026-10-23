@@ -4,9 +4,12 @@
 
 use super::*;
 use crate::conn::io::Events;
+use crate::conn::io::{Recv, Sent};
 use crate::libraries::Libraries;
 use crate::tls::fake::{self, FINISHED, FakeTls, HELLO, WELCOME};
-use crate::tls::{TlsPeerKind, fake::FakeLog};
+use crate::tls::{Handshake, TlsPeerKind, fake::FakeLog};
+use curl_alloc::TryArc;
+use std::io;
 
 /// A fake TLS library of the test's own, and the libraries naming it,
 /// for the test's handles: made once per test, kept to its end.
@@ -170,6 +173,37 @@ fn an_https_connection_is_reused_only_with_the_same_tls() {
         sent(&first),
         [handshake_then(&request_of("/a")), request_of("/b")].concat()
     );
+    assert_eq!(backend.log().sessions, 2);
+}
+
+/// A transfer that names the library's default CA file reuses the
+/// connection of one that kept the default, as in C, which copies the
+/// default into the setting before it compares; one that trusts no file
+/// gets a connection of its own.
+#[test]
+fn naming_the_default_ca_file_reuses_a_connection_made_with_it() {
+    use crate::options::CaSetting;
+    let (backend, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let first = Conversation::replies(&[&welcome, &response, &response], false);
+    let other = Conversation::replies(&[&welcome, &response], false);
+    let mut m = serving(Peer::Accepts, &[&first, &other]);
+    let one = get_tls(&mut m, libraries, "/a", first.clone(), |_| {});
+    assert_eq!(one.result, Ok(()));
+    let two = get_tls(&mut m, libraries, "/b", first.clone(), |o| {
+        o.tls.options.make_mut().unwrap().ca_file =
+            CaSetting::Given(fake::CA_FILE.as_bytes().to_vec());
+    });
+    assert_eq!(two.result, Ok(()));
+    let three = get_tls(&mut m, libraries, "/c", other.clone(), |o| {
+        o.tls.options.make_mut().unwrap().ca_file = CaSetting::Unset;
+    });
+    assert_eq!(three.result, Ok(()));
+    assert_eq!(
+        sent(&first),
+        [handshake_then(&request_of("/a")), request_of("/b")].concat()
+    );
+    assert_eq!(sent(&other), handshake_then(&request_of("/c")));
     assert_eq!(backend.log().sessions, 2);
 }
 
@@ -383,4 +417,134 @@ fn secure_cookies_go_over_tls() {
     assert_eq!(two.result, Ok(()));
     let wire = String::from_utf8(plain.received()).unwrap();
     assert!(!wire.contains("Cookie:"), "{wire}");
+}
+
+/// A TLS library whose sessions pass the bytes as they are and say why
+/// they fail, as OpenSSL's do: a read of `BAD` from the peer, or a
+/// failure below; and that trace the records they pass for a debug
+/// handler.
+struct Saying;
+
+impl crate::tls::TlsBackend for Saying {
+    fn session(
+        &self,
+        _: &TryArc<crate::tls::TlsIdentity>,
+        _: &crate::tls::TlsPeer<'_>,
+        _: crate::tls::Alpn,
+    ) -> Result<Box<dyn crate::tls::TlsSession>, ErrorKind> {
+        Ok(Box::new(SayingSession))
+    }
+
+    fn ca_defaults(&self) -> crate::tls::CaDefaults {
+        crate::tls::CaDefaults::default()
+    }
+}
+
+struct SayingSession;
+
+impl crate::tls::TlsSession for SayingSession {
+    fn handshake(&mut self, _: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+        Ok(Handshake::Done)
+    }
+
+    fn recv(&mut self, io: &mut crate::tls::TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv> {
+        match io.recv(buf) {
+            Ok(Recv::Data(n)) if &buf[..n.get()] == b"BAD" => {
+                io.fail(ErrorKind::RecvError, format_args!("the peer said BAD"));
+                Err(io::ErrorKind::InvalidData.into())
+            }
+            Ok(Recv::Data(n)) => {
+                if io.debugs() {
+                    io.record(crate::tls::TlsWay::In, &buf[..n.get()]);
+                }
+                Ok(Recv::Data(n))
+            }
+            got => got,
+        }
+    }
+
+    fn send(&mut self, io: &mut crate::tls::TlsIo<'_>, bytes: &[u8]) -> io::Result<Sent> {
+        io.send(bytes).inspect_err(|_| {
+            io.fail(
+                ErrorKind::SendError,
+                format_args!("the session could not send"),
+            );
+        })
+    }
+
+    fn shutdown(&mut self, _: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+        Ok(Handshake::Done)
+    }
+
+    fn waits(&self) -> crate::tls::TlsWait {
+        crate::tls::TlsWait::Nothing
+    }
+
+    fn pending(&self) -> bool {
+        false
+    }
+}
+
+fn saying() -> &'static Libraries {
+    static SAYING: Saying = Saying;
+    Box::leak(Box::new(Libraries {
+        tls: Some(&SAYING),
+        ..Libraries::NONE
+    }))
+}
+
+/// A session that says why its read failed is not said for again: the
+/// transfer keeps its reason, traced once, with no `Recv failure` of the
+/// socket's, which did not fail.
+#[test]
+fn a_session_s_reason_for_a_failed_read_is_the_transfer_s() {
+    let (mut m, talk, _) = server(&[b"BAD"], false);
+    let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+    assert_eq!(ran.easy.report().failure(), Some(&b"the peer said BAD"[..]));
+    let text = ran.seen.text();
+    assert_eq!(
+        text.iter().filter(|l| *l == "the peer said BAD\n").count(),
+        1
+    );
+    assert!(
+        !text.iter().any(|l| l.starts_with("Recv failure")),
+        "{text:?}"
+    );
+}
+
+/// The socket under a session failing is said as the socket says it
+/// (`cf_socket_send`'s `Send failure:`), first, so the transfer keeps
+/// it; the session's own reason follows, and nothing more.
+#[test]
+fn a_socket_failing_under_a_session_is_said_first() {
+    let libraries = saying();
+    let talk = Conversation::new(OK, false).breaking_after(0);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::SendError));
+    let failure = ran.easy.report().failure().unwrap();
+    assert!(failure.starts_with(b"Send failure: "), "{failure:?}");
+    let text = ran.seen.text();
+    let send = text
+        .iter()
+        .position(|l| l.starts_with("Send failure: "))
+        .unwrap();
+    assert_eq!(text[send + 1], "the session could not send\n", "{text:?}");
+    assert_eq!(
+        text.iter()
+            .filter(|l| l.starts_with("Send failure"))
+            .count(),
+        1
+    );
+}
+
+/// The records a session passes reach a verbose transfer's debug handler
+/// as SSL data (`CURLINFO_SSL_DATA_IN`).
+#[test]
+fn a_session_s_records_reach_the_debug_handler() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.of("ssl_in").concat(), OK);
 }

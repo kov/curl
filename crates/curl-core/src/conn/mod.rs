@@ -889,7 +889,7 @@ mod tests {
                 via: None,
                 ip: IpVersion::Any,
                 proxy: None,
-                tls: tls.map(|t| TlsIdentity::of(t).unwrap()),
+                tls: tls.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
             })
         };
         let verified = Tls::default();

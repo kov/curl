@@ -65,6 +65,22 @@ pub(crate) trait LayerCx {
     /// receive; the transfer keeps its number (`state.os_errno`). Work
     /// done for no transfer keeps nothing.
     fn socket_failed(&mut self, _e: &io::Error) {}
+
+    /// The transfer fails with `kind`, for the reason `why` (`failf`):
+    /// kept if it is the first given, and traced. Work done for no
+    /// transfer says nothing.
+    fn fails(&mut self, kind: ErrorKind, _why: fmt::Arguments<'_>) -> ErrorKind {
+        kind
+    }
+
+    /// Bytes for the transfer's debug handler (`Curl_debug`), if it is
+    /// verbose.
+    fn bytes(&mut self, _kind: crate::handler::DebugKind, _bytes: &[u8]) {}
+
+    /// The transfer has a debug handler (C's `data->set.fdebug`).
+    fn debugs(&self) -> bool {
+        false
+    }
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's

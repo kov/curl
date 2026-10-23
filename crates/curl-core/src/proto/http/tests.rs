@@ -86,7 +86,8 @@ impl DebugHandler for Seen {
             DebugKind::HeaderOut => "out",
             DebugKind::DataIn => "data",
             DebugKind::DataOut => "dataout",
-            _ => "other",
+            DebugKind::SslDataIn => "ssl_in",
+            DebugKind::SslDataOut => "ssl_out",
         };
         self.0.lock().unwrap().push((what, data.to_vec()));
     }

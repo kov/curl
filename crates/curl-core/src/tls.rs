@@ -17,7 +17,9 @@ use crate::conn::Peer;
 use crate::conn::io::{Recv, Sent};
 use crate::conn::layer::{Below, LayerCx};
 use crate::error::ErrorKind;
-use crate::options::{Tls, TlsOptions};
+use crate::handler::DebugKind;
+use crate::options::{CaSetting, Tls, TlsOptions};
+use crate::trace::OsError;
 
 pub use crate::conn::layer::Handshake;
 
@@ -30,13 +32,30 @@ pub mod fake;
 /// built in.
 pub trait TlsBackend: Send + Sync {
     /// A client session for one connection to `peer`, made with the
-    /// settings `identity` holds (C's `ssl_connect_data` and its
-    /// backend's context, made as the SSL filter is added).
+    /// settings `identity` holds and offering `alpn` (C's
+    /// `ssl_connect_data` and its backend's context, made as the SSL
+    /// filter is added). The session keeps the identity as long as it
+    /// needs it.
     fn session(
         &self,
-        identity: &TlsIdentity,
+        identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
+        alpn: Alpn,
     ) -> Result<Box<dyn TlsSession>, ErrorKind>;
+
+    /// Where it finds the certificates to trust when a transfer names
+    /// none, as its build found them.
+    fn ca_defaults(&self) -> CaDefaults;
+}
+
+/// Where a TLS library finds the certificates to trust when a transfer
+/// names none: a file of them and a directory of them, decided as the
+/// library was built (CMake's `CURL_CA_BUNDLE` and `CURL_CA_PATH`), or
+/// none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CaDefaults {
+    pub file: Option<&'static str>,
+    pub path: Option<&'static str>,
 }
 
 impl fmt::Debug for dyn TlsBackend {
@@ -83,6 +102,46 @@ pub enum TlsWait {
     Recv,
     /// To write, whatever the transfer wants: its reads wait on it.
     Send,
+}
+
+/// The protocols a session offers its peer by ALPN, as the transfer's
+/// HTTP version asks (`alpn_get_spec`, in a build without HTTP/2):
+/// HTTP/1.0 offers HTTP/1.1 too, as some HTTP/1.0 servers know only it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Alpn {
+    /// None (`CURLOPT_SSL_ENABLE_ALPN` off).
+    None,
+    Http11,
+    Http10,
+}
+
+impl Alpn {
+    /// The offer as ALPN puts it on the wire: each name after its length.
+    pub fn wire(self) -> &'static [u8] {
+        match self {
+            Alpn::None => b"",
+            Alpn::Http11 => b"\x08http/1.1",
+            Alpn::Http10 => b"\x08http/1.0\x08http/1.1",
+        }
+    }
+
+    /// The offer as C traces it (`ALPN: curl offers ...`), if any.
+    pub fn offer(self) -> Option<&'static str> {
+        match self {
+            Alpn::None => None,
+            Alpn::Http11 => Some("http/1.1"),
+            Alpn::Http10 => Some("http/1.0,http/1.1"),
+        }
+    }
+}
+
+/// Which way a TLS record went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsWay {
+    /// From the peer.
+    In,
+    /// To the peer.
+    Out,
 }
 
 /// Who a TLS session talks to: the origin as the URL names it (C's
@@ -135,7 +194,8 @@ pub struct TlsIo<'a> {
 
 impl TlsIo<'_> {
     /// Read into `buf`, which is not empty, from what came before the
-    /// session, else from below.
+    /// session, else from below. A failure below is said as the socket
+    /// says it (`cf_socket_recv`'s `Recv failure:`).
     pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<Recv> {
         assert!(!buf.is_empty(), "a receive needs room");
         if let Some(n) = std::num::NonZeroUsize::new(self.early.len().min(buf.len())) {
@@ -143,12 +203,43 @@ impl TlsIo<'_> {
             self.early.drain(..n.get());
             return Ok(Recv::Data(n));
         }
-        self.below.reborrow().recv(self.cx, buf)
+        self.below.reborrow().recv(self.cx, buf).inspect_err(|e| {
+            let why = OsError(e);
+            self.cx
+                .fails(ErrorKind::RecvError, format_args!("Recv failure: {why}"));
+        })
     }
 
-    /// Send from `bytes`, which is not empty, through the layers below.
+    /// Send from `bytes`, which is not empty, through the layers below; a
+    /// failure there said as the socket says it (`Send failure:`).
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<Sent> {
-        self.below.reborrow().send(self.cx, bytes)
+        self.below.reborrow().send(self.cx, bytes).inspect_err(|e| {
+            let why = OsError(e);
+            self.cx
+                .fails(ErrorKind::SendError, format_args!("Send failure: {why}"));
+        })
+    }
+
+    /// The transfer fails with `kind`, for the reason `why` (`failf`):
+    /// kept if it is the first, and traced; `kind` back.
+    pub fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind {
+        self.cx.fails(kind, why)
+    }
+
+    /// The bytes of a TLS record that went `way`, for the transfer's
+    /// debug handler (`CURLINFO_SSL_DATA_IN`, `CURLINFO_SSL_DATA_OUT`).
+    pub fn record(&mut self, way: TlsWay, bytes: &[u8]) {
+        let kind = match way {
+            TlsWay::In => DebugKind::SslDataIn,
+            TlsWay::Out => DebugKind::SslDataOut,
+        };
+        self.cx.bytes(kind, bytes);
+    }
+
+    /// The transfer has a debug handler (C's `data->set.fdebug`), which
+    /// a library's trace of its records is for.
+    pub fn debugs(&self) -> bool {
+        self.cx.debugs()
     }
 
     /// Trace a line of the layer's (`CURL_TRC_CF`), if its component is
@@ -191,17 +282,45 @@ pub struct TlsIdentity {
     /// The certificate must name the host.
     pub verify_host: bool,
     pub options: TlsOptions,
+    /// What the library trusts when the options name nothing.
+    pub ca_defaults: CaDefaults,
 }
 
 impl TlsIdentity {
     /// The identity the transfer's options `tls` make, shared by its
-    /// route and the connection set up for it.
-    pub(crate) fn of(tls: &Tls) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
+    /// route and the connection set up for it, with the library's
+    /// defaults where the options keep them.
+    pub(crate) fn of(
+        tls: &Tls,
+        ca_defaults: CaDefaults,
+    ) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
         TryArc::try_new(TlsIdentity {
             verify_peer: tls.verify_peer,
             verify_host: tls.verify_host,
             options: tls.options.try_clone()?,
+            ca_defaults,
         })
+    }
+
+    /// The file of certificates to trust: the transfer's, or the
+    /// library's default if it keeps it (`Curl_ssl_filter_config_tmp_init`
+    /// copies the default into the setting).
+    pub fn ca_file(&self) -> Option<&[u8]> {
+        resolved(&self.options.ca_file, self.ca_defaults.file)
+    }
+
+    /// The directory of certificates to trust, resolved as `ca_file`.
+    pub fn ca_path(&self) -> Option<&[u8]> {
+        resolved(&self.options.ca_path, self.ca_defaults.path)
+    }
+}
+
+/// A CA setting as it applies: the default where it keeps it.
+fn resolved<'a>(setting: &'a CaSetting, default: Option<&'static str>) -> Option<&'a [u8]> {
+    match setting {
+        CaSetting::Default => default.map(str::as_bytes),
+        CaSetting::Unset => None,
+        CaSetting::Given(given) => Some(given),
     }
 }
 
@@ -218,14 +337,19 @@ impl PartialEq for TlsIdentity {
             verify_peer,
             verify_host,
             options,
+            // Compared as the CA file and path they resolve: a handle
+            // that names the default's path matches one that keeps it,
+            // as C, which copies the default in, finds them.
+            ca_defaults: _,
         } = self;
         let TlsOptions {
             min_version,
             max_version,
             ssl_options,
             verify_status,
-            ca_file,
-            ca_path,
+            // Compared as they resolve, below.
+            ca_file: _,
+            ca_path: _,
             ca_blob,
             crl_file,
             issuer_cert,
@@ -253,8 +377,8 @@ impl PartialEq for TlsIdentity {
             && *max_version == o.max_version
             && *ssl_options == o.ssl_options
             && *verify_status == o.verify_status
-            && *ca_file == o.ca_file
-            && *ca_path == o.ca_path
+            && self.ca_file() == other.ca_file()
+            && self.ca_path() == other.ca_path()
             && *ca_blob == o.ca_blob
             && *crl_file == o.crl_file
             && *issuer_cert == o.issuer_cert

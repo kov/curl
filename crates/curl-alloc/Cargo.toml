@@ -17,5 +17,11 @@ required-features = ["debug-hooks"]
 # Past its limit every tracked allocation fails, the harness's included.
 harness = false
 
+[[test]]
+name = "track_here"
+required-features = ["debug-hooks"]
+# The tracker's state is process-wide.
+harness = false
+
 [lints]
 workspace = true

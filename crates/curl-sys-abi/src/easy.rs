@@ -588,7 +588,7 @@ fn perform(easy: &ShimEasy, drive: Drive) -> CURLcode {
     if let Err(e) = crate::multi::add(m, Reach::Direct, easy) {
         return match e {
             MultiError::Core(MultiErrorKind::OutOfMemory) => CURLE_OUT_OF_MEMORY,
-            _ => CURLE_BAD_FUNCTION_ARGUMENT,
+            _ => CURLE_FAILED_INIT,
         };
     }
     let (_, id) = easy.added().expect("just added");

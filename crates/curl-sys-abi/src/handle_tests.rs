@@ -4796,3 +4796,33 @@ fn the_global_trace_reaches_every_handle() {
         curl_easy_cleanup(e);
     }
 }
+
+/// A perform that cannot add its handle to its own multi for want of
+/// memory fails with CURLE_OUT_OF_MEMORY, as C's `easy_perform` does.
+#[cfg(feature = "debug-hooks")]
+#[test]
+fn a_perform_out_of_memory_adding_its_handle_says_so() {
+    use curl_alloc::track::fail_once_after_here;
+    // A port nothing listens on: refused at once.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let url = std::ffi::CString::new(format!("http://127.0.0.1:{port}/")).unwrap();
+    let c = curl_easy_init();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_URL, url.as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    // The first perform makes the handle's own multi, which it keeps: the
+    // next one's first allocation is its handle's place in that multi.
+    // SAFETY: a live handle.
+    assert_eq!(unsafe { curl_easy_perform(c) }, ffi::CURLE_COULDNT_CONNECT);
+    // SAFETY: a live handle.
+    let (code, refused) = fail_once_after_here(0, || unsafe { curl_easy_perform(c) });
+    assert!(refused);
+    assert_eq!(code, ffi::CURLE_OUT_OF_MEMORY);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}

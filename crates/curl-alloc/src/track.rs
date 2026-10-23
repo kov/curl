@@ -45,6 +45,9 @@ struct State {
     quiet: bool,
     /// Only one allocation is refused: the limit is lifted after it.
     once: bool,
+    /// Only the allocations of the thread that set the limit count
+    /// against it (`fail_once_after_here`).
+    here: bool,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -53,6 +56,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     refused: 0,
     quiet: false,
     once: false,
+    here: false,
 });
 
 /// Tracked blocks not yet freed.
@@ -69,6 +73,8 @@ thread_local! {
     /// Bytes this thread allocated outside [`untracked`], less those it
     /// freed: what it holds, as far as it made what it frees.
     static HELD: Cell<i64> = const { Cell::new(0) };
+    /// This thread set a limit that only its allocations count against.
+    static LIMITED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -140,18 +146,33 @@ pub fn fail_once_after<R>(limit: u64, f: impl FnOnce() -> R) -> (R, bool) {
     refusing(limit, true, f)
 }
 
+/// As [`fail_once_after`], counting only this thread's allocations, so
+/// that tests running beside it on other threads are not refused: for a
+/// test among others in a harness's threads.
+pub fn fail_once_after_here<R>(limit: u64, f: impl FnOnce() -> R) -> (R, bool) {
+    LIMITED.with(|l| l.set(true));
+    let r = refusing_in(limit, true, true, f);
+    LIMITED.with(|l| l.set(false));
+    r
+}
+
 fn refusing<R>(limit: u64, once: bool, f: impl FnOnce() -> R) -> (R, bool) {
+    refusing_in(limit, once, false, f)
+}
+
+fn refusing_in<R>(limit: u64, once: bool, here: bool, f: impl FnOnce() -> R) -> (R, bool) {
     let (previous, refused) = {
         let mut state = state();
-        let previous = (state.limit.replace(limit), state.once);
+        let previous = (state.limit.replace(limit), state.once, state.here);
         state.quiet = true;
         state.once = once;
+        state.here = here;
         (previous, state.refused)
     };
     ACTIVE.store(true, Ordering::Release);
     let r = f();
     let mut state = state();
-    (state.limit, state.once) = previous;
+    (state.limit, state.once, state.here) = previous;
     state.quiet = false;
     let reached = state.refused > refused;
     (r, reached)
@@ -276,6 +297,9 @@ fn write_log(state: &State, line: &Line) {
 /// call was made.
 pub fn limit_reached(func: &str, source: impl FnOnce(&mut Line)) -> bool {
     let mut state = state();
+    if state.here && !LIMITED.with(Cell::get) {
+        return false;
+    }
     match &mut state.limit {
         Some(0) => {}
         Some(left) => {

@@ -131,7 +131,7 @@ impl Dialed {
 }
 
 /// The most attempts running at once (`IP_HE_MAX_CONCURRENT_ATTEMPTS`).
-const MAX_ATTEMPTS: usize = 6;
+pub(crate) const MAX_ATTEMPTS: usize = 6;
 
 /// The attempts of a setup (C's `cf_ip_ballers`): each starts when the
 /// one before has failed, or has run the happy eyeballs delay without

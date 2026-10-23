@@ -1486,8 +1486,11 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
   `Curl_multi_will_close`), then closes it through its closer. Every pool path that closes a
   socket goes through it, so none can skip the order. A share's pool section holds the sockets
   it closes (`CloseLater`) and closes them once the lock is let go, so neither the socket
-  callback nor the closer runs under a share's lock. Planned (step 40): `CloseLater` allocates
-  for each socket it holds, and closes inside the lock when that allocation fails.
+  callback nor the closer runs under a share's lock. It holds as many as a lease given back
+  closes (each attempt of a setup, and one idle connection over the limit) without allocating;
+  a search or an addition, which may close any idle connection, first makes room for one socket
+  for each connection in the pool, under the lock, and fails for memory without it
+  (`pool_search`). A socket with no room is an assertion, never a close under the lock.
 
 ### 4.6.1 The share
 

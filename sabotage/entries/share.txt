@@ -33,12 +33,14 @@ witness: curl-core multi::tests::a_share_keeps_connections_across_handles
 --- old
         watched(watch.as_deref(), share, Kind::Connections, || {
             let mut later = CloseLater::new(&mut net);
-            let r = section(&mut share.pool(), &mut later, home);
+            let r = {
+                let mut pool = share.pool();
 --- new
         let mut held = share.pool();
         watched(watch.as_deref(), share, Kind::Connections, || {
             let mut later = CloseLater::new(&mut net);
-            let r = section(&mut held, &mut later, home);
+            let r = {
+                let mut pool = &mut held;
 
 === a transfer's jar ignores its share's
 file: crates/curl-core/src/proto/http/cookies.rs
@@ -98,3 +100,17 @@ witness: curl-core proto::http::tests::a_share_s_uses_are_told_where_c_locks_the
         names(&mut self.step.rest.caches.dns, self.kept)
 --- new
         names(&mut self.step.rest.caches.dns, None)
+
+=== a share's pool section closes a socket under its lock
+file: crates/curl-core/src/multi/cx.rs
+witness: curl-core multi::tests::a_share_s_sockets_close_out_of_its_lock
+--- old
+        if let Some(free) = self.few.iter_mut().find(|s| s.is_none()) {
+            *free = Some(socket);
+            return;
+        }
+--- new
+        if self.few.iter_mut().any(|s| s.is_none()) {
+            self.net.close(socket);
+            return;
+        }

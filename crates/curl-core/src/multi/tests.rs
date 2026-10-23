@@ -2100,6 +2100,83 @@ fn a_connection_closes_its_sockets_through_its_maker_s_closer() {
     assert_eq!(net.lock().unwrap().0.open_sockets(), 0);
 }
 
+/// Asks, as it closes a socket, whether the share's pool is locked.
+struct LockChecking {
+    share: std::sync::Arc<std::sync::Mutex<Option<crate::share::Share>>>,
+    locked: std::sync::Arc<std::sync::Mutex<Vec<bool>>>,
+}
+
+impl crate::handler::SocketCloser for LockChecking {
+    fn close(&self, _: crate::conn::io::SocketKey) {
+        // At the share's own cleanup the test holds it no more.
+        let share = self.share.lock().unwrap();
+        let locked = share
+            .as_ref()
+            .is_some_and(crate::share::Share::pool_is_locked);
+        self.locked.lock().unwrap().push(locked);
+    }
+}
+
+/// The sockets a share's pool section closes are closed once its lock is
+/// let go, so the application's closer never runs under it: one given
+/// back that may not be reused, and one a search finds dead.
+#[test]
+fn a_share_s_sockets_close_out_of_its_lock() {
+    use crate::conn::io::{Peer, SocketKey};
+    use crate::share::{Kind, Share};
+    let clock = ManualClock::new().unwrap();
+    let closed = std::sync::Arc::new(AtomicU32::new(0));
+    let at = std::net::SocketAddr::from(([127, 0, 0, 1], 1));
+    let net = std::sync::Arc::new(std::sync::Mutex::new(Closes(
+        FakeNet::new(clock.clone()).with_peer(at, Peer::Accepts),
+        closed.clone(),
+    )));
+    let env = || Env {
+        clock: Box::new(clock.clone()),
+        net: Box::new(OneNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let share = Share::with_net(Box::new(OneNet(net.clone()))).unwrap();
+    share.keep(Kind::Connections).unwrap();
+    let held = std::sync::Arc::new(std::sync::Mutex::new(Some(share.clone())));
+    let locked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let made = |forbid: bool| {
+        let mut e = easy("tcp://127.0.0.1:1/");
+        e.set_share(Some(share.clone()));
+        e.options_mut().limits.reuse.forbid = forbid;
+        let closer = LockChecking {
+            share: held.clone(),
+            locked: locked.clone(),
+        };
+        let closer = crate::handler::Handler::socket_closer(closer).unwrap();
+        e.options_mut().socket_hooks.make_mut().unwrap().close = Some(closer);
+        e
+    };
+    let mut m: Multi = Multi::new(env()).unwrap();
+    made(true)
+        .perform_in(&mut m, crate::easy::Drive::Waits)
+        .unwrap();
+    assert_eq!(*locked.lock().unwrap(), [false], "given back and closed");
+    made(false)
+        .perform_in(&mut m, crate::easy::Drive::Waits)
+        .unwrap();
+    assert_eq!(locked.lock().unwrap().len(), 1, "kept by the share");
+    net.lock().unwrap().0.hang_up(SocketKey::new(1000));
+    made(false)
+        .perform_in(&mut m, crate::easy::Drive::Waits)
+        .unwrap();
+    assert_eq!(
+        *locked.lock().unwrap(),
+        [false, false],
+        "found dead and closed"
+    );
+    drop(m);
+    held.lock().unwrap().take();
+    drop(share);
+    assert_eq!(locked.lock().unwrap().len(), 3, "closed with the share");
+}
+
 /// A connection of a share's pool that a transfer does not give back,
 /// for it may not be reused, is closed through the transfer's network
 /// once the transfer is done with the pool: at once, not with the share.

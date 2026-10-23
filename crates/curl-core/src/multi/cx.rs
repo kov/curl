@@ -88,13 +88,41 @@ impl<H: Host> EngineRest<'_, H> {
     /// network to use and `home` itself, which leases made there carry: a
     /// share's, under its lock with the application told around it, or
     /// the multi's own. The sockets the section closes are closed once the
-    /// share's lock is let go, as closing one tells the socket callback.
+    /// share's lock is let go, as closing one tells the socket callback;
+    /// the section closes no more than `CloseLater::FEW` (a lease given
+    /// back), as room for more is not made.
     pub(crate) fn pool_section<R>(
         &mut self,
         who: TransferId,
         home: &Home,
         section: impl FnOnce(&mut Pool, &mut dyn Net, &Home) -> R,
     ) -> R {
+        self.section_on(who, home, Room::Few, |pool, net, here| {
+            Ok(section(pool, net, here))
+        })
+        .expect("no room is made for a lease given back")
+    }
+
+    /// As `pool_section`, for a section that may close any of the pool's
+    /// idle connections (a search, an addition): room to hold the socket
+    /// of each connection in a share's pool is made under its lock before
+    /// the section runs, which does not run without it.
+    pub(crate) fn pool_search<R>(
+        &mut self,
+        who: TransferId,
+        home: &Home,
+        section: impl FnOnce(&mut Pool, &mut dyn Net, &Home) -> Result<R, OutOfMemory>,
+    ) -> Result<R, OutOfMemory> {
+        self.section_on(who, home, Room::EachConnection, section)
+    }
+
+    fn section_on<R>(
+        &mut self,
+        who: TransferId,
+        home: &Home,
+        room: Room,
+        section: impl FnOnce(&mut Pool, &mut dyn Net, &Home) -> Result<R, OutOfMemory>,
+    ) -> Result<R, OutOfMemory> {
         let watch = self
             .tell
             .slots
@@ -115,7 +143,15 @@ impl<H: Host> EngineRest<'_, H> {
         };
         watched(watch.as_deref(), share, Kind::Connections, || {
             let mut later = CloseLater::new(&mut net);
-            let r = section(&mut share.pool(), &mut later, home);
+            let r = {
+                let mut pool = share.pool();
+                if room == Room::EachConnection {
+                    let each = usize::try_from(pool.len()).expect("a pool's size fits");
+                    later.make_room(each)?;
+                }
+                section(&mut pool, &mut later, home)
+            };
+            // The share's lock is let go.
             later.close();
             r
         })
@@ -244,26 +280,48 @@ impl Kept {
     }
 }
 
-/// A network whose sockets closed are held, to be closed later: out of
-/// a share's lock. A socket it cannot hold, for want of memory, it
-/// closes at once.
+/// How many sockets a pool section may close: as many as a lease given
+/// back holds, or one for each connection in the pool.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Room {
+    Few,
+    EachConnection,
+}
+
+/// A network whose sockets closed are held, to be closed later: out of a
+/// share's lock. It holds a few without allocating, and more in room made
+/// before the section; a socket it has no room for is a bug, never closed
+/// under the lock.
 struct CloseLater<'n> {
     net: &'n mut dyn Net,
-    sockets: Vec<Sock>,
+    few: [Option<Sock>; CloseLater::FEW],
+    more: Vec<Sock>,
 }
 
 impl<'n> CloseLater<'n> {
+    /// The most sockets a lease given back closes: each attempt of a
+    /// setup under way, and the idle connection the pool closes over its
+    /// limit.
+    const FEW: usize = crate::conn::MAX_ATTEMPTS + 1;
+
     fn new(net: &'n mut dyn Net) -> CloseLater<'n> {
         CloseLater {
             net,
-            sockets: Vec::new(),
+            few: [const { None }; CloseLater::FEW],
+            more: Vec::new(),
         }
+    }
+
+    /// Room for `n` more sockets than `FEW`.
+    fn make_room(&mut self, n: usize) -> Result<(), OutOfMemory> {
+        self.more.try_reserve_exact(n).map_err(|_| OutOfMemory)
     }
 
     /// Close the sockets held, in the order they were.
     fn close(self) {
-        for socket in self.sockets {
-            self.net.close(socket);
+        let CloseLater { net, few, more } = self;
+        for socket in few.into_iter().flatten().chain(more) {
+            net.close(socket);
         }
     }
 }
@@ -287,11 +345,16 @@ impl Net for CloseLater<'_> {
     }
 
     fn close(&mut self, socket: Sock) {
-        if self.sockets.try_reserve(1).is_err() {
-            self.net.close(socket);
+        if let Some(free) = self.few.iter_mut().find(|s| s.is_none()) {
+            *free = Some(socket);
             return;
         }
-        self.sockets.try_push(socket).expect("reserved");
+        assert!(
+            self.more.len() < self.more.capacity(),
+            "no room for {:?}, which would close under the share's lock",
+            socket.key()
+        );
+        self.more.try_push(socket).expect("room was made");
     }
 
     fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
@@ -610,5 +673,90 @@ impl<H: Host> NotifyCx<'_, H> {
     /// As `Multi::assign`.
     pub fn assign(&mut self, s: SocketKey, value: Option<H::Socket>) -> Result<(), UnknownSocket> {
         self.multi.assign(s, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::conn::io::{Closer, FakeNet, Peer};
+    use crate::time::ManualClock;
+
+    /// The fake network, its closes recorded in order.
+    struct Recording(FakeNet, Vec<i32>);
+
+    impl Net for Recording {
+        fn poll(
+            &mut self,
+            sockets: &mut [SocketPoll<'_>],
+            fds: &mut [PollFd<'_>],
+            timeout: Duration,
+        ) -> io::Result<u32> {
+            self.0.poll(sockets, fds, timeout)
+        }
+
+        fn connect(
+            &mut self,
+            addr: SocketAddr,
+            options: crate::conn::io::SocketOptions,
+        ) -> io::Result<(Box<dyn Socket>, Connect)> {
+            self.0.connect(addr, options)
+        }
+
+        fn close(&mut self, socket: Sock) {
+            self.1.push(socket.key().get());
+            self.0.close(socket);
+        }
+
+        fn resolve(&mut self, name: &[u8], family: Family) -> Result<Vec<IpAddr>, ResolveFailure> {
+            self.0.resolve(name, family)
+        }
+
+        fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+            None
+        }
+    }
+
+    /// A network and `n` sockets open on it.
+    fn opened(n: usize) -> (Recording, Vec<Sock>) {
+        let at = SocketAddr::from(([127, 0, 0, 1], 1));
+        let mut net = FakeNet::new(ManualClock::new().unwrap()).with_peer(at, Peer::Accepts);
+        let socks = (0..n)
+            .map(|_| {
+                let (s, _) = net.connect(at, Default::default()).unwrap();
+                Sock::new(s, Closer::System)
+            })
+            .collect();
+        (Recording(net, Vec::new()), socks)
+    }
+
+    /// Sockets held close only once told, in the order given: a few
+    /// without room made, more in the room made.
+    #[test]
+    fn sockets_held_close_in_order_once_told() {
+        let (mut net, socks) = opened(CloseLater::FEW + 2);
+        let mut later = CloseLater::new(&mut net);
+        later.make_room(2).unwrap();
+        for s in socks {
+            Net::close(&mut later, s);
+        }
+        assert!(later.few.iter().all(Option::is_some));
+        assert_eq!(later.more.len(), 2, "none closed yet");
+        later.close();
+        let want: Vec<i32> = (1000..1000 + CloseLater::FEW as i32 + 2).collect();
+        assert_eq!(net.1, want);
+        assert_eq!(net.0.open_sockets(), 0);
+    }
+
+    /// A section closing more sockets than room was made for is a bug,
+    /// caught as it is made rather than closed under the share's lock.
+    #[test]
+    #[should_panic = "would close under the share's lock"]
+    fn a_socket_without_room_is_caught() {
+        let (mut net, socks) = opened(CloseLater::FEW + 1);
+        let mut later = CloseLater::new(&mut net);
+        for s in socks {
+            Net::close(&mut later, s);
+        }
     }
 }

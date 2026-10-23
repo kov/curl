@@ -142,6 +142,13 @@ impl Share {
         lock(&self.0.pool)
     }
 
+    /// Whether its pool is locked now, for the tests of what runs out of
+    /// the lock.
+    #[cfg(test)]
+    pub(crate) fn pool_is_locked(&self) -> bool {
+        self.0.pool.try_lock().is_err()
+    }
+
     /// The names kept, locked.
     pub(crate) fn dns(&self) -> MutexGuard<'_, DnsCache> {
         lock(&self.0.dns)

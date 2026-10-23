@@ -72,6 +72,10 @@ fn main() {
             a_get_stays_within_its_allocation_budget,
         ),
         (
+            "a_share_s_connection_survives_every_allocation_failing",
+            a_share_s_connection_survives_every_allocation_failing,
+        ),
+        (
             "a_lost_trailer_line_fails_the_request",
             a_lost_trailer_line_fails_the_request,
         ),
@@ -713,6 +717,101 @@ fn a_get_stays_within_its_allocation_budget() {
         n <= GET_BUDGET,
         "a plain GET made {n} allocations, over its {GET_BUDGET}"
     );
+}
+
+/// One fake network for a multi and the share whose connections it
+/// uses, as the share closes them at its end.
+struct SharedNet(TryArc<std::sync::Mutex<FakeNet>>);
+
+impl Net for SharedNet {
+    fn poll(
+        &mut self,
+        sockets: &mut [curl_core::conn::io::SocketPoll<'_>],
+        fds: &mut [curl_core::conn::io::PollFd<'_>],
+        timeout: Duration,
+    ) -> std::io::Result<u32> {
+        self.0.lock().unwrap().poll(sockets, fds, timeout)
+    }
+
+    fn connect(
+        &mut self,
+        addr: std::net::SocketAddr,
+        options: curl_core::conn::io::SocketOptions,
+    ) -> std::io::Result<(
+        Box<dyn curl_core::conn::io::Socket>,
+        curl_core::conn::io::Connect,
+    )> {
+        self.0.lock().unwrap().connect(addr, options)
+    }
+
+    fn close(&mut self, socket: curl_core::conn::io::Sock) {
+        self.0.lock().unwrap().close(socket);
+    }
+
+    fn resolve(
+        &mut self,
+        name: &[u8],
+        family: curl_core::conn::io::Family,
+    ) -> Result<Vec<std::net::IpAddr>, curl_core::conn::io::ResolveFailure> {
+        self.0.lock().unwrap().resolve(name, family)
+    }
+
+    fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
+        None
+    }
+}
+
+/// Two GETs of a multi whose connections a share keeps, the second
+/// reusing the first's: the search of the share's pool makes room for
+/// the sockets it may close before it runs. Each GET's result.
+fn shared_scenario() -> Result<[Result<(), ErrorKind>; 2], OutOfMemory> {
+    let (clock, talk) = track::untracked(|| {
+        let clock = ManualClock::new().expect("a clock");
+        (clock, Conversation::replies(&[REPLY, REPLY], false))
+    });
+    let net = track::untracked(|| {
+        let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
+        let net = FakeNet::new(clock.clone())
+            .with_peer(at, Peer::Accepts)
+            .with_conversation(at, talk.clone());
+        TryArc::try_new(std::sync::Mutex::new(net)).expect("a test's network")
+    });
+    let share = curl_core::share::Share::with_net(try_box(SharedNet(net.clone()))?)?;
+    share
+        .keep(curl_core::share::Kind::Connections)
+        .expect("no handle holds it yet");
+    let env = Env {
+        clock: try_box(clock)?,
+        net: try_box(SharedNet(net))?,
+        arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
+        waker: None,
+    };
+    let mut m: Multi = Multi::new(env)?;
+    let mut results = [Ok(()), Ok(())];
+    for result in &mut results {
+        let mut easy = Easy::new();
+        easy.set_share(Some(share.clone()));
+        easy.options_mut().set_url(Some(URL))?;
+        let id = match m.add(try_box(easy)?, (), &mut NoEvents) {
+            Ok(id) => id,
+            Err(AddError {
+                kind: MultiErrorKind::OutOfMemory,
+                ..
+            }) => return Err(OutOfMemory),
+            Err(e) => panic!("add refused with {:?}, not for memory", e.kind),
+        };
+        *result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents)
+            .expect("the transfer is in the multi");
+        if !matches!(result, Ok(()) | Err(ErrorKind::OutOfMemory)) {
+            track::untracked(|| panic!("a GET ended with {result:?}"));
+        }
+        m.remove(id, &mut NoEvents).expect("in the multi");
+    }
+    Ok(results)
+}
+
+fn a_share_s_connection_survives_every_allocation_failing() {
+    torture(shared_scenario, Ok([Ok(()), Ok(())]));
 }
 
 /// A count the handlers keep, `Sync` as a handler is; a lock makes no

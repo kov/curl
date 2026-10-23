@@ -2969,7 +2969,7 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
         None => Home::Multi,
     };
     let found = if pool::searches(&route, rules) {
-        cx.rest.pool_section(cx.me, &home, |pool, net, here| {
+        cx.rest.pool_search(cx.me, &home, |pool, net, here| {
             pool.find(here, &route, rules, net, now, &mut notes)
         })?
     } else {
@@ -2984,7 +2984,7 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
                 Some(close) => Closer::Hook(close.clone()),
                 None => Closer::System,
             };
-            let (added, members) = cx.rest.pool_section(cx.me, &home, |pool, net, here| {
+            let (added, members) = cx.rest.pool_search(cx.me, &home, |pool, net, here| {
                 pool.add(here, route, closer, add, net, now)
                     .map(|added| (added, pool.len()))
             })?;

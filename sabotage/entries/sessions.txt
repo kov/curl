@@ -1,0 +1,123 @@
+=== a session's key leaves out the TLS versions it was made under
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_key_holds_every_setting_a_session_must_share
+--- old
+            ":TLSVER-{}-{}",
+            min_number(o.min_version),
+            max_number(o.max_version)
+--- new
+            ":TLSVER-{}-{}",
+            6,
+            0
+
+=== a peer's sessions are found whatever client certificate asks
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_session_serves_only_its_client
+--- old
+            .position(|p| p.key.as_deref() == Some(key) && p.matches(auth));
+--- new
+            .position(|p| p.key.as_deref() == Some(key) && (true || p.matches(auth)));
+
+=== a new peer takes the most recently used slot
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::a_new_peer_takes_the_least_recently_used_slot
+--- old
+                    if p.age < self.peers[oldest].age {
+--- new
+                    if p.age > self.peers[oldest].age {
+
+=== a session before TLS 1.3 joins the others instead of replacing them
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::versions_do_not_mix
+--- old
+        if s.version != TLS1_3 {
+            self.sessions.clear();
+        } else {
+--- new
+        if s.version != TLS1_3 {
+        } else {
+
+=== a TLS 1.3 ticket is kept no longer than a day
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core tls::cache::tests::lifetimes_are_cut_to_the_most_a_version_is_kept
+--- old
+const MOST_13: i64 = 7 * 24 * 60 * 60;
+--- new
+const MOST_13: i64 = 24 * 60 * 60;
+
+=== a TLS 1.3 ticket taken is given back to be used again
+file: crates/curl-core/src/tls.rs
+witness: curl-core proto::http::tests::tls::the_session_cache_traces_its_uses
+features: test-util
+--- old
+        if let Some(t) = ticket.filter(|t| t.version < TLS1_3) {
+--- new
+        if let Some(t) = ticket.filter(|t| t.version <= TLS1_3) {
+
+=== a transfer keeping no sessions still keeps and resumes them
+file: crates/curl-core/src/tls/cache.rs
+witness: curl-core proto::http::tests::tls::the_next_connection_to_a_peer_resumes_a_session_its_multi_kept
+features: test-util
+--- old
+        self.identity.options.session_cache
+--- new
+        self.identity.options.session_cache || true
+
+=== a share keeping sessions is passed over for the multi's own
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_share_keeping_sessions_serves_them_across_multis
+features: test-util
+--- old
+        if let Some(kept) = self.rest.kept(self.me, Kind::SslSessions) {
+            let mut held = HeldSays {
+--- new
+        if let Some(kept) = self.rest.kept(self.me, Kind::Cookies) {
+            let mut held = HeldSays {
+
+=== what the cache says under a share's lock is never said
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_share_keeping_sessions_serves_them_across_multis
+features: test-util
+--- old
+            for line in &held.lines {
+                trace::of(self, Component::Ssls, format_args!("{line}"));
+            }
+--- new
+            for line in held.lines.iter().take(0) {
+                trace::of(self, Component::Ssls, format_args!("{line}"));
+            }
+
+=== a resumed session reports a chain it was not sent
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl the_next_connection_resumes_a_tls_1_3_ticket
+--- old
+    if !reused {
+        crate::certinfo::report(ssl, io)?;
+--- new
+    if !reused || true {
+        crate::certinfo::report(ssl, io)?;
+
+=== a peer that fails its check keeps its sessions
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_failed_check_forgets_the_peer_s_sessions
+--- old
+            io.forget_sessions();
+            return Err(kind);
+--- new
+            return Err(kind);
+
+=== the key log's lines are written without their line end
+file: crates/curl-core/src/tls/keylog.rs
+witness: curl-core tls::keylog::tests::lines_are_appended_as_the_nss_format_has_them
+--- old
+        if line.last() != Some(&b'\n') {
+--- new
+        if line.last() != Some(&b'\n') && false {
+
+=== the key log is handed no line the library gives
+file: crates/curl-openssl/src/bio.rs
+witness: curl-openssl the_key_log_has_each_connection_s_secrets
+--- old
+        log.write_line(unsafe { CStr::from_ptr(line) }.to_bytes());
+--- new
+        let _ = (log, line);

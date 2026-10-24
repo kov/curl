@@ -649,6 +649,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       unpauses it: measured 2026-10-24, the rewrite's run reads it there, C's on the next
       call, which makes one more timer callback.
     - **h. The session cache**, the share's `SSL_SESSION` kind, `--no-sessionid`, the key log.
+      **Done.** Left: a TLS 1.3 ticket that arrives while a connection says goodbye is
+      dropped, where C keeps it through the multi's internal handle; `curl_easy_ssls_import`
+      and `export` answer `CURLE_NOT_BUILT_IN`.
     - **i. HTTPS proxy.** `SSL-PROXY`, TLS in TLS, the proxy's TLS options; `HTTPS-proxy`
       reported (1630–1632, 3401).
     - **j. Closing the step.** Torture against the C build on a subset, the budgets, the sweep

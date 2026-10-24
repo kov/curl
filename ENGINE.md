@@ -164,7 +164,9 @@ curl-core/src/
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
   libraries.rs               Libraries, Ed25519: what the bound C libraries do for a handle
   tls.rs, tls/               TlsIdentity, the seam a TLS library implements (TlsBackend,
-                             TlsSession, TlsIo, TlsPeer, TlsWait); fake.rs: FakeTls (test-util)
+                             TlsSession, TlsIo, TlsPeer, TlsWait); cache.rs: SessionCache,
+                             SessionPeer, TlsTicket (vtls_scache.c); keylog.rs: KeyLog;
+                             fake.rs: FakeTls (test-util)
   hash.rs                    MD5, SHA-256 and SHA-512/256, for Digest
   save.rs                    a file written whole under a name of its own, then renamed
   multi/
@@ -225,8 +227,8 @@ curl-core/src/
   untrusted.rs, test_cell.rs input for the never-panics properties; a Cell for handlers (tests)
 ```
 
-Planned, not built: `conn/mux.rs`; `tls/cache.rs`, TLS's session cache (step 43h, §4.9); a
-`Resolver` for names the cache and the shortcuts do not answer; and `DebugNet`.
+Planned, not built: `conn/mux.rs`; a `Resolver` for names the cache and the shortcuts do not
+answer; and `DebugNet`.
 
 ### 2.3 Ids and the arena
 
@@ -468,8 +470,8 @@ wins, by `HAPPY-EYEBALLS` or `SOCKS` under a tunnel's `CONNECT`, and by the top 
 HTTP starts on a new connection (`http_check_new_conn`: `[TCP]`, `[UNIX]`, `[SOCKS]`,
 `[H1-PROXY]`, `[SSL]`); the TLS layer adds what it answers (`query ALPN: returning
 'http/1.1'`, `'(nil)'` for none). Each call of the chain's connect ends with its top filter's
-`[DNS] Curl_conn_connect(block=0) -> R, done=D`. Planned: `SSLS`, the session cache's lines
-(43h), and `SSL-PROXY`, an HTTPS proxy's layer (43i). C's `[SHUTDOWN]` lines and a
+`[DNS] Curl_conn_connect(block=0) -> R, done=D`. `SSLS` traces the session cache's lookups,
+additions and takings as C's (§4.9). Planned: `SSL-PROXY`, an HTTPS proxy's layer (43i). C's `[SHUTDOWN]` lines and a
 shutdown's TLS lines are its internal handle's, so not traced (§4.6).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
@@ -1790,14 +1792,14 @@ its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ### 4.9 TLS
 
-Built (steps 43d and 43e1): the seam, the layer, the identity reuse compares, the `https`
+Built (steps 43d to 43h): the seam, the layer, the identity reuse compares, the `https`
 scheme and the setup's TLS stage, the goodbye through the shutdown set, driven in the core's
 tests by a fake library (`tls::fake::FakeTls`); and OpenSSL's session in curl-openssl (**The
 BIO**, the context, **Verification** and the host check), which the tool and the C ABI give
 every handle (`Libraries::tls`), reporting `https`, `SSL` and `OpenSSL/3.5.9` as C's build does
 (`curl -V`, `curl_version_info`); the CA store each multi keeps for its next connections
-(`TlsShared`); close_notify (**Shutdown**). Planned: the seam's later methods noted below. MILESTONES.md step 43 lists the
-sub-steps.
+(`TlsShared`); close_notify (**Shutdown**); **The session cache** and the key log.
+MILESTONES.md step 43 lists the sub-steps.
 
 ```rust
 // curl_core::tls, public: the seam a TLS library implements (curl-openssl)
@@ -1805,7 +1807,7 @@ pub trait TlsBackend: Send + Sync {
     fn session(&self, identity: &TryArc<TlsIdentity>, peer: &TlsPeer<'_>, alpn: Alpn,
                shared: &TlsShared) -> Result<Box<dyn TlsSession>, ErrorKind>;
     fn ca_defaults(&self) -> CaDefaults;           // the build's CA file and path
-    // planned (43h): the ticket to resume.
+    fn id(&self) -> &dyn fmt::Display;             // `OpenSSL/3.5.9`, as a session's key names it
 }
 pub enum Alpn { None, Http11, Http10 }             // the offer, from the HTTP version
 #[derive(Clone)] pub struct TlsShared(/* TryArc<Mutex<Option<Box<dyn Any + Send>>>> */);
@@ -1822,7 +1824,6 @@ pub trait TlsSession: Send {                       // one connection's TLS, neve
     fn pending(&self) -> bool;                     // decrypted bytes not yet read
     fn native(&self) -> Option<TlsNative>;         // the library's objects, once made
     fn chosen(&self) -> Option<Chosen>;           // what the peer chose by ALPN, once done
-    // planned: fn tickets(..) (43h)
 }
 #[derive(Clone, Copy)] pub struct TlsNative {     // opaque to the core, which passes it on
     context: NonNull<c_void>, session: Option<NonNull<c_void>>,  // SSL_CTX *, SSL *
@@ -1840,7 +1841,15 @@ impl TlsIo<'_> {                                   // what a library's BIO and c
     pub fn configure_context(&mut self, native: TlsNative) -> Result<(), ErrorKind>;
     pub fn pause_recv(&mut self);                  // Curl_xfer_pause_recv
     pub fn peer_alive(&mut self) -> bool;          // is_alive of the layers below
+    pub fn unix_time(&self) -> i64;                // time(NULL), a ticket's lifetime's start
+    pub fn caches_sessions(&self) -> bool;         // Curl_ssl_scache_use
+    pub fn take_session(&mut self) -> Option<TlsTicket>;   // Curl_ssl_scache_take
+    pub fn keep_session(&mut self, t: TlsTicket);          // Curl_ssl_scache_put
+    pub fn return_session(&mut self, t: Option<TlsTicket>); // Curl_ssl_scache_return
+    pub fn forget_sessions(&mut self);             // Curl_ssl_scache_remove_all
 }
+pub struct TlsTicket { pub data: Vec<u8>, pub version: u16, pub alpn: Option<Chosen>,
+                       pub earlydata_max: usize, /* valid_until */ }
 pub struct TlsPeer<'a> { pub name: &'a [u8], pub port: u16, pub kind: TlsPeerKind }
 pub struct TlsIdentity { pub verify_peer: bool, pub verify_host: bool, pub options: TlsOptions,
                          pub ca_defaults: CaDefaults }
@@ -1959,7 +1968,7 @@ fields as `label:value` lines worded as C's, into a `CertInfo` the transfer's re
 been reported all the same, and a chain longer than 100 fails the handshake (35). The report's
 restart clears it. The shim answers `CURLINFO_CERTINFO` with the handle's `struct curl_certinfo`,
 made again only when the chain differs; the tool asks for it whenever `-w` is given, for
-`%{certs}` and `%{num_certs}`. A resumed session (43h) is to skip it, as its chain is not sent.
+`%{certs}` and `%{num_certs}`. A resumed session skips it, as its chain is not sent.
 
 **Engines and providers** (`engine.rs`, `CURLOPT_SSLENGINE` and `_DEFAULT`, handle fields in
 `TlsOptions` the identity does not compare) are selected first in `step1`, as
@@ -1978,8 +1987,9 @@ the library's engines, once it is initialised.
 With `CURLOPT_SSL_VERIFYSTATUS` (`--cert-status`) the session asks for a stapled OCSP response
 and `ocsp.rs` checks it as `verifystatus` does: there, successful, signed by the verified chain
 against the context's store, naming the peer's certificate, current within five minutes' skew,
-and good; each shortfall is 91 in C's words. A resumed session is not checked, as in C, once
-the session cache resumes any. `CURLOPT_ISSUERCERT` or its blob then names the
+and good; each shortfall is 91 in C's words. A resumed session is not checked, as in C; a
+transfer that checks the status resumes none, so only a session C's FTP data connection
+borrows would be. `CURLOPT_ISSUERCERT` or its blob then names the
 certificate that must have issued the peer's (`ossl_check_issuer`): 83 if it cannot be read or
 did not, said only when the peer is verified. The pinned key comes last.
 
@@ -1998,16 +2008,47 @@ carries the library's defaults, so it compares the file and path they resolve to
 names the default's path matches one that keeps the default, as C finds them, having copied the
 default into the setting (`Curl_ssl_filter_config_tmp_init`). `ProxyRoute` gains the proxy's identity with the HTTPS proxy (43i).
 
-**The session cache** (`tls/cache.rs`) is per multi, 25 peers for `curl_multi_init` and 3 for
-`curl_easy_perform`'s private multi (multi.c:71, easy.c:805), or the share's 25 when it keeps
-`Kind::SslSessions` (`CURL_LOCK_DATA_SSL_SESSION`); two tickets per peer. Its key is
-`Curl_ssl_peer_key_make`'s, as `SSLS` traces it: `https:localhost:18443:KEY-V3:TLSVER-6-0:
-CA-58:<CA file>:IMPL-13:OpenSSL/3.5.9:G`, with `NO-VRFY-PEER:NO-VRFY-HOST` in place of the CA
-for an unverified one. A ticket is a backend's `Box<dyn TlsTicket>`, kept as TLS 1.3's
-NewSessionTicket messages arrive, which they do once the transfer is reading its response; the
-next connection to the peer takes one (`SSL reusing session with ALPN '-'`).
-`CURLOPT_SSL_SESSIONID_CACHE` off makes no lookup. `curl_easy_ssls_import` and `export` answer
-`CURLE_NOT_BUILT_IN`, as a C build without `USE_SSLS_EXPORT`, and `SSLS-EXPORT` is not reported.
+**The session cache** (`tls/cache.rs`, vtls_scache.c) keeps what peers give to resume. Its one
+owner is the multi (`Caches::sessions`, 25 peers, `curl_easy_perform`'s own multi 3 as
+easy.c's), or the share in its place when the share keeps `Kind::SslSessions`
+(`CURL_LOCK_DATA_SSL_SESSION`, 25 peers, made as it is kept and dropped as it is let go): a
+transfer uses its share's if it has one (`cf_ssl_scache_get`). It is reached only through
+the layer context (`LayerCx::tls_sessions`), the share's under its lock with the application's
+lock function told first and its unlock last, as `Curl_ssl_scache_lock` nests them; the
+multi's lent out of the multi for the call. A peer is a slot, made as first needed up to the
+cache's count: found by its key and by the client certificate and key password it was added
+with (a certificate blob is named by its address in C, so its sessions are never found again;
+here likewise); a new peer takes a free slot, else one holding no session, else the least
+recently taken from. A peer keeps two tickets: one before TLS 1.3 replaces the others, one of
+TLS 1.3 joins those still good, the oldest dropped; a lifetime is cut to a week for TLS 1.3, a
+day before, and none given is a day; a ticket out of date is dropped as it is looked at. A
+ticket taken is TLS 1.3's alone, never given back (RFC 8446 C.4); one before is kept again.
+The key (`SessionPeer`, made with the TLS layer, `Curl_ssl_peer_key_make`) is the origin and
+every setting a session must share, each text after its length, a blob by its SHA-256, a
+relative path made absolute (`realpath`) or the key made local (`:L`), and the library's id:
+`https:localhost:18443:KEY-V3:TLSVER-6-0:CA-58:<CA file>:IMPL-13:OpenSSL/3.5.9:G`, with
+`NO-VRFY-PEER:NO-VRFY-HOST` and no CA for an unverified peer, and a connect-to's peer
+(`CHOST`, `CPORT`) while either check is off. `CURLOPT_SSL_SESSIONID_CACHE` (`--no-sessionid`)
+is the connection's (`TlsOptions::session_cache`, not compared for reuse, as C): off, nothing
+is looked up or kept. OpenSSL's session takes one at its first step, between SNI and ALPN,
+unless the status is to be checked (`ossl_init_session_and_alpns`: `SSL reusing session with
+ALPN '-'`, `SSL verify result: 0`, or why it was not), and keeps each session the library
+tells of (`SSL_CTX_sess_set_new_cb`, `SSL_SESS_CACHE_NO_INTERNAL`) as its DER through the BIO's
+slot: before TLS 1.3 at the handshake's end, TLS 1.3's NewSessionTicket messages as the
+transfer reads its response. A peer that fails its check has its sessions forgotten. A ticket
+arriving while a connection says goodbye has no transfer to be kept for and is dropped; C
+keeps it in the multi's cache through its internal handle (not built, MILESTONES.md). The trace is C's under `ssls`.
+`curl_easy_ssls_import` and `export` answer `CURLE_NOT_BUILT_IN`, as a C build without
+`USE_SSLS_EXPORT`, and `SSLS-EXPORT` is not reported.
+
+**The key log** (`tls/keylog.rs`, keylog.c): the file `SSLKEYLOGFILE` names, opened to append
+by the shim's first global init (also `curl_easy_init`'s, for a program that made none) and
+closed by its last cleanup, and opened by the tool as it starts: each owns one `KeyLog` in its
+root, handed to the OpenSSL value its handles are given (`OpenSsl::logging_keys_to`); the core
+keeps none. OpenSSL here is built without its own (`OPENSSL_NO_SSLKEYLOG`), so as C the
+session sets the library's keylog callback while the log is open, whose lines are written
+whole, a line end added (NSS's format: five secrets for TLS 1.3, `CLIENT_RANDOM` before it);
+each handshake done says `SSLKEYLOGFILE set, all TLS secrets are logged to '<file>'`.
 
 **The application's hands on the library.** A library's objects reach the application as a
 `TlsNative`: two pointers the core never looks through, the context and, once made, the
@@ -2033,9 +2074,7 @@ reset, and calls the function with the handle and the `SSL_CTX`; a code the tran
 with is its result, any other an abort (DIVERGENCE.md). `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION`
 point at the handle's `curl_tlssessioninfo`, `CURLSSLBACKEND_OPENSSL` with the `SSL` or the
 `SSL_CTX`, NULL while the transfer holds no connection, as C's getinfo answers. The SSL data (`CURLINFO_SSL_DATA_IN`,
-`OUT`) and the msg callback's text lines go through `TlsIo::bytes` and `info`. `SSLKEYLOGFILE`
-is read once by the shim's root and by the tool, each owning its key log (an opened file
-behind a mutex) and handing it to the backend value: never a process global in the core.
+`OUT`) and the msg callback's text lines go through `TlsIo::bytes` and `info`.
 
 **ALPN.** Until HTTP/2 (stage 5) the offer is a C build's without nghttp2: `http/1.1` alone,
 one baller (`1st attempt uses h1 from wanted versions`); the reference offers `h2,http/1.1`, so

@@ -2845,7 +2845,7 @@ fn follow_leg<H: Host>(
 ) -> TransferState {
     let options = cx.easy().options();
     let path_as_is = options.url_rules.path_as_is;
-    let max = options.http.max_redirects.0;
+    let max = options.http.max_redirects.get();
     let base = match request_url(run, cx) {
         Ok(base) => base,
         Err(e) => return TransferState::Init.fail(e),

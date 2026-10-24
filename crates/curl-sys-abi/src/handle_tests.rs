@@ -1382,7 +1382,7 @@ fn limits_are_checked_as_in_c() {
 /// them: refused out of range, clamped where C clamps.
 #[test]
 fn http_ranges_are_checked_as_in_c() {
-    use curl_core::options::{Condition, Follow, MaxRedirects, PostRedir, TimeCondition};
+    use curl_core::options::{Condition, Follow, PostRedir, TimeCondition};
     let c = curl_easy_init();
     let bad = CURLE_BAD_FUNCTION_ARGUMENT;
     let follow = |c| options(c, |o| o.http.follow);
@@ -1399,8 +1399,8 @@ fn http_ranges_are_checked_as_in_c() {
         assert_eq!(long(c, ffi::CURLOPT_FOLLOWLOCATION, v), bad, "{v}");
     }
     assert_eq!(follow(c), Follow::FirstOnly, "unchanged");
-    let redirects = |c| options(c, |o| o.http.max_redirects);
-    assert_eq!(redirects(c), MaxRedirects(Some(30)), "C's default");
+    let redirects = |c| options(c, |o| o.http.max_redirects.get());
+    assert_eq!(redirects(c), Some(30), "C's default");
     for (v, want) in [
         (-1, None),
         (0, Some(0)),
@@ -1408,10 +1408,10 @@ fn http_ranges_are_checked_as_in_c() {
         (0x8000, Some(0x7fff)),
     ] {
         assert_eq!(long(c, ffi::CURLOPT_MAXREDIRS, v), CURLE_OK);
-        assert_eq!(redirects(c), MaxRedirects(want), "{v}");
+        assert_eq!(redirects(c), want, "{v}");
     }
     assert_eq!(long(c, ffi::CURLOPT_MAXREDIRS, -2), bad);
-    assert_eq!(redirects(c), MaxRedirects(Some(0x7fff)), "unchanged");
+    assert_eq!(redirects(c), Some(0x7fff), "unchanged");
     let post = |c| {
         options(c, |o| {
             let p = o.http.post_redirect;
@@ -1441,7 +1441,7 @@ fn http_ranges_are_checked_as_in_c() {
         },
         "unchanged"
     );
-    let wait = |c| options(c, |o| o.http.continue_wait.0);
+    let wait = |c| options(c, |o| o.http.continue_wait.get());
     assert_eq!(wait(c), Duration::from_secs(1), "C's default");
     for (v, ms) in [(0, 0), (500, 500), (70000, 65535)] {
         assert_eq!(long(c, ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, v), CURLE_OK);

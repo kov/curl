@@ -123,7 +123,7 @@ fn a_wait_for_a_100_that_runs_out_is_cleared() {
             curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap(),
         );
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-        o.http.continue_wait = crate::options::ContinueWait(Duration::from_millis(300));
+        o.http.continue_wait = crate::options::ContinueWait::clamped(300);
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(clock.now().since(start), Duration::from_millis(300));

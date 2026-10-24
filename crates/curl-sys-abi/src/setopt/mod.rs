@@ -686,8 +686,8 @@ fn apply(
             // (`value_range`).
             options.http.max_redirects = match n {
                 ..-1 => return Err(Refused::Bad),
-                -1 => MaxRedirects(None),
-                n => MaxRedirects(Some(u16::try_from(n.min(0x7fff)).expect("clamped"))),
+                -1 => MaxRedirects::UNLIMITED,
+                n => MaxRedirects::clamped(u64::try_from(n).expect("not negative")),
             };
         }
         (ffi::CURLOPT_POSTREDIR, Long(n)) => {
@@ -710,8 +710,8 @@ fn apply(
         }
         (ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, Long(n)) => {
             // Negative refused, past 65535 taken as it (`value_range`).
-            let ms = u64::try_from(n).map_err(|_| Refused::Bad)?.min(0xffff);
-            options.http.continue_wait = ContinueWait(std::time::Duration::from_millis(ms));
+            let ms = u64::try_from(n).map_err(|_| Refused::Bad)?;
+            options.http.continue_wait = ContinueWait::clamped(ms);
         }
         (ffi::CURLOPT_SSL_VERIFYPEER, Long(n)) => options.tls.verify_peer = n != 0,
         // 1 is taken as 2, as C takes it.

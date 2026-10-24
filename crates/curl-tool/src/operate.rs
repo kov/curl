@@ -2736,10 +2736,10 @@ fn http_setopts(
     // As `CURLOPT_MAXREDIRS` takes it: -1 no limit, at most 32767.
     let max_redirs = op.max_redirs.unwrap_or(50);
     s.long("CURLOPT_MAXREDIRS", max_redirs, |o| {
-        o.http.max_redirects = options::MaxRedirects(match max_redirs {
-            -1 => None,
-            n => Some(u16::try_from(n.clamp(0, 0x7fff)).expect("clamped")),
-        });
+        o.http.max_redirects = match max_redirs {
+            -1 => options::MaxRedirects::UNLIMITED,
+            n => options::MaxRedirects::clamped(u64::try_from(n).unwrap_or(0)),
+        };
         Ok(())
     })?;
     if let Some(version) = op.http_version {
@@ -2778,8 +2778,7 @@ fn http_setopts(
     if op.expect100_timeout_ms > 0 {
         let ms = op.expect100_timeout_ms;
         s.long("CURLOPT_EXPECT_100_TIMEOUT_MS", long(ms), |o| {
-            // As `CURLOPT_EXPECT_100_TIMEOUT_MS` takes it, at most 65535.
-            o.http.continue_wait = options::ContinueWait(Duration::from_millis(ms.min(0xffff)));
+            o.http.continue_wait = options::ContinueWait::clamped(ms);
             Ok(())
         })?;
     }

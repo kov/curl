@@ -98,7 +98,7 @@ fn a_pass_during_the_wait_for_a_100_is_said() {
         o.method = Method::Post;
         o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap());
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-        o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(3));
+        o.http.continue_wait = crate::options::ContinueWait::clamped(3000);
         o.flow.make_mut().unwrap().low_speed = Some(crate::options::LowSpeed {
             limit: NonZeroU64::new(1).unwrap(),
             time: std::num::NonZeroU16::new(10).unwrap(),
@@ -283,7 +283,7 @@ fn what_a_send_leaves_is_said_after_what_went() {
     o.method = Method::Post;
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
     o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-    o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(3));
+    o.http.continue_wait = crate::options::ContinueWait::clamped(3000);
     o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(RATE as u64);
     o.output.verbose = true;
     o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());

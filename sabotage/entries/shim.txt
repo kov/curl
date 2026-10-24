@@ -231,3 +231,12 @@ witness: curl-sys-abi handle_tests::the_tls_check_and_identity_strings_are_copie
         ffi::CURLOPT_ISSUERCERT_BLOB => |t| &mut t.issuer_cert_blob,
 --- new
         ffi::CURLOPT_ISSUERCERT_BLOB => |t| &mut t.issuer_cert,
+
+=== a proxy's TLS option sets the origin's
+file: crates/curl-sys-abi/src/setopt/proxy_tls.rs
+witness: curl-sys-abi setopt::proxy_tls::tests::sets_the_proxy_s_tls_alone
+features: debug-hooks
+--- old
+    Ok(options.proxy.make_mut()?.tls.options.make_mut()?)
+--- new
+    Ok(options.tls.options.make_mut()?)

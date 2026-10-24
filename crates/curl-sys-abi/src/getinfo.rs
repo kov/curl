@@ -310,6 +310,9 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_SSL_VERIFYRESULT => {
             Value::Long(c_long::try_from(r.verify_result()).unwrap_or(c_long::MAX))
         }
+        ffi::CURLINFO_PROXY_SSL_VERIFYRESULT => {
+            Value::Long(c_long::try_from(r.proxy_verify_result()).unwrap_or(c_long::MAX))
+        }
         ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
         ffi::CURLINFO_USED_PROXY => Value::Long(c_long::from(r.used_proxy())),
         ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),

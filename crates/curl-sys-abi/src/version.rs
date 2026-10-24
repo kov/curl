@@ -83,6 +83,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
+        Feature::HttpsProxy => (c"HTTPS-proxy", crate::ffi::CURL_VERSION_HTTPS_PROXY),
         // A name alone, without a bit, as in C.
         Feature::Httpsig => (c"HTTPSIG", 0),
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
@@ -296,6 +297,7 @@ mod tests {
                 &[
                     "brotli",
                     "Debug",
+                    "HTTPS-proxy",
                     "HTTPSIG",
                     "IPv6",
                     "libz",
@@ -306,6 +308,7 @@ mod tests {
                 ][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_DEBUG
+                    | ffi::CURL_VERSION_HTTPS_PROXY
                     | ffi::CURL_VERSION_IPV6
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
@@ -320,6 +323,7 @@ mod tests {
             (
                 &[
                     "brotli",
+                    "HTTPS-proxy",
                     "HTTPSIG",
                     "IPv6",
                     "libz",
@@ -329,6 +333,7 @@ mod tests {
                     "zstd"
                 ][..],
                 ffi::CURL_VERSION_BROTLI
+                    | ffi::CURL_VERSION_HTTPS_PROXY
                     | ffi::CURL_VERSION_IPV6
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL

@@ -10,6 +10,7 @@
 
 #[rustfmt::skip]
 mod known;
+mod proxy_tls;
 mod tls;
 
 use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
@@ -1354,6 +1355,7 @@ fn apply(
         }
         (ffi::CURLOPT_SSL_CTX_DATA, Ptr(p)) => tls_hooks(me, options, |c| c.ctx_data = p)?,
         (option, arg) if tls::takes(option) => tls::apply(options, option, arg)?,
+        (option, arg) if proxy_tls::takes(option) => proxy_tls::apply(options, option, arg)?,
         (option, _) if known::KNOWN.binary_search(&option.0).is_ok() => {
             return Err(Refused::NotBuiltIn);
         }

@@ -26,6 +26,9 @@ pub enum Feature {
     /// A debug build, for the test suite: never for production.
     #[cfg(feature = "debug-hooks")]
     Debug,
+    /// HTTPS proxies: TLS to the proxy, and TLS in TLS to an `https`
+    /// origin through one, by the TLS library `Ssl` names.
+    HttpsProxy,
     /// HTTP message signatures (RFC 9421), though only with HMAC-SHA256.
     Httpsig,
     /// Connections over IPv6, and its addresses in URLs.
@@ -52,6 +55,7 @@ impl Feature {
             Feature::Brotli => "brotli",
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
+            Feature::HttpsProxy => "HTTPS-proxy",
             Feature::Httpsig => "HTTPSIG",
             Feature::Ipv6 => "IPv6",
             Feature::Libz => "libz",
@@ -67,6 +71,7 @@ impl Feature {
 const FEATURES: &[Feature] = &[
     Feature::Brotli,
     Feature::Debug,
+    Feature::HttpsProxy,
     Feature::Httpsig,
     Feature::Ipv6,
     Feature::Libz,
@@ -78,6 +83,7 @@ const FEATURES: &[Feature] = &[
 #[cfg(not(feature = "debug-hooks"))]
 const FEATURES: &[Feature] = &[
     Feature::Brotli,
+    Feature::HttpsProxy,
     Feature::Httpsig,
     Feature::Ipv6,
     Feature::Libz,

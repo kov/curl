@@ -6,8 +6,9 @@
 
 use super::*;
 use crate::components::Components;
+use crate::libraries::Libraries;
 use crate::options::IpVersion;
-use crate::tls::fake::{self, WELCOME};
+use crate::tls::fake::{self, FakeTls, WELCOME};
 
 /// A handle with the test's fake TLS library, tracing `components`.
 fn tracing(components: &[u8]) -> Easy {
@@ -219,4 +220,50 @@ fn a_failed_https_setup_names_the_chain_to_its_filter() {
             [MULTI] [CONNECTING] failed to connect [0][!DNS][!DNS][!HTTPS-CONNECT]"
         )
     );
+}
+
+/// What was agreed by ALPN is asked of a new connection twice: by the
+/// HTTPS connect filter, from the setup filter, as its attempt wins
+/// (`baller_connected`), and by HTTP, from the top of the chain, before
+/// its first request (`http_check_new_conn`); the TLS filter answers with
+/// what its peer chose. A reused connection is not asked.
+#[test]
+fn what_alpn_agreed_is_asked_of_a_new_connection_only() {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::agreeing().unwrap()));
+    let libraries: &'static Libraries = Box::leak(Box::new(Libraries {
+        tls: Some(backend),
+        ..Libraries::NONE
+    }));
+    let response = fake::records(OK).unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response, &response], false);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let url = format!("https://127.0.0.1:{PORT}/");
+    let e = || {
+        let mut e = tracing(b"setup,ssl,https-connect");
+        e.set_libraries(libraries);
+        e
+    };
+    let starts = [
+        "[SETUP] query",
+        "[SSL] query",
+        "[HTTPS-CONNECT] connect ->",
+        "using",
+    ];
+    let first = https_get(&mut m, e(), &url, |_| {});
+    assert_eq!(first.result, Ok(()));
+    assert_eq!(
+        lines(&first, &starts),
+        expect(
+            "[HTTPS-CONNECT] connect -> 0, done=0
+            [SETUP] query ALPN
+            [SSL] query ALPN: returning 'http/1.1'
+            [HTTPS-CONNECT] connect -> 0, done=1
+            [SSL] query ALPN
+            [SSL] query ALPN: returning 'http/1.1'
+            using HTTP/1.x"
+        )
+    );
+    let again = https_get(&mut m, e(), &url, |_| {});
+    assert_eq!(again.result, Ok(()));
+    assert_eq!(lines(&again, &starts), Vec::<String>::new());
 }

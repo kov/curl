@@ -152,6 +152,12 @@ pub trait TlsSession: Send {
     /// socket cannot see.
     fn pending(&self) -> bool;
 
+    /// What the peer chose of the ALPN offer, once the handshake is over
+    /// and if it chose (`connssl->negotiated.alpn`).
+    fn chosen(&self) -> Option<Chosen> {
+        None
+    }
+
     /// The library's own objects for the session, once it made them.
     fn native(&self) -> Option<TlsNative> {
         None
@@ -226,6 +232,34 @@ impl Alpn {
             Alpn::None => None,
             Alpn::Http11 => Some("http/1.1"),
             Alpn::Http10 => Some("http/1.0,http/1.1"),
+        }
+    }
+}
+
+/// A protocol a peer may choose of an ALPN offer: one this build
+/// offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chosen {
+    Http11,
+    Http10,
+}
+
+impl Chosen {
+    /// The protocol whose ALPN name is `name`, if one this build offers;
+    /// a library checks the peer chose of the offer.
+    pub fn named(name: &[u8]) -> Option<Chosen> {
+        match name {
+            b"http/1.1" => Some(Chosen::Http11),
+            b"http/1.0" => Some(Chosen::Http10),
+            _ => None,
+        }
+    }
+
+    /// Its ALPN name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Chosen::Http11 => "http/1.1",
+            Chosen::Http10 => "http/1.0",
         }
     }
 }

@@ -46,12 +46,17 @@ pub(crate) enum LayerQuery {
     /// The origin's TLS library's own objects (`CF_QUERY_SSL_INFO`,
     /// `CF_QUERY_SSL_CTX_INFO`).
     TlsNative,
+    /// The protocol the origin's TLS session agreed by ALPN
+    /// (`CF_QUERY_ALPN_NEGOTIATED`).
+    Alpn,
 }
 
 /// What a layer answers a `LayerQuery`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LayerAnswer {
     TlsNative(crate::tls::TlsNative),
+    /// What the peer chose, if it chose.
+    Alpn(Option<crate::tls::Chosen>),
 }
 
 /// What a layer reaches while it works: the time, and the trace of the

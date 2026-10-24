@@ -122,7 +122,8 @@ fn a_unix_socket_is_connected_in_place_of_the_host() {
             [UNIX] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to /tmp/t.sock (/tmp/t.sock) port 0
-            Established connection to /tmp/t.sock (/tmp/t.sock port 0) from  port 0"
+            Established connection to /tmp/t.sock (/tmp/t.sock port 0) from  port 0
+            [UNIX] query ALPN"
         )
     );
     let ends = ran.easy.report().primary().expect("the ends");
@@ -139,8 +140,11 @@ fn an_abstract_name_shows_as_nothing() {
     let lines = setup_lines(&ran);
     assert_eq!(lines[1], "  Trying :0...");
     assert_eq!(
-        lines.last().unwrap(),
-        "Established connection to t-abs ( port 0) from  port 0"
+        lines[lines.len() - 2..],
+        [
+            "Established connection to t-abs ( port 0) from  port 0",
+            "[UNIX] query ALPN"
+        ]
     );
 }
 

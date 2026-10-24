@@ -1235,9 +1235,7 @@ witness: curl-core proto::http::tests::a_connection_that_answered_http10_is_aske
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_get_is_sent_and_its_response_delivered
 --- old
-        if !reused {
             trace::info(cx, format_args!("using HTTP/1.x"));
-        }
 --- new
 
 === a step reads for as long as its peer sends

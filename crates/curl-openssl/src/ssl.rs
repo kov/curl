@@ -17,8 +17,8 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
-    TlsSession, TlsShared, TlsWait,
+    Alpn, CaDefaults, Chosen, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer,
+    TlsPeerKind, TlsSession, TlsShared, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX};
@@ -656,17 +656,24 @@ impl Session {
         ));
     }
 
-    /// What the peer chose of the ALPN offer (`Curl_alpn_set_negotiated`).
-    fn negotiated(&self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+    /// The name the peer chose of the ALPN offer, empty if none; the
+    /// library refuses a choice not offered.
+    fn selected(&self) -> &[u8] {
         let mut proto: *const u8 = ptr::null();
         let mut len: u32 = 0;
         // SAFETY: the SSL; the protocol is its own, alive while it is.
         unsafe { openssl_sys::SSL_get0_alpn_selected(self.ssl().as_ptr(), &mut proto, &mut len) };
-        let chosen = match usize::try_from(len) {
-            // SAFETY: `len` bytes at `proto`.
+        match usize::try_from(len) {
+            // SAFETY: `len` bytes at `proto`, the SSL's while `self` is
+            // borrowed.
             Ok(n) if n > 0 && !proto.is_null() => unsafe { core::slice::from_raw_parts(proto, n) },
             _ => &[],
-        };
+        }
+    }
+
+    /// What the peer chose of the ALPN offer (`Curl_alpn_set_negotiated`).
+    fn negotiated(&self, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+        let chosen = self.selected();
         if chosen.is_empty() {
             io.info(format_args!(
                 "ALPN: server did not agree on a protocol. Uses default."
@@ -886,6 +893,12 @@ impl TlsSession for Session {
 
     fn pending(&self) -> bool {
         self.flags.input_pending
+    }
+
+    /// What the peer chose, which is none before the handshake chose it.
+    fn chosen(&self) -> Option<Chosen> {
+        self.ssl.as_ref()?;
+        Chosen::named(self.selected())
     }
 
     /// The `SSL_CTX`, and the `SSL` once made, as C hands them out.

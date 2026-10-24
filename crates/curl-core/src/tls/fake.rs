@@ -25,8 +25,8 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
-    TlsSession, TlsShared, TlsWait,
+    Alpn, CaDefaults, Chosen, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer,
+    TlsPeerKind, TlsSession, TlsShared, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -61,6 +61,8 @@ pub struct FakeTls {
     /// flight is read, as a verification the application finishes later
     /// does (`SSL_ERROR_WANT_RETRY_VERIFY`).
     pause: bool,
+    /// Each session's peer agrees by ALPN to the first protocol offered.
+    agree: bool,
 }
 
 /// What a fake library's sessions were asked.
@@ -152,6 +154,16 @@ impl FakeTls {
         Ok(FakeTls {
             log: TryArc::try_new(Mutex::new(log))?,
             pause: false,
+            agree: false,
+        })
+    }
+
+    /// The same, each session's peer agreeing by ALPN to the first
+    /// protocol offered, where the plain fake's peers agree to none.
+    pub fn agreeing() -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            agree: true,
+            ..FakeTls::new()?
         })
     }
 
@@ -183,7 +195,7 @@ impl TlsBackend for FakeTls {
         &self,
         identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
-        _alpn: Alpn,
+        alpn: Alpn,
         shared: &TlsShared,
     ) -> Result<Box<dyn TlsSession>, ErrorKind> {
         let state = shared
@@ -205,6 +217,12 @@ impl TlsBackend for FakeTls {
             log: self.log.clone(),
             made: false,
             pause: self.pause,
+            agreed: match alpn {
+                Alpn::None => None,
+                Alpn::Http11 => Some(Chosen::Http11),
+                Alpn::Http10 => Some(Chosen::Http10),
+            }
+            .filter(|_| self.agree),
             stage: Stage::Hello(0),
             waits: TlsWait::Nothing,
             header: [0; HEADER],
@@ -246,6 +264,8 @@ struct FakeSession {
     made: bool,
     /// It is to pause the transfer's receiving as the welcome is read.
     pause: bool,
+    /// What its peer agrees to by ALPN, once the handshake is over.
+    agreed: Option<Chosen>,
     stage: Stage,
     waits: TlsWait,
     /// The header of the record being read, as far as read.
@@ -538,6 +558,11 @@ impl TlsSession for FakeSession {
                 }
             }
         }
+    }
+
+    fn chosen(&self) -> Option<Chosen> {
+        self.agreed
+            .filter(|_| !matches!(self.stage, Stage::Hello(_) | Stage::Welcome(_)))
     }
 
     fn waits(&self) -> TlsWait {

@@ -200,6 +200,12 @@ impl Chain {
         left
     }
 
+    /// The filter at its top, which a question of the connection is
+    /// asked of first (`conn->cfilter[FIRSTSOCKET]`).
+    pub(crate) fn top(&self) -> Option<Component> {
+        self.filters[..self.len].first().map(|&(filter, _)| filter)
+    }
+
     /// The setup filters that go once the chain is connected, top first,
     /// that trace their going: C's DNS and HAPPY-EYEBALLS filters' own
     /// lines are not traced.

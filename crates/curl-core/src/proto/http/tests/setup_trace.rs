@@ -10,13 +10,13 @@ use crate::components::Components;
 fn tracing_setup() -> Easy {
     let mut e = Easy::new();
     let components = Components::new().unwrap();
-    components.configure(b"multi,setup,http-proxy,haproxy");
+    components.configure(b"multi,setup,http-proxy,haproxy,happy-eyeballs,socks,h1-proxy,tcp,ssl");
     e.set_components(Some(components));
     e
 }
 
-/// The lines of a run about the chain: SETUP's, the chain's and the setup
-/// filters' going.
+/// The lines of a run about the chain: SETUP's, the chain's, the setup
+/// filters' going, and its filters asked what ALPN agreed.
 fn setup_lines(ran: &Ran) -> Vec<String> {
     ran.seen
         .text()
@@ -30,6 +30,9 @@ fn setup_lines(ran: &Ran) -> Vec<String> {
                 "failed to connect ",
             ];
             l.starts_with("[SETUP] ")
+                || l.ends_with("] query ALPN")
+                || l.contains("] query ALPN: returning ")
+                || l.starts_with("CONNECT: ")
                 || l.starts_with("[HTTP-PROXY] ")
                 || l.starts_with("[HAPROXY] ")
                 || (l.starts_with("[MULTI] [CONNECTING] ")
@@ -71,7 +74,8 @@ fn a_direct_setup_is_traced_as_c() {
         "[MULTI] [CONNECTING] connected [0][DNS][SETUP][HAPPY-EYEBALLS][TCP]
         [SETUP] removing connected setup filter
         [SETUP] destroy
-        [MULTI] [CONNECTING] reduced to [0][TCP]",
+        [MULTI] [CONNECTING] reduced to [0][TCP]
+        [TCP] query ALPN",
     ));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -108,7 +112,8 @@ fn the_proxy_protocol_s_filter_is_added_and_goes() {
         [SETUP] destroy
         [HAPROXY] removing connected setup filter
         [HAPROXY] destroy
-        [MULTI] [CONNECTING] reduced to [0][TCP]",
+        [MULTI] [CONNECTING] reduced to [0][TCP]
+        [TCP] query ALPN",
     ));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -117,6 +122,8 @@ fn the_proxy_protocol_s_filter_is_added_and_goes() {
 /// it first connects; the first goes with the setup, the second stays.
 const TUNNEL: &str = "[SETUP] added HTTP proxy tunnel filter
     [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+    [HAPPY-EYEBALLS] query ALPN
+    CONNECT: no ALPN negotiated
     [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]";
 
 const TUNNEL_UP_TRACE: &str =
@@ -125,7 +132,8 @@ const TUNNEL_UP_TRACE: &str =
     [SETUP] destroy
     [HTTP-PROXY] removing connected setup filter
     [HTTP-PROXY] destroy
-    [MULTI] [CONNECTING] reduced to [0][H1-PROXY][TCP]";
+    [MULTI] [CONNECTING] reduced to [0][H1-PROXY][TCP]
+    [H1-PROXY] query ALPN";
 
 /// Through an HTTP proxy's tunnel, its answer read in the call after the
 /// one that sent the `CONNECT`.
@@ -164,7 +172,8 @@ fn the_proxy_line_after_a_tunnel_is_traced_as_c() {
         [HAPROXY] destroy
         [HTTP-PROXY] removing connected setup filter
         [HTTP-PROXY] destroy
-        [MULTI] [CONNECTING] reduced to [0][H1-PROXY][TCP]",
+        [MULTI] [CONNECTING] reduced to [0][H1-PROXY][TCP]
+        [H1-PROXY] query ALPN",
     ));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -226,7 +235,8 @@ fn a_socks_proxy_s_setup_is_traced_as_c() {
         [MULTI] [CONNECTING] connected [0][DNS][SETUP][SOCKS][HAPPY-EYEBALLS][TCP]
         [SETUP] removing connected setup filter
         [SETUP] destroy
-        [MULTI] [CONNECTING] reduced to [0][SOCKS][TCP]"
+        [MULTI] [CONNECTING] reduced to [0][SOCKS][TCP]
+        [SOCKS] query ALPN"
     )));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -261,13 +271,16 @@ fn a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c() {
         {socks}
         [SETUP] added HTTP proxy tunnel filter
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!HTTP-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
+        [SOCKS] query ALPN
+        CONNECT: no ALPN negotiated
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
         [MULTI] [CONNECTING] connected [0][DNS][DNS][SETUP][HTTP-PROXY][H1-PROXY][SOCKS][HAPPY-EYEBALLS][TCP]
         [SETUP] removing connected setup filter
         [SETUP] destroy
         [HTTP-PROXY] removing connected setup filter
         [HTTP-PROXY] destroy
-        [MULTI] [CONNECTING] reduced to [0][H1-PROXY][SOCKS][TCP]"
+        [MULTI] [CONNECTING] reduced to [0][H1-PROXY][SOCKS][TCP]
+        [H1-PROXY] query ALPN"
     )));
     assert_eq!(setup_lines(&ran), want);
 }
@@ -316,6 +329,8 @@ fn a_tunnel_failing_as_it_starts_names_its_filter() {
     want.extend(expect(
         "[SETUP] added HTTP proxy tunnel filter
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!HTTP-PROXY][HAPPY-EYEBALLS][TCP]
+        [HAPPY-EYEBALLS] query ALPN
+        CONNECT: no ALPN negotiated
         [MULTI] [CONNECTING] failed to connect [0][!DNS][!SETUP][!HTTP-PROXY][!H1-PROXY][HAPPY-EYEBALLS][TCP]",
     ));
     assert_eq!(setup_lines(&ran), want);
@@ -367,10 +382,14 @@ fn an_https_setup_is_traced_as_c() {
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
         [SETUP] added SSL filter for origin
         [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+        [SETUP] query ALPN
+        [SSL] query ALPN: returning '(nil)'
         [MULTI] [CONNECTING] connected [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
         [SETUP] removing connected setup filter
         [SETUP] destroy
-        [MULTI] [CONNECTING] reduced to [0][SSL][TCP]"
+        [MULTI] [CONNECTING] reduced to [0][SSL][TCP]
+        [SSL] query ALPN
+        [SSL] query ALPN: returning '(nil)'"
     ));
     assert_eq!(setup_lines(&ran), want);
 }

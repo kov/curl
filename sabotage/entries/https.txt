@@ -62,3 +62,41 @@ features: test-util
         if !https || forwarded || !alpn {
 --- new
         if !https || forwarded {
+
+=== a reused connection is asked what ALPN agreed
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::https_trace::what_alpn_agreed_is_asked_of_a_new_connection_only
+features: test-util
+--- old
+        if !reused {
+            let top = lease.conn().top();
+--- new
+        if true {
+            let top = lease.conn().top();
+
+=== the TLS filter answers what ALPN agreed with none
+file: crates/curl-core/src/conn/tls.rs
+witness: curl-core proto::http::tests::https_trace::what_alpn_agreed_is_asked_of_a_new_connection_only
+features: test-util
+--- old
+            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen())),
+--- new
+            LayerQuery::Alpn => Some(LayerAnswer::Alpn(None)),
+
+=== the winning attempt is not asked what ALPN agreed
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::https_trace::what_alpn_agreed_is_asked_of_a_new_connection_only
+features: test-util
+--- old
+        query_alpn(cx, &c.lease, Component::Setup);
+--- new
+        let _ = &c.lease;
+
+=== the tunnel asks the proxy's dialer for ALPN where a SOCKS proxy is below
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::setup_trace::a_pre_proxy_s_and_a_tunnel_s_setup_is_traced_as_c
+features: test-util
+--- old
+    let below = if c.route.socks().is_some() {
+--- new
+    let below = if c.route.socks().is_none() {

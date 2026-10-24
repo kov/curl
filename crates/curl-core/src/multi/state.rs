@@ -1037,6 +1037,20 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
 pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
     match lease.query(LayerQuery::TlsNative)? {
         LayerAnswer::TlsNative(native) => Some(native),
+        LayerAnswer::Alpn(_) => unreachable!("an answer of another question"),
+    }
+}
+
+/// Ask the connection `lease` holds, from its filter `top`, what was
+/// agreed by ALPN (`Curl_conn_cf_get_alpn_negotiated`): the filter says it
+/// is asked, and the TLS session, if one answers, what it answers; the
+/// others answer none, or pass the question on, saying nothing.
+pub(crate) fn query_alpn<H: Host>(cx: &mut StepCx<'_, H>, lease: &ConnLease, top: Component) {
+    trace::of(cx, top, format_args!("query ALPN"));
+    if let Some(LayerAnswer::Alpn(chosen)) = lease.query(LayerQuery::Alpn) {
+        let name = chosen.map_or("(nil)", crate::tls::Chosen::name);
+        let line = format_args!("query ALPN: returning '{name}'");
+        trace::of(cx, Component::Ssl, line);
     }
 }
 
@@ -2053,6 +2067,11 @@ fn up<H: Host>(
     at: Instant,
     preface: bool,
 ) -> (TransferState, Wake) {
+    if c.https.is_some() {
+        // The winner's chain is asked whether HTTP/2 was agreed
+        // (`baller_connected`), from its SETUP filter.
+        query_alpn(cx, &c.lease, Component::Setup);
+    }
     https::call_ended(c.https, cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects).

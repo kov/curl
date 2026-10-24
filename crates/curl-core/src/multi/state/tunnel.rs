@@ -7,6 +7,7 @@
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::{Connecting, Handshake, StepCx, TransferState, Wake};
+use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
 use crate::conn::{Made, Peer, RecvFailed};
 use crate::error::ErrorKind;
@@ -73,6 +74,14 @@ impl Tunnel {
 /// Connected to the proxy: the tunnel's first `CONNECT` is made
 /// (`http_proxy_cf_connect`).
 pub(super) fn dialed<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    // The filter below the tunnel's is asked (`http_proxy_cf_connect`):
+    // the SOCKS proxy's, or the one that dialed the proxy.
+    let below = if c.route.socks().is_some() {
+        Component::Socks
+    } else {
+        Component::HappyEyeballs
+    };
+    super::query_alpn(cx, &c.lease, below);
     trace::info(cx, format_args!("CONNECT: no ALPN negotiated"));
     match start(&c, cx) {
         Ok(tunnel) => {

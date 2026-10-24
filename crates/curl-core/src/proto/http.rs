@@ -809,6 +809,8 @@ impl Request {
         // On a connection's first request (`http_check_new_conn`); no
         // other version is spoken here.
         if !reused {
+            let top = lease.conn().top();
+            crate::multi::state::query_alpn(cx, lease, top);
             trace::info(cx, format_args!("using HTTP/1.x"));
         }
         let http_proxy = lease.conn().http_proxy();

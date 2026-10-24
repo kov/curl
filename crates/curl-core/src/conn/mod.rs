@@ -703,6 +703,18 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
+    /// The filter at the top of its chain once it is up, which a question
+    /// of it is asked of first (`conn->cfilter[FIRSTSOCKET]`).
+    pub(crate) fn top(&self) -> crate::components::Component {
+        match &self.route {
+            Route::Tcp(route) => chain::Chain::connected(route, chain::Head::default(), false)
+                .reduced()
+                .top()
+                .expect("a connection has a socket"),
+            Route::Local => crate::components::Component::Tcp,
+        }
+    }
+
     /// What its socket's filter traces as (`TCP`, `UNIX`).
     pub(crate) fn socket_component(&self) -> crate::components::Component {
         match &self.route {

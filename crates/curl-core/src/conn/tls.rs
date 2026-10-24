@@ -94,6 +94,7 @@ impl Layer for TlsLayer {
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         match q {
             LayerQuery::TlsNative => self.session.native().map(LayerAnswer::TlsNative),
+            LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen())),
         }
     }
 }

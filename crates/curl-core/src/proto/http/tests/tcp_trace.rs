@@ -123,7 +123,8 @@ fn a_socket_s_setup_is_traced_as_c() {
             [TCP] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to 127.0.0.1 (127.0.0.1) port {PORT}
-            Established connection to 127.0.0.1 (127.0.0.1 port {PORT}) from 127.0.0.1 port 40000"
+            Established connection to 127.0.0.1 (127.0.0.1 port {PORT}) from 127.0.0.1 port 40000
+            [TCP] query ALPN"
         ))
     );
 }
@@ -212,7 +213,8 @@ fn a_refused_family_gives_way_to_the_next() {
             [TCP] connected on fd=1000
             [HAPPY-EYEBALLS] connect attempt #0 successful
             [HAPPY-EYEBALLS] Connected to dual.example (127.0.0.1) port {PORT}
-            Established connection to dual.example (127.0.0.1 port {PORT}) from 127.0.0.1 port 40000"
+            Established connection to dual.example (127.0.0.1 port {PORT}) from 127.0.0.1 port 40000
+            [TCP] query ALPN"
         ))
     );
 }
@@ -255,7 +257,8 @@ fn a_losing_attempt_is_closed_as_c_closes_it() {
             [TCP] cf_socket_close, fd=1000
             [MULTI] [CONNECTING] Curl_multi_will_close fd=1000
             [HAPPY-EYEBALLS] Connected to two.example (127.0.0.1) port {PORT}
-            Established connection to two.example (127.0.0.1 port {PORT}) from 127.0.0.1 port 40001"
+            Established connection to two.example (127.0.0.1 port {PORT}) from 127.0.0.1 port 40001
+            [TCP] query ALPN"
         ))
     );
 }

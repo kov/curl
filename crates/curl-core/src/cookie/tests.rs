@@ -67,6 +67,13 @@ fn hashes_as_c() {
     ] {
         assert_eq!(bucket(Some(domain)), want, "{}", domain.escape_ascii());
     }
+    // A byte past ASCII is C's `char`: compiled with a signed `char` the
+    // C hash puts `bücher.de` in 59, with `-funsigned-char` in 14.
+    let signed = core::ffi::c_char::MIN != 0;
+    assert_eq!(
+        bucket(Some("bücher.de".as_bytes())),
+        if signed { 59 } else { 14 }
+    );
     assert_eq!(bucket(None), 0);
     assert_eq!(bucket(Some(b"127.0.0.1")), 0);
     assert_eq!(bucket(Some(b"::1")), 0);

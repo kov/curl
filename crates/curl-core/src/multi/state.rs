@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
-use crate::conn::chain::{Chain, SetupPoint};
+use crate::conn::chain::{Chain, Head, SetupPoint};
 use crate::conn::io::{Closer, Events, Remote, ResolveFailure, SocketKey};
 use crate::conn::layer::{LayerAnswer, LayerCx, LayerQuery};
 use crate::conn::pool;
@@ -30,6 +30,7 @@ use crate::progress::{self, Speedometer};
 use crate::share::Kind;
 
 mod haproxy;
+mod https;
 mod socks;
 mod tls;
 mod tunnel;
@@ -166,6 +167,8 @@ pub(crate) struct Connecting {
     /// The handshake made over the connection to the proxy, once
     /// connected.
     handshake: Option<Box<Handshake>>,
+    /// The HTTPS connect filter heading the setup, if it has one.
+    https: Option<https::HttpsConnect>,
 }
 
 /// A handshake over the connection to the first hop: a proxy's, or the
@@ -575,9 +578,9 @@ impl TransferState {
 pub(crate) struct PollsetTrace<T> {
     wants: Wants,
     /// While the setup runs: whether its sockets are connected, a
-    /// handshake under way over the one dialed, and what their filter
-    /// traces as.
-    setup: Option<(bool, Component)>,
+    /// handshake under way over the one dialed, what their filter traces
+    /// as, and whether an HTTPS connect filter heads it.
+    setup: Option<(bool, Component, bool)>,
     timers: T,
     /// Sending and receiving, paused.
     paused: (bool, bool),
@@ -594,6 +597,7 @@ impl Run {
             TransferState::Connecting(c) => Some((
                 matches!(c.lease.reached(), Some(SetupPoint::Dialed(_))),
                 c.route.socket_component(),
+                c.https.is_some(),
             )),
             _ => None,
         };
@@ -625,7 +629,7 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
     /// of timers armed, then each timer in the order they fire.
     pub(crate) fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
         let wants = self.wants.as_slice();
-        if let Some((dialed, component)) = self.setup {
+        if let Some((dialed, component, https)) = self.setup {
             for &(key, _) in wants {
                 let fd = key.get();
                 if dialed {
@@ -635,6 +639,14 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
                     let line = format_args!("adjust_pollset, !connected, POLLOUT fd={fd}");
                     trace::of(cx, component, line);
                 }
+            }
+            // The HTTPS connect filter, not connected while the setup
+            // runs, says how many sockets the pollset has below it
+            // (`cf_hc_adjust_pollset`).
+            if https {
+                let n = wants.len();
+                let line = format_args!("adjust_pollset -> 0, {n} socks");
+                trace::of(cx, Component::HttpsConnect, line);
             }
         }
         if !trace::traces(cx, Component::Multi) {
@@ -698,6 +710,7 @@ impl Connecting {
             proto,
             route,
             handshake: _,
+            https: _,
         } = self;
         TransferState::ProtoConnect(Attached {
             lease,
@@ -1522,17 +1535,28 @@ fn connecting<H: Host>(
     }
     // One call of C's `Curl_conn_connect`: on until the setup waits, is
     // up or fails.
+    if let Err(kind) = https::connect_call(&mut c, cx) {
+        return (TransferState::Connecting(c).fail(kind), Wake::Again);
+    }
     let mut entered = false;
     loop {
+        if let Some(SetupPoint::Racing { started: false }) = c.lease.reached() {
+            https::start(&mut c, &mut run.deadlines, cx);
+        }
         let chain = enter_setup(&c, cx, &mut entered);
         let partly = c.lease.partly_made();
+        let https = c.https;
         let (next, wake) = connect_once(run, c, cx);
         match next {
             TransferState::Connecting(next) if wake == Wake::Again => c = next,
             TransferState::Done(ref d) => {
                 let kind = d.result.expect_err("a setup is done with only as it fails");
                 report_failed(cx, partly);
+                https::call_ended(https, cx, Err(kind));
                 if let Some(chain) = chain {
+                    // The HTTPS connect filter holds its attempt's
+                    // filters apart from the chain once its call is over.
+                    let chain = chain.failed();
                     mstate::trace(cx, format_args!("failed to connect {chain}"));
                 }
                 mstate::trace(
@@ -1541,8 +1565,21 @@ fn connecting<H: Host>(
                 );
                 return (next, wake);
             }
-            next => return (next, wake),
+            next => {
+                if matches!(next, TransferState::Connecting(_)) {
+                    https::call_ended(https, cx, Ok(false));
+                }
+                return (next, wake);
+            }
         }
+    }
+}
+
+/// What heads the setup's chain above its setup filter.
+fn head_of(c: &Connecting) -> Head {
+    Head {
+        https: c.https.is_some(),
+        record: c.https.is_some_and(|h| h.asks()),
     }
 }
 
@@ -1557,7 +1594,9 @@ fn enter_setup<H: Host>(
 ) -> Option<Chain> {
     let reached = c.lease.reached()?;
     let under_way = c.handshake.as_deref().map(Handshake::filter);
-    let chain = |reached, under_way, installed| Chain::of(&c.route, reached, under_way, installed);
+    let head = head_of(c);
+    let chain =
+        |reached, under_way, installed| Chain::of(&c.route, head, reached, under_way, installed);
     let entry = |cx: &mut StepCx<'_, H>, chain: Chain| {
         mstate::trace(cx, format_args!("cf_setup_connect {chain}"));
     };
@@ -2014,6 +2053,7 @@ fn up<H: Host>(
     at: Instant,
     preface: bool,
 ) -> (TransferState, Wake) {
+    https::call_ended(c.https, cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects).
     if c.route.tls.is_some() {
@@ -2038,7 +2078,7 @@ fn up<H: Host>(
     cx.report_mut().set_primary(Ends { remote, local });
     // The setup filters go once the chain is connected
     // (`Curl_conn_remove_setup_filters`).
-    let connected = Chain::connected(&c.route, preface);
+    let connected = Chain::connected(&c.route, head_of(&c), preface);
     mstate::trace(cx, format_args!("connected {connected}"));
     for filter in connected.going() {
         trace::of(cx, filter, format_args!("removing connected setup filter"));
@@ -3130,17 +3170,26 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
     };
     cx.report_mut().set_used_proxy(plan.route.proxy.is_some());
+    let Plan { proto, route } = plan;
+    let mut https = None;
     if !lease.is_up() {
-        // The setup filter starts the chain (`Curl_cf_setup_insert_after`).
-        trace::of(cx, Component::Setup, format_args!("added"));
+        // The HTTPS connect filter starts the chain, which puts the setup
+        // filter below it as its attempt starts; or the setup filter does
+        // (`Curl_cf_https_setup`, `Curl_cf_setup_insert_after`).
+        https = https::HttpsConnect::heading(&route, cx.easy().options().tls.options.alpn);
+        let first = match https {
+            Some(_) => Component::HttpsConnect,
+            None => Component::Setup,
+        };
+        trace::of(cx, first, format_args!("added"));
         mstate::trace(cx, format_args!("Curl_conn_setup() -> 0"));
     }
-    let Plan { proto, route } = plan;
     TransferState::Connecting(Connecting {
         lease,
         proto,
         route,
         handshake: None,
+        https,
     })
 }
 

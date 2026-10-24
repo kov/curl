@@ -26,7 +26,9 @@ pub(crate) use connect::{
     Unresolved, queries,
 };
 pub(crate) use connect_to::{BadVia, via};
-pub(crate) use dns::{Answer, BadEntry, DnsCache, ListEntry, Names, parse_entry};
+pub(crate) use dns::{
+    Answer, BadEntry, DnsCache, HttpsLookup, ListEntry, Names, address, parse_entry,
+};
 pub(crate) use pool::{
     Acquired, AddLimits, ConnLease, Connected, Finish, Full, Home, Limit, Pool, PoolNote, Released,
     ReuseRules, WaitReason,

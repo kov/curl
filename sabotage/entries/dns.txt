@@ -5,15 +5,15 @@
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-            .position(|e| e.port == port && e.answer.name.eq_ignore_ascii_case(name))
+            e.port == port && e.https == https && e.answer.name.eq_ignore_ascii_case(name)
 --- new
-            .position(|e| e.port == port && e.answer.name[..] == *name)
+            e.port == port && e.https == https && e.answer.name[..] == *name
 
 === a wildcard answers for nothing
 file: crates/curl-core/src/conn/dns.rs
 witness: curl-core multi::tests::a_resolve_list_is_read_once_for_each_setting
 --- old
-            .or_else(|| self.row(b"*", port).filter(|_| wildcard));
+            .or_else(|| self.row(b"*", port, false).filter(|_| wildcard));
 --- new
             .or_else(|| None.filter(|_| wildcard));
 

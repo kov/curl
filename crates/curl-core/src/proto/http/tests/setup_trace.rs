@@ -345,7 +345,8 @@ fn a_socks_handshake_refused_as_it_starts_names_its_filter() {
 /// HTTPS: TLS's filter is added last, right below SETUP, and stays once
 /// the setup filters go (`[SETUP] added SSL filter for origin`, `reduced
 /// to [0][SSL][TCP]`), as the C build traces it with `--http1.1`; the
-/// ALPN race C puts above SETUP (`HTTPS-CONNECT`) is not traced yet.
+/// HTTPS connect filter heads the chain, below the name's DNS filter, and
+/// goes before SETUP (`https_trace.rs` has its own lines).
 #[test]
 fn an_https_setup_is_traced_as_c() {
     let (_, libraries) = super::tls::tls();
@@ -359,14 +360,17 @@ fn an_https_setup_is_traced_as_c() {
         o.set_url(Some(url.as_bytes())).unwrap();
     });
     assert_eq!(ran.result, Ok(()));
-    let mut want = expect(&raced("origin", &format!("127.0.0.1:{PORT}")));
-    want.extend(expect(
-        "[SETUP] added SSL filter for origin
-        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
-        [MULTI] [CONNECTING] connected [0][DNS][SETUP][SSL][HAPPY-EYEBALLS][TCP]
+    let want = expect(&format!(
+        "[MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP]
+        [SETUP] happy eyeballing to origin 127.0.0.1:{PORT}
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!HAPPY-EYEBALLS]
+        [SETUP] added SSL filter for origin
+        [MULTI] [CONNECTING] cf_setup_connect [0][!DNS][!HTTPS-CONNECT][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]
+        [MULTI] [CONNECTING] connected [0][DNS][HTTPS-CONNECT][SETUP][SSL][HAPPY-EYEBALLS][TCP]
         [SETUP] removing connected setup filter
         [SETUP] destroy
-        [MULTI] [CONNECTING] reduced to [0][SSL][TCP]",
+        [MULTI] [CONNECTING] reduced to [0][SSL][TCP]"
     ));
     assert_eq!(setup_lines(&ran), want);
 }

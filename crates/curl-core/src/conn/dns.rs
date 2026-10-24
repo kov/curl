@@ -101,11 +101,27 @@ impl Names<'_> {
 
 #[derive(Debug)]
 struct Entry {
+    /// The name's addresses; or, for its HTTPS record, the name, which
+    /// is the addresses' answer when it has one.
     answer: TryArc<Answer>,
     port: u16,
     added: Instant,
     /// Given by the application without `+`: it never goes stale.
     permanent: bool,
+    /// What it keeps is that the name has no HTTPS record (HTTPS-RR),
+    /// not its addresses: an entry of its own, as C keeps both
+    /// (`CURL_DNST_HTTPS`), and one that says no.
+    https: bool,
+}
+
+/// What the cache had of a name's HTTPS record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HttpsLookup {
+    /// That it has none.
+    Found,
+    /// It had gone stale, and is gone.
+    Stale,
+    Missing,
 }
 
 /// What the cache had for a name.
@@ -120,11 +136,12 @@ pub(crate) enum Lookup {
 }
 
 impl DnsCache {
-    /// The entry for `name` and `port`, the name in any case.
-    fn row(&self, name: &[u8], port: u16) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|e| e.port == port && e.answer.name.eq_ignore_ascii_case(name))
+    /// The entry for `name` and `port`, the name in any case: its
+    /// addresses', or its HTTPS record's if `https`.
+    fn row(&self, name: &[u8], port: u16, https: bool) -> Option<usize> {
+        self.entries.iter().position(|e| {
+            e.port == port && e.https == https && e.answer.name.eq_ignore_ascii_case(name)
+        })
     }
 
     /// What is kept for `name` and `port`, or for any name on the port if
@@ -139,8 +156,8 @@ impl DnsCache {
         now: Instant,
     ) -> Lookup {
         let row = self
-            .row(name, port)
-            .or_else(|| self.row(b"*", port).filter(|_| wildcard));
+            .row(name, port, false)
+            .or_else(|| self.row(b"*", port, false).filter(|_| wildcard));
         let Some(row) = row else {
             return Lookup::Missing;
         };
@@ -175,19 +192,67 @@ impl DnsCache {
             port,
             added: now,
             permanent,
+            https: false,
         })?;
         Ok(replaced)
     }
 
-    /// Forget what is kept for `name` and `port`; whether something was.
+    /// Forget the addresses kept for `name` and `port`; whether some
+    /// were.
     pub(crate) fn remove(&mut self, name: &[u8], port: u16) -> bool {
-        match self.row(name, port) {
+        match self.row(name, port, false) {
             Some(row) => {
                 self.entries.remove(row);
                 true
             }
             None => false,
         }
+    }
+
+    /// What is kept of the HTTPS record of `name` and `port`: an entry
+    /// older than `max_age` is dropped, none for ever.
+    pub(crate) fn lookup_https(
+        &mut self,
+        (name, port): (&[u8], u16),
+        max_age: Option<Duration>,
+        now: Instant,
+    ) -> HttpsLookup {
+        let Some(row) = self.row(name, port, true) else {
+            return HttpsLookup::Missing;
+        };
+        if let Some(max_age) = max_age
+            && self.entries[row].stale_at(now, max_age)
+        {
+            self.entries.remove(row);
+            return HttpsLookup::Stale;
+        }
+        HttpsLookup::Found
+    }
+
+    /// Keep that `name` has no HTTPS record on `port`, from `now`, in
+    /// place of what was kept of it. The name is the answer of its
+    /// addresses when they are kept, so the entry costs no more than its
+    /// row.
+    pub(crate) fn put_https(
+        &mut self,
+        name: &[u8],
+        port: u16,
+        now: Instant,
+    ) -> Result<(), OutOfMemory> {
+        let answer = match self.row(name, port, false) {
+            Some(row) => self.entries[row].answer.clone(),
+            None => TryArc::try_new(Answer::new(name, Vec::new())?)?,
+        };
+        if let Some(row) = self.row(name, port, true) {
+            self.entries.remove(row);
+        }
+        self.entries.try_push(Entry {
+            answer,
+            port,
+            added: now,
+            permanent: false,
+            https: true,
+        })
     }
 
     /// Drop the entries older than `max_age` by `now`
@@ -226,11 +291,12 @@ impl Entry {
         !self.permanent && self.age(now) >= max_age
     }
 
-    /// How old the entry is by `now`: one saying the name does not exist
-    /// ages twice as fast (`dnscache_entry_is_stale`).
+    /// How old the entry is by `now`: one saying the name does not exist,
+    /// or has no HTTPS record, ages twice as fast
+    /// (`dnscache_entry_is_stale`).
     fn age(&self, now: Instant) -> Duration {
         let age = now.since(self.added);
-        if self.answer.addrs.is_empty() {
+        if self.https || self.answer.addrs.is_empty() {
             age.saturating_mul(2)
         } else {
             age
@@ -574,6 +640,54 @@ mod tests {
             [kept(b"p"), kept(b"a"), kept(b"b"), kept(b"c")],
             [true, false, false, true]
         );
+    }
+
+    /// A name's HTTPS record is kept apart from its addresses, by name,
+    /// in any case, and port, and goes stale in half the cache's timeout,
+    /// as an answer that says no does; it names the host with the
+    /// addresses' answer when they are kept, and leaves them as they
+    /// are.
+    #[test]
+    fn a_name_s_https_record_is_kept_apart_from_its_addresses() {
+        let clock = ManualClock::new().unwrap();
+        let now = clock.now();
+        let mut cache = DnsCache::default();
+        let addrs = TryArc::try_new(Answer::new(b"a.test", vec![ip("1.2.3.4")]).unwrap()).unwrap();
+        cache.put(addrs.clone(), 443, now, false).unwrap();
+        let https = |cache: &mut DnsCache, name: &[u8], port, at| {
+            cache.lookup_https((name, port), MAX_AGE, at)
+        };
+        assert_eq!(https(&mut cache, b"a.test", 443, now), HttpsLookup::Missing);
+        cache.put_https(b"a.test", 443, now).unwrap();
+        assert_eq!(TryArc::count(&addrs), 3, "the addresses' answer");
+        assert_eq!(https(&mut cache, b"A.TEST", 443, now), HttpsLookup::Found);
+        assert_eq!(https(&mut cache, b"a.test", 80, now), HttpsLookup::Missing);
+        match cache.lookup((b"a.test", 443), Family::Any, false, MAX_AGE, now) {
+            Lookup::Found(found) => assert_eq!(found.addrs(), [ip("1.2.3.4")]),
+            _ => panic!("the addresses stay"),
+        }
+        // Kept again, it replaces what was kept.
+        cache.put_https(b"a.test", 443, now).unwrap();
+        assert_eq!(TryArc::count(&addrs), 3);
+        let half = now.after(Duration::from_secs(30));
+        assert_eq!(https(&mut cache, b"a.test", 443, half), HttpsLookup::Stale);
+        assert_eq!(
+            https(&mut cache, b"a.test", 443, half),
+            HttpsLookup::Missing
+        );
+        assert!(matches!(
+            cache.lookup((b"a.test", 443), Family::Any, false, MAX_AGE, half),
+            Lookup::Found(_)
+        ));
+        // A name with no addresses kept has its record kept alone, and
+        // forgetting addresses leaves it.
+        cache.put_https(b"b.test", 443, now).unwrap();
+        assert!(!cache.remove(b"b.test", 443));
+        assert_eq!(https(&mut cache, b"b.test", 443, now), HttpsLookup::Found);
+        assert!(matches!(
+            cache.lookup((b"b.test", 443), Family::Any, false, MAX_AGE, now),
+            Lookup::Missing
+        ));
     }
 
     /// The cache keeps an answer by name, in any case, and port; a

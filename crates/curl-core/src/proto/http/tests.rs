@@ -4993,6 +4993,7 @@ mod bind_trace;
 mod coding;
 #[cfg(feature = "debug-hooks")]
 mod debug_lines;
+mod https_trace;
 mod multi_trace;
 mod os_errno;
 mod range;

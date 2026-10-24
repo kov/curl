@@ -23,9 +23,19 @@ pub(crate) enum SetupPoint {
     Dialed(Made),
 }
 
-/// The most filters a chain holds: two DNS, SETUP, SSL, HAPROXY,
-/// HTTP-PROXY, H1-PROXY, SOCKS, HAPPY-EYEBALLS and TCP.
-const MOST: usize = 10;
+/// What heads a setup's chain above its SETUP filter: the HTTPS connect
+/// filter, for an `https` origin no proxy forwards to with ALPN on
+/// (`Curl_cf_https_setup`), and above the name's DNS filter the one that
+/// asks for the origin's HTTPS record, unless the origin is an address.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Head {
+    pub(crate) https: bool,
+    pub(crate) record: bool,
+}
+
+/// The most filters a chain holds: three DNS, HTTPS-CONNECT, SETUP, SSL,
+/// HAPROXY, HTTP-PROXY, H1-PROXY, SOCKS, HAPPY-EYEBALLS and TCP.
+const MOST: usize = 12;
 
 /// A chain of filters, top first, each connected or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +65,7 @@ impl Chain {
     /// C installs it in the tunnel filter's first connect.
     pub(crate) fn of(
         route: &Tcp,
+        head: Head,
         reached: SetupPoint,
         under_way: Option<Component>,
         installed: bool,
@@ -62,12 +73,12 @@ impl Chain {
         let mut chain = Chain::new();
         let made = match reached {
             SetupPoint::Resolving | SetupPoint::Racing { started: false } => {
-                chain.push(Component::Dns, false);
+                chain.head(head, false);
                 chain.push(Component::Setup, false);
                 return chain;
             }
             SetupPoint::Racing { started: true } => {
-                chain.push(Component::Dns, false);
+                chain.head(head, false);
                 chain.push(Component::Setup, false);
                 chain.push(Component::HappyEyeballs, false);
                 return chain;
@@ -90,33 +101,54 @@ impl Chain {
             _ => false,
         };
         let installed = installed || made.has(Made::TUNNEL);
-        Chain::dialed(route, added, installed, connected)
+        Chain::dialed(route, head, added, installed, connected)
+    }
+
+    /// The DNS filters over the name the setup connects to first, the
+    /// record's above them, then the HTTPS connect filter.
+    fn head(&mut self, head: Head, connected: bool) {
+        if head.record {
+            self.push(Component::Dns, connected);
+        }
+        self.push(Component::Dns, connected);
+        if head.https {
+            self.push(Component::HttpsConnect, connected);
+        }
     }
 
     /// The chain of a setup over `route` once it is connected, every
     /// filter connected; `haproxy` if the PROXY line was sent.
-    pub(crate) fn connected(route: &Tcp, haproxy: bool) -> Chain {
+    pub(crate) fn connected(route: &Tcp, head: Head, haproxy: bool) -> Chain {
         let added = Handshakes {
             socks: route.socks().is_some(),
             tunnel: route.proxy.as_ref().is_some_and(|p| p.tunnels()),
             preface: haproxy,
             tls: route.tls.is_some(),
         };
-        Chain::dialed(route, added, true, |_| true)
+        Chain::dialed(route, head, added, true, |_| true)
     }
 
     /// The chain over a first hop connected, with the handshakes `added`.
     fn dialed(
         route: &Tcp,
+        head: Head,
         added: Handshakes,
         installed: bool,
         connected: impl Fn(Component) -> bool,
     ) -> Chain {
         let mut chain = Chain::new();
         let mut push = |filter| chain.push(filter, connected(filter));
+        if head.record {
+            push(Component::Dns);
+        }
         push(Component::Dns);
+        // The SOCKS proxy's goes after the last DNS filter there is
+        // (`cf_dns_add_resolve`), above the HTTPS connect filter.
         if added.socks && resolves_target(route) {
             push(Component::Dns);
+        }
+        if head.https {
+            push(Component::HttpsConnect);
         }
         push(Component::Setup);
         // Each filter the setup adds goes right below it, so the last,
@@ -139,6 +171,21 @@ impl Chain {
         push(Component::HappyEyeballs);
         push(route.socket_component());
         chain
+    }
+
+    /// The chain as a failed call leaves it: the HTTPS connect filter, if
+    /// there is one, holds its attempt's filters apart from the chain
+    /// outside its connect (`cf_hc_baller_connect`), so the chain ends
+    /// there.
+    pub(crate) fn failed(&self) -> Chain {
+        let mut left = Chain::new();
+        for &(filter, connected) in &self.filters[..self.len] {
+            left.push(filter, connected);
+            if filter == Component::HttpsConnect {
+                break;
+            }
+        }
+        left
     }
 
     /// What is left once the setup filters go
@@ -178,6 +225,7 @@ fn is_setup(filter: Component) -> bool {
     matches!(
         filter,
         Component::Dns
+            | Component::HttpsConnect
             | Component::Setup
             | Component::HappyEyeballs
             | Component::HttpProxy
@@ -233,7 +281,14 @@ mod tests {
             local: None,
         };
         let shown = |made, under_way| {
-            Chain::of(&route, SetupPoint::Dialed(made), under_way, false).to_string()
+            Chain::of(
+                &route,
+                Head::default(),
+                SetupPoint::Dialed(made),
+                under_way,
+                false,
+            )
+            .to_string()
         };
         assert_eq!(
             shown(Made::PREFACE, None),
@@ -253,7 +308,14 @@ mod tests {
             ..route
         };
         let shown = |made, under_way| {
-            Chain::of(&route, SetupPoint::Dialed(made), under_way, false).to_string()
+            Chain::of(
+                &route,
+                Head::default(),
+                SetupPoint::Dialed(made),
+                under_way,
+                false,
+            )
+            .to_string()
         };
         assert_eq!(
             shown(Made::TLS, None),

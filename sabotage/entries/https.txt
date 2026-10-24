@@ -1,0 +1,64 @@
+=== the timer for a second attempt is armed for an origin that is an address
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_an_address_asks_for_no_record
+features: test-util
+--- old
+        let record = if address(route.target().name()).is_some() {
+--- new
+        let record = if address(route.target().name()).is_none() {
+
+=== a record found in the cache still arms the timer for a second attempt
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
+features: test-util
+--- old
+        Record::Known
+    } else {
+--- new
+        Record::Pending
+    } else {
+
+=== the record's answer is not kept for the next setup
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_to_a_name_waits_for_its_record_once
+features: test-util
+--- old
+        .section(|d| d.put_https(peer.name(), peer.port(), now))
+--- new
+        .section(|_| Ok::<(), curl_alloc::OutOfMemory>(()))
+
+=== a name's HTTPS record answers for its addresses
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::a_name_s_https_record_is_kept_apart_from_its_addresses
+--- old
+            e.port == port && e.https == https && e.answer.name.eq_ignore_ascii_case(name)
+--- new
+            e.port == port && e.answer.name.eq_ignore_ascii_case(name)
+
+=== a name's HTTPS record ages as its addresses do
+file: crates/curl-core/src/conn/dns.rs
+witness: curl-core conn::dns::tests::a_name_s_https_record_is_kept_apart_from_its_addresses
+--- old
+        if self.https || self.answer.addrs.is_empty() {
+--- new
+        if self.answer.addrs.is_empty() {
+
+=== a failed chain is named past the HTTPS connect filter
+file: crates/curl-core/src/conn/chain.rs
+witness: curl-core proto::http::tests::https_trace::a_failed_https_setup_names_the_chain_to_its_filter
+features: test-util
+--- old
+            if filter == Component::HttpsConnect {
+                break;
+--- new
+            if filter == Component::Setup {
+                break;
+
+=== the HTTPS connect filter heads a setup without ALPN
+file: crates/curl-core/src/multi/state/https.rs
+witness: curl-core proto::http::tests::https_trace::an_https_setup_without_alpn_has_no_https_connect_filter
+features: test-util
+--- old
+        if !https || forwarded || !alpn {
+--- new
+        if !https || forwarded {

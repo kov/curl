@@ -130,11 +130,13 @@ curl-tool     drives transfers through the Rust API
 
 `curl-os` exposes safe functions; it does not implement `curl-core` traits (that would be a
 dependency cycle). `curl-core::conn::io::SystemNet` adapts `curl-os` to the `Net` trait in safe
-code. The libraries the core does not depend on (libpsl, the decoders, the Ed25519 signer, and
-the TLS library) are handed to a handle by whoever builds it: the shim and the tool. The
-decoders, the signer and the TLS library come as one `&'static Libraries`
-(`curl_core::libraries`), a static of each; a handle given none has `Libraries::NONE`. The TLS
-library is OpenSSL's (`curl_openssl::OPENSSL`). Each initialises OpenSSL as C's
+code. The libraries the core does not depend on (libpsl, the decoders, the Ed25519 signer, the
+TLS library and the GSS-API library) are handed to a handle by whoever builds it: the shim and
+the tool. The decoders, the signer, the TLS library and the GSS-API library come as one
+`&'static Libraries` (`curl_core::libraries`), a static of each; a handle given none has
+`Libraries::NONE`. The TLS library is OpenSSL's (`curl_openssl::OPENSSL`); the GSS-API library
+is MIT krb5's (`curl_gssapi::GSSAPI`, behind `curl_core::gss::Gss`), with C's debug stub under
+`debug-hooks`, chosen per context by `CURL_STUB_GSS_CREDS` as C's wrappers choose per call. Each initialises OpenSSL as C's
 global init does (`OPENSSL_init_ssl` with the configuration and the built-in engines): the shim
 at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
 program that never called `curl_global_init` signs the same.
@@ -163,6 +165,7 @@ curl-core/src/
   netrc.rs                   .netrc files: the file's path, its entries for a host
   coding.rs                  Coding, Decoder, Decoders, AcceptEncoding: the content codings
   libraries.rs               Libraries, Ed25519: what the bound C libraries do for a handle
+  gss.rs                     Gss, GssContext: the seam a GSS-API library implements
   tls.rs, tls/               TlsIdentity, the seam a TLS library implements (TlsBackend,
                              TlsSession, TlsIo, TlsPeer, TlsWait); cache.rs: SessionCache,
                              SessionPeer, TlsTicket (vtls_scache.c); keylog.rs: KeyLog;
@@ -1867,7 +1870,7 @@ C's failf), as C's filters each give theirs: a read or a send through a session 
 it failed is not said for again by HTTP, and a socket failing under a session is said first,
 as the socket says it (`Recv failure:`, `Send failure:`). A handle
 reaches its library through one `&'static Libraries` (the decoders, the Ed25519 signer, the
-TLS library), the shim's and the tool's statics, so a handle carries one pointer for all of
+TLS library, the GSS-API library), the shim's and the tool's statics, so a handle carries one pointer for all of
 them; `Easy: Default` takes `Libraries::NONE`. Without a TLS library `https` is a scheme the
 build leaves out (`Protocol "https" is disabled`, `UnsupportedProtocol`), as in C built
 without TLS; the shim and the tool give every handle OpenSSL. One library

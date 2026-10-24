@@ -15,6 +15,7 @@ pub mod date;
 mod deliver;
 pub mod easy;
 pub mod error;
+pub mod gss;
 pub mod handler;
 mod hash;
 pub mod id;

@@ -1,0 +1,21 @@
+[package]
+name = "curl-gssapi"
+description = "GSS-API (MIT krb5) for the curl rewrite: Negotiate and SOCKS5's GSS-API method"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+links = "gssapi_krb5"
+
+[features]
+# The debug test build's stand-in for a KDC: with `CURL_STUB_GSS_CREDS`
+# set, contexts are the stub's, as in C's debug build.
+debug-hooks = []
+
+[dependencies]
+curl-alloc = { path = "../curl-alloc" }
+curl-core = { path = "../curl-core" }
+curl-os = { path = "../curl-os" }
+
+[lints]
+workspace = true

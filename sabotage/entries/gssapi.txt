@@ -1,0 +1,66 @@
+=== SPNEGO's stub credentials let NTLM through though the mechanisms were narrowed
+file: crates/curl-gssapi/src/stub.rs
+witness: curl-gssapi tests::stub::the_stub_leaves_ntlm_out_of_spnego
+features: debug-hooks
+--- old
+                have_ntlm &= cred.allow_ntlm;
+--- new
+                have_ntlm &= cred.allow_ntlm || true;
+
+=== the stub's token is padded with something other than C's `A`
+file: crates/curl-gssapi/src/stub.rs
+witness: curl-gssapi tests::stub::the_stub_s_first_token_is_c_s
+features: debug-hooks
+--- old
+        bytes: [b'A'; TOKEN],
+--- new
+        bytes: [b'B'; TOKEN],
+
+=== the stub's token is cut after the byte C's NUL takes
+file: crates/curl-gssapi/src/stub.rs
+witness: curl-gssapi tests::stub::the_stub_s_bounds_are_c_s
+features: debug-hooks
+--- old
+        let n = part.len().min(TOKEN - 1 - at);
+--- new
+        let n = part.len().min(TOKEN - at);
+
+=== a context forgets what it sent between steps
+file: crates/curl-gssapi/src/lib.rs
+witness: curl-gssapi tests::stub::the_stub_continues_from_kerberos_to_ntlm
+features: debug-hooks
+--- old
+        let backend = self.backend.get_or_insert_with(Backend::chosen);
+--- new
+        let backend = self.backend.insert(Backend::chosen());
+
+=== the log layout says the minor code's text before the major code's
+file: crates/curl-gssapi/src/describe.rs
+witness: curl-gssapi tests::without_credentials_spnego_fails_to_acquire_them
+--- old
+            if major != sys::GSS_S_FAILURE {
+                len = every_message(major, Code::Gss, &mut buf, len);
+            }
+            len = every_message(minor, Code::Mech, &mut buf, len);
+--- new
+            len = every_message(minor, Code::Mech, &mut buf, len);
+            if major != sys::GSS_S_FAILURE {
+                len = every_message(major, Code::Gss, &mut buf, len);
+            }
+
+=== the log layout says the bare failure's major text
+file: crates/curl-gssapi/src/describe.rs
+witness: curl-gssapi tests::a_stub_status_has_no_text
+--- old
+            if major != sys::GSS_S_FAILURE {
+--- new
+            if major != sys::GSS_S_FAILURE || true {
+
+=== SPNEGO's credentials keep every mechanism, NTLM among them
+file: crates/curl-gssapi/src/lib.rs
+witness: curl-gssapi tests::stub::the_stub_leaves_ntlm_out_of_spnego
+features: debug-hooks
+--- old
+                        if *oid != NTLMSSP_OID {
+--- new
+                        if *oid != NTLMSSP_OID || true {

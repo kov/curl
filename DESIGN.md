@@ -18,6 +18,7 @@ decisions, not implementation details: those live beside the code.
 | `curl-brotli` | brotli's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-zstd` | zstd's decoder, behind `curl_core::coding::Decoder`. | yes: it is a binding |
 | `curl-openssl` | OpenSSL: the TLS library behind `curl_core::tls`, and Ed25519 for HTTP signatures, behind `curl_core::libraries::Ed25519`. | yes: it is a binding |
+| `curl-gssapi` | MIT krb5's GSS-API, behind `curl_core::gss::Gss`; with `debug-hooks`, the debug build's stub for the tests (`CURL_STUB_GSS_CREDS`). | in `sys.rs` |
 
 Code that must talk to C or to the OS gets its own crate, never a module of `curl-core`:
 - one crate per bound C library (OpenSSL, nghttp2, ngtcp2, libssh2, c-ares and the rest);

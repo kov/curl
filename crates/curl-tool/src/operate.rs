@@ -3261,7 +3261,8 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
 }
 
 /// What the libraries this build is linked with do for a handle, as C's:
-/// the content codings they undo, the signatures they make.
+/// the content codings they undo, the signatures they make, the TLS they
+/// speak and the GSS-API they authenticate with.
 static LIBRARIES: curl_core::libraries::Libraries = {
     use curl_core::coding::{Coding, Decoders};
     curl_core::libraries::Libraries {
@@ -3272,6 +3273,7 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: Some(&curl_openssl::ED25519),
         tls: Some(&OPENSSL),
+        gss: Some(&curl_gssapi::GSSAPI),
     }
 };
 

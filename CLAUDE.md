@@ -38,6 +38,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.
 - `crates/curl-openssl/src/sign.rs`: OpenSSL's Ed25519, signing HTTP message signatures.
+- `crates/curl-gssapi/src/sys.rs`: MIT krb5's GSS-API: names, credentials, security contexts
+  and the library's buffers.
 - `crates/curl-openssl/src/cert.rs`: the client's certificate and key, loaded into OpenSSL's
   context.
 - `crates/curl-openssl/src/certinfo.rs`: the peer's chain, each certificate's fields as OpenSSL

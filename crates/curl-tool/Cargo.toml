@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 # The debug test build: track allocations as the C tool's debug build does.
-debug-hooks = ["curl-alloc/debug-hooks", "curl-core/debug-hooks"]
+debug-hooks = ["curl-alloc/debug-hooks", "curl-core/debug-hooks", "curl-gssapi/debug-hooks"]
 
 [[test]]
 name = "memdebug"
@@ -26,6 +26,7 @@ required-features = ["debug-hooks"]
 curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os", features = ["args", "fs"] }
+curl-gssapi = { path = "../curl-gssapi" }
 curl-openssl = { path = "../curl-openssl" }
 curl-psl = { path = "../curl-psl" }
 curl-brotli = { path = "../curl-brotli" }

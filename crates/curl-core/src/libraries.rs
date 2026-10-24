@@ -1,16 +1,17 @@
 //! What the C libraries bound beside the core do for a handle: the
-//! content codings they undo, the signatures they make and the TLS they
-//! speak. The core links none of them; whoever builds a handle (the shim,
+//! content codings they undo, the signatures they make, the TLS they
+//! speak and the GSS-API they authenticate with. The core links none of them; whoever builds a handle (the shim,
 //! the tool) gives it one `&'static Libraries` naming what its build has.
 
 use std::fmt;
 
 use crate::coding::Decoders;
+use crate::gss::Gss;
 use crate::tls::TlsBackend;
 
 /// The libraries a handle uses. A handle without any is given
-/// `Libraries::NONE`: it undoes no coding, signs no Ed25519 and speaks no
-/// TLS.
+/// `Libraries::NONE`: it undoes no coding, signs no Ed25519, speaks no
+/// TLS and knows no GSS-API.
 #[derive(Clone, Copy, Debug)]
 pub struct Libraries {
     /// The content codings it undoes.
@@ -22,6 +23,9 @@ pub struct Libraries {
     /// The TLS library, if any: without it, no scheme that needs TLS is
     /// built in, as in a C build without one.
     pub tls: Option<&'static dyn TlsBackend>,
+    /// The GSS-API library, if any: without it, Negotiate and SOCKS5's
+    /// GSS-API method are not built in, as in a C build without one.
+    pub gss: Option<&'static dyn Gss>,
 }
 
 impl Libraries {
@@ -29,6 +33,7 @@ impl Libraries {
         decoders: Decoders::none(),
         ed25519: None,
         tls: None,
+        gss: None,
     };
 }
 
@@ -121,7 +126,7 @@ mod tests {
         };
         let printed = format!("{libraries:?}");
         assert!(
-            printed.ends_with("ed25519: Some(Ed25519), tls: None }"),
+            printed.ends_with("ed25519: Some(Ed25519), tls: None, gss: None }"),
             "{printed}"
         );
     }

@@ -663,12 +663,11 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       414, 417, 560, 1630, 2009, 2034, 2042, 2088, 2090, 2095, 3102 and 3207 (plain HTTPS, a
       verify failure, CRL, session reuse, certinfo, the multi, an HTTPS proxy, TLS in TLS,
       pinning, mTLS, a blob identity, the key log): the one Rust failure, an abort naming a
-      pinned key's file, fixed; the exit codes under refusal are C's kinds. The C build's
-      libtests write no memdump, so only the Rust leg tortures 560, 2095, 3102 and 3207. A
-      torture scenario over OpenSSL in curl-openssl's peer tests; the budgets of an HTTPS GET
-      over the fake (55) and over OpenSSL (+18), through an HTTPS proxy (+19) and resumed (16
-      fewer) pinned and listed in ENGINE.md 8.2; the sweep over the TLS areas; the certificate's
-      names printed only when verbose; an engine's certificate and key (`--cert-type ENG`,
+      pinned key's file, fixed; the exit codes under refusal are C's kinds. A torture
+      scenario over OpenSSL in curl-openssl's peer tests; the budgets of an HTTPS GET over the
+      fake (55) and over OpenSSL (+18), through an HTTPS proxy (+19) and resumed (16 fewer)
+      pinned and listed in ENGINE.md 8.2; the sweep over the TLS areas; the certificate's names
+      printed only when verbose; an engine's certificate and key (`--cert-type ENG`,
       `--key-type ENG`), tested with an engine the peer tests build. cargo-mutants runs
       separately on banana.
 

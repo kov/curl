@@ -3096,8 +3096,7 @@ peer gets a protocol error, not an out-of-memory one.
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.
 - `runtests.pl -t` over the milestone's tests checks the same at process level, against a torture
-  run of the C build. The C build's libtests write no memdump, so it finds nothing to refuse in
-  them; the Rust leg's libtests are tortured all the same.
+  run of the C build.
 
 ### 8.3 Fakes and test ports
 

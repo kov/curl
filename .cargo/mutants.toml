@@ -84,6 +84,12 @@ exclude_re = [
     # `X509_V_FLAG_CRL_CHECK` and `X509_V_FLAG_CRL_CHECK_ALL` are disjoint
     # bits (`x509_vfy.h`).
     'curl-openssl/src/x509\.rs:.*: replace \| with \^ in populate_store$',
+    # Whether a provider a PKCS#11 URI loaded is kept in the session's
+    # selection or only for the call changes when it is let go of, after
+    # the context was made with what was selected before.
+    'curl-openssl/src/engine\.rs:.*: (replace Crypto::is_empty -> bool with (true|false)|replace && with \|\| in Crypto::is_empty)$',
+    # `ENGINE_set_default` gives 1 or 0.
+    'curl-openssl/src/engine\.rs:.*: replace > with >= in Crypto::set_default$',
     # The core reads only that the session failed, and says nothing of
     # the error, which the session said itself.
     'curl-openssl/src/ssl\.rs:.*: replace != with == in said$',

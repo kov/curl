@@ -14,6 +14,14 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         "a_provider_s_store_gives_the_client_certificate_and_key",
         a_provider_s_store_gives_the_client_certificate_and_key,
     ),
+    (
+        "an_engine_made_the_default_is_said",
+        an_engine_made_the_default_is_said,
+    ),
+    (
+        "a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded",
+        a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded,
+    ),
 ];
 
 /// An engine that will not start is 66; a name that is neither an engine
@@ -53,6 +61,18 @@ fn an_engine_or_provider_that_cannot_be_had_fails_as_c_says() {
         assert_eq!(got.result, Err(ErrorKind::BadFunctionArgument));
         assert_eq!(got.failure, b"");
     }
+    // `MAX_PROVIDER_LEN` is the longest name looked for.
+    let got = with(&[b'x'; 128], false);
+    assert_eq!(got.result, Err(ErrorKind::SslEngineNotfound));
+    // The properties after the colon are the context's: a provider they
+    // name that cannot be had fails it, as C says it (27).
+    let got = with(b"default:provider=nosuch", false);
+    assert_eq!(got.result, Err(ErrorKind::OutOfMemory));
+    let failure = String::from_utf8(got.failure).unwrap();
+    assert!(
+        failure.starts_with("SSL: could not create a context: error:"),
+        "{failure}"
+    );
     for (name, default) in [
         (&b"default"[..], true),
         (b"default:?provider=default", false),
@@ -61,6 +81,11 @@ fn an_engine_or_provider_that_cannot_be_had_fails_as_c_says() {
         assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
         assert_eq!(got.seen.body, BODY);
         assert!(!said(&got, "set default crypto engine"));
+        // The library's configuration loads into the provider's context.
+        assert!(!said(
+            &got,
+            "Failed to load default openssl config. Proceeding."
+        ));
     }
 }
 
@@ -123,4 +148,55 @@ fn a_provider_s_store_gives_the_client_certificate_and_key() {
         got.failure,
         b"crypto provider not set, cannot load certificate"
     );
+}
+
+/// `CURLOPT_SSLENGINE_DEFAULT`: the engine selected is made the default
+/// for every algorithm, said (`ossl_set_engine_default`); not without
+/// the option. `loader_attic` is an engine every OpenSSL 3 build starts.
+fn an_engine_made_the_default_is_said() {
+    let certs = certs("enginedefault", "localhost", &["localhost"]);
+    for default in [true, false] {
+        let (at, server) = serve(&certs);
+        let got = get("localhost", at, |o| {
+            trusting(&certs)(o);
+            let t = o.tls.options.make_mut().unwrap();
+            t.engine = Some(b"loader_attic".to_vec());
+            t.engine_default = default;
+        });
+        server.join().unwrap();
+        assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+        assert_eq!(
+            said(&got, "set default crypto engine 'loader_attic'"),
+            default,
+            "{:#?}",
+            got.seen.lines
+        );
+    }
+}
+
+/// `--cert-type PROV` with a PKCS#11 URI and no provider loaded loads
+/// `pkcs11`, as C does, whether or not an engine is selected, and opens
+/// the URI's store with it: with no token there, that fails, said as C
+/// says it. Without it, the failure would be that no provider was set.
+fn a_pkcs11_uri_loads_the_pkcs11_provider_when_none_is_loaded() {
+    let certs = certs("pkcs11uri", "localhost", &["localhost"]);
+    let client = client("pkcs11uri");
+    for engine in [None, Some(b"loader_attic".to_vec())] {
+        let (at, server) = serve_asking(&certs, &client);
+        let got = get("localhost", at, |o| {
+            trusting(&certs)(o);
+            let t = o.tls.options.make_mut().unwrap();
+            t.engine = engine.clone();
+            t.cert = Some(b"pkcs11:object=nosuch".to_vec());
+            t.cert_type = Some(b"PROV".to_vec());
+            t.key = Some(bytes(&client.key_pem));
+        });
+        server.join().unwrap();
+        assert_eq!(got.result, Err(ErrorKind::SslCertproblem), "{engine:?}");
+        let failure = String::from_utf8(got.failure).unwrap();
+        assert!(
+            failure.starts_with("Failed to open OpenSSL store: error:"),
+            "{engine:?}: {failure}"
+        );
+    }
 }

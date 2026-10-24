@@ -6,8 +6,7 @@
 use std::fmt;
 
 use crate::components::Component;
-use crate::conn::RecvFailed;
-use crate::conn::io::{Recv, Sent};
+use crate::conn::io::Sent;
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::DebugKind;
 use crate::multi::state::StepCx;
@@ -110,28 +109,6 @@ pub(crate) fn sent<H: Host>(
         cx,
         component,
         format_args!("send(len={len}) -> {code}, {n}"),
-    );
-}
-
-/// What a receive of up to `len` bytes on the connection came to
-/// (`cf_socket_recv`), in the socket's filter's name, `component`.
-pub(crate) fn received<H: Host>(
-    cx: &mut StepCx<'_, H>,
-    component: Component,
-    len: usize,
-    got: &Result<Recv, RecvFailed>,
-) {
-    let (code, n) = match got {
-        Ok(Recv::Data(n)) => (0, n.get()),
-        Ok(Recv::Eof) => (0, 0),
-        Ok(Recv::WouldBlock) => (AGAIN_NUMBER, 0),
-        Err(RecvFailed::OutOfMemory) => (ErrorKind::OutOfMemory.number(), 0),
-        Err(RecvFailed::Os(_)) => (ErrorKind::RecvError.number(), 0),
-    };
-    of(
-        cx,
-        component,
-        format_args!("recv(len={len}) -> {code}, {n}"),
     );
 }
 

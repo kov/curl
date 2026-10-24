@@ -783,12 +783,15 @@ impl Conn {
     /// not used, which only a handshake's read past its answer leaves,
     /// are given first, the socket not asked, as a layer gives what it
     /// holds: they came first.
+    /// The socket's receive is traced, and its failure said, as it
+    /// reaches the socket, below any layer (`cf_socket_recv`).
     pub(crate) fn recv(&mut self, cx: &mut dyn LayerCx, max: usize) -> Result<Recv, RecvFailed> {
+        let component = self.socket_component();
         let stream = self.stream();
         if let Some(n) = std::num::NonZeroUsize::new(stream.received().len()) {
             return Ok(Recv::Data(n));
         }
-        let got = stream.recv(cx, max);
+        let got = stream.recv(cx, max, Some(component));
         if let Ok(Recv::Eof) = got {
             // Shut down by the server, not reused (`multi_done`).
             self.close = true;
@@ -796,9 +799,12 @@ impl Conn {
         got
     }
 
-    /// Send from `bytes`, which is not empty, what the network takes now.
+    /// Send from `bytes`, which is not empty, what the network takes now:
+    /// the socket's send traced, and its failure said, as it reaches the
+    /// socket, below any layer (`cf_socket_send`).
     pub(crate) fn send(&mut self, cx: &mut dyn LayerCx, bytes: &[u8]) -> std::io::Result<Sent> {
-        self.stream().send(cx, bytes)
+        let component = self.socket_component();
+        self.stream().send(cx, bytes, Some(component))
     }
 
     /// Whether bytes wait where a poll of its socket cannot see them, so

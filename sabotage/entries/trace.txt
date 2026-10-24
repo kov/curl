@@ -296,19 +296,20 @@ witness: curl-core proto::http::tests::multi_trace::a_request_is_traced_through_
         let total = current;
 
 === a receive that got data is traced as one that would block
-file: crates/curl-core/src/trace.rs
+file: crates/curl-core/src/conn/layer.rs
 witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_traced_as_c
 --- old
-        Ok(Recv::Data(n)) => (0, n.get()),
+                        Ok(Recv::Data(n)) => (0, n.get()),
 --- new
-        Ok(Recv::Data(n)) => (AGAIN_NUMBER, n.get()),
+                        Ok(Recv::Data(n)) => (AGAIN_NUMBER, n.get()),
 
 === a request's send is not traced
-file: crates/curl-core/src/proto/http.rs
+file: crates/curl-core/src/conn/mod.rs
 witness: curl-core proto::http::tests::multi_trace::sends_and_receives_are_traced_as_c
 --- old
-            trace::sent(cx, component, len, &sent);
+        self.stream().send(cx, bytes, Some(component))
 --- new
+        self.stream().send(cx, bytes, None)
 
 === a debug build ignores CURL_DEBUG
 file: crates/curl-sys-abi/src/root.rs

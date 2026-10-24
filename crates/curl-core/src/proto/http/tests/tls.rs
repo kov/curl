@@ -110,6 +110,48 @@ fn an_https_get_goes_through_its_tls_layer() {
     assert_eq!(plain.easy.report().timings().appconnect(), Duration::ZERO);
 }
 
+/// The socket under a session traces each send and receive the session
+/// makes of it, with the session's lengths (`cf_socket_send` under the
+/// SSL filter's BIO), and the request's send as the record that went,
+/// not as the bytes the transfer handed the session.
+#[test]
+fn the_socket_under_a_session_traces_what_the_session_asks_of_it() {
+    let (_, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let (mut m, talk, _) = server(&[&welcome, &response], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"tcp");
+    e.set_components(Some(components));
+    let request = request_of("/a");
+    let ran = get_with(&mut m, e, "/a", talk, |o| {
+        let url = format!("https://127.0.0.1:{PORT}/a");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let lines: Vec<String> = ran
+        .seen
+        .text()
+        .into_iter()
+        .filter(|l| l.starts_with("[TCP] send(") || l.starts_with("[TCP] recv("))
+        .map(|l| l.trim_end().to_owned())
+        .collect();
+    let (hello, wel, fin) = (HELLO.len(), WELCOME.len(), FINISHED.len());
+    let record = fake::records(&request).unwrap().len();
+    assert_eq!(
+        lines[..4],
+        [
+            format!("[TCP] send(len={hello}) -> 0, {hello}"),
+            format!("[TCP] recv(len={wel}) -> 0, {wel}"),
+            format!("[TCP] send(len={fin}) -> 0, {fin}"),
+            format!("[TCP] send(len={record}) -> 0, {record}"),
+        ]
+    );
+    let plain = format!("send(len={})", request.len());
+    assert!(!lines.iter().any(|l| l.contains(&plain)), "{lines:?}");
+}
+
 /// A record longer than the transfer's read is given out over as many
 /// reads, from what the session holds, without waiting on the socket,
 /// which has nothing more to say.

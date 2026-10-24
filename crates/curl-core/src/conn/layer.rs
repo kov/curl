@@ -15,8 +15,9 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
 use super::io::{Events, Recv, Sent, Socket, SocketPoll, poll_together};
 use crate::components::Component;
-use crate::error::ErrorKind;
+use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::time::Instant;
+use crate::trace::OsError;
 
 /// What a layer's handshake, or its shutdown, came to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,13 +194,21 @@ pub(crate) struct Below<'a> {
     /// Bottom first.
     layers: &'a mut [Box<dyn Layer>],
     socket: &'a dyn Socket,
+    /// The socket's filter, when the socket's sends and receives are
+    /// traced, and their failures said, as they reach it (`cf_socket_send`,
+    /// `cf_socket_recv`); none when the caller says what it needs itself.
+    traced: Option<Component>,
 }
 
 impl<'a> Below<'a> {
     /// The layers `layers`, bottom first, over `socket`, for a test.
     #[cfg(test)]
     pub(crate) fn new(layers: &'a mut [Box<dyn Layer>], socket: &'a dyn Socket) -> Below<'a> {
-        Below { layers, socket }
+        Below {
+            layers,
+            socket,
+            traced: None,
+        }
     }
 }
 
@@ -210,20 +219,62 @@ impl Below<'_> {
         Below {
             layers: &mut *self.layers,
             socket: self.socket,
+            traced: self.traced,
         }
     }
 
     pub(crate) fn recv(self, cx: &mut dyn LayerCx, buf: &mut [u8]) -> io::Result<Recv> {
         match self.layers.split_last_mut() {
             Some((top, layers)) => top.recv(cx, Below { layers, ..self }, buf),
-            None => self.socket.recv(buf).inspect_err(|e| cx.socket_failed(e)),
+            None => {
+                let got = self.socket.recv(buf);
+                if let Err(e) = &got {
+                    cx.socket_failed(e);
+                }
+                if let Some(component) = self.traced {
+                    let (code, n) = match &got {
+                        Ok(Recv::Data(n)) => (0, n.get()),
+                        Ok(Recv::Eof) => (0, 0),
+                        Ok(Recv::WouldBlock) => (AGAIN_NUMBER, 0),
+                        Err(e) => {
+                            let why = OsError(e);
+                            let kind = ErrorKind::RecvError;
+                            cx.fails(kind, format_args!("Recv failure: {why}"));
+                            (kind.number(), 0)
+                        }
+                    };
+                    let len = buf.len();
+                    cx.of(component, format_args!("recv(len={len}) -> {code}, {n}"));
+                }
+                got
+            }
         }
     }
 
     pub(crate) fn send(self, cx: &mut dyn LayerCx, bytes: &[u8]) -> io::Result<Sent> {
         match self.layers.split_last_mut() {
             Some((top, layers)) => top.send(cx, Below { layers, ..self }, bytes),
-            None => self.socket.send(bytes).inspect_err(|e| cx.socket_failed(e)),
+            None => {
+                let sent = self.socket.send(bytes);
+                if let Err(e) = &sent {
+                    cx.socket_failed(e);
+                }
+                if let Some(component) = self.traced {
+                    let (code, n) = match &sent {
+                        Ok(Sent::Bytes(n)) => (0, n.get()),
+                        Ok(Sent::WouldBlock) => (AGAIN_NUMBER, 0),
+                        Err(e) => {
+                            let why = OsError(e);
+                            let kind = ErrorKind::SendError;
+                            cx.fails(kind, format_args!("Send failure: {why}"));
+                            (kind.number(), 0)
+                        }
+                    };
+                    let len = bytes.len();
+                    cx.of(component, format_args!("send(len={len}) -> {code}, {n}"));
+                }
+                sent
+            }
         }
     }
 
@@ -282,14 +333,20 @@ pub(crate) struct LayerStack {
 }
 
 impl LayerStack {
-    /// The stack over `socket`, from its top.
-    pub(crate) fn over<'a>(&'a mut self, socket: &'a dyn Socket) -> Below<'a> {
+    /// The stack over `socket`, from its top; the socket's sends and
+    /// receives traced as `traced`, if given.
+    pub(crate) fn over<'a>(
+        &'a mut self,
+        socket: &'a dyn Socket,
+        traced: Option<Component>,
+    ) -> Below<'a> {
         Below {
             layers: self
                 .layers
                 .as_deref_mut()
                 .map_or(&mut [], Vec::as_mut_slice),
             socket,
+            traced,
         }
     }
 
@@ -309,10 +366,11 @@ impl LayerStack {
         &mut self,
         socket: &dyn Socket,
         cx: &mut dyn LayerCx,
+        traced: Option<Component>,
     ) -> Result<Handshake, ErrorKind> {
-        let Below { layers, socket } = self.over(socket);
-        match layers.split_last_mut() {
-            Some((top, layers)) => top.connect(cx, Below { layers, socket }),
+        let below = self.over(socket, traced);
+        match below.layers.split_last_mut() {
+            Some((top, layers)) => top.connect(cx, Below { layers, ..below }),
             None => Ok(Handshake::Done),
         }
     }
@@ -354,6 +412,7 @@ impl LayerStack {
             let below = Below {
                 layers: below,
                 socket,
+                traced: None,
             };
             if top[0].shutdown(cx, below)? == Handshake::Waiting {
                 return Ok(Handshake::Waiting);
@@ -631,6 +690,7 @@ mod tests {
         let below = || Below {
             layers: &mut [],
             socket: &*s,
+            traced: None,
         };
         assert_eq!(
             below().alive(&mut cx),
@@ -649,6 +709,7 @@ mod tests {
         let below = Below {
             layers: &mut [],
             socket: &*refused,
+            traced: None,
         };
         assert_eq!(below.alive(&mut cx), Alive::Dead);
     }
@@ -710,6 +771,7 @@ mod tests {
             let below = Below {
                 layers: &mut [],
                 socket: &s,
+                traced: None,
             };
             below.alive(&mut Silent(ManualClock::new().unwrap().now()))
         };
@@ -746,6 +808,7 @@ mod tests {
         let below = || Below {
             layers: &mut [],
             socket: &socket,
+            traced: None,
         };
         let mut cx = Silent(ManualClock::new().unwrap().now());
         assert_eq!(
@@ -776,12 +839,14 @@ mod tests {
         let below = Below {
             layers: &mut holds,
             socket: &*s,
+            traced: None,
         };
         assert!(below.data_pending());
         let mut empty = [holdback(), upper()];
         let below = Below {
             layers: &mut empty,
             socket: &*s,
+            traced: None,
         };
         assert!(!below.data_pending());
     }

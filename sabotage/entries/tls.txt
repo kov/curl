@@ -172,12 +172,12 @@ witness: curl-core proto::http::tests::tls::a_session_s_reason_for_a_failed_read
                 Err(RecvFailed::Os(_)) if false => {
 
 === a socket failing under a TLS session is not said as the socket says it
-file: crates/curl-core/src/tls.rs
+file: crates/curl-core/src/conn/layer.rs
 witness: curl-core proto::http::tests::tls::a_socket_failing_under_a_session_is_said_first
 --- old
-                .fails(ErrorKind::SendError, format_args!("Send failure: {why}"));
+                            cx.fails(kind, format_args!("Send failure: {why}"));
 --- new
-                .fails(ErrorKind::SendError, format_args!("{why}"));
+                            cx.fails(kind, format_args!("{why}"));
 
 === a setup cut short in its handshake forgets the connection's ends and connect time
 file: crates/curl-core/src/multi/state.rs

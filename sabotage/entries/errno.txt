@@ -5,18 +5,24 @@
 file: crates/curl-core/src/conn/layer.rs
 witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
 --- old
-            None => self.socket.recv(buf).inspect_err(|e| cx.socket_failed(e)),
+                let got = self.socket.recv(buf);
+                if let Err(e) = &got {
+                    cx.socket_failed(e);
+                }
 --- new
-            None => self.socket.recv(buf),
+                let got = self.socket.recv(buf);
 
 === a failed send keeps no number
 file: crates/curl-core/src/conn/layer.rs
 witness: curl-core proto::http::tests::os_errno::a_failed_send_keeps_its_number_until_the_next_transfer
 features: test-util
 --- old
-            None => self.socket.send(bytes).inspect_err(|e| cx.socket_failed(e)),
+                let sent = self.socket.send(bytes);
+                if let Err(e) = &sent {
+                    cx.socket_failed(e);
+                }
 --- new
-            None => self.socket.send(bytes),
+                let sent = self.socket.send(bytes);
 
 === an attempt refused once polled keeps no number
 file: crates/curl-core/src/conn/connect.rs

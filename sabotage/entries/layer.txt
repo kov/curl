@@ -18,7 +18,7 @@ witness: curl-core proto::http::tests::an_exchange_waits_for_what_its_layers_wan
 file: crates/curl-core/src/conn/stream.rs
 witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layers
 --- old
-        let below = self.layers.over(self.socket.socket());
+        let below = self.layers.over(self.socket.socket(), traced);
         self.rx.fill(max, |room| below.recv(cx, room))
 --- new
         let socket = self.socket.socket();
@@ -28,7 +28,9 @@ witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layer
 file: crates/curl-core/src/conn/stream.rs
 witness: curl-core proto::http::tests::bytes_pass_through_the_connection_s_layers
 --- old
-        self.layers.over(self.socket.socket()).send(cx, bytes)
+        self.layers
+            .over(self.socket.socket(), traced)
+            .send(cx, bytes)
 --- new
         self.socket.socket().send(bytes)
 
@@ -68,9 +70,9 @@ witness: curl-core proto::http::tests::bytes_after_a_tunnel_s_answer_are_read_fi
 file: crates/curl-core/src/conn/stream.rs
 witness: curl-core conn::pool::tests::a_connection_moves_bytes_both_ways
 --- old
-        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket()).data_pending()
+        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket(), None).data_pending()
 --- new
-        self.layers.over(self.socket.socket()).data_pending()
+        self.layers.over(self.socket.socket(), None).data_pending()
 
 === a socket with something to read and a hang-up is taken for alive
 file: crates/curl-core/src/conn/layer.rs
@@ -121,3 +123,20 @@ witness: curl-core conn::layer::tests::a_real_socket_with_bytes_to_read_is_input
         Ok(r) if r.intersects(dead) => Alive::Dead,
 --- new
         Ok(r) if r.intersects(dead) || r != Events::IN => Alive::Dead,
+
+=== the socket under a layer does not trace the sends the layer makes of it
+file: crates/curl-core/src/conn/layer.rs
+witness: curl-core proto::http::tests::tls::the_socket_under_a_session_traces_what_the_session_asks_of_it
+features: test-util
+--- old
+            Some((top, layers)) => top.send(cx, Below { layers, ..self }, bytes),
+--- new
+            Some((top, layers)) => top.send(
+                cx,
+                Below {
+                    layers,
+                    traced: None,
+                    ..self
+                },
+                bytes,
+            ),

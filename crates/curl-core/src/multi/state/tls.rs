@@ -67,7 +67,8 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
 
 /// Move the handshake on, as far as the socket lets it.
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    let shaken = c.lease.dialed().stream().connect(cx);
+    let traced = Some(c.route.socket_component());
+    let shaken = c.lease.dialed().stream().connect(cx, traced);
     // The session may have made its objects.
     cx.lend(super::tls_native(&c.lease));
     match shaken {

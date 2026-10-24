@@ -11,6 +11,7 @@ use curl_alloc::OutOfMemory;
 
 use super::layer::{Alive, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, LayerStack};
 use super::{RecvBuf, RecvFailed};
+use crate::components::Component;
 use crate::error::ErrorKind;
 
 #[derive(Debug)]
@@ -47,9 +48,14 @@ impl Stream {
         self.layers.push(layer)
     }
 
-    /// Move its top layer's handshake on.
-    pub(crate) fn connect(&mut self, cx: &mut dyn LayerCx) -> Result<Handshake, ErrorKind> {
-        self.layers.connect(self.socket.socket(), cx)
+    /// Move its top layer's handshake on, the socket's sends and
+    /// receives traced as `traced`, if given.
+    pub(crate) fn connect(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        traced: Option<Component>,
+    ) -> Result<Handshake, ErrorKind> {
+        self.layers.connect(self.socket.socket(), cx, traced)
     }
 
     pub(crate) fn socket(&self) -> &dyn Socket {
@@ -62,22 +68,35 @@ impl Stream {
     }
 
     /// Read once through the layers, up to `max` bytes, behind what was
-    /// received and not used.
-    pub(crate) fn recv(&mut self, cx: &mut dyn LayerCx, max: usize) -> Result<Recv, RecvFailed> {
-        let below = self.layers.over(self.socket.socket());
+    /// received and not used; the socket's receives traced as `traced`,
+    /// if given.
+    pub(crate) fn recv(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        max: usize,
+        traced: Option<Component>,
+    ) -> Result<Recv, RecvFailed> {
+        let below = self.layers.over(self.socket.socket(), traced);
         self.rx.fill(max, |room| below.recv(cx, room))
     }
 
     /// Send from `bytes`, which is not empty, what the layers and the
-    /// network take now.
-    pub(crate) fn send(&mut self, cx: &mut dyn LayerCx, bytes: &[u8]) -> io::Result<Sent> {
-        self.layers.over(self.socket.socket()).send(cx, bytes)
+    /// network take now; the socket's sends traced as `traced`, if given.
+    pub(crate) fn send(
+        &mut self,
+        cx: &mut dyn LayerCx,
+        bytes: &[u8],
+        traced: Option<Component>,
+    ) -> io::Result<Sent> {
+        self.layers
+            .over(self.socket.socket(), traced)
+            .send(cx, bytes)
     }
 
     /// Whether bytes wait where a poll of the socket cannot see them: in
     /// a layer, or received and not used (`Curl_conn_data_pending`).
     pub(crate) fn data_pending(&mut self) -> bool {
-        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket()).data_pending()
+        !self.rx.filled().is_empty() || self.layers.over(self.socket.socket(), None).data_pending()
     }
 
     /// What the transfer is to wait for on the socket, given what it
@@ -95,7 +114,7 @@ impl Stream {
     /// say. Nothing received waits unused on one that is idle: its last
     /// request used everything it read.
     pub(crate) fn is_alive(&mut self, cx: &mut dyn LayerCx) -> Alive {
-        self.layers.over(self.socket.socket()).alive(cx)
+        self.layers.over(self.socket.socket(), None).alive(cx)
     }
 
     /// What was received and not used.

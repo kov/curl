@@ -25,7 +25,6 @@ use crate::handler::DebugKind;
 use crate::options::{CaSetting, Tls, TlsOptions};
 use crate::report::CertInfo;
 use crate::time::Instant;
-use crate::trace::OsError;
 
 pub use crate::conn::layer::Handshake;
 pub use pin::pin_peer_pubkey;
@@ -290,8 +289,8 @@ pub struct TlsIo<'a> {
 
 impl TlsIo<'_> {
     /// Read into `buf`, which is not empty, from what came before the
-    /// session, else from below. A failure below is said as the socket
-    /// says it (`cf_socket_recv`'s `Recv failure:`).
+    /// session, else from below, whose socket traces the receive and says
+    /// why it failed (`cf_socket_recv`'s `Recv failure:`).
     pub fn recv(&mut self, buf: &mut [u8]) -> io::Result<Recv> {
         assert!(!buf.is_empty(), "a receive needs room");
         if let Some(n) = std::num::NonZeroUsize::new(self.early.len().min(buf.len())) {
@@ -299,21 +298,14 @@ impl TlsIo<'_> {
             self.early.drain(..n.get());
             return Ok(Recv::Data(n));
         }
-        self.below.reborrow().recv(self.cx, buf).inspect_err(|e| {
-            let why = OsError(e);
-            self.cx
-                .fails(ErrorKind::RecvError, format_args!("Recv failure: {why}"));
-        })
+        self.below.reborrow().recv(self.cx, buf)
     }
 
-    /// Send from `bytes`, which is not empty, through the layers below; a
-    /// failure there said as the socket says it (`Send failure:`).
+    /// Send from `bytes`, which is not empty, through the layers below,
+    /// whose socket traces the send and says why it failed (`Send
+    /// failure:`).
     pub fn send(&mut self, bytes: &[u8]) -> io::Result<Sent> {
-        self.below.reborrow().send(self.cx, bytes).inspect_err(|e| {
-            let why = OsError(e);
-            self.cx
-                .fails(ErrorKind::SendError, format_args!("Send failure: {why}"));
-        })
+        self.below.reborrow().send(self.cx, bytes)
     }
 
     /// The transfer fails with `kind`, for the reason `why` (`failf`):

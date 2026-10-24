@@ -209,7 +209,11 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
     loop {
         let t = tunnel(&mut c.handshake);
         if t.sent < t.request.len() {
-            let sent = c.lease.dialed().stream().send(cx, &t.request[t.sent..]);
+            let sent = c
+                .lease
+                .dialed()
+                .stream()
+                .send(cx, &t.request[t.sent..], None);
             let n = match sent {
                 Ok(Sent::Bytes(n)) => n.get(),
                 Ok(Sent::WouldBlock) => return Ok(Ran::Idle),
@@ -237,7 +241,7 @@ fn run<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) -> Result<Ran, Error
         // (`recv_CONNECT_resp`, `H1_CONNECT`).
         let dialed = c.lease.dialed().stream();
         if dialed.received().is_empty() {
-            match dialed.recv(cx, READ_SIZE) {
+            match dialed.recv(cx, READ_SIZE, None) {
                 Ok(Recv::Data(_)) => {}
                 Ok(Recv::WouldBlock) => {
                     progress::update(cx, false)?;

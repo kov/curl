@@ -1395,11 +1395,9 @@ impl Request {
                 trace::debug_info(cx, format_args!("sending last upload chunk of {len} bytes"));
             }
             let said = cx.easy().report().reasons();
-            let component = lease.get().socket_component();
+            // The socket traces the send, and says why it failed, as it
+            // reaches it (`cf_socket_send`); a layer may say why too.
             let sent = lease.get().send(cx, &self.out[self.sent..end]);
-            // The failure is said before the send is traced
-            // (`cf_socket_send`), unless a layer said why already, as
-            // TLS does.
             let failed = match &sent {
                 Err(_) if cx.easy().report().reasons() > said => Some(ErrorKind::SendError),
                 Err(e) => {
@@ -1412,7 +1410,6 @@ impl Request {
                 }
                 Ok(_) => None,
             };
-            trace::sent(cx, component, len, &sent);
             let (code, n) = match (&sent, failed) {
                 (Ok(Sent::Bytes(n)), _) => (0, n.get()),
                 (_, Some(kind)) => (kind.number(), 0),
@@ -1616,9 +1613,9 @@ impl Request {
             };
             reads += 1;
             let said = cx.easy().report().reasons();
-            let component = lease.get().socket_component();
+            // The socket traces the receive, and says why it failed, as it
+            // reaches it (`cf_socket_recv`).
             let got = lease.get().recv(cx, max);
-            trace::received(cx, component, max, &got);
             match got {
                 // Bytes a layer holds wake no poll: the step runs again
                 // (`sendrecv_dl`'s `data_pending`).

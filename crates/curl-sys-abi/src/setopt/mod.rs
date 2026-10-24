@@ -1358,7 +1358,7 @@ mod tests {
             &b"goobar"[..],
             b"http ",
             b" http",
-            b"https",
+            b"ftps",
             b"http,all",
             b"http,ft",
         ] {

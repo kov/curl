@@ -36,6 +36,8 @@ pub enum Feature {
     /// Cookies' domains are checked against libpsl's public suffixes,
     /// which the tool and the C ABI give every handle.
     Psl,
+    /// TLS, by OpenSSL, which the tool and the C ABI give every handle.
+    Ssl,
     /// The `zstd` content coding is undone by zstd, which the tool and the
     /// C ABI give every handle.
     Zstd,
@@ -52,6 +54,7 @@ impl Feature {
             Feature::Ipv6 => "IPv6",
             Feature::Libz => "libz",
             Feature::Psl => "PSL",
+            Feature::Ssl => "SSL",
             Feature::Zstd => "zstd",
         }
     }
@@ -65,6 +68,7 @@ const FEATURES: &[Feature] = &[
     Feature::Ipv6,
     Feature::Libz,
     Feature::Psl,
+    Feature::Ssl,
     Feature::Zstd,
 ];
 #[cfg(not(feature = "debug-hooks"))]
@@ -74,6 +78,7 @@ const FEATURES: &[Feature] = &[
     Feature::Ipv6,
     Feature::Libz,
     Feature::Psl,
+    Feature::Ssl,
     Feature::Zstd,
 ];
 
@@ -82,6 +87,8 @@ const FEATURES: &[Feature] = &[
 pub enum Protocol {
     File,
     Http,
+    /// HTTP over TLS, which the tool and the C ABI give every handle.
+    Https,
 }
 
 impl Protocol {
@@ -90,6 +97,7 @@ impl Protocol {
         match scheme {
             b"file" => Some(Protocol::File),
             b"http" => Some(Protocol::Http),
+            b"https" => Some(Protocol::Https),
             _ => None,
         }
     }
@@ -99,6 +107,7 @@ impl Protocol {
         match self {
             Protocol::File => "file",
             Protocol::Http => "http",
+            Protocol::Https => "https",
         }
     }
 }
@@ -167,7 +176,7 @@ static VERSION: VersionInfo = VersionInfo {
     timestamp: curlver::TIMESTAMP,
     host: HOST,
     features: FEATURES,
-    protocols: &[Protocol::File, Protocol::Http],
+    protocols: &[Protocol::File, Protocol::Http, Protocol::Https],
 };
 
 #[cfg(target_os = "linux")]
@@ -187,7 +196,7 @@ mod tests {
     #[test]
     fn protocols_are_named_by_their_schemes() {
         let names: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
-        assert_eq!(names, ["file", "http"]);
+        assert_eq!(names, ["file", "http", "https"]);
         for &p in version().protocols {
             assert_eq!(Protocol::of_scheme(p.name().as_bytes()), Some(p));
         }

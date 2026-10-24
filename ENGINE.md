@@ -1753,7 +1753,9 @@ its port. A transfer's end prunes what has gone stale (`multi_done`).
 Built (steps 43d and 43e1): the seam, the layer, the identity reuse compares, the `https`
 scheme and the setup's TLS stage, the goodbye through the shutdown set, driven in the core's
 tests by a fake library (`tls::fake::FakeTls`); and OpenSSL's session in curl-openssl (**The
-BIO**, the context, **Verification** and the host check). Planned: the CA store cache,
+BIO**, the context, **Verification** and the host check), which the tool and the C ABI give
+every handle (`Libraries::tls`), reporting `https`, `SSL` and `OpenSSL/3.5.9` as C's build does
+(`curl -V`, `curl_version_info`). Planned: the CA store cache,
 close_notify, and the seam's later methods noted below. MILESTONES.md step 43 lists the
 sub-steps.
 

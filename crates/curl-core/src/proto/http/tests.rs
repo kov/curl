@@ -2027,8 +2027,9 @@ fn built_schemes_are_named_in_any_case() {
     assert_eq!(Protocols::built(b"http"), Some(http));
     assert_eq!(Protocols::built(b"HtTp"), Some(http));
     assert_eq!(Protocols::built(b"FILE"), Protocols::of(&["file"]));
+    assert_eq!(Protocols::built(b"HTTPS"), Protocols::of(&["https"]));
     for name in [
-        &b"https"[..],
+        &b"ftps"[..],
         b"ftp",
         b"goobar",
         b"http ",

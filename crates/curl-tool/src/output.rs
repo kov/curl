@@ -346,6 +346,12 @@ impl Output {
     }
 }
 
+/// HTTP or HTTPS, which the tool treats alike (`proto_http`,
+/// `proto_https`).
+pub(crate) fn is_http(protocol: Option<Protocol>) -> bool {
+    matches!(protocol, Some(Protocol::Http | Protocol::Https))
+}
+
 /// The most names tried for a file not to clobber (`MAX_CLOBBER_ATTEMPTS`).
 const MAX_CLOBBER: u32 = 9999;
 
@@ -712,7 +718,7 @@ impl Stream {
         }
         // An ETag is saved, and a name taken, from a 2xx or 3xx response
         // only; an ETag saved is not looked at for a name.
-        let http = protocol == Some(Protocol::Http);
+        let http = is_http(protocol);
         let answered = code.is_some_and(|c| matches!(c / 100, 2 | 3));
         let mut named = false;
         let etag = line.len() >= 5 && line[..5].eq_ignore_ascii_case(b"etag:");
@@ -732,7 +738,12 @@ impl Stream {
             }
         }
         // C shows them for HTTP, HTTPS, RTSP and FILE.
-        if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
+        if !self.show_headers
+            || !matches!(
+                protocol,
+                Some(Protocol::File | Protocol::Http | Protocol::Https)
+            )
+        {
             return Write::Accepted;
         }
         // An interim response's lines wait for the name too.

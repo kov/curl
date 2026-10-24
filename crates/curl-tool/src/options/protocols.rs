@@ -138,26 +138,29 @@ mod tests {
         msgs
     }
 
-    /// The library speaks `file` and `http`: every other name is unknown,
-    /// as test 322 checks, and a redirect may go to `http` by default.
+    /// The library speaks `file`, `http` and `https`: every other name is
+    /// unknown, as test 322 checks, and a redirect may go to `http` and
+    /// `https` by default.
     #[test]
     fn with_file_and_http() {
         let msgs = quiet();
-        let (file, http) = (Protocols(1), Protocols(2));
-        let both = Protocols(3);
-        assert_eq!(Protocols::all(), both);
-        assert_eq!(Protocols::redirect_default(), http);
+        let (file, http, https) = (Protocols(1), Protocols(2), Protocols(4));
+        let all = Protocols(7);
+        let webs = Protocols(6);
+        assert_eq!(Protocols::all(), all);
+        assert_eq!(Protocols::redirect_default(), webs);
         for (list, want) in [
-            (b"".as_slice(), Ok(both)),
-            (b",,=ALL,", Ok(both)),
-            (b"FILE", Ok(both)),
+            (b"".as_slice(), Ok(all)),
+            (b",,=ALL,", Ok(all)),
+            (b"FILE", Ok(all)),
             (b"=file", Ok(file)),
-            (b"-file", Ok(http)),
-            (b"-file,-HTTP", Err(ParamError::BadUse)),
+            (b"-file", Ok(webs)),
+            (b"-file,-HTTP,-https", Err(ParamError::BadUse)),
             (b"-all,+file", Ok(file)),
             (b"+-http", Err(ParamError::BadUse)),
             (b"=http", Ok(http)),
-            (b"https", Err(ParamError::BadUse)),
+            (b"=https", Ok(https)),
+            (b"ftps", Err(ParamError::BadUse)),
             (b"all,x", Err(ParamError::BadUse)),
             (b"+", Err(ParamError::BadUse)),
         ] {

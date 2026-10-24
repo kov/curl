@@ -1193,7 +1193,7 @@ fn scheme_options_reach_the_transfer() {
         (ffi::CURLOPT_REDIR_PROTOCOLS_STR, c"HTTP", CURLE_OK),
         (
             ffi::CURLOPT_PROTOCOLS_STR,
-            c"https",
+            c"ftps",
             ffi::CURLE_UNSUPPORTED_PROTOCOL,
         ),
         (

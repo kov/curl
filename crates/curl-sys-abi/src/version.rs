@@ -11,6 +11,7 @@ use core::fmt::{self, Write};
 use core::ptr;
 use std::sync::OnceLock;
 
+use curl_core::tls::TlsBackend as _;
 use curl_core::version::{Feature, Library, Protocol, version};
 
 use crate::ffi::{self, CURLVERSION_NOW, CURLversion, curl_version_info_data};
@@ -67,6 +68,7 @@ fn c_protocol(p: Protocol) -> &'static CStr {
     match p {
         Protocol::File => c"file",
         Protocol::Http => c"http",
+        Protocol::Https => c"https",
     }
 }
 
@@ -86,6 +88,7 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
         Feature::Libz => (c"libz", crate::ffi::CURL_VERSION_LIBZ),
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
+        Feature::Ssl => (c"SSL", crate::ffi::CURL_VERSION_SSL),
         Feature::Zstd => (c"zstd", crate::ffi::CURL_VERSION_ZSTD),
     }
 }
@@ -104,6 +107,9 @@ unsafe impl Send for Data {}
 static COMPONENTS: OnceLock<CBuf<300>> = OnceLock::new();
 static VERSION: OnceLock<CBuf<32>> = OnceLock::new();
 static HOST: OnceLock<CBuf<32>> = OnceLock::new();
+static SSL: OnceLock<CBuf<200>> = OnceLock::new();
+static CAINFO: OnceLock<CBuf<4096>> = OnceLock::new();
+static CAPATH: OnceLock<CBuf<4096>> = OnceLock::new();
 static LIBZ: OnceLock<CBuf<32>> = OnceLock::new();
 static BROTLI: OnceLock<CBuf<32>> = OnceLock::new();
 static ZSTD: OnceLock<CBuf<32>> = OnceLock::new();
@@ -134,6 +140,15 @@ fn info() -> &'static curl_version_info_data {
     let r = v.release;
     let version = VERSION.get_or_init(|| cbuf(format_args!("{}", v.version)));
     let host = HOST.get_or_init(|| cbuf(format_args!("{}", v.host)));
+    let ssl = SSL.get_or_init(|| cbuf(format_args!("{}", curl_openssl::version())));
+    // The build's defaults, as C's `CURL_CA_BUNDLE` and `CURL_CA_PATH`.
+    let ca = curl_openssl::OPENSSL.ca_defaults();
+    let cainfo = ca
+        .file
+        .map(|f| CAINFO.get_or_init(|| cbuf(format_args!("{f}"))));
+    let capath = ca
+        .path
+        .map(|p| CAPATH.get_or_init(|| cbuf(format_args!("{p}"))));
     let libz = LIBZ.get_or_init(|| cbuf(format_args!("{}", curl_zlib::version())));
     // Named, as C's `brotli_version` names it.
     let brotli = BROTLI.get_or_init(|| cbuf(format_args!("brotli/{}", curl_brotli::version())));
@@ -148,7 +163,8 @@ fn info() -> &'static curl_version_info_data {
                     | c_uint::from(r.patch),
                 host: host.as_ptr(),
                 features,
-                ssl_version: ptr::null(),
+                ssl_version: ssl.as_ptr(),
+                // Kept at zero, as C keeps it.
                 ssl_version_num: 0,
                 libz_version: libz.as_ptr(),
                 protocols: protocol_names.0.as_ptr(),
@@ -162,8 +178,8 @@ fn info() -> &'static curl_version_info_data {
                 nghttp2_ver_num: 0,
                 nghttp2_version: ptr::null(),
                 quic_version: ptr::null(),
-                cainfo: ptr::null(),
-                capath: ptr::null(),
+                cainfo: cainfo.map_or(ptr::null(), CBuf::as_ptr),
+                capath: capath.map_or(ptr::null(), CBuf::as_ptr),
                 zstd_ver_num: curl_zstd::version_number(),
                 zstd_version: zstd.as_ptr(),
                 hyper_version: ptr::null(),
@@ -180,11 +196,12 @@ pub extern "C" fn curl_version() -> *mut c_char {
     COMPONENTS
         .get_or_init(|| {
             // The libraries linked in, in C's order.
+            let ssl = curl_openssl::version();
             let zlib = Library("zlib", curl_zlib::version());
             let brotli = Library("brotli", curl_brotli::version());
             let zstd = Library("zstd", curl_zstd::version());
             let psl = Library("libpsl", curl_psl::version());
-            let libraries: [&dyn fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
+            let libraries: [&dyn fmt::Display; 5] = [&ssl, &zlib, &brotli, &zstd, &psl];
             cbuf(format_args!("{}", version().components(&libraries)))
         })
         .as_ptr()
@@ -227,8 +244,9 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} zlib/{} brotli/{} zstd/{} libpsl/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libpsl/{}",
             version().version,
+            curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
@@ -247,7 +265,7 @@ mod tests {
     fn protocols_reach_the_c_struct() {
         let want: Vec<_> = version().protocols.iter().map(|p| p.name()).collect();
         assert_eq!(names(info().protocols), want);
-        assert_eq!(want, ["file", "http"]);
+        assert_eq!(want, ["file", "http", "https"]);
     }
 
     /// The features the core reports reach the C struct as bits and as
@@ -267,12 +285,15 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["brotli", "Debug", "HTTPSIG", "IPv6", "libz", "PSL", "zstd"][..],
+                &[
+                    "brotli", "Debug", "HTTPSIG", "IPv6", "libz", "PSL", "SSL", "zstd"
+                ][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_DEBUG
                     | ffi::CURL_VERSION_IPV6
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
+                    | ffi::CURL_VERSION_SSL
                     | ffi::CURL_VERSION_ZSTD
             )
         );
@@ -280,11 +301,12 @@ mod tests {
         assert_eq!(
             (names.as_slice(), info.features),
             (
-                &["brotli", "HTTPSIG", "IPv6", "libz", "PSL", "zstd"][..],
+                &["brotli", "HTTPSIG", "IPv6", "libz", "PSL", "SSL", "zstd"][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_IPV6
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
+                    | ffi::CURL_VERSION_SSL
                     | ffi::CURL_VERSION_ZSTD
             )
         );

@@ -110,6 +110,7 @@ fn proto_bit(p: Protocol) -> c_long {
     match p {
         Protocol::File => ffi::CURLPROTO_FILE,
         Protocol::Http => ffi::CURLPROTO_HTTP,
+        Protocol::Https => ffi::CURLPROTO_HTTPS,
     }
 }
 

@@ -61,9 +61,9 @@ witness: curl-tool keeps_the_remote_time
 file: crates/curl-tool/src/output.rs
 witness: curl-tool includes_headers
 --- old
-        if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
+                Some(Protocol::File | Protocol::Http | Protocol::Https)
 --- new
-        if !self.show_headers || !matches!(protocol, Some(Protocol::Http)) {
+                Some(Protocol::Http | Protocol::Https)
 
 === an upload that cannot be opened is not reported as a transfer
 file: crates/curl-tool/src/operate.rs
@@ -289,9 +289,9 @@ witness: curl-tool dumps_the_headers
 file: crates/curl-tool/src/output.rs
 witness: curl-tool shows_the_headers_of_http
 --- old
-        if !self.show_headers || !matches!(protocol, Some(Protocol::File | Protocol::Http)) {
+                Some(Protocol::File | Protocol::Http | Protocol::Https)
 --- new
-        if !self.show_headers || !matches!(protocol, Some(Protocol::File)) {
+                Some(Protocol::File | Protocol::Https)
 
 === `--max-time` is not given to the transfer
 file: crates/curl-tool/src/operate.rs
@@ -967,9 +967,9 @@ witness: curl-tool options::parse::tests::a_range_is_taken_as_c_takes_it
 file: crates/curl-tool/src/main.rs
 witness: curl-tool tests::names_the_libraries_as_c
 --- old
-        let libraries: [&dyn std::fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
+        let libraries: [&dyn std::fmt::Display; 5] = [&ssl, &zlib, &brotli, &zstd, &psl];
 --- new
-        let libraries: [&dyn std::fmt::Display; 3] = [&zlib, &brotli, &zstd];
+        let libraries: [&dyn std::fmt::Display; 4] = [&ssl, &zlib, &brotli, &zstd];
         let _ = psl;
 
 === %time{}'s microseconds lose their leading zeros

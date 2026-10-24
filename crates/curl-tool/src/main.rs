@@ -218,11 +218,12 @@ pub(crate) struct CurlVersion;
 impl std::fmt::Display for CurlVersion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use curl_core::version::Library;
+        let ssl = curl_openssl::version();
         let zlib = Library("zlib", curl_zlib::version());
         let brotli = Library("brotli", curl_brotli::version());
         let zstd = Library("zstd", curl_zstd::version());
         let psl = Library("libpsl", curl_psl::version());
-        let libraries: [&dyn std::fmt::Display; 4] = [&zlib, &brotli, &zstd, &psl];
+        let libraries: [&dyn std::fmt::Display; 5] = [&ssl, &zlib, &brotli, &zstd, &psl];
         version().components(&libraries).fmt(f)
     }
 }
@@ -302,8 +303,9 @@ mod tests {
     #[test]
     fn names_the_libraries_as_c() {
         let want = format!(
-            "libcurl/{} zlib/{} brotli/{} zstd/{} libpsl/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libpsl/{}",
             version().version,
+            curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),

@@ -1328,7 +1328,7 @@ fn reason(
         (os_errno.map(OsErrno::kind) == Some(std::io::ErrorKind::ConnectionRefused))
             .then_some(Reason::ConnRefused)
     } else if (result.is_ok() || failed_http)
-        && protocol == Some(Protocol::Http)
+        && output::is_http(protocol)
         && matches!(code, Some(408 | 429 | 500 | 502 | 503 | 504 | 522 | 524))
     {
         Some(Reason::Http)
@@ -1482,7 +1482,7 @@ impl Retrying {
 /// may be (`retrycheck`).
 fn answered_resumably(easy: &Easy, resumed_at: u64) -> bool {
     let report = easy.report();
-    if report.protocol() != Some(Protocol::Http) || easy.effective_method() != b"GET" {
+    if !output::is_http(report.protocol()) || easy.effective_method() != b"GET" {
         return false;
     }
     match report.response_code() {
@@ -3131,8 +3131,7 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Brotli, curl_brotli::decoder)
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: Some(&curl_openssl::ED25519),
-        // OpenSSL's TLS comes with its layer.
-        tls: None,
+        tls: Some(&curl_openssl::OPENSSL),
     }
 };
 

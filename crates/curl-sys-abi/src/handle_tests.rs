@@ -886,7 +886,13 @@ fn http_options_reach_the_request() {
         long(c, ffi::CURLOPT_HTTPAUTH, mask(ffi::CURLAUTH_ANY)),
         CURLE_OK
     );
-    assert_eq!(auth(c), M::ANY);
+    // Negotiate only where the build claims SPNEGO, as C strips it.
+    let any = if curl_core::version::version().claims("SPNEGO") {
+        M::ANY
+    } else {
+        M::ANY & !M::NEGOTIATE
+    };
+    assert_eq!(auth(c), any);
     assert_eq!(crate::getinfo::auth_mask(auth(c)), 1 | 2 | 64 | 128);
     let ie = ffi::CURLAUTH_DIGEST_IE | ffi::CURLAUTH_NTLM;
     assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, mask(ie)), CURLE_OK);
@@ -4286,7 +4292,13 @@ fn proxy_credentials_are_decoded_as_in_c() {
         CURLE_OK
     );
     options(c, |o| {
-        assert_eq!(o.proxy.auth.0, curl_core::options::AuthMethods::ANY)
+        use curl_core::options::AuthMethods as M;
+        let any = if curl_core::version::version().claims("SPNEGO") {
+            M::ANY
+        } else {
+            M::ANY & !M::NEGOTIATE
+        };
+        assert_eq!(o.proxy.auth.0, any)
     });
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_PROXYAUTH_AVAIL), 0);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_PROXYAUTH_USED), 0);

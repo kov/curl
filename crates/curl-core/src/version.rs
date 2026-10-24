@@ -134,6 +134,15 @@ pub struct VersionInfo {
 }
 
 impl VersionInfo {
+    /// Whether the build claims the feature `curl -V` lists as `name`,
+    /// as C's tool asks of `curl_version_info` (`feature_spnego`): a
+    /// capability the build lacks has no `Feature` to ask with.
+    pub fn claims(&self, name: &str) -> bool {
+        self.features
+            .iter()
+            .any(|f| f.name().eq_ignore_ascii_case(name))
+    }
+
     /// The library and the libraries it is linked with, as `curl_version`
     /// lists them: `libcurl/8.23.1-DEV zlib/1.3.1`. The core links none of
     /// them itself: what links it names them, in C's order (TLS, zlib,
@@ -213,6 +222,17 @@ mod tests {
         let names: Vec<_> = version().features.iter().map(|f| f.name()).collect();
         assert!(names.contains(&"IPv6"), "{names:?}");
         assert!(names.contains(&"UnixSockets"), "{names:?}");
+    }
+
+    /// A feature is claimed by its name in any case, as C's tool matches
+    /// it; one the build lacks is not.
+    #[test]
+    fn claims_a_listed_feature_by_name() {
+        let v = version();
+        assert!(v.claims("IPv6"));
+        assert!(v.claims("ipv6"));
+        assert!(!v.claims("NTLM"));
+        assert!(!v.claims("IPv"));
     }
 
     #[test]

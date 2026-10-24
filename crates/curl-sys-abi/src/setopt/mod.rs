@@ -103,18 +103,26 @@ unsafe fn string<'a>(p: *mut c_void) -> Result<Option<&'a [u8]>, Refused> {
 }
 
 /// A `CURLAUTH_*` mask as methods (`httpauth`): the legacy Digest bit
-/// read as Digest; NTLM and Negotiate, which this build lacks, left out
-/// as a C build without them leaves them out; any other bit below
-/// `CURLAUTH_ONLY` this build does not implement kept as `OTHER`, and
-/// bits past 32 dropped, as C stores the mask in 32 bits. A mask with no
-/// bit below `CURLAUTH_ONLY` left, but for one of none, is not built in.
-fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMethods, Refused> {
+/// read as Digest; NTLM, which this build lacks, left out as a C build
+/// without it leaves it out, and Negotiate likewise unless the build
+/// claims `spnego`; any other bit below `CURLAUTH_ONLY` this build does
+/// not implement kept as `OTHER`, and bits past 32 dropped, as C stores
+/// the mask in 32 bits. A mask with no bit below `CURLAUTH_ONLY` left,
+/// but for one of none, is not built in.
+fn auth_methods(
+    mask: core::ffi::c_ulong,
+    spnego: bool,
+) -> Result<curl_core::options::AuthMethods, Refused> {
     use curl_core::options::AuthMethods;
     if mask == ffi::CURLAUTH_NONE {
         return Ok(AuthMethods::NONE);
     }
     let digest = ffi::CURLAUTH_DIGEST | ffi::CURLAUTH_DIGEST_IE;
-    let lacking = ffi::CURLAUTH_NTLM | ffi::CURLAUTH_NEGOTIATE;
+    let lacking = if spnego {
+        ffi::CURLAUTH_NTLM
+    } else {
+        ffi::CURLAUTH_NTLM | ffi::CURLAUTH_NEGOTIATE
+    };
     let mut rest = mask & 0x7fff_ffff & !lacking;
     if rest == 0 {
         return Err(Refused::NotBuiltIn);
@@ -123,6 +131,7 @@ fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMeth
     for (bits, method) in [
         (ffi::CURLAUTH_BASIC, AuthMethods::BASIC),
         (digest, AuthMethods::DIGEST),
+        (ffi::CURLAUTH_NEGOTIATE, AuthMethods::NEGOTIATE),
         (ffi::CURLAUTH_BEARER, AuthMethods::BEARER),
         (ffi::CURLAUTH_AWS_SIGV4, AuthMethods::AWS_SIGV4),
         (ffi::CURLAUTH_HTTPSIG, AuthMethods::HTTPSIG),
@@ -139,6 +148,12 @@ fn auth_methods(mask: core::ffi::c_ulong) -> Result<curl_core::options::AuthMeth
         methods = methods | AuthMethods::ONLY;
     }
     Ok(methods)
+}
+
+/// Whether the build claims SPNEGO, which C decides when it is built
+/// (`USE_SPNEGO`).
+fn spnego() -> bool {
+    curl_core::version::version().claims("SPNEGO")
 }
 
 /// The lines of the list at `p`, in order; a node without a string is
@@ -662,7 +677,7 @@ fn apply(
         (ffi::CURLOPT_HTTPAUTH, Long(n)) => {
             // The mask as C reads it, an `unsigned long`.
             options.http.auth =
-                curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong)?);
+                curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong, spnego())?);
         }
         (ffi::CURLOPT_EXPECT_100_TIMEOUT_MS, Long(n)) => {
             // Negative refused, past 65535 taken as it (`value_range`).
@@ -950,7 +965,7 @@ fn apply(
         (ffi::CURLOPT_PROXYAUTH, Long(n)) => {
             // As `CURLOPT_HTTPAUTH`.
             options.proxy.make_mut()?.auth =
-                curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong)?);
+                curl_core::options::HttpAuth(auth_methods(n as core::ffi::c_ulong, spnego())?);
         }
         (ffi::CURLOPT_SOCKS5_AUTH, Long(n)) => {
             options.proxy.make_mut()?.socks5_auth = socks5_auth(n as core::ffi::c_ulong)?;
@@ -1533,6 +1548,32 @@ const _: ffi::proto::curl_easy_setopt = curl_easy_setopt;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Negotiate's bit is a method only where the build claims SPNEGO;
+    /// elsewhere it is dropped as NTLM's is, alone not built in, and
+    /// `CURLAUTH_ANY` holds every method but it (`httpauth`).
+    #[test]
+    fn reads_negotiate_only_where_claimed() {
+        use curl_core::options::AuthMethods as M;
+        let read = |mask, spnego| match auth_methods(mask, spnego) {
+            Ok(m) => Ok(m),
+            Err(Refused::NotBuiltIn) => Err(()),
+            Err(_) => panic!("{mask:#x}: refused otherwise"),
+        };
+        let nego = ffi::CURLAUTH_NEGOTIATE;
+        assert_eq!(read(nego, true), Ok(M::NEGOTIATE));
+        assert_eq!(read(nego, false), Err(()));
+        let basic = ffi::CURLAUTH_BASIC | nego;
+        assert_eq!(read(basic, true), Ok(M::BASIC | M::NEGOTIATE));
+        assert_eq!(read(basic, false), Ok(M::BASIC));
+        assert_eq!(read(ffi::CURLAUTH_ANY, true), Ok(M::ANY));
+        assert_eq!(read(ffi::CURLAUTH_ANY, false), Ok(M::ANY & !M::NEGOTIATE));
+        assert_eq!(
+            read(ffi::CURLAUTH_NTLM, true),
+            Err(()),
+            "NTLM still lacking"
+        );
+    }
 
     /// The generated list is sorted, for the search, and holds the ids C
     /// defines, aliases' targets among them.

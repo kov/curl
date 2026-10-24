@@ -64,3 +64,13 @@ features: debug-hooks
                         if *oid != NTLMSSP_OID {
 --- new
                         if *oid != NTLMSSP_OID || true {
+
+=== the shim keeps Negotiate's bit though the build does not claim SPNEGO
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::reads_negotiate_only_where_claimed
+--- old
+        ffi::CURLAUTH_NTLM | ffi::CURLAUTH_NEGOTIATE
+    };
+--- new
+        ffi::CURLAUTH_NTLM
+    };

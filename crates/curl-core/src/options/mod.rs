@@ -1613,6 +1613,10 @@ impl AuthMethods {
     /// used at once when it is the one method wanted, never with a proxy
     /// (`CURLOPT_HTTPSIG_ALGORITHM`).
     pub const HTTPSIG: AuthMethods = AuthMethods(0x10);
+    /// SPNEGO over GSS-API (`CURLAUTH_NEGOTIATE`). The shim and the tool
+    /// pass it on only where the build claims the `SPNEGO` feature, as C
+    /// strips it from a mask otherwise.
+    pub const NEGOTIATE: AuthMethods = AuthMethods(0x20);
     /// Methods this library does not implement, asked for all the same:
     /// never used, but with one of the others, that one is used only once
     /// a server asks for it, as with `ONLY`.
@@ -1622,7 +1626,7 @@ impl AuthMethods {
     pub const ONLY: AuthMethods = AuthMethods(0x80);
     /// Every method there is, chosen from as a server asks
     /// (`CURLAUTH_ANY`).
-    pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 8 | 0x40 | 0x80);
+    pub const ANY: AuthMethods = AuthMethods(1 | 2 | 4 | 8 | 0x20 | 0x40 | 0x80);
     /// Every method, and the bits beside them: `ANY` and the message
     /// signature, which `CURLAUTH_ANY` leaves out.
     const ALL: AuthMethods = AuthMethods(Self::ANY.0 | Self::HTTPSIG.0);
@@ -1651,6 +1655,7 @@ impl AuthMethods {
             Self::BEARER => "Bearer",
             Self::AWS_SIGV4 => "AWS_SIGV4",
             Self::HTTPSIG => "HTTPSIG",
+            Self::NEGOTIATE => "Negotiate",
             _ => unreachable!("one method: {self:?}"),
         }
     }
@@ -1685,6 +1690,7 @@ impl fmt::Debug for AuthMethods {
             (Self::BEARER, "BEARER"),
             (Self::AWS_SIGV4, "AWS_SIGV4"),
             (Self::HTTPSIG, "HTTPSIG"),
+            (Self::NEGOTIATE, "NEGOTIATE"),
             (Self::OTHER, "OTHER"),
             (Self::ONLY, "ONLY"),
         ];
@@ -2337,6 +2343,8 @@ mod tests {
         assert_eq!(format!("{:?}", A::BASIC | A::OTHER), "{BASIC, OTHER}");
         assert_eq!(format!("{:?}", A::DIGEST | A::ONLY), "{DIGEST, ONLY}");
         assert_eq!(format!("{:?}", A::NONE), "{}");
+        assert!(A::ANY.contains(A::NEGOTIATE), "as `CURLAUTH_ANY` has it");
+        assert_eq!(format!("{:?}", A::NEGOTIATE), "{NEGOTIATE}");
     }
 
     /// Each method is named as its `Authorization` line starts.
@@ -2353,6 +2361,7 @@ mod tests {
             assert_eq!(m.single(), Some(m));
             assert_eq!(m.name(), name);
         }
+        assert_eq!(A::NEGOTIATE.name(), "Negotiate");
     }
 
     /// A source giving one line, numbered by how often it was read.

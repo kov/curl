@@ -64,6 +64,14 @@ exclude_re = [
     # `SSL_OP_ALL`, `SSL_OP_NO_TICKET` and `SSL_OP_NO_COMPRESSION` are
     # disjoint bits, as `ssl.h` defines them.
     'curl-openssl/src/ssl\.rs:.*: replace \| with \^ in Session::step1$',
+    # A memory BIO's data is null only while it holds nothing, and what
+    # it holds is an empty slice either way.
+    'curl-openssl/src/x509\.rs:.*: replace (> with >=|&& with \|\|) in MemBio::bytes$',
+    # `X509_NAME_print_ex` gives the bytes it wrote or -1, and a name
+    # prints none or at least two (`C=`): 1 is never given either.
+    'curl-openssl/src/x509\.rs:.*: delete - in name_line$',
+    # `ASN1_STRING_to_UTF8` allocates whenever it gives a length.
+    'curl-openssl/src/x509\.rs:.*: replace match guard !owned\.is_null\(\) with true in common_name$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

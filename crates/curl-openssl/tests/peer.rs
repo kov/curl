@@ -54,6 +54,8 @@ mod goodbye;
 mod hands;
 #[path = "peer/hello.rs"]
 mod hello;
+#[path = "peer/names.rs"]
+mod names;
 #[path = "peer/status.rs"]
 mod status;
 
@@ -133,6 +135,7 @@ fn main() {
     .chain(goodbye::TESTS.iter().copied())
     .chain(hands::TESTS.iter().copied())
     .chain(hello::TESTS.iter().copied())
+    .chain(names::TESTS.iter().copied())
     .chain(status::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.

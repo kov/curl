@@ -1635,7 +1635,10 @@ pub(crate) enum Closer { System, Hook(Handler<dyn SocketCloser>) }
 - A transfer searches before it adds (`find`, `Curl_cpool_find`), unless the transfer wants a fresh
   connection (`CURLOPT_FRESH_CONNECT`, but for a redirect's request): at most once a second it first prunes
   the idle connections that are not healthy, silently, as C's prune traces to its internal
-  handle; then it takes the first idle connection, in table order, whose route is equal. One
+  handle; then it takes the transfer's last connection if that is idle and serves it, so a
+  transfer sticks to its connection (the `ConnId` its `Run` keeps from its last lease, none at
+  `add`, as C's `last_cpid`), else the first idle connection, in table order, whose route is
+  equal. One
   alive longer than the searching transfer's `max_age` is closed and passed over before its
   health is checked; one idle longer than its `max_idle`, or with anything to read, is closed as
   dead. What the search did comes back as `PoolNote`s, which the transfer traces in

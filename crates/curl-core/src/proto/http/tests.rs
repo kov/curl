@@ -1270,6 +1270,48 @@ fn a_request_is_retried_five_times_at_most() {
     );
 }
 
+/// A transfer that follows a redirect takes its own connection again, not
+/// another idle one lower in the table (`Curl_cpool_find`'s "sticky"
+/// search): as the C library does, A done on #0 and B redirected to the
+/// same host on #1 make B's next request over #1.
+#[test]
+fn a_redirect_goes_over_the_transfer_s_own_connection() {
+    let a = Conversation::replies(&[OK], false);
+    let moved = b"HTTP/1.1 302 Found\r\nLocation: /b\r\nContent-Length: 0\r\n\r\n";
+    let b = Conversation::replies(&[moved, OK], false);
+    // Accepting late, so that both transfers open a connection.
+    let late = Peer::AcceptsAfter(Duration::from_millis(5));
+    let mut m = serving(late, &[&a, &b]);
+    let mut ids = Vec::new();
+    for (path, follow) in [("/a", Follow::No), ("/b0", Follow::All)] {
+        let mut e = Easy::new();
+        let url = format!("http://127.0.0.1:{PORT}{path}");
+        let o = e.options_mut();
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.http.follow = follow;
+        // A request the other connection never answers fails, rather
+        // than the test.
+        o.limits.total = crate::time::TimeLimit::from_millis(10_000);
+        o.callbacks.write = Some(Handler::write(Seen::default()).unwrap());
+        ids.push(m.add(Box::new(e), (), &mut NoEvents).unwrap());
+    }
+    for &id in &ids {
+        assert_eq!(
+            drive_to_completion(&mut m, id, &mut NoEvents).unwrap(),
+            Ok(())
+        );
+    }
+    let b_easy = m.remove(ids[1], &mut NoEvents).unwrap().easy;
+    assert_eq!(b_easy.report().conn_number(), Some(1));
+    let asked = b.received();
+    assert!(
+        fixture::find(&asked, b"GET /b HTTP/1.1").is_some(),
+        "{}",
+        asked.escape_ascii()
+    );
+    m.remove(ids[0], &mut NoEvents).unwrap();
+}
+
 /// A reused connection that closes once a response has begun is not
 /// tried again: what came is all there is.
 #[test]

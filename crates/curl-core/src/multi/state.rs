@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
+use crate::conn::ConnId;
 use crate::conn::chain::{Chain, Head, SetupPoint};
 use crate::conn::io::{Closer, Events, Remote, ResolveFailure, SocketKey};
 use crate::conn::layer::{LayerAnswer, LayerCx, LayerQuery};
@@ -82,6 +83,10 @@ pub(crate) struct Run {
     /// What HTTP's next request takes from the ones before it, kept for
     /// HTTP and not read here.
     http: Inherited,
+    /// The connection the transfer had last, which its next search tries
+    /// first (`state.last_cpid`, `state.last_conn_id`); none at `add`, as
+    /// C forgets it there (`Curl_cpool_xfer_init`).
+    last_conn: Option<ConnId>,
 }
 
 impl Run {
@@ -95,6 +100,7 @@ impl Run {
             method: Method::Get,
             allow_port: true,
             http: Inherited::default(),
+            last_conn: None,
         }
     }
 }
@@ -1310,7 +1316,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
                     schedule_pending(&mut cx.rest);
                     TransferState::Init.fail(kind)
                 }
-                TimeLeft::Remaining(_) | TimeLeft::Unlimited => setup(cx, plan),
+                TimeLeft::Remaining(_) | TimeLeft::Unlimited => setup(run, cx, plan),
             };
             if next.is_completed() {
                 complete(cx, now, true);
@@ -3092,7 +3098,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let target = match target {
         Ok(Some(target)) => target,
         Ok(None) => {
-            let lease = match acquire(cx, &proto, Route::Local) {
+            let lease = match acquire(cx, &proto, Route::Local, &mut run.last_conn) {
                 Ok(Acquired::New(lease)) => lease,
                 Ok(Acquired::Reused(_)) => {
                     unreachable!("a connection without a network is never kept")
@@ -3191,7 +3197,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         // Compared for any protocol, as C compares it (`url_match_auth`).
         delegation: cx.easy().options().login.delegation,
     };
-    setup(cx, Plan { proto, route })
+    setup(run, cx, Plan { proto, route })
 }
 
 /// The peer at the Unix socket the options name, if they name one,
@@ -3435,8 +3441,13 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// A connection for the request (`Curl_connect`): one to set up, or an
 /// idle one to reuse, or none while the multi's limits allow none, the
 /// request waiting for one (`multistate_connect`).
-fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
-    let acquired = acquire(cx, &plan.proto, Route::Tcp(plan.route.clone()));
+fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
+    let acquired = acquire(
+        cx,
+        &plan.proto,
+        Route::Tcp(plan.route.clone()),
+        &mut run.last_conn,
+    );
     if !matches!(acquired, Ok(Acquired::Wait(_))) {
         // One waiting may now find room too.
         schedule_pending(&mut cx.rest);
@@ -3577,10 +3588,13 @@ fn connect_to<H: Host>(
 
 /// A connection for the transfer making `proto`, and the trace of what
 /// the search for one did.
+/// `last` is the transfer's last connection, tried first and then
+/// replaced by the one it gets.
 fn acquire<H: Host>(
     cx: &mut StepCx<'_, H>,
     proto: &ProtoState,
     route: Route,
+    last: &mut Option<ConnId>,
 ) -> Result<Acquired, OutOfMemory> {
     let auth = &cx.easy().auth;
     let wants = match (proto, &route) {
@@ -3612,6 +3626,7 @@ fn acquire<H: Host>(
                 pool::Wanted {
                     route: &route,
                     auth: wants,
+                    last: *last,
                 },
                 rules,
                 exits,
@@ -3653,6 +3668,7 @@ fn acquire<H: Host>(
     // The transfer's connection from now on (`Curl_attach_connection`).
     if let Acquired::Reused(lease) | Acquired::New(lease) = &acquired {
         cx.report_mut().set_conn(Some(lease.number()));
+        *last = Some(lease.id());
     }
     for note in notes {
         match note {

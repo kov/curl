@@ -75,6 +75,9 @@ exclude_re = [
     # With no protocol chosen OpenSSL gives a null pointer and a length
     # of 0, with one neither: either half of the guard decides it.
     'curl-openssl/src/ssl\.rs:.*: replace (> with >=|&& with \|\|) in Session::negotiated$',
+    # A reservation size: a wrong one only makes the pushes grow the
+    # vector.
+    'curl-openssl/src/certinfo\.rs:.*: replace (\* with (\+|/)|\+ with (-|\*)) in hex$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

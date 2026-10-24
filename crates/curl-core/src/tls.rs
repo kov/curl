@@ -177,10 +177,7 @@ pub trait TlsSession: Send {
     /// prefix `tls-server-end-point:` and the hash of the peer's
     /// certificate, or none where the peer showed no certificate or its
     /// signature names no digest. What it has to say goes to `notes`.
-    fn channel_binding(&self, notes: &mut dyn BindingNotes) -> Result<Option<Vec<u8>>, ErrorKind> {
-        let _ = notes;
-        Ok(None)
-    }
+    fn channel_binding(&self, notes: &mut dyn BindingNotes) -> Result<Option<Vec<u8>>, ErrorKind>;
 }
 
 /// What a session says as it makes a channel binding: a line of the

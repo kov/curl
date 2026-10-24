@@ -1521,3 +1521,44 @@ fn a_token_made_empty_leaves_the_connection_bound() {
     assert!(second_reuses(script, &[], |_| {}, denied, as_u, false));
     assert!(!second_reuses(script, &[], |_| {}, denied, as_u, true));
 }
+
+/// A handshake that took a challenge, the server saying nothing of
+/// persistence, persists: the next request goes without a token
+/// (`havemultiplerequests`). Told `Persistent-Auth: false` with the
+/// challenge, the token answering it still goes, the context kept.
+#[test]
+fn a_handshake_of_rounds_persists_unless_told_otherwise() {
+    for told in [false, true] {
+        let (gss, libraries) = scripted();
+        gss.then_token(b"one")
+            .then_token(b"two")
+            .then_token(b"three");
+        let challenge = format!(
+            "HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate {}\r\n{}Content-Length: 0\r\n\r\n",
+            b64(b"C"),
+            if told {
+                "Persistent-Auth: false\r\n"
+            } else {
+                ""
+            }
+        );
+        let talk = Conversation::replies(&[challenge.as_bytes(), OK_200, OK_200], false);
+        let mut m = serving(Peer::Accepts, &[&talk]);
+        let ran = get_with(&mut m, negotiating(libraries), "/a", talk.clone(), |_| {});
+        assert_eq!(ran.result, Ok(()), "{told}");
+        let cleaned =
+            "Curl_output_negotiate, no persistent authentication: cleanup existing context\n";
+        assert!(!text_has(&ran, cleaned), "{told}");
+        let ran = get_with(&mut m, negotiating(libraries), "/b", talk.clone(), |_| {});
+        assert_eq!(ran.result, Ok(()), "{told}");
+        let sent = String::from_utf8(talk.received()).unwrap();
+        let handshake = negotiated_get("/a", b"one") + &negotiated_get("/a", b"two");
+        if told {
+            assert_eq!(sent, handshake + &negotiated_get("/b", b"three"));
+            assert!(text_has(&ran, cleaned));
+        } else {
+            assert_eq!(sent, handshake + &plain_get("/b"), "{told}");
+            assert_eq!(gss.unused(), 1);
+        }
+    }
+}

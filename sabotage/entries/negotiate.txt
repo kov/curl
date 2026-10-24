@@ -193,3 +193,11 @@ witness: curl-core proto::http::tests::negotiate::a_refused_negotiation_unbinds_
 --- new
         if side != Side::Host {
             self.bound = None;
+
+=== a handshake that took a challenge is not counted as one of rounds
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::a_handshake_of_rounds_persists_unless_told_otherwise
+--- old
+        State::Recv if side.challenged => side.rounds = true,
+--- new
+        State::Recv if false => side.rounds = true,

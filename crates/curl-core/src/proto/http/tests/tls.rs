@@ -690,6 +690,13 @@ impl crate::tls::TlsBackend for Saying {
 struct SayingSession;
 
 impl crate::tls::TlsSession for SayingSession {
+    fn channel_binding(
+        &self,
+        _: &mut dyn crate::tls::BindingNotes,
+    ) -> Result<Option<Vec<u8>>, ErrorKind> {
+        Ok(None)
+    }
+
     fn handshake(&mut self, io: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
         io.info(format_args!("SAYING: connected"));
         io.trace(format_args!("handshake done"));

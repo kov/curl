@@ -51,6 +51,15 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # The room reserved for the token's base64: one wrong only makes the
+    # fallible pushes grow the buffer.
+    'curl-core/src/proto/http/negotiate\.rs:.*: replace \* with (\+|/) in output$',
+    # A side is `Recv` only after a challenge was taken, which leaves it
+    # challenged until this output clears it.
+    'curl-core/src/proto/http/negotiate\.rs:.*: replace match guard side\.challenged with true in output$',
+    # The TLS layer is the only one outside the tests: no layer that takes
+    # `Layer`'s default is ever asked for a channel binding.
+    'curl-core/src/conn/layer\.rs:.*: replace Layer::channel_binding -> .*$',
     # The backend's id is part of the session cache's key: with one
     # backend, any id keys every session alike.
     'curl-openssl/src/ssl\.rs:.*: replace <impl core::fmt::Display for Id>::fmt -> core::fmt::Result with Ok\(Default::default\(\)\)$',

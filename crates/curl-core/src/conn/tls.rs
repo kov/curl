@@ -169,6 +169,12 @@ mod tests {
         fn pending(&self) -> bool {
             self.0
         }
+        fn channel_binding(
+            &self,
+            _: &mut dyn crate::tls::BindingNotes,
+        ) -> Result<Option<Vec<u8>>, ErrorKind> {
+            Ok(None)
+        }
     }
 
     /// Bytes are pending, which a poll of the socket cannot see, while the

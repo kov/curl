@@ -467,12 +467,8 @@ fn step<H: Host>(
             side.token = sink.token;
             Ok(())
         }
-        Err(failure) => {
-            if failure.kind == GssFailureKind::NtlmChosen {
-                side.clean();
-            }
-            Err(failed(sink.cx, gss, failure))
-        }
+        // Started over by the caller, whatever failed: NTLM chosen too.
+        Err(failure) => Err(failed(sink.cx, gss, failure)),
     }
 }
 

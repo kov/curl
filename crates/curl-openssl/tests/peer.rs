@@ -578,14 +578,32 @@ fn a_missing_ca_file_fails_as_a_bad_file_twice_said() {
     assert_eq!(anchors, 2, "{:#?}", got.seen.lines);
 }
 
-/// A transfer naming no CA trusts the bundle the build found.
+/// The bundle CMake finds for the C build, the first of its list that
+/// exists, unless the build was told where to look.
+fn cmake_s_bundle() -> Option<String> {
+    if option_env!("CURL_CA_BUNDLE").is_some() || option_env!("CURL_CA_PATH").is_some() {
+        return curl_openssl::OPENSSL.ca_defaults().file.map(str::to_owned);
+    }
+    [
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/usr/share/ssl/certs/ca-bundle.crt",
+        "/usr/local/share/certs/ca-root-nss.crt",
+        "/etc/ssl/cert.pem",
+    ]
+    .into_iter()
+    .find(|b| std::path::Path::new(b).exists())
+    .map(str::to_owned)
+}
+
+/// A transfer naming no CA trusts the bundle the build found, as CMake
+/// finds it for the C build.
 fn no_ca_named_trusts_the_build_s_default() {
     let certs = certs("default", "localhost", &["localhost"]);
     let (at, server) = serve(&certs);
     let got = get("localhost", at, |_| {});
     server.join().unwrap();
-    let default = curl_openssl::OPENSSL.ca_defaults();
-    match default.file {
+    match cmake_s_bundle() {
         Some(file) => assert!(
             said(&got, &format!("  CAfile: {file}")),
             "{:#?}",

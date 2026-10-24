@@ -373,3 +373,32 @@ mod leaks {
         easy.perform().map_err(|e| e.kind())
     }
 }
+
+/// `ERR_GET_LIB` and `ERR_GET_REASON` (`err.h`): a library's error packs
+/// its library in the 8 bits above the 23 of its reason; a system
+/// error, its top bit set, is the system library's, its reason the rest.
+#[test]
+fn an_error_s_library_and_reason_are_as_err_h_unpacks_them() {
+    use crate::ssl::{error_lib, error_reason};
+    // `SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED`, `ERR_LIB_SSL`.
+    assert_eq!(error_lib(0x0A00_045C), 20);
+    assert_eq!(error_reason(0x0A00_045C), 1116);
+    // `ERR_LIB_X509`, a reason of the most bits.
+    assert_eq!(error_lib(0x05FF_FFFF), 11);
+    assert_eq!(error_reason(0x05FF_FFFF), 0x7F_FFFF);
+    // `ERR_LIB_SYS` and its `errno`, beyond the 23 bits.
+    assert_eq!(error_lib(0x8000_0068), 2);
+    assert_eq!(error_reason(0x8000_0068), 104);
+    assert_eq!(error_lib(0x8123_4567), 2);
+    assert_eq!(error_reason(0x8123_4567), 0x0123_4567);
+}
+
+/// The engines a transfer can name are the library's: `dynamic`, which
+/// loads the rest, among them.
+#[test]
+fn the_engines_are_the_library_s() {
+    use curl_core::tls::TlsBackend as _;
+    let engines = crate::OPENSSL.engines().unwrap();
+    assert!(engines.iter().any(|e| e == b"dynamic"), "{engines:?}");
+    assert_eq!(engines, crate::engine::ids().unwrap());
+}

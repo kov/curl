@@ -188,3 +188,11 @@ witness: curl-openssl a_client_certificate_in_der_or_in_memory_is_shown
     if error_lib(err) == ffi::ERR_LIB_PEM && error_reason(err) == ffi::PEM_R_NO_START_LINE {
 --- new
     if error_lib(err) == ffi::ERR_LIB_PEM && error_reason(err) == 0 {
+
+=== a TLS read's failure drops the version C puts before the library's error
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl no_client_certificate_fails_as_the_server_alerts
+--- old
+                            format_args!("OpenSSL SSL_read: {}, errno {errno}", e.versioned()),
+--- new
+                            format_args!("OpenSSL SSL_read: {e}, errno {errno}"),

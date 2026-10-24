@@ -780,7 +780,7 @@ impl TlsSession for Session {
                     let e = ErrText::of(e);
                     io.fail(
                         ErrorKind::SendError,
-                        format_args!("OpenSSL SSL_write: {e}, errno {errno}"),
+                        format_args!("OpenSSL SSL_write: {}, errno {errno}", e.versioned()),
                     );
                 } else if errno != 0 {
                     let why = ErrorText::of_code(errno);
@@ -858,7 +858,7 @@ impl Session {
                         let e = ErrText::of(e);
                         io.fail(
                             ErrorKind::RecvError,
-                            format_args!("OpenSSL SSL_read: {e}, errno {errno}"),
+                            format_args!("OpenSSL SSL_read: {}, errno {errno}", e.versioned()),
                         );
                     } else if errno != 0 && err == openssl_sys::SSL_ERROR_SYSCALL {
                         let why = ErrorText::of_code(errno);

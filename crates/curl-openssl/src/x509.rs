@@ -909,6 +909,26 @@ impl ErrText {
         // SAFETY: the thread's error queue.
         ErrText::of(unsafe { openssl_sys::ERR_get_error() })
     }
+
+    /// The text with the version and `: ` C puts before it, as the
+    /// failures that print C's whole buffer show it (`SSL_read` and
+    /// `SSL_write`'s).
+    pub(crate) fn versioned(&self) -> Versioned<'_> {
+        Versioned(self)
+    }
+}
+
+/// An `ErrText` after the library's version, as `ossl_strerror` leaves
+/// its buffer.
+pub(crate) struct Versioned<'a>(&'a ErrText);
+
+impl fmt::Display for Versioned<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if crate::sys::version_len() < self.0.buf.len() - 2 {
+            write!(f, "OpenSSL/{}: ", crate::sys::version_text())?;
+        }
+        fmt::Display::fmt(self.0, f)
+    }
 }
 
 impl fmt::Display for ErrText {

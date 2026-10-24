@@ -28,6 +28,10 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
         an_encrypted_key_is_read_with_the_password,
     ),
     (
+        "no_client_certificate_fails_as_the_server_alerts",
+        no_client_certificate_fails_as_the_server_alerts,
+    ),
+    (
         "a_certificate_or_key_that_cannot_be_used_fails_as_c_says",
         a_certificate_or_key_that_cannot_be_used_fails_as_c_says,
     ),
@@ -295,4 +299,26 @@ fn a_certificate_or_key_that_cannot_be_used_fails_as_c_says() {
         assert_eq!(got.result, Err(kind), "{failure}");
         assert_eq!(String::from_utf8(got.failure).unwrap(), failure);
     }
+}
+
+/// Without a certificate, the server's alert ends the transfer once the
+/// request is sent (TLS 1.3 ends the handshake before the server checks):
+/// the failure reads as C's, the library's version before its error, as
+/// `ossl_strerror` leaves its buffer.
+fn no_client_certificate_fails_as_the_server_alerts() {
+    let certs = certs("mtls-none", "localhost", &["localhost"]);
+    let client = client("mtls-none");
+    let (at, server) = serve_asking(&certs, &client);
+    let got = get("localhost", at, trusting(&certs));
+    server.join().unwrap();
+    let failure = String::from_utf8(got.failure).unwrap();
+    let version = openssl::version::version().split(' ').nth(1).unwrap();
+    assert_eq!(got.result, Err(ErrorKind::RecvError), "{failure}");
+    assert_eq!(
+        failure,
+        format!(
+            "OpenSSL SSL_read: OpenSSL/{version}: error:0A00045C:SSL routines::tlsv13 alert \
+             certificate required, errno 0"
+        )
+    );
 }

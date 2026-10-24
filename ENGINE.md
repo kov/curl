@@ -1977,7 +1977,10 @@ close_notify, and from the cleanup's pass for a connection still kept.
 82, `SslIssuerError` 83, the engine's 53, 54 and 66, `RecvError` 56 and `SendError` 55 from TLS
 I/O, `OperationTimedout` 28 for a handshake past the connect limit. They come as C's do: a
 server that wants a client certificate the client lacks fails the first send, not the
-handshake, under TLS 1.3 (`OpenSSL SSL_write: … Connection reset by peer, errno 104`, 55), and
+handshake, under TLS 1.3 (`OpenSSL SSL_write: … Connection reset by peer, errno 104`, 55, or
+`OpenSSL SSL_read: OpenSSL/3.5.9: error:0A00045C:…certificate required`, 56, when the alert is
+read first: the failures `SSL_read` and `SSL_write` raise print `ossl_strerror`'s whole buffer,
+the version before the error), and
 OpenSSL 3.5 loads `--engine` as a provider (`Failed to initialize provider: …`, 53; `--engine
 list` lists `dynamic`).
 

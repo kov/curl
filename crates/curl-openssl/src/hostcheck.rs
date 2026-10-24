@@ -72,4 +72,20 @@ mod tests {
             assert!(!names(pattern, host), "{pattern:?} for {host:?}");
         }
     }
+
+    /// A pattern of two bytes is never taken as a plain name, wildcard or
+    /// not (`hostmatch`'s `patternlen > 2`): an address, or a host that
+    /// starts with a dot, matches none, even the same.
+    #[test]
+    fn a_two_byte_pattern_names_no_address_or_dotted_host() {
+        for (pattern, host, matches) in [
+            (&b"::"[..], &b"::"[..], false),
+            (b".a", b".a", false),
+            (b"ab", b"ab", true),
+            (b"AB", b"ab", true),
+            (b"::1", b"::1", true),
+        ] {
+            assert_eq!(names(pattern, host), matches, "{pattern:?} for {host:?}");
+        }
+    }
 }

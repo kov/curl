@@ -289,6 +289,35 @@ fn a_kept_connection_is_left_intact() {
     );
 }
 
+/// A 101 nothing asked to upgrade to is the final response, and all that
+/// follows it, until the connection closes, its body, whatever its headers
+/// say; to a request sent as HTTP/1.0 it is refused once its head is
+/// delivered. Both as the C tool ends them (`http_on_101_upgrade`).
+#[test]
+fn a_switch_nothing_asked_for_is_the_response() {
+    let reply = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\nContent-Length: 2\r\n\r\nhello";
+    let ran = run("/", reply, true, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"hello");
+    assert_eq!(ran.easy.report().response_code(), Some(101));
+    // Its lines are a 1xx's, as C writes them (`CLIENTWRITE_1XX`).
+    assert_eq!(
+        ran.seen.of("interim").concat(),
+        b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\nContent-Length: 2\r\n\r\n"
+    );
+
+    let ran = run("/", reply, true, |o| {
+        o.http.version = crate::options::HttpVersion::Http10;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::WeirdServerReply));
+    assert_eq!(
+        ran.easy.report().failure(),
+        Some(&b"server sent 101 response while not talking HTTP/1.1"[..])
+    );
+    assert_eq!(ran.seen.body(), b"");
+    assert_eq!(ran.seen.of("interim").len(), 4, "the head is delivered");
+}
+
 /// The ways a response can end, each as the C tool showed.
 #[test]
 fn responses_end_as_c_ends_them() {

@@ -448,9 +448,12 @@ impl<H: Host> Multi<H> {
             running, current, ..
         } = self.counts.get();
         let total = current + 1;
+        // C's internal handle holds mid 0. A table that keeps its first
+        // row for it (the C ABI's) numbers its rows as C does; one that
+        // does not starts a row lower.
+        let mid = id.index() + u32::from(self.slots.reserved() == 0);
         let now = self.clock.now();
         let mut cx = StepCx::new(id, self.rest(now, ev));
-        let mid = id.index() + 1;
         mstate::trace(
             &mut cx,
             format_args!("{what} multi, mid={mid}, running={running}, total={total}"),

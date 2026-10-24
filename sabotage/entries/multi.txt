@@ -732,3 +732,11 @@ witness: curl-core multi::tests::a_transfer_let_out_of_pending_is_in_connect_at_
         mstate::enter(&mut cx, MState::Connect);
 --- new
         let _ = id;
+
+=== a table keeping its first row for C's internal handle numbers its transfers one too high
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::transfers_are_numbered_as_c_numbers_them
+--- old
+        let mid = id.index() + u32::from(self.slots.reserved() == 0);
+--- new
+        let mid = id.index() + 1;

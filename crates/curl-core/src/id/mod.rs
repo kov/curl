@@ -248,6 +248,11 @@ impl<T, K> Arena<T, K> {
         })
     }
 
+    /// The rows at the start never handed out.
+    pub fn reserved(&self) -> u32 {
+        self.reserved
+    }
+
     /// The number of values.
     pub fn len(&self) -> u32 {
         self.used - self.reserved

@@ -679,17 +679,14 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     `--fail-early`, `--rate`; `--disallow-username-in-url`, `--speed-limit`, `--speed-time`
     and `--create-file-mode` wired to what the core has; `--retry-connrefused`; the deprecated
     `--random-file` and `--egd-file` as C's no-ops. The socket options are step 40k's.
-46. **The tool's larger pieces:** `--libcurl` (`tool_easysrc.c`: the C program a command line
-    amounts to; 1400–1404, 1465, 1687 and the other `--libcurl` tests), `--manual` (the
-    built-in manual, `tool_hugehelp.c`: 1708, and the hint C's error messages end with),
-    `--xattr` (644, 687, 688), and `--parallel` (the tool driving a multi handle; 496). After
-    step 40: `--interface` and `--local-port` (a bind before the connect: 1045, 1046,
-    1082–1085) and `--unix-socket` and `--abstract-unix-socket` (a connect that is not TCP:
-    1268, 1435, 1436). The options still refused that need neither TLS nor a missing
-    protocol: `-T .` (uploading standard input without blocking, 1498), `--test-duphandle`,
-    `--socks5-basic` and `--socks5-gssapi` (wired to the SOCKS5 methods), `--crlf`,
-    `--doh-url` (2101) and the `--dns-*` options (c-ares). Done: `-H @file`,
-    `--etag-compare` and `--etag-save`.
+46. **The tool's larger pieces.** **Done**, but for `--doh-url` (2101), the `--dns-*` options
+    (c-ares), and the `--libcurl` output 1481 and 1679 expect of a TLS build. Built:
+    `--libcurl` (`tool_easysrc.c`: 1400–1404, 1465, 1687), `--manual` (`tool_hugehelp.c`: 1708,
+    and the hint C's error messages end with), `--xattr` (644, 687, 688), `--parallel` (496);
+    `--interface` and `--local-port`, bound before the connect (1045, 1046, 1082–1085);
+    `--unix-socket` and `--abstract-unix-socket` (1268, 1435, 1436, 1467, 1468, 1470); `-T .`
+    (1498), `--test-duphandle`, `--socks5-basic` and `--socks5-gssapi`, `--crlf` (3320, 3321),
+    `-H @file`, `--etag-compare` and `--etag-save`.
 
 After this milestone: **a corpus of real command lines**, as compatibility guidance. Some
 thousands of curl invocations sampled from public shell scripts, Dockerfiles, CI configurations

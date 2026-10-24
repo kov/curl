@@ -3031,11 +3031,11 @@ Each is either unobservable through the ABI or a fixed bug:
 | request head | once, measured before it is written | 1 MiB → TooLarge |
 | `Conn` receive buffer, head parser line | grows to the largest read and line | BUFFERSIZE, 100 KiB |
 | trace lines, polling | none: stack buffers; a poll of one socket or of none makes no list | — |
-| the TLS options (`Cold<TlsOptions>`; the SSL_CTX handler among them, and the proxy's in `Cold<Proxy>`, planned) | the first setopt of one | one group per handle |
+| the TLS options (`Cold<TlsOptions>`; the SSL_CTX handler among them, and the proxy's in `Cold<Proxy>`) | the first setopt of one | one group per handle |
 | a route's `TlsIdentity` | the leg's route, for a TLS route | one per leg, shared with the connection it makes |
 | a TLS layer (`TlsLayer` and the library's session), the layer stack, the handshake's marker | the handshake's start | one per TLS layer; OpenSSL's own memory is libc's, uncounted |
 | the multi's `TlsShared` and the library's state boxed in it (OpenSSL's: the kept store, the identity it was loaded for shared) | the multi's first TLS session; the state at its first store set up | one per multi |
-| planned: session cache entries | a ticket kept | 25 peers × 2 tickets (3 peers for `perform`'s multi) |
+| session cache entries | a ticket kept | 25 peers × 2 tickets (3 peers for `perform`'s multi) |
 
 Nothing allocates per chunk. Peer-sized reservations happen after the limit check, so a hostile
 peer gets a protocol error, not an out-of-memory one.
@@ -3064,26 +3064,40 @@ peer gets a protocol error, not an out-of-memory one.
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - The core's own part of an HTTPS GET is pinned over the fake TLS library
-  (`HTTPS_FAKE_GET_BUDGET`, 54): the plain GET's 46, then the route's `TlsIdentity` (shared with
+  (`HTTPS_FAKE_GET_BUDGET`, 55): the plain GET's 46, then the route's `TlsIdentity` (shared with
   the connection), the handshake under way, the library's session (the fake's one box), its
-  layer, the stream's layer stack and its list, and the multi's `TlsShared` with the fake's state
-  in its box. The same GET is run with each allocation
-  refused in turn and alone; its server says goodbye back at once, so the connection's shutdown,
-  as the multi goes, finishes in its one try and joins no set. `GET_BUDGET` stays 46: a plain
-  GET makes no TLS group, identity or layer.
-- An HTTPS GET over OpenSSL is pinned against the same GET over plain HTTP in
-  `crates/curl-openssl/tests/peer.rs` (`HTTPS_GET_EXTRA`, 12), as the core cannot depend on the
-  binding: the route's `TlsIdentity` and the CA file's copy in it, the handshake's marker, the
-  layer, the stack's box and list, the session's box and its copy of the host name, and the host
-  name and CA file ended by a zero byte for OpenSSL, freed as the calls return, and the multi's
-  `TlsShared` and the box of OpenSSL's CA store cache in it. OpenSSL's own allocations are libc's,
-  not counted, as C's tracker does not count them. The ALPN list and trace text are on the
-  stack. Planned: the session tickets kept.
+  layer, the stream's layer stack and its list, the multi's `TlsShared` with the fake's state
+  in its box, and the key the connection's sessions are kept by. The same GET is run with each
+  allocation refused in turn and alone; its server says goodbye back at once, so the
+  connection's shutdown, as the multi goes, finishes in its one try and joins no set.
+  `GET_BUDGET` stays 46: a plain GET makes no TLS group, identity or layer.
+- Over OpenSSL, `crates/curl-openssl/tests/peer.rs` pins three, as the core cannot depend on
+  the binding; OpenSSL's own allocations are libc's, not counted, as C's tracker does not count
+  them, and the ALPN list and trace text are on the stack:
+  - an HTTPS GET against the same GET over plain HTTP (`HTTPS_GET_EXTRA`, 18): the route's
+    `TlsIdentity` and the CA file's copy in it, the layer, the stack's box and list, the
+    handshake's marker, the session's box and its copy of the host name, the host name and CA
+    file ended by a zero byte for OpenSSL, freed as the calls return, the multi's `TlsShared`
+    and the box of OpenSSL's CA store cache in it, the key the connection's sessions are kept
+    by, and, as the server's two TLS 1.3 tickets arrive, the multi's session cache: its slots,
+    the slot's copy of the key and its list, and each ticket's DER;
+  - a GET through an HTTPS proxy against the same through an HTTP proxy
+    (`HTTPS_PROXY_GET_EXTRA`, 19): the 18, to the proxy, and the proxy route's cold part that
+    holds the proxy's identity;
+  - a second HTTPS GET in the multi, resuming the first's ticket on a new connection, against
+    the first (`RESUMED_GET_FEWER`, 16 fewer): the multi's, the DNS cache's, the CA store's and
+    the session cache's first-time allocations are not made again, the CA file is not read
+    again, and a resumed session is given one ticket, not two; its TLS layer costs the first's.
+  The same file's torture scenario refuses each allocation of a verified HTTPS GET with a
+  pinned key's file, a client certificate, a CRL and the chain reported, with the rest and
+  alone: every run fails (or, alone, succeeds whole where C lets that allocation fail, a
+  ticket's copy for the cache) and leaves nothing allocated.
 - Test 1's 140-allocation and 136000-byte limit is whole-process (argv, option parsing, output
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.
 - `runtests.pl -t` over the milestone's tests checks the same at process level, against a torture
-  run of the C build.
+  run of the C build. The C build's libtests write no memdump, so it finds nothing to refuse in
+  them; the Rust leg's libtests are tortured all the same.
 
 ### 8.3 Fakes and test ports
 

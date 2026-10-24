@@ -147,6 +147,14 @@ fn main() {
             "an_https_get_stays_within_its_allocation_budget",
             an_https_get_stays_within_its_allocation_budget,
         ),
+        (
+            "a_get_through_an_https_proxy_stays_within_its_allocation_budget",
+            a_get_through_an_https_proxy_stays_within_its_allocation_budget,
+        ),
+        (
+            "a_resumed_get_stays_within_its_allocation_budget",
+            a_resumed_get_stays_within_its_allocation_budget,
+        ),
     ]
     .into_iter()
     .chain(checks::TESTS.iter().copied())
@@ -995,5 +1003,139 @@ fn an_https_get_stays_within_its_allocation_budget() {
         n <= base + HTTPS_GET_EXTRA,
         "an HTTPS GET over OpenSSL made {n} allocations, over the plain GET's {base} \
          and its {HTTPS_GET_EXTRA}"
+    );
+}
+
+/// The options of a GET counted for a budget: no trace, and `ca` the CA
+/// file of the origin and of the proxy, whether or not either is TLS, so
+/// that the counts compared copy the same options.
+fn counted(o: &mut Options, ca: &[u8]) {
+    o.tls.options.make_mut().unwrap().ca_file = CaSetting::Given(ca.to_vec());
+    o.callbacks.debug = None;
+    o.output.verbose = false;
+}
+
+/// A GET of plain HTTP's `/` through the proxy at `proxy`, by `scheme`,
+/// its CA file `ca`.
+fn proxied_get(scheme: &str, proxy: SocketAddr, ca: &[u8]) -> (Got, u64) {
+    let url = track::untracked(|| format!("{scheme}://localhost:{}", proxy.port()).into_bytes());
+    let ca = track::untracked(|| ca.to_vec());
+    track::count_allocations(|| {
+        get_scheme("http", "localhost", proxy, |o| {
+            counted(o, &ca);
+            let p = o.proxy.make_mut().unwrap();
+            p.url = Some(url);
+            p.no_proxy = Some(Vec::new());
+            p.tls.options.make_mut().unwrap().ca_file = CaSetting::Given(ca);
+        })
+    })
+}
+
+/// What a GET through an HTTPS proxy allocates beyond the same GET
+/// through an HTTP proxy: what an HTTPS GET's TLS layer to its origin
+/// allocates (`HTTPS_GET_EXTRA`, 18), here to the proxy, and the proxy
+/// route's cold part holding the proxy's TLS identity.
+const HTTPS_PROXY_GET_EXTRA: u64 = HTTPS_GET_EXTRA + 1;
+
+fn a_get_through_an_https_proxy_stays_within_its_allocation_budget() {
+    let (at, server) = serve_plain();
+    let (got, base) = proxied_get("http", at, b"/unused/ca.pem");
+    server.join().unwrap();
+    assert_eq!(got.result, Ok(()));
+    let certs = certs("proxybudget", "localhost", &["localhost"]);
+    let ca = track::untracked(|| certs.ca_file.to_str().unwrap().as_bytes().to_vec());
+    let (at, server) = serve(&certs);
+    let (got, n) = proxied_get("https", at, &ca);
+    let request = server.join().unwrap();
+    assert_eq!(got.result, Ok(()));
+    assert!(request.starts_with(b"GET http://localhost:"), "{request:?}");
+    track::untracked(|| {
+        eprintln!(
+            "budget: a GET through an HTTPS proxy made {n} allocations, through an HTTP one {base}"
+        );
+    });
+    assert!(
+        n <= base + HTTPS_PROXY_GET_EXTRA,
+        "a GET through an HTTPS proxy made {n} allocations, over the HTTP proxy's {base} \
+         and its {HTTPS_PROXY_GET_EXTRA}"
+    );
+}
+
+/// How many fewer allocations a second HTTPS GET in a multi makes than
+/// the first, resuming the first's TLS 1.3 ticket on a connection of its
+/// own: the multi's timers, schedule and notice list, made once (4); the
+/// answer for the host, kept in the DNS cache (its name, its addresses,
+/// the answer shared, the cache's table) (4); the transfer's id in the
+/// table, grown once (1); the multi's `TlsShared` and the box of the CA
+/// store cache in it (2), and the CA file ended by a zero byte, as the
+/// kept store is not loaded again (1); the session cache's slots, the
+/// slot's copy of the key and its list of sessions, there already (3);
+/// and one ticket's DER of the two, as a resumed session is given one.
+/// Its TLS layer is the first's: the identity, the session's box and the
+/// host name's copy, the layer and the stack's box and list, the
+/// handshake's marker, the host name ended by a zero byte for SNI and the
+/// key its sessions are kept by.
+const RESUMED_GET_FEWER: u64 = 16;
+
+fn a_resumed_get_stays_within_its_allocation_budget() {
+    let certs = certs("resumebudget", "localhost", &["localhost"]);
+    let ca = track::untracked(|| certs.ca_file.to_str().unwrap().as_bytes().to_vec());
+    let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+    acceptor.set_private_key(&certs.key).unwrap();
+    acceptor.set_certificate(&certs.cert).unwrap();
+    let acceptor = acceptor.build();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let mut reused = Vec::new();
+        for _ in 0..2 {
+            let (tcp, _) = listener.accept().unwrap();
+            let mut tls = acceptor.accept(tcp).unwrap();
+            reused.push(tls.ssl().session_reused());
+            let mut got = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                match tls.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => got.extend_from_slice(&buf[..n]),
+                }
+            }
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", BODY.len());
+            tls.write_all(head.as_bytes()).unwrap();
+            tls.write_all(BODY).unwrap();
+            let _ = tls.shutdown();
+        }
+        reused
+    });
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let counted_get = |m: &mut Multi| {
+        let ca = track::untracked(|| ca.clone());
+        track::count_allocations(|| {
+            get_in(
+                m,
+                "https",
+                "localhost",
+                at,
+                |o| {
+                    counted(o, &ca);
+                    // Each on a connection of its own.
+                    o.limits.reuse.forbid = true;
+                },
+                false,
+            )
+        })
+    };
+    let (one, first) = counted_get(&mut m);
+    let (two, second) = counted_get(&mut m);
+    assert_eq!(server.join().unwrap(), [false, true], "the second resumes");
+    assert_eq!(one.result, Ok(()));
+    assert_eq!(two.result, Ok(()));
+    track::untracked(|| {
+        eprintln!("budget: a resumed HTTPS GET made {second} allocations, the first {first}");
+    });
+    assert!(
+        second + RESUMED_GET_FEWER <= first,
+        "a resumed HTTPS GET made {second} allocations, over the first's {first} \
+         less its {RESUMED_GET_FEWER}"
     );
 }

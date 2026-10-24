@@ -1,9 +1,9 @@
 //! The client's certificate and key, loaded into the session's context
 //! as openssl.c's `client_cert` loads them: PEM (a chain), DER, PKCS#12,
 //! from a file or from memory, the key from its own file or the
-//! certificate's, a password handed to OpenSSL by `passwd_callback`; a
-//! certificate or key of an engine or a provider is refused as C refuses
-//! it when none is set.
+//! certificate's, a password handed to OpenSSL by `passwd_callback`; or
+//! a certificate or key of the session's engine or from its provider's
+//! store, refused as C refuses it when none is set.
 
 #![allow(unsafe_code)]
 
@@ -421,13 +421,13 @@ fn pkcs12_use(
 /// (`engineload`, `enginecheck`, `providerload`, `providercheck`). With
 /// none of that kind selected, a PKCS#11 URI selects `pkcs11` as C does,
 /// kept for the session if it had nothing selected. A provider's store
-/// is read; loading from an engine is not built (no engine this build
-/// meets can start), said as C's build without engines says it.
+/// is read; an engine is asked, a key with `password`, a C string.
 fn from_crypto(
     ctx: NonNull<SSL_CTX>,
     kind: FileType,
     wanted: Wanted,
     file: Option<&[u8]>,
+    password: Option<&Vec<u8>>,
     crypto: &mut Crypto,
     io: &mut TlsIo<'_>,
 ) -> Result<(), ErrorKind> {
@@ -472,8 +472,10 @@ fn from_crypto(
             format_args!("crypto {short} not set, cannot load {what}"),
         ));
     }
-    match (engine, file) {
-        (false, Some(uri)) => using.use_from_store(ctx, uri, wanted, io),
+    match (engine, wanted, file) {
+        (true, Wanted::Certificate, Some(id)) => using.certificate_from_engine(ctx, id, io),
+        (true, Wanted::PrivateKey, id) => using.key_from_engine(ctx, id, password, io),
+        (false, _, Some(uri)) => using.use_from_store(ctx, uri, wanted, io),
         _ => Err(io.fail(
             ErrorKind::SslCertproblem,
             format_args!("SSL_FILETYPE_{name} not supported for {what}"),
@@ -571,7 +573,15 @@ pub(crate) fn client_cert(
             let Some(file) = cert_file else {
                 return Err(ErrorKind::SslCertproblem);
             };
-            from_crypto(ctx, k, Wanted::Certificate, Some(file), crypto, io)?;
+            from_crypto(
+                ctx,
+                k,
+                Wanted::Certificate,
+                Some(file),
+                password,
+                crypto,
+                io,
+            )?;
         }
         Some(FileType::Pkcs12) => {
             pkcs12_load(ctx, cert_blob, cert_file, password, io)?;
@@ -627,7 +637,7 @@ pub(crate) fn client_cert(
             }
         }
         Some(k @ (FileType::Engine | FileType::Provider)) => {
-            from_crypto(ctx, k, Wanted::PrivateKey, key_file, crypto, io)?;
+            from_crypto(ctx, k, Wanted::PrivateKey, key_file, password, crypto, io)?;
         }
         Some(FileType::Pkcs12) => {
             if !pkcs12_done {

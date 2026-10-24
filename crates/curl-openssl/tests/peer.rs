@@ -88,6 +88,12 @@ fn main() {
     // Removed however the run ends but by an abort: a failing test's
     // panic unwinds out of `main` past it.
     let _certs = CertsDir;
+    if std::env::var_os(engine::CHILD).is_some() {
+        track::untracked(|| print!("engine_child ... "));
+        engine::engine_child();
+        track::untracked(|| println!("ok"));
+        return;
+    }
     for (name, test) in [
         (
             "a_verified_get_reads_the_body",

@@ -1998,11 +1998,14 @@ made again only when the chain differs; the tool asks for it whenever `-w` is gi
 `name[:properties]` loaded into a library context of the session's own with `base` beside it
 (53 if it cannot be; 43 for no name or one over 128), the context then made in it
 (`SSL_CTX_new_ex`) and no store kept for the multi (`USING_PROVIDER`); an engine is made the
-default for every algorithm when asked (54). OpenSSL 3.5 has no engine but `dynamic`, which
-will not start, so `--engine` names a provider in practice. A `PROV` certificate or key is read
-from the provider's store (`providerload`, `providercheck`), a PKCS#11 URI selecting `pkcs11`
-when none is; loading from an engine (`engineload`, `enginecheck`) is not built and says so
-as C's build without engines does. `CURLINFO_SSL_ENGINES` and the tool's `--engine list` list
+default for every algorithm when asked (54). OpenSSL 3.5's engines (`afalg`, `loader_attic`,
+and any `OPENSSL_ENGINES` holds) are found by id; `dynamic` will not start. A `PROV`
+certificate or key is read from the provider's store (`providerload`, `providercheck`), a
+PKCS#11 URI selecting `pkcs11` when none is; an `ENG` certificate is the engine's
+`LOAD_CERT_CTRL` command's (`engineload`) and an `ENG` key `ENGINE_load_private_key`'s
+(`enginecheck`), its prompt for the default password answered with the key's password by a UI
+method of C's (`ssl_ui_reader`, `ssl_ui_writer`). The peer tests build an engine of that kind
+(`tests/peer/curltest_engine.c`). `CURLINFO_SSL_ENGINES` and the tool's `--engine list` list
 the library's engines, once it is initialised.
 
 **The issuer and the stapled status** follow the verify result, as in `Curl_ossl_check_peer_cert`.

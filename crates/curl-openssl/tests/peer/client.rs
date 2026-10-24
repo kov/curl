@@ -64,7 +64,7 @@ pub(crate) struct Client {
     cert_der: PathBuf,
     pub(crate) key_pem: PathBuf,
     key_der: PathBuf,
-    key_enc: PathBuf,
+    pub(crate) key_enc: PathBuf,
     both: PathBuf,
     p12: PathBuf,
     /// The CA the server checks the client against.

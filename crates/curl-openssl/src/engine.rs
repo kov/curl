@@ -7,7 +7,7 @@
 
 #![allow(unsafe_code)]
 
-use core::ffi::{c_char, c_int, c_uint, c_void};
+use core::ffi::{c_char, c_int, c_long, c_uint, c_void};
 use core::ptr::{self, NonNull};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
@@ -53,13 +53,72 @@ unsafe extern "C" {
     fn OSSL_STORE_INFO_get1_PKEY(info: *const StoreInfo) -> *mut EVP_PKEY;
     fn OSSL_STORE_INFO_free(info: *mut StoreInfo);
     fn UI_OpenSSL() -> *mut UiMethod;
+    fn ENGINE_ctrl(
+        e: *mut ENGINE,
+        cmd: c_int,
+        i: c_long,
+        p: *mut c_void,
+        f: Option<unsafe extern "C" fn()>,
+    ) -> c_int;
+    fn ENGINE_ctrl_cmd(
+        e: *mut ENGINE,
+        cmd_name: *const c_char,
+        i: c_long,
+        p: *mut c_void,
+        f: Option<unsafe extern "C" fn()>,
+        cmd_optional: c_int,
+    ) -> c_int;
+    fn ENGINE_load_private_key(
+        e: *mut ENGINE,
+        key_id: *const c_char,
+        ui_method: *mut UiMethod,
+        callback_data: *mut c_void,
+    ) -> *mut EVP_PKEY;
+    fn UI_create_method(name: *const c_char) -> *mut UiMethod;
+    fn UI_destroy_method(ui_method: *mut UiMethod);
+    fn UI_method_set_opener(method: *mut UiMethod, opener: Option<UiFn>) -> c_int;
+    fn UI_method_set_closer(method: *mut UiMethod, closer: Option<UiFn>) -> c_int;
+    fn UI_method_set_reader(method: *mut UiMethod, reader: Option<UiStringFn>) -> c_int;
+    fn UI_method_set_writer(method: *mut UiMethod, writer: Option<UiStringFn>) -> c_int;
+    fn UI_method_get_opener(method: *const UiMethod) -> Option<UiFn>;
+    fn UI_method_get_closer(method: *const UiMethod) -> Option<UiFn>;
+    fn UI_method_get_reader(method: *const UiMethod) -> Option<UiStringFn>;
+    fn UI_method_get_writer(method: *const UiMethod) -> Option<UiStringFn>;
+    fn UI_get_string_type(uis: *mut UiString) -> c_int;
+    fn UI_get_input_flags(uis: *mut UiString) -> c_int;
+    fn UI_get0_user_data(ui: *mut Ui) -> *mut c_void;
+    fn UI_set_result(ui: *mut Ui, uis: *mut UiString, result: *const c_char) -> c_int;
 }
 
-/// `OSSL_STORE_CTX`, `OSSL_STORE_INFO` and `UI_METHOD`, only ever pointed
-/// to.
+/// A UI method's opener and closer, and its reader and writer (`ui.h`).
+type UiFn = unsafe extern "C" fn(*mut Ui) -> c_int;
+type UiStringFn = unsafe extern "C" fn(*mut Ui, *mut UiString) -> c_int;
+
+/// `OSSL_STORE_CTX`, `OSSL_STORE_INFO`, `UI_METHOD`, `UI` and
+/// `UI_STRING`, only ever pointed to.
 enum StoreCtx {}
 enum StoreInfo {}
 enum UiMethod {}
+enum Ui {}
+enum UiString {}
+
+/// `UIT_PROMPT`, `UIT_VERIFY` (`ui.h`'s `enum UI_string_types`) and
+/// `UI_INPUT_FLAG_DEFAULT_PWD`.
+const UIT_PROMPT: c_int = 1;
+const UIT_VERIFY: c_int = 2;
+const UI_INPUT_FLAG_DEFAULT_PWD: c_int = 0x02;
+
+/// `ENGINE_CTRL_GET_CMD_FROM_NAME` (`engine.h`).
+const ENGINE_CTRL_GET_CMD_FROM_NAME: c_int = 13;
+
+/// What an engine's `LOAD_CERT_CTRL` command is given: the certificate's
+/// id, and where it puts the certificate, a reference the caller frees
+/// (libp11's convention, which C follows).
+#[repr(C)]
+struct LoadCert {
+    cert_id: *const c_char,
+    cert: *mut X509,
+}
 
 /// `OSSL_STORE_INFO_PKEY` and `OSSL_STORE_INFO_CERT` (`store.h`).
 const STORE_INFO_PKEY: c_int = 4;
@@ -355,6 +414,205 @@ impl Crypto {
         }
         Ok(())
     }
+}
+
+impl Crypto {
+    /// The certificate the engine has by the id `file`, made the
+    /// context's (`engineload`): through the engine's `LOAD_CERT_CTRL`
+    /// command, its failures said as C says them. Only for a session whose
+    /// engine started.
+    pub(crate) fn certificate_from_engine(
+        &self,
+        ctx: NonNull<SSL_CTX>,
+        file: &[u8],
+        io: &mut TlsIo<'_>,
+    ) -> Result<(), ErrorKind> {
+        let e = self.engine.expect("an engine started").as_ptr();
+        let fail = |io: &mut TlsIo<'_>, what: core::fmt::Arguments<'_>| {
+            io.fail(ErrorKind::SslCertproblem, what)
+        };
+        let cmd = c"LOAD_CERT_CTRL";
+        // SAFETY: the engine, and the command's name, which the call only
+        // reads. An engine without commands answers -1, which C takes as
+        // support, as this does.
+        let known = unsafe {
+            ENGINE_ctrl(
+                e,
+                ENGINE_CTRL_GET_CMD_FROM_NAME,
+                0,
+                cmd.as_ptr().cast_mut().cast(),
+                None,
+            )
+        };
+        if known == 0 {
+            return Err(fail(
+                io,
+                format_args!("SSL engine does not support loading certificates"),
+            ));
+        }
+        let id = c_string(file)?;
+        let mut params = LoadCert {
+            cert_id: id.as_ptr().cast(),
+            cert: ptr::null_mut(),
+        };
+        // SAFETY: the engine, the command's name, and the parameters it
+        // fills, alive for the call; a command the engine lacks is
+        // optional, as C asks.
+        let done =
+            unsafe { ENGINE_ctrl_cmd(e, cmd.as_ptr(), 0, (&raw mut params).cast(), None, 1) };
+        if done == 0 {
+            let err = ErrText::last();
+            return Err(fail(
+                io,
+                format_args!(
+                    "SSL engine cannot load client cert with id '{}' [{err}]",
+                    Text(file)
+                ),
+            ));
+        }
+        let Some(cert) = NonNull::new(params.cert) else {
+            return Err(fail(
+                io,
+                format_args!("SSL engine did not initialize the certificate properly."),
+            ));
+        };
+        // SAFETY: the context, which takes its own reference.
+        let used = unsafe { openssl_sys::SSL_CTX_use_certificate(ctx.as_ptr(), cert.as_ptr()) };
+        // SAFETY: the reference the engine gave, given back once.
+        unsafe { openssl_sys::X509_free(cert.as_ptr()) };
+        if used != 1 {
+            let err = ErrText::last();
+            return Err(fail(
+                io,
+                format_args!("unable to set client certificate [{err}]"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The private key the engine has by the id `file`, made the
+    /// context's (`enginecheck`): asked of the engine with a UI method
+    /// that answers a prompt for the default password with `password`, a
+    /// C string, and leaves every other to OpenSSL's console, as C's
+    /// does. Only for a session whose engine started.
+    pub(crate) fn key_from_engine(
+        &self,
+        ctx: NonNull<SSL_CTX>,
+        file: Option<&[u8]>,
+        password: Option<&Vec<u8>>,
+        io: &mut TlsIo<'_>,
+    ) -> Result<(), ErrorKind> {
+        let e = self.engine.expect("an engine started").as_ptr();
+        let fail = |io: &mut TlsIo<'_>, what: core::fmt::Arguments<'_>| {
+            io.fail(ErrorKind::SslCertproblem, what)
+        };
+        let id = file.map(c_string).transpose()?;
+        // SAFETY: a C string; the method is this one's, destroyed below.
+        let ui = unsafe { UI_create_method(c"curl user interface".as_ptr()) };
+        if ui.is_null() {
+            return Err(fail(
+                io,
+                format_args!("unable to create OpenSSL user-interface method"),
+            ));
+        }
+        // SAFETY: the library's static method.
+        let console = unsafe { UI_OpenSSL() }.cast_const();
+        // SAFETY: the library's method.
+        let open = unsafe { UI_method_get_opener(console) };
+        // SAFETY: as above.
+        let close = unsafe { UI_method_get_closer(console) };
+        // SAFETY: the method made above, and the console's functions, the
+        // library's, or none.
+        unsafe { UI_method_set_opener(ui, open) };
+        // SAFETY: as above.
+        unsafe { UI_method_set_closer(ui, close) };
+        // SAFETY: the method, and functions of the UI's signature.
+        unsafe { UI_method_set_reader(ui, Some(ui_reader)) };
+        // SAFETY: as above.
+        unsafe { UI_method_set_writer(ui, Some(ui_writer)) };
+        let pass = password.map_or(ptr::null_mut(), |p| p.as_ptr().cast_mut().cast());
+        // SAFETY: the engine, the id, a C string or none, the method, and
+        // the password, a C string or none, which the readers only read,
+        // all alive for the call; the key, if any, is this one's to free.
+        let key = unsafe {
+            ENGINE_load_private_key(
+                e,
+                id.as_ref().map_or(ptr::null(), |i| i.as_ptr().cast()),
+                ui,
+                pass,
+            )
+        };
+        // SAFETY: the method made above, destroyed once, after its use.
+        unsafe { UI_destroy_method(ui) };
+        let Some(key) = NonNull::new(key) else {
+            return Err(fail(
+                io,
+                format_args!("failed to load private key from crypto engine"),
+            ));
+        };
+        // SAFETY: the context, which takes its own reference.
+        let used = unsafe { openssl_sys::SSL_CTX_use_PrivateKey(ctx.as_ptr(), key.as_ptr()) };
+        // SAFETY: the reference the engine gave, given back once.
+        unsafe { openssl_sys::EVP_PKEY_free(key.as_ptr()) };
+        if used != 1 {
+            return Err(fail(io, format_args!("unable to set private key")));
+        }
+        Ok(())
+    }
+}
+
+/// Whether the UI's prompt `uis` asks for the default password and the
+/// caller gave one (`ssl_ui_reader`, `ssl_ui_writer`): its user data,
+/// the password `key_from_engine` passed.
+///
+/// # Safety
+/// `ui` and `uis` are the UI and its string the library calls with.
+unsafe fn default_password(ui: *mut Ui, uis: *mut UiString) -> Option<*const c_char> {
+    // SAFETY: as the caller says.
+    let kind = unsafe { UI_get_string_type(uis) };
+    if kind != UIT_PROMPT && kind != UIT_VERIFY {
+        return None;
+    }
+    // SAFETY: as above.
+    let password = unsafe { UI_get0_user_data(ui) };
+    // SAFETY: as above.
+    let flags = unsafe { UI_get_input_flags(uis) };
+    (!password.is_null() && flags & UI_INPUT_FLAG_DEFAULT_PWD != 0)
+        .then_some(password.cast_const().cast())
+}
+
+/// The reader of `key_from_engine`'s UI method (`ssl_ui_reader`): the
+/// password given, for a prompt for the default one; else the console's.
+unsafe extern "C" fn ui_reader(ui: *mut Ui, uis: *mut UiString) -> c_int {
+    // SAFETY: the library calls with its UI and string.
+    if let Some(password) = unsafe { default_password(ui, uis) } {
+        // SAFETY: as above; the password is a C string alive while the
+        // engine's load runs, which this call is within.
+        unsafe { UI_set_result(ui, uis, password) };
+        return 1;
+    }
+    // SAFETY: the library's static method.
+    let console = unsafe { UI_OpenSSL() };
+    // SAFETY: as above, whose reader it sets.
+    let read = unsafe { UI_method_get_reader(console) }.expect("OpenSSL's console reads");
+    // SAFETY: the console's reader, called as the library calls it.
+    unsafe { read(ui, uis) }
+}
+
+/// The writer of `key_from_engine`'s UI method (`ssl_ui_writer`): a
+/// prompt for the default password, given one, is not shown; else the
+/// console's.
+unsafe extern "C" fn ui_writer(ui: *mut Ui, uis: *mut UiString) -> c_int {
+    // SAFETY: the library calls with its UI and string.
+    if unsafe { default_password(ui, uis) }.is_some() {
+        return 1;
+    }
+    // SAFETY: the library's static method.
+    let console = unsafe { UI_OpenSSL() };
+    // SAFETY: as above, whose writer it sets.
+    let write = unsafe { UI_method_get_writer(console) }.expect("OpenSSL's console writes");
+    // SAFETY: the console's writer, called as the library calls it.
+    unsafe { write(ui, uis) }
 }
 
 impl Drop for Crypto {

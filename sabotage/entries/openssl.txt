@@ -235,9 +235,9 @@ witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_load
 file: crates/curl-openssl/src/cert.rs
 witness: curl-openssl a_provider_s_store_gives_the_client_certificate_and_key
 --- old
-        (false, Some(uri)) => using.use_from_store(ctx, uri, wanted, io),
+        (false, _, Some(uri)) => using.use_from_store(ctx, uri, wanted, io),
 --- new
-        (false, Some(_)) => Ok(()),
+        (false, _, Some(_)) => Ok(()),
 
 === the peer is never asked to staple its status
 file: crates/curl-openssl/src/ssl.rs
@@ -372,3 +372,19 @@ witness: curl-openssl a_name_too_long_for_c_s_buffer_is_not_shown
     if false && !io.verbose() {
         return Ok(());
     }
+
+=== the key an engine loads is not given its password, the default-password prompt left to the console
+file: crates/curl-openssl/src/engine.rs
+witness: curl-openssl an_engine_s_certificate_and_key_serve_the_client
+--- old
+        let pass = password.map_or(ptr::null_mut(), |p| p.as_ptr().cast_mut().cast());
+--- new
+        let pass: *mut c_void = ptr::null_mut();
+
+=== the certificate an engine's LOAD_CERT_CTRL gives is not made the context's
+file: crates/curl-openssl/src/engine.rs
+witness: curl-openssl an_engine_s_certificate_and_key_serve_the_client
+--- old
+        let used = unsafe { openssl_sys::SSL_CTX_use_certificate(ctx.as_ptr(), cert.as_ptr()) };
+--- new
+        let used = 1;

@@ -83,6 +83,7 @@ fn a_request_is_traced_through_c_s_states() {
         [MULTI] [DONE] multi_done: status: 0 prem: 0 done: 0
         [MULTI] [DONE] multi_done_locked, in use=0
         [MULTI] [DONE] -> [COMPLETED]
+        [MULTI] [COMPLETED] [TIMEOUT] all cleared
         [MULTI] [COMPLETED] -> [MSGSENT]
         [MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1",
     ));
@@ -123,6 +124,7 @@ fn a_redirect_starts_over_from_setup() {
             [MULTI] [DONE] multi_done: status: 0 prem: 0 done: 0
             [MULTI] [DONE] multi_done_locked, in use=0
             [MULTI] [DONE] -> [COMPLETED]
+            [MULTI] [COMPLETED] [TIMEOUT] all cleared
             [MULTI] [COMPLETED] -> [MSGSENT]
             [MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1"
         )[..]
@@ -157,6 +159,7 @@ fn a_refused_connect_is_done_with_where_it_failed() {
         [MULTI] [COMPLETED] [PGRS-PRETRANSFER] added Nus
         [MULTI] [COMPLETED] [PGRS-POSTRANSFER] added Nus
         [MULTI] [COMPLETED] [PGRS-STARTTRANSFER] added Nus
+        [MULTI] [COMPLETED] [TIMEOUT] all cleared
         [MULTI] [COMPLETED] -> [MSGSENT]
         [MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1"
     )));
@@ -181,6 +184,7 @@ fn a_failed_response_closes_its_connection_in_performing() {
             [MULTI] [PERFORMING] multi_done_locked, in use=0
             [MULTI] [PERFORMING] multi_done, terminating conn #0 to 127.0.0.1:{PORT}, forbid=0, close=1, premature=1, conn_multiplex=0
             [MULTI] [PERFORMING] -> [COMPLETED]
+            [MULTI] [COMPLETED] [TIMEOUT] all cleared
             [MULTI] [COMPLETED] -> [MSGSENT]
             [MULTI] [COMPLETED] removed from multi, mid=1, running=0, total=1"
         ))[..]

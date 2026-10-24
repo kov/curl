@@ -41,10 +41,14 @@ pub(crate) enum TimerKind {
     Proto,
     /// A speed limit's wait, or its next tokens (`EXPIRE_TOOFAST`).
     TooFast,
+    /// The HTTPS connect's wait before a second attempt, armed as its
+    /// race starts while the attempts are not all known
+    /// (`EXPIRE_ALPN_EYEBALLS`).
+    AlpnEyeballs,
 }
 
 impl TimerKind {
-    const COUNT: usize = 6;
+    const COUNT: usize = 7;
 
     /// The name C's trace gives it (`Curl_trc_timer_name`). The
     /// protocol's own wait is HTTP's for a 100, the only one there is.
@@ -56,6 +60,7 @@ impl TimerKind {
             TimerKind::Eyeballs => "HAPPY_EYEBALLS",
             TimerKind::Proto => "100_TIMEOUT",
             TimerKind::TooFast => "TOOFAST",
+            TimerKind::AlpnEyeballs => "ALPN_EYEBALLS",
         }
     }
 
@@ -68,10 +73,15 @@ impl TimerKind {
         TimerKind::Eyeballs,
         TimerKind::Proto,
         TimerKind::TooFast,
+        TimerKind::AlpnEyeballs,
     ];
 
     fn slot(self) -> usize {
         self as usize
+    }
+
+    fn bit(self) -> u8 {
+        1 << self.slot()
     }
 }
 
@@ -101,9 +111,12 @@ pub(crate) enum TimeLeft {
 pub(crate) struct Deadlines {
     total: Option<TimeLimit>,
     connect: Option<TimeLimit>,
-    /// When each timer fires, if armed. A timer stays armed until an
-    /// expiry pass at or after its instant, even once it is in the past.
-    armed: [Option<Instant>; TimerKind::COUNT],
+    /// When each timer fires, if its bit is in `set`. A timer stays
+    /// armed until an expiry pass at or after its instant, even once it
+    /// is in the past. Kept apart from the bits, as every transfer's slot
+    /// holds them.
+    at: [Instant; TimerKind::COUNT],
+    set: u8,
 }
 
 impl Deadlines {
@@ -112,7 +125,8 @@ impl Deadlines {
         Deadlines {
             total,
             connect,
-            armed: [None; TimerKind::COUNT],
+            at: [Instant::EPOCH; TimerKind::COUNT],
+            set: 0,
         }
     }
 
@@ -142,8 +156,19 @@ impl Deadlines {
         let ms =
             Duration::from_millis(u64::try_from(wait.min(MAX_WAIT).as_millis()).expect("capped"));
         let at = now.after(ms);
-        self.armed[kind.slot()] = Some(at);
+        self.at[kind.slot()] = at;
+        self.set |= kind.bit();
         at
+    }
+
+    /// When `kind` fires, if armed.
+    fn armed(&self, kind: TimerKind) -> Option<Instant> {
+        (self.set & kind.bit() != 0).then(|| self.at[kind.slot()])
+    }
+
+    /// Whether any timer is armed.
+    pub(crate) fn any(&self) -> bool {
+        self.set != 0
     }
 
     /// The timer that fires first, the earliest armed of a tie
@@ -151,7 +176,7 @@ impl Deadlines {
     pub(crate) fn first(&self) -> Option<TimerKind> {
         TimerKind::ALL
             .into_iter()
-            .filter_map(|k| self.armed[k.slot()].map(|at| (at, k)))
+            .filter_map(|k| self.armed(k).map(|at| (at, k)))
             .min_by_key(|&(at, _)| at)
             .map(|(_, k)| k)
     }
@@ -159,22 +184,25 @@ impl Deadlines {
     /// The armed timers, the first to fire first, a tie in `first`'s
     /// order (`timeouts.first` and its list), with when each fires.
     pub(crate) fn in_order(&self) -> impl Iterator<Item = (Instant, TimerKind)> + Clone + use<> {
-        let mut all = TimerKind::ALL.map(|k| self.armed[k.slot()].map(|at| (at, k)));
+        let mut all = TimerKind::ALL.map(|k| self.armed(k).map(|at| (at, k)));
         all.sort_unstable_by_key(|armed| armed.map(|(at, k)| (at, k.slot())));
         all.into_iter().flatten()
     }
 
     pub(crate) fn clear(&mut self, kind: TimerKind) {
-        self.armed[kind.slot()] = None;
+        self.set &= !kind.bit();
     }
 
     pub(crate) fn clear_all(&mut self) {
-        self.armed = [None; TimerKind::COUNT];
+        self.set = 0;
     }
 
     /// The earliest armed timer, past or not.
     pub(crate) fn wake_at(&self) -> Option<Instant> {
-        self.armed.iter().flatten().min().copied()
+        TimerKind::ALL
+            .into_iter()
+            .filter_map(|k| self.armed(k))
+            .min()
     }
 
     /// An expiry pass at `now` found this transfer due: every timer due by
@@ -182,9 +210,9 @@ impl Deadlines {
     /// just gave out; a transfer run for another reason keeps its past
     /// timers, which still wake it.
     pub(crate) fn expire(&mut self, now: Instant) {
-        for t in &mut self.armed {
-            if t.is_some_and(|at| at <= now) {
-                *t = None;
+        for k in TimerKind::ALL {
+            if self.armed(k).is_some_and(|at| at <= now) {
+                self.clear(k);
             }
         }
     }

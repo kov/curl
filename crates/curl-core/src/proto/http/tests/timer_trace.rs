@@ -274,3 +274,37 @@ fn a_limit_s_first_step_is_a_whole_one() {
         .unwrap_or_else(|| panic!("{text:?}"));
     assert_eq!(first, "[TIMER] [TOOFAST] set for 1000000us");
 }
+
+/// A transfer that completes with a timer still armed, its time limit's,
+/// says the timers are cleared as it enters COMPLETED, after the times it
+/// takes there; one with none left says nothing (`Curl_expire_clear_all`).
+#[test]
+fn a_timer_left_at_the_end_is_said_to_be_cleared() {
+    let cleared = |total| {
+        let (mut m, talk, _) = server(&[OK], false);
+        let ran = get_with(&mut m, tracing(b"multi"), "/", talk, |o| {
+            o.limits.total = total;
+        });
+        assert_eq!(ran.result, Ok(()));
+        let lines = lines_of(&ran, &["[MULTI] [COMPLETED]", "[MULTI] [DONE] ->"]);
+        lines
+            .into_iter()
+            .filter(|l| !l.contains("pollset[") && !l.contains("removed from"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        cleared(crate::time::TimeLimit::from_millis(10_000)),
+        [
+            "[MULTI] [DONE] -> [COMPLETED]",
+            "[MULTI] [COMPLETED] [TIMEOUT] all cleared",
+            "[MULTI] [COMPLETED] -> [MSGSENT]",
+        ]
+    );
+    assert_eq!(
+        cleared(None),
+        [
+            "[MULTI] [DONE] -> [COMPLETED]",
+            "[MULTI] [COMPLETED] -> [MSGSENT]",
+        ]
+    );
+}

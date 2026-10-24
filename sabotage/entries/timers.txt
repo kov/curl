@@ -56,9 +56,9 @@ witness: curl-core report::tests::phases_add_up_across_a_redirect
 file: crates/curl-core/src/multi/timers.rs
 witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
 --- old
-            if t.is_some_and(|at| at <= now) {
+            if self.armed(k).is_some_and(|at| at <= now) {
 --- new
-            if t.is_some_and(|at| at < now) {
+            if self.armed(k).is_some_and(|at| at < now) {
 
 === a timer is armed beyond the INT_MAX milliseconds C caps it at
 file: crates/curl-core/src/multi/timers.rs
@@ -132,3 +132,22 @@ witness: curl-core proto::http::tests::the_time_limit_is_the_whole_transfer_s
         Phase::Transferring => timings.since_op_ms(cx.rest.now),
 --- new
         Phase::Transferring => timings.since_single_ms(cx.rest.now),
+
+=== a transfer completing with a timer armed does not say they are cleared
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::timer_trace::a_timer_left_at_the_end_is_said_to_be_cleared
+features: test-util
+--- old
+    if run.deadlines.any() {
+        run.deadlines.clear_all();
+--- new
+    if false {
+        run.deadlines.clear_all();
+
+=== a cleared timer keeps its bit, and still wakes its transfer
+file: crates/curl-core/src/multi/timers.rs
+witness: curl-core multi::timers::tests::limits_are_armed_per_leg_and_judged_from_their_anchors
+--- old
+        self.set &= !kind.bit();
+--- new
+        self.set &= !0;

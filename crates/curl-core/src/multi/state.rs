@@ -1363,6 +1363,7 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         // Its message is ready at once (`handle_completed`).
         if cx.mstate() != MState::MsgSent {
             mstate::enter(cx, MState::Completed);
+            timers_cleared(run, cx);
             mstate::enter(cx, MState::MsgSent);
         }
     } else if let Some(state) = next.c_state() {
@@ -1370,6 +1371,18 @@ fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     }
     run.state = next;
     wake
+}
+
+/// The transfer is complete: every timer it still has armed is cleared,
+/// and said to be if there was one (`Curl_expire_clear_all` as it enters
+/// COMPLETED). The protocol's own wait is derived from a state that no
+/// longer waits, so it is not one: C clears it as the wait ends.
+fn timers_cleared<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) {
+    run.deadlines.clear(TimerKind::Proto);
+    if run.deadlines.any() {
+        run.deadlines.clear_all();
+        mstate::trace(cx, format_args!("[TIMEOUT] all cleared"));
+    }
 }
 
 /// A pass over the transfer's connection failed with `kind`

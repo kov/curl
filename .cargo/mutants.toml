@@ -505,4 +505,24 @@ exclude_re = [
     # The fake's reading of what a client sent is given whole records by
     # every test; a cut one matters to no core test.
     'curl-core/src/tls/fake\.rs:.*: replace match guard rest\.len\(\) >= HEADER \+ len with true in read_client$',
+    # Debug forms nothing reads.
+    'curl-core/src/gss\.rs:.*: replace <impl fmt::Debug for dyn (Gss|GssContext)>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    # Releasing what MIT krb5 allocated: only a leak checker sees it kept,
+    # and none the tests run under sees the library's heap (Miri cannot
+    # run FFI). Releasing an empty buffer or a context never made is the
+    # library's no-op.
+    'curl-gssapi/src/sys\.rs:.*: (replace <impl Drop for (Buffer|Name|Cred|OidSet|Ctx)>::drop with \(\)|delete ! in <impl Drop for (Buffer|Ctx)>::drop)$',
+    # MIT krb5 sets a call's output handle exactly when the call succeeds,
+    # NULL from the start otherwise: the status and the handle agree on
+    # every answer, so either test alone decides the same.
+    'curl-gssapi/src/sys\.rs:.*: replace \|\| with && in (Name::import|Cred::acquire|OidSet::mechanisms|OidSet::without|Ctx::initiator)$',
+    # Credentials acquired for every mechanism hold SPNEGO's, whose
+    # `gss_set_neg_mechs` only copies the set: it fails only for want of
+    # memory, which no test can make the library run short of.
+    'curl-gssapi/src/sys\.rs:.*: replace Cred::set_neg_mechs -> Result<\(\), Status> with Ok\(\(\)\)$',
+    # SPNEGO's stub credentials always leave NTLM out (the stub's
+    # mechanism list and its narrowing cannot fail while it is chosen),
+    # so a stub context SPNEGO checks is never NTLM's, as in C's stub;
+    # Kerberos contexts are not checked.
+    'curl-gssapi/src/stub\.rs:.*: replace Ctx::is_ntlm -> bool with false$',
 ]

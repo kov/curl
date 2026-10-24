@@ -57,6 +57,7 @@ impl TlsBackend for OpenSsl {
         let session = Session {
             ssl: None,
             ctx: None,
+            password: None,
             method: None,
             identity: identity.clone(),
             shared: Some(shared.clone()),
@@ -127,6 +128,9 @@ struct Session {
     // BIO's method; the context after the SSL made of it.
     ssl: Option<Ssl>,
     ctx: Option<Ctx>,
+    /// The client key's password as a C string, which the context points
+    /// at: dropped after it.
+    password: Option<Vec<u8>>,
     method: Option<Method>,
     identity: TryArc<TlsIdentity>,
     /// What the library keeps for the multi, until the trust store is
@@ -146,7 +150,7 @@ struct Session {
 }
 
 /// The library's major error codes C tells apart.
-fn error_lib(e: c_ulong) -> c_int {
+pub(crate) fn error_lib(e: c_ulong) -> c_int {
     // `ERR_GET_LIB`: the library is the 8 bits above the 23 of the
     // reason, unless the error is a system error.
     if e & (1 << 31) != 0 {
@@ -157,7 +161,7 @@ fn error_lib(e: c_ulong) -> c_int {
 }
 
 /// `ERR_GET_REASON`.
-fn error_reason(e: c_ulong) -> c_int {
+pub(crate) fn error_reason(e: c_ulong) -> c_int {
     if e & (1 << 31) != 0 {
         (e & 0x7fff_ffff) as c_int
     } else {
@@ -341,10 +345,14 @@ impl Session {
             }
             io.info(format_args!("TLS 1.3 cipher selection: {}", Text(ciphers)));
         }
-        if options.cert.is_some() || options.cert_blob.is_some() {
-            // Client certificates come with step 43e2; nothing in this
-            // build sets them yet, and none is ever ignored.
-            return Err(ErrorKind::NotBuiltIn);
+        if options.cert.is_some() || options.cert_blob.is_some() || options.cert_type.is_some() {
+            // Kept as long as the context, which OpenSSL hands it from.
+            self.password = options
+                .key_password
+                .as_deref()
+                .map(x509::c_string)
+                .transpose()?;
+            crate::cert::client_cert(ctx, options, self.password.as_ref(), io)?;
         }
         // SAFETY: the context. OpenSSL 1.1.1 and later need the client
         // to opt in to authenticating after the handshake.

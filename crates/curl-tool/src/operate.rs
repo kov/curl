@@ -1916,6 +1916,12 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     string_setopt(s, "CURLOPT_SSL_SIGNATURE_ALGORITHMS", tls.sigalgs, |t| {
         &mut t.signature_algorithms
     })?;
+    string_setopt(s, "CURLOPT_SSLCERT", tls.cert.as_deref(), |t| &mut t.cert)?;
+    string_setopt(s, "CURLOPT_SSLCERTTYPE", tls.cert_type, |t| {
+        &mut t.cert_type
+    })?;
+    string_setopt(s, "CURLOPT_SSLKEY", tls.key, |t| &mut t.key)?;
+    string_setopt(s, "CURLOPT_SSLKEYTYPE", tls.key_type, |t| &mut t.key_type)?;
     // Set for every transfer, so a program does not keep `--insecure`
     // from an earlier one.
     let verify = i64::from(!tls.insecure);
@@ -2213,6 +2219,9 @@ fn credentials_and_headers(
     s.str("CURLOPT_USERAGENT", Some(agent), |o| {
         o.http.user_agent = Some(copy(agent).map_err(oom)?);
         Ok(())
+    })?;
+    string_setopt(s, "CURLOPT_KEYPASSWD", op.tls.key_password, |t| {
+        &mut t.key_password
     })
 }
 

@@ -155,6 +155,14 @@ pub(crate) struct Tls<'a> {
     pub(crate) crlfile: Option<&'a [u8]>,
     /// `--pinnedpubkey`.
     pub(crate) pinned_key: Option<&'a [u8]>,
+    /// `--cert`, without the passphrase it may end in.
+    pub(crate) cert: Option<Cow<'a, [u8]>>,
+    /// `--cert-type`, `--key`, `--key-type`.
+    pub(crate) cert_type: Option<&'a [u8]>,
+    pub(crate) key: Option<&'a [u8]>,
+    pub(crate) key_type: Option<&'a [u8]>,
+    /// `--pass`, or the passphrase `--cert` ends in.
+    pub(crate) key_password: Option<&'a [u8]>,
 }
 
 /// `--proto-default`: the protocol, as named.
@@ -1078,6 +1086,18 @@ pub(crate) fn apply<'a>(
             line.current().tls.crlfile = Some(non_blank(file)?);
         }
         Opt::Pinnedpubkey => line.current().tls.pinned_key = Some(non_blank(value.text())?),
+        Opt::Cert => {
+            let (cert, pass) = super::cert::split(value.text())?;
+            let tls = &mut line.current().tls;
+            tls.cert = Some(cert);
+            if pass.is_some() {
+                tls.key_password = pass;
+            }
+        }
+        Opt::CertType => line.current().tls.cert_type = Some(non_blank(value.text())?),
+        Opt::Key => line.current().tls.key = Some(non_blank(value.text())?),
+        Opt::KeyType => line.current().tls.key_type = Some(non_blank(value.text())?),
+        Opt::Pass => line.current().tls.key_password = Some(non_blank(value.text())?),
         Opt::Capath => line.current().tls.capath = Some(Cow::Borrowed(non_blank(value.text())?)),
         Opt::Ciphers => line.current().tls.ciphers = Some(non_blank(value.text())?),
         Opt::Tls13Ciphers => line.current().tls.tls13_ciphers = Some(non_blank(value.text())?),
@@ -1516,9 +1536,7 @@ pub(crate) fn apply<'a>(
         Opt::AbstractUnixSocket
         | Opt::AltSvc
         | Opt::Append
-        | Opt::Cert
         | Opt::CertStatus
-        | Opt::CertType
         | Opt::CompressedSsh
         | Opt::Crlf
         | Opt::Delegation
@@ -1557,8 +1575,6 @@ pub(crate) fn apply<'a>(
         | Opt::Http3
         | Opt::Http3Only
         | Opt::Interface
-        | Opt::Key
-        | Opt::KeyType
         | Opt::Knownhosts
         | Opt::ListOnly
         | Opt::LocalPort
@@ -1569,7 +1585,6 @@ pub(crate) fn apply<'a>(
         | Opt::MailRcptAllowfails
         | Opt::Negotiate
         | Opt::Ntlm
-        | Opt::Pass
         | Opt::ProxyCaNative
         | Opt::ProxyCacert
         | Opt::ProxyCapath

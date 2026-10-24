@@ -36,7 +36,7 @@ impl Drop for Cert {
     }
 }
 
-/// A memory BIO, freed as it goes.
+/// A BIO this crate made, a memory one unless adopted, freed as it goes.
 pub(crate) struct MemBio(NonNull<BIO>);
 
 impl MemBio {
@@ -45,6 +45,11 @@ impl MemBio {
         let method = unsafe { openssl_sys::BIO_s_mem() };
         // SAFETY: a BIO of that method, owned by the `MemBio`.
         NonNull::new(unsafe { openssl_sys::BIO_new(method) }).map(MemBio)
+    }
+
+    /// A BIO of another method this crate made, owned from now on.
+    pub(crate) fn adopt(bio: NonNull<BIO>) -> MemBio {
+        MemBio(bio)
     }
 
     pub(crate) fn as_ptr(&self) -> *mut BIO {
@@ -83,7 +88,7 @@ impl Drop for MemBio {
 }
 
 /// Bytes as text in a line, as C's `%s` prints them.
-struct Text<'a>(&'a [u8]);
+pub(crate) struct Text<'a>(pub(crate) &'a [u8]);
 
 impl fmt::Display for Text<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -115,7 +120,7 @@ impl fmt::Display for Shown<'_> {
 
 /// `bytes`, ended by a zero byte, for a call that takes a C string: cut
 /// at a zero byte inside, where C would see its end.
-fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
+pub(crate) fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     let mut c = Vec::new();
     c.try_reserve_exact(end + 1)

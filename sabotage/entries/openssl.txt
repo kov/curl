@@ -164,3 +164,27 @@ witness: curl-openssl another_pinned_key_fails_even_unverified
     if let Some(pinned) = &identity.options.pinned_key {
 --- new
     if let Some(pinned) = identity.options.pinned_key.as_ref().filter(|_| identity.verify_peer) {
+
+=== a certificate given without a key is not taken as its own key
+file: crates/curl-openssl/src/cert.rs
+witness: curl-openssl a_client_certificate_in_pem_files_is_shown
+--- old
+        (None, None) => (cert_file, cert_blob),
+--- new
+        (None, None) => (None, None),
+
+=== the key's password is never handed to OpenSSL
+file: crates/curl-openssl/src/cert.rs
+witness: curl-openssl an_encrypted_key_is_read_with_the_password
+--- old
+    if encrypting != 0 || num < 0 || password.is_null() {
+--- new
+    if true {
+
+=== a PEM chain in memory fails where its text ends
+file: crates/curl-openssl/src/cert.rs
+witness: curl-openssl a_client_certificate_in_der_or_in_memory_is_shown
+--- old
+    if error_lib(err) == ffi::ERR_LIB_PEM && error_reason(err) == ffi::PEM_R_NO_START_LINE {
+--- new
+    if error_lib(err) == ffi::ERR_LIB_PEM && error_reason(err) == 0 {

@@ -1900,6 +1900,16 @@ SubjectPublicKeyInfo and the core compares it (`tls::pin_peer_pubkey`, vtls.c's
 `Curl_pin_peer_pubkey`), by the base64 of its SHA-256 (`sha256//`, several `;` apart, ` public key
 hash:` said) or as a file of it in DER or PEM.
 
+**The client's certificate** (`cert.rs`, `client_cert`) is loaded into the context before the
+session is made, when a certificate, a blob or a type is set: PEM as a chain (from a file, or
+from memory as `SSL_CTX_use_certificate_chain_file` reads one), DER, or PKCS#12 with its CAs
+added to the chain; the key from its own file or blob, of its own type, or else the
+certificate's with the certificate's type, then checked against it. A password reaches OpenSSL
+through `passwd_callback`, held by the session as long as the context that points at it. An
+engine's or a provider's certificate or key fails as C's does with none set (`crypto engine not
+set, cannot load certificate`, 58); an unknown type is 43, as C. The tool's `--cert` splits
+`name:password` as `parse_cert_parameter` does, `\` escaping a colon or itself.
+
 **Identity and reuse.** `Tcp` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
 copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares
 (versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the

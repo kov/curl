@@ -38,6 +38,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.
 - `crates/curl-openssl/src/sign.rs`: OpenSSL's Ed25519, signing HTTP message signatures.
+- `crates/curl-openssl/src/cert.rs`: the client's certificate and key, loaded into OpenSSL's
+  context.
 - `crates/curl-openssl/src/ffi.rs`: the OpenSSL functions openssl-sys does not declare.
 - `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, and
   its trace of the records.

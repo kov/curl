@@ -6,7 +6,10 @@
 
 use core::ffi::{c_char, c_int, c_long, c_ulong, c_void};
 
-use openssl_sys::{ASN1_TIME, BIO, EVP_PKEY, SSL, SSL_CTX, X509, X509_CRL, X509_NAME, X509_STORE};
+use openssl_sys::{
+    ASN1_TIME, BIO, EVP_PKEY, PKCS12, RSA, SSL, SSL_CTX, X509, X509_CRL, X509_NAME, X509_STORE,
+    pem_password_cb,
+};
 
 /// A certificate's public key with its algorithm (`X509_PUBKEY`), only
 /// ever pointed to.
@@ -77,8 +80,38 @@ unsafe extern "C" {
     ) -> *mut c_void;
     pub(crate) fn X509_INFO_free(info: *mut c_void);
     pub(crate) fn BIO_get_shutdown(bio: *mut BIO) -> c_int;
+    pub(crate) fn SSL_CTX_set_default_passwd_cb(ctx: *mut SSL_CTX, cb: pem_password_cb);
+    pub(crate) fn SSL_CTX_set_default_passwd_cb_userdata(ctx: *mut SSL_CTX, u: *mut c_void);
+    pub(crate) fn PEM_read_bio_X509_AUX(
+        bio: *mut BIO,
+        out: *mut *mut X509,
+        cb: pem_password_cb,
+        u: *mut c_void,
+    ) -> *mut X509;
+    pub(crate) fn d2i_PrivateKey_bio(bio: *mut BIO, out: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
+    pub(crate) fn d2i_PKCS12_bio(bio: *mut BIO, out: *mut *mut PKCS12) -> *mut PKCS12;
+    pub(crate) fn RSA_flags(rsa: *const RSA) -> c_int;
     pub(crate) fn BIO_set_shutdown(bio: *mut BIO, shut: c_int);
 }
+
+/// `BIO_C_SET_FILENAME` and the flags `BIO_read_filename` passes
+/// (`bio.h`): the file opened to read, closed with the BIO.
+pub(crate) const BIO_C_SET_FILENAME: c_int = 108;
+pub(crate) const BIO_CLOSE_FP_READ: c_long = 0x01 | 0x02;
+
+/// The `SSL_CTX_ctrl` commands of `SSL_CTX_clear_chain_certs` and
+/// `SSL_CTX_add0_chain_cert` (`ssl.h`).
+pub(crate) const SSL_CTRL_CHAIN: c_int = 88;
+pub(crate) const SSL_CTRL_CHAIN_CERT: c_int = 89;
+
+/// `ERR_LIB_PEM`, and the reason C clears after a chain's last
+/// certificate (`pemerr.h`).
+pub(crate) const ERR_LIB_PEM: c_int = 9;
+pub(crate) const PEM_R_NO_START_LINE: c_int = 108;
+
+/// `RSA_METHOD_FLAG_NO_CHECK` (`rsa.h`): the key's method cannot check
+/// it against its certificate.
+pub(crate) const RSA_METHOD_FLAG_NO_CHECK: c_int = 0x0001;
 
 /// `BIO_TYPE_MEM` (`bio.h`): `1 | BIO_TYPE_SOURCE_SINK`.
 pub(crate) const BIO_TYPE_MEM: c_int = 1 | 0x0400;

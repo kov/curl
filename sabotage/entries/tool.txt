@@ -1419,3 +1419,11 @@ witness: curl-tool an_upload_ends_once_its_time_is_up
         };
 --- new
         let left = self.timeout.saturating_sub(self.start.elapsed());
+
+=== a backslash escapes only a colon in `--cert`'s name
+file: crates/curl-tool/src/options/cert.rs
+witness: curl-tool options::cert::tests::splits_as_unit_1394
+--- old
+                    Some(&c @ (b'\\' | b':')) => {
+--- new
+                    Some(&c @ b':') => {

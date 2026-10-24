@@ -6,6 +6,7 @@
 //! borrowed from the command line; nothing is copied.
 
 mod apply;
+mod cert;
 #[allow(
     dead_code,
     reason = "every C error kind is listed; not all are raised yet"

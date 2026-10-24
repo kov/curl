@@ -368,9 +368,14 @@ fn the_tls_check_and_identity_strings_are_copied() {
     use curl_core::options::TlsOptions;
     let c = curl_easy_init();
     type Field = fn(&TlsOptions) -> Option<Vec<u8>>;
-    let fields: [(CURLoption, Field); 2] = [
+    let fields: [(CURLoption, Field); 7] = [
         (ffi::CURLOPT_CRLFILE, |t| t.crl_file.clone()),
         (ffi::CURLOPT_PINNEDPUBLICKEY, |t| t.pinned_key.clone()),
+        (ffi::CURLOPT_SSLCERT, |t| t.cert.clone()),
+        (ffi::CURLOPT_SSLCERTTYPE, |t| t.cert_type.clone()),
+        (ffi::CURLOPT_SSLKEY, |t| t.key.clone()),
+        (ffi::CURLOPT_SSLKEYTYPE, |t| t.key_type.clone()),
+        (ffi::CURLOPT_KEYPASSWD, |t| t.key_password.clone()),
     ];
     for (o, field) in fields {
         let mut given = *b"given\0";
@@ -384,6 +389,29 @@ fn the_tls_check_and_identity_strings_are_copied() {
             o.0
         );
         assert_eq!(pointer(c, o, ptr::null_mut::<c_char>()), CURLE_OK);
+        assert_eq!(options(c, |opts| field(&opts.tls.options)), None, "{}", o.0);
+    }
+    // The certificate and key in memory, copied as `CAINFO_BLOB` is.
+    type Blob = fn(&TlsOptions) -> Option<Vec<u8>>;
+    let blobs: [(CURLoption, Blob); 2] = [
+        (ffi::CURLOPT_SSLCERT_BLOB, |t| t.cert_blob.clone()),
+        (ffi::CURLOPT_SSLKEY_BLOB, |t| t.key_blob.clone()),
+    ];
+    for (o, field) in blobs {
+        let mut pem = *b"PEM";
+        let mut blob = ffi::curl_blob {
+            data: pem.as_mut_ptr().cast(),
+            len: pem.len(),
+            flags: ffi::CURL_BLOB_COPY as c_uint,
+        };
+        assert_eq!(pointer(c, o, &raw mut blob), CURLE_OK, "{}", o.0);
+        pem[0] = b'X';
+        std::hint::black_box(&pem);
+        assert_eq!(
+            options(c, |opts| field(&opts.tls.options)),
+            Some(b"PEM".to_vec())
+        );
+        assert_eq!(pointer(c, o, ptr::null_mut::<ffi::curl_blob>()), CURLE_OK);
         assert_eq!(options(c, |opts| field(&opts.tls.options)), None, "{}", o.0);
     }
     // SAFETY: a live handle, not used again.

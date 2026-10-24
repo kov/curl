@@ -36,12 +36,14 @@ use openssl::ec::{EcGroup, EcKey};
 use openssl::hash::MessageDigest;
 use openssl::nid::Nid;
 use openssl::pkey::{PKey, Private};
-use openssl::ssl::{SslAcceptor, SslMethod};
+use openssl::ssl::{SslAcceptor, SslAcceptorBuilder, SslMethod};
 use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
 use openssl::x509::{X509, X509Name};
 
 #[path = "peer/checks.rs"]
 mod checks;
+#[path = "peer/client.rs"]
+mod client;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -113,6 +115,7 @@ fn main() {
     ]
     .into_iter()
     .chain(checks::TESTS.iter().copied())
+    .chain(client::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -248,17 +251,39 @@ impl std::io::Write for Dribble {
 
 /// As `serve`, the server's bytes dribbled out if `dribble`.
 fn serve_with(certs: &Certs, dribble: bool) -> (SocketAddr, JoinHandle<Vec<u8>>) {
+    serve_configured(certs, dribble, |_| {})
+}
+
+/// As `serve_with`, the server's TLS set up further by `configure`.
+fn serve_configured(
+    certs: &Certs,
+    dribble: bool,
+    configure: impl FnOnce(&mut SslAcceptorBuilder),
+) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
     acceptor.set_private_key(&certs.key).unwrap();
     acceptor.set_certificate(&certs.cert).unwrap();
+    configure(&mut acceptor);
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
         let (tcp, _) = listener.accept().unwrap();
         tcp.set_nodelay(dribble).unwrap();
-        let Ok(mut tls) = acceptor.accept(Dribble(tcp, dribble)) else {
-            return Vec::new();
+        let mut tls = match acceptor.accept(Dribble(tcp, dribble)) {
+            Ok(tls) => tls,
+            // The alert sent, what the client goes on to send is read
+            // until it closes: closed with it unread, the socket would be
+            // reset, and the client fail on the reset, not the alert.
+            Err(openssl::ssl::HandshakeError::Failure(mut mid)) => {
+                let tcp = &mut mid.get_mut().0;
+                tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut buf = [0u8; 4096];
+                while matches!(tcp.read(&mut buf), Ok(n) if n > 0) {}
+                return Vec::new();
+            }
+            Err(_) => return Vec::new(),
         };
         let mut got = Vec::new();
         let mut buf = [0u8; 4096];

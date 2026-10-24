@@ -9,6 +9,7 @@
 
 mod bio;
 mod cache;
+mod cert;
 mod ffi;
 mod hostcheck;
 mod sign;

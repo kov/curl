@@ -119,3 +119,30 @@ witness: curl-core proto::http::tests::socks_gss::an_unanswered_message_fails_it
             Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx),
 --- new
             Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx).filter(|_| false),
+
+=== a token too long for its 16-bit length is sent cut
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::a_token_must_fit_its_length
+--- old
+        let Ok(len) = u16::try_from(token.len()) else {
+--- new
+        let Ok(len) = u16::try_from(token.len() & 0xffff) else {
+
+=== an empty token is sent framed
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::an_empty_token_is_not_sent
+--- old
+        if !token.is_empty() {
+            let [hi, lo] = len.to_be_bytes();
+--- new
+        if true {
+            let [hi, lo] = len.to_be_bytes();
+
+=== a token's message has its type before its version
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-gssapi the_stub_s_token_is_framed_as_c_s
+features: debug-hooks
+--- old
+                .try_extend_from_slice(&[VERSION, AUTHENTICATION, hi, lo])?;
+--- new
+                .try_extend_from_slice(&[AUTHENTICATION + 1, VERSION, hi, lo])?;

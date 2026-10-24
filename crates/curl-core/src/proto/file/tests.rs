@@ -885,6 +885,21 @@ fn a_send_limit_does_not_cut_an_upload_short() {
     assert_eq!(s.read("f"), [b'u'; 70000]);
 }
 
+/// An upload's line ends are converted as it is written (`--crlf`): each
+/// LF not after a CR becomes CRLF; the size announced is the body's
+/// before (`file_upload` announces `infilesize`).
+#[test]
+fn an_upload_s_line_ends_are_converted() {
+    let s = Scratch::new("upcrlf");
+    let (mut e, _) = upload(&s.url("f"), bytes(b"a\nb\r\n\nc"));
+    e.options_mut().crlf = true;
+    let (r, e) = run(e);
+    assert_eq!(r, Ok(()));
+    assert_eq!(s.read("f"), b"a\r\nb\r\n\r\nc");
+    assert_eq!(e.report().sizes().upload(), 9);
+    assert_eq!(e.report().sizes().upload_expected(), Some(7));
+}
+
 /// A resumed upload appends what of the body is past the resume point; at
 /// the end, past what the file holds already.
 #[test]

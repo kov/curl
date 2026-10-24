@@ -341,13 +341,23 @@ witness: curl-core proto::file::tests::a_download_past_its_time_limit_names_no_s
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_send_limit_does_not_cut_an_upload_short
 --- old
-        // Not pausable: a pause is a read error.
-        let got = upload.read(cx, &mut self.buf, false);
+        // Not pausable: a pause is a read error. Never chunked: no
+        // trailers are asked for.
+        let got = upload.read(cx, &mut self.buf, false, |_| Ok(Vec::new()));
 --- new
-        // Not pausable: a pause is a read error.
+        // Not pausable: a pause is a read error. Never chunked: no
+        // trailers are asked for.
         if matches!(cx.rate_allowance(crate::progress::rate::Way::Send), Some(..=0)) {
             self.doing = Doing::Ending { check: false };
             return Ok(DoStep::More);
         }
         cx.rate_drain(crate::progress::rate::Way::Send, self.buf.len());
-        let got = upload.read(cx, &mut self.buf, false);
+        let got = upload.read(cx, &mut self.buf, false, |_| Ok(Vec::new()));
+
+=== an upload to a file is written without its line ends converted
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_s_line_ends_are_converted
+--- old
+        let converts = cx.easy().options().crlf && upload.size() != Some(0);
+--- new
+        let converts = false;

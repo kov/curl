@@ -212,6 +212,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) show_headers: bool,
     /// `--remote-time`.
     pub(crate) remote_time: bool,
+    /// `--crlf`.
+    pub(crate) crlf: bool,
     /// `--skip-existing`.
     pub(crate) skip_existing: bool,
     /// `--remote-header-name`: a file `--remote-name` names takes the name
@@ -1439,6 +1441,7 @@ pub(crate) fn apply<'a>(
         }
         Opt::RemoteNameAll => line.current().remote_name_all = value.toggle(),
         Opt::RemoteTime => line.current().remote_time = value.toggle(),
+        Opt::Crlf => line.current().crlf = value.toggle(),
         Opt::SkipExisting => line.current().skip_existing = value.toggle(),
         Opt::CreateDirs => line.current().create_dirs = value.toggle(),
         Opt::Config => return Ok(Flow::Config(value.text())),
@@ -1559,7 +1562,6 @@ pub(crate) fn apply<'a>(
         | Opt::AltSvc
         | Opt::Append
         | Opt::CompressedSsh
-        | Opt::Crlf
         | Opt::Delegation
         | Opt::DisableEprt
         | Opt::DisableEpsv

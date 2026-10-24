@@ -422,9 +422,9 @@ witness: curl-core proto::http::tests::the_application_s_content_headers_replace
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_waits_for_a_100
 --- old
-            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+            && client_size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
 --- new
-            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD * 2);
+            && client_size.is_none_or(|n| n > EXPECT_100_THRESHOLD * 2);
 
 === a body the application asks chunked goes plain
 file: crates/curl-core/src/proto/http.rs
@@ -488,9 +488,9 @@ witness: curl-core proto::http::tests::the_application_s_transfer_encoding_decid
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_body_waits_for_a_100
 --- old
-            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+            && client_size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
 --- new
-            && size.is_some_and(|n| n > EXPECT_100_THRESHOLD);
+            && client_size.is_some_and(|n| n > EXPECT_100_THRESHOLD);
 
 === a body announced with Expect does not wait
 file: crates/curl-core/src/proto/http.rs

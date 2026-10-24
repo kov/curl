@@ -26,6 +26,7 @@ use crate::progress;
 use crate::proto::DoStep;
 use crate::text::Text;
 use crate::trace;
+use crate::upload::chain::Body;
 use crate::upload::{self, Upload};
 use crate::url::{self, GetOptions, Part, Url};
 
@@ -69,7 +70,7 @@ enum Doing {
     /// Writing the body to the file, a piece written and not looked at
     /// yet; the first `skip` bytes of the body stored already, and
     /// skipped.
-    Writing { upload: Upload, skip: u64 },
+    Writing { upload: Body, skip: u64 },
     /// The body is over: the last progress pass is left, after a look at
     /// the last piece if `check`.
     Ending { check: bool },
@@ -401,8 +402,14 @@ impl Request {
         buf.try_reserve_exact(room)
             .map_err(|_| ErrorKind::OutOfMemory)?;
         super::http::zeros(&mut buf, room).map_err(|_| ErrorKind::OutOfMemory)?;
-        // The reader is set as the body is first read (`Curl_client_read`).
+        // The reader is set as the body is first read (`Curl_client_read`),
+        // its line ends converted unless it is empty (`do_init_reader_stack`).
         upload.trace_set(cx);
+        let converts = cx.easy().options().crlf && upload.size() != Some(0);
+        let mut upload = Body::new(upload);
+        if converts {
+            upload.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
+        }
         self.file = Some(target);
         self.buf = buf;
         self.write_piece(cx, upload, skip)
@@ -413,11 +420,12 @@ impl Request {
     fn write_piece<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        mut upload: Upload,
+        mut upload: Body,
         mut skip: u64,
     ) -> Result<DoStep, ErrorKind> {
-        // Not pausable: a pause is a read error.
-        let got = upload.read(cx, &mut self.buf, false);
+        // Not pausable: a pause is a read error. Never chunked: no
+        // trailers are asked for.
+        let got = upload.read(cx, &mut self.buf, false, |_| Ok(Vec::new()));
         upload::client_read(cx, self.buf.len(), &got);
         let got = got?;
         if got.n == 0 {

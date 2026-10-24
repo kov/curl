@@ -401,6 +401,8 @@ pub(crate) struct Readers {
     /// The head said `Expect: 100-continue`: C's reader for it stays for
     /// the request, the 100 come or not.
     pub(crate) exp100: bool,
+    /// The body's line ends are converted (`cr-lineconv`).
+    pub(crate) lines: bool,
     pub(crate) client: Pausing,
 }
 
@@ -424,6 +426,7 @@ impl Readers {
         let stack = [
             self.chunked.then_some("chunked"),
             self.exp100.then_some("cr-exp100"),
+            self.lines.then_some("cr-lineconv"),
             Some(client),
         ];
         for name in stack.into_iter().flatten() {

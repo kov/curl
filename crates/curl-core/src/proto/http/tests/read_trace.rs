@@ -638,3 +638,107 @@ fn an_application_s_pause_is_told_to_no_reader() {
     );
     assert!(!lines.iter().any(|l| l.contains("unpausing")), "{lines:?}");
 }
+
+/// A file's body whose line ends are converted (`--crlf`) goes chunked,
+/// its size no longer known, though the client's size, small, still adds
+/// no `Expect`; the conversion stage reads into the chunk stage's room and
+/// gives each lone LF as CRLF. The C build traces the same for `-T` of
+/// the same seven bytes with `--crlf`.
+#[test]
+fn converted_line_ends_are_read_through_their_stage() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let crate::options::UploadSource::Read { handler, .. } = pieces(&[b"a\nb\r\nc\n"]) else {
+        unreachable!("pieces are read by a handler");
+    };
+    let ran = get_with(&mut m, tracing_read(), "/u", talk, |o| {
+        o.method = Method::Upload;
+        o.crlf = true;
+        o.upload = UploadSource::Read {
+            handler,
+            rewind: None,
+            size: Some(7),
+        };
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = b"9\r\na\r\nb\r\nc\r\n\r\n0\r\n\r\n";
+    assert!(ran.request.ends_with(sent), "{:?}", ran.request);
+    let head = std::str::from_utf8(&ran.request[..ran.request.len() - sent.len()]).unwrap();
+    assert!(head.contains("Transfer-Encoding: chunked\r\n"), "{head}");
+    assert!(!head.contains("Expect"), "{head}");
+    let room = room_after(head.len());
+    assert_eq!(
+        read_lines(&ran),
+        [
+            "[READ] client_reset, clear readers".to_owned(),
+            "[READ] add fread reader, len=7 -> 0".to_owned(),
+            "[READ] cr_in_read(len=7, total=7, read=7) -> 0, nread=7, eos=1".to_owned(),
+            format!("[READ] cr_lc_read(len={}) -> 0, nread=9, eos=1", room - 12),
+            "[READ] http_chunk, made chunk of 9 bytes -> 0".to_owned(),
+            "[READ] http_chunk, added last, empty chunk".to_owned(),
+            format!("[READ] client_read(len={room}) -> 0, nread=19, eos=1"),
+            "[READ] client_reset, clear readers".to_owned(),
+        ]
+    );
+}
+
+/// An LF that starts a read after one that ended in a CR ends that
+/// line: it is not doubled, though the CR went out in the chunk before.
+#[test]
+fn a_line_end_split_between_reads_is_kept_as_it_is() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_with(&mut m, tracing_read(), "/u", talk, |o| {
+        o.method = Method::Upload;
+        o.crlf = true;
+        o.upload = pieces(&[b"a\r", b"\nb\n"]);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = b"2\r\na\r\r\n4\r\n\nb\r\n\r\n0\r\n\r\n";
+    assert!(ran.request.ends_with(sent), "{:?}", ran.request);
+}
+
+/// A pause lifted is told to the conversion stage too, in C's order of
+/// its readers: after the chunk stage, before the client's.
+#[test]
+fn a_lifted_pause_is_told_to_the_conversion_stage() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let (handler, lift) = paused_first(b"a\nb");
+    let ran = get_with(&mut m, tracing_read(), "/p", talk, |o| {
+        o.method = Method::Post;
+        o.crlf = true;
+        o.upload = UploadSource::Read {
+            handler,
+            rewind: None,
+            size: Some(3),
+        };
+        o.progress = lift;
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(ran.request.ends_with(b"4\r\na\r\nb\r\n0\r\n\r\n"));
+    let lines = read_lines(&ran);
+    let lifts: Vec<_> = lines.iter().filter(|l| l.contains("unpausing")).collect();
+    assert_eq!(
+        lifts,
+        [
+            "[READ] unpausing chunked -> 0",
+            "[READ] unpausing cr-lineconv -> 0",
+            "[READ] unpausing cr-in -> 0",
+        ],
+        "{lines:?}"
+    );
+}
+
+/// An empty body is not converted: it keeps its size, and goes as it
+/// is (`do_init_reader_stack` adds no stage for a length of 0).
+#[test]
+fn an_empty_body_is_not_converted() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_with(&mut m, tracing_read(), "/u", talk, |o| {
+        o.method = Method::Upload;
+        o.crlf = true;
+        o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(Vec::new()).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let head = String::from_utf8(ran.request.clone()).unwrap();
+    assert!(head.contains("Content-Length: 0\r\n"), "{head}");
+    assert!(!read_lines(&ran).iter().any(|l| l.contains("cr_lc_read")));
+}

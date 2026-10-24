@@ -737,6 +737,7 @@ fn apply(
         (ffi::CURLOPT_NOSIGNAL, Long(_)) => {}
         (ffi::CURLOPT_HTTP09_ALLOWED, Long(n)) => options.http.allow_09 = n != 0,
         (ffi::CURLOPT_FILETIME, Long(n)) => options.filetime = n != 0,
+        (ffi::CURLOPT_CRLF, Long(n)) => options.crlf = n != 0,
         (ffi::CURLOPT_IGNORE_CONTENT_LENGTH, Long(n)) => {
             options.http.ignore_content_length = n != 0;
         }

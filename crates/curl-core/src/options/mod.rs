@@ -78,6 +78,9 @@ pub struct Options {
     pub progress: Progress,
     /// What a transfer sends, if its request has a body.
     pub upload: UploadSource,
+    /// Each LF of what it sends not after a CR is sent as CRLF
+    /// (`CURLOPT_CRLF`).
+    pub crlf: bool,
     /// How a multipart body is made.
     pub mime: Cold<MimeOptions>,
     /// Who the transfer authenticates as.
@@ -410,6 +413,7 @@ impl Options {
             callbacks: self.callbacks.clone(),
             progress: self.progress.clone(),
             upload: self.upload.clone(),
+            crlf: self.crlf,
             mime: self.mime.try_clone(|m| Ok(*m))?,
             login: self.login.try_clone(Login::try_clone)?,
             netrc: self.netrc.try_clone(|netrc| {

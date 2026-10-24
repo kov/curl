@@ -971,11 +971,16 @@ impl Request {
                 Some(upload)
             }
         };
-        let size = if probe {
+        // The client's size, and the body's as sent: unknown if its line
+        // ends are converted, as they are for any body not known to be
+        // empty (`do_init_reader_stack`).
+        let client_size = if probe {
             Some(0)
         } else {
             upload.as_ref().and_then(Upload::size)
         };
+        let converts = options.crlf && upload.is_some() && client_size != Some(0);
+        let size = client_size.filter(|_| !converts);
         let size_unknown = upload.is_some() && size.is_none();
         if asked.is_none() && size_unknown && self.version == HttpVersion::Http10 {
             return Err(trace::fail(
@@ -1025,7 +1030,9 @@ impl Request {
             && expects.is_none()
             && !self.no_expect
             && self.version == HttpVersion::Http11
-            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+            // Weighed by the client's size, converted or not
+            // (`Curl_creader_client_length`).
+            && client_size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
         let announced = content.is_some() && !auth.probe && (expects == Some(true) || added_expect);
         if let Some(content) = &mut content {
             content.expect = added_expect;
@@ -1190,9 +1197,13 @@ impl Request {
                 *cx.readers_mut() = upload.pausing().map(|client| upload::Readers {
                     chunked,
                     exp100: announced,
+                    lines: converts,
                     client,
                 });
                 let mut body = chain::Body::new(upload);
+                if converts {
+                    body.convert_lines().map_err(|_| ErrorKind::OutOfMemory)?;
+                }
                 if chunked {
                     body.chunked().map_err(|_| ErrorKind::OutOfMemory)?;
                 }
@@ -1499,7 +1510,7 @@ impl Request {
             let sized = self
                 .body
                 .as_ref()
-                .and_then(|b| b.upload().size())
+                .and_then(chain::Body::size)
                 .is_some_and(|n| n != 0);
             let said = if sized {
                 "We are completely uploaded and fine"
@@ -1678,7 +1689,7 @@ impl Request {
             None => Left::Nothing,
             Some(_) if sent_all => Left::Nothing,
             Some(body) if body.is_chunked() => Left::Unknown,
-            Some(body) => match body.upload().size() {
+            Some(body) => match body.size() {
                 Some(size) => Left::Bytes(size.saturating_sub(body_sent)),
                 None => Left::Unknown,
             },

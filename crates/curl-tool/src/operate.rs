@@ -2359,6 +2359,10 @@ fn transfer_setopts(
             Ok(())
         })?;
     }
+    s.long("CURLOPT_CRLF", i64::from(op.crlf), |o| {
+        o.crlf = op.crlf;
+        Ok(())
+    })?;
     let (condition, time) = match op.time_cond {
         None => (0, 0),
         Some(c) => (
@@ -3589,6 +3593,8 @@ mod tests {
                 vec![line("CURLOPT_TCP_FASTOPEN, 1L")],
                 vec![],
             ),
+            (&["--crlf"], vec![line("CURLOPT_CRLF, 1L")], vec![]),
+            (&[], vec![], vec!["CRLF".to_owned()]),
             (
                 &["--mptcp"],
                 vec!["  CURLOPT_OPENSOCKETFUNCTION was set to a function pointer\n".to_owned()],

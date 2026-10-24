@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+FILE
+--crlf
+</keywords>
+</info>
+
+# Client-side
+<client>
+<server>
+file
+</server>
+<name>
+file:// upload with --crlf
+</name>
+<command option="no-include">
+file://%FILE_PWD/%LOGDIR/result%TESTNUMBER.txt -T %LOGDIR/upload%TESTNUMBER.txt --crlf
+</command>
+<file name="%LOGDIR/upload%TESTNUMBER.txt">
+one
+two
+three
+</file>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<file name="%LOGDIR/result%TESTNUMBER.txt" crlf="yes">
+one
+two
+three
+</file>
+</verify>
+</testcase>

@@ -159,6 +159,7 @@ fn boolean_options_take_any_nonzero_value() {
         (ffi::CURLOPT_AUTOREFERER, |o| o.http.auto_referer),
         (ffi::CURLOPT_UNRESTRICTED_AUTH, |o| o.http.unrestricted_auth),
         (ffi::CURLOPT_FILETIME, |o| o.filetime),
+        (ffi::CURLOPT_CRLF, |o| o.crlf),
         (ffi::CURLOPT_HAPROXYPROTOCOL, |o| o.proxy.haproxy),
         (ffi::CURLOPT_SUPPRESS_CONNECT_HEADERS, |o| {
             o.proxy.suppress_connect_headers

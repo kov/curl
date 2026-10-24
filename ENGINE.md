@@ -470,16 +470,17 @@ shutdown's TLS lines are its internal handle's, so not traced (§4.6).
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
 built (`add buf reader`, `add fread reader`) and each read of it, by the reader C would have, a
 buffer, the application's read handler or a mime tree (`cr_buf_read`, `cr_in_read`,
-`cr_mime_read` with its special sizes), the chunk stage around it, and `client_read` with the
+`cr_mime_read` with its special sizes), the line-end conversion and the chunk stage around it
+(`cr_lc_read`, `http_chunk`), and `client_read` with the
 room the request's buffer had; a body held for a 100 is asked for and gives nothing. The
 readers are reset as a request starts and as it ends without error, kept to be rewound when the
 next request is to send the body again (a redirect or 417 that asks it, a retry always), and
 rewound before that request is issued. A pause the read handler or a tree's part asked for,
 lifted, is told to each reader C would stack, by name from the network's side (`unpausing
-chunked/cr-exp100/cr-in|cr-mime -> 0`, `Curl_creader_unpause`): the slot keeps which those are,
-set as HTTP makes the body and let go with the readers, since the lift mostly comes from a
-handler while the run is out. Not traced: C's rewind mechanics by name (`cr_in, rewind via
-...`) and the line-ending converter, which the engine has no reader for.
+chunked/cr-exp100/cr-lineconv/cr-in|cr-mime -> 0`, `Curl_creader_unpause`): the slot keeps which
+those are, set as HTTP makes the body and let go with the readers, since the lift mostly comes
+from a handler while the run is out. Not traced: C's rewind mechanics by name (`cr_in, rewind
+via ...`).
 
 Outside a transfer the handle's `DebugHandler` is not reached: it takes a `TransferCx`, which a
 handle in no transfer has none of. What C traces there (`CURLOPT_COOKIELIST`'s commands, as
@@ -2187,7 +2188,7 @@ pub(crate) struct Upload { source: Source /* None | Bytes(TryArc<Vec<u8>>) | Len
                                              | Mime(MimeReader) */,
                            read: u64, latch: Latch /* Open | Eof | Errored */, called: bool }
 pub(crate) struct Body { upload: Upload, chain: Chain }   // upload/chain.rs: what a request reads
-struct Chain { chunks: Option<ChunkEncoder> /* a slot per C phase: line ends join it */ }
+struct Chain { chunks: Option<ChunkEncoder>, lines: Option<Box<LineConv>> }   // a slot per C phase
 ```
 
 `Upload` is C's client readers at `CURL_CR_CLIENT` (`cr_null`, `cr_buf`, `cr_in`, `cr_mime`) as
@@ -2198,8 +2199,13 @@ a list of boxes. A read of the `Body` asks the last stage: one with output gives
 names the room in its buffer it wants filled (`wants`), the stage before it, or the source, fills
 it, and it frames what came (`got`, with the trailers at the end for the chunk stage). The protocol
 reads only the `Body`. `Expect: 100-continue` is not a stage: C's `cr_exp100` only holds reads
-back, which `Sending::AwaitingContinue` does (§6.1). SMTP's dot-stuffing and line ends
-(`CURLOPT_CRLF`, FTP ASCII) become stages when those protocols come.
+back, which `Sending::AwaitingContinue` does (§6.1). `CURLOPT_CRLF` is the `LineConv` stage
+(C's `cr_lc`), added for any body not known to be empty, `file:`'s too: each LF not after a CR
+goes as CRLF, a CR ending one read carried to the next; a read with no LF passes through, one
+with an LF is converted into the stage's buffer, boxed and grown fallibly as only such a body
+needs it. It makes the body's size unknown (`Body::size`, C's total length), so HTTP sends it
+chunked, while `Expect: 100-continue` still weighs the client's size, as `addexpect` does.
+SMTP's dot-stuffing and FTP's ASCII line ends become stages when those protocols come.
 
 - The request head is rendered into the request's own send buffer, as C's `req.sendbuf` is per
   request, measured first so that it takes one allocation; body bytes are pulled from the `Body`

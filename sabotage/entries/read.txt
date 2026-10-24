@@ -131,11 +131,13 @@ features: test-util
         let stack = [
             self.chunked.then_some("chunked"),
             self.exp100.then_some("cr-exp100"),
+            self.lines.then_some("cr-lineconv"),
             Some(client),
         ];
 --- new
         let stack = [
             Some(client),
+            self.lines.then_some("cr-lineconv"),
             self.exp100.then_some("cr-exp100"),
             self.chunked.then_some("chunked"),
         ];
@@ -148,3 +150,51 @@ features: test-util
                     exp100: announced,
 --- new
                     exp100: false,
+
+=== a CR that ends one read is forgotten by the next
+file: crates/curl-core/src/upload/chain.rs
+witness: curl-core proto::http::tests::read_trace::a_line_end_split_between_reads_is_kept_as_it_is
+features: test-util
+--- old
+                if let Some(&last) = read.last() {
+                    self.prev_cr = last == b'\r';
+                }
+--- new
+                if let Some(&last) = read.last() {
+                    self.prev_cr = last == b'\r' && false;
+                }
+
+=== a converted body keeps the size it had before
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::converted_line_ends_are_read_through_their_stage
+features: test-util
+--- old
+        let size = client_size.filter(|_| !converts);
+--- new
+        let size = client_size;
+
+=== a converted body's unknown size adds an Expect
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::converted_line_ends_are_read_through_their_stage
+features: test-util
+--- old
+            && client_size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+--- new
+            && size.is_none_or(|n| n > EXPECT_100_THRESHOLD);
+
+=== an empty body is converted too
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::read_trace::an_empty_body_is_not_converted
+features: test-util
+--- old
+        let converts = options.crlf && upload.is_some() && client_size != Some(0);
+--- new
+        let converts = options.crlf && upload.is_some();
+
+=== a lifted pause is not told to the conversion stage
+file: crates/curl-core/src/upload/mod.rs
+witness: curl-core proto::http::tests::read_trace::a_lifted_pause_is_told_to_the_conversion_stage
+features: test-util
+--- old
+            self.lines.then_some("cr-lineconv"),
+--- new

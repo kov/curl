@@ -26,6 +26,10 @@ pub(super) const TESTS: &[(&str, fn())] = &[
         "an_ed25519_certificate_binds_nothing",
         an_ed25519_certificate_binds_nothing,
     ),
+    (
+        "a_certificate_signed_by_another_kind_of_key_binds_nothing",
+        a_certificate_signed_by_another_kind_of_key_binds_nothing,
+    ),
 ];
 
 /// The bindings the steps were given, in order.
@@ -235,6 +239,35 @@ fn an_ed25519_certificate_binds_nothing() {
     let key = PKey::generate_ed25519().unwrap();
     let cert = self_signed(&key, MessageDigest::null());
     let (got, ran) = bound("bind-ed25519", cert, key);
+    assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.lines);
+    assert_eq!(got, None);
+    assert!(said(
+        &ran,
+        "certificate exposes no signing digest algorithm, nothing to add to channel binding"
+    ));
+}
+
+/// A certificate whose key is not of its signer's kind, and whose
+/// signature names no digest, binds nothing, said so, though its own key
+/// has a digest (C's post-quantum case): here a P-256 key signed by
+/// Ed25519.
+fn a_certificate_signed_by_another_kind_of_key_binds_nothing() {
+    let signer = PKey::generate_ed25519().unwrap();
+    let key = key();
+    let mut cert = X509Builder::new().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_serial_number(&BigNum::from_u32(8).unwrap().to_asn1_integer().unwrap())
+        .unwrap();
+    cert.set_subject_name(&name("localhost")).unwrap();
+    cert.set_issuer_name(&name("curl-openssl test Ed25519 CA"))
+        .unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    cert.set_not_after(&Asn1Time::days_from_now(2).unwrap())
+        .unwrap();
+    cert.sign(&signer, MessageDigest::null()).unwrap();
+    let (got, ran) = bound("bind-mixed", cert.build(), key);
     assert_eq!(ran.result, Ok(()), "{:#?}", ran.seen.lines);
     assert_eq!(got, None);
     assert!(said(

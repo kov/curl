@@ -401,8 +401,10 @@ witness: curl-openssl a_certificate_signed_with_sha_1_is_bound_by_sha_256
 file: crates/curl-openssl/src/x509.rs
 witness: curl-openssl an_ed25519_certificate_binds_nothing
 --- old
-                // The key's mandatory digest is none, as Ed25519's is.
-                no_digest_acceptable = true;
+    if mandatory && undef {
+        return true;
+    }
 --- new
-                // The key's mandatory digest is none, as Ed25519's is.
-                no_digest_acceptable = false;
+    if mandatory && undef {
+        return false;
+    }

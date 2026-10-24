@@ -1049,6 +1049,42 @@ impl fmt::Display for ErrText {
     }
 }
 
+/// Whether `key`, of its certificate's signer's kind, has none for its
+/// mandatory digest, as Ed25519's is: then nothing is bound. One naming
+/// a digest is said, though the binding then fails all the same.
+fn key_names_no_digest(
+    key: *mut openssl_sys::EVP_PKEY,
+    notes: &mut dyn curl_core::tls::BindingNotes,
+) -> bool {
+    let mut name = [0 as c_char; 128];
+    // SAFETY: the certificate's key, and room for the name with its zero.
+    let rc = unsafe { ffi::EVP_PKEY_get_default_digest_name(key, name.as_mut_ptr(), name.len()) };
+    // SAFETY: the library wrote a terminated name, or left the zeros.
+    let name = unsafe { CStr::from_ptr(name.as_ptr()) }.to_bytes();
+    let undef = name == b"UNDEF";
+    let mandatory = rc == 2;
+    if mandatory && undef {
+        return true;
+    }
+    if rc > 0 && !name.is_empty() && !undef {
+        say_unavailable(mandatory, name, notes);
+    }
+    false
+}
+
+/// That the key's digest `name` is not one to bind with.
+fn say_unavailable(mandatory: bool, name: &[u8], notes: &mut dyn curl_core::tls::BindingNotes) {
+    let how = if mandatory {
+        " [mandatory]"
+    } else {
+        " [advisory]"
+    };
+    notes.info(format_args!(
+        "Digest algorithm : {}{how} (derived from public key), but unavailable",
+        name.escape_ascii()
+    ));
+}
+
 /// The prefix of a channel binding (RFC 5929's `tls-server-end-point`).
 const BINDING_PREFIX: &[u8] = b"tls-server-end-point:";
 
@@ -1107,29 +1143,7 @@ pub(crate) fn channel_binding(
             // no digest: accepted, nothing bound (post-quantum).
             no_digest_acceptable = true;
         } else {
-            let mut name = [0 as c_char; 128];
-            // SAFETY: the key, and room for the name with its zero.
-            let rc = unsafe {
-                ffi::EVP_PKEY_get_default_digest_name(key, name.as_mut_ptr(), name.len())
-            };
-            // SAFETY: the library wrote a terminated name, or left the
-            // zeros.
-            let name = unsafe { CStr::from_ptr(name.as_ptr()) }.to_bytes();
-            let undef = name == b"UNDEF";
-            if rc == 2 && undef {
-                // The key's mandatory digest is none, as Ed25519's is.
-                no_digest_acceptable = true;
-            } else if rc > 0 && !name.is_empty() && !undef {
-                let how = if rc == 2 {
-                    " [mandatory]"
-                } else {
-                    " [advisory]"
-                };
-                notes.info(format_args!(
-                    "Digest algorithm : {}{how} (derived from public key), but unavailable",
-                    name.escape_ascii()
-                ));
-            }
+            no_digest_acceptable = key_names_no_digest(key, notes);
         }
     }
     if digest.is_null() {

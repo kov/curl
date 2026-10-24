@@ -44,6 +44,13 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # A key of its certificate's signer's kind, the signature naming no
+    # digest, that names a default digest of its own: the keys OpenSSL
+    # signs with without a digest name none (Ed25519's and Ed448's are
+    # "UNDEF"), so the line saying so is not reached, and the binding
+    # fails either way.
+    'curl-openssl/src/x509\.rs:.*: (replace && with \|\||replace > with (==|<|>=)|delete !) in key_names_no_digest$',
+    'curl-openssl/src/x509\.rs:.*: .* in say_unavailable$',
     # Standard input's copy is never 0, as 0 is the descriptor copied; and
     # `dup2` returns the descriptor it made, standard error's 2.
     'curl-os/src/fs\.rs:.*: replace < with <= in (stdin|stderr_to)$',

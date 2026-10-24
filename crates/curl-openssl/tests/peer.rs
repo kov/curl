@@ -48,6 +48,8 @@ mod checks;
 mod client;
 #[path = "peer/engine.rs"]
 mod engine;
+#[path = "peer/goodbye.rs"]
+mod goodbye;
 #[path = "peer/status.rs"]
 mod status;
 
@@ -124,6 +126,7 @@ fn main() {
     .chain(client::TESTS.iter().copied())
     .chain(chain::TESTS.iter().copied())
     .chain(engine::TESTS.iter().copied())
+    .chain(goodbye::TESTS.iter().copied())
     .chain(status::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.

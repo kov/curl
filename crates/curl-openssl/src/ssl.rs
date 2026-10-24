@@ -71,6 +71,7 @@ impl TlsBackend for OpenSsl {
             flags: Flags::default(),
             waits: TlsWait::Nothing,
             blocked_write: None,
+            shut: false,
         };
         Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
     }
@@ -161,6 +162,8 @@ struct Session {
     /// The length of a write the library could not finish, which it must
     /// be given again (`blocked_ssl_write_len`).
     blocked_write: Option<c_int>,
+    /// The goodbye is over, or failed (the filter's `shutdown`).
+    shut: bool,
 }
 
 /// The library's major error codes C tells apart.
@@ -842,10 +845,23 @@ impl TlsSession for Session {
         }
     }
 
-    /// No close_notify yet: the goodbye comes with step 43f, done at once
-    /// until then.
-    fn shutdown(&mut self, _io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
-        Ok(Handshake::Done)
+    /// The goodbye (`ssl_cf_shutdown`): only for a handshake that was
+    /// done, once; the bytes it holds are given up as it waits or ends.
+    fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+        if self.step != Step::Done || self.shut {
+            return Ok(Handshake::Done);
+        }
+        self.waits = TlsWait::Nothing;
+        let done = self.goodbye(io);
+        self.shut = done;
+        if done || self.waits != TlsWait::Nothing {
+            self.flags.input_pending = false;
+        }
+        Ok(if done {
+            Handshake::Done
+        } else {
+            Handshake::Waiting
+        })
     }
 
     fn waits(&self) -> TlsWait {
@@ -858,6 +874,122 @@ impl TlsSession for Session {
 }
 
 impl Session {
+    /// One try at the goodbye (`ossl_shutdown`, sending close_notify):
+    /// the peer's close_notify read first if it came, and nothing sent to
+    /// a peer that closed after it; then ours, then the peer's waited for.
+    /// Done, or waiting for what `waits` says.
+    fn goodbye(&mut self, io: &mut TlsIo<'_>) -> bool {
+        let ssl = self.ssl().as_ptr();
+        let mut buf = [0u8; 1024];
+        let mut read = |s: &mut Session, io: &mut TlsIo<'_>| s.read_into(io, &mut buf);
+        // SAFETY: the SSL.
+        let sent =
+            || unsafe { openssl_sys::SSL_get_shutdown(ssl) } & openssl_sys::SSL_SENT_SHUTDOWN;
+        if sent() == 0 {
+            // Not started from our side: the peer may have said goodbye.
+            // SAFETY: the thread's error queue.
+            unsafe { openssl_sys::ERR_clear_error() };
+            let mut nread = -1;
+            for _ in 0..10 {
+                nread = read(self, io).0;
+                io.trace(format_args!("SSL shutdown not sent, read -> {nread}"));
+                if nread <= 0 {
+                    break;
+                }
+            }
+            // SAFETY: the SSL and what its call returned.
+            let err = unsafe { openssl_sys::SSL_get_error(ssl, nread) };
+            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN && !io.peer_alive() {
+                // It closed after its close_notify: it wants none of ours.
+                self.flags.peer_closed = true;
+                io.trace(format_args!("peer closed connection"));
+                return true;
+            }
+        }
+        if sent() == 0 {
+            // SAFETY: the thread's error queue.
+            unsafe { openssl_sys::ERR_clear_error() };
+            io.trace(format_args!("send SSL close notify"));
+            // SAFETY: the session's SSL, its BIO reaching `io`.
+            let (rc, _) = self.call(io, |ssl| unsafe { openssl_sys::SSL_shutdown(ssl) });
+            if rc == 1 {
+                io.trace(format_args!("SSL shutdown finished"));
+                return true;
+            }
+            // SAFETY: the SSL and what its call returned.
+            if unsafe { openssl_sys::SSL_get_error(ssl, rc) } == openssl_sys::SSL_ERROR_WANT_WRITE {
+                io.trace(format_args!("SSL shutdown still wants to send"));
+                self.waits = TlsWait::Send;
+                return false;
+            }
+        }
+        // Ours sent: the peer's is read for.
+        let (mut nread, mut below) = (-1, Below::Ok);
+        for _ in 0..10 {
+            // SAFETY: the thread's error queue.
+            unsafe { openssl_sys::ERR_clear_error() };
+            (nread, below) = read(self, io);
+            io.trace(format_args!("SSL shutdown read -> {nread}"));
+            if nread <= 0 {
+                break;
+            }
+        }
+        // SAFETY: the SSL and what its call returned.
+        match unsafe { openssl_sys::SSL_get_error(ssl, nread) } {
+            openssl_sys::SSL_ERROR_ZERO_RETURN => {
+                // SAFETY: the session's SSL, its BIO reaching `io`.
+                let (rc, _) = self.call(io, |ssl| unsafe { openssl_sys::SSL_shutdown(ssl) });
+                if rc == 1 {
+                    io.trace(format_args!("SSL shutdown finished"));
+                } else {
+                    io.trace(format_args!("SSL shutdown not received, but closed"));
+                }
+                true
+            }
+            openssl_sys::SSL_ERROR_NONE | openssl_sys::SSL_ERROR_WANT_READ => {
+                io.trace(format_args!("SSL shutdown sent, want receive"));
+                self.waits = TlsWait::Recv;
+                false
+            }
+            openssl_sys::SSL_ERROR_WANT_WRITE => {
+                io.trace(format_args!("SSL shutdown send blocked"));
+                self.waits = TlsWait::Send;
+                false
+            }
+            err => {
+                // It closed without its close_notify.
+                // SAFETY: the thread's error queue, its earliest taken.
+                let e = unsafe { openssl_sys::ERR_get_error() };
+                let errno = errno_of(below);
+                if e != 0 {
+                    let e = ErrText::of(e);
+                    io.trace(format_args!(
+                        "SSL shutdown, ignore recv error: '{}', errno {errno}",
+                        e.versioned()
+                    ));
+                } else {
+                    io.trace(format_args!(
+                        "SSL shutdown, ignore recv error: '{}', errno {errno}",
+                        text::ssl_error(err)
+                    ));
+                }
+                true
+            }
+        }
+    }
+
+    /// `SSL_read` into `buf`, which is dropped: what it returned, and
+    /// what came of the read below.
+    fn read_into(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> (c_int, Below) {
+        let size = c_int::try_from(buf.len()).unwrap_or(c_int::MAX);
+        let room = buf.as_mut_ptr();
+        // SAFETY: the SSL, and `size` bytes of room at `room`, not
+        // otherwise used during the call.
+        self.call(io, |ssl| unsafe {
+            openssl_sys::SSL_read(ssl, room.cast(), size)
+        })
+    }
+
     /// What `SSL_read` returning `nread` comes to (`ossl_recv`).
     fn read_result(&mut self, io: &mut TlsIo<'_>, nread: c_int, below: Below) -> io::Result<Recv> {
         if let Some(n) = usize::try_from(nread).ok().and_then(NonZeroUsize::new) {

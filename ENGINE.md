@@ -1764,7 +1764,7 @@ tests by a fake library (`tls::fake::FakeTls`); and OpenSSL's session in curl-op
 BIO**, the context, **Verification** and the host check), which the tool and the C ABI give
 every handle (`Libraries::tls`), reporting `https`, `SSL` and `OpenSSL/3.5.9` as C's build does
 (`curl -V`, `curl_version_info`); the CA store each multi keeps for its next connections
-(`TlsShared`). Planned: close_notify, and the seam's later methods noted below. MILESTONES.md step 43 lists the
+(`TlsShared`); close_notify (**Shutdown**). Planned: the seam's later methods noted below. MILESTONES.md step 43 lists the
 sub-steps.
 
 ```rust
@@ -1998,12 +1998,14 @@ forwarded to the proxy, whose SETUP line C words `added SSL filter for origin`. 
 not apply to the proxy's handshake.
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
-multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s (built; the fake's says
-goodbye and waits for the peer's; OpenSSL's is done at once, sending nothing, until 43f).
-Planned (43f): OpenSSL's sends close_notify only after a completed
-handshake, and never for an aborted transfer (§4.6's discard terminates it); it then reads for
-the peer's. The reference sends it on every graceful close: after the server's own
-close_notify, and from the cleanup's pass for a connection still kept.
+multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s. OpenSSL's is
+`ossl_shutdown` with C's `send_shutdown` set, once, and only after a handshake that was done: it
+reads first for a close_notify the peer sent, and sends nothing to a peer that closed after it;
+else it sends close_notify (`SSL_shutdown`) and reads for the peer's, waiting as the read or the
+send says; a read that fails ends it. An aborted transfer's connection is terminated by §4.6's
+discard and says nothing, as a goodbye would tell the server the transfer went well. So
+close_notify goes on every graceful close, as the reference sends it: after the server's own
+(`openssl s_server -www`), and from the cleanup's pass for a connection still kept.
 
 **Errors.** The kinds `ErrorKind` kept get their producers: `SslConnectError` 35,
 `PeerFailedVerification` 60, `SslCacertBadfile` 77, `SslCipher` 59, `SslCertproblem` 58,

@@ -321,8 +321,6 @@ impl TlsIo<'_> {
         }
     }
 
-    /// The time of the multi's pass the call is made in (C's
-    /// `Curl_pgrs_now`), on the multi's clock.
     /// What the library made of the peer's certificate, its own code, 0
     /// being verified (`CURLINFO_SSL_VERIFYRESULT`). The origin's alone:
     /// a proxy's has its own info (43i).
@@ -349,8 +347,19 @@ impl TlsIo<'_> {
         Ok(())
     }
 
+    /// The time of the multi's pass the call is made in (C's
+    /// `Curl_pgrs_now`), on the multi's clock.
     pub fn now(&self) -> Instant {
         self.cx.now()
+    }
+
+    /// The connection below seems usable: the peer has not closed it
+    /// (`is_alive` of the filter below).
+    pub fn peer_alive(&mut self) -> bool {
+        matches!(
+            self.below.reborrow().alive(self.cx),
+            crate::conn::layer::Alive::Alive { .. }
+        )
     }
 }
 

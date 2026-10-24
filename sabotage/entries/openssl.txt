@@ -286,3 +286,33 @@ witness: curl-openssl the_verify_result_is_reported_as_openssl_gives_it
 --- old
     io.verified(verified);
 --- new
+
+=== a connection the transfers are done with closes without close_notify
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_kept_connection_says_goodbye_as_the_multi_goes
+--- old
+        if self.step != Step::Done || self.shut {
+--- new
+        if true || self.step != Step::Done || self.shut {
+
+=== the peer's close_notify, its socket still open, goes unanswered
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_goodbye_answers_the_peer_s_own
+--- old
+            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN && !io.peer_alive() {
+--- new
+            if nread == 0 && err == openssl_sys::SSL_ERROR_ZERO_RETURN {
+
+=== an aborted transfer's TLS connection says close_notify
+file: crates/curl-core/src/conn/shutdown.rs
+witness: curl-openssl an_aborted_transfer_s_connection_says_no_goodbye
+--- old
+    if aborted {
+        close_now(conn, net);
+        return;
+    }
+--- new
+    if false && aborted {
+        close_now(conn, net);
+        return;
+    }

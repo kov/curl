@@ -328,3 +328,11 @@ witness: curl-core proto::file::tests::an_upload_is_timed_piece_by_piece
 --- new
         if got.n == 0 {
             return progress::update(cx, false).map(|()| DoStep::Made);
+
+=== a file transfer's timeout names the size only its progress has
+file: crates/curl-core/src/proto/mod.rs
+witness: curl-core proto::file::tests::a_download_past_its_time_limit_names_no_size
+--- old
+        !matches!(self, ProtoState::File(_))
+--- new
+        true

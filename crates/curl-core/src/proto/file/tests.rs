@@ -807,6 +807,34 @@ fn a_download_is_timed_piece_by_piece() {
     );
 }
 
+/// A download that took it past its time limit fails as out of time with
+/// what it received, but not of how much: C's `file:` sizes only the
+/// progress, never the request (`req.size`), which the message names.
+#[test]
+fn a_download_past_its_time_limit_names_no_size() {
+    let s = Scratch::new("downlimit");
+    s.file("f", b"hello", Y2K_NOON);
+    let clock = ManualClock::new().unwrap();
+    let (mut e, _) = easy(&s.url("f"));
+    let slow = SlowWriter {
+        clock: clock.clone(),
+        took: Duration::from_secs(3),
+    };
+    e.options_mut().callbacks.write = Some(Handler::write(slow).unwrap());
+    e.options_mut().limits.total = crate::time::TimeLimit::from_millis(2000);
+    let lines = traced(&mut e, b"");
+    let (r, e) = run_on(e, clock);
+    assert_eq!(r, Err(ErrorKind::OperationTimedout));
+    assert_eq!(e.report().sizes().download_expected(), Some(5));
+    let lines = lines.0.lock().unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "Operation timed out after 3000 milliseconds with 5 bytes received"),
+        "{lines:?}"
+    );
+}
+
 /// An upload's times and speed are the time its pieces took, its request
 /// made when the body ended; its meter is drawn again as each second
 /// passes.

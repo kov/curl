@@ -340,7 +340,7 @@ file: crates/curl-core/src/multi/state.rs
 witness: curl-core multi::tests::a_waiting_transfer_runs_out_of_time
 --- old
         TimeLeft::Expired(_) => {
-            timed_out(cx, Phase::Connecting);
+            timed_out(cx, Phase::Connecting, true);
             trace::info(cx, format_args!("PENDING handle timeout"));
             (TransferState::Setup(plan), Wake::Again)
         }

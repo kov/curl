@@ -222,6 +222,13 @@ impl ProtoState {
         }
     }
 
+    /// Whether the size of the body to come, once known, is the request's
+    /// (C's `req.size`), which a timeout's message names: `file:` gives
+    /// only the progress its size (`Curl_pgrsSetDownloadSize`).
+    pub(crate) fn sizes_request(&self) -> bool {
+        !matches!(self, ProtoState::File(_))
+    }
+
     /// Whether the request, once made, exchanges anything more: C's
     /// transfer has a socket to receive or send on.
     pub(crate) fn exchanges(&self) -> bool {

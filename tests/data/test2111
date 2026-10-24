@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+HTTP proxy
+HTTP proxy Negotiate auth (stub krb5)
+--proxy-anyauth
+</keywords>
+</info>
+# Server-side
+<reply>
+<!-- First request, no credentials sent: the proxy offers Negotiate -->
+<data>
+HTTP/1.1 407 Proxy Authentication Required
+Server: Microsoft-IIS/7.0
+Proxy-Authenticate: Negotiate
+Content-Length: 18
+
+Who are you, sir?
+</data>
+<!-- Second request, with the stub's token for the proxy -->
+<data1>
+HTTP/1.1 200 Things are fine in proxy land
+Server: Microsoft-IIS/7.0
+Content-Length: 15
+
+Nice auth sir!
+</data1>
+<datacheck>
+HTTP/1.1 407 Proxy Authentication Required
+Server: Microsoft-IIS/7.0
+Proxy-Authenticate: Negotiate
+Content-Length: 18
+
+HTTP/1.1 200 Things are fine in proxy land
+Server: Microsoft-IIS/7.0
+Content-Length: 15
+
+Nice auth sir!
+</datacheck>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+HTTP proxy Negotiate picked from a 407 by --proxy-anyauth (stub krb5)
+</name>
+<features>
+GSS-API
+Debug
+proxy
+</features>
+<setenv>
+CURL_STUB_GSS_CREDS="KRB5_Alice"
+</setenv>
+<command>
+--proxy-anyauth -U : -x http://%HOSTIP:%HTTPPORT http://remote.example/%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<protocol crlf="headers">
+GET http://remote.example/%TESTNUMBER HTTP/1.1
+Host: remote.example
+User-Agent: curl/%VERSION
+Accept: */*
+Proxy-Connection: Keep-Alive
+
+GET http://remote.example/%TESTNUMBER HTTP/1.1
+Host: remote.example
+Proxy-Authorization: Negotiate %b64["KRB5_Alice":HTTP@127.0.0.1:1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]b64%
+User-Agent: curl/%VERSION
+Accept: */*
+Proxy-Connection: Keep-Alive
+
+</protocol>
+</verify>
+</testcase>

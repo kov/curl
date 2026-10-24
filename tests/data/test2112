@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+HTTP CONNECT
+HTTP proxy
+HTTP proxy Negotiate auth (stub krb5)
+--proxy-anyauth
+</keywords>
+</info>
+# Server-side
+<reply>
+<!-- First CONNECT, no credentials sent: the proxy offers Negotiate -->
+<connect crlf="headers">
+HTTP/1.1 407 Proxy Authentication Required
+Proxy-Authenticate: Negotiate
+Content-Length: 16
+
+data to discard
+</connect>
+<!-- Second CONNECT, with the stub's token for the proxy -->
+<connect1 crlf="headers">
+HTTP/1.1 200 Things are fine in proxy land
+
+</connect1>
+<!-- The request through the tunnel -->
+<data2>
+HTTP/1.1 200 OK
+Content-Length: 7
+
+daniel
+</data2>
+<datacheck>
+HTTP/1.1 407 Proxy Authentication Required%CR
+Proxy-Authenticate: Negotiate%CR
+Content-Length: 16%CR
+%CR
+HTTP/1.1 200 Things are fine in proxy land%CR
+%CR
+HTTP/1.1 200 OK
+Content-Length: 7
+
+daniel
+</datacheck>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+HTTP CONNECT with Negotiate picked from a 407 (stub krb5)
+</name>
+<features>
+GSS-API
+Debug
+proxy
+</features>
+<setenv>
+CURL_STUB_GSS_CREDS="KRB5_Alice"
+</setenv>
+<command>
+http://test.remote.example.com.%TESTNUMBER:%HTTPPORT/path/%TESTNUMBER0002 --proxy http://%HOSTIP:%HTTPPORT --proxy-user : --proxy-anyauth --proxytunnel
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<protocol crlf="headers">
+CONNECT test.remote.example.com.%TESTNUMBER:%HTTPPORT HTTP/1.1
+Host: test.remote.example.com.%TESTNUMBER:%HTTPPORT
+User-Agent: curl/%VERSION
+Proxy-Connection: Keep-Alive
+
+CONNECT test.remote.example.com.%TESTNUMBER:%HTTPPORT HTTP/1.1
+Host: test.remote.example.com.%TESTNUMBER:%HTTPPORT
+Proxy-Authorization: Negotiate %b64["KRB5_Alice":HTTP@127.0.0.1:1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]b64%
+User-Agent: curl/%VERSION
+Proxy-Connection: Keep-Alive
+
+GET /path/%TESTNUMBER0002 HTTP/1.1
+Host: test.remote.example.com.%TESTNUMBER:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+</protocol>
+</verify>
+</testcase>

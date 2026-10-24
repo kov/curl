@@ -618,15 +618,14 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **d. TLS in the core.** **Done.** `curl_core::tls` (the seam a library implements),
       `TlsLayer`, `Cold<TlsOptions>`, `TlsIdentity` on `Route` and compared for reuse, `https`
       with a TLS library and the origin's handshake as the setup's last stage, the bytes past a
-      tunnel's answer read first, the goodbye through the shutdown set; over `FakeTls`, with an
-      HTTPS GET budget of 52 over it. No runtests change: the shim and the tool name no TLS
+      tunnel's answer read first, the goodbye through the shutdown set; over `FakeTls`. No
+      runtests change: the shim and the tool name no TLS
       library until e1, which also brings the CA default.
     - **e1. The OpenSSL layer and the flip.** **Done.** The BIO, the context, verification and
       hostcheck (1397), the CA default, C's TLS failure texts, the tool's `-k`, `--cacert`,
       `--capath`, version, cipher, curve and signature options, the C ABI's (`CAINFO_BLOB`
       among them), `curl_global_sslset`, a failed setup's ends and connect time (5029);
-      `https`, `SSL` and `OpenSSL/3.5.9` reported; the HTTPS GET budget over OpenSSL pinned at
-      the plain GET's plus 12 (51 against 39), and over the fake at 54; the CA store each multi
+      `https`, `SSL` and `OpenSSL/3.5.9` reported; the CA store each multi
       keeps for its next connections (`TlsShared`, `CURLOPT_CA_CACHE_TIMEOUT`). Its list below
       passes on both legs.
     - **e2. Client certificates, pinning, CRL, issuer, OCSP stapling, certinfo, engines.**

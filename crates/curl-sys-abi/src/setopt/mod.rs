@@ -19,6 +19,7 @@ use core::ptr::NonNull;
 use core::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
+use curl_core::cookie::LoadError;
 use curl_core::error::ErrorKind;
 use curl_core::handler::{Handler, LineSource};
 use curl_core::options::{
@@ -1574,19 +1575,23 @@ fn cookie_command(
             short = held.try_extend_from_slice(line).is_err() || notes.try_push(held).is_err();
         }
     };
+    let oom = |_: OutOfMemory| ErrorKind::OutOfMemory;
     let done = if command.eq_ignore_ascii_case(b"ALL") {
-        easy.clear_cookies()
+        easy.clear_cookies().map_err(oom)
     } else if command.eq_ignore_ascii_case(b"SESS") {
-        easy.clear_session_cookies()
+        easy.clear_session_cookies().map_err(oom)
     } else if command.eq_ignore_ascii_case(b"FLUSH") {
         // A jar that cannot be written fails nothing, as in C, which says
         // so only in the trace; outside a transfer, there is none here.
         easy.save_cookies().ok();
         Ok(())
     } else if command.eq_ignore_ascii_case(b"RELOAD") {
-        easy.reload_cookies(note)
+        easy.reload_cookies(note).map_err(|e| match e {
+            LoadError::OutOfMemory => ErrorKind::OutOfMemory,
+            LoadError::Read => ErrorKind::ReadError,
+        })
     } else {
-        easy.add_cookie(command, note)
+        easy.add_cookie(command, note).map_err(oom)
     };
     match short {
         true => done.and(Err(ErrorKind::OutOfMemory)),

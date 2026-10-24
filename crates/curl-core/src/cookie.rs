@@ -13,6 +13,20 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
 use crate::url::is_ip_address;
 
+/// Why the cookie files could not be read into the jar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadError {
+    OutOfMemory,
+    /// A file that opened could not be read (`CURLE_READ_ERROR`).
+    Read,
+}
+
+impl From<OutOfMemory> for LoadError {
+    fn from(_: OutOfMemory) -> Self {
+        LoadError::OutOfMemory
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

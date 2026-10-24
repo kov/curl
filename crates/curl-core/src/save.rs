@@ -12,7 +12,7 @@ use curl_os::fs::{self, Keep};
 
 /// Why a file could not be written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SaveError {
+pub enum SaveError {
     OutOfMemory,
     /// It could not be opened, written or renamed (`CURLE_WRITE_ERROR`).
     Write,

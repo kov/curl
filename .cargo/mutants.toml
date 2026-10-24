@@ -430,4 +430,22 @@ exclude_re = [
     # With none shutting down to that destination, closing the oldest of
     # them closes none and takes nothing off.
     'curl-core/src/conn/pool\.rs:.*: replace > with >= in shutdowns_over$',
+    # Debug forms nothing reads.
+    'curl-core/src/tls\.rs:.*: replace <impl fmt::Debug for dyn TlsBackend>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    'curl-core/src/conn/tls\.rs:.*: replace <impl fmt::Debug for TlsLayer>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    'curl-core/src/tls/fake\.rs:.*: replace <impl fmt::Debug for FakeSession>::fmt -> fmt::Result with Ok\(Default::default\(\)\)$',
+    # A library traces its records only for a debug handler: without one,
+    # SSL data is written nowhere (`Curl_debug`), so asking is a saving.
+    'curl-core/src/tls\.rs:.*: replace TlsIo<.*>::debugs -> bool with true$',
+    # The fake's log keeps the room of the first 32 receives; no test
+    # reads more than that many through it.
+    'curl-core/src/tls/fake\.rs:.*: replace < with <= in <impl TlsSession for FakeSession>::recv$',
+    # The fake gives out what it holds before it reads again, so it says
+    # a read would block only holding nothing: whenever the core asks
+    # whether it holds bytes (after such a read), the answer is no, and a
+    # wrong yes costs only a pass that reads "would block" again.
+    'curl-core/src/tls/fake\.rs:.*: (replace <impl TlsSession for FakeSession>::pending -> bool with (true|false)|delete ! in <impl TlsSession for FakeSession>::pending)$',
+    # The fake's reading of what a client sent is given whole records by
+    # every test; a cut one matters to no core test.
+    'curl-core/src/tls/fake\.rs:.*: replace match guard rest\.len\(\) >= HEADER \+ len with true in read_client$',
 ]

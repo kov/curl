@@ -697,6 +697,78 @@ fn a_finished_connection_is_kept_for_an_equal_route() {
     ));
 }
 
+/// A search tries the transfer's last connection before the others, so a
+/// transfer sticks to its connection (`Curl_cpool_find`), and an id that
+/// no longer names an idle connection finds nothing, the search going on
+/// in the table's order. As the C library, two transfers on #0 and #1,
+/// the second following a redirect to the same host once the first is
+/// done, keeps #1.
+#[test]
+fn a_search_tries_the_transfer_s_last_connection_first() {
+    let (mut net, clock) = net();
+    let now = clock.now();
+    let mut pool = Pool::new().unwrap();
+    let mut leases = [0, 1].map(|_| {
+        let mut lease = new(&mut pool, &Home::Multi, tcp(1), &mut net, now);
+        up(&mut lease, &mut net, now);
+        lease
+    });
+    let ids = [leases[0].id(), leases[1].id()];
+    let find = |pool: &mut Pool, net: &mut FakeNet, last| {
+        let route = tcp(1);
+        let wanted = Wanted {
+            route: &route,
+            auth: Wants::NONE,
+            last,
+        };
+        let mut notes = Vec::new();
+        pool.find(&Home::Multi, wanted, RULES, net, now, &mut notes)
+            .unwrap()
+            .expect("an idle match")
+    };
+    for lease in leases {
+        pool.release(
+            &Home::Multi,
+            lease,
+            Finish::default(),
+            UNLIMITED,
+            &mut net,
+            now,
+        );
+    }
+    leases = [
+        find(&mut pool, &mut net, Some(ids[1])),
+        find(&mut pool, &mut net, None),
+    ];
+    assert_eq!([leases[0].id(), leases[1].id()], [ids[1], ids[0]]);
+    for lease in leases {
+        pool.release(
+            &Home::Multi,
+            lease,
+            Finish::default(),
+            UNLIMITED,
+            &mut net,
+            now,
+        );
+    }
+    // The last one leased elsewhere, or gone: the table's order.
+    let held = find(&mut pool, &mut net, Some(ids[1]));
+    assert_eq!(held.id(), ids[1]);
+    let other = find(&mut pool, &mut net, Some(ids[1]));
+    assert_eq!(other.id(), ids[0]);
+    for lease in [held, other] {
+        pool.release(
+            &Home::Multi,
+            lease,
+            Finish::default(),
+            UNLIMITED,
+            &mut net,
+            now,
+        );
+    }
+    pool.close_idle(&mut net, now);
+}
+
 /// An idle connection with something to read, or idle or alive too long,
 /// is closed when a search meets it; the search goes on to the next.
 #[test]

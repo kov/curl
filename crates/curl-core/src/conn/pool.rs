@@ -58,8 +58,8 @@ impl Home {
 }
 
 impl ConnLease {
-    /// Its place in its pool, for the tests to tell leases apart.
-    #[cfg(test)]
+    /// Its place in its pool: what a transfer keeps of the connection it
+    /// had last, and what the tests tell leases apart by.
     pub(crate) fn id(&self) -> ConnId {
         self.id
     }
@@ -321,6 +321,11 @@ impl Drop for ConnLease {
 pub(crate) struct Wanted<'w> {
     pub(crate) route: &'w Route,
     pub(crate) auth: Wants<'w>,
+    /// The connection the transfer used last, tried first, so that a
+    /// transfer sticks to its connection (`state.last_conn_id`). An id
+    /// of a connection gone, or of another pool, finds nothing or an
+    /// unrelated connection judged as any other, so it needs no clearing.
+    pub(crate) last: Option<ConnId>,
 }
 
 /// How long the transfer looking for a connection lets one be idle, and
@@ -541,6 +546,7 @@ impl Pool {
                 Wanted {
                     route: &route,
                     auth: Wants::NONE,
+                    last: None,
                 },
                 rules,
                 exits,
@@ -637,60 +643,90 @@ impl Pool {
             self.last_prune = Some(now);
             prune(&mut self.conns, rules, exits, now);
         }
+        // The transfer's last connection first, then the others in the
+        // table's order (`Curl_cpool_find`).
+        if let Some(last) = wanted.last
+            && let Some(lease) = self.take(last, here, &wanted, rules, exits, now, notes)?
+        {
+            return Ok(Some(lease));
+        }
         let mut cursor = None;
         while let Some(id) = self.conns.next_after(cursor) {
             cursor = Some(id);
-            let Some(conn) = self.conns.get_mut(id).and_then(Place::idle_mut) else {
-                continue;
-            };
-            let Use::Idle { since } = conn.use_ else {
-                unreachable!("an idle connection is idle");
-            };
-            if !conn.serves(wanted.route) || !conn.serves_auth(&wanted.auth) {
+            if Some(id) == wanted.last {
                 continue;
             }
-            let number = conn.number;
-            // One that lived too long is passed over for a younger one
-            // (`CPOOL_MATCH_TOO_OLD`); one not healthy is reported.
-            let verdict = if rules
-                .max_age
-                .is_some_and(|max| past(now.since(conn.created), max))
-            {
-                Err(None)
-            } else {
-                health(conn, since, rules, now).map_err(Some)
-            };
-            match verdict {
-                Ok(()) => {
-                    let leased = Leased {
-                        route: conn.route.clone(),
-                    };
-                    let Some(Place::Idle(mut slot)) = self
-                        .conns
-                        .replace_with(id, |place| (Place::Leased(leased), place))
-                    else {
-                        unreachable!("just found idle");
-                    };
-                    let ConnSlot::Open(conn) = &mut slot else {
-                        unreachable!("an idle connection is open");
-                    };
-                    conn.use_ = Use::Leased(NonZeroU32::MIN);
-                    return Ok(Some(ConnLease {
-                        id,
-                        conn: Some(slot),
-                        home: here.clone(),
-                    }));
-                }
-                Err(sick) => {
-                    if let Some(why) = sick {
-                        if let Some(old) = why {
-                            notes.try_push(old)?;
-                        }
-                        notes.try_push(PoolNote::Dead(number))?;
+            if let Some(lease) = self.take(id, here, &wanted, rules, exits, now, notes)? {
+                return Ok(Some(lease));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The connection `id`, leased from `here` if it is idle, matches
+    /// `wanted` and is young and healthy enough; one too old or not
+    /// healthy is closed, and its notes said.
+    #[expect(clippy::too_many_arguments, reason = "what `find` takes, and the id")]
+    fn take(
+        &mut self,
+        id: ConnId,
+        here: &Home,
+        wanted: &Wanted<'_>,
+        rules: ReuseRules,
+        exits: &mut dyn Exits,
+        now: Instant,
+        notes: &mut Vec<PoolNote>,
+    ) -> Result<Option<ConnLease>, OutOfMemory> {
+        let Some(conn) = self.conns.get_mut(id).and_then(Place::idle_mut) else {
+            return Ok(None);
+        };
+        let Use::Idle { since } = conn.use_ else {
+            unreachable!("an idle connection is idle");
+        };
+        if !conn.serves(wanted.route) || !conn.serves_auth(&wanted.auth) {
+            return Ok(None);
+        }
+        let number = conn.number;
+        // One that lived too long is passed over for a younger one
+        // (`CPOOL_MATCH_TOO_OLD`); one not healthy is reported.
+        let verdict = if rules
+            .max_age
+            .is_some_and(|max| past(now.since(conn.created), max))
+        {
+            Err(None)
+        } else {
+            health(conn, since, rules, now).map_err(Some)
+        };
+        match verdict {
+            Ok(()) => {
+                let leased = Leased {
+                    route: conn.route.clone(),
+                };
+                let Some(Place::Idle(mut slot)) = self
+                    .conns
+                    .replace_with(id, |place| (Place::Leased(leased), place))
+                else {
+                    unreachable!("just found idle");
+                };
+                let ConnSlot::Open(conn) = &mut slot else {
+                    unreachable!("an idle connection is open");
+                };
+                conn.use_ = Use::Leased(NonZeroU32::MIN);
+                return Ok(Some(ConnLease {
+                    id,
+                    conn: Some(slot),
+                    home: here.clone(),
+                }));
+            }
+            Err(sick) => {
+                if let Some(why) = sick {
+                    if let Some(old) = why {
+                        notes.try_push(old)?;
                     }
-                    notes.try_push(PoolNote::Closed(number))?;
-                    close(&mut self.conns, id, Evicted::Linger, exits, now);
+                    notes.try_push(PoolNote::Dead(number))?;
                 }
+                notes.try_push(PoolNote::Closed(number))?;
+                close(&mut self.conns, id, Evicted::Linger, exits, now);
             }
         }
         Ok(None)

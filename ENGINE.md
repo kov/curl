@@ -123,7 +123,7 @@ curl-zlib     zlib's inflate, curl-brotli brotli's decoder, curl-zstd zstd's dec
               content codings, behind `curl_core::coding::Decoder`
 curl-openssl  OpenSSL 3.0 or later through openssl-sys's declarations: Ed25519 for HTTP
               signatures, behind `curl_core::libraries::Ed25519`; the TLS backend behind
-              `curl_core::tls` (planned, step 43; §4.9)
+              `curl_core::tls` (§4.9)
 curl-sys-abi  the shim: handles, frames, callback adapters, generated setopt and api table
 curl-tool     drives transfers through the Rust API
 ```
@@ -172,7 +172,9 @@ curl-core/src/
     state.rs                 Run, TransferState and its variant structs, StepCx, the steps;
                              state/tunnel.rs, state/socks.rs, state/haproxy.rs,
                              state/tls.rs: the CONNECT and SOCKS handshakes, the PROXY
-                             line and the origin's TLS handshake a transfer makes
+                             line and the origin's TLS handshake a transfer makes;
+                             state/https.rs: the HTTPS connect filter heading an
+                             https setup, its HTTPS-RR lookup and its timer
     mstate.rs                MState: where a transfer is in C's states, for the trace
     sched.rs                 RowSet (the dirty set), Counts, Tally
     timers.rs                Deadlines, TimerQueue, TimerAnnounce
@@ -389,8 +391,7 @@ lines, which the pool's check makes with a silent context where C traces them on
 looking for a connection. Not traced: the receive
 C tries before its first poll in PERFORMING, which the engine does not make; a tunnel's and
 SOCKS handshake's reads and writes, as C reads a proxy's answer to `CONNECT` a byte at a time
-from the socket, where the engine reads what is there; and `query ALPN`, which comes with TLS
-(below).
+from the socket, where the engine reads what is there.
 
 `SETUP` traces cf-setup.c's lines as the transfer's step meets the points C passes: `added` as
 a new connection's setup starts, `happy eyeballing to origin|proxy H:P` as the race starts,
@@ -441,30 +442,34 @@ answer (`get Nth result`), the chain's connect result C traces under the top fil
 (`Curl_conn_connect(block=0) -> R, done=D`, `filter returned R`), c-ares's polling (the cache looked in again at each poll, `resolve incomplete`, `still waiting`),
 and a SOCKS proxy's lookup of the destination.
 
-Planned (step 43): the TLS components, as the reference build traces them on the transfer.
-`SSL` (the origin's layer) and `SSL-PROXY` (the proxy's) trace the handshake as it is driven
-(`cf_connect()`, `ossl_connect, step1|2|3`, `SSL_connect() -> err=-1, detail=2`, `want recv`,
-`cf_connect() -> R, done=D`, `ossl_connect, done`), each read and write its BIO makes on the
-layer below with the length OpenSSL asked for (`ossl_bio_cf_in_read(len=5) -> 81, 0`, under the
-`TCP` line of the same call), each receive with the caller's length and what OpenSSL still holds
-(`ossl_recv(len=102400) -> 0, 44 (in_pending=1)`), `configuring OpenSSL's x509 trust store` at
-the first read, and `adjust_pollset, POLLIN fd=N` above the socket's `adjust_pollset, !active,
-POLLIN fd=N`. `SSLS` traces the session cache: each lookup with the peer's key (`find peer slot
-for K among 25 slots`, `peer not found`, `no cached session`, `took session`) and each ticket kept
-(`added session for K [proto=0x304, valid_secs=7200, alpn=(nil), earlydata=0, quic_tp=no], peer
-has N sessions now`). Without a component, as text lines: `ALPN: curl offers …`, `SSL
+The TLS components, as the reference build traces them on the transfer. `SSL` (the origin's
+layer) traces the handshake as it is driven (`cf_connect()`, `ossl_connect, step1|2|3`,
+`SSL_connect() -> err=-1, detail=2`, `want recv`, `cf_connect() -> R, done=D`, `ossl_connect,
+done`), each read and write its BIO makes on the layer below with the length OpenSSL asked for
+(`ossl_bio_cf_in_read(len=5) -> 81, 0`, under the `TCP` line of the same call), each receive
+with the caller's length and what OpenSSL still holds (`ossl_recv(len=102400) -> 0, 44
+(in_pending=1)`), `configuring OpenSSL's x509 trust store` at the first read, and
+`adjust_pollset, POLLIN fd=N` (or `POLLOUT`) while its session waits, connecting or not, above
+the socket's own pollset line. Its first connect checks the versions allowed first
+(`ssl_prefs_check`): a newest older than the oldest fails it, `CURL_SSLVERSION_MAX incompatible
+with CURL_SSLVERSION`. Without a component, as text lines: `ALPN: curl offers …`, `SSL
 connection using …`, `ALPN: server did not agree on a protocol. Uses default.`, the `Server
-certificate:` (or `Proxy certificate:`) block, the trust anchors, the verification's lines,
-`SSL reusing session with ALPN '-'`; and the msg callback's handshake lines (`TLSv1.3 (OUT), TLS
-handshake, Client hello (1):`) beside the record bytes as SSL data. `HTTPS-CONNECT`, the ALPN
-race C puts above SETUP for an `https` origin without a forwarding proxy, is rendered in the
-chain (`[0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]`) and traces `added`, `connect, init`, `HTTPS-RR
-not available`, `1st attempt uses h1 from wanted versions` and its `connect -> R, done=D` and
-`adjust_pollset` lines. `query ALPN` is traced by the top of the chain each time a filter asks
-it: by `SETUP` (or `HAPPY-EYEBALLS` and `SSL-PROXY` under a tunnel's `CONNECT`) as a setup
-completes, and by the top layer as HTTP starts on a new connection (`http_check_new_conn`),
-plain TCP included (`[TCP] query ALPN`, `[SOCKS] query ALPN`, `[H1-PROXY] query ALPN`); a TLS
-layer adds what it answers (`query ALPN: returning '(nil)'`). C's `[SHUTDOWN]` lines and a
+certificate:` block, the trust anchors, the verification's lines; and the msg callback's
+handshake lines (`TLSv1.3 (OUT), TLS handshake, Client hello (1):`) beside the record bytes as
+SSL data. `HTTPS-CONNECT`, the filter C puts above SETUP for an `https` origin with ALPN on and
+no forwarding proxy (`multi/state/https.rs`), is rendered in the chain with the DNS filter that
+asks for the origin's HTTPS-RR above the name's (`[0][!DNS][!DNS][!HTTPS-CONNECT][!SETUP]`, one
+DNS filter for an address) and traces `added` in place of SETUP's, `connect, init`, `HTTPS-RR
+not available`, `1st attempt uses h1 from wanted versions`, its `connect -> R, done=D` at the end
+of each connect call (after `connect, all attempts failed` for a failure, whose chain C names
+truncated at it) and `adjust_pollset -> 0, N socks`. `query ALPN` is traced by the filter a
+question of what ALPN agreed is asked of: by `SETUP` as the HTTPS connect filter's attempt
+wins, by `HAPPY-EYEBALLS` or `SOCKS` under a tunnel's `CONNECT`, and by the top of the chain as
+HTTP starts on a new connection (`http_check_new_conn`: `[TCP]`, `[UNIX]`, `[SOCKS]`,
+`[H1-PROXY]`, `[SSL]`); the TLS layer adds what it answers (`query ALPN: returning
+'http/1.1'`, `'(nil)'` for none). Each call of the chain's connect ends with its top filter's
+`[DNS] Curl_conn_connect(block=0) -> R, done=D`. Planned: `SSLS`, the session cache's lines
+(43h), and `SSL-PROXY`, an HTTPS proxy's layer (43i). C's `[SHUTDOWN]` lines and a
 shutdown's TLS lines are its internal handle's, so not traced (§4.6).
 
 `READ` traces a request's body as C's client readers read it: the reader set as the request is
@@ -873,22 +878,21 @@ pub(crate) struct Starts { op: Instant, single: Instant }  // in Timings: TIMER_
   stored apart from the protocol's state, it is derived after every step from
   `TransferState::wake_at`, as `Directions` is, and armed or cleared there. One kind serves
   every protocol, as a transfer runs one at a time.
-- Planned (step 43): `AlpnEyeballs` and `Shutdown` get producers. `AlpnEyeballs`
-  (EXPIRE_ALPN_EYEBALLS, 100 ms) is armed as the HTTPS-CONNECT race starts while its ballers
-  are not complete: with a second baller, or with the host's HTTPS-RR answer still to come. With
-  C's defaults there is one baller, so the reference build arms it exactly for a host name whose
-  HTTPS-RR query is outstanding as the attempt starts (`localhost`, which 758 uses), never for an
-  IP literal, which makes no query, nor for a name whose HTTPS-RR answer is cached, even a
-  negative one (the second connection of a run). A `CURLOPT_RESOLVE` entry answers the
-  addresses only, so a name it gives still arms it. Once armed it is not cleared when the race
-  is won: it stays in the transfer's pollset lines through PERFORMING until `[TIMEOUT] all
-  cleared` at COMPLETED. The engine resolves no HTTPS-RR yet, so it arms the timer where C's
-  query would be outstanding, to keep the timer callback's sequence: for a host name whose
-  HTTPS-RR answer C would not have cached (C keeps it, negative or not, in the DNS cache beside
-  the addresses). How the engine knows that without the query is 43g's to settle, against 758's
-  timer callbacks and a golden of two connections.
-  The HTTPS-RR lookup itself waits for c-ares.
-- The set's deadline is the multi's, not a transfer's: C arms EXPIRE_SHUTDOWN on its internal
+- `AlpnEyeballs` (EXPIRE_ALPN_EYEBALLS, half the happy eyeballs delay, 100 ms by default) is
+  armed as the HTTPS connect filter's attempt starts while its ballers are not complete: with a
+  second baller, or with the origin's HTTPS-RR answer still to come. With one baller, as here,
+  that is a host name whose HTTPS-RR is not known as the attempt starts (`localhost`, which 758
+  uses, or a name `CURLOPT_RESOLVE` gives, which answers the addresses only); never an address,
+  which asks for none, nor a name whose answer is cached. Once armed it is not cleared when the
+  attempt wins: it stays in the transfer's pollset lines until `[TIMEOUT] all cleared` at
+  COMPLETED. The engine resolves no HTTPS-RR (that waits for c-ares) and has the answer the
+  reference build's resolver gives a name without one: it looks for the record in the DNS cache
+  as the setup's first connect starts, as C's does (`queries=HTTPS -> 0 not found`, `hostip_resolv
+  started -> 81`), and at the setup's next connect has the answer, none, as C's local resolver
+  gives it before the attempt is looked at again, keeping it in the cache (`cache negative name
+  resolve for H:P type=HTTPS`). A later setup for the name finds it (`Hostname H was found in DNS
+  cache`, `HTTPS-RR H:P: -`) and arms nothing.
+- `Shutdown`: the shutdown set's deadline is the multi's, not a transfer's: C arms EXPIRE_SHUTDOWN on its internal
   handle for the earliest deadline of the connections shutting down (cshutdn.c:359–367). Built:
   the `ShutdownSet` keeps it as one `Option<Instant>` of its own beside the `TimerQueue`, not a
   row in it (a row would need a transfer's slot). Only a pass of the set arms it, at the least
@@ -1368,7 +1372,7 @@ pub(crate) trait Layer: Send + Debug {           // conn/layer.rs; C's Curl_cfty
     fn data_pending(&self, below: Below<'_>) -> bool;         // bytes a poll cannot see
     fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Alive;
     fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind>;
-    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // TLS's objects; ALPN (43g)
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // TLS's objects, ALPN, waits
 }
 pub enum Handshake { Done, Waiting }                         // public: a TLS session returns it
 pub(crate) enum Alive { Dead, Alive { input_pending: bool } }
@@ -1426,8 +1430,7 @@ stream once up, and `conn::layer::testing` holds those that arm each call (`Uppe
 `Holdback`, `WantsOut`, `Dying`). `shutdown` is called by the discard and the `ShutdownSet`
 (§4.6), from the top layer down, one at a time, a layer done never asked again: TLS's says
 goodbye, and `Lingering` (test-util, pushed on every connection a multi makes under
-`Multi::linger_connections`) waits as one would. `query` has no caller until ALPN (43g);
-`LayerCx`'s trace is the connect machine's (`ConnCx` extends it) and, through `TlsIo`, a TLS
+`Multi::linger_connections`) waits as one would. `LayerCx`'s trace is the connect machine's (`ConnCx` extends it) and, through `TlsIo`, a TLS
 library's.
 
 The bytes a tunnel's handshake read past its answer, which `rx` holds, are the first bytes the
@@ -1445,8 +1448,9 @@ called through the transfer's context, and `pause_recv`, a handshake waiting for
 application (`Curl_xfer_pause_recv`); the silent context of a pool section has none of them, as
 C's internal handle has no debug function and no SSL_CTX callback. A connection's layers are
 asked from the top (`LayerStack::query`, the first that answers): `LayerQuery::TlsNative` is
-answered by the origin's TLS layer with its library's objects (§4.9). Planned (43g):
-`LayerQuery::Alpn`, the protocol the peer agreed to. The key log is not on `LayerCx`: the shim's
+answered by the origin's TLS layer with its library's objects (§4.9), `LayerQuery::Alpn` with
+the protocol its peer chose of the offer, and `LayerQuery::TlsWaits` with what its session
+waits for, which the pollset's trace says. The key log is not on `LayerCx`: the shim's
 root and the tool own it and hand it to the backend.
 
 ### 4.4 Multiplexing
@@ -1775,7 +1779,9 @@ looks in the cache first (`hostip_resolv`), then asks the shortcuts, then the re
 keeps what they answer for the cache's timeout (`CURLOPT_DNS_CACHE_TIMEOUT`, the transfer's: 60
 seconds unless set, for ever at -1). That a name does not exist, or has no address of the family
 asked, is kept too, as an answer with no addresses ("Negative DNS entry"), which ages twice as
-fast; that the resolver could not answer is not. A failure gives
+fast; that the resolver could not answer is not. A name's HTTPS-RR answer is an entry of its
+own beside its addresses (C's `CURL_DNST_HTTPS`), that it has none, aging as a negative answer
+does; it shares the name with the addresses' answer. A failure gives
 the reference build's reason, c-ares's ("Domain name not found"), then fails again without it. `CURLOPT_RESOLVE` entries are read into the cache when a transfer
 starts, once for each time the list is set (`Options::resolve` carries a stamp, the easy the
 stamp it last read), as its source has them then; a list set while one is read, from the
@@ -1815,7 +1821,8 @@ pub trait TlsSession: Send {                       // one connection's TLS, neve
     fn waits(&self) -> TlsWait;                    // Nothing, Recv or Send: C's io_need
     fn pending(&self) -> bool;                     // decrypted bytes not yet read
     fn native(&self) -> Option<TlsNative>;         // the library's objects, once made
-    // planned: fn alpn(&self) (43g); fn tickets(..) (43h)
+    fn chosen(&self) -> Option<Chosen>;           // what the peer chose by ALPN, once done
+    // planned: fn tickets(..) (43h)
 }
 #[derive(Clone, Copy)] pub struct TlsNative {     // opaque to the core, which passes it on
     context: NonNull<c_void>, session: Option<NonNull<c_void>>,  // SSL_CTX *, SSL *

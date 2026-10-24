@@ -637,11 +637,17 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - **f. The application's hands on OpenSSL.** **Done.** `SSL_CTX_FUNCTION` and its data,
       `TLS_SSL_PTR` and `TLS_SESSION` (the core's `TlsNative`), the retry-verify pause;
       close_notify as `Closing`'s first producer, in the reference's order (758, 1587). 758
-      checks its result only; C's run also arms ALPN_EYEBALLS, which g brings, and its socket
-      calls include a first, IPv6 attempt the rewrite's run does not make.
-    - **g. ALPN's trace.** HTTPS-CONNECT in the chain, ALPN_EYEBALLS armed where C's
-      outstanding HTTPS-RR query arms it (sabotage: arm it for an IP literal or a cached
-      name), `query ALPN` on every new connection (step 40's goldens updated), SSL's lines.
+      checks its result only.
+    - **g. ALPN's trace.** **Done.** HTTPS-CONNECT heads an https setup, with the DNS filter
+      of the origin's HTTPS-RR; ALPN_EYEBALLS is armed where C's outstanding HTTPS-RR query
+      arms it, the record's answer (none) kept in the DNS cache as C keeps it, so a second
+      connection to the name arms nothing; `query ALPN` where C asks it, on new connections
+      only; SSL's `cf_connect()` lines, its pollset line and `ssl_prefs_check`; the chain's
+      `Curl_conn_connect` line. 758's callbacks match C's but for c-ares's socket (C's first
+      socket, read, is its HTTPS-RR query's; both runs make the IPv6 attempt) and for where
+      the response arrives, which decides whether the transfer completes in the call that
+      unpauses it: measured 2026-10-24, the rewrite's run reads it there, C's on the next
+      call, which makes one more timer callback.
     - **h. The session cache**, the share's `SSL_SESSION` kind, `--no-sessionid`, the key log.
     - **i. HTTPS proxy.** `SSL-PROXY`, TLS in TLS, the proxy's TLS options; `HTTPS-proxy`
       reported (1630–1632, 3401).

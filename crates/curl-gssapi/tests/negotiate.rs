@@ -392,3 +392,165 @@ fn second_request_in_a_child() {
         assert_eq!(seen.lines()[..want.len()], want, "{persists}");
     }
 }
+
+/// Through the proxy at `PORT`, which forwards unless `tunnel`, to
+/// `http://origin.example/x`, any method wanted of the proxy and the
+/// empty credentials of `-U :` for it.
+fn via_proxy(o: &mut Options, tunnel: bool) {
+    o.set_url(Some(b"http://origin.example/x")).unwrap();
+    let proxy = o.proxy.make_mut().unwrap();
+    proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    proxy.tunnel = tunnel;
+    proxy.auth = HttpAuth(AuthMethods::ANY);
+    proxy.user = Some(Vec::new());
+    proxy.password = Some(Vec::new());
+}
+
+const PROXY_407: &[u8] =
+    b"HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate\r\nContent-Length: 4\r\n\r\nno!\n";
+
+/// C's capture with `-x ... --proxy-anyauth -U :`:
+/// a forwarding proxy's 407 offering Negotiate has it picked and the
+/// request made again over the connection with the stub's token for the
+/// proxy.
+#[test]
+fn a_forwarding_proxy_s_407_round_trip() {
+    in_child("forwarding_407_in_a_child", "KRB5_Alice");
+}
+
+#[test]
+fn forwarding_407_in_a_child() {
+    if !is_child("forwarding_407_in_a_child") {
+        return;
+    }
+    let (mut m, talk) = server(&[PROXY_407, OK]);
+    let (result, seen) = get(&mut m, "/", |o| via_proxy(o, false));
+    assert_eq!(result, Ok(()));
+    let get = |token: Option<&str>| {
+        let proxy = token.map_or(String::new(), |t| {
+            format!("Proxy-Authorization: Negotiate {t}\r\n")
+        });
+        format!(
+            "GET http://origin.example/x HTTP/1.1\r\nHost: origin.example\r\n{proxy}\
+             User-Agent: curl/test\r\nAccept: */*\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+        )
+    };
+    assert_eq!(
+        String::from_utf8(talk.received()).unwrap(),
+        get(None) + &get(Some(&token("KRB5_Alice")))
+    );
+    assert_eq!(
+        seen.lines(),
+        [
+            "* using HTTP/1.x",
+            "=> GET http://origin.example/x HTTP/1.1",
+            "<= HTTP/1.1 407 Who",
+            "<= Proxy-Authenticate: Negotiate",
+            "<= Content-Length: 4",
+            "* Ignoring the response-body",
+            "* setting size while ignoring",
+            "<=",
+            "* Connection #0 to host 127.0.0.1:8990 left intact",
+            "* Issue another request to this URL: 'http://origin.example/x'",
+            "* Reusing existing http: connection with proxy 127.0.0.1",
+            "* Proxy auth using Negotiate with user ''",
+            "=> GET http://origin.example/x HTTP/1.1",
+            "<= HTTP/1.1 200 OK",
+            "<= Content-Length: 3",
+            "<=",
+            "* Connection #0 to host 127.0.0.1:8990 left intact",
+        ]
+    );
+}
+
+/// C's capture with `-p -x ... --proxy-anyauth -U :`: a tunnel's 407
+/// offering Negotiate has the `CONNECT` made again with the stub's token,
+/// and the request goes through the tunnel without one.
+#[test]
+fn a_tunnel_s_407_round_trip() {
+    in_child("tunnel_407_in_a_child", "KRB5_Alice");
+}
+
+#[test]
+fn tunnel_407_in_a_child() {
+    if !is_child("tunnel_407_in_a_child") {
+        return;
+    }
+    let up = b"HTTP/1.1 200 Connection established\r\n\r\n";
+    let (mut m, talk) = server(&[PROXY_407, up, OK]);
+    let (result, seen) = get(&mut m, "/", |o| via_proxy(o, true));
+    assert_eq!(result, Ok(()));
+    let connect = |token: Option<&str>| {
+        let proxy = token.map_or(String::new(), |t| {
+            format!("Proxy-Authorization: Negotiate {t}\r\n")
+        });
+        format!(
+            "CONNECT origin.example:80 HTTP/1.1\r\nHost: origin.example:80\r\n{proxy}\
+             User-Agent: curl/test\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+        )
+    };
+    assert_eq!(
+        String::from_utf8(talk.received()).unwrap(),
+        connect(None)
+            + &connect(Some(&token("KRB5_Alice")))
+            + "GET /x HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\n\
+               Accept: */*\r\n\r\n"
+    );
+    assert_eq!(
+        seen.lines(),
+        [
+            "* CONNECT: no ALPN negotiated",
+            "* Establishing HTTP proxy tunnel to origin.example:80",
+            "=> CONNECT origin.example:80 HTTP/1.1",
+            "<= HTTP/1.1 407 Who",
+            "<= Proxy-Authenticate: Negotiate",
+            "<= Content-Length: 4",
+            "<=",
+            "* Ignore 4 bytes of response-body",
+            "* Proxy auth using Negotiate with user ''",
+            "* Establishing HTTP proxy tunnel to origin.example:80",
+            "=> CONNECT origin.example:80 HTTP/1.1",
+            "<= HTTP/1.1 200 Connection established",
+            "<=",
+            "* CONNECT phase completed for HTTP proxy",
+            "* CONNECT tunnel established, response 200",
+            "* using HTTP/1.x",
+            "=> GET /x HTTP/1.1",
+            "<= HTTP/1.1 200 OK",
+            "<= Content-Length: 3",
+            "<=",
+            "* Connection #0 to host origin.example:80 left intact",
+        ]
+    );
+}
+
+/// C's capture with the stub's NTLM credentials and `-p --proxy-negotiate`:
+/// the `CONNECT` goes without a token, the failure said first.
+#[test]
+fn a_tunnel_without_a_token() {
+    in_child("tunnel_without_in_a_child", "NTLM_Alice");
+}
+
+#[test]
+fn tunnel_without_in_a_child() {
+    if !is_child("tunnel_without_in_a_child") {
+        return;
+    }
+    let up = b"HTTP/1.1 200 Connection established\r\n\r\n";
+    let (mut m, _) = server(&[up, OK]);
+    let (result, seen) = get(&mut m, "/", |o| {
+        via_proxy(o, true);
+        o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::NEGOTIATE);
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(
+        seen.lines()[..5],
+        [
+            "* CONNECT: no ALPN negotiated",
+            "* gss_init_sec_context() failed:",
+            "* Proxy auth using Negotiate with user ''",
+            "* Establishing HTTP proxy tunnel to origin.example:80",
+            "=> CONNECT origin.example:80 HTTP/1.1",
+        ]
+    );
+}

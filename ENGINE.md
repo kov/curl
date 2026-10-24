@@ -1885,6 +1885,10 @@ a handle's later performs take its store, as C's `multi_easy` does. Without room
 is loaded and not kept, as C does. A CA file that cannot be read
 fails the first read's setup and, as in C, is tried and said again by the handshake's step (77,
 `error adding trust anchors from file:` twice).
+A revocation list (`CURLOPT_CRLFILE`, `--crlfile`) is loaded into the store after the trust
+anchors, by OpenSSL's file lookup, and turns the CRL check on for every certificate of the chain
+(` CRLfile:`; a file holding no list fails the setup with 82, `error loading CRL file:`); with
+one no chain is taken as partial (OpenSSL's issue 5081), and its store is not kept for the multi.
 The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
 (`subjectAltName: "localhost" matches cert's "localhost"`); the failure texts are C's
 (`SSL certificate problem: …`, `CURLINFO_SSL_VERIFYRESULT`). With the peer unverified

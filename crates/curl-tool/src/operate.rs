@@ -1903,6 +1903,12 @@ fn ssl_ca_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKin
 /// The TLS options (`ssl_setopts`).
 fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
     let tls = &op.tls;
+    string_setopt(s, "CURLOPT_CRLFILE", tls.crlfile, |t| &mut t.crl_file)?;
+    if let Some(crl) = tls.crlfile {
+        // The proxy's too, unless it has its own, which an HTTP proxy has
+        // no use for (43i).
+        s.str("CURLOPT_PROXY_CRLFILE", Some(crl), nothing)?;
+    }
     string_setopt(s, "CURLOPT_SSL_EC_CURVES", tls.curves, |t| &mut t.curves)?;
     string_setopt(s, "CURLOPT_SSL_SIGNATURE_ALGORITHMS", tls.sigalgs, |t| {
         &mut t.signature_algorithms

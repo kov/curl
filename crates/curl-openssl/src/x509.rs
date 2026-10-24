@@ -233,10 +233,32 @@ fn populate_store(
     }
     io.info(format_args!("SSL Trust Anchors:"));
     load_trust_anchors(store, identity, io)?;
+    let mut flags: c_ulong = 0;
+    if let Some(crl) = &identity.options.crl_file {
+        // The revocation list, which every certificate of the chain is
+        // checked against.
+        let c = c_string(crl)?;
+        // SAFETY: the library's static file method.
+        let method = unsafe { openssl_sys::X509_LOOKUP_file() };
+        // SAFETY: the context's store, which owns the lookup it adds.
+        let lookup = unsafe { openssl_sys::X509_STORE_add_lookup(store.as_ptr(), method) };
+        let pem = openssl_sys::X509_FILETYPE_PEM;
+        if lookup.is_null()
+            // SAFETY: the store's lookup, and a C string alive for the call.
+            || unsafe { openssl_sys::X509_load_crl_file(lookup, c.as_ptr().cast(), pem) } == 0
+        {
+            return Err(io.fail(
+                ErrorKind::SslCrlBadfile,
+                format_args!("error loading CRL file: {}", Text(crl)),
+            ));
+        }
+        flags = openssl_sys::X509_V_FLAG_CRL_CHECK | openssl_sys::X509_V_FLAG_CRL_CHECK_ALL;
+        io.info(format_args!(" CRLfile: {}", Text(crl)));
+    }
     // Chains built from what the store trusts first, and a certificate
     // the store has trusted whatever issued it (C's comment: trusted
     // intermediates as anchors), unless asked not to.
-    let mut flags: c_ulong = openssl_sys::X509_V_FLAG_TRUSTED_FIRST;
+    flags |= openssl_sys::X509_V_FLAG_TRUSTED_FIRST;
     if !identity
         .options
         .ssl_options

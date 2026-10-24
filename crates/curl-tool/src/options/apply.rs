@@ -151,6 +151,8 @@ pub(crate) struct Tls<'a> {
     pub(crate) sigalgs: Option<&'a [u8]>,
     /// `--no-alpn`.
     pub(crate) no_alpn: bool,
+    /// `--crlfile`.
+    pub(crate) crlfile: Option<&'a [u8]>,
 }
 
 /// `--proto-default`: the protocol, as named.
@@ -1068,6 +1070,11 @@ pub(crate) fn apply<'a>(
             existing_file(file, b"cacert", msgs)?;
             line.current().tls.cacert = Some(Cow::Borrowed(non_blank(file)?));
         }
+        Opt::Crlfile => {
+            let file = value.text();
+            existing_file(file, b"crlfile", msgs)?;
+            line.current().tls.crlfile = Some(non_blank(file)?);
+        }
         Opt::Capath => line.current().tls.capath = Some(Cow::Borrowed(non_blank(value.text())?)),
         Opt::Ciphers => line.current().tls.ciphers = Some(non_blank(value.text())?),
         Opt::Tls13Ciphers => line.current().tls.tls13_ciphers = Some(non_blank(value.text())?),
@@ -1511,7 +1518,6 @@ pub(crate) fn apply<'a>(
         | Opt::CertType
         | Opt::CompressedSsh
         | Opt::Crlf
-        | Opt::Crlfile
         | Opt::Delegation
         | Opt::DisableEprt
         | Opt::DisableEpsv

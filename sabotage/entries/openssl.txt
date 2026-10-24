@@ -148,3 +148,11 @@ witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_load
         && !o.ssl_options.contains(SslOptions::NATIVE_CA)
 --- new
         && true
+
+=== a revocation list is loaded but the chain is never checked against it
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_revoked_certificate_fails_the_verification
+--- old
+        flags = openssl_sys::X509_V_FLAG_CRL_CHECK | openssl_sys::X509_V_FLAG_CRL_CHECK_ALL;
+--- new
+        flags = 0;

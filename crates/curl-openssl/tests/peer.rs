@@ -40,6 +40,9 @@ use openssl::ssl::{SslAcceptor, SslMethod};
 use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
 use openssl::x509::{X509, X509Name};
 
+#[path = "peer/checks.rs"]
+mod checks;
+
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
 
@@ -107,7 +110,10 @@ fn main() {
             "an_https_get_stays_within_its_allocation_budget",
             an_https_get_stays_within_its_allocation_budget,
         ),
-    ] {
+    ]
+    .into_iter()
+    .chain(checks::TESTS.iter().copied())
+    {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
             continue;
@@ -136,6 +142,8 @@ struct Certs {
     ca_file: PathBuf,
     cert: X509,
     key: PKey<Private>,
+    ca: X509,
+    ca_key: PKey<Private>,
 }
 
 fn key() -> PKey<Private> {
@@ -198,6 +206,8 @@ fn certs(tag: &str, cn: &str, alt: &[&str]) -> Certs {
         ca_file,
         cert: cert.build(),
         key,
+        ca,
+        ca_key,
     }
 }
 
@@ -757,8 +767,10 @@ fn an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own() {
     });
     assert_eq!(loads(&blob), 1);
     assert!(said(&blob, "  CA Blob from configuration"));
+    let list = checks::crl(&certs, "bypass", false);
+    let list = list.to_str().unwrap().as_bytes().to_vec();
     let crl = verified_in(&mut m, &certs, |o| {
-        o.tls.options.make_mut().unwrap().crl_file = Some(b"/unused/crl.pem".to_vec());
+        o.tls.options.make_mut().unwrap().crl_file = Some(list);
     });
     assert_eq!(loads(&crl), 1);
     let native = verified_in(&mut m, &certs, |o| {

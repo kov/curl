@@ -10,6 +10,7 @@
 
 #[rustfmt::skip]
 mod known;
+mod tls;
 
 use core::ffi::{CStr, VaList, c_char, c_int, c_long, c_void};
 use core::num::{NonZeroU16, NonZeroU32, NonZeroU64};
@@ -1242,6 +1243,7 @@ fn apply(
             socket_hooks(me, options, |c| c.close = f)?;
         }
         (ffi::CURLOPT_CLOSESOCKETDATA, Ptr(p)) => socket_hooks(me, options, |c| c.close_data = p)?,
+        (option, arg) if tls::takes(option) => tls::apply(options, option, arg)?,
         (option, _) if known::KNOWN.binary_search(&option.0).is_ok() => {
             return Err(Refused::NotBuiltIn);
         }

@@ -361,6 +361,32 @@ fn tls_options_are_kept_as_c_keeps_them() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The strings that say who the client is and how its peer is checked
+/// past the chain are copied; NULL takes each away (`Curl_setstropt`).
+#[test]
+fn the_tls_check_and_identity_strings_are_copied() {
+    use curl_core::options::TlsOptions;
+    let c = curl_easy_init();
+    type Field = fn(&TlsOptions) -> Option<Vec<u8>>;
+    let fields: [(CURLoption, Field); 1] = [(ffi::CURLOPT_CRLFILE, |t| t.crl_file.clone())];
+    for (o, field) in fields {
+        let mut given = *b"given\0";
+        assert_eq!(pointer(c, o, given.as_mut_ptr()), CURLE_OK, "{}", o.0);
+        given[0] = b'X';
+        std::hint::black_box(&given);
+        assert_eq!(
+            options(c, |opts| field(&opts.tls.options)),
+            Some(b"given".to_vec()),
+            "{}",
+            o.0
+        );
+        assert_eq!(pointer(c, o, ptr::null_mut::<c_char>()), CURLE_OK);
+        assert_eq!(options(c, |opts| field(&opts.tls.options)), None, "{}", o.0);
+    }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `curl_global_sslset` knows OpenSSL alone, by id or by name in any
 /// case, and lists it.
 #[test]

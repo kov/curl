@@ -497,7 +497,8 @@ impl<H: Host> Multi<H> {
         self.timers.remove(id);
         self.dirty.remove(id.index());
         // One waiting may run now (multi.c:867).
-        state::wake_pending(&mut self.slots, &mut self.dirty, &mut self.pending_after);
+        let now = self.clock.now();
+        self.wake_pending(now, ev);
         let status = self.update_timer(ev);
         Some(Removed {
             easy: slot.easy,
@@ -525,7 +526,7 @@ impl<H: Host> Multi<H> {
             cursor = Some(id);
             self.run_single(id, now, ev);
         }
-        self.schedule_if_changed();
+        self.schedule_if_changed(now, ev);
         self.dispatch(ev);
         // Timers due by the pass's start have been dealt with.
         while let Some(id) = self.timers.pop_due(now) {
@@ -557,9 +558,20 @@ impl<H: Host> Multi<H> {
 
     /// A connection shutting down closed: one transfer waiting for room
     /// may find some (`multi_ischanged`, `multi_schedule_pending`).
-    fn schedule_if_changed(&mut self) {
+    fn schedule_if_changed(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) {
         if self.shutdowns.take_changed() {
-            state::wake_pending(&mut self.slots, &mut self.dirty, &mut self.pending_after);
+            self.wake_pending(now, ev);
+        }
+    }
+
+    /// Let one transfer waiting for a connection look for one again
+    /// (`multi_schedule_pending`), traced entering CONNECT as it is let.
+    fn wake_pending(&mut self, now: Instant, ev: &mut dyn MultiEvents<H>) {
+        if let Some(id) =
+            state::wake_pending(&mut self.slots, &mut self.dirty, &mut self.pending_after)
+        {
+            let mut cx = StepCx::new(id, self.rest(now, ev));
+            mstate::enter(&mut cx, mstate::MState::Connect);
         }
     }
 
@@ -593,17 +605,17 @@ impl<H: Host> Multi<H> {
                 }
             }
         }
-        let now = self.clock.now();
+        let mut now = self.clock.now();
         self.mark_expired_dirty(now, ev);
         // A socket callback's abort ends the call before notifications and
         // the timer (`multi_socket`'s `goto out`).
         if self.run_dirty(now, ev)? > 0 {
             // Running took time: catch what came due meanwhile, once.
-            let now = self.clock.now();
+            now = self.clock.now();
             self.mark_expired_dirty(now, ev);
             self.run_dirty(now, ev)?;
         }
-        self.schedule_if_changed();
+        self.schedule_if_changed(now, ev);
         self.dispatch(ev);
         self.update_timer(ev)?;
         Ok(self.counts.get().running)
@@ -669,8 +681,8 @@ impl<H: Host> Multi<H> {
     /// Whether transfer `id` is one the multi works on (C's `process`
     /// set): neither completed nor waiting its turn.
     fn in_process(&self, id: TransferId) -> bool {
-        let slot = self.slots.get(id).expect("a transfer in the multi");
-        slot.mstate != mstate::MState::Pending && !self.run_of(id).state.is_completed()
+        let state = &self.run_of(id).state;
+        !matches!(state, TransferState::Pending(_)) && !state.is_completed()
     }
 
     /// Transfer `id`'s pollset traced as it is made (`Curl_multi_pollset`),

@@ -3018,6 +3018,49 @@ fn a_transfer_can_refuse_to_share_its_connection() {
 /// A transfer that would pass the host limit waits, running not at all,
 /// until a connection is given back; then it looks again, and reuses it
 /// (`multistate_connect`, `multi_schedule_pending`).
+/// A transfer let out of PENDING is in CONNECT at once, so the wait that
+/// follows collects its pollset, as C's `move_pending_to_connect` puts it
+/// in the process set. Removing the transfer holding a host's one
+/// connection lets out two that wait: one as its connection goes, one as
+/// it leaves the multi (multi.c:867). The C library traces these lines for
+/// a transfer let out, when the multi then waits.
+#[test]
+fn a_transfer_let_out_of_pending_is_in_connect_at_once() {
+    let (mut m, _clock) = networked();
+    m.conn_limits_mut().max_host = NonZeroU32::new(1);
+    // The first never connects, holding the host's one connection.
+    let (a, _) = traced("tcp://127.0.0.1:3/");
+    let a = m.add(Box::new(a), (), &mut NoEvents).unwrap();
+    let waiting = [0, 1].map(|_| {
+        let (mut e, lines) = traced("tcp://127.0.0.1:3/");
+        let components = crate::components::Components::new().unwrap();
+        components.configure(b"multi");
+        e.set_components(Some(components));
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        lines
+    });
+    m.perform(&mut NoEvents).unwrap();
+    assert_eq!(m.census().pending, 2);
+    let before = waiting.each_ref().map(|lines| trace_of(lines).len());
+    m.remove(a, &mut NoEvents).unwrap();
+    m.wait(&mut [], Duration::ZERO, WaitMode::Poll, &mut NoEvents)
+        .unwrap();
+    let let_out = [
+        "[MULTI] [PENDING] -> [CONNECT]\n",
+        "[MULTI] [CONNECT] pollset[], timeouts=0, paused 0/0 (r/w)\n",
+    ];
+    assert_eq!(trace_of(&waiting[0])[before[0]..], let_out);
+    // The wait is traced on the last transfer it collected.
+    assert_eq!(
+        trace_of(&waiting[1])[before[1]..],
+        [
+            let_out[0],
+            let_out[1],
+            "[MULTI] [CONNECT] multi_wait(fds=0, timeout=0) tinternal=0\n",
+        ]
+    );
+}
+
 #[test]
 fn a_transfer_waits_for_room_under_the_host_limit() {
     let (mut m, clock) = networked();

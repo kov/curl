@@ -3511,15 +3511,21 @@ fn setup<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, plan: Plan) -> Transfer
 /// let, look for one again (`multi_schedule_pending`): one at a time, as
 /// a connection freed most often makes room for one.
 pub(crate) fn schedule_pending<H: Host>(rest: &mut EngineRest<'_, H>) {
-    wake_pending(rest.tell.slots, rest.dirty, rest.pending_after);
+    if let Some(id) = wake_pending(rest.tell.slots, rest.dirty, rest.pending_after) {
+        let mut cx = StepCx::new(id, rest.reborrow());
+        mstate::enter(&mut cx, MState::Connect);
+    }
 }
 
-/// As `schedule_pending`, on the multi's tables.
+/// As `schedule_pending`, on the multi's tables: the transfer let out,
+/// which the caller traces entering CONNECT at once, as C's
+/// `move_pending_to_connect` does, so that it is in the multi's process
+/// set, and its pollset traced, before it next runs.
 pub(super) fn wake_pending<H: Host>(
     slots: &mut Slots<H>,
     dirty: &mut RowSet,
     after: &mut Option<TransferId>,
-) {
+) -> Option<TransferId> {
     let waiting = |slots: &Slots<H>, id| {
         slots
             .get(id)
@@ -3546,9 +3552,7 @@ pub(super) fn wake_pending<H: Host>(
             }
         }
     }
-    let Some(id) = found else {
-        return;
-    };
+    let id = found?;
     let run = slots
         .get_mut(id)
         .and_then(|slot| slot.run.as_mut())
@@ -3560,6 +3564,7 @@ pub(super) fn wake_pending<H: Host>(
     run.state = TransferState::Setup(plan);
     dirty.insert(id.index());
     *after = Some(id);
+    Some(id)
 }
 
 /// The peer the connect-to entries send a connection for `origin` to, if

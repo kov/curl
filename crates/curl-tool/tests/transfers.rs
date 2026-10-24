@@ -68,6 +68,11 @@ fn curl_env(dir: &Scratch, args: &[&str], env: &[(&str, &str)]) -> Run {
         .arg("-q")
         .args(args)
         .current_dir(&dir.0)
+        // The CA locations come from the environment only where a test
+        // gives them.
+        .env_remove("CURL_CA_BUNDLE")
+        .env_remove("SSL_CERT_DIR")
+        .env_remove("SSL_CERT_FILE")
         .envs(env.iter().copied())
         .output()
         .unwrap();
@@ -1682,4 +1687,246 @@ fn warns_of_more_than_one_auth_with_standard_input() {
     assert!(warned(&["--proxy-anyauth", "-T", "."]));
     assert!(!warned(&["--digest", "-T", "-"]));
     assert!(!warned(&["--anyauth", "-T", "f"]));
+}
+
+/// The TLS options as C's tool sets them, seen in what `--libcurl`
+/// writes (`ssl_ca_setopts`, `ssl_setopts`, `tlsversion`): the CA
+/// locations as given, else from the environment unless the peer goes
+/// unverified (`cacertpaths`); the oldest version 1.2 unless given, or
+/// the newest if that is older; the `CURLSSLOPT_*` bits by name. A blank
+/// value and a version range that cannot be met are refused.
+#[test]
+fn sets_the_tls_options_as_c_does() {
+    let s = Scratch::new("tls");
+    s.write("f", b"x");
+    let ca = s.path("f");
+    let dir = s.path("");
+    let dir = dir.trim_end_matches('/');
+    let set = |args: &[&str], env: &[(&str, &str)]| -> Result<Vec<String>, String> {
+        let r = curl_env(
+            &s,
+            &[
+                &["--no-progress-meter", "-o", "out", "--libcurl", "-"],
+                args,
+                &[&s.url("f")],
+            ]
+            .concat(),
+            env,
+        );
+        if r.code != 0 {
+            return Err(format!("{}: {}", r.code, r.stderr.lines().next().unwrap()));
+        }
+        let program = String::from_utf8(r.stdout).unwrap();
+        Ok(program
+            .split(";\n")
+            .map(|call| call.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter_map(|call| {
+                let call = call.strip_prefix("curl_easy_setopt(curl, ")?;
+                let name = &call[..call.find(',')?];
+                ["SSL", "CA", "TLS"]
+                    .iter()
+                    .any(|n| name.contains(n))
+                    .then(|| call.strip_suffix(')').unwrap().to_owned())
+            })
+            .collect())
+    };
+    let tls12 = "CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2";
+    let version = |v: &str| format!("CURLOPT_SSLVERSION, (long){v}");
+    let range = |min: &str, max: &str| {
+        format!("CURLOPT_SSLVERSION, (long)(CURL_SSLVERSION_{min} | CURL_SSLVERSION_MAX_{max})")
+    };
+    let cainfo = |f: &str| format!("CURLOPT_CAINFO, \"{f}\"");
+    let capath = |d: &str| {
+        [
+            format!("CURLOPT_CAPATH, \"{d}\""),
+            format!("CURLOPT_PROXY_CAPATH, \"{d}\""),
+        ]
+    };
+    let unverified = [
+        "CURLOPT_SSL_VERIFYPEER, 0L".to_owned(),
+        "CURLOPT_SSL_VERIFYHOST, 0L".to_owned(),
+    ];
+    let bundle = ("CURL_CA_BUNDLE", "/bundle");
+    let given_ca = ["--cacert", ca.as_str()];
+    let given_dir = ["--capath", dir];
+    // The arguments, the environment, and the calls written.
+    type Case<'a> = (&'a [&'a str], Vec<(&'a str, &'a str)>, Vec<String>);
+    let cases: Vec<Case<'_>> = vec![
+        (&[], vec![], vec![tls12.to_owned()]),
+        (
+            &["-k"],
+            vec![],
+            [&unverified[..], &[tls12.to_owned()]].concat(),
+        ),
+        (&given_ca, vec![], vec![cainfo(&ca), tls12.to_owned()]),
+        (&given_ca, vec![bundle], vec![cainfo(&ca), tls12.to_owned()]),
+        (
+            &given_dir,
+            vec![bundle],
+            [&capath(dir)[..], &[tls12.to_owned()]].concat(),
+        ),
+        (&[], vec![bundle], vec![cainfo("/bundle"), tls12.to_owned()]),
+        (
+            &["-k"],
+            vec![bundle],
+            [&unverified[..], &[tls12.to_owned()]].concat(),
+        ),
+        (
+            &[],
+            vec![("SSL_CERT_DIR", "/d"), ("SSL_CERT_FILE", "/f")],
+            [&[cainfo("/f")][..], &capath("/d"), &[tls12.to_owned()]].concat(),
+        ),
+        (
+            &[],
+            vec![bundle, ("SSL_CERT_DIR", "/d")],
+            vec![cainfo("/bundle"), tls12.to_owned()],
+        ),
+        (
+            &[],
+            vec![("CURL_CA_BUNDLE", ""), ("SSL_CERT_FILE", "/f")],
+            vec![cainfo("/f"), tls12.to_owned()],
+        ),
+        (
+            &["--proxy-insecure"],
+            vec![],
+            vec![
+                "CURLOPT_PROXY_SSL_VERIFYPEER, 0L".to_owned(),
+                "CURLOPT_PROXY_SSL_VERIFYHOST, 0L".to_owned(),
+                tls12.to_owned(),
+            ],
+        ),
+        (
+            &["--tlsv1"],
+            vec![],
+            vec![version("CURL_SSLVERSION_TLSv1_0")],
+        ),
+        (
+            &["--tlsv1.0"],
+            vec![],
+            vec![version("CURL_SSLVERSION_TLSv1_0")],
+        ),
+        (
+            &["--tlsv1.1"],
+            vec![],
+            vec![version("CURL_SSLVERSION_TLSv1_1")],
+        ),
+        (&["--tlsv1.2"], vec![], vec![tls12.to_owned()]),
+        (
+            &["--tlsv1.3"],
+            vec![],
+            vec![version("CURL_SSLVERSION_TLSv1_3")],
+        ),
+        (&["--tls-max", "default"], vec![], vec![tls12.to_owned()]),
+        (
+            &["--tls-max", "1.0"],
+            vec![],
+            vec![range("TLSv1_0", "TLSv1_0")],
+        ),
+        (
+            &["--tls-max", "1.1"],
+            vec![],
+            vec![range("TLSv1_1", "TLSv1_1")],
+        ),
+        (
+            &["--tls-max", "1.2"],
+            vec![],
+            vec![range("TLSv1_2", "TLSv1_2")],
+        ),
+        (
+            &["--tls-max", "1.3"],
+            vec![],
+            vec![range("TLSv1_2", "TLSv1_3")],
+        ),
+        (
+            &["--tlsv1.1", "--tls-max", "1.2"],
+            vec![],
+            vec![range("TLSv1_1", "TLSv1_2")],
+        ),
+        (
+            &["--tls-max", "1.2", "--tlsv1.1"],
+            vec![],
+            vec![range("TLSv1_1", "TLSv1_2")],
+        ),
+        (
+            &["--tlsv1.2", "--tls-max", "1.2"],
+            vec![],
+            vec![range("TLSv1_2", "TLSv1_2")],
+        ),
+        (
+            &["--tls-max", "1.2", "--tlsv1.2"],
+            vec![],
+            vec![range("TLSv1_2", "TLSv1_2")],
+        ),
+        (
+            &["--ssl-allow-beast", "--ca-native"],
+            vec![],
+            vec![
+                tls12.to_owned(),
+                "CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_ALLOW_BEAST | (long)CURLSSLOPT_NATIVE_CA"
+                    .to_owned(),
+            ],
+        ),
+        (
+            &["--ca-native"],
+            vec![],
+            vec![
+                tls12.to_owned(),
+                "CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA".to_owned(),
+            ],
+        ),
+        (
+            &["--no-alpn"],
+            vec![],
+            vec![tls12.to_owned(), "CURLOPT_SSL_ENABLE_ALPN, 0L".to_owned()],
+        ),
+        (
+            &[
+                "--ciphers",
+                "A",
+                "--tls13-ciphers",
+                "B",
+                "--curves",
+                "C",
+                "--sigalgs",
+                "D",
+            ],
+            vec![],
+            vec![
+                "CURLOPT_SSL_EC_CURVES, \"C\"".to_owned(),
+                "CURLOPT_SSL_SIGNATURE_ALGORITHMS, \"D\"".to_owned(),
+                tls12.to_owned(),
+                "CURLOPT_SSL_CIPHER_LIST, \"A\"".to_owned(),
+                "CURLOPT_TLS13_CIPHERS, \"B\"".to_owned(),
+            ],
+        ),
+    ];
+    for (args, env, want) in cases {
+        assert_eq!(set(args, &env), Ok(want), "{args:?} {env:?}");
+    }
+    let blank =
+        |o: &str| format!("2: curl: option --{o}: blank argument where content is expected");
+    let bad = |o: &str| format!("2: curl: option --{o}: is badly used here");
+    for (args, want) in [
+        (&["--ciphers", ""][..], blank("ciphers")),
+        (&["--tls13-ciphers", ""], blank("tls13-ciphers")),
+        (&["--curves", ""], blank("curves")),
+        (&["--sigalgs", ""], blank("sigalgs")),
+        (&["--capath", ""], blank("capath")),
+        (&["--tls-max", "1.4"], bad("tls-max")),
+        (
+            &["--tls-max", "1.2", "--tlsv1.3"],
+            "2: curl: Minimum TLS version set higher than max".to_owned(),
+        ),
+        (
+            &["--tlsv1.3", "--tls-max", "1.2"],
+            "2: curl: --tls-max set lower than minimum accepted version".to_owned(),
+        ),
+        // A newest version of the default is lower than any oldest set.
+        (
+            &["--tlsv1.2", "--tls-max", "default"],
+            "2: curl: --tls-max set lower than minimum accepted version".to_owned(),
+        ),
+    ] {
+        assert_eq!(set(args, &[]), Err(want), "{args:?}");
+    }
 }

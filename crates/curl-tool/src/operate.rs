@@ -3659,6 +3659,22 @@ mod tests {
         assert!(off.contains("fastopen: true"), "{off}");
     }
 
+    /// The peer and its name are verified unless `--insecure` says not
+    /// to, as the lines for them say.
+    #[test]
+    fn verifies_the_peer_unless_insecure() {
+        let verify = "tls: Tls { verify_peer: true, verify_host: true,";
+        let (_, on) = set_up(&[]).unwrap();
+        assert!(on.contains(verify), "{on}");
+        let (_, off) = set_up(&["-k"]).unwrap();
+        assert!(
+            off.contains("tls: Tls { verify_peer: false, verify_host: false,"),
+            "{off}"
+        );
+        let (_, on) = set_up(&["-k", "--no-insecure"]).unwrap();
+        assert!(on.contains(verify), "{on}");
+    }
+
     /// Each option that changes what a transfer is set up with changes
     /// what `--libcurl` writes: an option is not set without its line.
     /// Options the C writes nothing for, as their value is the default,

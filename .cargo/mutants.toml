@@ -410,6 +410,13 @@ exclude_re = [
     # A header line ends with its line end, so the 9 bytes left at its
     # very end are never `filename=`, nor can one follow them.
     'curl-tool/src/output\.rs:.*: replace > with >= in Stream::disposition$',
+    # `CURLOPT_SSLVERSION` joins the oldest version, in the low 16 bits,
+    # and the newest, above them; the SSL options each bit once: disjoint
+    # bits, where `|` and `^` agree.
+    'curl-tool/src/operate\.rs:.*: replace \| with \^ in ssl_setopts$',
+    # A newest of 1.2 with no oldest given makes the oldest 1.2, which the
+    # default oldest already is.
+    'curl-tool/src/operate\.rs:.*: replace < with <= in tls_versions$',
     # `put` is reached with the buffer just written out or made, so empty,
     # and with less than a block left, so less than the buffer: on the one
     # turn a stream that is not line buffered takes, the room is the whole

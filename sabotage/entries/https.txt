@@ -100,3 +100,50 @@ features: test-util
     let below = if c.route.socks().is_some() {
 --- new
     let below = if c.route.socks().is_none() {
+
+=== a newest TLS version older than the oldest is let through
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::http::tests::https_trace::versions_that_allow_none_fail_the_tls_filter_s_connect
+features: test-util
+--- old
+    if max < min {
+--- new
+    if max < min && false {
+
+=== versions are checked against each other in the wrong order
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::http::tests::https_trace::versions_that_allow_none_fail_the_tls_filter_s_connect
+features: test-util
+--- old
+        TlsMinVersion::Tls1_3 => 7,
+--- new
+        TlsMinVersion::Tls1_3 => 6,
+
+=== the TLS filter's connect says it is done while it waits
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::http::tests::https_trace::the_connect_calls_and_the_tls_filter_s_wait_are_traced
+features: test-util
+--- old
+        Ok(Shake::Waiting) => (trace::Code(Ok(())), 0),
+--- new
+        Ok(Shake::Waiting) => (trace::Code(Ok(())), 1),
+
+=== the TLS filter does not say its socket is in the pollset
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::https_trace::the_connect_calls_and_the_tls_filter_s_wait_are_traced
+features: test-util
+--- old
+            tls: self.state.tls_waits(),
+--- new
+            tls: None,
+
+=== a failed connect of the chain does not say its filter returned it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::https_trace::versions_that_allow_none_fail_the_tls_filter_s_connect
+features: test-util
+--- old
+    if ended.is_err() {
+        trace::of(
+--- new
+    if ended.is_ok() {
+        trace::of(

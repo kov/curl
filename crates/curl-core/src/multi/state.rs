@@ -40,7 +40,7 @@ use crate::proto::http1::follow::Inherited;
 use crate::proto::{Before, DoStep, Ended, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
-use crate::tls::TlsNative;
+use crate::tls::{TlsNative, TlsWait};
 use crate::trace::{self, Bytes, Ip, OsError};
 use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
@@ -299,6 +299,22 @@ impl TransferState {
         match self {
             TransferState::Done(_) => None,
             state => tls_native(state.lease()?),
+        }
+    }
+
+    /// What the origin's TLS session waits for on the socket, if it
+    /// waits.
+    fn tls_waits(&self) -> Option<TlsWait> {
+        let lease = match self {
+            TransferState::Done(_) => None,
+            state => state.lease(),
+        }?;
+        match lease.query(LayerQuery::TlsWaits)? {
+            LayerAnswer::TlsWaits(TlsWait::Nothing) => None,
+            LayerAnswer::TlsWaits(waits) => Some(waits),
+            LayerAnswer::TlsNative(_) | LayerAnswer::Alpn(_) => {
+                unreachable!("an answer of another question")
+            }
         }
     }
 
@@ -581,6 +597,8 @@ pub(crate) struct PollsetTrace<T> {
     /// handshake under way over the one dialed, what their filter traces
     /// as, and whether an HTTPS connect filter heads it.
     setup: Option<(bool, Component, bool)>,
+    /// What the origin's TLS session waits for, if it waits.
+    tls: Option<TlsWait>,
     timers: T,
     /// Sending and receiving, paused.
     paused: (bool, bool),
@@ -604,6 +622,7 @@ impl Run {
         PollsetTrace {
             wants,
             setup,
+            tls: self.state.tls_waits(),
             timers: self.deadlines.in_order(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         }
@@ -617,6 +636,7 @@ impl PollsetTrace<std::iter::Empty<(Instant, TimerKind)>> {
         PollsetTrace {
             wants: Wants::NONE,
             setup: None,
+            tls: None,
             timers: std::iter::empty(),
             paused: (pause.send_paused(), pause.recv != RecvPause::Running),
         }
@@ -629,6 +649,16 @@ impl<T: Iterator<Item = (Instant, TimerKind)> + Clone> PollsetTrace<T> {
     /// of timers armed, then each timer in the order they fire.
     pub(crate) fn trace<H: Host>(self, cx: &mut StepCx<'_, H>) {
         let wants = self.wants.as_slice();
+        // The TLS filter puts its socket in for what its session waits
+        // for (`Curl_ssl_adjust_pollset`).
+        if let (Some(waits), Some(&(key, _))) = (self.tls, wants.first()) {
+            let fd = key.get();
+            let line = match waits {
+                TlsWait::Send => format_args!("adjust_pollset, POLLOUT fd={fd}"),
+                TlsWait::Recv | TlsWait::Nothing => format_args!("adjust_pollset, POLLIN fd={fd}"),
+            };
+            trace::of(cx, Component::Ssl, line);
+        }
         if let Some((dialed, component, https)) = self.setup {
             for &(key, _) in wants {
                 let fd = key.get();
@@ -1037,7 +1067,9 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
 pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
     match lease.query(LayerQuery::TlsNative)? {
         LayerAnswer::TlsNative(native) => Some(native),
-        LayerAnswer::Alpn(_) => unreachable!("an answer of another question"),
+        LayerAnswer::Alpn(_) | LayerAnswer::TlsWaits(_) => {
+            unreachable!("an answer of another question")
+        }
     }
 }
 
@@ -1567,6 +1599,7 @@ fn connecting<H: Host>(
                 let kind = d.result.expect_err("a setup is done with only as it fails");
                 report_failed(cx, partly);
                 https::call_ended(https, cx, Err(kind));
+                chain_connect_ended(cx, Err(kind));
                 if let Some(chain) = chain {
                     // The HTTPS connect filter holds its attempt's
                     // filters apart from the chain once its call is over.
@@ -1582,10 +1615,33 @@ fn connecting<H: Host>(
             next => {
                 if matches!(next, TransferState::Connecting(_)) {
                     https::call_ended(https, cx, Ok(false));
+                    chain_connect_ended(cx, Ok(false));
                 }
                 return (next, wake);
             }
         }
+    }
+}
+
+/// A call of the chain's connect ends, up, under way or failed, as the
+/// filter at its top, the name's DNS one, traces it (`Curl_conn_connect`).
+fn chain_connect_ended<H: Host>(cx: &mut StepCx<'_, H>, ended: Result<bool, ErrorKind>) {
+    let (code, done) = match ended {
+        Ok(done) => (trace::Code(Ok(())), u8::from(done)),
+        Err(kind) => (trace::Code(Err(kind)), 0),
+    };
+    let dns = Component::Dns;
+    trace::of(
+        cx,
+        dns,
+        format_args!("Curl_conn_connect(block=0) -> {code}, done={done}"),
+    );
+    if ended.is_err() {
+        trace::of(
+            cx,
+            dns,
+            format_args!("Curl_conn_connect(), filter returned {code}"),
+        );
     }
 }
 
@@ -2073,6 +2129,7 @@ fn up<H: Host>(
         query_alpn(cx, &c.lease, Component::Setup);
     }
     https::call_ended(c.https, cx, Ok(true));
+    chain_connect_ended(cx, Ok(true));
     // Its TLS is up now, and its socket was when it connected
     // (`Curl_pgrsTime` for `TIMER_APPCONNECT` as the SSL filter connects).
     if c.route.tls.is_some() {

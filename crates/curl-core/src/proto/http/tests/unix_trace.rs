@@ -82,7 +82,7 @@ fn setup_lines(ran: &Ran) -> Vec<String> {
             });
             socket
                 || l.starts_with("[TCP] ")
-                || l.starts_with("[DNS] ")
+                || (l.starts_with("[DNS] ") && !l.contains("] Curl_conn_connect("))
                 || l.starts_with("[HAPPY-EYEBALLS] ")
                 || said.iter().any(|p| l.starts_with(p))
         })

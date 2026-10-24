@@ -267,3 +267,69 @@ fn what_alpn_agreed_is_asked_of_a_new_connection_only() {
     assert_eq!(again.result, Ok(()));
     assert_eq!(lines(&again, &starts), Vec::<String>::new());
 }
+
+/// Each call of the chain's connect is traced by its top filter as it
+/// ends, and each of the TLS filter's by it as it begins and ends; the
+/// TLS filter puts its socket in the pollset for what its session waits
+/// for.
+#[test]
+fn the_connect_calls_and_the_tls_filter_s_wait_are_traced() {
+    let response = fake::records(OK).unwrap();
+    let talk = Conversation::replies(&[WELCOME, &response], true).late_replies();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let e = tracing(b"ssl,dns");
+    let ran = https_get(&mut m, e, &format!("https://127.0.0.1:{PORT}/"), |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let starts = [
+        "[SSL] cf_connect",
+        "[SSL] adjust",
+        "[DNS] Curl_conn_connect",
+    ];
+    assert_eq!(
+        lines(&ran, &starts),
+        expect(
+            "[DNS] Curl_conn_connect(block=0) -> 0, done=0
+            [SSL] cf_connect()
+            [SSL] cf_connect() -> 0, done=0
+            [DNS] Curl_conn_connect(block=0) -> 0, done=0
+            [SSL] adjust_pollset, POLLIN fd=1000
+            [SSL] cf_connect()
+            [SSL] cf_connect() -> 0, done=1
+            [DNS] Curl_conn_connect(block=0) -> 0, done=1
+            [SSL] adjust_pollset, POLLIN fd=1000"
+        )
+    );
+}
+
+/// A newest version allowed older than the oldest fails the TLS filter's
+/// first connect, before its session's handshake starts
+/// (`ssl_prefs_check`), and the chain's connect with it.
+#[test]
+fn versions_that_allow_none_fail_the_tls_filter_s_connect() {
+    let talk = Conversation::replies(&[WELCOME], true);
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let e = tracing(b"ssl,dns");
+    let ran = https_get(&mut m, e, &format!("https://127.0.0.1:{PORT}/"), |o| {
+        let tls = o.tls.options.make_mut().unwrap();
+        tls.min_version = crate::options::TlsMinVersion::Tls1_3;
+        tls.max_version = crate::options::TlsMaxVersion::Tls1_2;
+    });
+    assert_eq!(ran.result, Err(ErrorKind::SslConnectError));
+    let starts = [
+        "[SSL] cf_connect",
+        "CURL_SSLVERSION",
+        "[DNS] Curl_conn_connect",
+    ];
+    let got = lines(&ran, &starts);
+    assert_eq!(
+        got[got.len() - 5..],
+        expect(
+            "[SSL] cf_connect()
+            CURL_SSLVERSION_MAX incompatible with CURL_SSLVERSION
+            [SSL] cf_connect() -> 35, done=0
+            [DNS] Curl_conn_connect(block=0) -> 35, done=0
+            [DNS] Curl_conn_connect(), filter returned 35"
+        )
+    );
+    assert_eq!(talk.received(), b"", "no hello sent");
+}

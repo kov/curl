@@ -2604,7 +2604,9 @@ fn dns_lines(m: &mut Multi, url: &str, set: impl FnOnce(&mut Options)) -> Vec<St
     lines
         .into_iter()
         .filter(|l| {
-            (l.starts_with("[DNS]") && !l.contains("] hostip_resolv("))
+            (l.starts_with("[DNS]")
+                && !l.contains("] hostip_resolv(")
+                && !l.contains("] Curl_conn_connect("))
                 || l.starts_with("Hostname")
                 || l.starts_with("Negative")
         })

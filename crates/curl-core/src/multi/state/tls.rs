@@ -7,12 +7,15 @@
 use curl_alloc::{OutOfMemory, try_box};
 
 use super::{Connecting, Handshake, StepCx, TransferState, Wake};
+use crate::components::Component;
 use crate::conn::Made;
 use crate::conn::tls::TlsLayer;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::HttpVersion;
+use crate::options::{TlsMaxVersion, TlsMinVersion};
 use crate::tls::{Alpn, Handshake as Shake, TlsPeer, TlsShared};
+use crate::trace;
 
 /// The handshakes before it are made: the session is made and its layer
 /// put on the stream, taking the bytes the stream received and did not
@@ -65,10 +68,23 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
     }
 }
 
-/// Move the handshake on, as far as the socket lets it.
+/// Move the handshake on, as far as the socket lets it, each call traced
+/// as the TLS filter traces its connect (`ssl_cf_connect`); the versions
+/// allowed are checked first (`ssl_prefs_check`).
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
+    let ssl = Component::Ssl;
+    trace::of(cx, ssl, format_args!("cf_connect()"));
     let traced = Some(c.route.socket_component());
-    let shaken = c.lease.dialed().stream().connect(cx, traced);
+    let shaken = match prefs_check(cx) {
+        Ok(()) => c.lease.dialed().stream().connect(cx, traced),
+        Err(kind) => Err(kind),
+    };
+    let (code, done) = match shaken {
+        Ok(Shake::Done) => (trace::Code(Ok(())), 1),
+        Ok(Shake::Waiting) => (trace::Code(Ok(())), 0),
+        Err(kind) => (trace::Code(Err(kind)), 0),
+    };
+    trace::of(cx, ssl, format_args!("cf_connect() -> {code}, done={done}"));
     // The session may have made its objects.
     cx.lend(super::tls_native(&c.lease));
     match shaken {
@@ -80,4 +96,30 @@ pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Trans
         Ok(Shake::Waiting) => (TransferState::Connecting(c), Wake::Idle),
         Err(kind) => (TransferState::Connecting(c).fail(kind), Wake::Again),
     }
+}
+
+/// The newest version allowed is not older than the oldest
+/// (`ssl_prefs_check`), each as C numbers them: any TLS 1.x is below
+/// TLS 1.0; no newest set, or the library's, allows any.
+fn prefs_check<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    let options = &cx.easy().options().tls.options;
+    let min = match options.min_version {
+        TlsMinVersion::Tls1 => 1,
+        TlsMinVersion::Tls1_0 => 4,
+        TlsMinVersion::Tls1_1 => 5,
+        TlsMinVersion::Tls1_2 => 6,
+        TlsMinVersion::Tls1_3 => 7,
+    };
+    let max = match options.max_version {
+        TlsMaxVersion::None | TlsMaxVersion::Default => return Ok(()),
+        TlsMaxVersion::Tls1_0 => 4,
+        TlsMaxVersion::Tls1_1 => 5,
+        TlsMaxVersion::Tls1_2 => 6,
+        TlsMaxVersion::Tls1_3 => 7,
+    };
+    if max < min {
+        let why = format_args!("CURL_SSLVERSION_MAX incompatible with CURL_SSLVERSION");
+        return Err(trace::fail(cx, ErrorKind::SslConnectError, why));
+    }
+    Ok(())
 }

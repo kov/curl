@@ -49,6 +49,9 @@ pub(crate) enum LayerQuery {
     /// The protocol the origin's TLS session agreed by ALPN
     /// (`CF_QUERY_ALPN_NEGOTIATED`).
     Alpn,
+    /// What the origin's TLS session waits for on the socket (its
+    /// `io_need`).
+    TlsWaits,
 }
 
 /// What a layer answers a `LayerQuery`.
@@ -57,6 +60,7 @@ pub(crate) enum LayerAnswer {
     TlsNative(crate::tls::TlsNative),
     /// What the peer chose, if it chose.
     Alpn(Option<crate::tls::Chosen>),
+    TlsWaits(crate::tls::TlsWait),
 }
 
 /// What a layer reaches while it works: the time, and the trace of the

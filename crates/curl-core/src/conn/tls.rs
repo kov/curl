@@ -95,6 +95,7 @@ impl Layer for TlsLayer {
         match q {
             LayerQuery::TlsNative => self.session.native().map(LayerAnswer::TlsNative),
             LayerQuery::Alpn => Some(LayerAnswer::Alpn(self.session.chosen())),
+            LayerQuery::TlsWaits => Some(LayerAnswer::TlsWaits(self.session.waits())),
         }
     }
 }

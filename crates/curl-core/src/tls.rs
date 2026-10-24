@@ -6,11 +6,13 @@
 //! connection's stream (`TlsSession`), handing it the layers below to
 //! read and write through (`TlsIo`). The core names no library's types.
 
+use std::any::Any;
 use std::fmt;
 use std::io;
 use std::net::Ipv4Addr;
+use std::sync::Mutex;
 
-use curl_alloc::{OutOfMemory, TryArc};
+use curl_alloc::{OutOfMemory, TryArc, try_box};
 
 use crate::components::Component;
 use crate::conn::Peer;
@@ -19,6 +21,7 @@ use crate::conn::layer::{Below, LayerCx};
 use crate::error::ErrorKind;
 use crate::handler::DebugKind;
 use crate::options::{CaSetting, Tls, TlsOptions};
+use crate::time::Instant;
 use crate::trace::OsError;
 
 pub use crate::conn::layer::Handshake;
@@ -35,12 +38,14 @@ pub trait TlsBackend: Send + Sync {
     /// settings `identity` holds and offering `alpn` (C's
     /// `ssl_connect_data` and its backend's context, made as the SSL
     /// filter is added). The session keeps the identity as long as it
-    /// needs it.
+    /// needs it, and `shared` too: what the library keeps across the
+    /// connections of the multi the session's connection belongs to.
     fn session(
         &self,
         identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
         alpn: Alpn,
+        shared: &TlsShared,
     ) -> Result<Box<dyn TlsSession>, ErrorKind>;
 
     /// Where it finds the certificates to trust when a transfer names
@@ -56,6 +61,51 @@ pub trait TlsBackend: Send + Sync {
 pub struct CaDefaults {
     pub file: Option<&'static str>,
     pub path: Option<&'static str>,
+}
+
+/// What a TLS library keeps for one multi across the connections made
+/// from it, which only the library knows the shape of (C keeps
+/// OpenSSL's CA store in `multi->proto_hash`). The multi holds it, made
+/// as its first TLS session is, and hands it to each session it asks
+/// for; the library makes what goes in it the first time it needs it.
+/// It goes with the multi and the connections it owns.
+#[derive(Clone)]
+pub struct TlsShared(TryArc<Mutex<Option<Box<dyn Any + Send>>>>);
+
+impl TlsShared {
+    pub(crate) fn new() -> Result<TlsShared, OutOfMemory> {
+        TryArc::try_new(Mutex::new(None)).map(TlsShared)
+    }
+
+    /// Run `f` on the library's state, of its own type `T`, made by
+    /// `make` the first time. A multi whose handles name two libraries
+    /// keeps the state of the first that asked: for the other, `f` is not
+    /// run, and none comes back.
+    pub fn with<T: Any + Send, R>(
+        &self,
+        make: impl FnOnce() -> T,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Result<Option<R>, OutOfMemory> {
+        let mut state = self.0.lock().expect("panics abort");
+        if state.is_none() {
+            let made: Box<dyn Any + Send> = try_box(make())?;
+            *state = Some(made);
+        }
+        let state = state.as_mut().expect("made above");
+        Ok(state.downcast_mut::<T>().map(f))
+    }
+
+    /// The state is the same one: two sessions were handed the same
+    /// multi's.
+    pub fn same(&self, other: &TlsShared) -> bool {
+        TryArc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl fmt::Debug for TlsShared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TlsShared")
+    }
 }
 
 impl fmt::Debug for dyn TlsBackend {
@@ -252,6 +302,12 @@ impl TlsIo<'_> {
     pub fn info(&mut self, line: fmt::Arguments<'_>) {
         self.cx.info(line);
     }
+
+    /// The time of the multi's pass the call is made in (C's
+    /// `Curl_pgrs_now`), on the multi's clock.
+    pub fn now(&self) -> Instant {
+        self.cx.now()
+    }
 }
 
 impl<'a> TlsIo<'a> {
@@ -369,6 +425,8 @@ impl PartialEq for TlsIdentity {
             // The handle's, not the connection's: C reads it as the
             // handshake starts and matches no connection by it.
             alpn: _,
+            // The handle's too, read as the store is set up.
+            ca_cache: _,
         } = options;
         let o = &other.options;
         *verify_peer == other.verify_peer

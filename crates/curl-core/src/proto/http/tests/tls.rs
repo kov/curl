@@ -181,6 +181,37 @@ fn an_https_connection_is_reused_only_with_the_same_tls() {
     assert_eq!(backend.log().sessions, 2);
 }
 
+/// A multi hands each session the one state the library keeps for it,
+/// made with its first session and dropped with the multi; another multi
+/// keeps its own.
+#[test]
+fn a_multi_keeps_one_state_of_the_library_s_for_its_sessions() {
+    let (backend, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let talks: Vec<Conversation> = (0..3)
+        .map(|_| Conversation::replies(&[&welcome, &response], false))
+        .collect();
+    let mut m = serving(Peer::Accepts, &[&talks[0], &talks[1]]);
+    assert_eq!(backend.log().states_made, 0, "none before a session");
+    let fresh = |o: &mut Options| o.limits.reuse.fresh = true;
+    for talk in &talks[..2] {
+        let got = get_tls(&mut m, libraries, "/", talk.clone(), fresh);
+        assert_eq!(got.result, Ok(()));
+    }
+    let log = backend.log();
+    assert_eq!((log.sessions, log.states_made, log.state), (2, 1, 1));
+    let mut other = serving(Peer::Accepts, &[&talks[2]]);
+    let got = get_tls(&mut other, libraries, "/", talks[2].clone(), |_| {});
+    assert_eq!(got.result, Ok(()));
+    let log = backend.log();
+    assert_eq!((log.sessions, log.states_made, log.state), (3, 2, 2));
+    assert_eq!(log.states_dropped, 0);
+    drop(m);
+    assert_eq!(backend.log().states_dropped, 1);
+    drop(other);
+    assert_eq!(backend.log().states_dropped, 2);
+}
+
 /// A transfer that names the library's default CA file reuses the
 /// connection of one that kept the default, as in C, which copies the
 /// default into the setting before it compares; one that trusts no file
@@ -461,6 +492,7 @@ impl crate::tls::TlsBackend for Saying {
         _: &TryArc<crate::tls::TlsIdentity>,
         _: &crate::tls::TlsPeer<'_>,
         _: crate::tls::Alpn,
+        _: &crate::tls::TlsShared,
     ) -> Result<Box<dyn crate::tls::TlsSession>, ErrorKind> {
         Ok(Box::new(SayingSession))
     }

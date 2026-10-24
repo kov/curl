@@ -10,12 +10,13 @@ use core::fmt;
 use core::ptr::{self, NonNull};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-use curl_alloc::TryVec as _;
+use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 use curl_core::error::ErrorKind;
 use curl_core::options::SslOptions;
-use curl_core::tls::{TlsIdentity, TlsIo, TlsPeerKind};
+use curl_core::tls::{TlsIdentity, TlsIo, TlsPeerKind, TlsShared};
 use openssl_sys::{BIO, SSL, SSL_CTX, X509, X509_STORE};
 
+use crate::cache::{self, StoreCache};
 use crate::ffi;
 use crate::hostcheck;
 
@@ -125,9 +126,97 @@ fn c_string(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
     Ok(c)
 }
 
+/// A reference to a store of certificates to trust, freed as it goes.
+pub(crate) struct Store(NonNull<X509_STORE>);
+
+// SAFETY: OpenSSL counts a store's references atomically and locks it as
+// it is used, so a store may be shared and freed from any thread; this
+// crate changes a store only as it loads it, before it is shared.
+unsafe impl Send for Store {}
+
+impl Store {
+    /// Another reference to the store of `ctx`.
+    fn of(ctx: NonNull<SSL_CTX>) -> Option<Store> {
+        // SAFETY: the session's context, alive while it is.
+        let store = NonNull::new(unsafe { openssl_sys::SSL_CTX_get_cert_store(ctx.as_ptr()) })?;
+        Store::up(store)
+    }
+
+    /// Another reference to the same store.
+    fn another(&self) -> Option<Store> {
+        Store::up(self.0)
+    }
+
+    /// Another reference to `store`, if the library could count it.
+    fn up(store: NonNull<X509_STORE>) -> Option<Store> {
+        // SAFETY: a store alive while this runs: a context's, or one this
+        // crate holds a reference to.
+        (unsafe { ffi::X509_STORE_up_ref(store.as_ptr()) } == 1).then_some(Store(store))
+    }
+
+    /// Make it the store of `ctx`, which takes this reference over and
+    /// frees the store it had.
+    fn give_to(self, ctx: NonNull<SSL_CTX>) {
+        let store = core::mem::ManuallyDrop::new(self);
+        // SAFETY: the session's context, and a reference this crate
+        // holds, which the context now owns.
+        unsafe { openssl_sys::SSL_CTX_set_cert_store(ctx.as_ptr(), store.0.as_ptr()) };
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        // SAFETY: a reference this crate took, given back once.
+        unsafe { openssl_sys::X509_STORE_free(self.0.as_ptr()) };
+    }
+}
+
+/// What this library keeps for a multi: the store its connections last
+/// loaded.
+pub(crate) type Kept = StoreCache<Store>;
+
 /// Set the trust store of `ctx` up for a session with `identity`
+/// (`Curl_ssl_setup_x509_store`): the store `shared` keeps for the
+/// multi, if one serves it, and nothing is said; else one loaded, and
+/// kept for the connections after if they may take it.
+pub(crate) fn setup_store(
+    ctx: NonNull<SSL_CTX>,
+    identity: &TryArc<TlsIdentity>,
+    shared: Option<&TlsShared>,
+    io: &mut TlsIo<'_>,
+) -> Result<(), ErrorKind> {
+    let shared = shared.filter(|_| cache::cacheable(identity));
+    let now = io.now();
+    if let Some(shared) = shared {
+        let kept = shared.with(Kept::default, |c| {
+            c.get(identity, now).and_then(Store::another)
+        });
+        match kept {
+            Ok(Some(Some(store))) => {
+                store.give_to(ctx);
+                return Ok(());
+            }
+            Ok(Some(None)) => {}
+            // No room to keep a store, or the multi keeps another
+            // library's: loaded as without the cache, as C goes without
+            // it when it cannot make its entry.
+            Err(OutOfMemory) | Ok(None) => {}
+        }
+    }
+    populate_store(ctx, identity, io)?;
+    if let Some(shared) = shared
+        && let Some(store) = Store::of(ctx)
+    {
+        // Kept, or not kept as above: the transfer goes on either way.
+        let (Ok(Some(()) | None) | Err(OutOfMemory)) =
+            shared.with(Kept::default, |c| c.set(identity, now, store));
+    }
+    Ok(())
+}
+
+/// Load the trust store of `ctx` for a session with `identity`
 /// (`ossl_populate_x509_store`).
-pub(crate) fn populate_store(
+fn populate_store(
     ctx: NonNull<SSL_CTX>,
     identity: &TlsIdentity,
     io: &mut TlsIo<'_>,

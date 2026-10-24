@@ -186,3 +186,14 @@ witness: curl-core proto::http::tests::tls::a_handshake_cut_short_keeps_the_conn
     let Some((remote, local, at)) = partly else {
 --- new
     let Some((remote, local, at)) = partly.filter(|_| false) else {
+
+=== each TLS session of a multi is handed a state of its own, not the multi's one
+file: crates/curl-core/src/multi/state/tls.rs
+witness: curl-core proto::http::tests::tls::a_multi_keeps_one_state_of_the_library_s_for_its_sessions
+--- old
+        Some(shared) => shared,
+--- new
+        Some(shared) => {
+            *shared = TlsShared::new().unwrap();
+            shared
+        }

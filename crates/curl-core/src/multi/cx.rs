@@ -22,6 +22,7 @@ use crate::options::Options;
 use crate::report::TransferReport;
 use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock, Instant};
+use crate::tls::TlsShared;
 
 use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
@@ -39,6 +40,8 @@ pub(crate) struct EngineRest<'a, H: Host> {
     /// The transfers, and what the socket callback reaches.
     pub(super) tell: Telling<'a, H>,
     pub(super) caches: &'a mut Caches,
+    /// What the TLS library keeps across the multi's connections.
+    pub(super) tls: &'a mut Option<TlsShared>,
     /// The connections shutting down.
     pub(super) shutdowns: &'a mut ShutdownSet,
     /// The transfer last let look for a connection again.
@@ -65,6 +68,7 @@ impl<H: Host> EngineRest<'_, H> {
         EngineRest {
             tell: self.tell.reborrow(),
             caches: &mut *self.caches,
+            tls: &mut *self.tls,
             shutdowns: &mut *self.shutdowns,
             pending_after: &mut *self.pending_after,
             net: &mut *self.net,

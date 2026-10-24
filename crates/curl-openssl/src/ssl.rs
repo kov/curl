@@ -18,7 +18,7 @@ use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
     Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession,
-    TlsWait,
+    TlsShared, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX};
@@ -46,6 +46,7 @@ impl TlsBackend for OpenSsl {
         identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
         alpn: Alpn,
+        shared: &TlsShared,
     ) -> Result<Box<dyn TlsSession>, ErrorKind> {
         // A library this build does not work with is one it does not
         // have: what the shim and the tool name is checked at their init.
@@ -58,6 +59,7 @@ impl TlsBackend for OpenSsl {
             ctx: None,
             method: None,
             identity: identity.clone(),
+            shared: Some(shared.clone()),
             host,
             port: peer.port,
             kind: peer.kind,
@@ -127,6 +129,9 @@ struct Session {
     ctx: Option<Ctx>,
     method: Option<Method>,
     identity: TryArc<TlsIdentity>,
+    /// What the library keeps for the multi, until the trust store is
+    /// set up: the store it may take, and keep its own in.
+    shared: Option<TlsShared>,
     /// The origin's name as the URL gives it, without brackets.
     host: Vec<u8>,
     port: u16,
@@ -211,8 +216,9 @@ impl Session {
     fn call<R>(&mut self, io: &mut TlsIo<'_>, op: impl FnOnce(*mut SSL) -> R) -> (R, Below) {
         let ssl = self.ssl.as_ref().expect("made at the first step").0;
         let ctx = self.ctx.as_ref().expect("made at the first step").0;
-        let identity: &TlsIdentity = &self.identity;
-        let mut setup = |io: &mut TlsIo<'_>| x509::populate_store(ctx, identity, io);
+        let identity = &self.identity;
+        let shared = self.shared.as_ref();
+        let mut setup = |io: &mut TlsIo<'_>| x509::setup_store(ctx, identity, shared, io);
         let mut slot = Slot {
             io,
             flags: &mut self.flags,
@@ -452,8 +458,13 @@ impl Session {
             // The ClientHello went out without a read: the store is set
             // up for the certificate to come.
             let ctx = self.ctx.as_ref().expect("made at the first step").0;
-            x509::populate_store(ctx, &self.identity, io)?;
+            x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
             self.flags.store_ready = true;
+        }
+        if self.flags.store_ready {
+            // Not needed past the store: the connection does not keep the
+            // multi's state alive, wherever it goes.
+            self.shared = None;
         }
         if err == 1 {
             self.report_handshake(io);

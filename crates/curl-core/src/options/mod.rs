@@ -1746,6 +1746,28 @@ pub struct TlsOptions {
     /// ALPN is offered (`CURLOPT_SSL_ENABLE_ALPN`). C keeps it on the
     /// handle, not in the TLS settings a connection is matched by.
     pub alpn: bool,
+    /// How long a store of the certificates to trust, once loaded, serves
+    /// the next connections of the multi (`CURLOPT_CA_CACHE_TIMEOUT`).
+    /// The handle's, as `alpn`.
+    pub ca_cache: CaCache,
+}
+
+/// How long the certificates loaded to trust are kept for the next
+/// connections a multi makes, so that they are not read again
+/// (`CURLOPT_CA_CACHE_TIMEOUT`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaCache {
+    /// Not kept: each connection loads its own (0).
+    Off,
+    /// Kept this long after they were loaded.
+    For(std::time::Duration),
+    /// Kept as long as the multi is (-1).
+    Forever,
+}
+
+impl CaCache {
+    /// C's default: a day.
+    pub const DEFAULT: CaCache = CaCache::For(std::time::Duration::from_secs(24 * 60 * 60));
 }
 
 impl ColdGroup for TlsOptions {
@@ -1774,6 +1796,7 @@ impl ColdGroup for TlsOptions {
         signature_algorithms: None,
         pinned_key: None,
         alpn: true,
+        ca_cache: CaCache::DEFAULT,
     };
 }
 
@@ -1805,6 +1828,7 @@ impl TlsOptions {
             signature_algorithms,
             pinned_key,
             alpn,
+            ca_cache,
         } = self;
         Ok(TlsOptions {
             min_version: *min_version,
@@ -1830,6 +1854,7 @@ impl TlsOptions {
             signature_algorithms: text(signature_algorithms)?,
             pinned_key: text(pinned_key)?,
             alpn: *alpn,
+            ca_cache: *ca_cache,
         })
     }
 }

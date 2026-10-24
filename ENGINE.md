@@ -1759,19 +1759,24 @@ scheme and the setup's TLS stage, the goodbye through the shutdown set, driven i
 tests by a fake library (`tls::fake::FakeTls`); and OpenSSL's session in curl-openssl (**The
 BIO**, the context, **Verification** and the host check), which the tool and the C ABI give
 every handle (`Libraries::tls`), reporting `https`, `SSL` and `OpenSSL/3.5.9` as C's build does
-(`curl -V`, `curl_version_info`). Planned: the CA store cache,
-close_notify, and the seam's later methods noted below. MILESTONES.md step 43 lists the
+(`curl -V`, `curl_version_info`); the CA store each multi keeps for its next connections
+(`TlsShared`). Planned: close_notify, and the seam's later methods noted below. MILESTONES.md step 43 lists the
 sub-steps.
 
 ```rust
 // curl_core::tls, public: the seam a TLS library implements (curl-openssl)
 pub trait TlsBackend: Send + Sync {
-    fn session(&self, identity: &TryArc<TlsIdentity>, peer: &TlsPeer<'_>, alpn: Alpn)
-        -> Result<Box<dyn TlsSession>, ErrorKind>;
+    fn session(&self, identity: &TryArc<TlsIdentity>, peer: &TlsPeer<'_>, alpn: Alpn,
+               shared: &TlsShared) -> Result<Box<dyn TlsSession>, ErrorKind>;
     fn ca_defaults(&self) -> CaDefaults;           // the build's CA file and path
     // planned (43h): the ticket to resume.
 }
 pub enum Alpn { None, Http11, Http10 }             // the offer, from the HTTP version
+#[derive(Clone)] pub struct TlsShared(/* TryArc<Mutex<Option<Box<dyn Any + Send>>>> */);
+impl TlsShared {                                   // the library's per-multi state, its own type
+    pub fn with<T: Any + Send, R>(&self, make: impl FnOnce() -> T, f: impl FnOnce(&mut T) -> R)
+        -> Result<Option<R>, OutOfMemory>;         // none: another library's state is there
+}
 pub trait TlsSession: Send {                       // one connection's TLS, never Sync
     fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
     fn recv(&mut self, io: &mut TlsIo<'_>, buf: &mut [u8]) -> io::Result<Recv>;
@@ -1790,6 +1795,7 @@ impl TlsIo<'_> {                                   // what a library's BIO and c
     pub fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind; // failf
     pub fn record(&mut self, way: TlsWay, bytes: &[u8]); // CURLINFO_SSL_DATA_IN/OUT
     pub fn debugs(&self) -> bool;                  // a debug handler is set (fdebug)
+    pub fn now(&self) -> Instant;                  // the pass's time (Curl_pgrs_now)
     // planned: ssl_ctx(native) (43f)
 }
 pub struct TlsPeer<'a> { pub name: &'a [u8], pub port: u16, pub kind: TlsPeerKind }
@@ -1858,10 +1864,21 @@ hashed certificates (`xxxxxxxx.0`; none here); one set explicitly stops the othe
 for; no fallback to OpenSSL's own paths. They are `&'static str` (`TlsBackend::ca_defaults`),
 so a handle holds no CA string until the application sets one, and `CURLINFO_CAINFO` returns
 the constant whatever the handle set, as C's does. The tool
-reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c does. Planned: the
-CA store cached per multi, keyed by file and path, for `CURLOPT_CA_CACHE_TIMEOUT` (24 h), which
-decides whether `SSL Trust Anchors:` and `CAfile:` are traced again for the next connection;
-until then each connection loads its anchors and traces them. A CA file that cannot be read
+reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c does.
+**The CA store cache** (`Curl_ssl_setup_x509_store`, curl-openssl's `cache.rs`): a store a
+connection loads is kept for the multi's next ones, which take it at their first read instead of
+loading (nothing traced: no `configuring OpenSSL's x509 trust store`, `SSL Trust Anchors:` or
+`CAfile:`), while it is younger than the taking transfer's `CURLOPT_CA_CACHE_TIMEOUT`
+(`CaCache` in the TLS options, a day unless set, `Forever` for -1, `Off` for 0; not compared for
+reuse, as `alpn`) on the multi's clock, and was loaded for the same CA file, CA path (as they
+resolve) and partial-chain bit; a store loaded in its place is kept from then. Only a verified
+peer with no blob, no CRL and no `NATIVE_CA` takes or keeps one. It is OpenSSL's state in the
+multi's `TlsShared`, which the multi makes with its first session (`Multi::tls`, beside the
+caches, never a share's, as C keeps it in `multi->proto_hash`) and hands to every session; the
+session keeps a clone until its store is set up, so a connection does not keep it alive, and it
+goes with the multi. `curl_easy_perform`'s private multi lasts from one perform to the next, so
+a handle's later performs take its store, as C's `multi_easy` does. Without room for it, a store
+is loaded and not kept, as C does. A CA file that cannot be read
 fails the first read's setup and, as in C, is tried and said again by the handshake's step (77,
 `error adding trust anchors from file:` twice).
 The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
@@ -2820,7 +2837,7 @@ Each is either unobservable through the ABI or a fixed bug:
 | the TLS options (`Cold<TlsOptions>`; the SSL_CTX handler among them, and the proxy's in `Cold<Proxy>`, planned) | the first setopt of one | one group per handle |
 | a route's `TlsIdentity` | the leg's route, for a TLS route | one per leg, shared with the connection it makes |
 | a TLS layer (`TlsLayer` and the library's session), the layer stack, the handshake's marker | the handshake's start | one per TLS layer; OpenSSL's own memory is libc's, uncounted |
-| planned: a CA store cache entry | the first connection with that CA file and path | per CA setting, per multi, for the cache's timeout |
+| the multi's `TlsShared` and the library's state boxed in it (OpenSSL's: the kept store, the identity it was loaded for shared) | the multi's first TLS session; the state at its first store set up | one per multi |
 | planned: session cache entries | a ticket kept | 25 peers × 2 tickets (3 peers for `perform`'s multi) |
 
 Nothing allocates per chunk. Peer-sized reservations happen after the limit check, so a hostile
@@ -2850,20 +2867,21 @@ peer gets a protocol error, not an out-of-memory one.
   header store; and the content type. `Stream`, `Sock`, `Closer::System`, `Home` and an empty
   `LayerStack` allocate nothing, so step 40 leaves the budget as it is.
 - The core's own part of an HTTPS GET is pinned over the fake TLS library
-  (`HTTPS_FAKE_GET_BUDGET`, 52): the plain GET's 46, then the route's `TlsIdentity` (shared with
+  (`HTTPS_FAKE_GET_BUDGET`, 54): the plain GET's 46, then the route's `TlsIdentity` (shared with
   the connection), the handshake under way, the library's session (the fake's one box), its
-  layer, and the stream's layer stack and its list. The same GET is run with each allocation
+  layer, the stream's layer stack and its list, and the multi's `TlsShared` with the fake's state
+  in its box. The same GET is run with each allocation
   refused in turn and alone; its server says goodbye back at once, so the connection's shutdown,
   as the multi goes, finishes in its one try and joins no set. `GET_BUDGET` stays 46: a plain
   GET makes no TLS group, identity or layer.
 - An HTTPS GET over OpenSSL is pinned against the same GET over plain HTTP in
-  `crates/curl-openssl/tests/peer.rs` (`HTTPS_GET_EXTRA`, 10), as the core cannot depend on the
+  `crates/curl-openssl/tests/peer.rs` (`HTTPS_GET_EXTRA`, 12), as the core cannot depend on the
   binding: the route's `TlsIdentity` and the CA file's copy in it, the handshake's marker, the
   layer, the stack's box and list, the session's box and its copy of the host name, and the host
-  name and CA file ended by a zero byte for OpenSSL, freed as the calls return. OpenSSL's own
-  allocations are libc's, not counted, as C's tracker does not count them. The ALPN list and
-  trace text are on the stack. Planned: the multi's CA store entry on first use, and the
-  session tickets kept.
+  name and CA file ended by a zero byte for OpenSSL, freed as the calls return, and the multi's
+  `TlsShared` and the box of OpenSSL's CA store cache in it. OpenSSL's own allocations are libc's,
+  not counted, as C's tracker does not count them. The ALPN list and trace text are on the
+  stack. Planned: the session tickets kept.
 - Test 1's 140-allocation and 136000-byte limit is whole-process (argv, option parsing, output
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.

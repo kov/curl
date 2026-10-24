@@ -8,6 +8,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods, clippy::disallowed_macros))]
 
 mod bio;
+mod cache;
 mod ffi;
 mod hostcheck;
 mod sign;

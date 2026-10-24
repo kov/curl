@@ -12,7 +12,7 @@ use crate::conn::tls::TlsLayer;
 use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::HttpVersion;
-use crate::tls::{Alpn, Handshake as Shake, TlsPeer};
+use crate::tls::{Alpn, Handshake as Shake, TlsPeer, TlsShared};
 
 /// The handshakes before it are made: the session is made and its layer
 /// put on the stream, taking the bytes the stream received and did not
@@ -30,7 +30,22 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
         (true, HttpVersion::Http10) => Alpn::Http10,
         (true, HttpVersion::Http11) => Alpn::Http11,
     };
-    let session = match backend.session(identity, &TlsPeer::of(&c.route.origin), alpn) {
+    // What the library keeps across the multi's connections, made with
+    // its first session.
+    let shared = match &mut *cx.rest.tls {
+        Some(shared) => shared,
+        none => match TlsShared::new() {
+            Ok(made) => none.insert(made),
+            Err(OutOfMemory) => {
+                return (
+                    TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
+                    Wake::Again,
+                );
+            }
+        },
+    };
+    let peer = TlsPeer::of(&c.route.origin);
+    let session = match backend.session(identity, &peer, alpn, shared) {
         Ok(session) => session,
         Err(kind) => return (TransferState::Connecting(c).fail(kind), Wake::Again),
     };

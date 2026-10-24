@@ -27,8 +27,8 @@ use curl_core::handler::{DebugHandler, DebugKind, Handler, Write, WriteHandler};
 use curl_core::id::ArenaPolicy;
 use curl_core::libraries::Libraries;
 use curl_core::multi::{Env, Multi, NoEvents, TransferCx};
-use curl_core::options::{CaSetting, IpVersion, Options};
-use curl_core::time::SystemClock;
+use curl_core::options::{CaCache, CaSetting, IpVersion, Options, SslOptions};
+use curl_core::time::{Clock, ManualClock, SystemClock};
 use curl_core::tls::TlsBackend as _;
 use openssl::asn1::Asn1Time;
 use openssl::bn::BigNum;
@@ -82,6 +82,26 @@ fn main() {
         (
             "the_library_reads_no_more_than_it_asks",
             the_library_reads_no_more_than_it_asks,
+        ),
+        (
+            "a_second_connection_takes_the_multi_s_store",
+            a_second_connection_takes_the_multi_s_store,
+        ),
+        (
+            "a_handle_s_own_multi_keeps_its_store_between_performs",
+            a_handle_s_own_multi_keeps_its_store_between_performs,
+        ),
+        (
+            "the_kept_store_serves_for_the_cache_s_age",
+            the_kept_store_serves_for_the_cache_s_age,
+        ),
+        (
+            "another_ca_file_path_or_partial_chain_loads_its_own",
+            another_ca_file_path_or_partial_chain_loads_its_own,
+        ),
+        (
+            "an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own",
+            an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own,
         ),
         (
             "an_https_get_stays_within_its_allocation_budget",
@@ -305,15 +325,32 @@ fn get_any(
     set: impl FnOnce(&mut Options),
     ssl: bool,
 ) -> Got {
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    get_in(&mut m, scheme, host, at, set, ssl)
+}
+
+/// A multi on `clock`, through the system's network.
+fn multi(clock: Box<dyn Clock>) -> Multi {
+    let env = Env {
+        clock,
+        net: try_box(SystemNet).unwrap(),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    Multi::new(env).unwrap()
+}
+
+/// As `get_any`, in the multi `m`.
+fn get_in(
+    m: &mut Multi,
+    scheme: &str,
+    host: &str,
+    at: SocketAddr,
+    set: impl FnOnce(&mut Options),
+    ssl: bool,
+) -> Got {
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
     let (result, failure) = {
-        let env = Env {
-            clock: try_box(SystemClock::new()).unwrap(),
-            net: try_box(SystemNet).unwrap(),
-            arena: ArenaPolicy::new(16, 0).unwrap(),
-            waker: None,
-        };
-        let mut m: Multi = Multi::new(env).unwrap();
         let mut easy = Easy::new();
         easy.set_libraries(&LIBRARIES);
         if ssl {
@@ -330,7 +367,7 @@ fn get_any(
         o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
         set(o);
         let id = m.add(try_box(easy).unwrap(), (), &mut NoEvents).unwrap();
-        let result = curl_core::multi::drive_to_completion(&mut m, id, &mut NoEvents).unwrap();
+        let result = curl_core::multi::drive_to_completion(m, id, &mut NoEvents).unwrap();
         let easy = m.remove(id, &mut NoEvents).unwrap().easy;
         let failure = track::untracked(|| easy.report().failure().unwrap_or_default().to_vec());
         (result, failure)
@@ -523,6 +560,219 @@ fn the_library_reads_no_more_than_it_asks() {
     assert!(short > 0, "no short read in {:#?}", got.seen.lines);
 }
 
+/// A verified GET in `m` of a server of its own, on a port of its own,
+/// so that it makes a connection of its own: the server shows the
+/// certificate `certs` made, and the transfer trusts their CA, with the
+/// options `set` makes after. The TLS layer is traced.
+fn verified_in(m: &mut Multi, certs: &Certs, set: impl FnOnce(&mut Options)) -> Got {
+    let (at, server) = serve(certs);
+    let got = get_in(
+        m,
+        "https",
+        "localhost",
+        at,
+        |o| {
+            trusting(certs)(o);
+            set(o);
+        },
+        true,
+    );
+    server.join().unwrap();
+    got
+}
+
+/// The times the transfer loaded its trust store, which it traces as it
+/// starts to (`ossl_populate_x509_store`); its handshake done, or none of
+/// it counts.
+fn loads(got: &Got) -> usize {
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert!(
+        got.seen
+            .lines
+            .iter()
+            .any(|l| l.starts_with("SSL connection using ")),
+        "no handshake in {:#?}",
+        got.seen.lines
+    );
+    got.seen
+        .lines
+        .iter()
+        .filter(|l| l.ends_with("configuring OpenSSL's x509 trust store"))
+        .count()
+}
+
+fn starts(got: &Got, prefix: &str) -> bool {
+    got.seen.lines.iter().any(|l| l.starts_with(prefix))
+}
+
+const DAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+const SECOND: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The store a connection loads is kept for the multi's next ones, which
+/// verify against it without loading or saying it again
+/// (`ossl_get_cached_x509_store`); another multi keeps its own.
+fn a_second_connection_takes_the_multi_s_store() {
+    let certs = certs("kept", "localhost", &["localhost"]);
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    let first = verified_in(&mut m, &certs, |_| {});
+    assert_eq!(loads(&first), 1);
+    assert!(said(&first, "SSL Trust Anchors:"));
+    assert!(said(
+        &first,
+        &format!("  CAfile: {}", certs.ca_file.display())
+    ));
+    let second = verified_in(&mut m, &certs, |_| {});
+    assert_eq!(loads(&second), 0, "{:#?}", second.seen.lines);
+    assert!(said(&second, "SSL certificate verified via OpenSSL."));
+    assert!(!starts(&second, "SSL Trust"), "{:#?}", second.seen.lines);
+    assert!(!starts(&second, "  CAfile:"), "{:#?}", second.seen.lines);
+    let mut other = multi(try_box(SystemClock::new()).unwrap());
+    assert_eq!(loads(&verified_in(&mut other, &certs, |_| {})), 1);
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 0);
+}
+
+/// A handle performing on its own does so in a multi of its own, kept
+/// from one perform to the next (C's `multi_easy`), and so is its store.
+fn a_handle_s_own_multi_keeps_its_store_between_performs() {
+    let certs = certs("own", "localhost", &["localhost"]);
+    let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
+    let mut easy = Easy::new();
+    easy.set_libraries(&LIBRARIES);
+    let components = Components::new().unwrap();
+    components.configure(b"ssl");
+    easy.set_components(Some(components));
+    let o = easy.options_mut();
+    o.ip_version = IpVersion::V4;
+    o.output.verbose = true;
+    o.callbacks.debug = Some(Handler::debug(Taker(seen.clone())).unwrap());
+    o.callbacks.write = Some(Handler::write(Taker(seen.clone())).unwrap());
+    trusting(&certs)(o);
+    let mut perform = || {
+        let (at, server) = serve(&certs);
+        let url = track::untracked(|| format!("https://localhost:{}/", at.port()));
+        easy.options_mut().set_url(Some(url.as_bytes())).unwrap();
+        let result = easy.perform().map_err(|e| e.kind());
+        server.join().unwrap();
+        let seen = track::untracked(|| std::mem::take(&mut *seen.lock().unwrap()));
+        loads(&Got {
+            result,
+            failure: Vec::new(),
+            seen,
+        })
+    };
+    assert_eq!(perform(), 1);
+    assert_eq!(perform(), 0);
+}
+
+/// A kept store serves while it is younger than the asking transfer's
+/// `CURLOPT_CA_CACHE_TIMEOUT`, a day unless it is set, on the multi's
+/// clock; one loaded in its place is kept from then.
+fn the_kept_store_serves_for_the_cache_s_age() {
+    let certs = certs("age", "localhost", &["localhost"]);
+    let clock = ManualClock::new().unwrap();
+    let mut m = multi(try_box(clock.clone()).unwrap());
+    let age = |cache| move |o: &mut Options| o.tls.options.make_mut().unwrap().ca_cache = cache;
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 1);
+    clock.advance(DAY - SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 0);
+    // A day old is too old.
+    clock.advance(SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 1);
+    clock.advance(DAY - SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 0);
+    // For ever takes one of any age.
+    clock.advance(400 * DAY);
+    assert_eq!(
+        loads(&verified_in(&mut m, &certs, age(CaCache::Forever))),
+        0
+    );
+    let minute = CaCache::For(60 * SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, age(minute))), 1);
+    clock.advance(59 * SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, age(minute))), 0);
+    clock.advance(SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, age(minute))), 1);
+    // Off takes none and keeps none: the store kept is still the one
+    // loaded before, a day old a day after it.
+    assert_eq!(loads(&verified_in(&mut m, &certs, age(CaCache::Off))), 1);
+    clock.advance(30 * SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, age(CaCache::Off))), 1);
+    clock.advance(DAY - 30 * SECOND);
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 1);
+}
+
+/// A store is kept for the CA file, the CA path and the partial-chain
+/// choice it was loaded with (`ossl_cached_x509_store_different`): a
+/// connection naming others loads its own, which is kept in its place.
+fn another_ca_file_path_or_partial_chain_loads_its_own() {
+    let certs = certs("key", "localhost", &["localhost"]);
+    let copy = track::untracked(|| {
+        let copy = certs_dir().join("key-copy.pem");
+        std::fs::copy(&certs.ca_file, &copy).unwrap();
+        copy.to_str().unwrap().as_bytes().to_vec()
+    });
+    let dir = track::untracked(|| certs_dir().to_str().unwrap().as_bytes().to_vec());
+    let file = |o: &mut Options| {
+        o.tls.options.make_mut().unwrap().ca_file = CaSetting::Given(copy.clone());
+    };
+    let whole = |o: &mut Options| {
+        file(o);
+        o.tls.options.make_mut().unwrap().ssl_options = SslOptions::NO_PARTIALCHAIN;
+    };
+    let path = |o: &mut Options| {
+        whole(o);
+        o.tls.options.make_mut().unwrap().ca_path = CaSetting::Given(dir.clone());
+    };
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 1);
+    assert_eq!(loads(&verified_in(&mut m, &certs, file)), 1);
+    assert_eq!(loads(&verified_in(&mut m, &certs, file)), 0);
+    assert_eq!(loads(&verified_in(&mut m, &certs, whole)), 1);
+    assert_eq!(loads(&verified_in(&mut m, &certs, whole)), 0);
+    let got = verified_in(&mut m, &certs, path);
+    assert_eq!(loads(&got), 1);
+    assert!(said(&got, &format!("  CApath: {}", certs_dir().display())));
+    assert_eq!(loads(&verified_in(&mut m, &certs, path)), 0);
+    // The first one's settings again: the store kept now is another's.
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 1);
+}
+
+/// A connection that does not verify its peer, or verifies it against a
+/// blob, with a revocation list or by the system's store, loads its own
+/// store, and leaves the kept one as it was
+/// (`Curl_ssl_setup_x509_store`'s `cache_criteria_met`).
+fn an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own() {
+    let certs = certs("bypass", "localhost", &["localhost"]);
+    let pem = track::untracked(|| std::fs::read(&certs.ca_file).unwrap());
+    let mut m = multi(try_box(SystemClock::new()).unwrap());
+    assert_eq!(loads(&verified_in(&mut m, &certs, |_| {})), 1);
+    let unverified = verified_in(&mut m, &certs, |o| {
+        o.tls.verify_peer = false;
+        o.tls.verify_host = false;
+    });
+    assert_eq!(loads(&unverified), 1);
+    assert!(said(&unverified, "SSL Trust: peer verification disabled"));
+    let blob = verified_in(&mut m, &certs, |o| {
+        o.tls.options.make_mut().unwrap().ca_blob = Some(pem);
+    });
+    assert_eq!(loads(&blob), 1);
+    assert!(said(&blob, "  CA Blob from configuration"));
+    let crl = verified_in(&mut m, &certs, |o| {
+        o.tls.options.make_mut().unwrap().crl_file = Some(b"/unused/crl.pem".to_vec());
+    });
+    assert_eq!(loads(&crl), 1);
+    let native = verified_in(&mut m, &certs, |o| {
+        o.tls.options.make_mut().unwrap().ssl_options = SslOptions::NATIVE_CA;
+    });
+    assert_eq!(loads(&native), 1);
+    assert!(said(&native, "SSL Trust Anchors:"));
+    // None of them kept theirs: the unverified one's is empty, and the
+    // peer would not verify against it.
+    let after = verified_in(&mut m, &certs, |_| {});
+    assert_eq!(loads(&after), 0);
+    assert!(said(&after, "SSL certificate verified via OpenSSL."));
+}
+
 /// A server for one plain HTTP connection, as `serve` answers.
 fn serve_plain() -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -569,9 +819,11 @@ fn plain_get_allocations() -> u64 {
 /// session's box and the copy of the host name it checks the
 /// certificate against; the host name ended
 /// by a zero byte for SNI, and the CA file's for OpenSSL, both freed as
-/// the call returns. OpenSSL's own allocations are libc's, not counted,
-/// as C's memory tracker does not count them.
-const HTTPS_GET_EXTRA: u64 = 10;
+/// the call returns; the multi's `TlsShared` (its `TryArc`), made with
+/// its first session, and the box of the CA store cache OpenSSL keeps in
+/// it, made as the first store is set up. OpenSSL's own allocations are
+/// libc's, not counted, as C's memory tracker does not count them.
+const HTTPS_GET_EXTRA: u64 = 12;
 
 fn an_https_get_stays_within_its_allocation_budget() {
     let base = plain_get_allocations();

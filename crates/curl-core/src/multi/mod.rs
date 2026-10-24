@@ -34,6 +34,7 @@ use crate::progress::Speedometer;
 use crate::progress::rate::{RateLimits, Way};
 use crate::share::{Kind, watched};
 use crate::time::{Clock, Instant};
+use crate::tls::TlsShared;
 use crate::upload::Readers;
 
 pub use crate::deliver::PauseRequest;
@@ -259,6 +260,10 @@ pub struct Multi<H: Host = NoHost> {
     /// Notifications are being delivered.
     delivering: bool,
     caches: Caches,
+    /// What the TLS library keeps across the connections made here,
+    /// made with the first TLS session; the multi's own, never a share's,
+    /// as C keeps it.
+    tls: Option<TlsShared>,
     /// The connections shutting down, whichever pool they left.
     shutdowns: ShutdownSet,
     limits: ConnLimits,
@@ -297,6 +302,7 @@ impl<H: Host> Multi<H> {
             notify: NotifyQueue::default(),
             delivering: false,
             caches,
+            tls: None,
             shutdowns: ShutdownSet::default(),
             limits: ConnLimits::default(),
             pending_after: None,
@@ -800,6 +806,7 @@ impl<H: Host> Multi<H> {
                 life: &mut self.life,
             },
             caches: &mut self.caches,
+            tls: &mut self.tls,
             shutdowns: &mut self.shutdowns,
             pending_after: &mut self.pending_after,
             net: &mut *self.net,

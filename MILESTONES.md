@@ -617,15 +617,14 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       tunnel's answer read first, the goodbye through the shutdown set; over `FakeTls`, with an
       HTTPS GET budget of 52 over it. No runtests change: the shim and the tool name no TLS
       library until e1, which also brings the CA default.
-    - **e1. The OpenSSL layer and the flip.** Built: the BIO, the context, verification and
+    - **e1. The OpenSSL layer and the flip.** **Done.** The BIO, the context, verification and
       hostcheck (1397), the CA default, C's TLS failure texts, the tool's `-k`, `--cacert`,
       `--capath`, version, cipher, curve and signature options, the C ABI's (`CAINFO_BLOB`
       among them), `curl_global_sslset`, a failed setup's ends and connect time (5029);
       `https`, `SSL` and `OpenSSL/3.5.9` reported; the HTTPS GET budget over OpenSSL pinned at
-      the plain GET's plus 10 (49 against 39). Its list below passes on both legs. Remaining:
-      the CA store cached per multi (`Curl_ssl_setup_x509_store`: keyed by CA file, path and
-      partial-chain bit, for `CURLOPT_CA_CACHE_TIMEOUT`, which stays `NOT_BUILT_IN` until
-      then), which needs per-multi state the seam does not carry.
+      the plain GET's plus 12 (51 against 39), and over the fake at 54; the CA store each multi
+      keeps for its next connections (`TlsShared`, `CURLOPT_CA_CACHE_TIMEOUT`). Its list below
+      passes on both legs.
     - **e2. Client certificates, pinning, CRL, issuer, OCSP stapling, certinfo, engines.**
     - **f. The application's hands on OpenSSL.** `SSL_CTX_FUNCTION`, `TLS_SSL_PTR` and
       `TLS_SESSION`, the retry-verify pause; close_notify as `Closing`'s first producer.

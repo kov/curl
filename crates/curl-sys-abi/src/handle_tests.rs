@@ -216,7 +216,7 @@ fn a_request_target_is_kept() {
 /// refused, where C takes it and fails the handshake.
 #[test]
 fn tls_options_are_kept_as_c_keeps_them() {
-    use curl_core::options::{CaSetting, SslOptions, TlsMaxVersion, TlsMinVersion};
+    use curl_core::options::{CaCache, CaSetting, SslOptions, TlsMaxVersion, TlsMinVersion};
     let c = curl_easy_init();
     let ca = |c, want: CaSetting| options(c, |o| o.tls.options.ca_file == want);
     assert!(ca(c, CaSetting::Default));
@@ -309,6 +309,31 @@ fn tls_options_are_kept_as_c_keeps_them() {
     );
     assert_eq!(long(c, ffi::CURLOPT_SSL_ENABLE_ALPN, 0), CURLE_OK);
     assert!(!options(c, |o| o.tls.options.alpn));
+    // A day unless set; -1 for ever, 0 off, past `INT_MAX` taken as it,
+    // below -1 refused and the setting kept (`value_range`).
+    let cache = |c| options(c, |o| o.tls.options.ca_cache);
+    assert_eq!(cache(c), CaCache::For(Duration::from_secs(86400)));
+    for (value, want) in [
+        (-1, CaCache::Forever),
+        (0, CaCache::Off),
+        (60, CaCache::For(Duration::from_secs(60))),
+        (
+            c_long::MAX,
+            CaCache::For(Duration::from_secs(c_int::MAX as u64)),
+        ),
+    ] {
+        assert_eq!(long(c, ffi::CURLOPT_CA_CACHE_TIMEOUT, value), CURLE_OK);
+        assert_eq!(cache(c), want, "{value}");
+    }
+    assert_eq!(
+        long(c, ffi::CURLOPT_CA_CACHE_TIMEOUT, -2),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    assert_eq!(
+        cache(c),
+        CaCache::For(Duration::from_secs(c_int::MAX as u64)),
+        "unchanged"
+    );
     let mut list = *b"X25519\0";
     assert_eq!(
         pointer(c, ffi::CURLOPT_SSL_EC_CURVES, list.as_mut_ptr()),

@@ -682,6 +682,17 @@ fn apply(
                 curl_core::options::SslOptions::from_bits(n as u8);
         }
         (ffi::CURLOPT_SSL_ENABLE_ALPN, Long(n)) => options.tls.options.make_mut()?.alpn = n != 0,
+        (ffi::CURLOPT_CA_CACHE_TIMEOUT, Long(n)) => {
+            // -1 keeps the store for ever, 0 keeps none; below -1 is
+            // refused, past `INT_MAX` taken as it (`value_range`).
+            options.tls.options.make_mut()?.ca_cache = match n {
+                -1 => curl_core::options::CaCache::Forever,
+                0 => curl_core::options::CaCache::Off,
+                n => curl_core::options::CaCache::For(std::time::Duration::from_secs(
+                    u64::try_from(n.min(c_long::from(c_int::MAX))).map_err(|_| Refused::Bad)?,
+                )),
+            };
+        }
         (ffi::CURLOPT_CAINFO, Ptr(p)) => {
             // SAFETY: the application passes a C string or NULL.
             let file = ca_setting(unsafe { owned(p) }?);

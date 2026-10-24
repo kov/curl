@@ -59,3 +59,92 @@ witness: curl-openssl a_missing_ca_file_fails_as_a_bad_file_twice_said
 --- new
         if false {
             // The ClientHello went out without a read: the store is set
+
+=== a connection never takes the store the multi kept, and loads its own
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_second_connection_takes_the_multi_s_store
+--- old
+            Ok(Some(Some(store))) => {
+                store.give_to(ctx);
+                return Ok(());
+            }
+--- new
+            Ok(Some(Some(_store))) => {}
+
+=== a kept store exactly as old as the cache's age still serves
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl the_kept_store_serves_for_the_cache_s_age
+--- old
+        CaCache::For(age) => now.since(made) >= age,
+--- new
+        CaCache::For(age) => now.since(made) > age,
+
+=== a transfer with the CA cache off takes the kept store
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl the_kept_store_serves_for_the_cache_s_age
+--- old
+    o.ca_cache != CaCache::Off
+        && identity.verify_peer
+--- new
+    identity.verify_peer
+
+=== a store kept with partial chains allowed serves a transfer that refuses them
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl another_ca_file_path_or_partial_chain_loads_its_own
+--- old
+    partial(kept) == partial(wanted)
+        && kept.ca_file()
+--- new
+    (partial(kept) || !partial(wanted))
+        && kept.ca_file()
+
+=== a store kept for one CA path serves a transfer naming another
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl another_ca_file_path_or_partial_chain_loads_its_own
+--- old
+        && kept.ca_path() == wanted.ca_path()
+--- new
+        && (kept.ca_path() == wanted.ca_path() || kept.ca_path().is_none())
+
+=== a store kept for one CA file serves a transfer naming another
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl another_ca_file_path_or_partial_chain_loads_its_own
+--- old
+        && kept.ca_file() == wanted.ca_file()
+--- new
+        && kept.ca_file().is_some() == wanted.ca_file().is_some()
+
+=== a transfer that does not verify its peer takes and keeps the multi's store
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
+--- old
+        && identity.verify_peer
+        && o.ca_blob.is_none()
+--- new
+        && o.ca_blob.is_none()
+
+=== a transfer trusting a CA blob takes the multi's store
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
+--- old
+        && o.ca_blob.is_none()
+        && o.crl_file.is_none()
+--- new
+        && o.crl_file.is_none()
+
+=== a transfer checking a revocation list takes the multi's store
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
+--- old
+        && o.crl_file.is_none()
+        && !o.ssl_options
+--- new
+        && !o.ssl_options
+
+=== a transfer trusting the system's store takes the multi's store
+file: crates/curl-openssl/src/cache.rs
+witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
+--- old
+        && !o.ssl_options.contains(SslOptions::NATIVE_CA)
+--- new
+        && true

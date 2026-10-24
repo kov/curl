@@ -33,6 +33,7 @@ unsafe extern "C" {
     pub(crate) fn SSL_CTX_set_msg_callback(ctx: *mut SSL_CTX, cb: Option<MsgCallback>);
     pub(crate) fn X509_STORE_load_file(store: *mut X509_STORE, file: *const c_char) -> c_int;
     pub(crate) fn X509_STORE_load_path(store: *mut X509_STORE, path: *const c_char) -> c_int;
+    pub(crate) fn X509_STORE_up_ref(store: *mut X509_STORE) -> c_int;
     pub(crate) fn X509_STORE_add_crl(store: *mut X509_STORE, crl: *mut X509_CRL) -> c_int;
     pub(crate) fn X509_NAME_print_ex(
         out: *mut BIO,

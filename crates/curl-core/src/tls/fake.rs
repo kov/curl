@@ -25,7 +25,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
     Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession,
-    TlsWait,
+    TlsShared, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -79,6 +79,39 @@ pub struct FakeLog {
     /// Goodbyes sent, and those that heard the peer's.
     pub closes_sent: usize,
     pub closes_heard: usize,
+    /// The multis' states it made, and those dropped since.
+    pub states_made: usize,
+    pub states_dropped: usize,
+    /// The number of the state the last session was handed, counting
+    /// from 1 in the order they were made.
+    pub state: usize,
+}
+
+/// What the fake keeps for a multi: its number, and the log it notes
+/// its drop in.
+struct FakeState {
+    number: usize,
+    log: TryArc<Mutex<FakeLog>>,
+}
+
+impl FakeState {
+    fn new(log: &TryArc<Mutex<FakeLog>>) -> FakeState {
+        let mut l = log.lock().expect("no test panics holding the log");
+        l.states_made += 1;
+        FakeState {
+            number: l.states_made,
+            log: log.clone(),
+        }
+    }
+}
+
+impl Drop for FakeState {
+    fn drop(&mut self) {
+        self.log
+            .lock()
+            .expect("no test panics holding the log")
+            .states_dropped += 1;
+    }
 }
 
 impl FakeLog {
@@ -107,6 +140,9 @@ impl FakeTls {
             handshakes: 0,
             closes_sent: 0,
             closes_heard: 0,
+            states_made: 0,
+            states_dropped: 0,
+            state: 0,
         };
         Ok(FakeTls {
             log: TryArc::try_new(Mutex::new(log))?,
@@ -132,9 +168,15 @@ impl TlsBackend for FakeTls {
         identity: &TryArc<TlsIdentity>,
         peer: &TlsPeer<'_>,
         _alpn: Alpn,
+        shared: &TlsShared,
     ) -> Result<Box<dyn TlsSession>, ErrorKind> {
+        let state = shared
+            .with(|| FakeState::new(&self.log), |s| s.number)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?
+            .expect("one library per multi in the tests");
         {
             let mut log = self.log.lock().expect("no test panics holding the log");
+            log.state = state;
             log.sessions += 1;
             let n = peer.name.len().min(NAME);
             log.name[..n].copy_from_slice(&peer.name[..n]);

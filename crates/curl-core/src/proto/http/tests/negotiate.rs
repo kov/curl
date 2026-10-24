@@ -1448,3 +1448,76 @@ fn a_binding_not_made_fails_the_request() {
     );
     assert!(gss.asked().is_empty());
 }
+
+/// Whether a second transfer, as `set` makes it, reuses the connection a
+/// first, negotiating as `first` makes it, left after the conversation
+/// `replies`, its library scripted by `script`.
+fn second_reuses(
+    script: fn(&Scripted),
+    replies: &[&[u8]],
+    first: fn(&mut Options),
+    want_first: Result<(), ErrorKind>,
+    set: fn(&mut Options),
+    negotiates: bool,
+) -> bool {
+    let reused = "Reusing existing http: connection with host 127.0.0.1\n";
+    let (gss, libraries) = scripted();
+    script(gss);
+    let mut all = replies.to_vec();
+    all.push(OK_200);
+    let talk = Conversation::replies(&all, false);
+    let other = Conversation::replies(&[OK_200], false);
+    let mut m = serving(Peer::Accepts, &[&talk, &other]);
+    let ran = get_with(&mut m, negotiating(libraries), "/a", talk.clone(), first);
+    assert_eq!(ran.result, want_first);
+    let e = if negotiates {
+        negotiating(libraries)
+    } else {
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        e
+    };
+    let ran = get_with(&mut m, e, "/b", talk.clone(), set);
+    assert_eq!(ran.result, Ok(()), "{:?}", ran.seen.text());
+    let served = text_has(&ran, reused);
+    assert_eq!(other.received().is_empty(), served);
+    served
+}
+
+/// A refused Negotiate starts over with the origin unbound: the
+/// connection then serves a transfer negotiating as anyone
+/// (`http_auth_nego_reset`, `url_match_auth_nego`).
+#[test]
+fn a_refused_negotiation_unbinds_the_connection() {
+    let refused: &[u8] =
+        b"HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate\r\nContent-Length: 0\r\n\r\n";
+    let script = |gss: &Scripted| {
+        gss.then_token(b"first").then_token(b"again");
+    };
+    let as_u = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+    let as_v = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"v".to_vec());
+    assert!(second_reuses(script, &[refused], as_u, Ok(()), as_v, true));
+    assert!(second_reuses(
+        script,
+        &[refused],
+        as_u,
+        Ok(()),
+        |_| {},
+        true
+    ));
+}
+
+/// A first token the library makes empty fails the request with the
+/// connection bound to the origin and credentials it was for, though not
+/// negotiating: it serves a transfer not negotiating, but not one
+/// negotiating as others.
+#[test]
+fn a_token_made_empty_leaves_the_connection_bound() {
+    let script = |gss: &Scripted| {
+        gss.then_token(b"").then_token(b"t");
+    };
+    let as_u = |o: &mut Options| o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+    let denied = Err(ErrorKind::RemoteAccessDenied);
+    assert!(second_reuses(script, &[], |_| {}, denied, as_u, false));
+    assert!(!second_reuses(script, &[], |_| {}, denied, as_u, true));
+}

@@ -1,0 +1,414 @@
+{
+ "c-commit": "19e7b749b96689fe013a2a53bf41e416d8bb552b",
+ "data": {
+  "differ": 11,
+  "distinct": 1411,
+  "groups": [
+   {
+    "c_exit": "0",
+    "c_line": "",
+    "differs_in": "stdout",
+    "distinct": 2,
+    "examples": [
+     {
+      "argv": [
+       "--version",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 0,
+       "files": [],
+       "stderr": "WARNING: this libcurl is Debug-enabled, do not use in production\n\n",
+       "stdout": "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 c-ares/1.34.5 libidn2/2.3.7 libpsl/0.21.2 libssh2/1.11.0 nghttp2/1.59.0 mit-krb5/1.20.1 OpenLDAP/2.6.10\nRelease-Date: [unreleased]\nProtocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss\nFeatures: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd\n"
+      },
+      "from": [
+       "dracut 060+5-1ubuntu3: modules.d/45url-lib/module-setup.sh:22",
+       "git-ftp 1.6.0+dfsg-1: INSTALL.md:124",
+       "git-ftp 1.6.0+dfsg-1: git-ftp:1435"
+      ],
+      "rust": {
+       "exit": 0,
+       "files": [],
+       "stderr": "WARNING: this libcurl is Debug-enabled, do not use in production\n\n",
+       "stdout": "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libpsl/0.21.2 mit-krb5/1.20.1\nRelease-Date: [unreleased]\nProtocols: file http https ipfs ipns\nFeatures: brotli Debug GSS-API HTTPS-proxy HTTPSIG IPv6 Kerberos libz PSL SPNEGO SSL UnixSockets zstd\n"
+      }
+     },
+     {
+      "argv": [
+       "-V",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 0,
+       "files": [],
+       "stderr": "WARNING: this libcurl is Debug-enabled, do not use in production\n\n",
+       "stdout": "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 c-ares/1.34.5 libidn2/2.3.7 libpsl/0.21.2 libssh2/1.11.0 nghttp2/1.59.0 mit-krb5/1.20.1 OpenLDAP/2.6.10\nRelease-Date: [unreleased]\nProtocols: dict file ftp ftps gopher gophers http https imap imaps ipfs ipns ldap ldaps mqtt mqtts pop3 pop3s rtsp scp sftp smtp smtps telnet tftp ws wss\nFeatures: alt-svc AsynchDNS brotli Debug GSS-API HSTS HTTP2 HTTPS-proxy HTTPSIG HTTPSRR IDN IPv6 Kerberos Largefile libz PSL SPNEGO SSL SSLS-EXPORT threadsafe UnixSockets zstd\n"
+      },
+      "from": [
+       "dehydrated 0.7.0-3: dehydrated:250"
+      ],
+      "rust": {
+       "exit": 0,
+       "files": [],
+       "stderr": "WARNING: this libcurl is Debug-enabled, do not use in production\n\n",
+       "stdout": "curl 8.23.1-DEV (Linux) libcurl/8.23.1-DEV OpenSSL/3.0.13 zlib/1.3 brotli/1.1.0 zstd/1.5.5 libpsl/0.21.2 mit-krb5/1.20.1\nRelease-Date: [unreleased]\nProtocols: file http https ipfs ipns\nFeatures: brotli Debug GSS-API HTTPS-proxy HTTPSIG IPv6 Kerberos libz PSL SPNEGO SSL UnixSockets zstd\n"
+      }
+     }
+    ],
+    "invocations": 8,
+    "rust_exit": "0",
+    "rust_line": ""
+   },
+   {
+    "c_exit": "1",
+    "c_line": "",
+    "differs_in": "exit",
+    "distinct": 1,
+    "examples": [
+     {
+      "argv": [
+       "-s",
+       "-l",
+       "http://example.invalid/",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 1,
+       "files": [],
+       "stderr": "",
+       "stdout": ""
+      },
+      "from": [
+       "open-build-service 2.9.4-10: dist/obs_import_srcrpmtree:14",
+       "open-build-service 2.9.4-10: dist/obs_project_srcimport:17"
+      ],
+      "rust": {
+       "exit": 125,
+       "files": [],
+       "stderr": "",
+       "stdout": ""
+      }
+     }
+    ],
+    "invocations": 2,
+    "rust_exit": "125",
+    "rust_line": ""
+   },
+   {
+    "c_exit": "1",
+    "c_line": "curl: (N) Protocol \"http\" is disabled",
+    "differs_in": "exit+stderr",
+    "distinct": 2,
+    "examples": [
+     {
+      "argv": [
+       "--fail",
+       "--location",
+       "--progress-bar",
+       "--user-agent",
+       "x/x",
+       "--http2",
+       "http://example.invalid/",
+       "http://example.invalid//x",
+       "-o",
+       "x/x",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 1,
+       "files": [],
+       "stderr": "curl: (1) Protocol \"http\" is disabled\ncurl: (1) Protocol \"http\" is disabled\n",
+       "stdout": ""
+      },
+      "from": [
+       "open-infrastructure-compute-tools 20221223-3: share/get-scripts/curl:316"
+      ],
+      "rust": {
+       "exit": 125,
+       "files": [],
+       "stderr": "curl: option --http2: not implemented yet\n",
+       "stdout": ""
+      }
+     },
+     {
+      "argv": [
+       "--fail",
+       "--location",
+       "--progress-bar",
+       "--user-agent",
+       "x/x",
+       "--http2",
+       "http://example.invalid//container-list.txt",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 1,
+       "files": [],
+       "stderr": "curl: (1) Protocol \"http\" is disabled\n",
+       "stdout": ""
+      },
+      "from": [
+       "open-infrastructure-compute-tools 20221223-3: share/get-scripts/curl:255"
+      ],
+      "rust": {
+       "exit": 125,
+       "files": [],
+       "stderr": "curl: option --http2: not implemented yet\n",
+       "stdout": ""
+      }
+     }
+    ],
+    "invocations": 2,
+    "rust_exit": "125",
+    "rust_line": "curl: option --httpN: not implemented yet"
+   },
+   {
+    "c_exit": "26",
+    "c_line": "",
+    "differs_in": "exit",
+    "distinct": 2,
+    "examples": [
+     {
+      "argv": [
+       "-nfs",
+       "-X",
+       "POST",
+       "x",
+       "-F",
+       "jenkinsfile=<-",
+       "http://example.invalid//pipeline-model-converter/validate",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 26,
+       "files": [],
+       "stderr": "",
+       "stdout": ""
+      },
+      "from": [
+       "python-jenkinsapi 0.3.13-1: bin/pipelint:21"
+      ],
+      "rust": {
+       "exit": 1,
+       "files": [],
+       "stderr": "",
+       "stdout": ""
+      }
+     },
+     {
+      "argv": [
+       "-nfs",
+       "http://example.invalid//crumbIssuer/api/xml?xpath=concat(//crumbRequestField,%22:%22,//crumb)",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 26,
+       "files": [],
+       "stderr": "",
+       "stdout": ""
+      },
+      "from": [
+       "python-jenkinsapi 0.3.13-1: bin/pipelint:18"
+      ],
+      "rust": {
+       "exit": 1,
+       "files": [],
+       "stderr": "",
+       "stdout": ""
+      }
+     }
+    ],
+    "invocations": 2,
+    "rust_exit": "1",
+    "rust_line": ""
+   },
+   {
+    "c_exit": "3",
+    "c_line": "curl: (N) Protocol \"http\" is disabled",
+    "differs_in": "exit+stderr",
+    "distinct": 1,
+    "examples": [
+     {
+      "argv": [
+       "--fail",
+       "--location",
+       "--progress-bar",
+       "--user-agent",
+       "x/x",
+       "--http2",
+       "http://example.invalid/",
+       "x",
+       "-o",
+       "-",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 3,
+       "files": [],
+       "stderr": "curl: (1) Protocol \"http\" is disabled\ncurl: (3) URL rejected: Bad file:// URL\n",
+       "stdout": ""
+      },
+      "from": [
+       "open-infrastructure-compute-tools 20221223-3: share/build-scripts/debconf:467",
+       "open-infrastructure-compute-tools 20221223-3: share/build-scripts/debconf:473"
+      ],
+      "rust": {
+       "exit": 125,
+       "files": [],
+       "stderr": "curl: option --http2: not implemented yet\n",
+       "stdout": ""
+      }
+     }
+    ],
+    "invocations": 2,
+    "rust_exit": "125",
+    "rust_line": "curl: option --httpN: not implemented yet"
+   },
+   {
+    "c_exit": "1",
+    "c_line": "curl: (N) Protocol \"http\" is disabled",
+    "differs_in": "exit+stderr",
+    "distinct": 1,
+    "examples": [
+     {
+      "argv": [
+       "http://example.invalid/",
+       "-Q",
+       "MKDIR x",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 1,
+       "files": [],
+       "stderr": "curl: (1) Protocol \"http\" is disabled\n",
+       "stdout": ""
+      },
+      "from": [
+       "git-ftp 1.6.0+dfsg-1: git-ftp:1451"
+      ],
+      "rust": {
+       "exit": 125,
+       "files": [],
+       "stderr": "curl: option --quote: not implemented yet\n",
+       "stdout": ""
+      }
+     }
+    ],
+    "invocations": 1,
+    "rust_exit": "125",
+    "rust_line": "curl: option --quote: not implemented yet"
+   },
+   {
+    "c_exit": "1",
+    "c_line": "curl: (N) Protocol \"https\" is disabled",
+    "differs_in": "exit+stderr",
+    "distinct": 1,
+    "examples": [
+     {
+      "argv": [
+       "-l",
+       "https://releases.nixos.org/patchelf/patchelf-0.9/patchelf-0.9.tar.gz",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 1,
+       "files": [],
+       "stderr": "curl: (1) Protocol \"https\" is disabled\n",
+       "stdout": ""
+      },
+      "from": [
+       "python-confluent-kafka 1.7.0-4build2: tools/fixup-wheels.sh:133"
+      ],
+      "rust": {
+       "exit": 125,
+       "files": [],
+       "stderr": "curl: option --list-only: not implemented yet\n",
+       "stdout": ""
+      }
+     }
+    ],
+    "invocations": 1,
+    "rust_exit": "125",
+    "rust_line": "curl: option --list-only: not implemented yet"
+   },
+   {
+    "c_exit": "26",
+    "c_line": "curl: cannot open 'x'",
+    "differs_in": "exit+stderr",
+    "distinct": 1,
+    "examples": [
+     {
+      "argv": [
+       "-s",
+       "-S",
+       "-k",
+       "--ftp-create-dirs",
+       "-T",
+       "x",
+       "x/x",
+       "--proto",
+       "=file",
+       "--proto-default",
+       "file"
+      ],
+      "c": {
+       "exit": 26,
+       "files": [],
+       "stderr": "curl: cannot open 'x'\ncurl: try 'curl --help' or 'curl --manual' for more information\ncurl: (26) Failed to open/read local data from file/application\n",
+       "stdout": ""
+      },
+      "from": [
+       "git-remote-gcrypt 1.5-1: git-remote-gcrypt:255"
+      ],
+      "rust": {
+       "exit": 125,
+       "files": [],
+       "stderr": "curl: option --ftp-create-dirs: not implemented yet\n",
+       "stdout": ""
+      }
+     }
+    ],
+    "invocations": 1,
+    "rust_exit": "125",
+    "rust_line": "curl: option --ftp-create-dirs: not implemented yet"
+   }
+  ],
+  "invocations": 2263,
+  "same": 1400,
+  "unrunnable": 0
+ },
+ "generated-by": "inventory/measure/corpus_run.py --diff",
+ "sources": [
+  "src/tool_getparam.c"
+ ]
+}

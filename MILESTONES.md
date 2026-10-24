@@ -768,22 +768,29 @@ a distribution's libcurl. It ends when our library, through `LD_LIBRARY_PATH`, s
 the system's under the HTTP-only programs installed here.
 
 47. **The corpus of real command lines,** as the paragraph above describes. **In progress.**
-    - **a. The collection.** **To do.** The sources of the packages of the distribution that
-      depend on, recommend or suggest the `curl` tool (Ubuntu 24.04's, through `apt-get
-      source`): each invocation in their shell scripts, Dockerfiles, CI configurations,
+    - **a. The collection.** **Done.** The sources of Ubuntu 24.04's packages (through `apt-get
+      source`) that depend on, recommend or suggest the `curl` tool or build with it, and of
+      every small `golang-`, `node-`, `python-` and `ruby-` package, which keep their upstream
+      trees whole: each invocation in their shell scripts, Dockerfiles, CI configurations,
       makefiles and documentation, with its package, version, file and line, kept in
-      `inventory/corpus_lines.json` by `inventory/measure/corpus.py --collect`.
-    - **b. The parse and the ranking.** **To do.** Each line split as a shell splits it (quotes,
-      escapes, line continuations; a variable kept as a variable), its options read against
-      C's table (`inventory/cli.json`): which options, spellings and pairs are used, and how
-      often (`inventory/gen/corpus.py`, `inventory/corpus.{json,md}`).
-    - **c. Both tools over every line.** **To do.** Each line run by the C tool and the Rust
-      tool with no transfer (`--proto =file` closing each operation, in an empty directory,
-      standard input empty), their exit codes, standard output and standard error compared,
-      the differences grouped (`inventory/measure/corpus.py --diff`,
-      `inventory/corpus_diff.{json,md}`).
-    - **d. The differences closed.** **To do.** Each one made as C's, or, where C's is a clear
-      bug, put to the user as a divergence; those waiting on later steps say which.
+      `inventory/corpus_lines.json` by `inventory/measure/corpus_run.py --collect`. 2263
+      invocations from 576 of the 6786 packages read: 995 in shell scripts, 708 in
+      documentation, 381 in CI configurations, 106 in Dockerfiles, 73 in makefiles.
+    - **b. The parse and the ranking.** **Done.** Each line split as a shell splits it (quotes,
+      escapes, line continuations, command substitutions; a variable kept as a variable), its
+      options read against C's table (`inventory/cli.json`): which options, spellings and
+      pairs are used, and how often (`inventory/gen/corpus.py`, `inventory/corpus.{json,md}`).
+    - **c. Both tools over every line.** **Done.** Each line run by the C tool and the Rust
+      tool with no transfer (`--proto =file --proto-default file` closing each operation, in
+      an empty directory, standard input empty), their exit codes, standard output, standard
+      error and the files left compared, the differences grouped
+      (`inventory/measure/corpus_run.py --diff`, `inventory/corpus_diff.{json,md}`). 1400 of
+      the 1411 distinct invocations behave the same; of the 11, 7 use options not built yet
+      (`--http2`, step 52; FTP's `-Q`, `-l` and `--ftp-create-dirs`, stage 6), 2 are `-V`'s
+      lists, and 2 a required `.netrc` that is missing, which C fails before it looks at the
+      protocol (d).
+    - **d. The differences closed.** **In progress.** Each one made as C's, or, where C's is a
+      clear bug, put to the user as a divergence; those waiting on later steps say which.
     - **e. Closing the step.** **To do.** The sweep and cargo-mutants on what it changed.
 48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **To do.**
 49. **IDN** through libidn2. **To do.**

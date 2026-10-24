@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+HTTP Negotiate auth (stub krb5)
+</keywords>
+</info>
+# Server-side
+<reply>
+<!-- The token is refused: the server asks to continue, which the stub
+     cannot for a Kerberos context, so the 401 is the response -->
+<data1>
+HTTP/1.1 401 Authorization Required
+Server: Microsoft-IIS/7.0
+WWW-Authenticate: Negotiate Qw==
+Content-Length: 18
+
+Who are you, sir?
+</data1>
+<datacheck>
+HTTP/1.1 401 Authorization Required
+Server: Microsoft-IIS/7.0
+WWW-Authenticate: Negotiate Qw==
+Content-Length: 18
+
+Who are you, sir?
+</datacheck>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+HTTP Negotiate challenge the context cannot continue (stub krb5)
+</name>
+<features>
+GSS-API
+Debug
+</features>
+<setenv>
+CURL_STUB_GSS_CREDS="KRB5_Alice"
+</setenv>
+<command>
+--negotiate http://%HOSTIP:%HTTPPORT/%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<protocol crlf="headers">
+GET /%TESTNUMBER HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+Authorization: Negotiate %b64["KRB5_Alice":HTTP@127.0.0.1:1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]b64%
+User-Agent: curl/%VERSION
+Accept: */*
+
+</protocol>
+</verify>
+</testcase>

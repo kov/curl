@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTP
+HTTP GET
+HTTP Negotiate auth (stub krb5)
+--anyauth
+</keywords>
+</info>
+# Server-side
+<reply>
+<!-- First request, no credentials sent: Negotiate offered -->
+<data>
+HTTP/1.1 401 Authorization Required
+Server: Microsoft-IIS/7.0
+WWW-Authenticate: Negotiate
+Content-Length: 18
+
+Who are you, sir?
+</data>
+<!-- Second request, with the stub's token -->
+<data1>
+HTTP/1.1 200 Things are fine in server land
+Server: Microsoft-IIS/7.0
+Persistent-Auth: true
+Content-Length: 15
+
+Nice auth sir!
+</data1>
+<datacheck>
+HTTP/1.1 401 Authorization Required
+Server: Microsoft-IIS/7.0
+WWW-Authenticate: Negotiate
+Content-Length: 18
+
+HTTP/1.1 200 Things are fine in server land
+Server: Microsoft-IIS/7.0
+Persistent-Auth: true
+Content-Length: 15
+
+Nice auth sir!
+</datacheck>
+</reply>
+
+# Client-side
+<client>
+<server>
+http
+</server>
+<name>
+HTTP Negotiate picked from a 401 by --anyauth (stub krb5)
+</name>
+<features>
+GSS-API
+Debug
+</features>
+<setenv>
+CURL_STUB_GSS_CREDS="KRB5_Alice"
+</setenv>
+<command>
+--anyauth -u : http://%HOSTIP:%HTTPPORT/%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<protocol crlf="headers">
+GET /%TESTNUMBER HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+User-Agent: curl/%VERSION
+Accept: */*
+
+GET /%TESTNUMBER HTTP/1.1
+Host: %HOSTIP:%HTTPPORT
+Authorization: Negotiate %b64["KRB5_Alice":HTTP@127.0.0.1:1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA]b64%
+User-Agent: curl/%VERSION
+Accept: */*
+
+</protocol>
+</verify>
+</testcase>

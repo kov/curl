@@ -305,6 +305,12 @@ fn a_switch_nothing_asked_for_is_the_response() {
         ran.seen.of("interim").concat(),
         b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: x\r\nContent-Length: 2\r\n\r\n"
     );
+    // The server closed the connection to end the body, so it is not kept,
+    // where C keeps it and says it is left intact (DIVERGENCE.md).
+    assert_eq!(
+        ran.seen.text().last().unwrap(),
+        "shutting down connection #0\n"
+    );
 
     let ran = run("/", reply, true, |o| {
         o.http.version = crate::options::HttpVersion::Http10;

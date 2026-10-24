@@ -825,6 +825,12 @@ fn the_proxy_s_token_is_made_before_the_origin_s() {
         .iter()
         .position(|l| l == "Server auth using Negotiate with user ''\n");
     assert!(proxy.zip(origin).is_some_and(|(p, o)| p < o), "{text:?}");
+    let said = |line: &str| text.iter().filter(|l| *l == line).count();
+    assert_eq!(
+        said("Proxy auth using Negotiate with user ''\n"),
+        1,
+        "said once"
+    );
     let Asked::Context { host, .. } = &gss.asked()[2] else {
         panic!("the origin's context second: {:?}", gss.asked());
     };
@@ -1561,4 +1567,75 @@ fn a_handshake_of_rounds_persists_unless_told_otherwise() {
             assert_eq!(gss.unused(), 1);
         }
     }
+}
+
+/// A POST sends its body with its token, whether the context wants
+/// more or is complete: unlike Digest's, Negotiate's request is done once
+/// a token goes (`CURL_NEGO_AUTH_DONE` for `GSS_S_CONTINUE_NEEDED` too),
+/// so it never probes without its body (C's `authneg`).
+#[test]
+fn a_post_sends_its_body_with_its_token() {
+    for complete in [false, true] {
+        let (gss, libraries) = scripted();
+        if complete {
+            gss.then(Answer::Token(Progress::Complete, b"all".to_vec()));
+        } else {
+            gss.then_token(b"one").then_token(b"two");
+        }
+        let challenge = format!(
+            "HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate {}\r\nContent-Length: 0\r\n\r\n",
+            b64(b"C")
+        );
+        let replies: Vec<&[u8]> = if complete {
+            vec![OK_200]
+        } else {
+            vec![challenge.as_bytes(), OK_200]
+        };
+        let (mut m, talk, _) = server(&replies, false);
+        let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+            o.method = crate::options::Method::Post;
+            o.upload = crate::options::UploadSource::Bytes(
+                curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap(),
+            );
+        });
+        assert_eq!(ran.result, Ok(()), "{complete}");
+        let text = String::from_utf8_lossy(&ran.request).into_owned();
+        let posts = if complete { 1 } else { 2 };
+        assert_eq!(text.matches("POST / ").count(), posts, "{text}");
+        assert_eq!(
+            text.matches("Content-Length: 3\r\n").count(),
+            posts,
+            "{text}"
+        );
+        assert_eq!(text.matches("\r\n\r\na=b").count(), posts, "{text}");
+        assert!(!text.contains("Content-Length: 0\r\n"), "{text}");
+    }
+}
+
+/// The proxy's method, not Negotiate, is still said before the origin's
+/// Negotiate, and once (C makes the proxy's line first).
+#[test]
+fn the_proxy_s_other_method_is_said_before_the_origin_s_negotiate() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"origin");
+    let (mut m, talk, _) = server(&[OK_200], false);
+    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+        via_proxy(o, false);
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.auth = HttpAuth(AuthMethods::BASIC);
+        proxy.user = Some(b"pu".to_vec());
+        proxy.password = Some(b"pp".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    let at = |line: &str| text.iter().position(|l| l == line);
+    let proxy = at("Proxy auth using Basic with user 'pu'\n");
+    let origin = at("Server auth using Negotiate with user ''\n");
+    assert!(proxy.zip(origin).is_some_and(|(p, o)| p < o), "{text:?}");
+    let said = |line: &str| text.iter().filter(|l| *l == line).count();
+    assert_eq!(
+        said("Proxy auth using Basic with user 'pu'\n"),
+        1,
+        "{text:?}"
+    );
 }

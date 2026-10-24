@@ -51,6 +51,10 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # Negotiate's output is done whenever it returns a request to send (a
+    # token went: `CURL_NEGO_AUTH_DONE`), so `!done` alone already makes
+    # its probe false.
+    'curl-core/src/proto/http1/auth\.rs:.*: delete ! in PeerAuth::negotiated$',
     # The build claims SPNEGO: asking whether it does is always true.
     'curl-sys-abi/src/getinfo\.rs:.*: replace spnego -> bool with true$',
     'curl-tool/src/options/parse\.rs:.*: replace claims_spnego -> bool with true$',

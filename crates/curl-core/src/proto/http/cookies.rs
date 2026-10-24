@@ -10,7 +10,7 @@
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
-use crate::cookie::{Jar, Source, Suffixes};
+use crate::cookie::{Jar, LoadError, Source, Suffixes};
 use crate::easy::Easy;
 use crate::error::ErrorKind;
 use crate::handler::Handler;
@@ -127,7 +127,7 @@ fn read_files<H: Host>(cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
             if name.is_empty() {
                 continue;
             }
-            read_named(name)?
+            read_named(name).map_err(load_failed)?
         };
         match opened {
             Ok(text) => load_text(cx, &text)?,
@@ -231,13 +231,13 @@ enum Opened {
 }
 
 /// Open the cookie file `name`, `-` standard input (`cookie_load`).
-fn open(name: &[u8]) -> Result<Opened, ErrorKind> {
+fn open(name: &[u8]) -> Result<Opened, OutOfMemory> {
     let file = if name == b"-" {
         curl_os::fs::stdin()
     } else {
         let mut path = Vec::new();
-        path.try_extend_from_slice(name).map_err(oom)?;
-        path.try_push(0).map_err(oom)?;
+        path.try_extend_from_slice(name)?;
+        path.try_push(0)?;
         match std::ffi::CStr::from_bytes_with_nul(&path) {
             Ok(path) => curl_os::fs::open_read(path),
             Err(_) => Err(std::io::ErrorKind::InvalidInput.into()),
@@ -252,9 +252,17 @@ fn open(name: &[u8]) -> Result<Opened, ErrorKind> {
     Ok(Opened::File(file))
 }
 
+/// A cookie file not read, as the transfer fails for it.
+fn load_failed(e: LoadError) -> ErrorKind {
+    match e {
+        LoadError::OutOfMemory => ErrorKind::OutOfMemory,
+        LoadError::Read => ErrorKind::ReadError,
+    }
+}
+
 /// The text of the cookie file `name`, or the warning C traces when it
 /// is no file or cannot be opened (`cookie_load`). The name is not empty.
-pub(crate) fn read_named(name: &[u8]) -> Result<Result<Vec<u8>, trace::Line>, ErrorKind> {
+pub(crate) fn read_named(name: &[u8]) -> Result<Result<Vec<u8>, trace::Line>, LoadError> {
     Ok(match open(name)? {
         Opened::File(mut file) => Ok(read_all(&mut file)?),
         Opened::Missing => Err(trace::line_with(&[
@@ -272,15 +280,15 @@ pub(crate) fn read_named(name: &[u8]) -> Result<Result<Vec<u8>, trace::Line>, Er
 
 /// The whole of `file`; a read that fails fails the transfer, as C's
 /// `Curl_get_line` fails it.
-fn read_all(file: &mut impl std::io::Read) -> Result<Vec<u8>, ErrorKind> {
+fn read_all(file: &mut impl std::io::Read) -> Result<Vec<u8>, LoadError> {
     let mut text = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
         match file.read(&mut chunk) {
             Ok(0) => return Ok(text),
-            Ok(n) => text.try_extend_from_slice(&chunk[..n]).map_err(oom)?,
+            Ok(n) => text.try_extend_from_slice(&chunk[..n])?,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => return Err(ErrorKind::ReadError),
+            Err(_) => return Err(LoadError::Read),
         }
     }
 }
@@ -550,7 +558,7 @@ mod tests {
             Err(std::io::ErrorKind::Other.into()),
             Ok(b"c".to_vec()),
         ]);
-        assert_eq!(read_all(&mut reader), Err(ErrorKind::ReadError));
+        assert_eq!(read_all(&mut reader), Err(LoadError::Read));
     }
 
     #[test]

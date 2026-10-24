@@ -147,12 +147,12 @@ file: crates/curl-core/src/easy.rs
 witness: curl-core easy::tests::the_application_s_cookies_count_toward_the_limit
 --- old
         let mut set = self.set_cookies;
-        let suffixes = self.public_suffixes().map_err(oom)?;
+        let suffixes = self.public_suffixes()?;
         let list = suffixes.as_ref().map(Suffixes::list);
         let added = self
 --- new
         let mut set = 0;
-        let suffixes = self.public_suffixes().map_err(oom)?;
+        let suffixes = self.public_suffixes()?;
         let list = suffixes.as_ref().map(Suffixes::list);
         let added = self
 

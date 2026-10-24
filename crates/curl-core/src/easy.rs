@@ -9,7 +9,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 use crate::coding::Decoders;
 use crate::components::Components;
 use crate::conn::io::{SystemNet, Waker};
-use crate::cookie::{Jar, Suffixes};
+use crate::cookie::{Jar, LoadError, Suffixes};
 use crate::error::{Error, ErrorKind, MultiErrorKind};
 use crate::handler::Handler;
 use crate::id::ArenaPolicy;
@@ -18,7 +18,8 @@ use crate::multi::{AddError, Env, Multi, NoEvents, WaitMode, drive_by_events};
 use crate::options::{Lines, Options};
 use crate::proto::http1::auth::Auth;
 use crate::report::TransferReport;
-use crate::save::{self, SaveError};
+use crate::save;
+pub use crate::save::SaveError;
 use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock as _, SystemClock};
 use crate::trace;
@@ -282,12 +283,12 @@ impl Easy {
         &mut self,
         line: &[u8],
         mut notes: impl FnMut(&[u8]),
-    ) -> Result<(), ErrorKind> {
+    ) -> Result<(), OutOfMemory> {
         let now = SystemClock::new().unix_time();
         // Counted with the last request's, and dropped silently past
         // their limit, as C counts it.
         let mut set = self.set_cookies;
-        let suffixes = self.public_suffixes().map_err(oom)?;
+        let suffixes = self.public_suffixes()?;
         let list = suffixes.as_ref().map(Suffixes::list);
         let added = self
             .with_jar(true, |jar| {
@@ -296,24 +297,22 @@ impl Easy {
                     said.lines(|parts| notes(trace::line_with(parts).ended().bytes()));
                 }
                 Ok(())
-            })
-            .map_err(oom)?
-            .expect("made if missing")
-            .map_err(oom);
+            })?
+            .expect("made if missing");
         self.set_cookies = set;
         added
     }
 
     /// Forget every cookie (`CURLOPT_COOKIELIST` `ALL`).
-    pub fn clear_cookies(&mut self) -> Result<(), ErrorKind> {
-        self.with_jar(false, Jar::clear).map_err(oom)?;
+    pub fn clear_cookies(&mut self) -> Result<(), OutOfMemory> {
+        self.with_jar(false, Jar::clear)?;
         Ok(())
     }
 
     /// Forget the cookies that last the session (`CURLOPT_COOKIELIST`
     /// `SESS`).
-    pub fn clear_session_cookies(&mut self) -> Result<(), ErrorKind> {
-        self.with_jar(false, Jar::clear_session).map_err(oom)?;
+    pub fn clear_session_cookies(&mut self) -> Result<(), OutOfMemory> {
+        self.with_jar(false, Jar::clear_session)?;
         Ok(())
     }
 
@@ -324,15 +323,15 @@ impl Easy {
     ///
     /// `notes` hears each line C would trace, its end included: a file
     /// that cannot be opened, then what each file's lines say, in turn.
-    pub fn reload_cookies(&mut self, mut notes: impl FnMut(&[u8])) -> Result<(), ErrorKind> {
+    pub fn reload_cookies(&mut self, mut notes: impl FnMut(&[u8])) -> Result<(), LoadError> {
         let cookies = &self.options.http.cookies;
         if cookies.files.iter().next().is_none() {
             return Ok(());
         }
-        let files = cookies.files.try_clone().map_err(oom)?;
+        let files = cookies.files.try_clone()?;
         let new_session = cookies.new_session;
         let now = SystemClock::new().unix_time();
-        let suffixes = self.public_suffixes().map_err(oom)?;
+        let suffixes = self.public_suffixes()?;
         let list = suffixes.as_ref().map(Suffixes::list);
         let mut set = self.set_cookies;
         let loaded = self
@@ -356,12 +355,10 @@ impl Easy {
                     };
                     jar.load(&text, new_session, true, list, now, &mut set, |said| {
                         said.lines(|parts| notes(trace::line_with(parts).ended().bytes()));
-                    })
-                    .map_err(oom)?;
+                    })?;
                 }
                 Ok(())
-            })
-            .map_err(oom)?
+            })?
             .expect("made if missing");
         self.set_cookies = set;
         loaded
@@ -370,24 +367,22 @@ impl Easy {
     /// Every cookie the jar holds that has a domain, as a line in the
     /// Netscape format (`CURLINFO_COOKIELIST`), those expired swept out
     /// first.
-    pub fn cookie_list(&mut self) -> Result<Vec<Vec<u8>>, ErrorKind> {
+    pub fn cookie_list(&mut self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
         let now = SystemClock::new().unix_time();
-        let listed = self
-            .with_jar(false, |jar| -> Result<_, OutOfMemory> {
-                let mut lines = Vec::new();
-                if jar.len() == 0 {
-                    return Ok(lines);
-                }
-                jar.sweep(now);
-                for co in jar.listed() {
-                    let mut line = Vec::new();
-                    co.netscape(&mut line)?;
-                    lines.try_push(line)?;
-                }
-                Ok(lines)
-            })
-            .map_err(oom)?;
-        Ok(listed.transpose().map_err(oom)?.unwrap_or_default())
+        let listed = self.with_jar(false, |jar| -> Result<_, OutOfMemory> {
+            let mut lines = Vec::new();
+            if jar.len() == 0 {
+                return Ok(lines);
+            }
+            jar.sweep(now);
+            for co in jar.listed() {
+                let mut line = Vec::new();
+                co.netscape(&mut line)?;
+                lines.try_push(line)?;
+            }
+            Ok(lines)
+        })?;
+        Ok(listed.transpose()?.unwrap_or_default())
     }
 
     /// Run `f` on the jar the handle uses: its share's, if that keeps the
@@ -437,7 +432,7 @@ impl Easy {
     /// the handle's own. A jar no transfer has started since its files
     /// were read is not written, as they may not all have been. Nothing to
     /// write is no failure.
-    pub fn save_cookies(&mut self) -> Result<(), ErrorKind> {
+    pub fn save_cookies(&mut self) -> Result<(), SaveError> {
         let Some(to) = &self.options.http.cookies.save_to else {
             self.watch_shared_jar();
             return Ok(());
@@ -450,10 +445,7 @@ impl Easy {
             Ok(written) => written,
             Err(save) => self.cookies.as_deref_mut().map(save),
         };
-        written.unwrap_or(Ok(())).map_err(|e| match e {
-            SaveError::OutOfMemory => ErrorKind::OutOfMemory,
-            SaveError::Write => ErrorKind::WriteError,
-        })
+        written.unwrap_or(Ok(()))
     }
 
     /// Run the transfer to its end, blocking (`curl_easy_perform`), in the

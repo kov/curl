@@ -107,6 +107,22 @@ pub fn stat(path: &CStr) -> io::Result<Status> {
     })
 }
 
+/// Call `f` with the absolute name of the file at `path`, every symbolic
+/// link, `.` and `..` resolved (`realpath(3)`), into a buffer on the
+/// stack, not the heap. A file that does not exist has none.
+pub fn real_path<T>(path: &CStr, f: impl FnOnce(&[u8]) -> T) -> io::Result<T> {
+    let mut resolved = [0u8; NAME_MAX_BYTES];
+    // SAFETY: `path` is a C string and `resolved` room for `PATH_MAX` bytes,
+    // what `realpath` writes at most, its ending zero byte included; both
+    // are alive for the call.
+    let got = unsafe { libc::realpath(path.as_ptr(), resolved.as_mut_ptr().cast()) };
+    if got.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let name = CStr::from_bytes_until_nul(&resolved).expect("realpath ends its name");
+    Ok(f(name.to_bytes()))
+}
+
 /// Remove the name `path` (`unlink(2)`).
 pub fn remove(path: &CStr) -> io::Result<()> {
     // SAFETY: `path` is a C string, alive for the call.
@@ -361,6 +377,24 @@ mod tests {
             .read_to_string(&mut read)
             .unwrap();
         assert!(read.contains("to the file\n"), "{read:?}");
+    }
+
+    /// A name is made absolute through its links and dots; a file that is
+    /// not there has none.
+    #[test]
+    #[cfg_attr(miri, ignore = "Miri has no realpath")]
+    fn a_real_path_resolves_links_and_dots() {
+        let s = Scratch::new("realpath");
+        std::fs::write(s.0.join("f"), b"").unwrap();
+        std::os::unix::fs::symlink(s.0.join("f"), s.0.join("l")).unwrap();
+        let want = std::fs::canonicalize(s.0.join("f")).unwrap();
+        let got = real_path(&s.c("./l"), <[u8]>::to_vec).unwrap();
+        assert_eq!(got, want.as_os_str().as_bytes());
+        std::fs::create_dir(s.0.join("d")).unwrap();
+        let got = real_path(&s.c("d/../f"), <[u8]>::to_vec).unwrap();
+        assert_eq!(got, want.as_os_str().as_bytes());
+        let missing = real_path(&s.c("missing"), <[u8]>::to_vec).unwrap_err();
+        assert_eq!(missing.raw_os_error(), Some(libc::ENOENT));
     }
 
     /// Only `EACCES` is a refusal: `EPERM` is not, though std gives both

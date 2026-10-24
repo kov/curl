@@ -1293,6 +1293,10 @@ mod tests {
         // SAFETY: the storage holds the `sockaddr_un` written.
         let un = unsafe { (&raw const abs.raw).cast::<libc::sockaddr_un>().read() };
         assert_eq!(i32::from(un.sun_family), libc::AF_UNIX);
+        #[allow(
+            clippy::unnecessary_cast,
+            reason = "`c_char` is signed on some targets"
+        )]
         let name: Vec<u8> = un.sun_path[..6].iter().map(|&c| c as u8).collect();
         assert_eq!(name, b"\0name\0");
         assert!(unix_address(&[b'x'; UNIX_PATH_ROOM - 1], false).is_some());

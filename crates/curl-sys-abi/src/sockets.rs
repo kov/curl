@@ -323,6 +323,10 @@ mod tests {
         assert_eq!(abs.addrlen as usize, at + 7);
         // SAFETY: the storage holds the `sockaddr_un` written.
         let un = unsafe { (&raw const abs.addr).cast::<libc::sockaddr_un>().read() };
+        #[allow(
+            clippy::unnecessary_cast,
+            reason = "`c_char` is signed on some targets"
+        )]
         let name: Vec<u8> = un.sun_path[..8].iter().map(|&c| c as u8).collect();
         assert_eq!(name, b"\0s46abs\0");
         assert_eq!(abs.read(), None, "not read back as TCP's");

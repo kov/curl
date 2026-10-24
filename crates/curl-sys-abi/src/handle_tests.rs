@@ -280,6 +280,18 @@ fn tls_options_are_kept_as_c_keeps_them() {
             ffi::CURL_SSLVERSION_TLSv1_3,
             Some((TlsMinVersion::Tls1_3, TlsMaxVersion::None)),
         ),
+        (
+            ffi::CURL_SSLVERSION_TLSv1_0 | ffi::CURL_SSLVERSION_MAX_TLSv1_0,
+            Some((TlsMinVersion::Tls1_0, TlsMaxVersion::Tls1_0)),
+        ),
+        (
+            ffi::CURL_SSLVERSION_TLSv1_0 | ffi::CURL_SSLVERSION_MAX_TLSv1_1,
+            Some((TlsMinVersion::Tls1_0, TlsMaxVersion::Tls1_1)),
+        ),
+        (
+            ffi::CURL_SSLVERSION_TLSv1_2 | ffi::CURL_SSLVERSION_MAX_TLSv1_3,
+            Some((TlsMinVersion::Tls1_2, TlsMaxVersion::Tls1_3)),
+        ),
         (ffi::CURL_SSLVERSION_SSLv3, None),
         (ffi::CURL_SSLVERSION_SSLv2, None),
         (ffi::CURL_SSLVERSION_LAST, None),
@@ -334,15 +346,30 @@ fn tls_options_are_kept_as_c_keeps_them() {
         CaCache::For(Duration::from_secs(c_int::MAX as u64)),
         "unchanged"
     );
-    let mut list = *b"X25519\0";
-    assert_eq!(
-        pointer(c, ffi::CURLOPT_SSL_EC_CURVES, list.as_mut_ptr()),
-        CURLE_OK
-    );
-    assert_eq!(
-        options(c, |o| o.tls.options.curves.clone()),
-        Some(b"X25519".to_vec())
-    );
+    // The lists, each copied into its own option.
+    type Field = fn(&curl_core::options::TlsOptions) -> &Option<Vec<u8>>;
+    let lists: [(CURLoption, &[u8], Field); 4] = [
+        (ffi::CURLOPT_SSL_EC_CURVES, b"X25519\0", |t| &t.curves),
+        (ffi::CURLOPT_SSL_CIPHER_LIST, b"AES128-SHA\0", |t| {
+            &t.ciphers
+        }),
+        (
+            ffi::CURLOPT_TLS13_CIPHERS,
+            b"TLS_AES_128_GCM_SHA256\0",
+            |t| &t.tls13_ciphers,
+        ),
+        (ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS, b"ed25519\0", |t| {
+            &t.signature_algorithms
+        }),
+    ];
+    for (option, list, field) in lists {
+        let mut list = list.to_vec();
+        assert_eq!(pointer(c, option, list.as_mut_ptr()), CURLE_OK);
+        assert_eq!(
+            options(c, |o| field(&o.tls.options).clone()),
+            Some(list[..list.len() - 1].to_vec())
+        );
+    }
     // The build's CA defaults, whatever was set.
     let given = |i| {
         let mut p: *const c_char = ptr::null();

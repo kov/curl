@@ -68,7 +68,7 @@ pub(crate) struct Client {
     both: PathBuf,
     p12: PathBuf,
     /// The CA the server checks the client against.
-    ca: X509,
+    pub(crate) ca: X509,
 }
 
 /// Credentials for a client certificate a CA of their own signed.

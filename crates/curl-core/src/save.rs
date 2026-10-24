@@ -106,7 +106,9 @@ fn c_path(path: &[u8]) -> Result<std::ffi::CString, SaveError> {
     v.try_reserve_exact(path.len() + 1)
         .map_err(|_| SaveError::OutOfMemory)?;
     v.try_extend_from_slice(path)?;
-    // A name with a zero byte in it names no file.
+    // A name with a zero byte in it names no file. The vector has room
+    // for the zero byte `new` adds, so it does not grow.
+    #[allow(clippy::disallowed_methods)]
     std::ffi::CString::new(v).map_err(|_| SaveError::Write)
 }
 

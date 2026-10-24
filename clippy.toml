@@ -35,6 +35,8 @@ disallowed-methods = [
     { path = "std::collections::HashMap::insert", reason = "reserve with try_reserve first" },
     { path = "std::collections::VecDeque::push_back", reason = "reserve with try_reserve first" },
     { path = "std::collections::VecDeque::push_front", reason = "reserve with try_reserve first" },
+    # From a slice, it copies with an allocation that cannot fail.
+    { path = "std::ffi::CString::new", reason = "use curl_os::fs::with_c_name, or a Vec with room for the zero byte" },
     # The argument strings are wiped in place (curl_os::args); nothing else
     # may read them, or a read could race the wipe.
     { path = "std::env::args", reason = "use curl_os::args::command_line" },

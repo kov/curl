@@ -4,7 +4,6 @@
 //! base64 of its SHA-256 (`sha256//`, `;` between several) or as a file
 //! of it, in DER or PEM. The library finds the key; this compares it.
 
-use std::ffi::CString;
 use std::fmt;
 use std::io::Read as _;
 
@@ -94,11 +93,9 @@ fn matches(pinned: &[u8], spki: &[u8], say: &mut dyn FnMut(Said<'_>)) -> Result<
         }
         return Ok(false);
     }
-    // A file of the key, in DER, or else in PEM.
-    let Ok(name) = CString::new(pinned) else {
-        unreachable!("cut at its first zero byte");
-    };
-    let Ok(mut file) = curl_os::fs::open_read(&name) else {
+    // A file of the key, in DER, or else in PEM; its name copied on the
+    // stack, which cannot fail for memory.
+    let Ok(mut file) = curl_os::fs::with_c_name(pinned, curl_os::fs::open_read) else {
         return Ok(false);
     };
     let size = match file.metadata() {

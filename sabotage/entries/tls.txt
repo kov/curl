@@ -268,3 +268,15 @@ features: test-util
 --- new
         let _ = self.cx.configure_tls(native);
         Ok(()).map_err(|kind: ErrorKind| {
+
+=== a pinned key's file is named by a copy that aborts when memory runs out
+file: crates/curl-core/src/tls/pin.rs
+witness: curl-openssl an_https_get_survives_each_allocation_refused
+--- old
+    let Ok(mut file) = curl_os::fs::with_c_name(pinned, curl_os::fs::open_read) else {
+--- new
+    #[allow(clippy::disallowed_methods)]
+    let Ok(name) = std::ffi::CString::new(pinned) else {
+        unreachable!("cut at its first zero byte");
+    };
+    let Ok(mut file) = curl_os::fs::open_read(&name) else {

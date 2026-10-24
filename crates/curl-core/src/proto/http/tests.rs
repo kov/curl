@@ -4989,6 +4989,7 @@ fn an_origin_s_digest_is_answered_through_a_proxy() {
     );
 }
 
+mod bind_trace;
 mod coding;
 #[cfg(feature = "debug-hooks")]
 mod debug_lines;

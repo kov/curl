@@ -885,6 +885,16 @@ impl Net for BrokenNet {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         None
     }
+
+    fn interface_address(
+        &mut self,
+        _: &[u8],
+        _: bool,
+        _: crate::conn::io::Ipv6Scope,
+        _: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        crate::conn::io::InterfaceAddress::NotFound
+    }
 }
 
 #[test]
@@ -1369,6 +1379,16 @@ impl Net for Patient {
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.net.link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.net.interface_address(name, v6, remote_scope, scope_id)
     }
 }
 
@@ -2038,6 +2058,16 @@ impl Net for Closes {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.0.link_local_scope()
     }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0.interface_address(name, v6, remote_scope, scope_id)
+    }
 }
 
 /// One network behind several owners: a share and the multis whose
@@ -2075,6 +2105,19 @@ impl Net for OneNet {
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.0.lock().unwrap().link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0
+            .lock()
+            .unwrap()
+            .interface_address(name, v6, remote_scope, scope_id)
     }
 }
 
@@ -3745,6 +3788,16 @@ impl Net for Probed {
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.0.link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0.interface_address(name, v6, remote_scope, scope_id)
     }
 
     fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {

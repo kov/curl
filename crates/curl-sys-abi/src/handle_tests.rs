@@ -1814,7 +1814,10 @@ fn callback_options_install_their_adapters() {
 #[test]
 fn ids_are_told_apart_as_c_tells_them() {
     let c = curl_easy_init();
-    assert_eq!(long(c, ffi::CURLOPT_LOCALPORT, 80), CURLE_NOT_BUILT_IN);
+    assert_eq!(
+        long(c, ffi::CURLOPT_SOCKS5_GSSAPI_NEC, 1),
+        CURLE_NOT_BUILT_IN
+    );
     for unknown in [9999, 10999, 50000] {
         assert_eq!(
             long(c, CURLoption(unknown), 0),
@@ -6010,6 +6013,50 @@ fn tcp_options_are_held_to_c_s_range() {
             (k.idle, k.interval, k.count),
             (Duration::ZERO, Duration::ZERO, 0)
         );
+    });
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// An interface is read for its syntax as it is set, empty unsetting it,
+/// and the local port and range are held to the ports
+/// (`setstropt_interface`, `CURLOPT_LOCALPORT`).
+#[test]
+fn a_local_end_is_read_as_c_reads_it() {
+    use curl_core::options::{Interface, LocalBind};
+    let c = curl_easy_init();
+    let set = |text: &CStr| pointer(c, ffi::CURLOPT_INTERFACE, text.as_ptr().cast_mut());
+    for bad in [c"if!", c"host!", c"ifhost!eth0", c"ifhost!eth0!"] {
+        assert_eq!(set(bad), CURLE_BAD_FUNCTION_ARGUMENT, "{bad:?}");
+    }
+    assert!(
+        options(c, |o| o.sockets.made_mut().is_none()),
+        "nothing refused is kept"
+    );
+    for range in [ffi::CURLOPT_LOCALPORT, ffi::CURLOPT_LOCALPORTRANGE] {
+        assert_eq!(long(c, range, -1), CURLE_BAD_FUNCTION_ARGUMENT);
+        assert_eq!(long(c, range, 65536), CURLE_BAD_FUNCTION_ARGUMENT);
+    }
+    assert_eq!(set(c"ifhost!eth0!10.0.0.1"), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_LOCALPORT, 65535), CURLE_OK);
+    assert_eq!(long(c, ffi::CURLOPT_LOCALPORTRANGE, 3), CURLE_OK);
+    options(c, |o| {
+        let s = o.sockets.made_mut().expect("made by a value set");
+        assert_eq!(
+            s.local,
+            LocalBind {
+                interface: Some(Interface::InterfaceHost {
+                    interface: b"eth0".to_vec(),
+                    host: b"10.0.0.1".to_vec(),
+                }),
+                port: 65535,
+                port_range: 3,
+            }
+        );
+    });
+    assert_eq!(set(c""), CURLE_OK);
+    options(c, |o| {
+        assert_eq!(o.sockets.made_mut().expect("made").local.interface, None);
     });
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };

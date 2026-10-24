@@ -13,7 +13,10 @@ use curl_alloc::{OutOfMemory, TryVec, try_box};
 use crate::handler::{Handler, SocketCloser};
 use crate::time::Instant;
 
-pub use curl_os::net::{Connect, Protocol, Recv, Sent, SocketOption, TcpSocket, adopt, open};
+pub use curl_os::net::{
+    AF_INET, AF_INET6, Connect, InterfaceAddress, Ipv6Scope, Protocol, Recv, Sent, SocketOption,
+    TcpSocket, adopt, ipv6_scope, open,
+};
 pub use curl_os::poll::{Events, PollFd};
 pub use curl_os::resolve::{Failure as ResolveFailure, Family};
 pub use curl_os::wake::Waker;
@@ -55,6 +58,12 @@ pub trait Socket: fmt::Debug + Send {
 
     /// Make it nonblocking, as a socket the application opened may not be.
     fn set_nonblocking(&self) -> io::Result<()>;
+
+    /// Bind its local end to `addr`, before it connects.
+    fn bind(&self, addr: SocketAddr) -> io::Result<()>;
+
+    /// Bind it to the network interface named `name` (`SO_BINDTODEVICE`).
+    fn bind_to_device(&self, name: &[u8]) -> io::Result<()>;
 
     /// Start connecting it to `addr`.
     fn connect(&self, addr: SocketAddr) -> io::Result<Connect>;
@@ -198,6 +207,17 @@ pub trait Net {
     /// loopback and has a link-local IPv6 address, if any.
     fn link_local_scope(&mut self) -> Option<NonZeroU32>;
 
+    /// The address the interface named `name` has of the family IPv6 if
+    /// `v6`, else IPv4; an IPv6 one only in `remote_scope`, and with the
+    /// scope id `scope_id` unless that is 0 (`Curl_if2ip`).
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: Ipv6Scope,
+        scope_id: u32,
+    ) -> InterfaceAddress;
+
     /// Whether IPv6 works here, as a multi asks once as it is made
     /// (`Curl_probeipv6`): an error only if memory ran out. A network of
     /// the tests' has it unless it says otherwise.
@@ -229,6 +249,14 @@ impl Socket for curl_os::net::TcpSocket {
 
     fn set_nonblocking(&self) -> io::Result<()> {
         curl_os::net::TcpSocket::set_nonblocking(self)
+    }
+
+    fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        curl_os::net::TcpSocket::bind(self, addr)
+    }
+
+    fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
+        curl_os::net::TcpSocket::bind_to_device(self, name)
     }
 
     fn connect(&self, addr: SocketAddr) -> io::Result<Connect> {
@@ -277,6 +305,16 @@ impl Net for SystemNet {
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
         curl_os::net::link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: Ipv6Scope,
+        scope_id: u32,
+    ) -> InterfaceAddress {
+        curl_os::net::interface_address(name, v6, remote_scope, scope_id)
     }
 
     fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {
@@ -692,6 +730,22 @@ pub struct FakeNet {
     /// conversation: a closed number is handed out again, lowest first, as
     /// the kernel does.
     open: Vec<Option<Conversation>>,
+    /// Its interfaces' addresses, each with its name and scope id.
+    interfaces: Vec<(Vec<u8>, IpAddr, u32)>,
+    /// What a socket may bind to, shared by the sockets it opens; none
+    /// where a test says nothing of it, so that opening a socket
+    /// allocates nothing.
+    binding: Option<curl_alloc::TryArc<Binding>>,
+}
+
+/// What a fake socket may bind to.
+#[cfg(any(test, feature = "test-util"))]
+#[derive(Clone, Debug, Default)]
+struct Binding {
+    /// The interfaces a socket binds to by name.
+    devices: Vec<Vec<u8>>,
+    /// The local ports in use, which a bind is refused.
+    in_use: Vec<u16>,
 }
 
 /// The first number a fake socket gets: past the descriptors a test
@@ -722,7 +776,74 @@ impl FakeNet {
             link_local: None,
             ipv6: true,
             open,
+            interfaces: Vec::new(),
+            binding: None,
         }
+    }
+
+    /// An interface named `name` with the address `ip`, of scope id
+    /// `scope` if IPv6.
+    pub fn with_interface(mut self, name: &str, ip: IpAddr, scope: u32) -> FakeNet {
+        let mut n = Vec::new();
+        n.try_extend_from_slice(name.as_bytes())
+            .expect("a test's names fit");
+        self.interfaces
+            .try_push((n, ip, scope))
+            .expect("a test's interfaces fit");
+        self
+    }
+
+    /// A socket may bind to the interface `name` by its name.
+    pub fn with_device(self, name: &str) -> FakeNet {
+        self.binding_with(|b| {
+            let mut n = Vec::new();
+            n.try_extend_from_slice(name.as_bytes())
+                .expect("a test's names fit");
+            b.devices.try_push(n).expect("a test's devices fit");
+        })
+    }
+
+    /// The local port `port` is in use: a bind to it is refused.
+    pub fn with_port_in_use(self, port: u16) -> FakeNet {
+        self.binding_with(|b| b.in_use.try_push(port).expect("a test's ports fit"))
+    }
+
+    fn binding_with(mut self, change: impl FnOnce(&mut Binding)) -> FakeNet {
+        let mut binding = self.binding.as_deref().cloned().unwrap_or_default();
+        change(&mut binding);
+        self.binding = Some(curl_alloc::TryArc::try_new(binding).expect("a test's binding fits"));
+        self
+    }
+
+    /// `Curl_if2ip` over the interfaces it has.
+    fn interface_address_of(
+        &self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: Ipv6Scope,
+        scope_id: u32,
+    ) -> InterfaceAddress {
+        let mut found = InterfaceAddress::NotFound;
+        for &(ref n, ip, scope) in &self.interfaces {
+            let named = n.as_slice() == name;
+            if ip.is_ipv6() != v6 {
+                if named && found == InterfaceAddress::NotFound {
+                    found = InterfaceAddress::OtherFamily;
+                }
+                continue;
+            }
+            if !named {
+                continue;
+            }
+            if v6 && (ipv6_scope(ip) != remote_scope || (scope_id != 0 && scope != scope_id)) {
+                if found == InterfaceAddress::NotFound {
+                    found = InterfaceAddress::OtherFamily;
+                }
+                continue;
+            }
+            return InterfaceAddress::Found(ip, scope);
+        }
+        found
     }
 
     /// A system where IPv6 does not work: a multi's probe finds none.
@@ -865,6 +986,8 @@ impl Net for FakeNet {
             key,
             peer,
             local,
+            binding: self.binding.clone(),
+            bound: std::sync::Mutex::new(None),
             connected: std::sync::atomic::AtomicBool::new(false),
             opened_for: addr,
             clock: self.clock.clone(),
@@ -909,6 +1032,16 @@ impl Net for FakeNet {
         self.link_local
     }
 
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.interface_address_of(name, v6, remote_scope, scope_id)
+    }
+
     fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {
         Ok(self.ipv6)
     }
@@ -924,6 +1057,9 @@ struct FakeSocket {
     peer: Option<Peer>,
     /// The address the kernel would bind it to as it connects.
     local: SocketAddr,
+    binding: Option<curl_alloc::TryArc<Binding>>,
+    /// What it was bound to before it connected.
+    bound: std::sync::Mutex<Option<SocketAddr>>,
     /// Whether its connect started: only then is it bound.
     connected: std::sync::atomic::AtomicBool,
     opened_for: SocketAddr,
@@ -991,11 +1127,32 @@ impl Socket for FakeSocket {
         })
     }
 
-    /// Bound as its connect starts: unbound before, and after one
-    /// refused at once.
+    /// Bound as its connect starts, where it was bound to if it was, the
+    /// kernel's port for a bind to none: unbound before, and after one
+    /// refused at once, unless it was bound.
     fn local_addr(&self) -> io::Result<SocketAddr> {
+        let bound = *self.bound.lock().expect("no test panics holding it");
         if self.connected.load(std::sync::atomic::Ordering::Relaxed) {
-            return Ok(self.local);
+            // What the bind left open, the connect chooses.
+            return Ok(match bound {
+                Some(at) => {
+                    let ip = if at.ip().is_unspecified() {
+                        self.local.ip()
+                    } else {
+                        at.ip()
+                    };
+                    let port = if at.port() == 0 {
+                        self.local.port()
+                    } else {
+                        at.port()
+                    };
+                    SocketAddr::new(ip, port)
+                }
+                None => self.local,
+            });
+        }
+        if let Some(at) = bound {
+            return Ok(at);
         }
         Ok(match self.local {
             SocketAddr::V4(_) => SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 0)),
@@ -1014,6 +1171,32 @@ impl Socket for FakeSocket {
         let mut wire = self.wire.0.lock().expect("no test panics holding the wire");
         wire.nonblocking_after = Some(wire.options.iter().flatten().count());
         Ok(())
+    }
+
+    /// Bound to a port in use, the bind is refused.
+    fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        let in_use = self
+            .binding
+            .as_ref()
+            .is_some_and(|b| addr.port() != 0 && b.in_use.contains(&addr.port()));
+        if in_use {
+            return Err(io::Error::from_raw_os_error(libc_errno::EADDRINUSE));
+        }
+        *self.bound.lock().expect("no test panics holding it") = Some(addr);
+        Ok(())
+    }
+
+    /// Only an interface the network has as a device binds.
+    fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
+        let known = self
+            .binding
+            .as_ref()
+            .is_some_and(|b| b.devices.iter().any(|d| d.as_slice() == name));
+        if known {
+            Ok(())
+        } else {
+            Err(io::Error::from_raw_os_error(libc_errno::ENODEV))
+        }
     }
 
     /// Its peer is the one at the address it was opened for, which it
@@ -1114,6 +1297,8 @@ impl Socket for FakeSocket {
 mod libc_errno {
     pub(super) const ECONNREFUSED: i32 = 111;
     pub(super) const EPIPE: i32 = 32;
+    pub(super) const EADDRINUSE: i32 = 98;
+    pub(super) const ENODEV: i32 = 19;
 }
 
 /// A fake network the test reaches while the multi holds it.
@@ -1145,6 +1330,19 @@ impl Net for SharedNet {
 
     fn link_local_scope(&mut self) -> Option<NonZeroU32> {
         self.0.lock().unwrap().link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0
+            .lock()
+            .unwrap()
+            .interface_address(name, v6, remote_scope, scope_id)
     }
 
     fn probe_ipv6(&mut self) -> Result<bool, OutOfMemory> {

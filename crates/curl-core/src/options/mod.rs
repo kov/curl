@@ -424,7 +424,7 @@ impl Options {
             })?,
             proxy: self.proxy.try_clone(Proxy::try_clone)?,
             schemes: self.schemes.try_clone(|s| Ok(*s))?,
-            sockets: self.sockets.try_clone(|h| Ok(h.clone()))?,
+            sockets: self.sockets.try_clone(Sockets::try_clone)?,
             http: self.http.try_clone()?,
             tls: self.tls.try_clone()?,
             #[cfg(any(test, feature = "test-util"))]
@@ -588,7 +588,7 @@ impl ColdGroup for MimeOptions {
 /// (`CURLOPT_OPENSOCKETFUNCTION`, `CURLOPT_SOCKOPTFUNCTION`,
 /// `CURLOPT_CLOSESOCKETFUNCTION`). The closer is kept by each connection
 /// the transfer makes, and closes its sockets whoever closes them.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Sockets {
     /// Small sends go out at once, Nagle's algorithm off
     /// (`CURLOPT_TCP_NODELAY`): on by default, as in C.
@@ -596,6 +596,8 @@ pub struct Sockets {
     pub keepalive: KeepAlive,
     /// The connect is made with TCP Fast Open (`CURLOPT_TCP_FASTOPEN`).
     pub fastopen: bool,
+    /// What each socket's local end is bound to before it connects.
+    pub local: LocalBind,
     pub open: Option<Handler<dyn SocketOpener>>,
     pub configure: Option<Handler<dyn SocketConfigurer>>,
     pub close: Option<Handler<dyn SocketCloser>>,
@@ -625,12 +627,185 @@ impl KeepAlive {
     };
 }
 
+/// What a socket's local end is bound to before it connects: an
+/// interface, an address or a name, a port, or nothing (`CURLOPT_INTERFACE`,
+/// `CURLOPT_LOCALPORT`, `CURLOPT_LOCALPORTRANGE`, `bindlocal`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct LocalBind {
+    pub interface: Option<Interface>,
+    /// The port, 0 for any.
+    pub port: u16,
+    /// How many ports from `port` up are tried, one after the other, as
+    /// each bind fails; 0 or 1 tries `port` alone.
+    pub port_range: u16,
+}
+
+impl LocalBind {
+    pub const NONE: LocalBind = LocalBind {
+        interface: None,
+        port: 0,
+        port_range: 0,
+    };
+
+    /// Whether anything is bound at all.
+    pub(crate) fn binds(&self) -> bool {
+        self.interface.is_some() || self.port != 0
+    }
+
+    pub(crate) fn try_clone(&self) -> Result<LocalBind, OutOfMemory> {
+        Ok(LocalBind {
+            interface: self
+                .interface
+                .as_ref()
+                .map(Interface::try_clone)
+                .transpose()?,
+            port: self.port,
+            port_range: self.port_range,
+        })
+    }
+}
+
+impl Sockets {
+    fn try_clone(&self) -> Result<Sockets, OutOfMemory> {
+        Ok(Sockets {
+            nodelay: self.nodelay,
+            keepalive: self.keepalive,
+            fastopen: self.fastopen,
+            local: self.local.try_clone()?,
+            open: self.open.clone(),
+            configure: self.configure.clone(),
+            close: self.close.clone(),
+        })
+    }
+}
+
+/// Where a socket is bound, as `CURLOPT_INTERFACE` names it
+/// (`Curl_parse_interface`): each name not empty, but for the interface
+/// of `ifhost!`, which C lets be.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Interface {
+    /// A plain name: an interface bound to by name, else whose address
+    /// is bound to, else a host name or address.
+    Device(Vec<u8>),
+    /// `if!NAME`: an interface, nothing else.
+    Interface(Vec<u8>),
+    /// `host!NAME`: a host name or address.
+    Host(Vec<u8>),
+    /// `ifhost!IFACE!HOST`: bound to the interface, and to the host's
+    /// address.
+    InterfaceHost { interface: Vec<u8>, host: Vec<u8> },
+}
+
+/// What an `Interface` names, as `bindlocal` uses it.
+pub(crate) struct InterfaceParts<'a> {
+    pub(crate) interface: Option<&'a [u8]>,
+    pub(crate) host: Option<&'a [u8]>,
+    /// Named with `if!` or `ifhost!`.
+    pub(crate) interface_named: bool,
+    /// Named with `host!` or `ifhost!`.
+    pub(crate) host_named: bool,
+}
+
+/// Why a `CURLOPT_INTERFACE` is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InterfaceError {
+    /// Longer than 512 bytes, or a form whose name is empty.
+    Malformed,
+    OutOfMemory,
+}
+
+impl Interface {
+    fn try_clone(&self) -> Result<Interface, OutOfMemory> {
+        Ok(match self {
+            Interface::Device(name) => Interface::Device(copy(name)?),
+            Interface::Interface(name) => Interface::Interface(copy(name)?),
+            Interface::Host(name) => Interface::Host(copy(name)?),
+            Interface::InterfaceHost { interface, host } => Interface::InterfaceHost {
+                interface: copy(interface)?,
+                host: copy(host)?,
+            },
+        })
+    }
+
+    /// The interface and the host it names, and whether each was named
+    /// as one (`bindlocal`'s `iface_in`, `host_in`): a plain name stands
+    /// for both.
+    pub(crate) fn parts(&self) -> InterfaceParts<'_> {
+        match self {
+            Interface::Device(name) => InterfaceParts {
+                interface: Some(name),
+                host: Some(name),
+                interface_named: false,
+                host_named: false,
+            },
+            Interface::Interface(name) => InterfaceParts {
+                interface: Some(name),
+                host: None,
+                interface_named: true,
+                host_named: false,
+            },
+            Interface::Host(name) => InterfaceParts {
+                interface: None,
+                host: Some(name),
+                interface_named: false,
+                host_named: true,
+            },
+            Interface::InterfaceHost { interface, host } => InterfaceParts {
+                interface: Some(interface),
+                host: Some(host),
+                interface_named: true,
+                host_named: true,
+            },
+        }
+    }
+
+    /// `input` read as C reads it (`Curl_parse_interface`); none for an
+    /// empty one, which unsets it.
+    pub fn parse(input: &[u8]) -> Result<Option<Interface>, InterfaceError> {
+        if input.is_empty() {
+            return Ok(None);
+        }
+        if input.len() > 512 {
+            return Err(InterfaceError::Malformed);
+        }
+        let named = |name: &[u8]| {
+            if name.is_empty() {
+                return Err(InterfaceError::Malformed);
+            }
+            copy(name).map_err(|_| InterfaceError::OutOfMemory)
+        };
+        let parsed = if let Some(name) = input.strip_prefix(b"if!") {
+            Interface::Interface(named(name)?)
+        } else if let Some(name) = input.strip_prefix(b"host!") {
+            Interface::Host(named(name)?)
+        } else if let Some(rest) = input.strip_prefix(b"ifhost!") {
+            let at = rest
+                .iter()
+                .position(|&b| b == b'!')
+                .ok_or(InterfaceError::Malformed)?;
+            let host = &rest[at + 1..];
+            if host.is_empty() {
+                return Err(InterfaceError::Malformed);
+            }
+            Interface::InterfaceHost {
+                // An empty interface is C's too.
+                interface: copy(&rest[..at]).map_err(|_| InterfaceError::OutOfMemory)?,
+                host: named(host)?,
+            }
+        } else {
+            Interface::Device(named(input)?)
+        };
+        Ok(Some(parsed))
+    }
+}
+
 impl ColdGroup for Sockets {
     const UNSET: &'static Sockets = &Sockets::NONE;
     const NONE: Sockets = Sockets {
         nodelay: true,
         keepalive: KeepAlive::DEFAULT,
         fastopen: false,
+        local: LocalBind::NONE,
         open: None,
         configure: None,
         close: None,

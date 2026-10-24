@@ -777,6 +777,37 @@ mod tests {
         }
     }
 
+    /// `--local-port` reads a port, or a range with a blank allowed on
+    /// each side of its dash, as the first port and how many to try
+    /// (`parse_localport`); anything else is badly used.
+    #[test]
+    fn a_local_port_range_is_read_as_c_reads_it() {
+        let ports = |given: &str| {
+            parsed(&["x", "--local-port", given]).map(|p| match p {
+                Parsed::Run(l) => (l.operations[0].local_port, l.operations[0].local_port_range),
+                Parsed::Request(r) => panic!("asked for {r:?}"),
+            })
+        };
+        assert_eq!(ports("4000"), Ok((4000, 1)));
+        assert_eq!(ports("4000-4002"), Ok((4000, 3)));
+        assert_eq!(ports("4000 - 4002"), Ok((4000, 3)));
+        assert_eq!(ports("4000\t-4000"), Ok((4000, 1)));
+        assert_eq!(ports("65535"), Ok((65535, 1)));
+        assert_eq!(ports("0"), Ok((0, 1)));
+        for bad in [
+            "65536",
+            "10-5",
+            "10x",
+            "-5",
+            "5-",
+            "10  -12",
+            "",
+            "4000-65536",
+        ] {
+            assert_eq!(ports(bad), Err(ParamError::BadUse), "{bad:?}");
+        }
+    }
+
     /// `--parallel-max` and `--parallel-max-host` cap at 65535, and below
     /// 1 fall back to their defaults (`MAX_PARALLEL`, `PARALLEL_DEFAULT`).
     #[test]
@@ -995,13 +1026,13 @@ mod tests {
         assert_eq!(run(&["-hfoo", "http://a/"]), Ok((1, None, None)));
         // A recognised option without its meaning is recorded, not run.
         assert_eq!(
-            run(&["--interface", "lo", "x"]),
-            Ok((1, Some("interface"), None))
+            run(&["--dns-interface", "lo", "x"]),
+            Ok((1, Some("dns-interface"), None))
         );
         // Each operation has its own URLs and options.
         assert_eq!(
-            run(&["x", "--interface", "e", "--next", "y", "z", "-C", "1"]),
-            Ok((2, Some("interface"), None))
+            run(&["x", "--dns-interface", "e", "--next", "y", "z", "-C", "1"]),
+            Ok((2, Some("dns-interface"), None))
         );
         assert_eq!(
             run(&["x", "-C", "1", "--clobber", "--no-remove-on-error"]),

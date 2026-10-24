@@ -2811,12 +2811,24 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     } else {
         None
     };
+    // The local end each socket binds, which a connection must share to
+    // serve it (`conn->interface_opts`, `localport`, `localportrange`).
+    let bind = &cx.easy().options().sockets.local;
+    let local = match bind.binds().then(|| bind.try_clone()) {
+        None => None,
+        Some(Ok(bind)) => match TryArc::try_new(bind) {
+            Ok(bind) => Some(bind),
+            Err(OutOfMemory) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
+        },
+        Some(Err(OutOfMemory)) => return TransferState::Init.fail(ErrorKind::OutOfMemory),
+    };
     let route = Tcp {
         origin,
         via,
         ip: cx.easy().options().ip_version,
         proxy,
         tls,
+        local,
     };
     setup(cx, Plan { proto, route })
 }

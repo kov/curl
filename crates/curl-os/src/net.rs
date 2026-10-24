@@ -7,7 +7,7 @@
 #![allow(unsafe_code)]
 
 use std::io::{self, Read as _, Write as _};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpStream};
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::os::fd::{AsFd, AsRawFd as _, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
@@ -71,6 +71,9 @@ pub enum SocketOption {
     TypeOfService(i32),
     /// The priority of what it sends, a VLAN's (`SO_PRIORITY`).
     Priority(i32),
+    /// A bind to an address leaves the port for the connect to choose
+    /// (`IP_BIND_ADDRESS_NO_PORT`).
+    BindAddressNoPort,
 }
 
 impl SocketOption {
@@ -90,6 +93,7 @@ impl SocketOption {
                 _ => return None,
             },
             SocketOption::Priority(p) => (libc::SOL_SOCKET, libc::SO_PRIORITY, p),
+            SocketOption::BindAddressNoPort => (libc::IPPROTO_IP, libc::IP_BIND_ADDRESS_NO_PORT, 1),
         })
     }
 }
@@ -318,9 +322,167 @@ pub fn link_local_scope() -> Option<NonZeroU32> {
     found
 }
 
+/// The system's numbers for the address families, as C's traces show
+/// them.
+pub const AF_INET: i32 = libc::AF_INET;
+pub const AF_INET6: i32 = libc::AF_INET6;
+
+/// The scope an IPv6 address is in, as an interface's address is matched
+/// against the one connected to (`Curl_ipv6_scope`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ipv6Scope {
+    Global,
+    LinkLocal,
+    SiteLocal,
+    UniqueLocal,
+    /// The loopback address.
+    NodeLocal,
+}
+
+/// The scope of `ip`; an IPv4 address's is global.
+pub fn ipv6_scope(ip: IpAddr) -> Ipv6Scope {
+    let IpAddr::V6(v6) = ip else {
+        return Ipv6Scope::Global;
+    };
+    let b = v6.octets();
+    if b[0] & 0xFE == 0xFC {
+        return Ipv6Scope::UniqueLocal;
+    }
+    match u16::from_be_bytes([b[0], b[1]]) & 0xFFC0 {
+        0xFE80 => Ipv6Scope::LinkLocal,
+        0xFEC0 => Ipv6Scope::SiteLocal,
+        0x0000 if b[1..15].iter().all(|&x| x == 0) && b[15] == 1 => Ipv6Scope::NodeLocal,
+        _ => Ipv6Scope::Global,
+    }
+}
+
+/// What the interface asked for has of the family a socket binds in
+/// (`Curl_if2ip`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InterfaceAddress {
+    /// No interface has the name, or the list cannot be had.
+    NotFound,
+    /// It has no address of the family, or none of the scope wanted.
+    OtherFamily,
+    /// Its address, and for IPv6 the address's scope id (0 for none).
+    Found(IpAddr, u32),
+}
+
+/// The first address of the family IPv6 if `v6`, else IPv4, of the
+/// interface named `name` (`Curl_if2ip`). An IPv6 one is taken only in
+/// `remote_scope`, the scope of the address connected to, and, if
+/// `scope_id` is not 0, with that scope id.
+pub fn interface_address(
+    name: &[u8],
+    v6: bool,
+    remote_scope: Ipv6Scope,
+    scope_id: u32,
+) -> InterfaceAddress {
+    let family = if v6 { libc::AF_INET6 } else { libc::AF_INET };
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `list` is a valid place for the list's head, which is freed
+    // below with `freeifaddrs` and nowhere else.
+    if unsafe { libc::getifaddrs(&raw mut list) } < 0 {
+        return InterfaceAddress::NotFound;
+    }
+    let mut found = InterfaceAddress::NotFound;
+    let mut at = list;
+    while !at.is_null() {
+        // SAFETY: `at` is an entry of the list `getifaddrs` returned, not
+        // yet freed.
+        let entry = unsafe { &*at };
+        at = entry.ifa_next;
+        if entry.ifa_addr.is_null() {
+            continue;
+        }
+        // SAFETY: an entry's name is a C string the list owns.
+        let named = unsafe { std::ffi::CStr::from_ptr(entry.ifa_name) }.to_bytes() == name;
+        // SAFETY: a non-null `ifa_addr` points at a socket address, which
+        // starts with its family.
+        let of = libc::c_int::from(unsafe { (*entry.ifa_addr).sa_family });
+        if of != family {
+            if named && found == InterfaceAddress::NotFound {
+                found = InterfaceAddress::OtherFamily;
+            }
+            continue;
+        }
+        if !named {
+            continue;
+        }
+        if v6 {
+            // SAFETY: the family says the address is a `sockaddr_in6`,
+            // which may be unaligned in the list.
+            let sin6 = unsafe { entry.ifa_addr.cast::<libc::sockaddr_in6>().read_unaligned() };
+            let ip = IpAddr::V6(std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr));
+            // Only an address of the scope connected to, and of the scope
+            // id asked for, if one is.
+            let wrong_scope =
+                ipv6_scope(ip) != remote_scope || (scope_id != 0 && sin6.sin6_scope_id != scope_id);
+            if wrong_scope {
+                if found == InterfaceAddress::NotFound {
+                    found = InterfaceAddress::OtherFamily;
+                }
+                continue;
+            }
+            found = InterfaceAddress::Found(ip, sin6.sin6_scope_id);
+        } else {
+            // SAFETY: as above, for a `sockaddr_in`.
+            let sin = unsafe { entry.ifa_addr.cast::<libc::sockaddr_in>().read_unaligned() };
+            let ip = std::net::Ipv4Addr::from(sin.sin_addr.s_addr.to_ne_bytes());
+            found = InterfaceAddress::Found(IpAddr::V4(ip), 0);
+        }
+        break;
+    }
+    // SAFETY: `list` is what `getifaddrs` returned, freed once, and no
+    // entry of it is used after.
+    unsafe { libc::freeifaddrs(list) };
+    found
+}
+
 impl TcpSocket {
     pub fn fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
+    }
+
+    /// Bind its local end to `addr`, before it connects.
+    pub fn bind(&self, addr: SocketAddr) -> io::Result<()> {
+        let storage = SockAddr::from(addr);
+        // SAFETY: `storage` holds a sockaddr of `addr`'s family, valid for
+        // the length given, and lives through the call; the socket is open.
+        let rc = unsafe {
+            libc::bind(
+                self.fd().as_raw_fd(),
+                (&raw const storage.raw).cast::<libc::sockaddr>(),
+                storage.len,
+            )
+        };
+        checked(rc)?;
+        Ok(())
+    }
+
+    /// Bind it to the network interface named `name`, which must not hold
+    /// a zero byte and be shorter than 255 bytes (`SO_BINDTODEVICE`).
+    pub fn bind_to_device(&self, name: &[u8]) -> io::Result<()> {
+        let mut c_name = [0u8; 256];
+        if name.contains(&0) || name.len() >= c_name.len() - 1 {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        c_name[..name.len()].copy_from_slice(name);
+        // With its terminator, as C gives it.
+        let len = libc::socklen_t::try_from(name.len() + 1).expect("a short name's length fits");
+        // SAFETY: `c_name` holds the name and a zero after it, `len` bytes
+        // of it, and lives through the call; the socket is open.
+        let rc = unsafe {
+            libc::setsockopt(
+                self.fd().as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_BINDTODEVICE,
+                c_name.as_ptr().cast(),
+                len,
+            )
+        };
+        checked(rc)?;
+        Ok(())
     }
 
     /// Set `option` on it, as [`set`] does.
@@ -973,5 +1135,71 @@ mod tests {
             Some(scope) => assert!(scopes.contains(&scope.get()), "{scope} of {scopes:?}"),
             None => assert!(scopes.is_empty(), "none of {scopes:?}"),
         }
+    }
+
+    /// An address's scope is C's: the unique-local, link-local and
+    /// site-local prefixes, the loopback address, and global for any
+    /// other and for IPv4.
+    #[test]
+    fn an_address_s_scope_is_c_s() {
+        let scope = |a: &str| ipv6_scope(a.parse().unwrap());
+        assert_eq!(scope("fc00::1"), Ipv6Scope::UniqueLocal);
+        assert_eq!(scope("fdff::1"), Ipv6Scope::UniqueLocal);
+        assert_eq!(scope("fe80::1"), Ipv6Scope::LinkLocal);
+        assert_eq!(scope("febf::1"), Ipv6Scope::LinkLocal);
+        assert_eq!(scope("fec0::1"), Ipv6Scope::SiteLocal);
+        assert_eq!(scope("::1"), Ipv6Scope::NodeLocal);
+        assert_eq!(scope("::2"), Ipv6Scope::Global);
+        assert_eq!(scope("::"), Ipv6Scope::Global);
+        assert_eq!(scope("2001:db8::1"), Ipv6Scope::Global);
+        assert_eq!(scope("127.0.0.1"), Ipv6Scope::Global);
+    }
+
+    /// The loopback interface has the loopback addresses, each of its
+    /// family; an IPv6 one only of the scope wanted; a name no interface
+    /// has, none.
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore = "FFI")]
+    fn an_interface_s_address_is_of_the_family_and_scope_asked() {
+        let lo = interface_address(b"lo", false, Ipv6Scope::Global, 0);
+        assert_eq!(lo, InterfaceAddress::Found("127.0.0.1".parse().unwrap(), 0));
+        let missing = interface_address(b"no-such-if0", false, Ipv6Scope::Global, 0);
+        assert_eq!(missing, InterfaceAddress::NotFound);
+        let has_v6 = std::fs::read_to_string("/proc/net/if_inet6")
+            .unwrap_or_default()
+            .lines()
+            .any(|l| l.ends_with(" lo"));
+        if has_v6 {
+            let lo6 = interface_address(b"lo", true, Ipv6Scope::NodeLocal, 0);
+            assert_eq!(lo6, InterfaceAddress::Found(Ipv6Addr::LOCALHOST.into(), 0));
+            let global = interface_address(b"lo", true, Ipv6Scope::Global, 0);
+            assert_eq!(global, InterfaceAddress::OtherFamily);
+            let scoped = interface_address(b"lo", true, Ipv6Scope::NodeLocal, 77);
+            assert_eq!(scoped, InterfaceAddress::OtherFamily);
+        }
+    }
+
+    /// A socket bound before it connects connects from the address and
+    /// port it was bound to; a port in use is refused; an interface no
+    /// one has is no device.
+    #[test]
+    #[cfg_attr(miri, ignore = "FFI")]
+    fn a_socket_binds_its_local_end() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let to = listener.local_addr().unwrap();
+        let s = open(to, Protocol::Tcp, false).unwrap();
+        s.set(SocketOption::BindAddressNoPort).unwrap();
+        s.bind(SocketAddr::from(([127, 0, 0, 1], 0))).unwrap();
+        assert_eq!(s.connect(to).unwrap(), Connect::Done);
+        let from = s.local_addr().unwrap();
+        assert_eq!(from.ip(), to.ip());
+        let taken = open(to, Protocol::Tcp, false).unwrap();
+        let refused = taken.bind(from).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(libc::EADDRINUSE));
+        let unknown = taken.bind_to_device(b"no-such-if0").unwrap_err();
+        assert_eq!(unknown.raw_os_error(), Some(libc::ENODEV));
+        let too_long = taken.bind_to_device(&[b'x'; 255]).unwrap_err();
+        assert_eq!(too_long.raw_os_error(), Some(libc::EINVAL));
     }
 }

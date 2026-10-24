@@ -142,6 +142,16 @@ impl Net for Wire {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         None
     }
+
+    fn interface_address(
+        &mut self,
+        _: &[u8],
+        _: bool,
+        _: crate::conn::io::Ipv6Scope,
+        _: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        crate::conn::io::InterfaceAddress::NotFound
+    }
 }
 
 /// What each server answers, and keeps the connection open after.

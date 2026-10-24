@@ -1,0 +1,58 @@
+=== a port in use is tried again, not passed over
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::http::tests::bind_trace::a_port_in_use_gives_way_to_the_next_of_the_range
+--- old
+        port = port.wrapping_add(1);
+        if port == 0 {
+--- new
+        if port == 0 {
+
+=== a range is tried once more than its length
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::http::tests::bind_trace::a_range_all_in_use_fails_to_bind
+--- old
+        tries -= 1;
+        if tries <= 0 {
+--- new
+        tries -= 1;
+        if tries < 0 {
+
+=== an address of the other family fails the transfer rather than the attempt
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::http::tests::bind_trace::a_host_of_the_other_family_cannot_connect
+--- old
+            BindFailed::OtherFamily => ErrorKind::CouldntConnect,
+--- new
+            BindFailed::OtherFamily => ErrorKind::InterfaceFailed,
+
+=== an interface bound to by name stops the bind though a host is named
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::http::tests::bind_trace::an_interface_with_a_host_binds_to_both
+--- old
+            Ok(()) if !host_in => {
+--- new
+            Ok(()) => {
+
+=== an interface not there is taken for a host's name
+file: crates/curl-core/src/conn/bind.rs
+witness: curl-core proto::http::tests::bind_trace::an_interface_not_there_fails_to_bind
+--- old
+            InterfaceAddress::NotFound if iface_in => {
+--- new
+            InterfaceAddress::NotFound if iface_in && host_in => {
+
+=== a transfer naming an interface but no port takes a bound port
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core conn::tests::bound_routes_match_as_c
+--- old
+    let anywhere = interface.is_none() && *port == 0;
+--- new
+    let anywhere = *port == 0;
+
+=== the route forgets its local end
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::bind_trace::a_name_binds_to_its_interface
+--- old
+    let local = match bind.binds().then(|| bind.try_clone()) {
+--- new
+    let local = match false.then(|| bind.try_clone()) {

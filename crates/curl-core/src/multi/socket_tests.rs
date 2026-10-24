@@ -117,6 +117,16 @@ impl Net for Counting {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.0.link_local_scope()
     }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.0.interface_address(name, v6, remote_scope, scope_id)
+    }
 }
 
 /// A multi over peers that refuse (port 2), stay silent (3) and accept

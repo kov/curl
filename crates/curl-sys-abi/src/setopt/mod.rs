@@ -1224,6 +1224,31 @@ fn apply(
         }
         // Linux connects with `TCP_FASTOPEN_CONNECT`.
         (ffi::CURLOPT_TCP_FASTOPEN, Long(n)) => tcp(options, |s| s.fastopen = n != 0)?,
+        (ffi::CURLOPT_INTERFACE, Ptr(p)) => {
+            // SAFETY: as above.
+            let given = unsafe { string(p) }?;
+            // Read for its syntax, empty unsetting it
+            // (`setstropt_interface`).
+            let interface = match given.map(curl_core::options::Interface::parse) {
+                None => None,
+                Some(Ok(parsed)) => parsed,
+                Some(Err(curl_core::options::InterfaceError::Malformed)) => {
+                    return Err(Refused::Bad);
+                }
+                Some(Err(curl_core::options::InterfaceError::OutOfMemory)) => {
+                    return Err(Refused::OutOfMemory);
+                }
+            };
+            tcp(options, |s| s.local.interface = interface)?;
+        }
+        (ffi::CURLOPT_LOCALPORT, Long(n)) => {
+            let port = u16::try_from(n).map_err(|_| Refused::Bad)?;
+            tcp(options, |s| s.local.port = port)?;
+        }
+        (ffi::CURLOPT_LOCALPORTRANGE, Long(n)) => {
+            let range = u16::try_from(n).map_err(|_| Refused::Bad)?;
+            tcp(options, |s| s.local.port_range = range)?;
+        }
         (ffi::CURLOPT_OPENSOCKETFUNCTION, Ptr(p)) => {
             // SAFETY: the application passes a function of the option's
             // type, or NULL.
@@ -1271,8 +1296,8 @@ fn tcp(options: &mut Options, change: impl FnOnce(&mut Sockets)) -> Result<(), O
     let mut probe = <Sockets as ColdGroup>::NONE;
     change(&mut probe);
     let unset = <Sockets as ColdGroup>::UNSET;
-    if (probe.nodelay, probe.keepalive, probe.fastopen)
-        != (unset.nodelay, unset.keepalive, unset.fastopen)
+    if (probe.nodelay, probe.keepalive, probe.fastopen, &probe.local)
+        != (unset.nodelay, unset.keepalive, unset.fastopen, &unset.local)
     {
         *options.sockets.make_mut()? = probe;
     }

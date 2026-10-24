@@ -1333,7 +1333,14 @@ socket before its connect.
   `Socket::set`, `set_nonblocking` and `connect` are each one system call. A socket that does
   not open, or closes as it is set, is traced as C traces it, with neither address known or the
   local one not, and the setup's failure is the last attempt's kind (`ConnectError::Failed`).
-  Bind is planned (step 46).
+  The local end is bound between the SOCKOPT callback and non-blocking (`conn/bind.rs`,
+  `bindlocal`), as the route's `LocalBind` says (`CURLOPT_INTERFACE`, `LOCALPORT`,
+  `LOCALPORTRANGE`): an interface by name with `SO_BINDTODEVICE`, else by its address
+  (`Net::interface_address`, `Curl_if2ip`), else a host's, resolved for the connection's family
+  alone through the DNS cache, which keeps no negative entry for it; then the ports of the range
+  in turn. A failure closes the socket as one not opened; an address of the other family fails
+  the attempt as `CouldntConnect`, letting the next address be tried, any other as
+  `InterfaceFailed`.
 - Happy-eyeballs parameters are C's: 25 ms AAAA wait, `happy_eyeballs_timeout` attempt delay, at
   most 6 concurrent attempts, IPv6 first then alternating. Unit 2600 is ported before a second
   attempt is implemented.
@@ -1483,7 +1490,9 @@ one, and the traces name it where C's do. Matching is `Route::serves`: the same 
 `Peer`'s `Eq`, which is `Curl_peer_equal` (the host in any case, and the zone by its scope,
 or by its text when it has none), the same `via` or none on both, the same `IpVersion` unless the
 transfer takes any (`url_match_conn`, `url_match_destination`), and an equal `TlsIdentity` or
-none on both (`url_match_ssl_use`, `url_match_ssl_config`). An `https` peer is not an `http` one,
+none on both (`url_match_ssl_use`, `url_match_ssl_config`), and the same local end
+(`url_match_connect_config`): the same interface as written, or none on both, and the same
+ports when the transfer names an interface or a port. An `https` peer is not an `http` one,
 its scheme being part of `Peer`'s `Eq`, so plain HTTP never takes a TLS connection. It,
 `ProxyRoute`'s key, `Peer`'s `Eq` and `TlsIdentity`'s `eq` destructure every field without `..`,
 so a field added later does not compile until it is compared; the exceptions are named where

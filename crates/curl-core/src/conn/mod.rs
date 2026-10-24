@@ -6,6 +6,7 @@
 //! `ConnectMachine`, in the slot it keeps once established. `io` is the
 //! engine's way to the network.
 
+mod bind;
 mod buf;
 pub(crate) mod chain;
 mod connect;
@@ -142,6 +143,7 @@ impl Route {
                     ip,
                     proxy,
                     tls,
+                    local,
                 } = have;
                 let Tcp {
                     origin: want_origin,
@@ -149,6 +151,7 @@ impl Route {
                     ip: want_ip,
                     proxy: want_proxy,
                     tls: want_tls,
+                    local: want_local,
                 } = want;
                 **origin == **want_origin
                     // C compares the detours without their schemes
@@ -164,10 +167,34 @@ impl Route {
                     // that verifies its peer never takes a connection
                     // made without.
                     && tls.as_deref() == want_tls.as_deref()
+                    && binds_as(local.as_deref(), want_local.as_deref())
             }
             (Route::Local | Route::Tcp(..), Route::Local | Route::Tcp(..)) => false,
         }
     }
+}
+
+/// Whether a connection bound as `have` serves a transfer that binds as
+/// `want` (`url_match_connect_config`): the same interface, or none on
+/// both, as it may go another way; and the same port and range if the
+/// transfer names an interface or a port, as one that names neither
+/// takes any.
+fn binds_as(
+    have: Option<&crate::options::LocalBind>,
+    want: Option<&crate::options::LocalBind>,
+) -> bool {
+    use crate::options::LocalBind;
+    let have = have.unwrap_or(&LocalBind::NONE);
+    let want = want.unwrap_or(&LocalBind::NONE);
+    // Every field by name, as in `Route::serves`.
+    let LocalBind {
+        interface,
+        port,
+        port_range,
+    } = want;
+    let anywhere = interface.is_none() && *port == 0;
+    *interface == have.interface
+        && (anywhere || (*port == have.port && *port_range == have.port_range))
 }
 
 /// A route over TCP to `origin`, the peer shared by the transfer and the
@@ -185,6 +212,10 @@ pub(crate) struct Tcp {
     /// Shared with the connection set up for it, as every connection's
     /// slot holds its route inline.
     pub(crate) tls: Option<TryArc<crate::tls::TlsIdentity>>,
+    /// What each socket's local end is bound to, if anything (C's
+    /// `interface_opts`, `localport`, `localportrange`): shared, as few
+    /// routes bind and every connection's slot holds its route inline.
+    pub(crate) local: Option<TryArc<crate::options::LocalBind>>,
 }
 
 impl Tcp {
@@ -802,6 +833,7 @@ mod tests {
                 proxy: proxy
                     .map(|host| ProxyRoute::new(ProxyType::Socks5, arc(host), None, false, false)),
                 tls: None,
+                local: None,
             })
         };
         let have = tcp(
@@ -890,6 +922,7 @@ mod tests {
                 ip: IpVersion::Any,
                 proxy: None,
                 tls: tls.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
+                local: None,
             })
         };
         let verified = Tls::default();
@@ -940,7 +973,48 @@ mod tests {
                 false,
             )),
             tls: None,
+            local: None,
         })
+    }
+
+    /// A connection bound serves a transfer bound to the same interface,
+    /// written the same way, and to the same ports if the transfer names
+    /// an interface or a port; one that names neither takes any port, but
+    /// no interface (`url_match_connect_config`).
+    #[test]
+    fn bound_routes_match_as_c() {
+        use crate::options::{Interface, LocalBind};
+        let bound = |interface: &str, port, port_range| {
+            let local = LocalBind {
+                interface: Interface::parse(interface.as_bytes()).unwrap(),
+                port,
+                port_range,
+            };
+            Route::Tcp(Tcp {
+                origin: TryArc::try_new(peer(b"o.example", 80, None)).unwrap(),
+                via: None,
+                ip: IpVersion::Any,
+                proxy: None,
+                tls: None,
+                local: local.binds().then(|| TryArc::try_new(local).unwrap()),
+            })
+        };
+        let plain = bound("", 0, 0);
+        assert!(plain.serves(&plain));
+        // A port named takes only the same ports.
+        assert!(bound("", 4000, 1).serves(&bound("", 4000, 1)));
+        assert!(!bound("", 4000, 2).serves(&bound("", 4000, 1)));
+        assert!(!bound("", 4001, 1).serves(&bound("", 4000, 1)));
+        assert!(!plain.serves(&bound("", 4000, 1)));
+        // None named takes any port, but not an interface.
+        assert!(bound("", 4000, 1).serves(&plain));
+        assert!(!bound("eth0", 0, 0).serves(&plain));
+        assert!(!plain.serves(&bound("eth0", 0, 0)));
+        // An interface as it was written, and its ports with it.
+        assert!(bound("eth0", 0, 0).serves(&bound("eth0", 0, 0)));
+        assert!(!bound("if!eth0", 0, 0).serves(&bound("eth0", 0, 0)));
+        assert!(!bound("eth0", 4000, 1).serves(&bound("eth0", 0, 0)));
+        assert!(!bound("eth1", 0, 0).serves(&bound("eth0", 0, 0)));
     }
 
     /// A connection through a proxy serves a transfer through the same
@@ -954,6 +1028,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
             tls: None,
+            local: None,
         });
         let route = via_proxy(b"proxy.example", None, true);
         assert!(route.serves(&via_proxy(b"PROXY.example", None, true)));

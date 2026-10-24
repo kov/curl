@@ -421,6 +421,19 @@ impl<H: Host> Net for DriveCx<'_, '_, H> {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.step.rest.net.link_local_scope()
     }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.step
+            .rest
+            .net
+            .interface_address(name, v6, remote_scope, scope_id)
+    }
 }
 
 /// A transfer's share, which keeps a kind of data, and what the
@@ -516,6 +529,16 @@ impl Net for CloseLater<'_> {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.net.link_local_scope()
     }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.net.interface_address(name, v6, remote_scope, scope_id)
+    }
 }
 
 /// The multi's network as its pool uses it: a socket a transfer waits on
@@ -571,6 +594,16 @@ impl<H: Host> Net for Announcing<'_, H> {
 
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         self.net.link_local_scope()
+    }
+
+    fn interface_address(
+        &mut self,
+        name: &[u8],
+        v6: bool,
+        remote_scope: crate::conn::io::Ipv6Scope,
+        scope_id: u32,
+    ) -> crate::conn::io::InterfaceAddress {
+        self.net.interface_address(name, v6, remote_scope, scope_id)
     }
 }
 
@@ -913,6 +946,16 @@ mod tests {
 
         fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
             None
+        }
+
+        fn interface_address(
+            &mut self,
+            _: &[u8],
+            _: bool,
+            _: crate::conn::io::Ipv6Scope,
+            _: u32,
+        ) -> crate::conn::io::InterfaceAddress {
+            crate::conn::io::InterfaceAddress::NotFound
         }
     }
 

@@ -887,6 +887,16 @@ impl Net for SharedNet {
     fn link_local_scope(&mut self) -> Option<std::num::NonZeroU32> {
         None
     }
+
+    fn interface_address(
+        &mut self,
+        _: &[u8],
+        _: bool,
+        _: curl_core::conn::io::Ipv6Scope,
+        _: u32,
+    ) -> curl_core::conn::io::InterfaceAddress {
+        curl_core::conn::io::InterfaceAddress::NotFound
+    }
 }
 
 /// Two GETs of a multi whose connections a share keeps, the second

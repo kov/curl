@@ -1184,6 +1184,21 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
         bar: bar.as_ref(),
         stdin: stdin.as_ref(),
     };
+    // An interface the library refuses for its syntax fails the transfer
+    // as it is set, in the library's words (`setstropt_interface`, and
+    // `curl_easy_setopt`'s failf).
+    let refused = op
+        .interface
+        .map(curl_core::options::Interface::parse)
+        .is_some_and(|parsed| parsed == Err(curl_core::options::InterfaceError::Malformed));
+    if refused {
+        let e = ErrorKind::BadFunctionArgument;
+        if let Ok(code) = try_format(format_args!("curl: ({}) ", exit_code(e))) {
+            run.msgs
+                .error_line(&[code.as_bytes(), b"setopt 0x274e got bad argument\n"]);
+        }
+        return said(easy, e);
+    }
     let set = {
         let mut source = run.libcurl.map(RefCell::borrow_mut);
         let mut set = Setopt::new(&mut easy, source.as_deref_mut());
@@ -1678,6 +1693,21 @@ fn setopts(
         ssl_setopts(s, op)?;
     }
     // `dns_and_network_setopts`.
+    s.str("CURLOPT_INTERFACE", op.interface, |o| {
+        let interface = match op.interface.map(options::Interface::parse) {
+            None => None,
+            Some(Ok(parsed)) => parsed,
+            Some(Err(options::InterfaceError::OutOfMemory)) => return Err(ErrorKind::OutOfMemory),
+            Some(Err(options::InterfaceError::Malformed)) => {
+                unreachable!("refused before it is set")
+            }
+        };
+        // Nothing set makes nothing: the group stays cold.
+        if interface.is_some() {
+            o.sockets.make_mut().map_err(oom)?.local.interface = interface;
+        }
+        Ok(())
+    })?;
     s.long(
         "CURLOPT_CONNECTTIMEOUT_MS",
         long(op.connect_timeout_ms),
@@ -1722,6 +1752,20 @@ fn setopts(
             Ok(())
         },
     )?;
+    if op.local_port != 0 {
+        s.long("CURLOPT_LOCALPORT", i64::from(op.local_port), |o| {
+            o.sockets.make_mut().map_err(oom)?.local.port = op.local_port;
+            Ok(())
+        })?;
+        s.long(
+            "CURLOPT_LOCALPORTRANGE",
+            i64::from(op.local_port_range),
+            |o| {
+                o.sockets.make_mut().map_err(oom)?.local.port_range = op.local_port_range;
+                Ok(())
+            },
+        )?;
+    }
     if op.raw {
         s.long("CURLOPT_HTTP_CONTENT_DECODING", 0, |o| {
             o.http.raw_content = true;

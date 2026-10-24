@@ -328,6 +328,12 @@ pub(crate) struct Operation<'a> {
     pub(crate) tcp_fastopen: bool,
     /// `--mptcp`.
     pub(crate) mptcp: bool,
+    /// `--interface`, never empty.
+    pub(crate) interface: Option<&'a [u8]>,
+    /// `--local-port`: the first port, 0 for none, and how many from it
+    /// are tried.
+    pub(crate) local_port: u16,
+    pub(crate) local_port_range: u16,
     /// `--no-keepalive`.
     pub(crate) no_keepalive: bool,
     /// `--keepalive-time`, in seconds; 0 leaves libcurl's.
@@ -758,6 +764,44 @@ fn range(msgs: &Messages, given: &[u8]) -> Result<Vec<u8>, ParamError> {
         return Err(ParamError::BlankString);
     }
     copy(given)
+}
+
+/// `--local-port`'s `N` or `N-M`, a blank allowed on each side of the
+/// dash: the first port and how many are tried (`parse_localport`).
+fn local_port(given: &[u8]) -> Result<(u16, u16), ParamError> {
+    let digits = given.iter().take_while(|b| b.is_ascii_digit()).count();
+    let (first, rest) = given.split_at(digits);
+    let last = if rest.is_empty() {
+        None
+    } else {
+        let rest = rest
+            .strip_prefix(b" ")
+            .or(rest.strip_prefix(b"\t"))
+            .unwrap_or(rest);
+        let rest = rest.strip_prefix(b"-").ok_or(ParamError::BadUse)?;
+        Some(
+            rest.strip_prefix(b" ")
+                .or(rest.strip_prefix(b"\t"))
+                .unwrap_or(rest),
+        )
+    };
+    let port = |text: &[u8]| match number::unsigned(text) {
+        Ok(n) => u16::try_from(n).map_err(|_| ParamError::BadUse),
+        Err(_) => Err(ParamError::BadUse),
+    };
+    let first = port(first)?;
+    let range = match last {
+        None => 1,
+        Some(last) => {
+            let last = i32::from(port(last)?);
+            let range = last - (i32::from(first) - 1);
+            if range < 1 {
+                return Err(ParamError::BadUse);
+            }
+            u16::try_from(range).expect("a range within the ports fits")
+        }
+    };
+    Ok((first, range))
 }
 
 /// The error of an etag option on more than one URL.
@@ -1262,6 +1306,19 @@ pub(crate) fn apply<'a>(
         Opt::TcpNodelay => line.current().nagle = !value.toggle(),
         Opt::TcpFastopen => line.current().tcp_fastopen = value.toggle(),
         Opt::Mptcp => line.current().mptcp = value.toggle(),
+        Opt::Interface => {
+            let name = value.text();
+            if name.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            line.current().interface = Some(name);
+        }
+        Opt::LocalPort => {
+            let (port, range) = local_port(value.text())?;
+            let op = line.current();
+            op.local_port = port;
+            op.local_port_range = range;
+        }
         Opt::Keepalive => line.current().no_keepalive = !value.toggle(),
         Opt::KeepaliveTime => line.current().keepalive_time = value.number(),
         Opt::KeepaliveCnt => line.current().keepalive_cnt = value.number(),
@@ -1596,10 +1653,8 @@ pub(crate) fn apply<'a>(
         | Opt::Http2PriorKnowledge
         | Opt::Http3
         | Opt::Http3Only
-        | Opt::Interface
         | Opt::Knownhosts
         | Opt::ListOnly
-        | Opt::LocalPort
         | Opt::LoginOptions
         | Opt::MailAuth
         | Opt::MailFrom

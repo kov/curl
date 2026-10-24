@@ -18,6 +18,7 @@ use std::num::NonZeroU32;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _};
 
+use super::bind::{BindFailed, bind_local};
 use super::chain::SetupPoint;
 #[cfg(test)]
 use super::dns::DnsCache;
@@ -742,6 +743,23 @@ impl ConnectMachine {
                 return self.not_opened(cx, Some(remote), kind, none);
             }
         };
+        // The local end bound, as the route says, for the address's
+        // family (`bindlocal`); a failure closes the socket, and one for
+        // the family alone lets the next address be tried.
+        if let Some(local) = self.route.local.clone() {
+            let scope = setup
+                .scope
+                .or(self.route.destination().scope())
+                .map_or(0, NonZeroU32::get);
+            if let Err(failed) = bind_local(cx, &*socket, remote, &local, scope, setup) {
+                cx.net().close(Sock::new(socket, self.closer.clone()));
+                if failed == BindFailed::OutOfMemory {
+                    return Err(ConnectError::OutOfMemory);
+                }
+                let none = io::Error::from_raw_os_error(0);
+                return self.not_opened(cx, Some(remote), failed.kind(), none);
+            }
+        }
         if opened.by_application
             && let Err(error) = socket.set_nonblocking()
         {
@@ -1182,8 +1200,6 @@ fn resolve(
     cx: &mut dyn ConnCx,
     setup: Setup,
 ) -> Result<(TryArc<Answer>, Found), ConnectError> {
-    let now = cx.now();
-    let (name, port) = (peer.name(), peer.port());
     // Without IPv6 only IPv4 addresses are asked for
     // (`Curl_resolv_dns_queries`).
     let ipv6 = cx.ipv6_works();
@@ -1192,6 +1208,33 @@ fn resolve(
         IpVersion::Any | IpVersion::V4 => Family::V4,
         IpVersion::V6 => Family::V6,
     };
+    resolve_name((peer.shown(), peer.name(), peer.port()), family, cx, setup)
+}
+
+/// The addresses of `family` the host `shown` stands for, as a URL shows
+/// it, `name` without brackets, for a connection to `port`: from the
+/// cache, a shortcut or the resolver, kept in the cache (`hostip_resolv`).
+pub(super) fn resolve_name(
+    (shown, name, port): (&[u8], &[u8], u16),
+    family: Family,
+    cx: &mut dyn ConnCx,
+    setup: Setup,
+) -> Result<(TryArc<Answer>, Found), ConnectError> {
+    lookup_name((shown, name, port), family, cx, setup, true)
+}
+
+/// `resolve_name`, keeping that the name does not exist only if
+/// `keep_negative`, as only the setup's own resolve does
+/// (`Curl_dnscache_add_negative`).
+pub(super) fn lookup_name(
+    (shown, name, port): (&[u8], &[u8], u16),
+    family: Family,
+    cx: &mut dyn ConnCx,
+    setup: Setup,
+    keep_negative: bool,
+) -> Result<(TryArc<Answer>, Found), ConnectError> {
+    let now = cx.now();
+    let ipv6 = cx.ipv6_works();
     let (wildcard, max_age) = (setup.wildcard, setup.max_age);
     let found: fn(Asked) -> Found = match cx
         .names()
@@ -1203,7 +1246,7 @@ fn resolve(
         Lookup::Missing => Found::Resolved,
     };
     let oom = |OutOfMemory| ConnectError::OutOfMemory;
-    let (answer, found) = match shortcut(peer.shown(), name).map_err(oom)? {
+    let (answer, found) = match shortcut(shown, name).map_err(oom)? {
         Some(answer) => (answer, found(Asked::Shortcut)),
         // A resolver is not asked for IPv6 addresses alone without IPv6
         // (`can_resolve_dns_queries`); nothing is kept of it.
@@ -1216,7 +1259,7 @@ fn resolve(
                 found(Asked::Resolver),
             ),
             Err(ResolveFailure::OutOfMemory) => return Err(ConnectError::OutOfMemory),
-            Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) => {
+            Err(why @ (ResolveFailure::NotFound | ResolveFailure::NoData)) if keep_negative => {
                 let none = Answer::of(name, Vec::new(), family).map_err(oom)?;
                 let none = TryArc::try_new(none).map_err(oom)?;
                 cx.names()
@@ -1332,6 +1375,7 @@ mod tests {
             ip,
             proxy: None,
             tls: None,
+            local: None,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
@@ -1422,6 +1466,7 @@ mod tests {
             ip: IpVersion::Any,
             proxy: None,
             tls: None,
+            local: None,
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),

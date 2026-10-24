@@ -679,6 +679,12 @@ mod tests {
         fn set_nonblocking(&self) -> io::Result<()> {
             unreachable!()
         }
+        fn bind(&self, _: std::net::SocketAddr) -> io::Result<()> {
+            unreachable!()
+        }
+        fn bind_to_device(&self, _: &[u8]) -> io::Result<()> {
+            unreachable!()
+        }
         fn connect(&self, _: std::net::SocketAddr) -> io::Result<crate::conn::io::Connect> {
             unreachable!()
         }

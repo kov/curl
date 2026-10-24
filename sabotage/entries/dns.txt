@@ -146,8 +146,10 @@ file: crates/curl-core/src/conn/connect.rs
 witness: curl-core multi::tests::without_ipv6_only_ipv4_is_resolved
 --- old
     let ipv6 = cx.ipv6_works();
+    let family = match ip {
 --- new
     let ipv6 = true;
+    let family = match ip {
 
 === a name is resolved for IPv6 alone though IPv6 does not work
 file: crates/curl-core/src/conn/connect.rs

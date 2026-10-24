@@ -1919,6 +1919,19 @@ restart clears it. The shim answers `CURLINFO_CERTINFO` with the handle's `struc
 made again only when the chain differs; the tool asks for it whenever `-w` is given, for
 `%{certs}` and `%{num_certs}`. A resumed session (43h) is to skip it, as its chain is not sent.
 
+**Engines and providers** (`engine.rs`, `CURLOPT_SSLENGINE` and `_DEFAULT`, handle fields in
+`TlsOptions` the identity does not compare) are selected first in `step1`, as
+`ossl_set_engine`: an engine of that id, started (66 if it will not start), else a provider
+`name[:properties]` loaded into a library context of the session's own with `base` beside it
+(53 if it cannot be; 43 for no name or one over 128), the context then made in it
+(`SSL_CTX_new_ex`) and no store kept for the multi (`USING_PROVIDER`); an engine is made the
+default for every algorithm when asked (54). OpenSSL 3.5 has no engine but `dynamic`, which
+will not start, so `--engine` names a provider in practice. A `PROV` certificate or key is read
+from the provider's store (`providerload`, `providercheck`), a PKCS#11 URI selecting `pkcs11`
+when none is; loading from an engine (`engineload`, `enginecheck`) is not built and says so
+as C's build without engines does. `CURLINFO_SSL_ENGINES` and the tool's `--engine list` list
+the library's engines, once it is initialised.
+
 **Identity and reuse.** `Tcp` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
 copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares
 (versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the

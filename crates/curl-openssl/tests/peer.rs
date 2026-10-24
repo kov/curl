@@ -46,6 +46,8 @@ mod chain;
 mod checks;
 #[path = "peer/client.rs"]
 mod client;
+#[path = "peer/engine.rs"]
+mod engine;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -119,6 +121,7 @@ fn main() {
     .chain(checks::TESTS.iter().copied())
     .chain(client::TESTS.iter().copied())
     .chain(chain::TESTS.iter().copied())
+    .chain(engine::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -811,6 +814,11 @@ fn an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own() {
     });
     assert_eq!(loads(&native), 1);
     assert!(said(&native, "SSL Trust Anchors:"));
+    // A store loaded in a provider's library context is not kept past it.
+    let provider = verified_in(&mut m, &certs, |o| {
+        o.tls.options.make_mut().unwrap().engine = Some(b"default".to_vec());
+    });
+    assert_eq!(loads(&provider), 1);
     // None of them kept theirs: the unverified one's is empty, and the
     // peer would not verify against it.
     let after = verified_in(&mut m, &certs, |_| {});

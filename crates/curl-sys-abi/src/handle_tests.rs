@@ -368,7 +368,7 @@ fn the_tls_check_and_identity_strings_are_copied() {
     use curl_core::options::TlsOptions;
     let c = curl_easy_init();
     type Field = fn(&TlsOptions) -> Option<Vec<u8>>;
-    let fields: [(CURLoption, Field); 7] = [
+    let fields: [(CURLoption, Field); 8] = [
         (ffi::CURLOPT_CRLFILE, |t| t.crl_file.clone()),
         (ffi::CURLOPT_PINNEDPUBLICKEY, |t| t.pinned_key.clone()),
         (ffi::CURLOPT_SSLCERT, |t| t.cert.clone()),
@@ -376,6 +376,7 @@ fn the_tls_check_and_identity_strings_are_copied() {
         (ffi::CURLOPT_SSLKEY, |t| t.key.clone()),
         (ffi::CURLOPT_SSLKEYTYPE, |t| t.key_type.clone()),
         (ffi::CURLOPT_KEYPASSWD, |t| t.key_password.clone()),
+        (ffi::CURLOPT_SSLENGINE, |t| t.engine.clone()),
     ];
     for (o, field) in fields {
         let mut given = *b"given\0";
@@ -414,6 +415,40 @@ fn the_tls_check_and_identity_strings_are_copied() {
         assert_eq!(pointer(c, o, ptr::null_mut::<ffi::curl_blob>()), CURLE_OK);
         assert_eq!(options(c, |opts| field(&opts.tls.options)), None, "{}", o.0);
     }
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// `CURLOPT_SSLENGINE_DEFAULT` asks for the engine as the default only
+/// with 1, as C reads it; `CURLINFO_SSL_ENGINES` lists OpenSSL's, its
+/// built-in `dynamic` among them, in a list the application frees.
+#[test]
+fn the_engines_are_listed_and_one_made_the_default_with_1() {
+    let c = curl_easy_init();
+    let default = |c| options(c, |o| o.tls.options.engine_default);
+    assert_eq!(long(c, ffi::CURLOPT_SSLENGINE_DEFAULT, 2), CURLE_OK);
+    assert!(!default(c));
+    assert_eq!(long(c, ffi::CURLOPT_SSLENGINE_DEFAULT, 1), CURLE_OK);
+    assert!(default(c));
+    assert_eq!(long(c, ffi::CURLOPT_SSLENGINE_DEFAULT, 0), CURLE_OK);
+    assert!(!default(c));
+    let list = info::<*mut ffi::curl_slist>(c, ffi::CURLINFO_SSL_ENGINES);
+    let mut ids = Vec::new();
+    let mut node = list;
+    while !node.is_null() {
+        // SAFETY: a node of the list the call made, its data a C string.
+        let n = unsafe { &*node };
+        // SAFETY: as above.
+        ids.push(
+            unsafe { core::ffi::CStr::from_ptr(n.data) }
+                .to_bytes()
+                .to_vec(),
+        );
+        node = n.next;
+    }
+    // SAFETY: the list the call made, freed once.
+    unsafe { crate::strings::curl_slist_free_all(list) };
+    assert!(ids.iter().any(|id| id == b"dynamic"), "{ids:?}");
     // SAFETY: a live handle, not used again.
     unsafe { curl_easy_cleanup(c) };
 }

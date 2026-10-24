@@ -1573,6 +1573,20 @@ fn sets_the_socks5_methods_asked_for() {
     assert_eq!(set(&[]), None);
 }
 
+/// `--engine list` lists the TLS library's engines, its built-in
+/// `dynamic` among them, and transfers nothing.
+#[test]
+fn lists_the_engines() {
+    let s = Scratch::new("engines");
+    s.write("f", b"x");
+    let r = curl(&s, &["--engine", "list", "-o", "out", &s.url("f")]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let out = String::from_utf8(r.stdout).unwrap();
+    assert!(out.starts_with("Build-time engines:\n"), "{out}");
+    assert!(out.lines().any(|l| l == "  dynamic"), "{out}");
+    assert!(!s.exists("out"));
+}
+
 /// `--ssl-allow-beast`, `--ssl-no-revoke`, `--ssl-revoke-best-effort`
 /// and `--ssl-auto-client-cert` each set their `CURLOPT_SSL_OPTIONS` bit,
 /// and none of them leaves the option unset.

@@ -11,6 +11,7 @@ mod bio;
 mod cache;
 mod cert;
 mod certinfo;
+mod engine;
 mod ffi;
 mod hostcheck;
 mod sign;

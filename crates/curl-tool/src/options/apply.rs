@@ -106,6 +106,8 @@ pub(crate) enum Request<'a> {
     Help(Option<&'a [u8]>),
     /// `--dump-ca-embed`.
     CaEmbed,
+    /// `--engine list`.
+    Engines,
 }
 
 /// What an HTTP message signature signs with, as the command line gives
@@ -168,6 +170,8 @@ pub(crate) struct Tls<'a> {
     pub(crate) key_type: Option<&'a [u8]>,
     /// `--pass`, or the passphrase `--cert` ends in.
     pub(crate) key_password: Option<&'a [u8]>,
+    /// `--engine`.
+    pub(crate) engine: Option<&'a [u8]>,
 }
 
 /// `--proto-default`: the protocol, as named.
@@ -1106,6 +1110,13 @@ pub(crate) fn apply<'a>(
         Opt::Key => line.current().tls.key = Some(non_blank(value.text())?),
         Opt::KeyType => line.current().tls.key_type = Some(non_blank(value.text())?),
         Opt::Pass => line.current().tls.key_password = Some(non_blank(value.text())?),
+        Opt::Engine => {
+            let engine = non_blank(value.text())?;
+            line.current().tls.engine = Some(engine);
+            if engine == b"list" {
+                return Ok(Flow::Request(Request::Engines));
+            }
+        }
         Opt::Capath => line.current().tls.capath = Some(Cow::Borrowed(non_blank(value.text())?)),
         Opt::Ciphers => line.current().tls.ciphers = Some(non_blank(value.text())?),
         Opt::Tls13Ciphers => line.current().tls.tls13_ciphers = Some(non_blank(value.text())?),
@@ -1558,7 +1569,6 @@ pub(crate) fn apply<'a>(
         | Opt::DohInsecure
         | Opt::DohUrl
         | Opt::Ech
-        | Opt::Engine
         | Opt::Eprt
         | Opt::Epsv
         | Opt::FalseStart

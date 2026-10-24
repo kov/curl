@@ -15,6 +15,7 @@ use curl_core::options::TlsOptions;
 use curl_core::tls::TlsIo;
 use openssl_sys::{EVP_PKEY, SSL_CTX, X509};
 
+use crate::engine::{Crypto, Wanted};
 use crate::ffi;
 use crate::ssl::{error_lib, error_reason};
 use crate::x509::{ErrText, MemBio, Text, c_string};
@@ -416,6 +417,70 @@ fn pkcs12_use(
     Ok(())
 }
 
+/// An engine's or a provider's certificate or key made the context's
+/// (`engineload`, `enginecheck`, `providerload`, `providercheck`). With
+/// none of that kind selected, a PKCS#11 URI selects `pkcs11` as C does,
+/// kept for the session if it had nothing selected. A provider's store
+/// is read; loading from an engine is not built (no engine this build
+/// meets can start), said as C's build without engines says it.
+fn from_crypto(
+    ctx: NonNull<SSL_CTX>,
+    kind: FileType,
+    wanted: Wanted,
+    file: Option<&[u8]>,
+    crypto: &mut Crypto,
+    io: &mut TlsIo<'_>,
+) -> Result<(), ErrorKind> {
+    let engine = kind == FileType::Engine;
+    let what = match wanted {
+        Wanted::Certificate => "certificate",
+        Wanted::PrivateKey => "private key",
+    };
+    let has = |c: &Crypto| {
+        if engine {
+            c.has_engine()
+        } else {
+            c.has_libctx()
+        }
+    };
+    let pkcs11 = file.is_some_and(|f| f.len() >= 7 && f[..7].eq_ignore_ascii_case(b"pkcs11:"));
+    let mut picked = None;
+    if !has(crypto) && pkcs11 {
+        let made = if engine {
+            Crypto::select(b"pkcs11", io)
+        } else {
+            Crypto::select_provider(b"pkcs11", io)
+        };
+        let Ok(made) = made else {
+            return Err(ErrorKind::SslCertproblem);
+        };
+        if crypto.is_empty() {
+            *crypto = made;
+        } else {
+            picked = Some(made);
+        }
+    }
+    let using = picked.as_ref().unwrap_or(crypto);
+    let (name, short) = if engine {
+        ("ENGINE", "engine")
+    } else {
+        ("PROVIDER", "provider")
+    };
+    if !has(using) {
+        return Err(io.fail(
+            ErrorKind::SslCertproblem,
+            format_args!("crypto {short} not set, cannot load {what}"),
+        ));
+    }
+    match (engine, file) {
+        (false, Some(uri)) => using.use_from_store(ctx, uri, wanted, io),
+        _ => Err(io.fail(
+            ErrorKind::SslCertproblem,
+            format_args!("SSL_FILETYPE_{name} not supported for {what}"),
+        )),
+    }
+}
+
 /// Load the client's certificate and key into `ctx` (`client_cert`), as
 /// the options name them, if they name a certificate or its type; the
 /// password, as a C string, is `password`, which the caller keeps alive
@@ -424,6 +489,7 @@ pub(crate) fn client_cert(
     ctx: NonNull<SSL_CTX>,
     options: &TlsOptions,
     password: Option<&Vec<u8>>,
+    crypto: &mut Crypto,
     io: &mut TlsIo<'_>,
 ) -> Result<(), ErrorKind> {
     let cert_file = options.cert.as_deref();
@@ -500,17 +566,12 @@ pub(crate) fn client_cert(
                 ));
             }
         }
-        Some(FileType::Engine) => {
-            return Err(io.fail(
-                ErrorKind::SslCertproblem,
-                format_args!("crypto engine not set, cannot load certificate"),
-            ));
-        }
-        Some(FileType::Provider) => {
-            return Err(io.fail(
-                ErrorKind::SslCertproblem,
-                format_args!("crypto provider not set, cannot load certificate"),
-            ));
+        Some(k @ (FileType::Engine | FileType::Provider)) => {
+            // Without a name, C fails saying nothing.
+            let Some(file) = cert_file else {
+                return Err(ErrorKind::SslCertproblem);
+            };
+            from_crypto(ctx, k, Wanted::Certificate, Some(file), crypto, io)?;
         }
         Some(FileType::Pkcs12) => {
             pkcs12_load(ctx, cert_blob, cert_file, password, io)?;
@@ -565,17 +626,8 @@ pub(crate) fn client_cert(
                 ));
             }
         }
-        Some(FileType::Engine) => {
-            return Err(io.fail(
-                ErrorKind::SslCertproblem,
-                format_args!("crypto engine not set, cannot load private key"),
-            ));
-        }
-        Some(FileType::Provider) => {
-            return Err(io.fail(
-                ErrorKind::SslCertproblem,
-                format_args!("crypto provider not set, cannot load private key"),
-            ));
+        Some(k @ (FileType::Engine | FileType::Provider)) => {
+            from_crypto(ctx, k, Wanted::PrivateKey, key_file, crypto, io)?;
         }
         Some(FileType::Pkcs12) => {
             if !pkcs12_done {

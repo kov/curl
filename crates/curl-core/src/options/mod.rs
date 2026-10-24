@@ -1755,6 +1755,12 @@ pub struct TlsOptions {
     /// the next connections of the multi (`CURLOPT_CA_CACHE_TIMEOUT`).
     /// The handle's, as `alpn`.
     pub ca_cache: CaCache,
+    /// The crypto engine, or provider and its properties, the library
+    /// uses (`CURLOPT_SSLENGINE`), and whether it is made the default for
+    /// every algorithm (`CURLOPT_SSLENGINE_DEFAULT`). The handle's, as
+    /// `alpn`.
+    pub engine: Option<Vec<u8>>,
+    pub engine_default: bool,
 }
 
 /// How long the certificates loaded to trust are kept for the next
@@ -1802,6 +1808,8 @@ impl ColdGroup for TlsOptions {
         pinned_key: None,
         alpn: true,
         ca_cache: CaCache::DEFAULT,
+        engine: None,
+        engine_default: false,
     };
 }
 
@@ -1834,6 +1842,8 @@ impl TlsOptions {
             pinned_key,
             alpn,
             ca_cache,
+            engine,
+            engine_default,
         } = self;
         Ok(TlsOptions {
             min_version: *min_version,
@@ -1860,6 +1870,8 @@ impl TlsOptions {
             pinned_key: text(pinned_key)?,
             alpn: *alpn,
             ca_cache: *ca_cache,
+            engine: text(engine)?,
+            engine_default: *engine_default,
         })
     }
 }

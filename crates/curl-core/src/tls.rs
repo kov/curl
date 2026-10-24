@@ -55,6 +55,12 @@ pub trait TlsBackend: Send + Sync {
     /// Where it finds the certificates to trust when a transfer names
     /// none, as its build found them.
     fn ca_defaults(&self) -> CaDefaults;
+
+    /// The ids of the crypto engines it has (`Curl_ssl_engines_list`):
+    /// none for a library without engines.
+    fn engines(&self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
+        Ok(Vec::new())
+    }
 }
 
 /// Where a TLS library finds the certificates to trust when a transfer
@@ -456,6 +462,10 @@ impl PartialEq for TlsIdentity {
             alpn: _,
             // The handle's too, read as the store is set up.
             ca_cache: _,
+            // The handle's (`STRING_SSL_ENGINE`, `engine_default`), read
+            // as the context is made.
+            engine: _,
+            engine_default: _,
         } = options;
         let o = &other.options;
         *verify_peer == other.verify_peer

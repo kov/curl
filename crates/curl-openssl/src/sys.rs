@@ -87,37 +87,15 @@ fn supported(number: c_ulong) -> Result<(), TooOld> {
 pub(crate) mod tests {
     use super::*;
 
-    use core::ffi::{CStr, c_char};
-
     use curl_core::libraries::{Ed25519, Ed25519Error};
 
-    /// An `ENGINE`, only ever pointed to.
-    enum Engine {}
-
-    // SAFETY: the declarations are `engine.h`'s; the library exports them.
-    unsafe extern "C" {
-        fn ENGINE_get_first() -> *mut Engine;
-        fn ENGINE_get_next(engine: *mut Engine) -> *mut Engine;
-        fn ENGINE_get_id(engine: *const Engine) -> *const c_char;
-    }
-
-    /// The ids of the engines the library has loaded.
+    /// The ids of the engines the library has loaded, as text.
     pub(crate) fn engines() -> Vec<String> {
-        let mut ids = Vec::new();
-        // SAFETY: the list is walked as `engine.h` says, each engine
-        // passed on to `ENGINE_get_next`, which releases it, and its id
-        // read while it is held.
-        let mut engine = unsafe { ENGINE_get_first() };
-        while !engine.is_null() {
-            // SAFETY: as above; an engine's id is a C string it keeps.
-            let id = unsafe { ENGINE_get_id(engine) };
-            // SAFETY: as above.
-            let id = unsafe { CStr::from_ptr(id) };
-            ids.push(id.to_string_lossy().into_owned());
-            // SAFETY: as above.
-            engine = unsafe { ENGINE_get_next(engine) };
-        }
-        ids
+        crate::engine::ids()
+            .unwrap()
+            .into_iter()
+            .map(|id| String::from_utf8(id).unwrap())
+            .collect()
     }
 
     /// Runs the ignored test `name` in a process of its own, with

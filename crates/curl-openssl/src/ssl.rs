@@ -24,6 +24,7 @@ use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX};
 
 use crate::bio::{self, Below, Flags, Method, Slot};
+use crate::engine::Crypto;
 use crate::ffi;
 use crate::text;
 use crate::x509::{self, ErrText};
@@ -58,6 +59,7 @@ impl TlsBackend for OpenSsl {
             ssl: None,
             ctx: None,
             password: None,
+            crypto: Crypto::default(),
             method: None,
             identity: identity.clone(),
             shared: Some(shared.clone()),
@@ -77,6 +79,15 @@ impl TlsBackend for OpenSsl {
         CaDefaults {
             file: ca::CA_BUNDLE,
             path: ca::CA_PATH,
+        }
+    }
+
+    /// The engines of the library, made ready first, which loads its
+    /// built-in ones; none for a library this build does not work with.
+    fn engines(&self) -> Result<Vec<Vec<u8>>, OutOfMemory> {
+        match crate::sys::ready() {
+            Ok(()) => crate::engine::ids(),
+            Err(_) => Ok(Vec::new()),
         }
     }
 }
@@ -131,6 +142,9 @@ struct Session {
     /// The client key's password as a C string, which the context points
     /// at: dropped after it.
     password: Option<Vec<u8>>,
+    /// The engine or provider the context was made with: dropped after
+    /// it.
+    crypto: Crypto,
     method: Option<Method>,
     identity: TryArc<TlsIdentity>,
     /// What the library keeps for the multi, until the trust store is
@@ -246,10 +260,23 @@ impl Session {
                 format_args!("Insufficient randomness"),
             ));
         }
+        let identity = self.identity.clone();
+        let options = &identity.options;
+        if let Some(name) = options.engine.as_deref() {
+            self.crypto = Crypto::select(name, io)?;
+        }
+        if options.engine_default {
+            self.crypto.set_default(io)?;
+        }
+        if self.crypto.has_libctx() {
+            // A store loaded in a provider's library context cannot
+            // outlive it in the multi (`USING_PROVIDER`).
+            self.shared = None;
+        }
         // SAFETY: the library's static client method.
         let method = unsafe { openssl_sys::TLS_client_method() };
-        // SAFETY: a context of that method, owned by `Ctx` below.
-        let ctx = unsafe { openssl_sys::SSL_CTX_new(method) };
+        // A context of that method, owned by `Ctx` below.
+        let ctx = self.crypto.new_ctx(method);
         let Some(ctx) = NonNull::new(ctx) else {
             // SAFETY: the thread's error queue, looked at.
             let e = ErrText::of(unsafe { ffi::ERR_peek_error() });
@@ -259,8 +286,6 @@ impl Session {
             ));
         };
         self.ctx = Some(Ctx(ctx));
-        let identity = self.identity.clone();
-        let options = &identity.options;
         if io.debugs() {
             // SAFETY: the context, and a callback of the library's
             // signature, which reaches only the BIO's slot.
@@ -352,7 +377,7 @@ impl Session {
                 .as_deref()
                 .map(x509::c_string)
                 .transpose()?;
-            crate::cert::client_cert(ctx, options, self.password.as_ref(), io)?;
+            crate::cert::client_cert(ctx, options, self.password.as_ref(), &mut self.crypto, io)?;
         }
         // SAFETY: the context. OpenSSL 1.1.1 and later need the client
         // to opt in to authenticating after the handshake.

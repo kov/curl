@@ -188,8 +188,25 @@ fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
         // From a callback the jar is not reached.
         EasyRef::Frame(..) => None,
     })?;
+    Ok(Some(list_of(lines.iter().flatten())))
+}
+
+/// The TLS library's crypto engines, an id each, as a list the
+/// application frees (`CURLINFO_SSL_ENGINES`); NULL for none, or where
+/// the list cannot be made.
+fn engines() -> Value {
+    use curl_core::tls::TlsBackend as _;
+    match curl_openssl::OPENSSL.engines() {
+        Ok(ids) => list_of(ids.iter()),
+        Err(OutOfMemory) => Value::List(core::ptr::null_mut()),
+    }
+}
+
+/// `lines` as a list the application frees; NULL for none, or where the
+/// list cannot be made.
+fn list_of<'a>(lines: impl Iterator<Item = &'a Vec<u8>>) -> Value {
     let mut list = core::ptr::null_mut();
-    for line in lines.iter().flatten() {
+    for line in lines {
         let longer = c_string(line).ok().map(|text| {
             // SAFETY: `list` is one this function made, and `text` a C
             // string.
@@ -200,11 +217,11 @@ fn cookie_list(easy: &ShimEasy) -> Result<Option<Value>, Recursive> {
             None => {
                 // SAFETY: as above; it is not used again.
                 unsafe { curl_slist_free_all(list) };
-                return Ok(Some(Value::List(core::ptr::null_mut())));
+                return Value::List(core::ptr::null_mut());
             }
         }
     }
-    Ok(Some(Value::List(list)))
+    Value::List(list)
 }
 
 /// What `info` asks of the transfer, or none for one not known.
@@ -412,6 +429,8 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         effective_method(easy)
     } else if info == ffi::CURLINFO_COOKIELIST {
         cookie_list(easy)
+    } else if info == ffi::CURLINFO_SSL_ENGINES {
+        Ok(Some(engines()))
     } else {
         easy.with_report(|r| value(easy, r, info))
     };

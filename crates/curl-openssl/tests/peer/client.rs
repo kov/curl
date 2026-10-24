@@ -38,13 +38,13 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
 ];
 
 /// The client's credentials, each written to a file of its own.
-struct Client {
+pub(crate) struct Client {
     /// The certificate, in PEM and DER; the key, in PEM, DER and PEM
     /// encrypted with `secret`; both in one PEM file; a PKCS#12 file
     /// with `secret`.
-    cert_pem: PathBuf,
+    pub(crate) cert_pem: PathBuf,
     cert_der: PathBuf,
-    key_pem: PathBuf,
+    pub(crate) key_pem: PathBuf,
     key_der: PathBuf,
     key_enc: PathBuf,
     both: PathBuf,
@@ -54,7 +54,7 @@ struct Client {
 }
 
 /// Credentials for a client certificate a CA of their own signed.
-fn client(tag: &str) -> Client {
+pub(crate) fn client(tag: &str) -> Client {
     let made = certs(&format!("{tag}-client"), "client", &[]);
     let dir = certs_dir();
     let write = |name: &str, bytes: &[u8]| {
@@ -90,7 +90,7 @@ fn client(tag: &str) -> Client {
 
 /// A server for `certs` that asks for a client certificate the CA of
 /// `client` signed, and fails without one.
-fn serve_asking(certs: &Certs, client: &Client) -> (SocketAddr, JoinHandle<Vec<u8>>) {
+pub(crate) fn serve_asking(certs: &Certs, client: &Client) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let ca = client.ca.clone();
     serve_configured(certs, false, move |a| {
         a.set_verify(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT);
@@ -98,7 +98,7 @@ fn serve_asking(certs: &Certs, client: &Client) -> (SocketAddr, JoinHandle<Vec<u
     })
 }
 
-fn bytes(path: &std::path::Path) -> Vec<u8> {
+pub(crate) fn bytes(path: &std::path::Path) -> Vec<u8> {
     path.to_str().unwrap().as_bytes().to_vec()
 }
 

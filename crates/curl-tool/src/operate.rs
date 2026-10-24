@@ -1987,6 +1987,7 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     string_setopt(s, "CURLOPT_TLS13_CIPHERS", tls.tls13_ciphers, |t| {
         &mut t.tls13_ciphers
     })?;
+    string_setopt(s, "CURLOPT_SSLENGINE", tls.engine, |t| &mut t.engine)?;
     if tls.no_alpn {
         s.long("CURLOPT_SSL_ENABLE_ALPN", 0, |o| {
             o.tls.options.make_mut().map_err(oom)?.alpn = false;

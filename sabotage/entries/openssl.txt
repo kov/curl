@@ -213,3 +213,28 @@ witness: curl-openssl the_chain_is_reported_as_c_words_it_when_asked
         asked.then(|| self.report_mut())
 --- new
         Some(self.report_mut())
+
+=== a name that is no engine is not tried as a provider
+file: crates/curl-openssl/src/engine.rs
+witness: curl-openssl an_engine_or_provider_that_cannot_be_had_fails_as_c_says
+--- old
+            return Crypto::provider(name, io);
+--- new
+            return Err(ErrorKind::SslEngineNotfound);
+
+=== a store loaded under a provider is kept by the multi
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl an_unverified_peer_a_blob_a_crl_or_the_system_s_store_loads_its_own
+--- old
+            // outlive it in the multi (`USING_PROVIDER`).
+            self.shared = None;
+--- new
+            // outlive it in the multi (`USING_PROVIDER`).
+
+=== a provider's certificate is never read from its store
+file: crates/curl-openssl/src/cert.rs
+witness: curl-openssl a_provider_s_store_gives_the_client_certificate_and_key
+--- old
+        (false, Some(uri)) => using.use_from_store(ctx, uri, wanted, io),
+--- new
+        (false, Some(_)) => Ok(()),

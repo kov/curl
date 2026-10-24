@@ -198,8 +198,37 @@ fn show(request: Request<'_>, msgs: &Messages) -> ExitCode {
         // Nothing is embedded: a build without an embedded CA bundle prints
         // nothing.
         Request::CaEmbed => {}
+        Request::Engines => list_engines(),
     }
     ExitCode::SUCCESS
+}
+
+/// `--engine list` (`tool_list_engines`): the TLS library's crypto
+/// engines, `<none>` if it has none or they cannot be listed. A failure
+/// to write stops the rest, as `puts` and `printf` would only fail again.
+fn list_engines() {
+    use curl_core::tls::TlsBackend as _;
+    use std::io::Write as _;
+    let ids = curl_openssl::OPENSSL.engines().unwrap_or_default();
+    let mut out = std::io::stdout().lock();
+    let none: &[&[u8]] = &[b"<none>"];
+    let shown = ids.iter().map(Vec::as_slice);
+    let written = out.write_all(b"Build-time engines:\n").and_then(|()| {
+        let mut each = |id: &[u8]| {
+            out.write_all(b"  ")?;
+            out.write_all(id)?;
+            out.write_all(b"\n")
+        };
+        if ids.is_empty() {
+            none.iter().try_for_each(|id| each(id))
+        } else {
+            shown.into_iter().try_for_each(each)
+        }
+    });
+    // C does not look at what its writes return.
+    if written.is_ok() {
+        let _ = out.flush();
+    }
 }
 
 /// The command line, as the operating system gave it.

@@ -873,6 +873,20 @@ impl Conn {
         &mut self.negotiate
     }
 
+    /// Its Negotiate, and the stream an exchange is bound to the TLS of.
+    pub(crate) fn negotiate_over(
+        &mut self,
+    ) -> (
+        &mut Option<Box<crate::proto::http::negotiate::Negotiate>>,
+        Option<&Stream>,
+    ) {
+        let stream = match &self.transport {
+            Transport::Tcp(stream) => Some(stream),
+            Transport::Local => None,
+        };
+        (&mut self.negotiate, stream)
+    }
+
     /// Whether a transfer with `wants` may have it, as far as Negotiate's
     /// binding goes (`url_match_auth`, `url_match_auth_nego`).
     pub(crate) fn serves_auth(&self, wants: &crate::proto::http::negotiate::Wants<'_>) -> bool {

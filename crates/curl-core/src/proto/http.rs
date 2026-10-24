@@ -821,14 +821,17 @@ impl Request {
                 unreachable!("only a proxy that forwards is negotiated with here")
             }
         };
+        let delegation = cx.easy().options().login.delegation;
+        let (kept, tls) = lease.get().negotiate_over();
         let request = negotiate::Request {
             gss,
             side,
             credentials,
             peer,
-            delegation: cx.easy().options().login.delegation,
+            delegation,
+            tls,
         };
-        let (header, done) = negotiate::output(cx, lease.get().negotiate_mut(), &request)?;
+        let (header, done) = negotiate::output(cx, kept, &request)?;
         Ok(cx
             .easy_mut()
             .auth
@@ -1982,16 +1985,17 @@ impl Request {
                 None
             };
             if let Some((side, credentials, peer)) = challenged {
-                let request = negotiate::Request {
-                    gss,
-                    side,
-                    credentials,
-                    peer,
-                    delegation,
-                };
                 let value = fields::header_value(line.bytes).unwrap_or(&[]);
                 for challenge in super::http1::auth::negotiate_challenges(value) {
-                    let kept = lease.get().negotiate_mut();
+                    let (kept, tls) = lease.get().negotiate_over();
+                    let request = negotiate::Request {
+                        gss,
+                        side,
+                        credentials,
+                        peer,
+                        delegation,
+                        tls,
+                    };
                     let taken = negotiate::challenged(cx, kept, &request, challenge);
                     let (any, _) = negotiated.map_or((false, true), |(_, any, last)| (any, last));
                     negotiated = Some((side, any || taken, taken));

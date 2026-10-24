@@ -227,6 +227,16 @@ pub(crate) trait Layer: Send + fmt::Debug {
     fn query(&self, _q: LayerQuery) -> Option<LayerAnswer> {
         None
     }
+
+    /// The channel binding of the origin's TLS, if this layer is it:
+    /// what its session binds with, or why it cannot (`Curl_conn_is_ssl`,
+    /// which passes over an HTTPS proxy's, then `get_channel_binding`).
+    fn channel_binding(
+        &self,
+        _notes: &mut dyn crate::tls::BindingNotes,
+    ) -> Option<Result<Option<Vec<u8>>, ErrorKind>> {
+        None
+    }
 }
 
 /// The layers below one, then the socket: the stack split at the layer
@@ -434,6 +444,18 @@ impl LayerStack {
             .flat_map(|l| l.iter())
             .rev()
             .find_map(|layer| layer.query(q))
+    }
+
+    /// The channel binding of the origin's TLS, if a layer is it.
+    pub(crate) fn channel_binding(
+        &self,
+        notes: &mut dyn crate::tls::BindingNotes,
+    ) -> Option<Result<Option<Vec<u8>>, ErrorKind>> {
+        self.layers
+            .iter()
+            .flat_map(|l| l.iter())
+            .rev()
+            .find_map(|layer| layer.channel_binding(notes))
     }
 
     /// Shut its layers down over `socket` from the top, past the `shut`

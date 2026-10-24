@@ -310,6 +310,8 @@ pub(crate) mod testing {
     struct Script {
         answers: VecDeque<Answer>,
         asked: Vec<Asked>,
+        /// The channel binding each step was given.
+        bindings: Vec<Option<Vec<u8>>>,
         /// Making a context fails with this, once.
         import_fails: Option<GssStatus>,
     }
@@ -344,6 +346,11 @@ pub(crate) mod testing {
         /// What was asked of it so far, taken.
         pub(crate) fn asked(&self) -> Vec<Asked> {
             std::mem::take(&mut self.0.lock().unwrap().asked)
+        }
+
+        /// The channel binding each step since the last ask was given.
+        pub(crate) fn bindings(&self) -> Vec<Option<Vec<u8>>> {
+            std::mem::take(&mut self.0.lock().unwrap().bindings)
         }
 
         /// The answers given and not yet used.
@@ -410,11 +417,12 @@ pub(crate) mod testing {
         fn step(
             &mut self,
             input: Option<&[u8]>,
-            _: Option<&[u8]>,
+            binding: Option<&[u8]>,
             sink: &mut dyn StepSink,
         ) -> Result<Step, GssFailure> {
             let mut script = self.0.lock().unwrap();
             script.asked.push(Asked::Step(input.map(<[u8]>::to_vec)));
+            script.bindings.push(binding.map(<[u8]>::to_vec));
             loop {
                 match script.answers.pop_front().expect("a step scripted") {
                     Answer::Notes(note) => sink.note(note),

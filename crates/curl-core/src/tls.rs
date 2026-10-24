@@ -171,6 +171,27 @@ pub trait TlsSession: Send {
     fn native(&self) -> Option<TlsNative> {
         None
     }
+
+    /// The channel's binding, for an authentication bound to it (RFC
+    /// 5929's `tls-server-end-point`, C's `get_channel_binding`): the
+    /// prefix `tls-server-end-point:` and the hash of the peer's
+    /// certificate, or none where the peer showed no certificate or its
+    /// signature names no digest. What it has to say goes to `notes`.
+    fn channel_binding(&self, notes: &mut dyn BindingNotes) -> Result<Option<Vec<u8>>, ErrorKind> {
+        let _ = notes;
+        Ok(None)
+    }
+}
+
+/// What a session says as it makes a channel binding: a line of the
+/// transfer's verbose output, or why the transfer fails.
+pub trait BindingNotes {
+    /// A line of the transfer's verbose output (`infof`).
+    fn info(&mut self, line: fmt::Arguments<'_>);
+
+    /// The transfer fails with `kind`, for the reason `why` (`failf`):
+    /// `kind` back.
+    fn fail(&mut self, kind: ErrorKind, why: fmt::Arguments<'_>) -> ErrorKind;
 }
 
 /// A TLS library's own objects for one connection, which an application

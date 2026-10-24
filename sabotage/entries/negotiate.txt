@@ -162,3 +162,24 @@ features: test-util
     if !cx.easy().auth.proxy_picks_negotiate() {
 --- new
     if cx.easy().auth.proxy_picks_negotiate() {
+
+=== a step over HTTPS is not bound to the channel
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::a_step_over_https_is_bound_to_the_channel
+--- old
+    match context.step(input.as_deref(), binding, &mut sink) {
+--- new
+    match context.step(input.as_deref(), None, &mut sink) {
+
+=== a binding that cannot be made is passed over
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::a_binding_not_made_fails_the_request
+--- old
+        Some(Err(e)) => {
+            nego.reset(side);
+            return Err(e);
+        }
+    };
+--- new
+        Some(Err(_)) => None,
+    };

@@ -1368,3 +1368,83 @@ fn no_proxy_is_negotiated_with_where_none_is_asked() {
     );
     assert!(gss.asked().is_empty());
 }
+
+/// A scripted GSS-API library and a fake TLS one whose sessions bind a
+/// channel as `binding` says, and the libraries naming both.
+fn scripted_over_tls(
+    binding: crate::tls::fake::FakeBinding,
+) -> (&'static Scripted, &'static Libraries) {
+    let gss = Scripted::leaked();
+    let tls = Box::leak(Box::new(
+        crate::tls::fake::FakeTls::binding(binding).unwrap(),
+    ));
+    let libraries = Box::leak(Box::new(Libraries {
+        gss: Some(gss),
+        tls: Some(tls),
+        ..Libraries::NONE
+    }));
+    (gss, libraries)
+}
+
+/// A Negotiate GET of `/` over HTTPS, its server answering `response`.
+fn negotiated_https(libraries: &'static Libraries, response: &[u8]) -> Ran {
+    let replies = [
+        crate::tls::fake::WELCOME.to_vec(),
+        crate::tls::fake::records(response).unwrap(),
+    ];
+    let replies: Vec<&[u8]> = replies.iter().map(Vec::as_slice).collect();
+    let (mut m, talk, _) = server(&replies, false);
+    get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+        let url = format!("https://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    })
+}
+
+/// Over HTTPS each step is bound to the channel, as the origin's TLS
+/// session binds it (`Curl_ssl_get_channel_binding`); over HTTP, to
+/// none.
+#[test]
+fn a_step_over_https_is_bound_to_the_channel() {
+    let (gss, libraries) = scripted_over_tls(crate::tls::fake::FakeBinding::Bound);
+    gss.then_token(b"first");
+    let ran = negotiated_https(libraries, OK_200);
+    assert_eq!(ran.result, Ok(()));
+    let bound = [crate::tls::fake::BINDING, &[1]].concat();
+    assert_eq!(gss.bindings(), [Some(bound)]);
+
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first");
+    let (mut m, talk, _) = server(&[OK_200], false);
+    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(gss.bindings(), [None]);
+}
+
+/// A peer certificate whose signature names no digest binds nothing,
+/// said so, and the step goes on unbound.
+#[test]
+fn a_certificate_naming_no_digest_binds_nothing() {
+    let (gss, libraries) = scripted_over_tls(crate::tls::fake::FakeBinding::NoDigest);
+    gss.then_token(b"first");
+    let ran = negotiated_https(libraries, OK_200);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(gss.bindings(), [None]);
+    assert!(text_has(
+        &ran,
+        "certificate exposes no signing digest algorithm, nothing to add to channel binding\n"
+    ));
+}
+
+/// A binding that cannot be made fails the request with the session's
+/// reason, before any context is made (`Curl_output_negotiate`).
+#[test]
+fn a_binding_not_made_fails_the_request() {
+    let (gss, libraries) = scripted_over_tls(crate::tls::fake::FakeBinding::Fails);
+    let ran = negotiated_https(libraries, OK_200);
+    assert_eq!(ran.result, Err(ErrorKind::SslInvalidcertstatus));
+    assert_eq!(
+        ran.easy.report().failure(),
+        Some(&b"certificate signature algorithm not recognized"[..])
+    );
+    assert!(gss.asked().is_empty());
+}

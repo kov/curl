@@ -68,7 +68,27 @@ pub struct FakeTls {
     agree: bool,
     /// Each session resumes a ticket kept and gives one to keep.
     tickets: bool,
+    /// What each session binds a channel with.
+    binding: FakeBinding,
 }
+
+/// What a fake session binds a channel with, once its handshake is over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FakeBinding {
+    /// Nothing, as a library that cannot bind (C's `get_channel_binding`
+    /// unset) or a peer with no certificate.
+    None,
+    /// `tls-server-end-point:` and the session's number, a byte.
+    Bound,
+    /// The peer's certificate names no digest: nothing, said so.
+    NoDigest,
+    /// The peer's certificate's signature is not known: the transfer
+    /// fails.
+    Fails,
+}
+
+/// The prefix of a channel binding (RFC 5929's `tls-server-end-point`).
+pub const BINDING: &[u8] = b"tls-server-end-point:";
 
 /// The ticket a ticketing fake's handshake gives.
 pub const TICKET: &[u8] = b"FAKETLS TICKET";
@@ -167,6 +187,15 @@ impl FakeTls {
             pause: false,
             agree: false,
             tickets: false,
+            binding: FakeBinding::None,
+        })
+    }
+
+    /// The same, each session binding a channel as `binding` says.
+    pub fn binding(binding: FakeBinding) -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            binding,
+            ..FakeTls::new()?
         })
     }
 
@@ -245,6 +274,7 @@ impl TlsBackend for FakeTls {
             made: false,
             pause: self.pause,
             tickets: self.tickets,
+            binding: self.binding,
             agreed: match alpn {
                 Alpn::None => None,
                 Alpn::Http11 => Some(Chosen::Http11),
@@ -297,6 +327,8 @@ struct FakeSession {
     pause: bool,
     /// It resumes a ticket kept and gives one to keep.
     tickets: bool,
+    /// What it binds a channel with.
+    binding: FakeBinding,
     /// What its peer agrees to by ALPN, once the handshake is over.
     agreed: Option<Chosen>,
     stage: Stage,
@@ -614,6 +646,41 @@ impl TlsSession for FakeSession {
     fn chosen(&self) -> Option<Chosen> {
         self.agreed
             .filter(|_| !matches!(self.stage, Stage::Hello(_) | Stage::Welcome(_)))
+    }
+
+    /// Only once the handshake is over, as before it the peer showed no
+    /// certificate.
+    fn channel_binding(
+        &self,
+        notes: &mut dyn crate::tls::BindingNotes,
+    ) -> Result<Option<Vec<u8>>, ErrorKind> {
+        if matches!(self.stage, Stage::Hello(_) | Stage::Welcome(_)) {
+            return Ok(None);
+        }
+        match self.binding {
+            FakeBinding::None => Ok(None),
+            FakeBinding::Bound => {
+                let mut bytes = Vec::new();
+                bytes
+                    .try_extend_from_slice(BINDING)
+                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                let number = u8::try_from(self.number).expect("a test makes few sessions");
+                bytes
+                    .try_extend_from_slice(&[number])
+                    .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                Ok(Some(bytes))
+            }
+            FakeBinding::NoDigest => {
+                notes.info(format_args!(
+                    "certificate exposes no signing digest algorithm, nothing to add to channel binding"
+                ));
+                Ok(None)
+            }
+            FakeBinding::Fails => Err(notes.fail(
+                ErrorKind::SslInvalidcertstatus,
+                format_args!("certificate signature algorithm not recognized"),
+            )),
+        }
     }
 
     fn waits(&self) -> TlsWait {

@@ -408,6 +408,8 @@ fn challenged<H: Host>(c: &mut Connecting, cx: &mut StepCx<'_, H>) {
         credentials,
         peer,
         delegation: cx.easy().options().login.delegation,
+        // The origin's TLS has no peer yet while the tunnel is set up.
+        tls: None,
     };
     let Some(Handshake::Connect(t)) = c.handshake.as_deref_mut() else {
         unreachable!("a tunnel is set up");
@@ -448,6 +450,8 @@ fn negotiate<H: Host>(
         credentials,
         peer,
         delegation: cx.easy().options().login.delegation,
+        // The origin's TLS has no peer yet while the tunnel is set up.
+        tls: None,
     };
     let (header, done) = negotiate::output(cx, kept, &request)?;
     Ok(cx

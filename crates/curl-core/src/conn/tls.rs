@@ -118,6 +118,14 @@ impl Layer for TlsLayer {
     /// answers only for the origin (`ssl_cf_query`). Either answers what
     /// was agreed by ALPN, saying it is the one that answers, and what it
     /// waits for, the proxy's asked apart.
+    /// The origin's alone: an HTTPS proxy's is never bound to.
+    fn channel_binding(
+        &self,
+        notes: &mut dyn crate::tls::BindingNotes,
+    ) -> Option<Result<Option<Vec<u8>>, ErrorKind>> {
+        (self.filter == Component::Ssl).then(|| self.session.channel_binding(notes))
+    }
+
     fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
         let origin = self.filter == Component::Ssl;
         match q {

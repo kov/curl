@@ -203,6 +203,10 @@ pub(crate) struct Request<'r> {
     /// The peer the context is with: the origin, or the proxy.
     pub(crate) peer: &'r Peer,
     pub(crate) delegation: Delegation,
+    /// The connection whose origin's TLS, if it has one, both sides'
+    /// exchanges are bound to; none while a tunnel is set up, before that
+    /// TLS has a peer.
+    pub(crate) tls: Option<&'r crate::conn::Stream>,
 }
 
 /// The connection's Negotiate, kept in `kept` and made the first time it
@@ -358,7 +362,15 @@ fn input<H: Host>(
             return Err(ErrorKind::LoginDenied);
         }
     }
-    if let Err(e) = step(cx, nego.with(side), request, challenge) {
+    let binding = match request.tls.and_then(|s| s.channel_binding(&mut Notes(cx))) {
+        None => None,
+        Some(Ok(binding)) => binding,
+        Some(Err(e)) => {
+            nego.reset(side);
+            return Err(e);
+        }
+    };
+    if let Err(e) = step(cx, nego.with(side), request, challenge, binding.as_deref()) {
         nego.reset(side);
         return Err(e);
     }
@@ -396,6 +408,7 @@ fn step<H: Host>(
     side: &mut Peering,
     request: &Request<'_>,
     challenge: &[u8],
+    binding: Option<&[u8]>,
 ) -> Result<(), ErrorKind> {
     if side.context.is_some() && side.progress == Some(Progress::Complete) {
         // Done on our side, and refused all the same: nothing better to
@@ -448,7 +461,7 @@ fn step<H: Host>(
         gss,
         token: Vec::new(),
     };
-    match context.step(input.as_deref(), None, &mut sink) {
+    match context.step(input.as_deref(), binding, &mut sink) {
         Ok(step) => {
             side.progress = Some(step.progress);
             side.token = sink.token;
@@ -460,6 +473,20 @@ fn step<H: Host>(
             }
             Err(failed(sink.cx, gss, failure))
         }
+    }
+}
+
+/// What a TLS session says of the channel binding it makes, said as the
+/// transfer's.
+struct Notes<'s, 'c, H: Host>(&'s mut StepCx<'c, H>);
+
+impl<H: Host> crate::tls::BindingNotes for Notes<'_, '_, H> {
+    fn info(&mut self, line: std::fmt::Arguments<'_>) {
+        trace::info(self.0, line);
+    }
+
+    fn fail(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+        trace::fail(self.0, kind, why)
     }
 }
 

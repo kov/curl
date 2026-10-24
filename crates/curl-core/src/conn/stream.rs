@@ -110,6 +110,14 @@ impl Stream {
         self.layers.query(q)
     }
 
+    /// The channel binding of the origin's TLS, if it has one.
+    pub(crate) fn channel_binding(
+        &self,
+        notes: &mut dyn crate::tls::BindingNotes,
+    ) -> Option<Result<Option<Vec<u8>>, ErrorKind>> {
+        self.layers.channel_binding(notes)
+    }
+
     /// Whether the connection seems usable, as its layers and its socket
     /// say. Nothing received waits unused on one that is idle: its last
     /// request used everything it read.

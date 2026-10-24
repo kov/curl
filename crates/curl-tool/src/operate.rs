@@ -75,14 +75,19 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         Ok(tracer) => tracer,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
-    // The transfers share their connections, resolved names and cookies,
-    // as C's tool gives each handle its share.
+    // The transfers share their connections, resolved names, cookies and
+    // TLS sessions, as C's tool gives each handle its share.
     let share = match Share::new() {
         Ok(share) => share,
         Err(OutOfMemory) => return Err(ErrorKind::OutOfMemory),
     };
     // In parallel the multi keeps the connections (`share_setup`).
-    for kind in [Kind::Connections, Kind::Names, Kind::Cookies] {
+    for kind in [
+        Kind::Connections,
+        Kind::Names,
+        Kind::Cookies,
+        Kind::SslSessions,
+    ] {
         if kind != Kind::Connections || !line.global.parallel {
             share.keep(kind).expect("held by none yet");
         }
@@ -2051,6 +2056,12 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     string_setopt(s, "CURLOPT_TLS13_CIPHERS", tls.tls13_ciphers, |t| {
         &mut t.tls13_ciphers
     })?;
+    if tls.no_sessionid {
+        s.long("CURLOPT_SSL_SESSIONID_CACHE", 0, |o| {
+            o.tls.options.make_mut().map_err(oom)?.session_cache = false;
+            Ok(())
+        })?;
+    }
     string_setopt(s, "CURLOPT_SSLENGINE", tls.engine, |t| &mut t.engine)?;
     if tls.no_alpn {
         s.long("CURLOPT_SSL_ENABLE_ALPN", 0, |o| {
@@ -3260,9 +3271,16 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Brotli, curl_brotli::decoder)
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: Some(&curl_openssl::ED25519),
-        tls: Some(&curl_openssl::OPENSSL),
+        tls: Some(&OPENSSL),
     }
 };
+
+/// The file TLS secrets are logged to (`SSLKEYLOGFILE`), opened as the
+/// tool starts, as C's global init opens it.
+pub(crate) static KEYLOG: curl_core::tls::KeyLog = curl_core::tls::KeyLog::new();
+
+/// OpenSSL, logging secrets to the tool's key log.
+static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(&KEYLOG);
 
 #[cfg(test)]
 mod tests {
@@ -3737,6 +3755,20 @@ mod tests {
         );
         let (_, on) = set_up(&["-k", "--no-insecure"]).unwrap();
         assert!(on.contains(verify), "{on}");
+    }
+
+    /// `--no-sessionid` keeps no TLS sessions to resume; `--sessionid`
+    /// after it keeps them again. C writes no `--libcurl` line for it, as
+    /// 0 is what its table takes for the default.
+    #[test]
+    fn keeps_tls_sessions_unless_told_not_to() {
+        let (text, on) = set_up(&[]).unwrap();
+        assert!(on.contains("session_cache: true"), "{on}");
+        let (off_text, off) = set_up(&["--no-sessionid"]).unwrap();
+        assert!(off.contains("session_cache: false"), "{off}");
+        assert_eq!(off_text, text);
+        let (_, on) = set_up(&["--no-sessionid", "--sessionid"]).unwrap();
+        assert!(on.contains("session_cache: true"), "{on}");
     }
 
     /// Each option that changes what a transfer is set up with changes

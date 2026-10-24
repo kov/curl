@@ -321,10 +321,36 @@ impl Allocator {
     }
 }
 
+/// The file TLS secrets are logged to (`SSLKEYLOGFILE`), the process's
+/// as C's is: opened by the first global init, closed by the last
+/// cleanup. Part of the root, beside it as the TLS library reaches it
+/// from every handle without the root's lock.
+pub(crate) static KEYLOG: curl_core::tls::KeyLog = curl_core::tls::KeyLog::new();
+
 /// Initialise the libraries linked in, as C's global init does
-/// (`Curl_ssl_init`): OpenSSL's configuration is read now.
+/// (`Curl_ssl_init`): OpenSSL's configuration is read now, and the key
+/// log opened (`ossl_init`).
 fn libraries_init() {
     curl_openssl::init();
+    KEYLOG.open();
+}
+
+/// What the libraries linked in let go of at the last cleanup
+/// (`ossl_cleanup`).
+fn libraries_cleanup() {
+    KEYLOG.close();
+}
+
+/// The library initialised for a program that did not, as a handle is
+/// made (`curl_easy_init`).
+pub(crate) fn init_unless_done() {
+    let mut root = root();
+    if root.initialized == 0 {
+        root.allocator = SYSTEM;
+        trace_from_env();
+        libraries_init();
+        root.initialized = 1;
+    }
 }
 
 fn global_init() -> CURLcode {
@@ -379,10 +405,33 @@ pub extern "C" fn curl_global_init_mem(
 }
 const _: ffi::proto::curl_global_init_mem = curl_global_init_mem;
 
+/// The allocator `curl_global_init_mem` would install, installed even
+/// though the library is initialised: a test's handle made before may
+/// have initialised it (`curl_easy_init`), which the test cannot order.
+#[cfg(test)]
+pub(crate) fn install_mem(
+    malloc: Malloc,
+    free: Free,
+    realloc: Realloc,
+    strdup: Strdup,
+    calloc: Calloc,
+) {
+    root().allocator = Allocator {
+        malloc,
+        free,
+        realloc,
+        strdup,
+        calloc,
+    };
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_global_cleanup() {
     let mut root = root();
     // The allocator stays: memory handed out may still be freed with it.
+    if root.initialized == 1 {
+        libraries_cleanup();
+    }
     root.initialized = root.initialized.saturating_sub(1);
 }
 const _: ffi::proto::curl_global_cleanup = curl_global_cleanup;

@@ -1571,6 +1571,13 @@ mod tests {
                 Some(counted_calloc),
             );
             assert_eq!(code, CURLE_OK);
+            crate::root::install_mem(
+                counted_malloc,
+                counted_free,
+                counted_realloc,
+                counted_strdup,
+                counted_calloc,
+            );
         });
         let before = HELD.with(core::cell::Cell::get);
         let p = crate::root::allocator().malloc(1);

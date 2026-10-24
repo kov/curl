@@ -2,8 +2,8 @@
 //! how far the peer is checked past its chain and whether its chain is
 //! reported (`lib/setopt.c`): the revocation list, the pinned key, the
 //! issuer and the stapled status, the client's certificate and key with
-//! their types and password, the crypto engine, and `CURLOPT_CERTINFO`,
-//! each taken as C takes it.
+//! their types and password, the crypto engine, whether sessions are kept
+//! to resume, and `CURLOPT_CERTINFO`, each taken as C takes it.
 
 use curl_core::options::{Options, TlsOptions};
 
@@ -28,6 +28,7 @@ pub(super) fn takes(option: CURLoption) -> bool {
         ffi::CURLOPT_SSLKEY_BLOB,
         ffi::CURLOPT_SSLKEYTYPE,
         ffi::CURLOPT_KEYPASSWD,
+        ffi::CURLOPT_SSL_SESSIONID_CACHE,
     ]
     .contains(&option)
 }
@@ -43,6 +44,12 @@ pub(super) fn apply(options: &mut Options, option: CURLoption, arg: Arg) -> Resu
         (ffi::CURLOPT_SSL_VERIFYSTATUS, Arg::Long(n)) => match tls.made_mut() {
             Some(t) => t.verify_status = n != 0,
             None if n != 0 => tls.make_mut()?.verify_status = true,
+            None => {}
+        },
+        // On unless set to 0; the group is made only to turn it off.
+        (ffi::CURLOPT_SSL_SESSIONID_CACHE, Arg::Long(n)) => match tls.made_mut() {
+            Some(t) => t.session_cache = n != 0,
+            None if n == 0 => tls.make_mut()?.session_cache = false,
             None => {}
         },
         // Only 1 asks for it; the group is made only to say so.

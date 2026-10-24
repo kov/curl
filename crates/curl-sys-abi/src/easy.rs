@@ -402,19 +402,24 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Brotli, curl_brotli::decoder)
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: Some(&curl_openssl::ED25519),
-        tls: Some(&curl_openssl::OPENSSL),
+        tls: Some(&OPENSSL),
     }
 };
 
+/// OpenSSL, logging secrets to the root's key log.
+static OPENSSL: curl_openssl::OpenSsl =
+    curl_openssl::OpenSsl::logging_keys_to(&crate::root::KEYLOG);
+
 #[unsafe(no_mangle)]
 pub extern "C" fn curl_easy_init() -> *mut CURL {
+    // C initialises the library for a program that did not.
+    crate::root::init_unless_done();
     // Each handle has its own list of public suffixes, made and loaded
     // the first time a cookie asks, as C loads it in the handle's multi.
     let mut handle = Easy::new();
     handle.set_public_suffixes_from(curl_psl::suffixes);
     handle.set_libraries(&LIBRARIES);
     handle.set_components(Some(crate::root::components()));
-    // C initialises the library for a program that did not.
     match ShimEasy::boxed(
         handle,
         CCallbacks::new(),

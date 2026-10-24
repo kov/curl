@@ -174,6 +174,8 @@ pub(crate) struct Tls<'a> {
     pub(crate) engine: Option<&'a [u8]>,
     /// `--cert-status`.
     pub(crate) cert_status: bool,
+    /// `--no-sessionid`.
+    pub(crate) no_sessionid: bool,
 }
 
 /// `--proto-default`: the protocol, as named.
@@ -1136,6 +1138,7 @@ pub(crate) fn apply<'a>(
         Opt::CaNative => line.current().tls.native_ca = value.toggle(),
         Opt::SslAllowBeast => line.current().tls.allow_beast = value.toggle(),
         Opt::CertStatus => line.current().tls.cert_status = value.toggle(),
+        Opt::Sessionid => line.current().tls.no_sessionid = !value.toggle(),
         Opt::SslNoRevoke => line.current().tls.no_revoke = value.toggle(),
         Opt::SslRevokeBestEffort => line.current().tls.revoke_best_effort = value.toggle(),
         Opt::SslAutoClientCert => line.current().tls.auto_client_cert = value.toggle(),
@@ -1699,7 +1702,6 @@ pub(crate) fn apply<'a>(
         | Opt::SaslAuthzid
         | Opt::SaslIr
         | Opt::ServiceName
-        | Opt::Sessionid
         | Opt::Socks5GssapiNec
         | Opt::Socks5GssapiService
         | Opt::Ssl

@@ -449,6 +449,23 @@ fn the_tls_check_and_identity_strings_are_copied() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// `CURLOPT_SSL_SESSIONID_CACHE` keeps and resumes TLS sessions unless set
+/// to 0, as C reads it.
+#[test]
+fn the_session_cache_is_off_only_with_0() {
+    let c = curl_easy_init();
+    let cache = |c| options(c, |o| o.tls.options.session_cache);
+    assert!(cache(c), "on by default");
+    assert_eq!(long(c, ffi::CURLOPT_SSL_SESSIONID_CACHE, 0), CURLE_OK);
+    assert!(!cache(c));
+    assert_eq!(long(c, ffi::CURLOPT_SSL_SESSIONID_CACHE, 2), CURLE_OK);
+    assert!(cache(c));
+    assert_eq!(long(c, ffi::CURLOPT_SSL_SESSIONID_CACHE, 0), CURLE_OK);
+    assert!(!cache(c), "off again");
+    // SAFETY: the handle made above, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_SSL_VERIFYSTATUS` asks for the stapled status with any value
 /// but 0, `CURLOPT_SSLENGINE_DEFAULT` for the engine as the default only
 /// with 1, as C reads them; `CURLINFO_SSL_ENGINES` lists OpenSSL's, its

@@ -246,5 +246,21 @@ mod tests {
             shown(Made::default(), None),
             "[0][!DNS][!SETUP][HAPPY-EYEBALLS][TCP]"
         );
+        let tls = crate::tls::TlsIdentity::of(&Default::default(), Default::default()).unwrap();
+        let route = Tcp {
+            tls: Some(tls),
+            ..route
+        };
+        let shown = |made, under_way| {
+            Chain::of(&route, SetupPoint::Dialed(made), under_way, false).to_string()
+        };
+        assert_eq!(
+            shown(Made::TLS, None),
+            "[0][!DNS][!SETUP][SSL][HAPPY-EYEBALLS][TCP]"
+        );
+        assert_eq!(
+            shown(Made::default(), Some(Component::Ssl)),
+            "[0][!DNS][!SETUP][!SSL][HAPPY-EYEBALLS][TCP]"
+        );
     }
 }

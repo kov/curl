@@ -313,13 +313,17 @@ impl UserHeaders {
 
 fn classify(line: Vec<u8>) -> UserHeader {
     // `Name;` alone, with no colon in the name, asks for a blank header.
+    // C splits the line with `curlx_str_until`, which finds nothing in a
+    // span of no bytes: a line starting with `;` or `:` is sent by neither
+    // rule, though one starting with a blank is.
     let blank = line
         .iter()
         .position(|&b| b == b';')
-        .filter(|&at| at + 1 == line.len() && !line[..at].contains(&b':'));
+        .filter(|&at| at > 0 && at + 1 == line.len() && !line[..at].contains(&b':'));
     let (end, asks) = match blank {
         Some(at) => (at, Asks::Blank),
         None => match line.iter().position(|&b| b == b':') {
+            Some(0) => (0, Asks::Nothing),
             Some(at) => {
                 let rest = &line[at + 1..];
                 let to_nl = rest
@@ -1145,6 +1149,31 @@ mod tests {
              X-C: a;\r\n\
              X-D:\r\n\
              Connection: close\r\n\
+             \r\n"
+        );
+    }
+
+    /// A line whose name is empty before its `;` or `:` is not sent, as
+    /// C's `curlx_str_until` finds no name in it; one whose name is only
+    /// blanks still is. The C tool's request for `-H ':foo' -H ';' -H '  ;'
+    /// -H ' :v' -H 'X-A;'`.
+    #[test]
+    fn lines_with_an_empty_name_go_as_in_c() {
+        let got = render(
+            b"GET",
+            b"/",
+            Version::Http11,
+            &[b":foo", b";", b"  ;", b" :v", b"X-A;"],
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&got),
+            "GET / HTTP/1.1\r\n\
+             Host: 127.0.0.1:8990\r\n\
+             User-Agent: curl/8.99.0-test\r\n\
+             Accept: */*\r\n\
+             :\r\n \
+             :v\r\n\
+             X-A:\r\n\
              \r\n"
         );
     }

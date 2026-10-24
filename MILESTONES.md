@@ -617,9 +617,15 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       tunnel's answer read first, the goodbye through the shutdown set; over `FakeTls`, with an
       HTTPS GET budget of 52 over it. No runtests change: the shim and the tool name no TLS
       library until e1, which also brings the CA default.
-    - **e1. The OpenSSL layer and the flip.** The BIO, the context, verification and hostcheck
-      (1397), the CA default and store cache, the tool's `-k`, `--cacert`, `--capath`, version
-      and cipher options, `curl_global_sslset`; `https`, `SSL` and `OpenSSL/3.5.9` reported.
+    - **e1. The OpenSSL layer and the flip.** Built: the BIO, the context, verification and
+      hostcheck (1397), the CA default, C's TLS failure texts, the tool's `-k`, `--cacert`,
+      `--capath`, version, cipher, curve and signature options, the C ABI's (`CAINFO_BLOB`
+      among them), `curl_global_sslset`, a failed setup's ends and connect time (5029);
+      `https`, `SSL` and `OpenSSL/3.5.9` reported; the HTTPS GET budget over OpenSSL pinned at
+      the plain GET's plus 10 (49 against 39). Its list below passes on both legs. Remaining:
+      the CA store cached per multi (`Curl_ssl_setup_x509_store`: keyed by CA file, path and
+      partial-chain bit, for `CURLOPT_CA_CACHE_TIMEOUT`, which stays `NOT_BUILT_IN` until
+      then), which needs per-multi state the seam does not carry.
     - **e2. Client certificates, pinning, CRL, issuer, OCSP stapling, certinfo, engines.**
     - **f. The application's hands on OpenSSL.** `SSL_CTX_FUNCTION`, `TLS_SSL_PTR` and
       `TLS_SESSION`, the retry-verify pause; close_notify as `Closing`'s first producer.
@@ -636,12 +642,13 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     the tool claiming `https`, `SSL` and `OpenSSL/3.5.9`, over the 199 tests that need TLS or
     name it: 1244, 1939, 1941, 1945, 2824 and 4657 then pass already and must stay green, with
     1827, which passes today. The 52 that run and fail, each with what closes it:
-    - e1: 94, 300–306, 309–312, 325, 364, 410, 414, 474, 560, 1561, 1562, 1849, 2009–2011,
-      2118, 2885, 3000, 3001, 3102, 3106, 3208, 3305, 3611, 5029;
-    - e2: 308, 313, 417, 2034, 2035, 2037, 2038, 2041, 2042, 2048, 2088, 2089;
-    - f: 758, 1587. h: 2090, 3207. Step 46 (`--libcurl`): 1481, 1679.
+    - e1: 94, 300–306, 309–312, 325, 364, 410, 414, 474, 560, 1561, 1562, 1849, 2118, 2885,
+      3000, 3001, 3106, 3208, 3305, 3611, 5029;
+    - e2: 3102 (certinfo), 308, 313, 417, 2034, 2035, 2037, 2038, 2041, 2042, 2048, 2088, 2089;
+    - f: 758, 1587. h: 2090, 3207. i: 2009–2011 (`--proxy-insecure` with an HTTPS proxy).
+      Step 46 (`--libcurl`): 1481, 1679.
 
-    Skipped at the flip by their prechecks: 678 (`CAINFO_BLOB`, e1), 2095 (`SSLCERT_BLOB`,
+    Skipped at the flip by their prechecks: 678 (`CAINFO_BLOB`, passing since e1), 2095 (`SSLCERT_BLOB`,
     e2), 307 (engines, skipped on the C leg too). Skipped for what is built elsewhere: HSTS
     (446, 780–783, 1586, 3109), alt-svc (358, 359) and DoH (2100, 2117), stage 7; Unix sockets
     (1470), step 46; GSS-API (1582) and `crypto` (1647, 1933–1938 and 14 more), step 44;

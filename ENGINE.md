@@ -133,7 +133,7 @@ code. The libraries the core does not depend on (libpsl, the decoders, the Ed255
 the TLS library) are handed to a handle by whoever builds it: the shim and the tool. The
 decoders, the signer and the TLS library come as one `&'static Libraries`
 (`curl_core::libraries`), a static of each; a handle given none has `Libraries::NONE`. The TLS
-library is OpenSSL's from 43e1; until then the statics name none. Each initialises OpenSSL as C's
+library is OpenSSL's (`curl_openssl::OPENSSL`). Each initialises OpenSSL as C's
 global init does (`OPENSSL_init_ssl` with the configuration and the built-in engines): the shim
 at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
 program that never called `curl_global_init` signs the same.
@@ -1808,7 +1808,7 @@ reaches its library through one `&'static Libraries` (the decoders, the Ed25519 
 TLS library), the shim's and the tool's statics, so a handle carries one pointer for all of
 them; `Easy: Default` takes `Libraries::NONE`. Without a TLS library `https` is a scheme the
 build leaves out (`Protocol "https" is disabled`, `UnsupportedProtocol`), as in C built
-without TLS: the shim and the tool name none until OpenSSL's layer is built (43e1). One library
+without TLS; the shim and the tool give every handle OpenSSL. One library
 is built, OpenSSL 3.0
 or later, checked at build (curl-openssl's build script reads the version openssl-sys found,
 `DEP_OPENSSL_VERSION_NUMBER`, and refuses LibreSSL) and at init (`OpenSSL_version_num`): an

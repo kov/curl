@@ -599,7 +599,11 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     The protocol decides what follows an exchange as it ends (`ProtoState::exchanged`), and
     what a redirect changes of the next request (`redirected`); the engine keeps C's generic
     follow mechanics. The redirect schemes come from an option with C's default list.
-43. **TLS through OpenSSL** (ENGINE.md 4.9 and 4.6's shutdown set). In progress.
+43. **TLS through OpenSSL** (ENGINE.md 4.9 and 4.6's shutdown set). **Done**, but for: a TLS 1.3
+    ticket that arrives while a connection says goodbye is dropped, where C keeps it;
+    `curl_easy_ssls_import` and `export` answer `CURLE_NOT_BUILT_IN`; a `PROV` key with no file
+    says it is not supported, where C opens the provider's store by no name; 1631 and 1632
+    wait for the FTP server (stage 6), and 1679 for step 46's `--libcurl` output.
     - **a. Captures, the red list and the design.** **Done.** The reference build's traces of
       HTTPS against stunnel and `openssl s_server` (`-k`, verified, a verify failure, wrong
       names, mTLS, pinning, reuse, a resumed session, close_notify, CONNECT and HTTPS proxies,
@@ -626,9 +630,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       keeps for its next connections (`TlsShared`, `CURLOPT_CA_CACHE_TIMEOUT`). Its list below
       passes on both legs.
     - **e2. Client certificates, pinning, CRL, issuer, OCSP stapling, certinfo, engines.**
-      **Done**, but for what this machine cannot reach: a certificate or key loaded from an
-      engine (no engine starts here; C's path is ported as far as `SSL_FILETYPE_ENGINE not
-      supported`), and a `PROV` key with no file, which says it is not supported where C
+      **Done**, but for a `PROV` key with no file, which says it is not supported where C
       opens the provider's store by no name. PEM, DER, PKCS#12 and blob identities, the
       key's password, `--pinnedpubkey`, `--crlfile`, the issuer, the stapled status, certinfo
       (`%{certs}`, `CURLINFO_CERTINFO`), `CURLINFO_SSL_VERIFYRESULT` for the origin (the
@@ -657,8 +659,18 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       `%{proxy_ssl_verify_result}` and `CURLINFO_PROXY_SSL_VERIFYRESULT`; `HTTPS-proxy`
       reported. 2009–2011, 1630, 3401 and 1481 pass on both legs; 1631 and 1632 wait for the
       FTP server (stage 6).
-    - **j. Closing the step.** Torture against the C build on a subset, the budgets, the sweep
-      and cargo-mutants.
+    - **j. Closing the step.** **Done.** `runtests.pl -t` on both legs over 300, 305, 313,
+      414, 417, 560, 1630, 2009, 2034, 2042, 2088, 2090, 2095, 3102 and 3207 (plain HTTPS, a
+      verify failure, CRL, session reuse, certinfo, the multi, an HTTPS proxy, TLS in TLS,
+      pinning, mTLS, a blob identity, the key log): the one Rust failure, an abort naming a
+      pinned key's file, fixed; the exit codes under refusal are C's kinds. The C build's
+      libtests write no memdump, so only the Rust leg tortures 560, 2095, 3102 and 3207. A
+      torture scenario over OpenSSL in curl-openssl's peer tests; the budgets of an HTTPS GET
+      over the fake (55) and over OpenSSL (+18), through an HTTPS proxy (+19) and resumed (16
+      fewer) pinned and listed in ENGINE.md 8.2; the sweep over the TLS areas; the certificate's
+      names printed only when verbose; an engine's certificate and key (`--cert-type ENG`,
+      `--key-type ENG`), tested with an engine the peer tests build. cargo-mutants runs
+      separately on banana.
 
     Green at the flip (e1) means no test that passed before fails. Measured 2026-10-23 with
     the tool claiming `https`, `SSL` and `OpenSSL/3.5.9`, over the 199 tests that need TLS or

@@ -164,6 +164,17 @@ not a difference: it is tracked in `MILESTONES.md`.
   Pinned by `an_etag_file_that_does_not_open_passes_over_its_urls`
   (`crates/curl-tool/tests/http.rs`).
 
+- **A connection a 101's body ended by closing is not kept.** A 101 nothing asked to upgrade
+  to is the final response, and its body runs until the server closes the connection; the
+  rewrite then drops the connection and traces `shutting down connection #0`. C's
+  `http_on_101_upgrade` (`lib/http.c`) accepts the 101 with `k->header = FALSE` and returns
+  before the response's end is worked out, so nothing marks the connection for closing: it
+  goes back to the pool, closed by the server, with `Connection #0 to host ... left intact`.
+  `curl -v` against a server
+  that sends `HTTP/1.1 101 Switching Protocols`, `Upgrade: x`, a body and closes shows it.
+  Measured against the C build. Pinned by `a_switch_nothing_asked_for_is_the_response`
+  (`crates/curl-core/src/proto/http/tests.rs`).
+
 ## Reads C makes smaller
 
 - **A proxy's answer to `CONNECT` is read in bulk.** The tunnel reads what the socket holds, up

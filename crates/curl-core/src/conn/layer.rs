@@ -88,6 +88,11 @@ pub(crate) trait LayerCx {
     fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
         None
     }
+
+    /// What the TLS library made of the origin's certificate, for the
+    /// transfer's report (`set.ssl.certverifyresult`). Work done for no
+    /// transfer keeps nothing.
+    fn tls_verified(&mut self, _result: i64) {}
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's

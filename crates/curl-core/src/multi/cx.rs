@@ -329,6 +329,10 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
     fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
         LayerCx::certinfo_report(&mut *self.step)
     }
+
+    fn tls_verified(&mut self, result: i64) {
+        LayerCx::tls_verified(&mut *self.step, result);
+    }
 }
 
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {

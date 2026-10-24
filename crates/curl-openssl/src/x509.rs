@@ -807,6 +807,7 @@ pub(crate) fn check_peer(
     }
     // SAFETY: the session's SSL.
     let verified = unsafe { openssl_sys::SSL_get_verify_result(ssl.as_ptr()) };
+    io.verified(verified);
     io.info(format_args!("OpenSSL verify result: {verified:x}"));
     if verified == c_long::from(openssl_sys::X509_V_OK) {
         io.info(format_args!("SSL certificate verified via OpenSSL."));

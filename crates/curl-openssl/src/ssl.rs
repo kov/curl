@@ -273,6 +273,8 @@ impl Session {
             // outlive it in the multi (`USING_PROVIDER`).
             self.shared = None;
         }
+        // Not verified until the peer is checked (`!X509_V_OK`).
+        io.verified(1);
         // SAFETY: the library's static client method.
         let method = unsafe { openssl_sys::TLS_client_method() };
         // A context of that method, owned by `Ctx` below.
@@ -545,6 +547,7 @@ impl Session {
             // SAFETY: the SSL.
             let verified = unsafe { openssl_sys::SSL_get_verify_result(ssl.as_ptr()) };
             if verified != c_long::from(openssl_sys::X509_V_OK) {
+                io.verified(verified);
                 // SAFETY: a function of no state, for any number.
                 let why = unsafe { openssl_sys::X509_verify_cert_error_string(verified) };
                 // SAFETY: the library's static text, or null.

@@ -751,6 +751,10 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         let asked = self.easy().options().tls.certinfo;
         asked.then(|| self.report_mut())
     }
+
+    fn tls_verified(&mut self, result: i64) {
+        self.report_mut().set_verify_result(result);
+    }
 }
 
 /// What a step needs: the transfer it steps, whose `Run` is out of its

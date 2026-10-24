@@ -94,7 +94,11 @@ witness: curl-sys-abi handle_tests::the_os_errno_is_the_last_socket_failure_s
 --- old
         TransferReport {
             os_errno: self.os_errno,
+            verify_result: 0,
             ..self.cleared()
         }
 --- new
-        self.cleared()
+        TransferReport {
+            verify_result: 0,
+            ..self.cleared()
+        }

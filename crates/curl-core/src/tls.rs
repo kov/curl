@@ -323,6 +323,15 @@ impl TlsIo<'_> {
 
     /// The time of the multi's pass the call is made in (C's
     /// `Curl_pgrs_now`), on the multi's clock.
+    /// What the library made of the peer's certificate, its own code, 0
+    /// being verified (`CURLINFO_SSL_VERIFYRESULT`). The origin's alone:
+    /// a proxy's has its own info (43i).
+    pub fn verified(&mut self, result: impl Into<i64>) {
+        if self.component == Component::Ssl {
+            self.cx.tls_verified(result.into());
+        }
+    }
+
     /// The transfer asked for its peer's chain (`CURLOPT_CERTINFO`).
     pub fn wants_certinfo(&mut self) -> bool {
         self.cx.certinfo_report().is_some()

@@ -12,6 +12,10 @@ use super::*;
 /// The tests of this file, as `main` runs them.
 pub(crate) const TESTS: &[(&str, fn())] = &[
     (
+        "the_verify_result_is_reported_as_openssl_gives_it",
+        the_verify_result_is_reported_as_openssl_gives_it,
+    ),
+    (
         "a_revoked_certificate_fails_the_verification",
         a_revoked_certificate_fails_the_verification,
     ),
@@ -219,4 +223,29 @@ fn another_pinned_key_fails_even_unverified() {
             ));
         }
     }
+}
+
+/// `CURLINFO_SSL_VERIFYRESULT`: 0 for a peer verified; OpenSSL's code for
+/// one that did not verify, whether that failed the handshake or was let
+/// through unverified (20, `X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY`).
+fn the_verify_result_is_reported_as_openssl_gives_it() {
+    let certs = certs("verify-result", "localhost", &["localhost"]);
+    let (at, server) = serve(&certs);
+    let got = get("localhost", at, trusting(&certs));
+    server.join().unwrap();
+    assert_eq!((got.result, got.verify), (Ok(()), 0));
+    let (at, server) = serve(&certs);
+    let got = get("localhost", at, |o| {
+        o.tls.verify_peer = false;
+        o.tls.verify_host = false;
+    });
+    server.join().unwrap();
+    assert_eq!((got.result, got.verify), (Ok(()), 20));
+    let (at, server) = serve(&certs);
+    let got = get("localhost", at, |_| {});
+    server.join().unwrap();
+    assert_eq!(
+        (got.result, got.verify),
+        (Err(ErrorKind::PeerFailedVerification), 20)
+    );
 }

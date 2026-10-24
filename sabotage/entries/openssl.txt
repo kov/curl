@@ -279,3 +279,10 @@ witness: curl-openssl the_issuer_named_must_have_issued_the_peer_s_certificate
 --- new
         if true {
             io.fail(ErrorKind::SslIssuerError, why);
+
+=== the peer check's verify result is not reported
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl the_verify_result_is_reported_as_openssl_gives_it
+--- old
+    io.verified(verified);
+--- new

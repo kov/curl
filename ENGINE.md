@@ -1891,10 +1891,13 @@ anchors, by OpenSSL's file lookup, and turns the CRL check on for every certific
 one no chain is taken as partial (OpenSSL's issue 5081), and its store is not kept for the multi.
 The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
 (`subjectAltName: "localhost" matches cert's "localhost"`); the failure texts are C's
-(`SSL certificate problem: …`, `CURLINFO_SSL_VERIFYRESULT`). With the peer unverified
-(`-k`) no CA is loaded, even one given (`SSL Trust: peer verification disabled`), and OpenSSL's
-result is traced and ignored (`OpenSSL verify result: 14`, `SSL certificate verification
-failed, continuing anyway!`); a pinned key (`--pinnedpubkey`) is checked after, `-k` or not (90,
+(`SSL certificate problem: …`). OpenSSL's verify result is the report's
+(`CURLINFO_SSL_VERIFYRESULT`, `%{ssl_verify_result}`): 1 from the session's first step, then
+the library's code once the peer is checked or its handshake fails verifying; like C's
+`set.ssl.certverifyresult` it is the handle's, kept as transfers start over and cleared by a
+reset. With the peer unverified (`-k`) no CA is loaded, even one given (`SSL Trust: peer
+verification disabled`), and the result is traced and ignored (`OpenSSL verify result: 14`,
+`SSL certificate verification failed, continuing anyway!`); a pinned key (`--pinnedpubkey`) is checked after, `-k` or not (90,
 `SSL: public key does not match pinned public key`): the library gives the DER of the peer's
 SubjectPublicKeyInfo and the core compares it (`tls::pin_peer_pubkey`, vtls.c's
 `Curl_pin_peer_pubkey`), by the base64 of its SHA-256 (`sha256//`, several `;` apart, ` public key

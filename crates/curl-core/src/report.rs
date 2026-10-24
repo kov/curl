@@ -140,6 +140,10 @@ pub struct TransferReport {
     /// The peer's chain, for a transfer that asked for it
     /// (`info.certs`).
     certinfo: Option<Box<CertInfo>>,
+    /// What the TLS library made of the origin's certificate, its own
+    /// code, 0 being verified: the handle's, kept as transfers start over
+    /// (C's `set.ssl.certverifyresult`).
+    verify_result: i64,
 }
 
 impl TransferReport {
@@ -154,6 +158,7 @@ impl TransferReport {
     pub(crate) fn cleared(&self) -> TransferReport {
         TransferReport {
             headers: HeaderStore::after(&self.headers),
+            verify_result: self.verify_result,
             transfer: self.transfer,
             ..TransferReport::default()
         }
@@ -166,6 +171,7 @@ impl TransferReport {
     pub(crate) fn reset(&self) -> TransferReport {
         TransferReport {
             os_errno: self.os_errno,
+            verify_result: 0,
             ..self.cleared()
         }
     }
@@ -263,6 +269,16 @@ impl TransferReport {
     /// The number of the connection the transfer last used, the `N` of
     /// its "Connection #N", unless the pool closed it as it came back
     /// (`CURLINFO_CONN_ID`).
+    /// What the TLS library made of the origin's certificate when last
+    /// asked, 0 for verified or never asked (`CURLINFO_SSL_VERIFYRESULT`).
+    pub fn verify_result(&self) -> i64 {
+        self.verify_result
+    }
+
+    pub(crate) fn set_verify_result(&mut self, result: i64) {
+        self.verify_result = result;
+    }
+
     pub fn certinfo(&self) -> Option<&CertInfo> {
         self.certinfo.as_deref()
     }

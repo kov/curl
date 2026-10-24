@@ -483,8 +483,14 @@ fn secure_cookies_go_over_tls() {
 /// they fail, as OpenSSL's do: a read of `BAD` from the peer, or a
 /// failure below; that trace the records they pass for a debug handler;
 /// and whose handshake says a line of verbose output and one of its
-/// filter's trace.
+/// filter's trace; and that note whether they were told to trace them.
 struct Saying;
+
+std::thread_local! {
+    /// What the last handshake of a `SayingSession` on this thread was
+    /// told of a debug handler (`TlsIo::debugs`).
+    static SAYING_DEBUGS: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
 
 impl crate::tls::TlsBackend for Saying {
     fn session(
@@ -508,6 +514,7 @@ impl crate::tls::TlsSession for SayingSession {
     fn handshake(&mut self, io: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
         io.info(format_args!("SAYING: connected"));
         io.trace(format_args!("handshake done"));
+        SAYING_DEBUGS.set(Some(io.debugs()));
         Ok(Handshake::Done)
     }
 
@@ -611,6 +618,46 @@ fn a_session_s_records_reach_the_debug_handler() {
     let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.of("ssl_in").concat(), OK);
+}
+
+/// A session is told to trace its records for a debug handler only when
+/// the transfer has one and is verbose (C's `data->set.fdebug` and
+/// `verbose`, under which OpenSSL's message callback is set).
+#[test]
+fn a_session_traces_its_records_only_for_a_verbose_debug_handler() {
+    /// Verbose output without a debug handler, kept.
+    #[derive(Clone, Default)]
+    struct Stderr(Arc<Mutex<Vec<u8>>>);
+    impl crate::handler::TextSink for Stderr {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().extend_from_slice(text);
+        }
+    }
+    for (handler, verbose) in [(true, true), (true, false), (false, true), (false, false)] {
+        let (mut m, talk, _) = server(&[OK], false);
+        let stderr = Stderr::default();
+        SAYING_DEBUGS.set(None);
+        let ran = get_tls(&mut m, saying(), "/", talk, |o| {
+            if !handler {
+                o.callbacks.debug = None;
+            }
+            o.callbacks.stderr = Some(Handler::text(stderr.clone()).unwrap());
+            o.output.verbose = verbose;
+        });
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(
+            SAYING_DEBUGS.get(),
+            Some(handler && verbose),
+            "{handler} {verbose}"
+        );
+        // The needle: verbose without a handler is verbose all the same.
+        let said = String::from_utf8(stderr.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            said.contains("* SAYING: connected\n"),
+            verbose && !handler,
+            "{said}"
+        );
+    }
 }
 
 /// A session's lines reach the transfer: its verbose output always, its

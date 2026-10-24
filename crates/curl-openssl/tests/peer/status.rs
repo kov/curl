@@ -132,11 +132,15 @@ fn response(certs: &Certs, tag: &str, signer: (&X509, &PKey<Private>), revoked: 
     std::fs::read(resp).unwrap()
 }
 
-/// A status the CA signed: good passes, saying so; revoked fails with its
-/// reason; one signed by a stranger fails its verification.
+/// A status the CA signed: good passes, saying so, whenever it was
+/// issued; revoked fails with its reason; one signed by a stranger fails
+/// its verification.
 fn a_good_status_passes_and_a_revoked_one_fails() {
     let certs = certs("status", "localhost", &["localhost"]);
     let good = response(&certs, "status-good", (&certs.ca, &certs.ca_key), false);
+    // However old the response's issue, it is taken while it is valid
+    // (`OCSP_check_validity`'s `-1`): this one is two seconds old.
+    std::thread::sleep(std::time::Duration::from_millis(2100));
     let got = checking_status(&certs, Some(good));
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     assert!(

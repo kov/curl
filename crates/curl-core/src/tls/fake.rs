@@ -299,11 +299,12 @@ fn record_len(header: &[u8; HEADER]) -> Option<usize> {
 /// Each letter turned 13 places, both ways.
 fn rot13(bytes: &mut [u8]) {
     for b in bytes {
-        *b = match *b {
-            b'a'..=b'z' => (*b - b'a' + 13) % 26 + b'a',
-            b'A'..=b'Z' => (*b - b'A' + 13) % 26 + b'A',
-            other => other,
+        let base = match *b {
+            b'a'..=b'z' => b'a',
+            b'A'..=b'Z' => b'A',
+            _ => continue,
         };
+        *b = (*b - base + 13) % 26 + base;
     }
 }
 

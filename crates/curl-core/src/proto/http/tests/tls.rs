@@ -86,6 +86,11 @@ fn an_https_get_goes_through_its_tls_layer() {
     let ran = get_tls(&mut m, libraries, "/a", talk.clone(), |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(sent(&talk), handshake_then(&request_of("/a")));
+    // On the wire the request is records, not in the clear.
+    let wire = talk.received();
+    let records = fake::records(&request_of("/a")).unwrap();
+    assert_eq!(wire, [HELLO, FINISHED, &records].concat());
+    assert!(!wire.windows(4).any(|w| w == b"GET "), "{wire:?}");
     assert_eq!(ran.seen.body(), b"ok\n");
     let log: FakeLog = backend.log();
     assert_eq!((log.sessions, log.handshakes), (1, 1));
@@ -445,8 +450,9 @@ fn secure_cookies_go_over_tls() {
 
 /// A TLS library whose sessions pass the bytes as they are and say why
 /// they fail, as OpenSSL's do: a read of `BAD` from the peer, or a
-/// failure below; and that trace the records they pass for a debug
-/// handler.
+/// failure below; that trace the records they pass for a debug handler;
+/// and whose handshake says a line of verbose output and one of its
+/// filter's trace.
 struct Saying;
 
 impl crate::tls::TlsBackend for Saying {
@@ -467,7 +473,9 @@ impl crate::tls::TlsBackend for Saying {
 struct SayingSession;
 
 impl crate::tls::TlsSession for SayingSession {
-    fn handshake(&mut self, _: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+    fn handshake(&mut self, io: &mut crate::tls::TlsIo<'_>) -> Result<Handshake, ErrorKind> {
+        io.info(format_args!("SAYING: connected"));
+        io.trace(format_args!("handshake done"));
         Ok(Handshake::Done)
     }
 
@@ -571,4 +579,85 @@ fn a_session_s_records_reach_the_debug_handler() {
     let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
     assert_eq!(ran.result, Ok(()));
     assert_eq!(ran.seen.of("ssl_in").concat(), OK);
+}
+
+/// A session's lines reach the transfer: its verbose output always, its
+/// trace as its filter's (`[SSL]`) only when that is traced.
+#[test]
+fn a_session_s_info_and_trace_lines_reach_the_transfer() {
+    let (mut m, talk, _) = server(&[OK], false);
+    let ran = get_tls(&mut m, saying(), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    assert!(text.iter().any(|l| l == "SAYING: connected\n"), "{text:?}");
+    assert!(
+        !text.iter().any(|l| l.contains("handshake done")),
+        "{text:?}"
+    );
+
+    let (mut m, talk, _) = server(&[OK], false);
+    let mut e = Easy::new();
+    e.set_libraries(saying());
+    let components = crate::components::Components::new().unwrap();
+    components.configure(b"ssl");
+    e.set_components(Some(components));
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("https://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    assert!(
+        text.iter().any(|l| l == "[SSL] handshake done\n"),
+        "{text:?}"
+    );
+}
+
+/// A body that runs to the connection's end ends as the session reads
+/// the end, between records; a session that fails its read, the
+/// connection cut inside a record or a record that is not one, fails the
+/// transfer as a receive error.
+#[test]
+fn a_session_s_end_ends_the_body_and_its_failure_fails_the_read() {
+    let (_, libraries) = tls();
+    let response = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nto the end";
+    let records = fake::records(response).unwrap();
+    let (mut m, talk, _) = server(&[WELCOME, &records], true);
+    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.body(), b"to the end");
+
+    let cut = [&records[..], b"[00"].concat();
+    let (mut m, talk, _) = server(&[WELCOME, &cut], true);
+    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+
+    let mut not_one = records.clone();
+    not_one[0] = b'(';
+    let (mut m, talk, _) = server(&[WELCOME, &not_one], true);
+    let ran = get_tls(&mut m, libraries, "/", talk, |_| {});
+    assert_eq!(ran.result, Err(ErrorKind::RecvError));
+}
+
+/// A body longer than a record goes over as many: the layer sends what
+/// the session takes, and sends the rest after.
+#[test]
+fn a_body_longer_than_a_record_goes_as_many() {
+    let (_, libraries) = tls();
+    let [welcome, response] = served(OK);
+    let (mut m, talk, _) = server(&[&welcome, &response], false);
+    let body = vec![b'x'; fake::RECORD + 1000];
+    let upload = body.clone();
+    let ran = get_tls(&mut m, libraries, "/p", talk.clone(), |o| {
+        o.method = Method::Post;
+        o.upload = crate::options::UploadSource::Bytes(TryArc::try_new(upload).unwrap());
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = sent(&talk);
+    assert!(
+        sent.ends_with(&body),
+        "{:?}",
+        String::from_utf8_lossy(&sent)
+    );
+    assert!(!talk.received().ends_with(&body[..1000]), "in the clear");
 }

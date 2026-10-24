@@ -163,6 +163,9 @@ mod stub {
         let mut sink = Collected::default();
         let step = context.step(input, None, &mut sink)?;
         assert!(sink.notes.is_empty());
+        // The stub claims neither protection, as C's gives back only the
+        // flags asked for, and those only when done.
+        assert!(!step.confidentiality && !step.integrity, "{step:?}");
         Ok((step.progress, sink.token.unwrap()))
     }
 
@@ -316,16 +319,23 @@ mod stub {
         assert_eq!(token.len(), 187);
         assert_eq!(&token[..186], format!("KRB5{}", "x".repeat(182)).as_bytes());
         assert_eq!(token[186], b'A');
-        // A target that does not leave the room's 5 bytes fails: 190 +
-        // 65 + 5 is past 250.
-        let host = [b'h'; 60];
-        let target = Target::Service {
-            service: b"HTTP",
-            host: &host,
-        };
-        let mut context = GSSAPI.context(target, Mech::Kerberos, MUTUAL).unwrap();
-        let failure = step(&mut *context, None).unwrap_err();
-        assert_eq!(failure.kind, stub_failure(crate::stub::NO_MEMORY));
+        // The credentials, the target and 5 bytes must leave room for the
+        // NUL: 190 + 54 + 5 does, 190 + 55 + 5 does not.
+        for (host, fits) in [(49, true), (50, false)] {
+            let host = vec![b'h'; host];
+            let target = Target::Service {
+                service: b"HTTP",
+                host: &host,
+            };
+            let mut context = GSSAPI.context(target, Mech::Kerberos, MUTUAL).unwrap();
+            let stepped = step(&mut *context, None);
+            if fits {
+                assert_eq!(stepped.unwrap().1.len(), 187);
+            } else {
+                let failure = stepped.unwrap_err();
+                assert_eq!(failure.kind, stub_failure(crate::stub::NO_MEMORY));
+            }
+        }
     }
 
     /// A stub's context wraps nothing, as C's stub has no `gss_wrap`.

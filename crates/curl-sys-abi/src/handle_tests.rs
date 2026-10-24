@@ -886,18 +886,17 @@ fn http_options_reach_the_request() {
         long(c, ffi::CURLOPT_HTTPAUTH, mask(ffi::CURLAUTH_ANY)),
         CURLE_OK
     );
-    // Negotiate only where the build claims SPNEGO, as C strips it.
-    let any = if curl_core::version::version().claims("SPNEGO") {
-        M::ANY
-    } else {
-        M::ANY & !M::NEGOTIATE
-    };
-    assert_eq!(auth(c), any);
-    let spnego = curl_core::version::version().claims("SPNEGO");
-    let negotiate = if spnego { 4 } else { 0 };
+    // Negotiate kept, as the build claims SPNEGO; C strips it where not.
+    assert!(curl_core::version::version().claims("SPNEGO"));
+    assert_eq!(auth(c), M::ANY);
+    // And reports it as C's bit.
     assert_eq!(
-        crate::getinfo::auth_mask(auth(c), spnego),
-        1 | 2 | negotiate | 64 | 128
+        crate::getinfo::auth_mask(M::NEGOTIATE, crate::getinfo::spnego()),
+        4
+    );
+    assert_eq!(
+        crate::getinfo::auth_mask(auth(c), true),
+        1 | 2 | 4 | 64 | 128
     );
     // Negotiate reads as C's bit only where claimed; unclaimed, as no
     // method at all.
@@ -4367,12 +4366,8 @@ fn proxy_credentials_are_decoded_as_in_c() {
     );
     options(c, |o| {
         use curl_core::options::AuthMethods as M;
-        let any = if curl_core::version::version().claims("SPNEGO") {
-            M::ANY
-        } else {
-            M::ANY & !M::NEGOTIATE
-        };
-        assert_eq!(o.proxy.auth.0, any)
+        // Negotiate kept, as the build claims SPNEGO.
+        assert_eq!(o.proxy.auth.0, M::ANY)
     });
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_PROXYAUTH_AVAIL), 0);
     assert_eq!(info::<c_long>(c, ffi::CURLINFO_PROXYAUTH_USED), 0);

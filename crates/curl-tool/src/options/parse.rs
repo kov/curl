@@ -792,17 +792,12 @@ mod tests {
     #[test]
     fn reads_gss_options_as_c() {
         use curl_core::options::{AuthMethods, Delegation};
-        let refused = Err(ParamError::LibcurlDoesntSupport);
-        if !claims_spnego() {
-            assert_eq!(run(&["--negotiate", "x"]), refused);
-            assert_eq!(run(&["--proxy-negotiate", "x"]), refused);
-            assert_eq!(run(&["--no-proxy-negotiate", "x"]), refused);
-            assert_eq!(run(&["--no-negotiate", "x"]), Ok((1, None, None)));
-        } else {
-            let l = line(&["--negotiate", "--proxy-negotiate", "x"]);
-            assert_eq!(l.operations[0].auth, AuthMethods::NEGOTIATE);
-            assert!(l.operations[0].proxy_negotiate);
-        }
+        // The build claims SPNEGO, so both are taken.
+        let l = line(&["--negotiate", "--proxy-negotiate", "x"]);
+        assert_eq!(l.operations[0].auth, AuthMethods::NEGOTIATE);
+        assert!(l.operations[0].proxy_negotiate);
+        let l = line(&["--proxy-negotiate", "--no-proxy-negotiate", "x"]);
+        assert!(!l.operations[0].proxy_negotiate);
         let l = line(&["--basic", "--no-negotiate", "x"]);
         assert_eq!(l.operations[0].auth, AuthMethods::BASIC);
         let delegation = |word: &str| {

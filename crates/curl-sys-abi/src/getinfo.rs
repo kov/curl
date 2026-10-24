@@ -98,7 +98,7 @@ fn secs(d: Duration) -> f64 {
 }
 
 /// Whether the build claims SPNEGO (`USE_SPNEGO`).
-fn spnego() -> bool {
+pub(crate) fn spnego() -> bool {
     curl_core::version::version().claims("SPNEGO")
 }
 

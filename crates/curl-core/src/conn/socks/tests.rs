@@ -4,6 +4,8 @@ use proptest::prelude::*;
 
 use super::*;
 
+mod gss;
+
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 fn dest(name: &[u8], resolved: Resolved) -> Dest<'_> {
@@ -15,7 +17,11 @@ fn dest(name: &[u8], resolved: Resolved) -> Dest<'_> {
 }
 
 fn creds<'a>(user: &'a [u8], password: &'a [u8]) -> Option<Creds<'a>> {
-    Some(Creds { user, password })
+    Some(Creds {
+        user,
+        password,
+        service: b"",
+    })
 }
 
 /// Send what is to be sent, and return it.
@@ -34,7 +40,14 @@ fn said(e: &SocksError) -> String {
 #[test]
 fn socks4_asks_for_the_address_resolved_here() {
     let d = dest(b"localhost", Resolved::Address(LOOPBACK));
-    let mut h = Handshake::new(Version::V4, d, creds(b"u", b"p"), Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(
+        Version::V4,
+        d,
+        creds(b"u", b"p"),
+        Socks5Auth::default(),
+        None,
+    )
+    .unwrap();
     assert_eq!(send(&mut h), b"\x04\x01\x23\x1e\x7f\x00\x00\x01u\x00");
     assert_eq!(h.take(b"\x00\x5a\x00"), Ok(Took::Need(8)));
     assert_eq!(
@@ -43,7 +56,7 @@ fn socks4_asks_for_the_address_resolved_here() {
     );
     assert!(h.done());
     let d = dest(b"v6.example", Resolved::NoAddress);
-    let e = Handshake::new(Version::V4, d, None, Socks5Auth::default()).unwrap_err();
+    let e = Handshake::new(Version::V4, d, None, Socks5Auth::default(), None).unwrap_err();
     assert_eq!(said(&e), "SOCKS4 connection to v6.example not supported");
     assert_eq!(e.code(), Some(ProxyError::ResolveHost));
 }
@@ -53,7 +66,7 @@ fn socks4_asks_for_the_address_resolved_here() {
 #[test]
 fn socks4a_sends_the_name() {
     let d = dest(b"host.example", Resolved::Remote);
-    let mut h = Handshake::new(Version::V4a, d, None, Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(Version::V4a, d, None, Socks5Auth::default(), None).unwrap();
     assert_eq!(
         send(&mut h),
         b"\x04\x01\x23\x1e\x00\x00\x00\x01\x00host.example\x00"
@@ -64,7 +77,8 @@ fn socks4a_sends_the_name() {
             Version::V4a,
             dest(&name, Resolved::Remote),
             None,
-            Socks5Auth::default()
+            Socks5Auth::default(),
+            None
         )
         .is_ok()
     );
@@ -74,6 +88,7 @@ fn socks4a_sends_the_name() {
         dest(&name, Resolved::Remote),
         None,
         Socks5Auth::default(),
+        None,
     )
     .unwrap_err();
     assert_eq!(
@@ -82,7 +97,14 @@ fn socks4a_sends_the_name() {
     );
     let user = [b'a'; 256];
     let d = dest(b"h", Resolved::Remote);
-    let e = Handshake::new(Version::V4a, d, creds(&user, b""), Socks5Auth::default()).unwrap_err();
+    let e = Handshake::new(
+        Version::V4a,
+        d,
+        creds(&user, b""),
+        Socks5Auth::default(),
+        None,
+    )
+    .unwrap_err();
     assert_eq!(
         (said(&e).as_str(), e.code()),
         ("Too long SOCKS proxy username", Some(ProxyError::LongUser))
@@ -94,7 +116,7 @@ fn socks4a_sends_the_name() {
 fn socks4_refusals_are_said_as_c() {
     let refused = |reply: &[u8]| {
         let d = dest(b"127.0.0.1", Resolved::Address(LOOPBACK));
-        let mut h = Handshake::new(Version::V4, d, None, Socks5Auth::default()).unwrap();
+        let mut h = Handshake::new(Version::V4, d, None, Socks5Auth::default(), None).unwrap();
         send(&mut h);
         h.take(reply).unwrap_err()
     };
@@ -129,7 +151,7 @@ fn socks4_refusals_are_said_as_c() {
 #[test]
 fn socks5_sends_the_name_and_reads_the_whole_answer() {
     let d = dest(b"host.example", Resolved::Remote);
-    let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default(), None).unwrap();
     assert_eq!(send(&mut h), b"\x05\x01\x00");
     assert_eq!(h.take(b"\x05\x00"), Ok(Took::Read(2)));
     assert_eq!(send(&mut h), b"\x05\x01\x00\x03\x0chost.example\x23\x1e");
@@ -152,6 +174,7 @@ fn socks5_logs_in_when_asked() {
         d,
         creds(b"uz3r", b"p4ss"),
         Socks5Auth::default(),
+        None,
     )
     .unwrap();
     assert_eq!(send(&mut h), b"\x05\x02\x00\x02");
@@ -164,7 +187,7 @@ fn socks5_logs_in_when_asked() {
     assert_eq!(send(&mut h), want);
     assert!(h.authenticated());
     let d = dest(b"12.34.56.78", Resolved::Remote);
-    let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default(), None).unwrap();
     send(&mut h);
     h.take(b"\x05\x00").unwrap();
     assert_eq!(send(&mut h), b"\x05\x01\x00\x01\x0c\x22\x38\x4e\x23\x1e");
@@ -173,6 +196,7 @@ fn socks5_logs_in_when_asked() {
         d,
         creds(b"u", b"p"),
         Socks5Auth::default(),
+        None,
     )
     .unwrap();
     send(&mut h);
@@ -208,12 +232,12 @@ fn socks5_asks_for_the_address_resolved_here() {
         Resolved::NoAddress
     );
     let d = dest(b"localhost", Resolved::Address(LOOPBACK));
-    let mut h = Handshake::new(Version::V5, d, None, Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(Version::V5, d, None, Socks5Auth::default(), None).unwrap();
     send(&mut h);
     h.take(b"\x05\x00").unwrap();
     assert_eq!(send(&mut h), b"\x05\x01\x00\x01\x7f\x00\x00\x01\x23\x1e");
     let d = dest(b"nowhere", Resolved::NoAddress);
-    let mut h = Handshake::new(Version::V5, d, None, Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(Version::V5, d, None, Socks5Auth::default(), None).unwrap();
     send(&mut h);
     let e = h.take(b"\x05\x00").unwrap_err();
     assert_eq!(
@@ -230,12 +254,12 @@ fn socks5_refusals_are_said_as_c() {
         ..Socks5Auth::default()
     };
     let d = dest(b"h", Resolved::Remote);
-    let e = Handshake::new(Version::V5Hostname, d, None, only).unwrap_err();
+    let e = Handshake::new(Version::V5Hostname, d, None, only, None).unwrap_err();
     assert_eq!(
         said(&e),
         "SOCKS5: no acceptable authentication method is available."
     );
-    let mut h = Handshake::new(Version::V5Hostname, d, creds(b"u", b"p"), only).unwrap();
+    let mut h = Handshake::new(Version::V5Hostname, d, creds(b"u", b"p"), only, None).unwrap();
     assert_eq!(send(&mut h), b"\x05\x01\x02");
     let e = h.take(b"\x05\x00").unwrap_err();
     assert_eq!(
@@ -246,7 +270,8 @@ fn socks5_refusals_are_said_as_c() {
         )
     );
     let method = |reply: &[u8]| {
-        let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default()).unwrap();
+        let mut h =
+            Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default(), None).unwrap();
         send(&mut h);
         h.take(reply).unwrap_err()
     };
@@ -266,6 +291,7 @@ fn socks5_refusals_are_said_as_c() {
         d,
         creds(&user, b"b"),
         Socks5Auth::default(),
+        None,
     )
     .unwrap();
     send(&mut h);
@@ -283,6 +309,7 @@ fn socks5_refusals_are_said_as_c() {
         dest(&name, Resolved::Remote),
         None,
         Socks5Auth::default(),
+        None,
     )
     .unwrap_err();
     assert_eq!(e.code(), Some(ProxyError::LongHostname));
@@ -291,6 +318,7 @@ fn socks5_refusals_are_said_as_c() {
         dest(b"host", Resolved::Remote),
         None,
         Socks5Auth::default(),
+        None,
     )
     .unwrap();
     send(&mut h);
@@ -371,17 +399,25 @@ fn reply_codes_are_c_s() {
 fn fields_of_255_bytes_go() {
     let long = [b'x'; 255];
     let d = dest(b"h", Resolved::Remote);
-    let mut h = Handshake::new(Version::V4a, d, creds(&long, b""), Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(
+        Version::V4a,
+        d,
+        creds(&long, b""),
+        Socks5Auth::default(),
+        None,
+    )
+    .unwrap();
     assert_eq!(send(&mut h).len(), 8 + 256 + 2);
     let d = dest(&long, Resolved::Remote);
-    let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default()).unwrap();
+    let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default(), None).unwrap();
     send(&mut h);
     h.take(b"\x05\x00").unwrap();
     assert_eq!(send(&mut h).len(), 5 + 255 + 2);
     let login = |user: &[u8], password: &[u8]| {
         let d = dest(b"h", Resolved::Remote);
         let auth = Socks5Auth::default();
-        let mut h = Handshake::new(Version::V5Hostname, d, creds(user, password), auth).unwrap();
+        let mut h =
+            Handshake::new(Version::V5Hostname, d, creds(user, password), auth, None).unwrap();
         send(&mut h);
         h.take(b"\x05\x02").map(|_| send(&mut h).len())
     };
@@ -402,7 +438,7 @@ fn fields_of_255_bytes_go() {
 fn a_socks5_proxy_s_pick_is_checked_against_what_is_allowed() {
     let pick = |reply: &[u8], auth: Socks5Auth| {
         let d = dest(b"h", Resolved::Remote);
-        let mut h = Handshake::new(Version::V5Hostname, d, creds(b"u", b"p"), auth).unwrap();
+        let mut h = Handshake::new(Version::V5Hostname, d, creds(b"u", b"p"), auth, None).unwrap();
         send(&mut h);
         let e = h.take(reply).unwrap_err();
         (said(&e), e.code(), h.authenticated())
@@ -444,7 +480,8 @@ fn a_socks5_proxy_s_pick_is_checked_against_what_is_allowed() {
 fn a_socks5_answer_is_read_by_its_address_type() {
     let connecting = |name: &[u8]| {
         let d = dest(name, Resolved::Remote);
-        let mut h = Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default()).unwrap();
+        let mut h =
+            Handshake::new(Version::V5Hostname, d, None, Socks5Auth::default(), None).unwrap();
         send(&mut h);
         h.take(b"\x05\x00").map(|_| {
             send(&mut h);
@@ -513,6 +550,12 @@ fn shake(start: impl Fn() -> Result<Handshake, SocksError>, pieces: &[&[u8]]) ->
                 );
                 received.drain(..n);
                 got.used += n;
+                if h.gss_starts()
+                    && let Err(e) = h.start_gss(b"proxy.example", &mut |_| {})
+                {
+                    got.error = Some(e);
+                    break;
+                }
             }
             Err(e) => {
                 got.error = Some(e);
@@ -541,12 +584,34 @@ const REPLY_WORDS: &[&[u8]] = &[
     b"\x05\x00\x00\x03\xff",
     b"\x05\x00\x00\x04",
     b"\x7f\x00\x00\x01\x00\x50",
+    b"\x05\x01",
+    b"\x01\x01\x00\x01",
+    b"\x01\x02\x00\x01",
+    b"\x01\x02\x00\x02",
 ];
 const REPLIES: &[&[u8]] = &[
     b"\x00\x5a\x00\x00\x00\x00\x00\x00rest",
     b"\x05\x00\x05\x00\x00\x03\x03abc\x00\x50more",
     b"\x05\x02\x01\x00\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50",
     b"\x05\x00\x05\x00\x00\x04\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\x01\x00\x50",
+];
+
+const GSS_WORDS: &[&[u8]] = &[
+    b"\x00",
+    b"\x01",
+    b"\x02",
+    b"\xff",
+    b"\x05\x01",
+    b"\x01\x01\x00\x01",
+    b"\x01\x02\x00\x01",
+    b"\x01\x02\x00\x02",
+    b"\x01\x01\x00\x00",
+    b"\x05\x00\x00\x01",
+    b"\x7f\x00\x00\x01\x00\x50",
+];
+const GSS_REPLIES: &[&[u8]] = &[
+    b"\x05\x01\x01\x01\x00\x01x\x01\x02\x00\x01\x00\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50",
+    b"\x05\x01\x01\x01\x00\x02xy\x01\x02\x00\x01\x01\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x50",
 ];
 
 fn version() -> impl Strategy<Value = Version> {
@@ -593,11 +658,41 @@ proptest! {
         resolved in resolved(),
         creds in proptest::option::of((field(), field())),
         [basic, gssapi, only] in any::<[bool; 3]>(),
+        library in proptest::option::of(any::<bool>()),
     ) {
         let start = || {
-            let creds = creds.as_ref().map(|(user, password)| Creds { user, password });
+            let creds = creds.as_ref().map(|(user, password)| Creds { user, password, service: b"" });
             let d = Dest { name: &name, port, resolved };
-            Handshake::new(version, d, creds, Socks5Auth { basic, gssapi, only })
+            let library = library.map(|nec| GssMethod {
+                library: &gss::ECHO,
+                nec,
+                delegation: crate::options::Delegation::default(),
+            });
+            Handshake::new(version, d, creds, Socks5Auth { basic, gssapi, only }, library)
+        };
+        let whole = shake(start, &[&reply]);
+        let pieces = crate::untrusted::pieces(&reply, &cuts);
+        prop_assert_eq!(shake(start, &pieces), whole);
+    }
+
+    /// Likewise for a SOCKS5 proxy offered GSS-API, its messages whole or
+    /// in any pieces, wrapped or in NEC's way.
+    #[test]
+    fn any_gss_api_reply_is_read_alike_in_any_pieces(
+        reply in crate::untrusted::input(GSS_WORDS, GSS_REPLIES, 16),
+        cuts in crate::untrusted::cuts(),
+        nec in any::<bool>(),
+        basic in any::<bool>(),
+    ) {
+        let start = || {
+            let d = Dest { name: b"h", port: 80, resolved: Resolved::Remote };
+            let library = Some(GssMethod {
+                library: &gss::ECHO,
+                nec,
+                delegation: crate::options::Delegation::default(),
+            });
+            let auth = Socks5Auth { basic, ..Socks5Auth::default() };
+            Handshake::new(Version::V5Hostname, d, None, auth, library)
         };
         let whole = shake(start, &[&reply]);
         let pieces = crate::untrusted::pieces(&reply, &cuts);

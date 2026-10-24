@@ -2,17 +2,22 @@
 //! SOCKS4, SOCKS4a or SOCKS5 proxy is sent, made in turn, and what its
 //! replies say. Whoever holds the connection to the proxy sends what
 //! `to_send` gives and hands each reply to `take`, in C's words when it
-//! is refused.
+//! is refused. SOCKS5's GSS-API method (RFC 1961, `lib/socks_gssapi.c`)
+//! is states of the same handshake, in `gss`.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 
 use curl_alloc::{OutOfMemory, TryVec as _};
 
+use crate::gss::GssContext;
 use crate::options::{IpVersion, ProxyType, Socks5Auth};
 
+mod gss;
 #[cfg(test)]
 mod tests;
+
+pub(crate) use gss::{Failed, GssError, GssLine, GssMethod};
 
 /// What a SOCKS proxy's handshake failed at (`CURLproxycode`,
 /// `CURLINFO_PROXY_ERROR`).
@@ -136,11 +141,21 @@ impl Resolved {
     }
 }
 
-/// The user and password the proxy is given.
+/// The user and password the proxy is given, and the service it is
+/// authenticated as by GSS-API, empty for the default.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Creds<'a> {
     pub(crate) user: &'a [u8],
     pub(crate) password: &'a [u8],
+    pub(crate) service: &'a [u8],
+}
+
+/// The credentials a handshake keeps.
+#[derive(Debug)]
+struct Kept {
+    user: Vec<u8>,
+    password: Vec<u8>,
+    service: Vec<u8>,
 }
 
 /// A handshake under way.
@@ -157,11 +172,24 @@ pub(crate) struct Handshake {
     resolved: Resolved,
     /// The user and password, unless SOCKS5's basic authentication is
     /// not allowed.
-    creds: Option<(Vec<u8>, Vec<u8>)>,
+    creds: Option<Kept>,
     auth: Socks5Auth,
     /// The SOCKS5 proxy picked a method that authenticates
     /// (`socks5_authenticated`).
     authenticated: bool,
+    /// SOCKS5's GSS-API method, where it is built in.
+    gss: Option<GssMethod>,
+    /// Its security context, from the method's pick until the protection
+    /// is agreed on, kept after that only if some was granted.
+    context: Option<Box<dyn GssContext>>,
+    /// The protection the context can give, from its last step
+    /// (`gss_ret_flags`).
+    can: gss::Level,
+    /// The protection the proxy granted (`socks5_gssapi_enctype`).
+    granted: u8,
+    /// What the GSS-API messages to send are, for C's words when sending
+    /// them fails.
+    framing: gss::Framing,
 }
 
 /// The reply the handshake waits for.
@@ -175,6 +203,12 @@ enum Awaiting {
     Authenticated,
     /// SOCKS5's answer to the request, of a length its address type gives.
     Connected,
+    /// Nothing yet: GSS-API was picked, and its context is to be made.
+    GssStart,
+    /// An RFC 1961 authentication message: its 4 bytes, then its token.
+    GssToken,
+    /// An RFC 1961 protection-level message, likewise.
+    GssLevel,
     /// Nothing: the proxy connected to the destination.
     Done,
 }
@@ -197,7 +231,11 @@ pub(crate) enum SocksError {
     LongHostname4,
     NotIpv4(Vec<u8>),
     Unresolved(Vec<u8>, u16),
-    Refused4 { code: u8, port: u16, ip: [u8; 4] },
+    Refused4 {
+        code: u8,
+        port: u16,
+        ip: [u8; 4],
+    },
     BadVersion4,
     LongHostname5,
     NoMethod,
@@ -211,6 +249,10 @@ pub(crate) enum SocksError {
     LongUser5,
     LongPassword5,
     UserRejected(u8, u8),
+    /// The GSS-API method failed.
+    Gss(GssError),
+    /// The proxy granted GSS-API protection, which is not implemented.
+    GssProtection,
     NotResolved5(Vec<u8>),
     BadIpv6,
     BadVersion5,
@@ -247,6 +289,8 @@ impl SocksError {
             SocksError::UnknownMode => ProxyError::UnknownMode,
             SocksError::LongPassword5 => ProxyError::LongPasswd,
             SocksError::UserRejected(..) => ProxyError::UserRejected,
+            SocksError::Gss(_) => ProxyError::Gssapi,
+            SocksError::GssProtection => ProxyError::GssapiProtection,
             SocksError::BadIpv6 | SocksError::BadAddressType => ProxyError::BadAddressType,
             SocksError::Refused5(_, code) => match code {
                 1 => ProxyError::ReplyGeneralServerFailure,
@@ -262,10 +306,11 @@ impl SocksError {
         })
     }
 
-    /// What C says of it, if anything (`failf`).
+    /// What C says of it, if anything (`failf`); a GSS-API failure's
+    /// lines are its own.
     pub(crate) fn said(&self) -> Option<Said<'_>> {
         match self {
-            SocksError::OutOfMemory | SocksError::BadIpv6 => None,
+            SocksError::OutOfMemory | SocksError::BadIpv6 | SocksError::Gss(_) => None,
             _ => Some(Said(self)),
         }
     }
@@ -362,7 +407,10 @@ impl fmt::Display for Said<'_> {
                 Text(name)
             ),
             SocksError::BadAddressType => f.write_str("SOCKS5 reply has wrong address type."),
-            SocksError::OutOfMemory | SocksError::BadIpv6 => Ok(()),
+            SocksError::GssProtection => {
+                f.write_str("SOCKS5 GSS-API protection not yet implemented.")
+            }
+            SocksError::OutOfMemory | SocksError::BadIpv6 | SocksError::Gss(_) => Ok(()),
         }
     }
 }
@@ -389,23 +437,32 @@ const MAX_FIELD: usize = 255;
 impl Handshake {
     /// A handshake with a proxy of `version` for `dest`: its first
     /// request made, SOCKS4's whole (`socks4_connect`), SOCKS5's offer of
-    /// methods (`socks5_req0_init`).
+    /// methods (`socks5_req0_init`), GSS-API's among them where `gss`
+    /// builds it in.
     pub(crate) fn new(
         version: Version,
         dest: Dest<'_>,
         creds: Option<Creds<'_>>,
         auth: Socks5Auth,
+        gss: Option<GssMethod>,
     ) -> Result<Handshake, SocksError> {
         let mut name = Vec::new();
         name.try_extend_from_slice(dest.name)?;
         let creds = match creds {
-            // SOCKS5 gives none unless basic authentication is allowed.
+            // SOCKS5 gives none unless basic authentication is allowed,
+            // and with them goes the service GSS-API names (C unlinks
+            // `sx->creds`, which `Curl_SOCKS5_gssapi_negotiate` reads).
             Some(_) if matches!(version, Version::V5 | Version::V5Hostname) && !auth.basic => None,
             Some(c) => {
-                let (mut user, mut password) = (Vec::new(), Vec::new());
-                user.try_extend_from_slice(c.user)?;
-                password.try_extend_from_slice(c.password)?;
-                Some((user, password))
+                let mut kept = Kept {
+                    user: Vec::new(),
+                    password: Vec::new(),
+                    service: Vec::new(),
+                };
+                kept.user.try_extend_from_slice(c.user)?;
+                kept.password.try_extend_from_slice(c.password)?;
+                kept.service.try_extend_from_slice(c.service)?;
+                Some(kept)
             }
             None => None,
         };
@@ -420,6 +477,11 @@ impl Handshake {
             creds,
             auth,
             authenticated: false,
+            gss,
+            context: None,
+            can: gss::Level::None,
+            granted: 0,
+            framing: gss::Framing::None,
         };
         match version {
             Version::V4 | Version::V4a => handshake.request4()?,
@@ -458,16 +520,32 @@ impl Handshake {
         match self.awaiting {
             Awaiting::Granted4 | Awaiting::Connected => 8,
             Awaiting::Method | Awaiting::Authenticated => 2,
-            Awaiting::Done => 0,
+            Awaiting::GssToken | Awaiting::GssLevel => 4,
+            Awaiting::Done | Awaiting::GssStart => 0,
         }
     }
 
     /// Read the reply awaited from what was received, all sent first.
+    #[cfg(test)]
     pub(crate) fn take(&mut self, input: &[u8]) -> Result<Took, SocksError> {
+        self.take_saying(input, &mut |_| {})
+    }
+
+    /// `take`, with what C says on the way handed to `say`.
+    pub(crate) fn take_saying(
+        &mut self,
+        input: &[u8],
+        say: &mut dyn FnMut(GssLine<'_>),
+    ) -> Result<Took, SocksError> {
         assert!(
             self.to_send().is_empty(),
             "the request went before its reply"
         );
+        if self.awaiting == Awaiting::Connected && self.granted != 0 {
+            // The request went; what follows would need the protection
+            // granted (`SOCKS5_ST_REQ1_SEND`).
+            return Err(SocksError::GssProtection);
+        }
         let wants = self.wants();
         if input.len() < wants {
             return Ok(Took::Need(wants));
@@ -480,6 +558,15 @@ impl Handshake {
                 Some(used) => used,
                 None => return Ok(Took::Need(connected_len(input)?)),
             },
+            Awaiting::GssToken => match self.gss_token(input, say)? {
+                Some(used) => used,
+                None => return Ok(Took::Need(gss::framed_len(input))),
+            },
+            Awaiting::GssLevel => match self.gss_level(input, say)? {
+                Some(used) => used,
+                None => return Ok(Took::Need(gss::framed_len(input))),
+            },
+            Awaiting::GssStart => unreachable!("the context is made first"),
             Awaiting::Done => unreachable!("nothing is awaited"),
         };
         Ok(Took::Read(used))
@@ -499,7 +586,7 @@ impl Handshake {
     fn request4(&mut self) -> Result<(), SocksError> {
         let [hi, lo] = self.port.to_be_bytes();
         let head = [4, 1, hi, lo];
-        let user = self.creds.as_ref().map_or(&[][..], |(u, _)| &u[..]);
+        let user = self.creds.as_ref().map_or(&[][..], |c| &c.user[..]);
         let addr = if self.version == Version::V4a {
             if self.name.len() + 1 > MAX_FIELD {
                 return Err(SocksError::LongHostname4);
@@ -555,13 +642,16 @@ impl Handshake {
         if self.version == Version::V5Hostname && self.name.len() > MAX_FIELD {
             return Err(SocksError::LongHostname5);
         }
-        let mut methods = [0u8; 2];
+        let mut methods = [0u8; 3];
         let mut n = 0;
         if !self.auth.only {
             methods[n] = 0;
             n += 1;
         }
-        // GSS-API is not built in, so it is not offered.
+        if self.auth.gssapi && self.gss.is_some() {
+            methods[n] = 1;
+            n += 1;
+        }
         if self.creds.is_some() {
             methods[n] = 2;
             n += 1;
@@ -583,6 +673,10 @@ impl Handshake {
         match r[1] {
             0 if self.auth.only => return Err(SocksError::NoAuthSelected),
             0 => self.request5()?,
+            1 if self.auth.gssapi && self.gss.is_some() => {
+                self.authenticated = true;
+                self.awaiting = Awaiting::GssStart;
+            }
             1 if self.auth.gssapi => {
                 self.authenticated = true;
                 return Err(SocksError::GssapiNotSupported);
@@ -603,7 +697,7 @@ impl Handshake {
     /// (`socks5_auth_init`).
     fn login(&mut self) -> Result<(), SocksError> {
         let (user, password) = match &self.creds {
-            Some((u, p)) => (&u[..], &p[..]),
+            Some(c) => (&c.user[..], &c.password[..]),
             None => (&[][..], &[][..]),
         };
         if user.len() > MAX_FIELD {
@@ -682,6 +776,7 @@ impl Handshake {
         out.try_extend_from_slice(&[hi, lo])?;
         self.out = out;
         self.sent = 0;
+        self.framing = gss::Framing::None;
         self.awaiting = Awaiting::Connected;
         Ok(())
     }

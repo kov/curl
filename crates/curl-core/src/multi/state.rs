@@ -1709,7 +1709,14 @@ fn connecting<H: Host>(
     if let TimeLeft::Expired(_) = run.deadlines.time_left(starts(cx), now, Phase::Connecting) {
         let ms = cx.easy().report().timings().since_single_ms(now);
         let kind = ErrorKind::OperationTimedout;
+        // C reads SOCKS5's GSS-API messages blocking, until its own check
+        // of the time left fails the read.
+        let gss_read = match c.handshake.as_deref() {
+            Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx),
+            _ => None,
+        };
         let kind = match c.handshake.as_deref() {
+            _ if let Some(failed) = gss_read => failed,
             Some(Handshake::Connect(_)) => trace::fail(
                 cx,
                 kind,

@@ -260,9 +260,9 @@ file: crates/curl-core/src/multi/state/socks.rs
 witness: curl-core proto::http::tests::a_socks_refusal_fails_with_the_proxy_s_error
 --- old
     cx.report_mut().set_proxy_error(code);
-    match e.said() {
+    if let SocksError::Gss(gss) = e {
 --- new
-    match e.said() {
+    if let SocksError::Gss(gss) = e {
 
 === the proxy's own lines are not sent with CONNECT
 file: crates/curl-core/src/proto/http1/tunnel.rs

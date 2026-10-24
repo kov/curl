@@ -200,6 +200,8 @@ curl-core/src/
     proxy.rs                 the proxy a transfer goes through: the options' or the
                              environment's, the no-proxy list, a proxy URL parsed
     socks.rs                 the SOCKS4, 4a and 5 handshakes, sans-IO
+    socks/gss.rs             SOCKS5's GSS-API method (RFC 1961), states of the same
+                             handshake
     connect_to.rs            the CURLOPT_CONNECT_TO entry matcher and parser
     dns.rs                   DnsCache, Answer, the CURLOPT_RESOLVE entry parser
     buf.rs                   RecvBuf
@@ -1301,6 +1303,20 @@ socket before its connect.
   the same cache, and the `Dialed` stage carries the answer. A failure is `ErrorKind::Proxy` with
   the `ProxyError` kept for `CURLINFO_PROXY_ERROR`; a SOCKS5 proxy that authenticated the user
   marks the `Conn`, which alone serves a transfer insisting on it (`CURLAUTH_ONLY`).
+- SOCKS5's GSS-API method is offered where the handle has a GSS-API library and the options
+  allow it. Picked, it is three more states of the same `Handshake` (`conn/socks/gss.rs`): the
+  context is made with the proxy's service (`rcmd`, or the credentials', which a disallowed
+  basic method takes away as C unlinks them) and stepped one RFC 1961 message at a time, then
+  the protection level is asked and read, wrapped by the context or, in NEC's way, as it is. The
+  context lives in the boxed handshake, so nothing grows on `Connecting` or `Conn`; it is
+  dropped with the handshake, or as soon as the proxy grants no protection. C makes the socket
+  blocking for the whole exchange (`Curl_blockread_all`); here each message is sent and read as
+  the socket lets it, the same bytes (`DIVERGENCE.md`). The handshake says what a failed send,
+  read or close means in the message under way, and the connect deadline reached while one is
+  awaited fails its read as C's blocking read does, and a GSS-API failure is traced as C's
+  `failf`s are, the library's words for the call, the step's, then "Unable to negotiate SOCKS5
+  GSS-API context.", the first of them the transfer's reason. Protection granted fails once
+  the request went (`CURLPX_GSSAPI_PROTECTION`), as C does.
 - A SOCKS pre-proxy (`CURLOPT_PRE_PROXY`) sits in front of an HTTP proxy only, set on its
   `ProxyRoute` through `ProxyRoute::behind`, which asserts it; alone, it is the route's SOCKS
   proxy. The route then dials the pre-proxy first (`Tcp::destination`), its SOCKS handshake asks

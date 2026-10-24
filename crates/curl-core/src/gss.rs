@@ -260,6 +260,14 @@ pub(crate) mod testing {
     pub(crate) enum Answer {
         /// The step makes `token` and gets this far.
         Token(Progress, Vec<u8>),
+        /// The step makes `token` and gets as far as `Step` says.
+        Stepped(Step, Vec<u8>),
+        /// `wrap` makes this token, or fails.
+        Wrapped(Result<Vec<u8>, GssFailure>),
+        /// `unwrap` finds this message, or fails.
+        Unwrapped(Result<Vec<u8>, GssFailure>),
+        /// `initiator` names this user, or fails.
+        Initiator(Result<Vec<u8>, GssFailure>),
         /// The step fails.
         Fails(GssFailure),
         /// The step notes a failure on the way, then answers as the next
@@ -277,11 +285,26 @@ pub(crate) mod testing {
             mech: Mech,
             flags: Flags,
         },
+        /// A context with a name parsed as it is.
+        Named {
+            name: Vec<u8>,
+            mech: Mech,
+            flags: Flags,
+        },
         /// A step, with the peer's token if there was one.
         Step(Option<Vec<u8>>),
+        /// A message wrapped.
+        Wrap(Vec<u8>),
+        /// A token unwrapped.
+        Unwrap(Vec<u8>),
+        /// The initiator's name.
+        Initiator,
         /// A context was dropped.
         Dropped,
     }
+
+    /// The major code whose text is too long for SOCKS's layout.
+    pub(crate) const TOO_LONG: u32 = 0xdead;
 
     #[derive(Debug, Default)]
     struct Script {
@@ -340,27 +363,37 @@ pub(crate) mod testing {
             if let Some(status) = script.import_fails.take() {
                 return Err(GssFailure::status(GssCall::ImportName, status));
             }
-            let Target::Service { service, host } = target else {
-                panic!("HTTP's targets are services");
-            };
-            script.asked.push(Asked::Context {
-                service: service.to_vec(),
-                host: host.to_vec(),
-                mech,
-                flags,
+            script.asked.push(match target {
+                Target::Service { service, host } => Asked::Context {
+                    service: service.to_vec(),
+                    host: host.to_vec(),
+                    mech,
+                    flags,
+                },
+                Target::Name(name) => Asked::Named {
+                    name: name.to_vec(),
+                    mech,
+                    flags,
+                },
             });
             Ok(Box::new(ScriptedContext(self.0.clone())))
         }
 
-        /// A status as `major.minor`.
+        /// A status as `major.minor` in the log's layout, and as two
+        /// lines in SOCKS's, where a major code of `TOO_LONG` has a text
+        /// too long.
         fn describe(
             &self,
             status: &GssStatus,
-            _: Style,
+            style: Style,
             out: &mut dyn FnMut(&[u8]),
         ) -> Result<(), TooLong> {
             let (major, minor) = status.codes();
-            out(format!("status {major}.{minor}. ").as_bytes());
+            match style {
+                Style::Log => out(format!("status {major}.{minor}. ").as_bytes()),
+                Style::Socks if major == TOO_LONG => return Err(TooLong),
+                Style::Socks => out(format!("major {major}.\nminor {minor}").as_bytes()),
+            }
             Ok(())
         }
     }
@@ -387,40 +420,71 @@ pub(crate) mod testing {
                     Answer::Notes(note) => sink.note(note),
                     Answer::Fails(failure) => return Err(failure),
                     Answer::Token(progress, token) => {
-                        sink.token(&token).map_err(|OutOfMemory| {
-                            GssFailure::out_of_memory(GssCall::InitSecContext)
-                        })?;
-                        return Ok(Step {
+                        let step = Step {
                             progress,
                             confidentiality: false,
                             integrity: false,
-                        });
+                        };
+                        return handed(&token, step, sink);
                     }
+                    Answer::Stepped(step, token) => return handed(&token, step, sink),
+                    other => panic!("a step scripted, not {other:?}"),
                 }
             }
         }
 
         fn wrap(
             &mut self,
-            _: &[u8],
-            _: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+            message: &[u8],
+            out: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
         ) -> Result<(), GssFailure> {
-            unreachable!("HTTP wraps nothing")
+            let mut script = self.0.lock().unwrap();
+            script.asked.push(Asked::Wrap(message.to_vec()));
+            match script.answers.pop_front() {
+                Some(Answer::Wrapped(answer)) => given(answer, GssCall::Wrap, out),
+                other => panic!("a wrap scripted, not {other:?}"),
+            }
         }
 
         fn unwrap(
             &mut self,
-            _: &[u8],
-            _: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+            token: &[u8],
+            out: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
         ) -> Result<(), GssFailure> {
-            unreachable!("HTTP unwraps nothing")
+            let mut script = self.0.lock().unwrap();
+            script.asked.push(Asked::Unwrap(token.to_vec()));
+            match script.answers.pop_front() {
+                Some(Answer::Unwrapped(answer)) => given(answer, GssCall::Unwrap, out),
+                other => panic!("an unwrap scripted, not {other:?}"),
+            }
         }
 
         fn initiator(
             &mut self,
-            _: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+            out: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
         ) -> Result<(), GssFailure> {
-            unreachable!("HTTP asks no name")
+            let mut script = self.0.lock().unwrap();
+            script.asked.push(Asked::Initiator);
+            match script.answers.pop_front() {
+                Some(Answer::Initiator(answer)) => given(answer, GssCall::DisplayName, out),
+                other => panic!("an initiator scripted, not {other:?}"),
+            }
         }
+    }
+
+    /// A step's `token` handed to `sink`, then `step`.
+    fn handed(token: &[u8], step: Step, sink: &mut dyn StepSink) -> Result<Step, GssFailure> {
+        sink.token(token)
+            .map_err(|OutOfMemory| GssFailure::out_of_memory(GssCall::InitSecContext))?;
+        Ok(step)
+    }
+
+    /// A scripted answer's bytes handed to `out`, or its failure.
+    fn given(
+        answer: Result<Vec<u8>, GssFailure>,
+        call: GssCall,
+        out: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+    ) -> Result<(), GssFailure> {
+        out(&answer?).map_err(|OutOfMemory| GssFailure::out_of_memory(call))
     }
 }

@@ -1,3 +1,11 @@
+=== SOCKS5 offers GSS-API without a library to do it
+file: crates/curl-core/src/conn/socks.rs
+witness: curl-core conn::socks::tests::gss::gss_api_is_offered_where_built_in_and_allowed
+--- old
+        if self.auth.gssapi && self.gss.is_some() {
+--- new
+        if self.auth.gssapi {
+
 === the shim gives GSS-API to a build that does not claim it
 file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi easy::tests::a_handle_has_gss_api_where_claimed
@@ -15,3 +23,99 @@ witness: curl-tool operate::tests::a_transfer_has_gss_api_where_claimed
 --- new
     if claims.gssapi || true {
         &LIBRARIES
+
+=== NEC's protection level is wrapped
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::nec_sends_the_level_unwrapped
+--- old
+        if method.nec {
+            self.out
+--- new
+        if !method.nec {
+            self.out
+
+=== a zero-length GSS-API token from the proxy is taken
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::the_proxy_s_messages_are_checked_as_c
+--- old
+        if len == 4 {
+            return Err(GssError::at(Failed::ZeroAuthToken).into());
+        }
+--- new
+
+=== protection the proxy grants is taken as none
+file: crates/curl-core/src/conn/socks.rs
+witness: curl-core conn::socks::tests::gss::protection_granted_fails_once_the_request_went
+--- old
+        if self.awaiting == Awaiting::Connected && self.granted != 0 {
+--- new
+        if self.awaiting == Awaiting::Connected && self.granted == 0xff {
+
+=== the level asked is the first step's, not the last's
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::the_level_asked_is_the_last_step_s
+--- old
+        self.can = if step.confidentiality {
+--- new
+        self.can = if input.is_some() {
+            self.can
+        } else if step.confidentiality {
+
+=== the credentials' service is not the context's
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::the_service_is_the_credentials_or_rcmd
+--- old
+            Some(c) if !c.service.is_empty() => &c.service[..],
+--- new
+            Some(c) if c.service.is_empty() => &c.service[..],
+
+=== a context the proxy grants no protection for is kept
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core conn::socks::tests::gss::the_exchange_is_rfc_1961_s
+--- old
+        if granted == 0 {
+            self.context = None;
+        }
+--- new
+
+=== a close mid-token is said as a close before it
+file: crates/curl-core/src/conn/socks/gss.rs
+witness: curl-core proto::http::tests::socks_gss::a_proxy_closing_is_said_of_the_message_awaited
+--- old
+            (Awaiting::GssToken, false) => Failed::RecvAuthToken,
+--- new
+            (Awaiting::GssToken, false) => Failed::RecvAuthResponse,
+
+=== a GSS-API failure leaves out C's words for its step
+file: crates/curl-core/src/multi/state/socks.rs
+witness: curl-core proto::http::tests::socks_gss::a_gss_api_failure_gives_c_s_three_reasons
+--- old
+    if e.step != Failed::Silently {
+--- new
+    if e.step == Failed::Silently {
+
+=== the library's words come after the step's, not first
+file: crates/curl-core/src/multi/state/socks.rs
+witness: curl-core proto::http::tests::socks_gss::a_gss_api_failure_gives_c_s_three_reasons
+--- old
+    if let Some((call, status)) = e.status {
+--- new
+    if e.step != Failed::Silently {
+        trace::fail(cx, ErrorKind::Proxy, format_args!("{}", e.step));
+    }
+    if let Some((call, status)) = e.status {
+
+=== a GSS-API send that fails is said as the handshake's others
+file: crates/curl-core/src/multi/state/socks.rs
+witness: curl-core proto::http::tests::socks_gss::a_failed_send_is_said_of_its_message
+--- old
+                Err(_) if let Some(e) = h.gss_send_failed() => return Err(refused(cx, &e)),
+--- new
+
+=== a GSS-API read out of time is said as any connect's timeout
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::socks_gss::an_unanswered_message_fails_its_read_when_the_time_is_out
+--- old
+            Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx),
+--- new
+            Some(Handshake::Socks(_)) => socks::timed_out(&mut c, cx).filter(|_| false),

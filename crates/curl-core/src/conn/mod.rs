@@ -295,6 +295,8 @@ impl Tcp {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SocksLeg<'a> {
     pub(crate) version: socks::Version,
+    /// The SOCKS proxy itself.
+    pub(crate) at: &'a Peer,
     pub(crate) creds: Option<&'a ProxyCreds>,
     pub(crate) to: &'a Peer,
 }
@@ -455,11 +457,13 @@ impl ProxyRoute {
         match self.pre() {
             Some(pre) => Some(SocksLeg {
                 version: socks::Version::of(pre.kind).expect("a pre-proxy is SOCKS"),
+                at: &pre.peer,
                 creds: pre.creds.as_deref(),
                 to: &self.peer,
             }),
             None => socks::Version::of(self.kind).map(|version| SocksLeg {
                 version,
+                at: &self.peer,
                 creds: self.creds.as_deref(),
                 to: target,
             }),

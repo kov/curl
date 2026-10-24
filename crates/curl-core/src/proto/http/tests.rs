@@ -5036,6 +5036,7 @@ mod range;
 mod read_trace;
 mod setup_trace;
 mod sigv4;
+mod socks_gss;
 mod tcp_trace;
 mod time_condition;
 mod timer_trace;

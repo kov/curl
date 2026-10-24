@@ -84,6 +84,20 @@ not a difference: it is tracked in `MILESTONES.md`.
   when a 10 s `timeout` killed it. Pinned by `a_part_read_answering_stop_filling_fails`
   (`crates/curl-sys-abi/src/handle_tests.rs`).
 
+## Waits C makes blocking
+
+- **SOCKS5's GSS-API messages are sent and read as the socket lets them.** C makes the socket
+  blocking for the whole RFC 1961 exchange (`Curl_SOCKS5_gssapi_negotiate`, then
+  `Curl_blockread_all` for each reply), so every other transfer of the multi waits on the proxy
+  until it answers or the transfer's time runs out. Here each message is a state of the SOCKS
+  handshake, sent and read without blocking, the other transfers going on meanwhile. The bytes
+  on the wire, the lines said, and a read whose time runs out failing the method (97, "Failed
+  to receive GSS-API authentication response.") are C's, measured against the C build with its
+  GSS-API stub and a hand-rolled RFC 1961 proxy. Pinned by
+  `a_socks5_proxy_authenticates_by_gss_api` and
+  `an_unanswered_message_fails_its_read_when_the_time_is_out`
+  (`crates/curl-core/src/proto/http/tests/socks_gss.rs`).
+
 ## Bodies C cannot send again
 
 - **A form part of nothing is sent again.** A part given a name but no content

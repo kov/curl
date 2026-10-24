@@ -36,6 +36,7 @@ use super::http1::auth::{
     Secret, Side,
 };
 use super::http1::chunked::{ChunkDecoder, ChunkError, ChunkEvent};
+use super::http1::fields;
 use super::http1::follow::{self, Inherited};
 use super::http1::framing::{self, Asked, CodingStep, CodingTale, Framing, Left, Unsent};
 use super::http1::request::{
@@ -51,6 +52,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 
 pub(crate) mod cookies;
 pub(crate) mod httpsig;
+pub(crate) mod negotiate;
 pub(crate) mod sigv4;
 use super::http1::response::{self, Exchange, HeadError, HeadEvent, HeadParser, LineKind};
 
@@ -604,7 +606,7 @@ impl Request {
                 .auth
                 .apply(&act, offered, origin, proxy)
                 .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
-            if act.reload {
+            if act.again() {
                 let mut location = Vec::new();
                 location
                     .try_extend_from_slice(url)
@@ -783,6 +785,48 @@ impl Request {
         })
     }
 
+    /// Negotiate's header, made by the connection's context
+    /// (`Curl_output_negotiate`); without a GSS-API library, none, as
+    /// in a build without one.
+    fn negotiate<H: Host>(
+        &self,
+        cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
+        get_or_head: bool,
+    ) -> Result<Output, ErrorKind> {
+        let Some(gss) = cx.easy().libraries().gss else {
+            cx.easy_mut().auth.side(Side::Host).finish();
+            return Ok(Output {
+                header: None,
+                used: AuthMethods::NONE,
+                probe: false,
+                negotiate: false,
+            });
+        };
+        let request = negotiate::Request {
+            gss,
+            credentials: self.credentials.as_ref().map(Credentials::secret),
+            origin: &self.peer,
+            delegation: cx.easy().options().login.delegation,
+        };
+        let (header, done) = negotiate::output(cx, lease.get(), &request)?;
+        Ok(cx
+            .easy_mut()
+            .auth
+            .side(Side::Host)
+            .negotiated(header, done, get_or_head))
+    }
+
+    /// What the request brings to the search for a connection to reuse,
+    /// wanting `want` of the origin (`want_nego_http`).
+    pub(crate) fn reuse_wants(&self, want: AuthMethods) -> negotiate::Wants<'_> {
+        negotiate::Wants {
+            negotiate: want.contains(AuthMethods::NEGOTIATE) && self.gate.trusted().is_some(),
+            credentials: self.credentials.as_ref().map(Credentials::secret),
+            origin: Some(&self.peer),
+        }
+    }
+
     /// The method the request line names: the application's own, unless
     /// a follow dropped it.
     fn method_line<'o>(&self, http: &'o Http) -> &'o [u8] {
@@ -872,6 +916,17 @@ impl Request {
                 .side(Side::Host)
                 .output(credentials, custom, &request, random),
         )?;
+        // Negotiate's token is the connection's context's to make, after
+        // the proxy's line is made and said, as C makes the proxy's first.
+        let proxy_traced = auth.negotiate;
+        let auth = if auth.negotiate {
+            auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+            self.negotiate(cx, lease, get_or_head)?
+        } else {
+            auth
+        };
+        let options = cx.easy().options();
+        let method = self.method_line(&options.http);
         // AWS SigV4 is signed now, with what the request will be; it
         // fails a path kept as given (`Curl_output_aws_sigv4`).
         let signing = if auth.used == AuthMethods::AWS_SIGV4 {
@@ -1072,6 +1127,12 @@ impl Request {
             (Some(c), Some((AuthMethods::DIGEST, value))) => {
                 Some(Authorization::alongside("Digest", value, c.trusted()))
             }
+            // Negotiate goes with no credentials too, made only for an
+            // origin the gate trusts and without the application's own.
+            (_, Some((AuthMethods::NEGOTIATE, value))) => {
+                let trusted = gate.trusted().expect("Negotiate goes only where trusted");
+                Authorization::new("Negotiate", value, trusted, &http.headers)
+            }
             (Some(c), Some((method, value))) => {
                 Authorization::new(method.name(), value, c.trusted(), &http.headers)
             }
@@ -1150,7 +1211,9 @@ impl Request {
         };
         // Named once in use, though Digest sends nothing before its
         // first challenge (`output_auth_headers`).
-        auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+        if !proxy_traced {
+            auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
+        }
         for note in signed.iter().flat_map(|(notes, _)| notes) {
             trace::info_with(cx, &[note]);
         }
@@ -1637,7 +1700,7 @@ impl Request {
                 }
                 Ok(Recv::Data(_)) => {
                     let mut rx = std::mem::take(lease.get().rx_mut());
-                    let fed = self.input(cx, rx.filled());
+                    let fed = self.input(cx, lease, rx.filled());
                     let all = rx.filled().len();
                     rx.consume(all);
                     *lease.get().rx_mut() = rx;
@@ -1706,11 +1769,12 @@ impl Request {
     fn input<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
         mut input: &[u8],
     ) -> Result<(), ErrorKind> {
         while !input.is_empty() {
             match self.stage {
-                Stage::Head => input = self.head_input(cx, input)?,
+                Stage::Head => input = self.head_input(cx, lease, input)?,
                 Stage::Body(Body::Length | Body::UntilClose) => {
                     self.pipeline.body(cx, input)?;
                     input = &[];
@@ -1732,6 +1796,7 @@ impl Request {
     fn head_input<'i, H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
+        lease: &mut ConnLease,
         input: &'i [u8],
     ) -> Result<&'i [u8], ErrorKind> {
         let Request {
@@ -1741,15 +1806,29 @@ impl Request {
             body,
             outgoing,
             body_sent,
+            credentials,
+            peer,
+            cookie_host,
+            target,
             ..
         } = self;
+        let state = lease.conn().negotiate().map(negotiate::Negotiate::state);
+        let conn_negotiate = framing::ConnNegotiate {
+            started: state.is_some_and(|s| s != negotiate::State::None),
+            taken: state == Some(negotiate::State::Recv),
+        };
         let head = head.as_mut().expect("made at DO");
         // Only a status line changes it, so for a header line it is what
         // it was before.
         let bodyless = head.meta().bodyless();
         let sent_all = matches!(outgoing, Sending::Done | Sending::Aborted);
         let unsent = Self::left_to_send(body.as_ref(), sent_all, *body_sent);
-        let fed = head.feed(input, &mut cx.report_mut().sizes_mut().header, unsent);
+        let fed = head.feed(
+            input,
+            &mut cx.report_mut().sizes_mut().header,
+            unsent,
+            conn_negotiate,
+        );
         let (used, event) = match fed {
             Ok(fed) => fed,
             Err(e) => {
@@ -1804,11 +1883,40 @@ impl Request {
         {
             content_codings(cx, pipeline, value)?;
         }
+        // Negotiate's challenges are taken into the connection's context,
+        // and its persistence read, as the line is handled
+        // (`auth_spnego`, `http_header_p`).
+        let mut negotiated = None;
+        if line.kind == LineKind::Header
+            && cx.easy().auth.host_picks_negotiate()
+            && let Some(gss) = cx.easy().libraries().gss
+        {
+            let request = negotiate::Request {
+                gss,
+                credentials: credentials.as_ref().map(Credentials::secret),
+                origin: peer,
+                delegation: cx.easy().options().login.delegation,
+            };
+            if cx.report_mut().response_code() == Some(401)
+                && strip_name(line.bytes, b"WWW-Authenticate:").is_some()
+            {
+                let value = fields::header_value(line.bytes).unwrap_or(&[]);
+                for challenge in super::http1::auth::negotiate_challenges(value) {
+                    let taken = negotiate::challenged(cx, lease.get(), &request, challenge);
+                    let (any, _) = negotiated.unwrap_or((false, true));
+                    negotiated = Some((any || taken, taken));
+                }
+            }
+            if strip_name(line.bytes, b"Persistent-Auth:").is_some() {
+                let value = fields::header_value(line.bytes).unwrap_or(&[]);
+                negotiate::persistence(cx, lease.get(), value)?;
+            }
+        }
         // A cookie is stored before its line is traced (`http_header`).
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
-            let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+            let site = cookie_site(cookie_host, target, peer);
             cookies::set_by_server(cx, value, &site)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
@@ -1868,8 +1976,16 @@ impl Request {
         }
         early?;
         then.map_err(|e| head_failed(cx, &e))?;
+        if let Some((any, last)) = negotiated {
+            let head = self.head.as_mut().expect("made at DO");
+            head.meta_mut().negotiate_answered(any, last);
+        }
         if let LineKind::End { interim } = kind {
             let code = cx.report_mut().response_code().unwrap_or(0);
+            if !interim {
+                // The token that went was taken (`http_check_auth_closure`).
+                negotiate::responded(lease.get(), code);
+            }
             if interim && code == 100 {
                 // The server is ready for the body (`http_exp100_got100`).
                 self.release(cx);

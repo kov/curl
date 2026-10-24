@@ -501,8 +501,9 @@ mod tests {
             let mut input = *chunk;
             while !input.is_empty() {
                 let Some(decoder) = body.as_mut() else {
-                    let (used, event) =
-                        head.feed(input, &mut transfer, Default::default()).unwrap();
+                    let (used, event) = head
+                        .feed(input, &mut transfer, Default::default(), Default::default())
+                        .unwrap();
                     input = &input[used..];
                     if let Some(HeadEvent::Line(line)) = event {
                         line.early.and(line.then).unwrap();

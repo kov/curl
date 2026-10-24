@@ -93,8 +93,12 @@ pub(crate) enum Note {
     /// The body is to be read again from the application.
     NeedRewind,
     /// The connection closes rather than carry the rest of the body,
-    /// this much or an unknown amount, for a request answered already.
-    CloseInstead(Left),
+    /// this much or an unknown amount, for a request answered already;
+    /// Negotiate in use with neither peer started, said so.
+    CloseInstead(Left, Ongoing),
+    /// The connection closes as the origin's Negotiate challenge was
+    /// taken: authenticating goes wrong.
+    ClosedNegotiating,
     /// The document fails the time condition.
     Unmet(Unmet),
     /// And the transfer ends as if the server had said 304.
@@ -154,12 +158,18 @@ impl fmt::Display for Note {
             }
             Note::DuplicateDigest => "Ignoring duplicate digest auth header.",
             Note::NeedRewind => "Need to rewind upload for next request",
-            Note::CloseInstead(Left::Bytes(n)) => {
-                return write!(f, "close instead of sending {n} more bytes");
+            Note::CloseInstead(left, ongoing) => {
+                if *ongoing == Ongoing::Negotiate {
+                    f.write_str("NEGOTIATE send, ")?;
+                }
+                return match left {
+                    Left::Bytes(n) => write!(f, "close instead of sending {n} more bytes"),
+                    Left::Unknown | Left::Nothing => {
+                        f.write_str("close instead of sending unknown amount of more bytes")
+                    }
+                };
             }
-            Note::CloseInstead(Left::Unknown | Left::Nothing) => {
-                "close instead of sending unknown amount of more bytes"
-            }
+            Note::ClosedNegotiating => "Connection closure while negotiating auth (HTTP 1.0?)",
             Note::Unmet(unmet) => return write!(f, "{unmet}"),
             Note::Simulate304 => "Simulate an HTTP 304 response",
             Note::Heard(_) => unreachable!("given out one by one by `Notes::iter`"),
@@ -327,13 +337,41 @@ pub(crate) enum Left {
 /// (`little_upload_remains`).
 const LITTLE_LEFT: u64 = 2000;
 
+/// The authenticating in progress a closing connection is said to cut
+/// short (`ongoing_auth`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Ongoing {
+    #[default]
+    None,
+    Negotiate,
+}
+
+/// Where the connection's Negotiate is as a response is read, for what
+/// the response leads to (`http_perhapsrewind`,
+/// `http_check_auth_closure`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConnNegotiate {
+    /// It started, with either peer (`!= CURL_NEGO_AUTH_NONE`).
+    pub(crate) started: bool,
+    /// The origin's challenge was taken, the request to go again on the
+    /// connection (`CURL_NEGO_AUTH_RECV`).
+    pub(crate) taken: bool,
+}
+
 impl Meta {
     /// The response asks for another request (`http_perhapsrewind`), by
     /// a location to follow or at its end for credentials: a body the
     /// application gives is to be read again, and the connection closes
     /// rather than carry the rest of it for nothing, unless it closes
-    /// anyway or little is left.
-    pub(crate) fn perhaps_rewind(&mut self, sending: Unsent, note: &mut Notes) {
+    /// anyway, little is left, or Negotiate, the method `negotiate` says
+    /// is picked, started on the connection.
+    pub(crate) fn perhaps_rewind(
+        &mut self,
+        sending: Unsent,
+        negotiate: bool,
+        conn: ConnNegotiate,
+        note: &mut Notes,
+    ) {
         if sending.rereads {
             note.push(Note::NeedRewind);
             self.rewinds = true;
@@ -346,8 +384,14 @@ impl Meta {
             Left::Bytes(n) => n >= LITTLE_LEFT,
             Left::Unknown => true,
         };
-        if abort {
-            note.push(Note::CloseInstead(sending.left));
+        // Negotiate goes on with what it started, on this connection.
+        if abort && !(negotiate && conn.started) {
+            let ongoing = if negotiate {
+                Ongoing::Negotiate
+            } else {
+                Ongoing::None
+            };
+            note.push(Note::CloseInstead(sending.left, ongoing));
             self.close = true;
         }
     }
@@ -568,12 +612,14 @@ impl Meta {
         })
     }
 
-    /// The final head ended: how its body is framed, as the request asked.
+    /// The final head ended: how its body is framed, as the request asked,
+    /// over a connection whose Negotiate is where `conn` says.
     pub(crate) fn decide(
         &mut self,
         status: Status,
         asked: &Asked,
         sending: Unsent,
+        conn: ConnNegotiate,
     ) -> (Notes, Result<Framing, FramingError>) {
         let mut note = Notes::default();
         if self.size.is_none()
@@ -586,13 +632,24 @@ impl Meta {
             self.close = true;
             note.push(Note::AssumeClose);
         }
+        // A connection closing while the request is to go again on it
+        // for Negotiate cuts the handshake short (`http_check_auth_closure`).
+        if self.close && status.code == 401 && conn.taken {
+            note.push(Note::ClosedNegotiating);
+            self.challenges.host.refuse();
+        }
         self.auth = AuthAct::of(status.code, &self.challenges, &asked.auth);
         if should_fail(status.code, asked, &self.auth) {
             return (note, Err(FramingError::Returned(status.code)));
         }
-        // `Curl_http_auth_act`.
+        // `Curl_http_auth_act`, with the methods it just picked.
         if self.auth.reload {
-            self.perhaps_rewind(sending, &mut note);
+            let picked = |picked: Option<AuthMethods>, before: AuthMethods| {
+                picked.unwrap_or(before) == AuthMethods::NEGOTIATE
+            };
+            let negotiate = picked(self.auth.picked, asked.auth.host.picked())
+                || picked(self.auth.proxy_picked, asked.auth.proxy.picked());
+            self.perhaps_rewind(sending, negotiate, conn, &mut note);
         }
         if self.length_void || self.chunked {
             self.size = None;
@@ -600,7 +657,7 @@ impl Meta {
         // `http_firstwrite`: a response to follow, or to make again with
         // credentials, is read no further than its head on a connection
         // that closes, and its body is dropped on one kept.
-        let again = self.follow || self.auth.reload;
+        let again = self.follow || self.auth.again();
         if again && self.close {
             if let Some(size) = self.size
                 && asked.max_filesize.is_some_and(|max| size > max.get())
@@ -696,6 +753,17 @@ impl Meta {
     /// Where the response redirects to, if it is followed.
     pub(crate) fn follow(&self) -> Option<&[u8]> {
         self.location.as_deref().filter(|_| self.follow)
+    }
+
+    /// The origin's Negotiate challenges on a line, answered in order:
+    /// whether any was taken into the context, and whether the last was.
+    pub(crate) fn negotiate_answered(&mut self, any: bool, last: bool) {
+        if any {
+            self.challenges.host.negotiate_answered(true);
+        }
+        if !last {
+            self.challenges.host.negotiate_answered(false);
+        }
     }
 
     /// The 401's and 407's challenges, taken for the handle to keep.

@@ -75,7 +75,7 @@ fn parse_sending(
                 break;
             }
             assert!(p.held().len() <= MAX_LINE, "a line kept past C's buffer");
-            let (used, event) = match p.feed(input, transfer_bytes, sending) {
+            let (used, event) = match p.feed(input, transfer_bytes, sending, Default::default()) {
                 Ok(fed) => fed,
                 Err(e) => {
                     out.error = Some(e);
@@ -254,7 +254,7 @@ fn a_reply_without_a_status_line_is_http_0_9() {
     // `HTT` could still become a status line; nothing is decided.
     let mut p = HeadParser::new(allowed);
     assert!(matches!(
-        p.feed(b"HTT", &mut 0, Unsent::default()),
+        p.feed(b"HTT", &mut 0, Unsent::default(), Default::default()),
         Ok((3, None))
     ));
 }
@@ -375,7 +375,9 @@ fn a_request_s_head_bytes_are_counted() {
     let mut transfer = 0;
     let mut input = &b"HTTP/1.1 200 OK\r\nA: b\r\n\r\nrest"[..];
     while !p.is_done() {
-        let (used, _) = p.feed(input, &mut transfer, Unsent::default()).unwrap();
+        let (used, _) = p
+            .feed(input, &mut transfer, Unsent::default(), Default::default())
+            .unwrap();
         input = &input[used..];
     }
     assert_eq!((p.request_bytes(), transfer, input), (25, 25, &b"rest"[..]));
@@ -391,7 +393,9 @@ fn interim_heads_alone_are_nothing() {
         let mut transfer = 0;
         let mut input = reply;
         while !input.is_empty() {
-            let (used, _) = p.feed(input, &mut transfer, Unsent::default()).unwrap();
+            let (used, _) = p
+                .feed(input, &mut transfer, Unsent::default(), Default::default())
+                .unwrap();
             input = &input[used..];
         }
         p
@@ -810,14 +814,18 @@ fn trailers_are_noted() {
     let mut p = HeadParser::new(PLAIN);
     let mut input = &b"HTTP/1.1 200 OK\r\nContent-Type: a\r\nTrailer: x\r\n\r\n"[..];
     while !p.is_done() {
-        let (used, _) = p.feed(input, &mut 0, Unsent::default()).unwrap();
+        let (used, _) = p
+            .feed(input, &mut 0, Unsent::default(), Default::default())
+            .unwrap();
         input = &input[used..];
     }
     assert!(p.meta().trailer());
     let mut p = HeadParser::new(PLAIN);
     let mut input = &b"HTTP/1.1 200 OK\r\nX-Trailer: x\r\n\r\n"[..];
     while !p.is_done() {
-        let (used, _) = p.feed(input, &mut 0, Unsent::default()).unwrap();
+        let (used, _) = p
+            .feed(input, &mut 0, Unsent::default(), Default::default())
+            .unwrap();
         input = &input[used..];
     }
     assert!(!p.meta().trailer(), "no Trailer header");
@@ -1062,7 +1070,9 @@ fn a_line_never_needs_more_than_four_notes() {
                             let mut p = HeadParser::new(exchange);
                             let mut input = &reply[..];
                             while !input.is_empty() && !p.is_done() {
-                                let Ok((used, event)) = p.feed(input, &mut 0, sending) else {
+                                let Ok((used, event)) =
+                                    p.feed(input, &mut 0, sending, Default::default())
+                                else {
                                     break;
                                 };
                                 if let Some(HeadEvent::Line(line)) = event {

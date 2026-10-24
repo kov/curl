@@ -1067,6 +1067,7 @@ impl ConnectMachine {
             seen_version: None,
             close: false,
             settings,
+            negotiate: None,
         }
     }
 
@@ -1465,6 +1466,7 @@ mod tests {
             proxy: None,
             tls: None,
             local: None,
+            delegation: Default::default(),
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),
@@ -1562,6 +1564,7 @@ mod tests {
             proxy: None,
             tls: None,
             local: None,
+            delegation: Default::default(),
         };
         let mut m = ConnectMachine::new(
             ConnNumber(0),

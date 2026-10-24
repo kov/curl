@@ -1688,8 +1688,12 @@ impl AuthMethods {
     /// The one method this is, if it is exactly one this library
     /// implements; with `ONLY` or `OTHER`, none.
     pub(crate) fn single(self) -> Option<AuthMethods> {
-        let known =
-            Self::BASIC.0 | Self::DIGEST.0 | Self::BEARER.0 | Self::AWS_SIGV4.0 | Self::HTTPSIG.0;
+        let known = Self::BASIC.0
+            | Self::DIGEST.0
+            | Self::BEARER.0
+            | Self::AWS_SIGV4.0
+            | Self::HTTPSIG.0
+            | Self::NEGOTIATE.0;
         (self.0.count_ones() == 1 && self.0 & !known == 0).then_some(self)
     }
 

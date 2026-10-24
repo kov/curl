@@ -18,6 +18,7 @@ use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::shutdown::{ConnSettings, Exits, discard};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
+use crate::proto::http::negotiate::Wants;
 use crate::share::Share;
 use crate::time::Instant;
 
@@ -314,6 +315,14 @@ impl Drop for ConnLease {
     }
 }
 
+/// What a transfer looking for a connection wants of one: the route it
+/// serves, and how it authenticated, as far as that binds it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Wanted<'w> {
+    pub(crate) route: &'w Route,
+    pub(crate) auth: Wants<'w>,
+}
+
 /// How long the transfer looking for a connection lets one be idle, and
 /// live (`CURLOPT_MAXAGE_CONN`, `CURLOPT_MAXLIFETIME_CONN`); none for no
 /// limit, as 0 is for either in C.
@@ -527,7 +536,17 @@ impl Pool {
         notes: &mut Vec<PoolNote>,
     ) -> Result<Acquired, OutOfMemory> {
         if searches(&route, rules)
-            && let Some(lease) = self.find(here, &route, rules, exits, now, notes)?
+            && let Some(lease) = self.find(
+                here,
+                Wanted {
+                    route: &route,
+                    auth: Wants::NONE,
+                },
+                rules,
+                exits,
+                now,
+                notes,
+            )?
         {
             return Ok(Acquired::Reused(lease));
         }
@@ -580,6 +599,7 @@ impl Pool {
                 seen_version: None,
                 close: false,
                 settings,
+                negotiate: None,
             }),
             Route::Tcp(tcp) => {
                 ConnSlot::Connecting(ConnectMachine::new(number, tcp, now, closer, settings))
@@ -598,11 +618,13 @@ impl Pool {
     /// `url_match_conn`): a prune of the dead ones at most once a second,
     /// then the first match in the table's order. A match too old or not
     /// healthy is closed and the search goes on. The lease is from
-    /// `here`, the pool this is.
+    /// `here`, the pool this is. A match serves the route `wanted`
+    /// names, and what authenticated over it suits what the transfer
+    /// wants.
     pub(crate) fn find(
         &mut self,
         here: &Home,
-        route: &Route,
+        wanted: Wanted<'_>,
         rules: ReuseRules,
         exits: &mut dyn Exits,
         now: Instant,
@@ -624,7 +646,7 @@ impl Pool {
             let Use::Idle { since } = conn.use_ else {
                 unreachable!("an idle connection is idle");
             };
-            if !conn.serves(route) {
+            if !conn.serves(wanted.route) || !conn.serves_auth(&wanted.auth) {
                 continue;
             }
             let number = conn.number;
@@ -714,7 +736,9 @@ impl Pool {
             && let Route::Tcp(tcp) = &conn.route
             && tcp.origin.scheme().reuse
             && !finish.premature
-            && !finish.forbid_reuse
+            // Forbidden its reuse, it is kept all the same for the request
+            // Negotiate's handshake makes again on it.
+            && (!finish.forbid_reuse || conn.negotiating())
             && !conn.close
         {
             assert_eq!(conn.use_, Use::Leased(NonZeroU32::MIN), "one lease");

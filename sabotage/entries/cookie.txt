@@ -9,7 +9,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
-            let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+            let site = cookie_site(cookie_host, target, peer);
             cookies::set_by_server(cx, value, &site)?;
         }
         let early = line.early.map_err(|e| head_failed(cx, &e));
@@ -28,7 +28,7 @@ witness: curl-core proto::http::tests::a_cookie_set_goes_with_the_next_request
         if line.kind == LineKind::Header
             && let Some(value) = strip_name(line.bytes, b"Set-Cookie:")
         {
-            let site = cookie_site(&self.cookie_host, &self.target, &self.peer);
+            let site = cookie_site(cookie_host, target, peer);
             cookies::set_by_server(cx, value, &site)?;
         }
 

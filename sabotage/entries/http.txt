@@ -924,7 +924,7 @@ witness: curl-core proto::http1::auth::tests::composes_the_login_and_the_url_s_a
 file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
 --- old
-        let again = self.follow || self.auth.reload;
+        let again = self.follow || self.auth.again();
 --- new
         let again = self.follow;
 
@@ -932,9 +932,9 @@ witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_401_is_answered_with_a_method_it_offers
 --- old
-            if act.reload {
+            if act.again() {
 --- new
-            if act.reload && false {
+            if act.again() && false {
 
 === a 401 to be answered fails a request that fails on errors
 file: crates/curl-core/src/proto/http1/framing.rs
@@ -995,9 +995,9 @@ witness: curl-core proto::http1::auth::tests::composes_a_token_with_the_rest
 file: crates/curl-core/src/proto/http1/auth.rs
 witness: curl-core proto::http1::auth::tests::acts_on_a_401_as_c
 --- old
-    if open.contains(AuthMethods::BEARER) {
+    } else if open.contains(AuthMethods::BEARER) {
 --- new
-    if open.contains(AuthMethods::BEARER) && !open.contains(AuthMethods::BASIC) {
+    } else if open.contains(AuthMethods::BEARER) && !open.contains(AuthMethods::BASIC) {
 
 === Bearer is picked without a token
 file: crates/curl-core/src/proto/http1/auth.rs

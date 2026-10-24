@@ -75,6 +75,7 @@ fn to(scheme: Scheme, host: &[u8], port: u16) -> Route {
         proxy: None,
         tls: None,
         local: None,
+        delegation: Default::default(),
     })
 }
 

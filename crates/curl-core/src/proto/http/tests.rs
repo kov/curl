@@ -4995,6 +4995,7 @@ mod coding;
 mod debug_lines;
 mod https_trace;
 mod multi_trace;
+mod negotiate;
 mod os_errno;
 mod range;
 mod read_trace;

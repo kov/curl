@@ -35,6 +35,7 @@ mod socks;
 mod tls;
 mod tunnel;
 use crate::components::Component;
+use crate::proto::http::negotiate::Wants as AuthWants;
 use crate::proto::http1::follow;
 use crate::proto::http1::follow::Inherited;
 use crate::proto::{Before, DoStep, Ended, ProtoState, ProtoStep};
@@ -3068,7 +3069,7 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
     let target = match target {
         Ok(Some(target)) => target,
         Ok(None) => {
-            let lease = match acquire(cx, Route::Local) {
+            let lease = match acquire(cx, &proto, Route::Local) {
                 Ok(Acquired::New(lease)) => lease,
                 Ok(Acquired::Reused(_)) => {
                     unreachable!("a connection without a network is never kept")
@@ -3164,6 +3165,8 @@ fn start_leg<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>, mut url: Url) -> Tr
         proxy,
         tls,
         local,
+        // Compared for any protocol, as C compares it (`url_match_auth`).
+        delegation: cx.easy().options().login.delegation,
     };
     setup(cx, Plan { proto, route })
 }
@@ -3401,7 +3404,7 @@ fn copied(bytes: &[u8]) -> Result<Vec<u8>, ErrorKind> {
 /// idle one to reuse, or none while the multi's limits allow none, the
 /// request waiting for one (`multistate_connect`).
 fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
-    let acquired = acquire(cx, Route::Tcp(plan.route.clone()));
+    let acquired = acquire(cx, &plan.proto, Route::Tcp(plan.route.clone()));
     if !matches!(acquired, Ok(Acquired::Wait(_))) {
         // One waiting may now find room too.
         schedule_pending(&mut cx.rest);
@@ -3539,9 +3542,17 @@ fn connect_to<H: Host>(
     Err(trace::fail_for(cx, kind, reason))
 }
 
-/// A connection for the transfer, and the trace of what the search for
-/// one did.
-fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, OutOfMemory> {
+/// A connection for the transfer making `proto`, and the trace of what
+/// the search for one did.
+fn acquire<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    proto: &ProtoState,
+    route: Route,
+) -> Result<Acquired, OutOfMemory> {
+    let wants = match proto {
+        ProtoState::Http(request) => request.reuse_wants(cx.easy().auth.host_want()),
+        _ => AuthWants::NONE,
+    };
     let limits = cx.easy().options().limits.reuse;
     let rules = ReuseRules {
         max_idle: limits.max_idle.map(TimeLimit::duration),
@@ -3560,7 +3571,17 @@ fn acquire<H: Host>(cx: &mut StepCx<'_, H>, route: Route) -> Result<Acquired, Ou
     };
     let found = if pool::searches(&route, rules) {
         cx.rest.pool_search(cx.me, &home, |pool, exits, here| {
-            pool.find(here, &route, rules, exits, now, &mut notes)
+            pool.find(
+                here,
+                pool::Wanted {
+                    route: &route,
+                    auth: wants,
+                },
+                rules,
+                exits,
+                now,
+                &mut notes,
+            )
         })?
     } else {
         None

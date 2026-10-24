@@ -18,9 +18,12 @@ witness: curl-core proto::http1::auth::tests::a_message_signature_is_used_at_onc
 file: crates/curl-core/src/proto/http1/auth.rs
 witness: curl-core proto::http1::auth::tests::a_message_signature_is_used_at_once_and_never_by_a_proxy
 --- old
-        if credentials.is_none() && !self.want.contains(AuthMethods::HTTPSIG) {
+        if credentials.is_none()
+            && !self.want.contains(AuthMethods::HTTPSIG)
+            && !self.want.contains(AuthMethods::NEGOTIATE)
 --- new
-        if credentials.is_none() {
+        if credentials.is_none()
+            && !self.want.contains(AuthMethods::NEGOTIATE)
 
 === the application's own Signature-Input is signed over
 file: crates/curl-core/src/proto/http/httpsig.rs

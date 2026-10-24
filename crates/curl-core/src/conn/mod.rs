@@ -150,6 +150,7 @@ impl Route {
                     proxy,
                     tls,
                     local,
+                    delegation,
                 } = have;
                 let Tcp {
                     origin: want_origin,
@@ -158,8 +159,10 @@ impl Route {
                     proxy: want_proxy,
                     tls: want_tls,
                     local: want_local,
+                    delegation: want_delegation,
                 } = want;
                 **origin == **want_origin
+                    && delegation == want_delegation
                     // C compares the detours without their schemes
                     // (`Curl_peer_same_destination`); each has its
                     // origin's.
@@ -222,6 +225,10 @@ pub(crate) struct Tcp {
     /// `interface_opts`, `localport`, `localportrange`): shared, as few
     /// routes bind and every connection's slot holds its route inline.
     pub(crate) local: Option<TryArc<crate::options::LocalBind>>,
+    /// How far GSS-API contexts over it delegate the user's credentials
+    /// (`conn->gssapi_delegation`): a transfer reusing it must ask the
+    /// same (`url_match_auth`).
+    pub(crate) delegation: crate::options::Delegation,
 }
 
 impl Tcp {
@@ -773,6 +780,9 @@ pub(crate) struct Conn {
     close: bool,
     /// What it keeps of its creating transfer's settings.
     settings: shutdown::ConnSettings,
+    /// HTTP Negotiate's context with the origin, and what the connection
+    /// is bound to by it; made the first time a request negotiates.
+    negotiate: Option<Box<crate::proto::http::negotiate::Negotiate>>,
 }
 
 impl Conn {
@@ -836,6 +846,32 @@ impl Conn {
             Route::Tcp(_) | Route::Local => false,
         };
         self.route.serves(wanted) && (!insists || self.socks5_authenticated)
+    }
+
+    /// HTTP Negotiate on it, if a request negotiated.
+    pub(crate) fn negotiate(&self) -> Option<&crate::proto::http::negotiate::Negotiate> {
+        self.negotiate.as_deref()
+    }
+
+    pub(crate) fn negotiate_mut(
+        &mut self,
+    ) -> &mut Option<Box<crate::proto::http::negotiate::Negotiate>> {
+        &mut self.negotiate
+    }
+
+    /// Whether a transfer with `wants` may have it, as far as Negotiate's
+    /// binding goes (`url_match_auth`, `url_match_auth_nego`).
+    pub(crate) fn serves_auth(&self, wants: &crate::proto::http::negotiate::Wants<'_>) -> bool {
+        self.negotiate.as_ref().is_none_or(|n| n.serves(wants))
+    }
+
+    /// Whether it is in the middle of Negotiate's handshake, a challenge
+    /// taken and the request to go again on it, which the application's
+    /// forbidding its reuse does not close (`multi_conn_should_close`).
+    pub(crate) fn negotiating(&self) -> bool {
+        self.negotiate
+            .as_ref()
+            .is_some_and(|n| n.state() == crate::proto::http::negotiate::State::Recv)
     }
 
     /// Whether it carried a request before this one.
@@ -965,6 +1001,7 @@ mod tests {
                 proxy: None,
                 tls: None,
                 local: None,
+                delegation: Default::default(),
             })
         };
         assert!(over(b"/tmp/s").serves(&over(b"/tmp/s")));
@@ -1056,6 +1093,7 @@ mod tests {
                     .map(|host| ProxyRoute::new(ProxyType::Socks5, arc(host), None, false, false)),
                 tls: None,
                 local: None,
+                delegation: Default::default(),
             })
         };
         let have = tcp(
@@ -1145,6 +1183,7 @@ mod tests {
                 proxy: None,
                 tls: tls.map(|t| TlsIdentity::of(t, Default::default()).unwrap()),
                 local: None,
+                delegation: Default::default(),
             })
         };
         let verified = Tls::default();
@@ -1196,6 +1235,7 @@ mod tests {
             )),
             tls: None,
             local: None,
+            delegation: Default::default(),
         })
     }
 
@@ -1219,6 +1259,7 @@ mod tests {
                 proxy: None,
                 tls: None,
                 local: local.binds().then(|| TryArc::try_new(local).unwrap()),
+                delegation: Default::default(),
             })
         };
         let plain = bound("", 0, 0);
@@ -1251,6 +1292,7 @@ mod tests {
             proxy: None,
             tls: None,
             local: None,
+            delegation: Default::default(),
         });
         let route = via_proxy(b"proxy.example", None, true);
         assert!(route.serves(&via_proxy(b"PROXY.example", None, true)));

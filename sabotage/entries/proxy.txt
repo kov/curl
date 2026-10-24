@@ -74,9 +74,9 @@ witness: curl-core proto::http1::auth::tests::acts_on_a_407_as_c
 file: crates/curl-core/src/proto/http1/auth.rs
 witness: curl-core proto::http1::auth::tests::acts_on_a_407_as_c
 --- old
-            problem: asked.problem || offered.host.refused || offered.proxy.refused,
+            problem: (asked.problem && !cleared) || offered.host.refused || offered.proxy.refused,
 --- new
-            problem: asked.problem || offered.host.refused,
+            problem: (asked.problem && !cleared) || offered.host.refused,
 
 === a proxy is offered Bearer
 file: crates/curl-core/src/proto/http1/auth.rs
@@ -444,13 +444,11 @@ witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_fir
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_proxy_s_digest_is_traced_before_its_first_challenge
 --- old
-        auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
-        for note in signed
---- new
-        if proxy_auth.header.is_some() {
+        if !proxy_traced {
             auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
-        }
-        for note in signed
+--- new
+        if !proxy_traced && proxy_auth.header.is_some() {
+            auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
 
 === a redial looks the proxy's name up again
 file: crates/curl-core/src/conn/connect.rs

@@ -61,10 +61,9 @@ witness: curl-core conn::pool::tests::a_tcp_connection_is_set_up_in_its_slot
 file: crates/curl-core/src/conn/pool.rs
 witness: curl-core conn::pool::tests::a_finished_connection_is_kept_for_an_equal_route
 --- old
-            if !conn.serves(route) {
-                continue;
-            }
+            if !conn.serves(wanted.route) || !conn.serves_auth(&wanted.auth) {
 --- new
+            if !conn.serves_auth(&wanted.auth) {
 
 === an idle connection is reused without its health checked
 file: crates/curl-core/src/conn/pool.rs
@@ -350,7 +349,9 @@ file: crates/curl-core/src/conn/pool.rs
 witness: curl-core multi::tests::a_transfer_can_refuse_to_share_its_connection
 --- old
             && !finish.premature
-            && !finish.forbid_reuse
+            // Forbidden its reuse, it is kept all the same for the request
+            // Negotiate's handshake makes again on it.
+            && (!finish.forbid_reuse || conn.negotiating())
 --- new
             && !finish.premature
 

@@ -8,8 +8,11 @@ use std::fmt;
 use curl_alloc::{OutOfMemory, TryVec as _};
 
 use super::fields::{self, BadLine, MAX_HEADERS};
-use super::framing::{Asked, CodingTale, Framing, FramingError, Meta, Notes, Unsent};
+use super::framing::{
+    Asked, CodingTale, ConnNegotiate, Framing, FramingError, Meta, Notes, Unsent,
+};
 use crate::error::ErrorKind;
+use crate::options::AuthMethods;
 
 /// The most one assembled line may be, the byte C's buffer keeps for
 /// itself taken off (`CURL_MAX_HTTP_HEADER`).
@@ -304,12 +307,14 @@ impl HeadParser {
     /// Read from `input`; `transfer_bytes` counts head bytes over every
     /// request of the transfer (C's `info.header_size`). Gives how much of
     /// `input` was used and what it made, if anything: feed the rest
-    /// again until the head is done.
+    /// again until the head is done. `conn` is where the connection's
+    /// Negotiate is.
     pub(crate) fn feed<'s>(
         &'s mut self,
         mut input: &[u8],
         transfer_bytes: &mut u64,
         sending: Unsent,
+        conn: ConnNegotiate,
     ) -> Result<(usize, Option<HeadEvent<'s>>), HeadError> {
         if self.given {
             self.given = false;
@@ -325,7 +330,9 @@ impl HeadParser {
                 self.unfold();
             } else {
                 // The waiting line was whole.
-                return self.line_out(transfer_bytes, sending).map(|e| (0, Some(e)));
+                return self
+                    .line_out(transfer_bytes, sending, conn)
+                    .map(|e| (0, Some(e)));
             }
         }
         while !input.is_empty() {
@@ -368,7 +375,7 @@ impl HeadParser {
                 }
             }
             return self
-                .line_out(transfer_bytes, sending)
+                .line_out(transfer_bytes, sending, conn)
                 .map(|e| (used, Some(e)));
         }
         Ok((used, None))
@@ -427,6 +434,7 @@ impl HeadParser {
         &mut self,
         transfer_bytes: &mut u64,
         sending: Unsent,
+        conn: ConnNegotiate,
     ) -> Result<HeadEvent<'_>, HeadError> {
         self.given = true;
         let mut note = Notes::default();
@@ -444,7 +452,9 @@ impl HeadParser {
             } else {
                 self.phase = Phase::Done;
                 if !bad_code {
-                    let (said, framing) = self.meta.decide(status, &self.exchange.asked, sending);
+                    let (said, framing) =
+                        self.meta
+                            .decide(status, &self.exchange.asked, sending, conn);
                     note = said;
                     match framing {
                         Ok(framing) => self.framing = Some(framing),
@@ -483,7 +493,11 @@ impl HeadParser {
                 note = Notes::one(heard.map_err(HeadError::Framing)?);
                 // A location to follow (`http_header_l`).
                 if !following && self.meta.follow().is_some() {
-                    self.meta.perhaps_rewind(sending, &mut note);
+                    let auth = &self.exchange.asked.auth;
+                    let negotiate = auth.host.picked() == AuthMethods::NEGOTIATE
+                        || auth.proxy.picked() == AuthMethods::NEGOTIATE;
+                    self.meta
+                        .perhaps_rewind(sending, negotiate, conn, &mut note);
                 }
             }
             kind

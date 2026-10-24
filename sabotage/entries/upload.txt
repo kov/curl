@@ -289,9 +289,10 @@ file: crates/curl-core/src/proto/http1/framing.rs
 witness: curl-core proto::http::tests::a_challenge_mid_body_closes_rather_than_send_the_rest
 --- old
         if self.auth.reload {
-            self.perhaps_rewind(sending, &mut note);
-        }
+            let picked =
 --- new
+        if self.auth.reload && false {
+            let picked =
 
 === lent bytes have no size
 file: crates/curl-core/src/upload/mod.rs

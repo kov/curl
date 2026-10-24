@@ -1,0 +1,44 @@
+=== a connection bound to Negotiate credentials serves a transfer with others
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::a_negotiated_connection_serves_only_its_own
+features: test-util,debug-hooks
+--- old
+        if credentials.is_some() && !same {
+--- new
+        if credentials.is_some() && !same && wants.negotiate {
+
+=== a connection serves a transfer asking for another GSS-API delegation
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::negotiate::a_negotiated_connection_serves_only_its_own
+features: test-util,debug-hooks
+--- old
+                    && delegation == want_delegation
+--- new
+                    && (delegation == want_delegation || true)
+
+=== a token answered by a success is never taken as authenticating the connection
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::the_next_request_authenticates_again_unless_it_persists
+features: test-util,debug-hooks
+--- old
+        nego.host.state = State::Succ;
+--- new
+        nego.host.state = State::Done;
+
+=== a connection mid-handshake is closed when the transfer forbade reuse
+file: crates/curl-core/src/conn/pool.rs
+witness: curl-core proto::http::tests::negotiate::a_challenge_taken_holds_the_connection
+features: test-util,debug-hooks
+--- old
+            && (!finish.forbid_reuse || conn.negotiating())
+--- new
+            && !finish.forbid_reuse
+
+=== Persistent-Auth is read as false whatever it says
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::the_next_request_authenticates_again_unless_it_persists
+features: test-util,debug-hooks
+--- old
+    side.no_persist = value.len() >= 5 && value[..5].eq_ignore_ascii_case(b"false");
+--- new
+    side.no_persist = true;

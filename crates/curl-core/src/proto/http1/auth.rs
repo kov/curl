@@ -49,6 +49,18 @@ impl Auth {
         self.proxy.start(proxy);
     }
 
+    /// Negotiate is the method in use with the origin
+    /// (`authhost.picked == CURLAUTH_NEGOTIATE`).
+    pub(crate) fn host_picks_negotiate(&self) -> bool {
+        self.host.picked_negotiate()
+    }
+
+    /// The methods the transfer may use with the origin
+    /// (`authhost.want`).
+    pub(crate) fn host_want(&self) -> AuthMethods {
+        self.host.want
+    }
+
     /// Authenticating went wrong, and stops (`state.authproblem`).
     pub(crate) fn problem(&self) -> bool {
         self.problem
@@ -155,13 +167,15 @@ struct DigestState {
     digest: Digest,
 }
 
-/// The credentials a Digest challenge was answered with, to tell when
-/// they change (`Curl_creds_same`).
+/// Credentials kept to tell when a later request's are others
+/// (`Curl_creds_same`): those a Digest challenge was answered with, or
+/// those a connection authenticated with Negotiate is bound to.
 #[derive(Debug)]
-struct Answered {
+pub(crate) struct Answered {
     user: Vec<u8>,
     password: Vec<u8>,
     bearer: Vec<u8>,
+    service: Vec<u8>,
 }
 
 /// What a request is, for its credentials to answer.
@@ -190,6 +204,10 @@ pub(crate) struct Output {
     /// The request goes without its body, a probe for a method that
     /// takes more than one (`req.authneg`).
     pub(crate) probe: bool,
+    /// Negotiate is to be sent, with the connection's context: what it
+    /// sends, and whether it is done, are the connection's to decide
+    /// (`Curl_output_negotiate`), and `negotiated` to be told.
+    pub(crate) negotiate: bool,
 }
 
 /// Why a request's authentication could not be made.
@@ -236,14 +254,19 @@ impl PeerAuth {
         request: &AuthRequest<'_>,
         random: impl FnOnce(&mut [u8; 12]) -> Result<(), ()>,
     ) -> Result<Output, OutputError> {
-        // A message signature signs with its own key, credentials or
-        // not (`Curl_http_output_auth`).
-        if credentials.is_none() && !self.want.contains(AuthMethods::HTTPSIG) {
+        // A message signature signs with its own key, and Negotiate with
+        // the library's credentials, credentials or not
+        // (`Curl_http_output_auth`).
+        if credentials.is_none()
+            && !self.want.contains(AuthMethods::HTTPSIG)
+            && !self.want.contains(AuthMethods::NEGOTIATE)
+        {
             self.done = true;
             return Ok(Output {
                 header: None,
                 used: AuthMethods::NONE,
                 probe: false,
+                negotiate: false,
             });
         }
         if !self.want.is_empty() && self.picked == Picked::NotYet {
@@ -286,6 +309,22 @@ impl PeerAuth {
                 self.done = value.is_some();
                 (true, value)
             }
+            // Neither beside the application's own Authorization nor to an
+            // origin the application's settings may not go to; else the
+            // connection's context says.
+            (Some(AuthMethods::NEGOTIATE), _) => {
+                if custom || request.trusted.is_none() {
+                    self.done = true;
+                    (false, None)
+                } else {
+                    return Ok(Output {
+                        header: None,
+                        used: AuthMethods::NONE,
+                        probe: false,
+                        negotiate: true,
+                    });
+                }
+            }
             _ => (false, None),
         };
         let picked = self.picked.methods();
@@ -295,7 +334,30 @@ impl PeerAuth {
             // A method that takes more than one request, not done, probes
             // without the body.
             probe: active && !self.done && !request.get_or_head,
+            negotiate: false,
         })
+    }
+
+    /// What Negotiate sends, the connection's context having made it
+    /// (`Curl_output_negotiate`), and whether authenticating is done.
+    pub(crate) fn negotiated(
+        &mut self,
+        header: Option<Vec<u8>>,
+        done: bool,
+        get_or_head: bool,
+    ) -> Output {
+        self.done = done;
+        Output {
+            header: header.map(|v| (AuthMethods::NEGOTIATE, v)),
+            used: AuthMethods::NEGOTIATE,
+            probe: !done && !get_or_head,
+            negotiate: false,
+        }
+    }
+
+    /// Negotiate is the method in use (`picked == CURLAUTH_NEGOTIATE`).
+    pub(crate) fn picked_negotiate(&self) -> bool {
+        self.picked.methods() == AuthMethods::NEGOTIATE
     }
 
     /// The `Authorization: Digest` value answering the challenge kept for
@@ -416,6 +478,11 @@ pub(crate) struct PeerAsked {
 }
 
 impl PeerAsked {
+    /// The method picked, or the methods wanted before one is.
+    pub(crate) fn picked(&self) -> AuthMethods {
+        self.picked
+    }
+
     /// Without credentials, wanting nothing.
     pub(crate) const DEFAULT: PeerAsked = PeerAsked {
         want: AuthMethods::NONE,
@@ -467,6 +534,14 @@ pub(crate) struct Challenges {
     refused: bool,
     /// The Digest challenge, read whether or not Digest is wanted.
     digest: Option<Digest>,
+    /// A Negotiate challenge was taken into the connection's context: the
+    /// request is made again, whatever else the response leads to
+    /// (`auth_spnego`'s `newurl`).
+    negotiated: bool,
+    /// A Negotiate challenge taken cleared what went wrong before it, in
+    /// this response or an earlier one of the transfer (`authproblem =
+    /// FALSE`): only a refusal after it stands.
+    cleared: bool,
 }
 
 /// What C says as it reads one challenge line, in order (`infof`): at
@@ -515,6 +590,12 @@ impl Challenges {
             if names(value, AuthMethods::DIGEST.name()) {
                 self.digest_challenge(value, asked, &mut open, &mut heard)?;
             }
+            if names(value, AuthMethods::NEGOTIATE.name()) {
+                // Answered where the head is read, with the connection's
+                // context (`auth_spnego`): offered, and never refused here.
+                self.offered = self.offered | AuthMethods::NEGOTIATE;
+                open = open | AuthMethods::NEGOTIATE;
+            }
             for method in [AuthMethods::BASIC, AuthMethods::BEARER] {
                 if names(value, method.name()) {
                     self.offered = self.offered | method;
@@ -544,6 +625,25 @@ impl Challenges {
     /// The credentials were refused, or a challenge could not be read.
     pub(crate) fn refused(&self) -> bool {
         self.refused
+    }
+
+    /// Authenticating went wrong with what the response says
+    /// (`authproblem`).
+    pub(crate) fn refuse(&mut self) {
+        self.refused = true;
+    }
+
+    /// A Negotiate challenge of this response was answered (`auth_spnego`):
+    /// taken into the context, `ok`, the request is made again and what
+    /// went wrong before is cleared; else authenticating went wrong.
+    pub(crate) fn negotiate_answered(&mut self, ok: bool) {
+        if ok {
+            self.negotiated = true;
+            self.cleared = true;
+            self.refused = false;
+        } else {
+            self.refused = true;
+        }
     }
 
     /// The methods open: those left from before, until a challenge is
@@ -597,6 +697,37 @@ fn names(value: &[u8], name: &str) -> bool {
         && !value.get(name.len()).is_some_and(u8::is_ascii_alphanumeric)
 }
 
+/// What follows each `Negotiate` a challenge `value` offers, its blanks
+/// passed: the rest of the value, whatever else it offers after, as C
+/// hands it on (`auth_spnego`, `Curl_input_negotiate`).
+pub(crate) fn negotiate_challenges(mut value: &[u8]) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        while !value.is_empty() {
+            let here = value;
+            match value.iter().position(|&b| b == b',') {
+                Some(comma) => {
+                    value = &value[comma + 1..];
+                    let blanks = value
+                        .iter()
+                        .take_while(|&&b| b == b' ' || b == b'\t')
+                        .count();
+                    value = &value[blanks..];
+                }
+                None => value = &[],
+            }
+            if names(here, AuthMethods::NEGOTIATE.name()) {
+                let rest = &here[AuthMethods::NEGOTIATE.name().len()..];
+                let blanks = rest
+                    .iter()
+                    .take_while(|&&b| b == b' ' || b == b'\t')
+                    .count();
+                return Some(&rest[blanks..]);
+            }
+        }
+        None
+    })
+}
+
 /// What a final response leads to, once its head is in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct AuthAct {
@@ -609,6 +740,10 @@ pub(crate) struct AuthAct {
     /// The request is made again, its body not delivered.
     pub(crate) reload: bool,
     pub(crate) done: bool,
+    /// A Negotiate challenge was taken into the connection's context: the
+    /// request is made again even with no method picked, or with
+    /// authenticating gone wrong (`auth_spnego`'s `newurl`).
+    pub(crate) negotiated: bool,
 }
 
 impl AuthAct {
@@ -617,8 +752,10 @@ impl AuthAct {
     /// a 401 picks a method for the origin, a 407 for the proxy, and a
     /// probe let through for both.
     pub(crate) fn of(code: u16, offered: &Offered, asked: &AuthAsked) -> AuthAct {
+        let cleared = offered.host.cleared || offered.proxy.cleared;
         let mut act = AuthAct {
-            problem: asked.problem || offered.host.refused || offered.proxy.refused,
+            problem: (asked.problem && !cleared) || offered.host.refused || offered.proxy.refused,
+            negotiated: offered.host.negotiated || offered.proxy.negotiated,
             ..AuthAct::default()
         };
         if act.problem {
@@ -649,6 +786,12 @@ impl AuthAct {
         act
     }
 
+    /// The request is made again: a method was picked, a probe let
+    /// through, or a Negotiate challenge taken (`req.newurl`).
+    pub(crate) fn again(&self) -> bool {
+        self.reload || self.negotiated
+    }
+
     /// Whether a 401 or 407 is an error to fail on, as other codes of 400
     /// or more are (`http_should_fail`): one asking for credentials the
     /// request has for that peer, not yet refused, is not.
@@ -668,7 +811,10 @@ fn pick(challenges: &Challenges, asked: &PeerAsked, bearer: bool) -> AuthMethods
     if !bearer {
         open = open & !AuthMethods::BEARER;
     }
-    if open.contains(AuthMethods::BEARER) {
+    // Picked whatever the credentials, empty ones too.
+    if open.contains(AuthMethods::NEGOTIATE) {
+        AuthMethods::NEGOTIATE
+    } else if open.contains(AuthMethods::BEARER) {
         AuthMethods::BEARER
     } else if open.contains(AuthMethods::DIGEST) && asked.user_or_password {
         AuthMethods::DIGEST
@@ -687,6 +833,9 @@ pub(crate) struct Credentials {
     password: Vec<u8>,
     /// An OAuth 2.0 token, empty for none.
     bearer: Vec<u8>,
+    /// The service the origin is authenticated as, empty for the
+    /// protocol's (`sasl_service`).
+    service: Vec<u8>,
     source: Source,
     trusted: Trusted,
 }
@@ -732,6 +881,7 @@ impl Credentials {
         url: &Url,
     ) -> Result<Option<Credentials>, CredentialsError> {
         let (mut user, mut password, mut bearer) = (None, None, Vec::new());
+        let mut service = Vec::new();
         if let Some(trusted) = trusted {
             user = login.user.as_deref().map(copy).transpose()?;
             password = login.password.as_deref().map(copy).transpose()?;
@@ -741,11 +891,18 @@ impl Credentials {
                 .map(copy)
                 .transpose()?
                 .unwrap_or_default();
+            service = login
+                .service
+                .as_deref()
+                .map(copy)
+                .transpose()?
+                .unwrap_or_default();
             if let Some(user) = user.take_if(|u| !u.is_empty()) {
                 return Ok(Some(Credentials {
                     user,
                     password: password.unwrap_or_default(),
                     bearer,
+                    service,
                     source: Source::Options,
                     trusted,
                 }));
@@ -754,7 +911,7 @@ impl Credentials {
         if let Some((url_user, url_password)) = Self::of_url(url)? {
             user = url_user.or(user);
             password = url_password.or(password);
-        } else if user.is_none() && password.is_none() && bearer.is_empty() {
+        } else if user.is_none() && password.is_none() && bearer.is_empty() && service.is_empty() {
             return Ok(None);
         }
         // What the login left blank merged with the URL is the URL's,
@@ -763,6 +920,7 @@ impl Credentials {
             user: user.unwrap_or_default(),
             password: password.unwrap_or_default(),
             bearer,
+            service,
             source: Source::Url,
             // A login gets this far only trusted; the URL's own always.
             trusted: trusted.unwrap_or_else(Trusted::own_url),
@@ -799,10 +957,13 @@ impl Credentials {
     /// of theirs, a token kept (`Curl_creds_merge`). The entry is for the
     /// request's own host, so goes there wherever the transfer started.
     pub(crate) fn with_netrc(credentials: Option<Credentials>, found: Found) -> Credentials {
+        let (bearer, service) =
+            credentials.map_or_else(Default::default, |c| (c.bearer, c.service));
         Credentials {
             user: found.user,
             password: found.password,
-            bearer: credentials.map(|c| c.bearer).unwrap_or_default(),
+            bearer,
+            service,
             source: Source::Netrc,
             trusted: Trusted::own_url(),
         }
@@ -844,6 +1005,7 @@ impl Credentials {
             user: &self.user,
             password: &self.password,
             bearer: &self.bearer,
+            service: &self.service,
         }
     }
 
@@ -854,12 +1016,13 @@ impl Credentials {
 }
 
 /// What a request authenticates with to one peer: a user and a password,
-/// and a token, each empty for none.
+/// a token and the service it is authenticated as, each empty for none.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Secret<'a> {
     user: &'a [u8],
     password: &'a [u8],
     bearer: &'a [u8],
+    service: &'a [u8],
 }
 
 impl<'a> Secret<'a> {
@@ -869,6 +1032,7 @@ impl<'a> Secret<'a> {
             user,
             password,
             bearer: &[],
+            service: &[],
         }
     }
 
@@ -889,22 +1053,30 @@ impl<'a> Secret<'a> {
         !self.bearer.is_empty()
     }
 
+    /// The service the peer is authenticated as, if not the protocol's
+    /// (`Curl_creds_has_sasl_service`).
+    pub(crate) fn service(&self) -> Option<&'a [u8]> {
+        (!self.service.is_empty()).then_some(self.service)
+    }
+
     /// These, kept to tell whether a Digest challenge answered with them
     /// is answered with others.
-    fn answered(&self) -> Result<Answered, OutOfMemory> {
+    pub(crate) fn answered(&self) -> Result<Answered, OutOfMemory> {
         Ok(Answered {
             user: copy(self.user)?,
             password: copy(self.password)?,
             bearer: copy(self.bearer)?,
+            service: copy(self.service)?,
         })
     }
 
     /// Whether these are those `answered` kept (`Curl_creds_same`, whose
     /// comparisons take the same time whatever the bytes).
-    fn answers_as(&self, answered: &Answered) -> bool {
+    pub(crate) fn answers_as(&self, answered: &Answered) -> bool {
         same_secret(self.user, &answered.user)
             & same_secret(self.password, &answered.password)
             & same_secret(self.bearer, &answered.bearer)
+            & same_secret(self.service, &answered.service)
     }
 
     /// `user:password` in base64, what `Authorization: Basic` carries;
@@ -1158,6 +1330,7 @@ mod tests {
             user: user.to_vec(),
             password: password.to_vec(),
             bearer: Vec::new(),
+            service: Vec::new(),
             source,
             trusted: Trusted::own_url(),
         };
@@ -1301,6 +1474,8 @@ mod tests {
             offered: m,
             refused: false,
             digest: None,
+            negotiated: false,
+            cleared: false,
         }
     }
 
@@ -1322,6 +1497,151 @@ mod tests {
             host: *asked,
             ..AuthAsked::DEFAULT
         }
+    }
+
+    /// Negotiate is offered by its name as other methods are, never
+    /// refused as it is read, and what follows each is handed on whole,
+    /// its blanks passed, the rest of the value with it, as C hands it to
+    /// `Curl_input_negotiate`.
+    #[test]
+    fn reads_negotiate_challenges_as_c() {
+        let asked = PeerAsked {
+            picked: AuthMethods::NEGOTIATE,
+            ..PeerAsked::DEFAULT
+        };
+        let mut c = Challenges::default();
+        assert!(c.read(b"Negotiate abc", &asked).unwrap().is_empty());
+        assert_eq!(c.open, Some(AuthMethods::NEGOTIATE));
+        assert_eq!(c.offered, AuthMethods::NEGOTIATE);
+        assert!(!c.refused, "taken where the head is read");
+        let all = |v: &'static [u8]| negotiate_challenges(v).collect::<Vec<_>>();
+        assert_eq!(all(b"Negotiate"), [b""]);
+        assert_eq!(all(b"Negotiate \t RA=="), [b"RA=="]);
+        assert_eq!(all(b"Basic, Negotiate RA==, NTLM"), [&b"RA==, NTLM"[..]]);
+        assert_eq!(all(b"Negotiate, Negotiate"), [&b", Negotiate"[..], b""]);
+        assert!(all(b"Negotiatex, NegotiateY").is_empty());
+        assert!(all(b"X a=\"Negotiate\"").is_empty());
+        // A challenge answered clears what went wrong before it; one
+        // refused after it stands.
+        let mut c = Challenges::default();
+        c.read(
+            b"Basic",
+            &PeerAsked {
+                picked: AuthMethods::BASIC,
+                ..PeerAsked::DEFAULT
+            },
+        )
+        .unwrap();
+        assert!(c.refused);
+        c.negotiate_answered(true);
+        assert!(!c.refused && c.negotiated && c.cleared);
+        c.negotiate_answered(false);
+        assert!(c.refused && c.negotiated);
+    }
+
+    /// Negotiate is picked before any other method offered and wanted,
+    /// with credentials empty or not; a challenge taken has the request
+    /// made again with or without a pick, even with authenticating gone
+    /// wrong before, which it clears.
+    #[test]
+    fn acts_on_negotiate_as_c() {
+        let asked = PeerAsked {
+            want: AuthMethods::ANY,
+            credentials: true,
+            user_or_password: true,
+            bearer: true,
+            ..PeerAsked::DEFAULT
+        };
+        let all = || {
+            offered(
+                AuthMethods::BASIC
+                    | AuthMethods::DIGEST
+                    | AuthMethods::BEARER
+                    | AuthMethods::NEGOTIATE,
+            )
+        };
+        assert_eq!(
+            host_act(401, all(), &asked).picked,
+            Some(AuthMethods::NEGOTIATE)
+        );
+        let empty = PeerAsked {
+            user_or_password: false,
+            bearer: false,
+            ..asked
+        };
+        let negotiate = || offered(AuthMethods::NEGOTIATE);
+        assert_eq!(
+            host_act(401, negotiate(), &empty).picked,
+            Some(AuthMethods::NEGOTIATE)
+        );
+        let unwanted = PeerAsked {
+            want: AuthMethods::BASIC,
+            ..asked
+        };
+        assert!(host_act(401, negotiate(), &unwanted).problem);
+        let mut taken = negotiate();
+        taken.negotiate_answered(true);
+        let none = PeerAsked::DEFAULT;
+        let act = host_act(401, taken, &none);
+        assert!(act.again() && !act.reload && act.picked.is_none());
+        let problem = AuthAsked {
+            host: none,
+            problem: true,
+            ..AuthAsked::DEFAULT
+        };
+        let mut taken = negotiate();
+        taken.negotiate_answered(true);
+        let act = AuthAct::of(
+            401,
+            &Offered {
+                host: taken,
+                proxy: Challenges::default(),
+            },
+            &problem,
+        );
+        assert!(!act.problem && act.again(), "cleared");
+        let mut refused = negotiate();
+        refused.negotiate_answered(false);
+        let act = host_act(401, refused, &none);
+        assert!(act.problem && !act.again());
+    }
+
+    /// A service named makes credentials alone, as C's
+    /// `url_set_data_creds` counts `CURLOPT_SERVICE_NAME`, and only for
+    /// the origin the options go to; they are other credentials for
+    /// another service, and the netrc's keep it.
+    #[test]
+    fn a_service_makes_credentials() {
+        let login = Login {
+            service: Some(b"web".to_vec()),
+            ..Login::default()
+        };
+        let url = Url::parse(b"http://h/", ParseOptions::NONE).unwrap();
+        let c = Credentials::for_request(&login, Some(Trusted::own_url()), &url)
+            .unwrap()
+            .expect("credentials");
+        assert_eq!(c.secret().service(), Some(&b"web"[..]));
+        assert_eq!(c.secret().user(), b"");
+        assert!(
+            Credentials::for_request(&login, None, &url)
+                .unwrap()
+                .is_none()
+        );
+        let other = Login {
+            service: Some(b"other".to_vec()),
+            ..Login::default()
+        };
+        let d = Credentials::for_request(&other, Some(Trusted::own_url()), &url)
+            .unwrap()
+            .unwrap();
+        assert!(!d.secret().answers_as(&c.secret().answered().unwrap()));
+        assert!(c.secret().answers_as(&c.secret().answered().unwrap()));
+        let found = Found {
+            user: b"n".to_vec(),
+            password: b"p".to_vec(),
+        };
+        let merged = Credentials::with_netrc(Some(c), found);
+        assert_eq!(merged.secret().service(), Some(&b"web"[..]));
     }
 
     /// A 401 with credentials picks Basic if offered and wanted, else is
@@ -1524,6 +1844,7 @@ mod tests {
             user: b"u".to_vec(),
             password: password.to_vec(),
             bearer: Vec::new(),
+            service: Vec::new(),
             source: Source::Options,
             trusted: Trusted::own_url(),
         };
@@ -1535,6 +1856,7 @@ mod tests {
                 offered: AuthMethods::DIGEST,
                 refused: false,
                 digest: Some(digest),
+                ..Challenges::default()
             };
             auth.apply(None, false, challenges, &peer(b"a")).unwrap();
         };
@@ -1581,6 +1903,7 @@ mod tests {
             offered: AuthMethods::DIGEST,
             refused: true,
             digest: Some(digest),
+            ..Challenges::default()
         };
         auth.apply(None, false, challenges, &a).unwrap();
         assert!(!auth.asked(None, &a).digest_nonce);
@@ -1664,6 +1987,7 @@ mod tests {
             user: b"u".to_vec(),
             password: Vec::new(),
             bearer: bearer.to_vec(),
+            service: Vec::new(),
             source: Source::Options,
             trusted: Trusted::own_url(),
         };

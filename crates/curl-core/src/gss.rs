@@ -244,3 +244,183 @@ pub enum Style {
     /// minor code's first message, in at most 1023 bytes.
     Socks,
 }
+
+/// A GSS-API library whose steps are scripted, for the core's tests:
+/// each step taken by any of its contexts answers with the next of the
+/// answers given it, and what was asked of it is kept to be read back.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// What a scripted step answers.
+    #[derive(Clone, Debug)]
+    pub(crate) enum Answer {
+        /// The step makes `token` and gets this far.
+        Token(Progress, Vec<u8>),
+        /// The step fails.
+        Fails(GssFailure),
+        /// The step notes a failure on the way, then answers as the next
+        /// answer says.
+        Notes(GssNote),
+    }
+
+    /// Something asked of the library, in order.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) enum Asked {
+        /// A context with `service@host`, by a mechanism, with flags.
+        Context {
+            service: Vec<u8>,
+            host: Vec<u8>,
+            mech: Mech,
+            flags: Flags,
+        },
+        /// A step, with the peer's token if there was one.
+        Step(Option<Vec<u8>>),
+        /// A context was dropped.
+        Dropped,
+    }
+
+    #[derive(Debug, Default)]
+    struct Script {
+        answers: VecDeque<Answer>,
+        asked: Vec<Asked>,
+        /// Making a context fails with this, once.
+        import_fails: Option<GssStatus>,
+    }
+
+    /// The library.
+    #[derive(Clone, Debug, Default)]
+    pub(crate) struct Scripted(Arc<Mutex<Script>>);
+
+    impl Scripted {
+        /// A library made for a test, and kept to its end, as a handle's
+        /// libraries are.
+        pub(crate) fn leaked() -> &'static Scripted {
+            Box::leak(Box::new(Scripted::default()))
+        }
+
+        /// The next step answers `answer`.
+        pub(crate) fn then(&self, answer: Answer) -> &Self {
+            self.0.lock().unwrap().answers.push_back(answer);
+            self
+        }
+
+        /// The next step makes `token`, its context then wanting more.
+        pub(crate) fn then_token(&self, token: &[u8]) -> &Self {
+            self.then(Answer::Token(Progress::Continue, token.to_vec()))
+        }
+
+        /// The next context made fails to import its name.
+        pub(crate) fn import_fails(&self, status: GssStatus) {
+            self.0.lock().unwrap().import_fails = Some(status);
+        }
+
+        /// What was asked of it so far, taken.
+        pub(crate) fn asked(&self) -> Vec<Asked> {
+            std::mem::take(&mut self.0.lock().unwrap().asked)
+        }
+
+        /// The answers given and not yet used.
+        pub(crate) fn unused(&self) -> usize {
+            self.0.lock().unwrap().answers.len()
+        }
+    }
+
+    impl Gss for Scripted {
+        fn context(
+            &self,
+            target: Target<'_>,
+            mech: Mech,
+            flags: Flags,
+        ) -> Result<Box<dyn GssContext>, GssFailure> {
+            let mut script = self.0.lock().unwrap();
+            if let Some(status) = script.import_fails.take() {
+                return Err(GssFailure::status(GssCall::ImportName, status));
+            }
+            let Target::Service { service, host } = target else {
+                panic!("HTTP's targets are services");
+            };
+            script.asked.push(Asked::Context {
+                service: service.to_vec(),
+                host: host.to_vec(),
+                mech,
+                flags,
+            });
+            Ok(Box::new(ScriptedContext(self.0.clone())))
+        }
+
+        /// A status as `major.minor`.
+        fn describe(
+            &self,
+            status: &GssStatus,
+            _: Style,
+            out: &mut dyn FnMut(&[u8]),
+        ) -> Result<(), TooLong> {
+            let (major, minor) = status.codes();
+            out(format!("status {major}.{minor}. ").as_bytes());
+            Ok(())
+        }
+    }
+
+    struct ScriptedContext(Arc<Mutex<Script>>);
+
+    impl Drop for ScriptedContext {
+        fn drop(&mut self) {
+            self.0.lock().unwrap().asked.push(Asked::Dropped);
+        }
+    }
+
+    impl GssContext for ScriptedContext {
+        fn step(
+            &mut self,
+            input: Option<&[u8]>,
+            _: Option<&[u8]>,
+            sink: &mut dyn StepSink,
+        ) -> Result<Step, GssFailure> {
+            let mut script = self.0.lock().unwrap();
+            script.asked.push(Asked::Step(input.map(<[u8]>::to_vec)));
+            loop {
+                match script.answers.pop_front().expect("a step scripted") {
+                    Answer::Notes(note) => sink.note(note),
+                    Answer::Fails(failure) => return Err(failure),
+                    Answer::Token(progress, token) => {
+                        sink.token(&token).map_err(|OutOfMemory| {
+                            GssFailure::out_of_memory(GssCall::InitSecContext)
+                        })?;
+                        return Ok(Step {
+                            progress,
+                            confidentiality: false,
+                            integrity: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        fn wrap(
+            &mut self,
+            _: &[u8],
+            _: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+        ) -> Result<(), GssFailure> {
+            unreachable!("HTTP wraps nothing")
+        }
+
+        fn unwrap(
+            &mut self,
+            _: &[u8],
+            _: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+        ) -> Result<(), GssFailure> {
+            unreachable!("HTTP unwraps nothing")
+        }
+
+        fn initiator(
+            &mut self,
+            _: &mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>,
+        ) -> Result<(), GssFailure> {
+            unreachable!("HTTP asks no name")
+        }
+    }
+}

@@ -304,6 +304,7 @@ mod tests {
             proxy: None,
             tls: None,
             local: None,
+            delegation: Default::default(),
         };
         let shown = |made, under_way| {
             Chain::of(

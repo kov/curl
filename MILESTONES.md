@@ -526,7 +526,8 @@ cargo-mutants run on the milestone's diff.
 
 ## Milestone 3: connections in layers, then TLS
 
-Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's review.
+Status: **done**, but for what each step lists. Opens with what TLS stands on, decided at
+milestone 2's review.
 
 39. **Component tracing.** **Done**, but for what waits on later steps. `curl_global_trace`
     and `--trace-config`: one process-wide setting in the shim's root, read live through a
@@ -601,7 +602,13 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     ticket that arrives while a connection says goodbye is dropped, where C keeps it;
     `curl_easy_ssls_import` and `export` answer `CURLE_NOT_BUILT_IN`; a `PROV` key with no file
     says it is not supported, where C opens the provider's store by no name; 1631 and 1632
-    wait for the FTP server (stage 6), and 1679 for step 46's `--libcurl` output.
+    wait for the FTP server (stage 6), and 1679 for step 46's `--libcurl` output. And
+    cargo-mutants, run over steps 43 and 44 together, leaves about 165 mutants no test checks,
+    nearly all in this step's code. They are in the core's TLS layer and session cache, the
+    `LayerCx` methods of contexts the tests drive little, the interface binding, the shim's
+    proxy TLS options, and the tool's TLS options; two more are Negotiate's rewind and
+    closure decisions (`PeerAsked::picked`, `Challenges::refuse`), which need the reference
+    build's behaviour first.
     - **a. Captures, the red list and the design.** **Done.** The reference build's traces of
       HTTPS against stunnel and `openssl s_server` (`-k`, verified, a verify failure, wrong
       names, mTLS, pinning, reuse, a resumed session, close_notify, CONNECT and HTTPS proxies,
@@ -690,7 +697,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     claims them and `crypto` turns on. Opening `crypto` runs 85 tests that already pass; the GSS-API tests are 2056, 2057, 2077, 2078,
     2094 and 1582. C's debug build answers from a stub in `lib/curl_gssapi.c` when
     `CURL_STUB_GSS_CREDS` is set; the Rust build's stub is the same, under `debug-hooks`.
-    In progress.
+    **Done.**
     - **a. The binding and the seam.** **Done.** `crates/curl-gssapi` over MIT krb5's
       `gssapi_krb5`, `curl_core::gss` (`Gss`, `GssContext`) on the handle's `Libraries`, and
       the stub.
@@ -709,7 +716,10 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       and 2112 run on the Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method
       1 offered; of the 107 tests needing `crypto`, the 86 that run pass, the other 21 skipping
       for POP3, SMTP and IMAP.
-    - **h. Closing the step.** The sweep, cargo-mutants, torture.
+    - **h. Closing the step.** **Done.** The sabotage sweep catches every entry; the two
+      that guarded a build without GSS-API are gone. Torture passes on the GSS-API and SOCKS5
+      greeting tests. The cargo-mutants survivors in this step's code have tests, or are
+      excluded with their reasons, but for two Negotiate decisions step 43 lists.
 45. **The tool's options that need no new engine work,** built alongside step 40. **Done.**
     `--variable` and the `--expand-` prefix (`tool_vars.c`), `--styled-output`,
     `--fail-early`, `--rate`; `--disallow-username-in-url`, `--speed-limit`, `--speed-time`

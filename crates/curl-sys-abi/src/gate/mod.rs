@@ -24,6 +24,7 @@ use curl_core::easy::Easy;
 use curl_core::multi::{EventCx, NotifyCx, TransferCx, TransferId};
 use curl_core::options::Options;
 use curl_core::report::TransferReport;
+use curl_core::tls::TlsNative;
 
 use crate::multi::CHost;
 
@@ -113,6 +114,32 @@ impl Frame {
                 // SAFETY: as the caller guarantees, the adapter that lent
                 // the context does not use it until its callback returns.
                 unsafe { &*cx.as_ptr() }.info(id)
+            }
+        }
+    }
+
+    /// The TLS library's objects of the connection a transfer holds,
+    /// through the context lent.
+    ///
+    /// # Safety
+    ///
+    /// As `options_mut`.
+    pub(crate) unsafe fn tls_native(self, id: TransferId) -> Option<TlsNative> {
+        match self {
+            Frame::Transfer(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &*cx.as_ptr() }.tls_native(id)
+            }
+            Frame::Event(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &*cx.as_ptr() }.tls_native(id)
+            }
+            Frame::Notify(cx) => {
+                // SAFETY: as the caller guarantees, the adapter that lent
+                // the context does not use it until its callback returns.
+                unsafe { &*cx.as_ptr() }.tls_native(id)
             }
         }
     }

@@ -40,6 +40,9 @@ mod share;
 mod sockets;
 mod strerror;
 mod strings;
+mod tls;
+#[cfg(test)]
+mod tls_tests;
 mod url;
 mod version;
 

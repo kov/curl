@@ -36,6 +36,7 @@ use crate::ffi::{
 };
 use crate::gate::EasyCall;
 use crate::sockets::{self, CSockets};
+use crate::tls::CTls;
 
 /// C's longest string option (`CURL_MAX_INPUT_LENGTH`).
 const MAX_INPUT_LENGTH: usize = 8_000_000;
@@ -1243,6 +1244,13 @@ fn apply(
             socket_hooks(me, options, |c| c.close = f)?;
         }
         (ffi::CURLOPT_CLOSESOCKETDATA, Ptr(p)) => socket_hooks(me, options, |c| c.close_data = p)?,
+        (ffi::CURLOPT_SSL_CTX_FUNCTION, Ptr(p)) => {
+            // SAFETY: the application passes a function of the option's
+            // type, or NULL.
+            let f = unsafe { function(p) };
+            tls_hooks(me, options, |c| c.ctx = f)?;
+        }
+        (ffi::CURLOPT_SSL_CTX_DATA, Ptr(p)) => tls_hooks(me, options, |c| c.ctx_data = p)?,
         (option, arg) if tls::takes(option) => tls::apply(options, option, arg)?,
         (option, _) if known::KNOWN.binary_search(&option.0).is_ok() => {
             return Err(Refused::NotBuiltIn);
@@ -1294,6 +1302,24 @@ fn socket_hooks(
     change(&mut c);
     let room = easy.sockets_room()?;
     sockets::sync(options, me, &c)?;
+    room.set(c);
+    Ok(())
+}
+
+/// The `SSL_CTX` function or data of the handle at `me` changed by
+/// `change`, and its context handler made to match.
+fn tls_hooks(
+    me: NonNull<ShimEasy>,
+    options: &mut Options,
+    change: impl FnOnce(&mut CTls),
+) -> Result<(), OutOfMemory> {
+    // SAFETY: `me` is the live handle being set; only its TLS store is
+    // reached, which no other borrow holds.
+    let easy = unsafe { me.as_ref() };
+    let mut c = easy.tls();
+    change(&mut c);
+    let room = easy.tls_room()?;
+    crate::tls::sync(options, me, &c)?;
     room.set(c);
     Ok(())
 }

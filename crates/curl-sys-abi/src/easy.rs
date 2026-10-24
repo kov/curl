@@ -18,6 +18,7 @@ use curl_core::error::{ErrorKind, MultiErrorKind};
 use curl_core::multi::{PauseRequest, TransferId, drive_by_events, drive_to_completion};
 use curl_core::options::Options;
 use curl_core::report::TransferReport;
+use curl_core::tls::TlsNative;
 
 use crate::callbacks::{self, CCallbacks, CSettings};
 use crate::error_codes::{MultiError, easy_code};
@@ -29,6 +30,7 @@ use crate::gate::{EasyCall, EasyStack, Frame, MultiCall, MultiStack, Reach, Recu
 use crate::multi::{ShimEvents, ShimMulti};
 use crate::share::ShimShare;
 use crate::sockets::CSockets;
+use crate::tls::CTls;
 
 /// C's `CURLEASY_MAGIC_NUMBER`, which tells a live handle.
 const MAGIC: u32 = 0xc0de_dbad;
@@ -55,6 +57,12 @@ pub(crate) struct ShimEasy {
     /// The application's socket functions and data, made the first time
     /// one is set: few handles set any.
     sockets: OnceCell<Box<Cell<CSockets>>>,
+    /// The application's `SSL_CTX` function and data, made the first
+    /// time one is set: few handles set either.
+    tls: OnceCell<Box<Cell<CTls>>>,
+    /// What `CURLINFO_TLS_SSL_PTR` and `CURLINFO_TLS_SESSION` point to
+    /// (C's `data->tsi`).
+    pub(crate) tsi: UnsafeCell<ffi::curl_tlssessioninfo>,
     /// `CURLOPT_ERRORBUFFER`.
     pub(crate) errbuf: Cell<*mut c_char>,
     /// The share the application gave (`CURLOPT_SHARE`), whose core the
@@ -170,6 +178,38 @@ impl ShimEasy {
         Ok(self.sockets.get().expect("made above"))
     }
 
+    /// The application's `SSL_CTX` function and data, as set.
+    pub(crate) fn tls(&self) -> CTls {
+        self.tls.get().map_or(CTls::NONE, |c| c.get())
+    }
+
+    /// Room for the `SSL_CTX` function and data, made now if not yet.
+    pub(crate) fn tls_room(&self) -> Result<&Cell<CTls>, OutOfMemory> {
+        if self.tls.get().is_none() {
+            let made = try_box(Cell::new(CTls::NONE))?;
+            assert!(self.tls.set(made).is_ok(), "not made yet");
+        }
+        Ok(self.tls.get().expect("made above"))
+    }
+
+    /// The TLS library's objects of the connection the handle's transfer
+    /// holds, wherever the transfer is: none for a handle in no multi.
+    pub(crate) fn tls_native(&self) -> Result<Option<TlsNative>, Recursive> {
+        let Some((multi, id)) = self.added() else {
+            return Ok(None);
+        };
+        // SAFETY: the handle's multi outlives its `Added`.
+        let multi = unsafe { multi.as_ref() };
+        Ok(match multi.stack.reach()? {
+            // SAFETY: nothing runs on the multi, so its core is not
+            // borrowed.
+            Reach::Direct => unsafe { multi.core_mut() }.tls_native(id),
+            // SAFETY: the frame is the multi's innermost, and the borrow
+            // ends with this call, inside its callback.
+            Reach::Frame(frame) => unsafe { frame.tls_native(id) },
+        })
+    }
+
     /// A multi's own handle, which no call may use.
     pub(crate) fn internal() -> ShimEasy {
         ShimEasy::empty(true, CCallbacks::new(), CSettings::new())
@@ -187,6 +227,11 @@ impl ShimEasy {
             post_body: Cell::new(PostBody::Own),
             posted: OnceCell::new(),
             sockets: OnceCell::new(),
+            tls: OnceCell::new(),
+            tsi: UnsafeCell::new(ffi::curl_tlssessioninfo {
+                backend: ffi::CURLSSLBACKEND_NONE,
+                internals: ptr::null_mut(),
+            }),
             errbuf: Cell::new(ptr::null_mut()),
             share: Cell::new(None),
             private: Cell::new(None),
@@ -469,8 +514,8 @@ pub unsafe extern "C" fn curl_easy_duphandle(curl: *mut CURL) -> *mut CURL {
         Ok(dup) => dup,
         Err(OutOfMemory) => return ptr::null_mut(),
     };
-    // The copy's socket functions call through it.
-    if copy_sockets(easy, dup).is_err() {
+    // The copy's socket and `SSL_CTX` functions call through it.
+    if copy_sockets(easy, dup).is_err() || copy_tls(easy, dup).is_err() {
         // SAFETY: just made, and handed to no one.
         unsafe { curl_easy_cleanup(dup.as_ptr().cast()) };
         return ptr::null_mut();
@@ -499,6 +544,20 @@ fn copy_sockets(easy: &ShimEasy, dup: NonNull<ShimEasy>) -> Result<(), OutOfMemo
     synced.expect("a copy is in no callback")
 }
 
+/// The `SSL_CTX` function and data of `easy`, set on its copy `dup`,
+/// whose context handler calls through the copy.
+fn copy_tls(easy: &ShimEasy, dup: NonNull<ShimEasy>) -> Result<(), OutOfMemory> {
+    if easy.tls.get().is_none() {
+        return Ok(());
+    }
+    let c = easy.tls();
+    // SAFETY: just made, and reached only through this pointer.
+    let copy = unsafe { dup.as_ref() };
+    copy.tls_room()?.set(c);
+    let synced = copy.with_options(|o| crate::tls::sync(o, dup, &c));
+    synced.expect("a copy is in no callback")
+}
+
 /// # Safety
 ///
 /// `curl` is NULL or a live handle.
@@ -523,6 +582,9 @@ pub unsafe extern "C" fn curl_easy_reset(curl: *mut CURL) {
     }
     crate::mime::forget_post_state(easy);
     easy.errbuf.set(ptr::null_mut());
+    if let Some(tls) = easy.tls.get() {
+        tls.set(CTls::NONE);
+    }
     if let Some(sockets) = easy.sockets.get() {
         sockets.set(CSockets::NONE);
     }

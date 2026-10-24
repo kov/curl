@@ -238,6 +238,19 @@ not a difference: it is tracked in `MILESTONES.md`.
   `formadd_refuses_as_c_does` and `a_type_past_the_last_file_is_a_part_without_content`
   (`crates/curl-sys-abi/src/formdata.rs`).
 
+## Codes C passes through
+
+- **An `SSL_CTX` function's code that no transfer ends with is an abort.** A
+  `CURLOPT_SSL_CTX_FUNCTION` that returns a code fails the transfer with it, as in C, when the
+  code is one a transfer can end with. C returns any other code as the transfer's result too:
+  measured against the C build, 1000 from the function is 1000 from `curl_easy_perform`, and
+  `CURLE_UNKNOWN_OPTION` is 48; `CURLE_AGAIN` trips an assertion in `Curl_ossl_ctx_init` on the
+  debug build. A transfer's result here is one of the codes it can end with, so such a code
+  fails it with `CURLE_ABORTED_BY_CALLBACK`, as a callback that stopped it, with C's `error
+  signaled by SSL ctx callback`. Pinned by `a_function_s_code_is_the_transfer_s_if_it_can_be`
+  (`crates/curl-sys-abi/src/tls.rs`) and `the_ssl_ctx_function_s_code_fails_the_transfer`
+  (`crates/curl-sys-abi/src/tls_tests.rs`).
+
 ## Handles the application never made
 
 - **The connection lock at share cleanup is called with no handle.** When `curl_share_cleanup`

@@ -1993,7 +1993,15 @@ lends the context it is given, as C's getinfo finds them on `data->conn`. None o
 is over (`Done`), as `multi_done` lets the connection go, nor without a connection. A session may
 stop the transfer's receiving (`TlsIo::pause_recv`, C's `Curl_xfer_pause_recv`): its handshake
 is not moved on and its pollset is empty (`paused 0/1 (r/w)`), its socket removed, until the
-application unpauses it. The SSL data (`CURLINFO_SSL_DATA_IN`,
+application unpauses it. OpenSSL's objects are its `SSL_CTX` and `SSL`; its session calls the
+handler before `SSL_new`, its trust store set up first (C's #11800), and pauses so for
+`SSL_ERROR_WANT_RETRY_VERIFY` (`SSL_connect() -> want retry_verify`), a verify callback the
+application installed asking to be retried (lib758). The shim keeps each handle's function and
+data (`CURLOPT_SSL_CTX_FUNCTION`, `_DATA`), copied by `curl_easy_duphandle` and cleared by a
+reset, and calls the function with the handle and the `SSL_CTX`; a code the transfer can end
+with is its result, any other an abort (DIVERGENCE.md). `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION`
+point at the handle's `curl_tlssessioninfo`, `CURLSSLBACKEND_OPENSSL` with the `SSL` or the
+`SSL_CTX`, NULL while the transfer holds no connection, as C's getinfo answers. The SSL data (`CURLINFO_SSL_DATA_IN`,
 `OUT`) and the msg callback's text lines go through `TlsIo::bytes` and `info`. `SSLKEYLOGFILE`
 is read once by the shim's root and by the tool, each owning its key log (an opened file
 behind a mutex) and handing it to the backend value: never a process global in the core.

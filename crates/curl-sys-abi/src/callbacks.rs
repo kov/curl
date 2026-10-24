@@ -396,7 +396,7 @@ impl Adapter {
         }
     }
 
-    fn handle(&self) -> *mut c_void {
+    pub(crate) fn handle(&self) -> *mut c_void {
         self.0.as_ptr().cast()
     }
 }

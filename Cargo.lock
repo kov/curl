@@ -119,6 +119,8 @@ dependencies = [
  "curl-zlib",
  "curl-zstd",
  "libc",
+ "openssl",
+ "openssl-sys",
 ]
 
 [[package]]

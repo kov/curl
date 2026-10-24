@@ -114,9 +114,9 @@ file: crates/curl-sys-abi/src/easy.rs
 witness: curl-sys-abi handle_tests::socket_functions_are_called_as_c_calls_them
 features: debug-hooks
 --- old
-    if copy_sockets(easy, dup).is_err() {
+    if copy_sockets(easy, dup).is_err() || copy_tls(easy, dup).is_err() {
 --- new
-    if false {
+    if copy_tls(easy, dup).is_err() {
 
 === a reset handle keeps its socket functions for the next data set
 file: crates/curl-sys-abi/src/easy.rs
@@ -125,3 +125,40 @@ features: debug-hooks
 --- old
         sockets.set(CSockets::NONE);
 --- new
+
+=== a copy's SSL_CTX function is called with the handle it was copied from
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi tls_tests::a_copy_s_ssl_ctx_function_is_given_the_copy
+--- old
+    if copy_sockets(easy, dup).is_err() || copy_tls(easy, dup).is_err() {
+--- new
+    if copy_sockets(easy, dup).is_err() {
+
+=== a reset handle keeps its SSL_CTX data for the next function set
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi tls_tests::a_reset_forgets_the_ssl_ctx_data
+--- old
+    if let Some(tls) = easy.tls.get() {
+        tls.set(CTls::NONE);
+    }
+--- new
+    if let Some(tls) = easy.tls.get() {
+        tls.set(CTls { ctx: None, ..tls.get() });
+    }
+
+=== CURLINFO_TLS_SESSION hands out the connection's SSL, not its SSL_CTX
+file: crates/curl-sys-abi/src/tls.rs
+witness: curl-sys-abi tls_tests::the_ssl_ctx_function_and_getinfo_hand_out_the_connection_s_objects
+--- old
+            Some(n.context())
+--- new
+            n.session()
+
+=== a verify callback asking to be retried lets the handshake go on unpaused
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-sys-abi tls_tests::a_retried_verify_waits_for_the_application_to_unpause
+--- old
+                io.trace(format_args!("SSL_connect() -> want retry_verify"));
+                io.pause_recv();
+--- new
+                io.trace(format_args!("SSL_connect() -> want retry_verify"));

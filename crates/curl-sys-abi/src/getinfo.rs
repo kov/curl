@@ -434,6 +434,8 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         cookie_list(easy)
     } else if info == ffi::CURLINFO_SSL_ENGINES {
         Ok(Some(engines()))
+    } else if info == ffi::CURLINFO_TLS_SSL_PTR || info == ffi::CURLINFO_TLS_SESSION {
+        crate::tls::session_info(easy, info).map(|tsi| Some(Value::Struct(tsi.cast())))
     } else {
         easy.with_report(|r| value(easy, r, info))
     };

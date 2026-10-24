@@ -353,3 +353,13 @@ witness: curl-core proto::http1::response::tests::the_content_type_is_trimmed_an
     fields::header_value(line).filter(|v| !v.is_empty())
 --- new
     fields::header_value(line)
+
+=== a Digest value that cannot be held ends the challenge
+file: crates/curl-core/src/proto/http1/digest.rs
+witness: curl-core a_digest_get_takes_no_refusal_for_success
+--- old
+        content.try_push(b)?;
+--- new
+        if content.try_push(b).is_err() {
+            return Ok(None);
+        }

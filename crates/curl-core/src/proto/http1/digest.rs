@@ -78,14 +78,20 @@ fn skip_blanks(s: &[u8]) -> &[u8] {
     &s[n..]
 }
 
+/// A pair's name, its value unquoted, and what follows it.
+type Pair<'a> = (&'a [u8], Vec<u8>, &'a [u8]);
+
 /// A `name=value` pair at the start of `s`, the value quoted or not, and
 /// what follows it (`Curl_auth_digest_get_pair`). None where it is
 /// malformed: no `=`, a quote unclosed by the line's end or inside a bare
-/// value, a value too long.
-fn pair(s: &[u8]) -> Option<(&[u8], Vec<u8>, &[u8])> {
-    let eq = s.iter().position(|&b| b == b'=')?;
+/// value, a value too long. A value that cannot be held is an error, not
+/// the challenge's end.
+fn pair(s: &[u8]) -> Result<Option<Pair<'_>>, OutOfMemory> {
+    let Some(eq) = s.iter().position(|&b| b == b'=') else {
+        return Ok(None);
+    };
     if eq == 0 || eq > MAX_NAME {
-        return None;
+        return Ok(None);
     }
     let name = &s[..eq];
     let mut rest = &s[eq + 1..];
@@ -108,23 +114,23 @@ fn pair(s: &[u8]) -> Option<(&[u8], Vec<u8>, &[u8])> {
                     continue;
                 }
                 b',' if !quoted => break,
-                b'\r' | b'\n' if quoted => return None,
+                b'\r' | b'\n' if quoted => return Ok(None),
                 b'\r' | b'\n' => break,
                 b'"' if quoted => break,
-                b'"' => return None,
+                b'"' => return Ok(None),
                 _ => {}
             }
         }
         if content.len() >= MAX_CONTENT - 1 {
-            return None;
+            return Ok(None);
         }
         escape = false;
-        content.try_push(b).ok()?;
+        content.try_push(b)?;
     }
     if escape {
-        return None;
+        return Ok(None);
     }
-    Some((name, content, &rest[at..]))
+    Ok(Some((name, content, &rest[at..])))
 }
 
 impl Digest {
@@ -148,7 +154,7 @@ impl Digest {
     fn read(&mut self, mut s: &[u8]) -> Result<(), DigestError> {
         loop {
             s = skip_blanks(s);
-            let Some((name, content, rest)) = pair(s) else {
+            let Some((name, content, rest)) = pair(s)? else {
                 return Ok(());
             };
             s = rest;

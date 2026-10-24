@@ -70,6 +70,10 @@ fn main() {
             a_tunneled_get_takes_no_refusal_for_success,
         ),
         (
+            "a_digest_get_takes_no_refusal_for_success",
+            a_digest_get_takes_no_refusal_for_success,
+        ),
+        (
             "a_get_stays_within_its_allocation_budget",
             a_get_stays_within_its_allocation_budget,
         ),
@@ -707,6 +711,46 @@ fn a_tunneled_get_takes_no_refusal_for_success() {
                 Ok(())
             },
         )
+    }
+    refused_alone(scenario, |got| {
+        matches!(
+            got,
+            Err(OutOfMemory)
+                | Ok(Got {
+                    result: Err(ErrorKind::OutOfMemory),
+                    ..
+                })
+        )
+    });
+}
+
+/// A refusal while reading a Digest challenge, or answering it, fails the
+/// transfer for memory: never the challenge read short, its 401 taken
+/// for the answer or a part of it left out of the next request.
+fn a_digest_get_takes_no_refusal_for_success() {
+    fn scenario() -> Result<Got, OutOfMemory> {
+        let (clock, net, talk) = track::untracked(|| {
+            let clock = ManualClock::new().expect("a clock");
+            let at = std::net::SocketAddr::from(([127, 0, 0, 1], 80));
+            let challenge = b"HTTP/1.1 401 Who\r\n\
+                WWW-Authenticate: Digest realm=\"r\", nonce=\"n\", opaque=\"o\"\r\n\
+                Content-Length: 0\r\n\r\n";
+            let talk = Conversation::replies(&[challenge, REPLY], false);
+            let net = FakeNet::new(clock.clone())
+                .with_peer(at, Peer::Accepts)
+                .with_conversation(at, talk.clone());
+            (clock, net, talk)
+        });
+        let request = b"GET /1?q HTTP/1.1\r\nHost: 127.0.0.1\r\n\
+            User-Agent: curl/test\r\nAccept: */*\r\n\r\n\
+            GET /1?q HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Digest username=\"u\", \
+            realm=\"r\", nonce=\"n\", uri=\"/1?q\", \
+            response=\"38695cf802675b1ab04d0f17de868231\", opaque=\"o\"\r\n\
+            User-Agent: curl/test\r\nAccept: */*\r\n\r\n";
+        get_through(clock, net, &talk, AUTHED_URL, request, |o| {
+            o.http.auth = curl_core::options::HttpAuth(curl_core::options::AuthMethods::DIGEST);
+            Ok(())
+        })
     }
     refused_alone(scenario, |got| {
         matches!(

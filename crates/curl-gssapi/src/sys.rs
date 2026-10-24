@@ -396,6 +396,12 @@ impl OidSet {
         Ok(copy)
     }
 
+    /// Each member's bytes.
+    #[cfg(test)]
+    pub(crate) fn oids(&self) -> impl Iterator<Item = &[u8]> + '_ {
+        self.members().map(|(bytes, _)| bytes)
+    }
+
     /// Each member's bytes, and its descriptor for the library.
     fn members(&self) -> impl Iterator<Item = (&[u8], *mut GssOidDesc)> + '_ {
         // SAFETY: the set is the library's, live while `self` is:

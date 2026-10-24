@@ -1,9 +1,15 @@
 use curl_alloc::OutOfMemory;
 use curl_core::gss::{
-    Flags, Gss, GssCall, GssFailureKind, GssNote, GssStatus, Mech, StepSink, Style, Target,
+    Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssNote, GssStatus, Mech,
+    StepSink, Style, Target,
 };
 
-use crate::GSSAPI;
+use crate::{GSSAPI, KRB5_OID, SPNEGO_OID, sys};
+
+/// `GSS_S_FAILURE` and `GSS_S_NO_CONTEXT`, as `<gssapi/gssapi.h>` has
+/// them: the tests do not take the crate's own.
+const FAILURE: u32 = 0x000d_0000;
+const NO_CONTEXT: u32 = 0x0008_0000;
 
 /// What a step put out.
 #[derive(Default)]
@@ -46,21 +52,59 @@ fn described(status: &GssStatus, style: Style) -> Vec<u8> {
 /// Runs the test `name` of this binary in a child with `env` set, the
 /// environment being the whole process's, and asserts it passed.
 fn in_child(name: &str, env: &[(&str, &str)]) {
+    child_output(name, env);
+}
+
+/// As `in_child`, giving back what the child printed.
+fn child_output(name: &str, env: &[(&str, &str)]) -> String {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
-        .args(["--exact", name, "--test-threads=1"])
+        .args(["--exact", name, "--test-threads=1", "--nocapture"])
         .env("CURL_GSSAPI_CHILD", name)
         .env_remove("CURL_STUB_GSS_CREDS");
     for (k, v) in env {
         command.env(k, v);
     }
     let out = command.output().unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         out.status.success() && stdout.contains("1 passed"),
         "{stdout}{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    stdout
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// What `out` is handed, as one buffer.
+fn handed(
+    call: impl FnOnce(&mut dyn FnMut(&[u8]) -> Result<(), OutOfMemory>) -> Result<(), GssFailure>,
+) -> Result<Vec<u8>, GssFailure> {
+    let mut bytes = Vec::new();
+    call(&mut |b| {
+        bytes.extend_from_slice(b);
+        Ok(())
+    })?;
+    Ok(bytes)
+}
+
+/// How `context`'s wrap, unwrap and initiator fail, in that order.
+fn later_calls(context: &mut dyn GssContext) -> [GssFailure; 3] {
+    [
+        handed(|out| context.wrap(b"m", out)).unwrap_err(),
+        handed(|out| context.unwrap(b"m", out)).unwrap_err(),
+        handed(|out| context.initiator(out)).unwrap_err(),
+    ]
+}
+
+/// The failures `later_calls` sees of a context the library has none for.
+fn no_context() -> [GssFailure; 3] {
+    let status = GssStatus::new(NO_CONTEXT, 0);
+    [GssCall::Wrap, GssCall::Unwrap, GssCall::InquireContext]
+        .map(|call| GssFailure::status(call, status))
 }
 
 /// Whether this process is the child running `name`.
@@ -93,9 +137,26 @@ fn without_credentials_in_a_child() {
     let mut context = GSSAPI
         .context(HTTP_AT_LOCALHOST, Mech::Spnego, MUTUAL)
         .unwrap();
+    // Before a step, and after one that made no context, the calls on a
+    // context fail as the library's for no context.
+    assert_eq!(later_calls(&mut *context), no_context());
     let mut sink = Collected::default();
     let failure = context.step(None, None, &mut sink).unwrap_err();
     assert_eq!(failure.call, GssCall::AcquireCred);
+    assert_eq!(later_calls(&mut *context), no_context());
+    // Kerberos acquires nothing first: its step is what fails.
+    let mut kerberos = GSSAPI
+        .context(HTTP_AT_LOCALHOST, Mech::Kerberos, MUTUAL)
+        .unwrap();
+    let mut kerberos_sink = Collected::default();
+    let kerberos_failure = kerberos.step(None, None, &mut kerberos_sink).unwrap_err();
+    assert_eq!(kerberos_failure.call, GssCall::InitSecContext);
+    assert!(
+        matches!(kerberos_failure.kind, GssFailureKind::Status(_)),
+        "{kerberos_failure:?}"
+    );
+    assert!(kerberos_sink.token.is_none());
+    assert_eq!(later_calls(&mut *kerberos), no_context());
     let GssFailureKind::Status(status) = failure.kind else {
         panic!("{failure:?}");
     };
@@ -132,8 +193,144 @@ fn without_credentials_in_a_child() {
 /// it ("gss_init_sec_context() failed: ").
 #[test]
 fn a_stub_status_has_no_text() {
-    let status = GssStatus::new(crate::sys::GSS_S_FAILURE, 6);
+    let status = GssStatus::new(FAILURE, 6);
     assert_eq!(described(&status, Style::Log), b"");
+}
+
+/// The version `curl -V` names is the library's as pkg-config has it,
+/// as C's CMake build finds it.
+#[test]
+fn the_version_is_pkg_config_s() {
+    let out = std::process::Command::new("pkg-config")
+        .args(["--modversion", "mit-krb5-gssapi"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        crate::version(),
+        String::from_utf8_lossy(&out.stdout).trim()
+    );
+}
+
+/// The mechanisms the library has, and a copy without one of them.
+#[test]
+fn a_set_of_mechanisms_leaves_one_out() {
+    let all = sys::OidSet::mechanisms().unwrap();
+    let has = |set: &sys::OidSet, oid: &[u8]| set.oids().any(|member| member == oid);
+    assert!(has(&all, KRB5_OID) && has(&all, SPNEGO_OID));
+    let without = all.without(KRB5_OID).unwrap();
+    assert!(!has(&without, KRB5_OID) && has(&without, SPNEGO_OID));
+    assert_eq!(without.oids().count(), all.oids().count() - 1);
+}
+
+/// The longest text each of C's layouts holds: the minor code's message
+/// names the cache, whose name sets its length.
+#[test]
+fn a_long_status_text_is_cut_where_c_cuts_it() {
+    let base = std::env::temp_dir().join(format!("curl-gssapi-long-{}", std::process::id()));
+    let base = base.display().to_string();
+    // A cache name of `len` bytes, its parts short enough to be names.
+    let name_of = |len: usize| {
+        let mut path = format!("{base}/");
+        let fill = len - path.len();
+        for i in 0..fill {
+            path.push(if i % 100 == 99 && i + 1 < fill {
+                '/'
+            } else {
+                'a'
+            });
+        }
+        path
+    };
+    let probe = |path: &str| {
+        let cache = format!("FILE:{path}");
+        let out = child_output(
+            "tests::long_status_in_a_child",
+            &[
+                ("KRB5CCNAME", &cache),
+                ("KRB5_CONFIG", "/dev/null"),
+                ("LC_ALL", "C"),
+            ],
+        );
+        let field = |key: &str| {
+            // After the harness's "test ... ", on the same line.
+            let line = out.lines().find_map(|l| l.split_once(key)).unwrap().1;
+            (line != "too long").then(|| unhex(line))
+        };
+        (field("log=").unwrap(), field("socks="))
+    };
+    let short = name_of(base.len() + 2);
+    let (log, _) = probe(&short);
+    // The major code's message, then the minor code's, each with ". ".
+    let major = log.windows(2).position(|w| w == b". ").unwrap();
+    let minor = &log[major + 2..log.len() - 2];
+    assert!(
+        contains(minor, short.as_bytes()),
+        "{}",
+        String::from_utf8_lossy(&log)
+    );
+    // The probe for the two messages' lengths adding up to `sum`.
+    let at = |sum: usize| {
+        let path = name_of(short.len() + sum - major - minor.len());
+        let expected_minor = String::from_utf8_lossy(minor).replace(&short, &path);
+        assert_eq!(major + expected_minor.len(), sum);
+        let (log, socks) = probe(&path);
+        let mut whole = log[..major].to_vec();
+        whole.extend_from_slice(b".\n");
+        whole.extend_from_slice(expected_minor.as_bytes());
+        (log, socks, whole, expected_minor)
+    };
+    // `Curl_gss_log_error` adds a message while it and its ". " leave
+    // room for one more byte than the NUL.
+    let (log, socks, whole, minor) = at(1018);
+    let mut expected = log[..major + 2].to_vec();
+    expected.extend_from_slice(minor.as_bytes());
+    expected.extend_from_slice(b". ");
+    assert_eq!(log, expected);
+    assert_eq!(socks.as_ref(), Some(&whole));
+    let (log, _, _, _) = at(1019);
+    assert_eq!(log.len(), major + 2);
+    // `check_gss_err` holds 1023 bytes and its NUL, or says nothing.
+    let (_, socks, whole, _) = at(1021);
+    assert_eq!(whole.len(), 1023);
+    assert_eq!(socks, Some(whole));
+    let (_, socks, _, _) = at(1022);
+    assert_eq!(socks, None);
+}
+
+#[test]
+fn long_status_in_a_child() {
+    if !is_child("tests::long_status_in_a_child") {
+        return;
+    }
+    let mut context = GSSAPI
+        .context(HTTP_AT_LOCALHOST, Mech::Spnego, MUTUAL)
+        .unwrap();
+    let failure = context
+        .step(None, None, &mut Collected::default())
+        .unwrap_err();
+    let GssFailureKind::Status(status) = failure.kind else {
+        panic!("{failure:?}");
+    };
+    println!("log={}", hex(&described(&status, Style::Log)));
+    let mut socks = Vec::new();
+    match GSSAPI.describe(&status, Style::Socks, &mut |part| {
+        socks.extend_from_slice(part)
+    }) {
+        Ok(()) => println!("socks={}", hex(&socks)),
+        Err(_) => println!("socks=too long"),
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(text: &str) -> Vec<u8> {
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+        .collect()
 }
 
 #[cfg(feature = "debug-hooks")]
@@ -170,7 +367,7 @@ mod stub {
     }
 
     fn stub_failure(minor: u32) -> GssFailureKind {
-        GssFailureKind::Status(GssStatus::new(crate::sys::GSS_S_FAILURE, minor))
+        GssFailureKind::Status(GssStatus::new(FAILURE, minor))
     }
 
     #[test]

@@ -77,7 +77,8 @@ pub(crate) trait LayerCx {
     /// verbose.
     fn bytes(&mut self, _kind: crate::handler::DebugKind, _bytes: &[u8]) {}
 
-    /// The transfer has a debug handler (C's `data->set.fdebug`).
+    /// The transfer traces to a debug handler (C's `data->set.fdebug`
+    /// and `verbose`).
     fn debugs(&self) -> bool {
         false
     }

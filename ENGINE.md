@@ -1750,10 +1750,12 @@ its port. A transfer's end prunes what has gone stale (`multi_done`).
 
 ### 4.9 TLS
 
-Built (step 43d): the seam, the layer, the identity reuse compares, the `https` scheme and the
-setup's TLS stage, the goodbye through the shutdown set, all driven in the tests by a fake
-library (`tls::fake::FakeTls`). Planned: everything OpenSSL does, from **The BIO** on, and the
-seam's later methods noted below. MILESTONES.md step 43 lists the sub-steps.
+Built (steps 43d and 43e1): the seam, the layer, the identity reuse compares, the `https`
+scheme and the setup's TLS stage, the goodbye through the shutdown set, driven in the core's
+tests by a fake library (`tls::fake::FakeTls`); and OpenSSL's session in curl-openssl (**The
+BIO**, the context, **Verification** and the host check). Planned: the CA store cache,
+close_notify, and the seam's later methods noted below. MILESTONES.md step 43 lists the
+sub-steps.
 
 ```rust
 // curl_core::tls, public: the seam a TLS library implements (curl-openssl)
@@ -1850,9 +1852,12 @@ hashed certificates (`xxxxxxxx.0`; none here); one set explicitly stops the othe
 for; no fallback to OpenSSL's own paths. They are `&'static str` (`TlsBackend::ca_defaults`),
 so a handle holds no CA string until the application sets one, and `CURLINFO_CAINFO` returns
 the constant whatever the handle set, as C's does. The tool
-reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c does. The CA store
-is cached per multi, keyed by file and path, for `CURLOPT_CA_CACHE_TIMEOUT` (24 h), which
-decides whether `SSL Trust Anchors:` and `CAfile:` are traced again for the next connection.
+reads `CURL_CA_BUNDLE`, `SSL_CERT_DIR` and `SSL_CERT_FILE` as tool_operate.c does. Planned: the
+CA store cached per multi, keyed by file and path, for `CURLOPT_CA_CACHE_TIMEOUT` (24 h), which
+decides whether `SSL Trust Anchors:` and `CAfile:` are traced again for the next connection;
+until then each connection loads its anchors and traces them. A CA file that cannot be read
+fails the first read's setup and, as in C, is tried and said again by the handshake's step (77,
+`error adding trust anchors from file:` twice).
 The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
 (`subjectAltName: "localhost" matches cert's "localhost"`); the failure texts are C's
 (`SSL certificate problem: …`, `CURLINFO_SSL_VERIFYRESULT`). With the peer unverified
@@ -1915,7 +1920,8 @@ not apply to the proxy's handshake.
 
 **Shutdown.** A TLS layer's `shutdown` is its session's: the discard's one try, then the
 multi's `ShutdownSet` until the peer's goodbye or the connection's 2 s (built; the fake's says
-goodbye and waits for the peer's). OpenSSL's sends close_notify only after a completed
+goodbye and waits for the peer's; OpenSSL's is done at once, sending nothing, until 43f).
+Planned (43f): OpenSSL's sends close_notify only after a completed
 handshake, and never for an aborted transfer (§4.6's discard terminates it); it then reads for
 the peer's. The reference sends it on every graceful close: after the server's own
 close_notify, and from the cleanup's pass for a connection still kept.
@@ -2843,11 +2849,14 @@ peer gets a protocol error, not an out-of-memory one.
   refused in turn and alone; its server says goodbye back at once, so the connection's shutdown,
   as the multi goes, finishes in its one try and joins no set. `GET_BUDGET` stays 46: a plain
   GET makes no TLS group, identity or layer.
-- Planned (step 43): `HTTPS_GET_BUDGET` over curl-openssl's cargo TLS peer, listed the same way:
-  the fake's, with the multi's CA store entry on first use and the session tickets kept in
-  place of the fake's session. SNI, the ALPN list and trace text are on the stack. Those
-  scenarios are harness-free binaries under `crates/curl-openssl/tests/`, as the core cannot
-  depend on the binding.
+- An HTTPS GET over OpenSSL is pinned against the same GET over plain HTTP in
+  `crates/curl-openssl/tests/peer.rs` (`HTTPS_GET_EXTRA`, 10), as the core cannot depend on the
+  binding: the route's `TlsIdentity` and the CA file's copy in it, the handshake's marker, the
+  layer, the stack's box and list, the session's box and its copy of the host name, and the host
+  name and CA file ended by a zero byte for OpenSSL, freed as the calls return. OpenSSL's own
+  allocations are libc's, not counted, as C's tracker does not count them. The ALPN list and
+  trace text are on the stack. Planned: the multi's CA store entry on first use, and the
+  session tickets kept.
 - Test 1's 140-allocation and 136000-byte limit is whole-process (argv, option parsing, output
   and trace files, the library). The tool's count is measured on `file://` in the milestone,
   before `http` is reported.
@@ -2876,9 +2885,13 @@ peer gets a protocol error, not an out-of-memory one.
   was asked (the peer, the identity's verify bit, the room of each read); a session allocates
   nothing past its box. `Conversation::stalling_sends_after` stalls sends mid-conversation.
   `Lingering` (test-util), a layer whose shutdown waits a number of passes or for its peer,
-  arms the `ShutdownSet` without TLS (`multi::shutdown_tests`). Planned: curl-openssl's
-  `test-util` TLS peer over `FakeNet` (memory BIOs, the test certificates), so the OpenSSL paths
-  have cargo tests. The C captures that pin TLS's lines and 758's callback sequence (the
+  arms the `ShutdownSet` without TLS (`multi::shutdown_tests`).
+- **curl-openssl's peer** (`tests/peer.rs`): a server thread speaking TLS through the `openssl`
+  crate on a loopback socket, with certificates made per test and signed by a CA made per
+  test, so the OpenSSL paths have cargo tests over the system's network: a verified GET, the
+  host check, an unverified peer, an unknown issuer, a missing CA file, the build's default CA,
+  the BIO's read lengths, and the budget. The C captures that pin TLS's lines and 758's
+  callback sequence (the
   retry-verify pause, and the socket kept through a connection's shutdown until the multi's
   cleanup) are the goldens.
 - **Pure units**: `ResponseHeadParser`, `ChunkDecoder`, `decide_framing`, `render_h1`,

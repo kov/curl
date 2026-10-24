@@ -743,7 +743,8 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
     }
 
     fn debugs(&self) -> bool {
-        self.easy().options().callbacks.debug.is_some()
+        let options = self.easy().options();
+        options.callbacks.debug.is_some() && options.output.verbose
     }
 }
 

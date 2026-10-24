@@ -44,6 +44,33 @@ fn init_ssl() {
     unsafe { openssl_sys::OPENSSL_init_ssl(LOAD_CONFIG | ENGINE_ALL_BUILTIN, core::ptr::null()) };
 }
 
+/// The version of the library loaded as text: `3.5.9`.
+pub(crate) fn version_text() -> &'static str {
+    // SAFETY: a function of no state, for a value the library knows.
+    let text = unsafe { openssl_sys::OpenSSL_version(crate::ffi::OPENSSL_VERSION_STRING) };
+    // SAFETY: the library's static text for its version, alive for the
+    // process.
+    let text = unsafe { core::ffi::CStr::from_ptr(text) };
+    text.to_str().unwrap_or("")
+}
+
+/// The library as C names it in its version line (`Curl_ossl_version`):
+/// `OpenSSL/3.5.9`.
+pub fn version() -> impl core::fmt::Display {
+    struct Version;
+    impl core::fmt::Display for Version {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "OpenSSL/{}", version_text())
+        }
+    }
+    Version
+}
+
+/// The length of `version`'s text.
+pub(crate) fn version_len() -> usize {
+    "OpenSSL/".len() + version_text().len()
+}
+
 /// The version of the library loaded, as `OPENSSL_VERSION_NUMBER` says
 /// one: `0xMNN00PP0`.
 fn version_number() -> c_ulong {

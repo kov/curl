@@ -236,8 +236,8 @@ impl TlsIo<'_> {
         self.cx.bytes(kind, bytes);
     }
 
-    /// The transfer has a debug handler (C's `data->set.fdebug`), which
-    /// a library's trace of its records is for.
+    /// The transfer traces to a debug handler (C's `data->set.fdebug`
+    /// and `verbose`), which a library's trace of its records is for.
     pub fn debugs(&self) -> bool {
         self.cx.debugs()
     }

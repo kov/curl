@@ -127,7 +127,7 @@ NUMBER_TEMPLATE = """\
 impl {rust} {{
     /// The number of its C code, as trace lines print it (`-> %d`):
     /// its place in the C enum, which counts from 0 for success.
-    pub(crate) fn number(self) -> u16 {{
+    pub fn number(self) -> u16 {{
         match self {{
 {numbers}        }}
     }}

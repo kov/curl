@@ -38,6 +38,12 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-openssl/src/sys.rs`: OpenSSL's initialisation, and the version of the library
   loaded.
 - `crates/curl-openssl/src/sign.rs`: OpenSSL's Ed25519, signing HTTP message signatures.
+- `crates/curl-openssl/src/ffi.rs`: the OpenSSL functions openssl-sys does not declare.
+- `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, and
+  its trace of the records.
+- `crates/curl-openssl/src/ssl.rs`: OpenSSL's TLS session: the context, the handshake, the
+  records both ways.
+- `crates/curl-openssl/src/x509.rs`: the certificates a session trusts, and the peer's checked.
 - `crates/curl-os/src/args.rs`: the process's command line, captured before `main` and wiped in
   place.
 - `crates/curl-os/src/env.rs`: reading the environment, its values copied fallibly.

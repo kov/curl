@@ -15,3 +15,47 @@ witness: curl-openssl sys::tests::three_or_later_is_supported
     if number < OLDEST { Err(TooOld) } else { Ok(()) }
 --- new
     if number <= OLDEST { Err(TooOld) } else { Ok(()) }
+
+=== a verified peer's certificate is taken whatever names it holds
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_name_the_certificate_lacks_fails_the_host_check
+--- old
+    if identity.verify_host {
+        verify_host(&cert, host, kind, io)?;
+    }
+--- new
+    if false && identity.verify_host {
+        verify_host(&cert, host, kind, io)?;
+    }
+
+=== OpenSSL is told it read more than the layers below gave it
+file: crates/curl-openssl/src/bio.rs
+witness: curl-openssl the_library_reads_no_more_than_it_asks
+--- old
+            slot.flags.input_pending = true;
+            c_int::try_from(n.get()).expect("no more than asked")
+        }
+        Ok(Recv::Eof) => {
+--- new
+            slot.flags.input_pending = true;
+            blen
+        }
+        Ok(Recv::Eof) => {
+
+=== a transfer naming no CA file trusts none, not the build's default
+file: crates/curl-core/src/tls.rs
+witness: curl-openssl no_ca_named_trusts_the_build_s_default
+--- old
+        CaSetting::Default => default.map(str::as_bytes),
+--- new
+        CaSetting::Default => None,
+
+=== a CA file that failed the first read's setup is not tried again by the handshake
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_missing_ca_file_fails_as_a_bad_file_twice_said
+--- old
+        if !self.flags.store_ready {
+            // The ClientHello went out without a read: the store is set
+--- new
+        if false {
+            // The ClientHello went out without a read: the store is set

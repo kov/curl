@@ -83,12 +83,15 @@ fn c_feature(f: Feature) -> (&'static CStr, c_int) {
         Feature::Brotli => (c"brotli", crate::ffi::CURL_VERSION_BROTLI),
         #[cfg(feature = "debug-hooks")]
         Feature::Debug => (c"Debug", crate::ffi::CURL_VERSION_DEBUG),
+        Feature::GssApi => (c"GSS-API", crate::ffi::CURL_VERSION_GSSAPI),
         Feature::HttpsProxy => (c"HTTPS-proxy", crate::ffi::CURL_VERSION_HTTPS_PROXY),
         // A name alone, without a bit, as in C.
         Feature::Httpsig => (c"HTTPSIG", 0),
         Feature::Ipv6 => (c"IPv6", crate::ffi::CURL_VERSION_IPV6),
+        Feature::Kerberos => (c"Kerberos", crate::ffi::CURL_VERSION_KERBEROS5),
         Feature::Libz => (c"libz", crate::ffi::CURL_VERSION_LIBZ),
         Feature::Psl => (c"PSL", crate::ffi::CURL_VERSION_PSL),
+        Feature::Spnego => (c"SPNEGO", crate::ffi::CURL_VERSION_SPNEGO),
         Feature::Ssl => (c"SSL", crate::ffi::CURL_VERSION_SSL),
         Feature::UnixSockets => (c"UnixSockets", crate::ffi::CURL_VERSION_UNIX_SOCKETS),
         Feature::Zstd => (c"zstd", crate::ffi::CURL_VERSION_ZSTD),
@@ -210,7 +213,8 @@ pub extern "C" fn curl_version() -> *mut c_char {
             let brotli = Library("brotli", curl_brotli::version());
             let zstd = Library("zstd", curl_zstd::version());
             let psl = Library("libpsl", curl_psl::version());
-            let libraries: [&dyn fmt::Display; 5] = [&ssl, &zlib, &brotli, &zstd, &psl];
+            let gss = Library("mit-krb5", curl_gssapi::version());
+            let libraries: [&dyn fmt::Display; 6] = [&ssl, &zlib, &brotli, &zstd, &psl, &gss];
             cbuf(format_args!("{}", version().components(&libraries)))
         })
         .as_ptr()
@@ -253,13 +257,14 @@ mod tests {
         // SAFETY: a static C string.
         let said = unsafe { CStr::from_ptr(curl_version()) }.to_str().unwrap();
         let want = format!(
-            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libpsl/{}",
+            "libcurl/{} {} zlib/{} brotli/{} zstd/{} libpsl/{} mit-krb5/{}",
             version().version,
             curl_openssl::version(),
             curl_zlib::version(),
             curl_brotli::version(),
             curl_zstd::version(),
-            curl_psl::version()
+            curl_psl::version(),
+            curl_gssapi::version()
         );
         assert_eq!(said, want);
         // SAFETY: as above.
@@ -297,21 +302,27 @@ mod tests {
                 &[
                     "brotli",
                     "Debug",
+                    "GSS-API",
                     "HTTPS-proxy",
                     "HTTPSIG",
                     "IPv6",
+                    "Kerberos",
                     "libz",
                     "PSL",
+                    "SPNEGO",
                     "SSL",
                     "UnixSockets",
                     "zstd"
                 ][..],
                 ffi::CURL_VERSION_BROTLI
                     | ffi::CURL_VERSION_DEBUG
+                    | ffi::CURL_VERSION_GSSAPI
                     | ffi::CURL_VERSION_HTTPS_PROXY
                     | ffi::CURL_VERSION_IPV6
+                    | ffi::CURL_VERSION_KERBEROS5
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
+                    | ffi::CURL_VERSION_SPNEGO
                     | ffi::CURL_VERSION_SSL
                     | ffi::CURL_VERSION_UNIX_SOCKETS
                     | ffi::CURL_VERSION_ZSTD
@@ -323,20 +334,26 @@ mod tests {
             (
                 &[
                     "brotli",
+                    "GSS-API",
                     "HTTPS-proxy",
                     "HTTPSIG",
                     "IPv6",
+                    "Kerberos",
                     "libz",
                     "PSL",
+                    "SPNEGO",
                     "SSL",
                     "UnixSockets",
                     "zstd"
                 ][..],
                 ffi::CURL_VERSION_BROTLI
+                    | ffi::CURL_VERSION_GSSAPI
                     | ffi::CURL_VERSION_HTTPS_PROXY
                     | ffi::CURL_VERSION_IPV6
+                    | ffi::CURL_VERSION_KERBEROS5
                     | ffi::CURL_VERSION_LIBZ
                     | ffi::CURL_VERSION_PSL
+                    | ffi::CURL_VERSION_SPNEGO
                     | ffi::CURL_VERSION_SSL
                     | ffi::CURL_VERSION_UNIX_SOCKETS
                     | ffi::CURL_VERSION_ZSTD

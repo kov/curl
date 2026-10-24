@@ -126,9 +126,9 @@ witness: curl-sys-abi handle_tests::http_options_reach_the_request
 file: crates/curl-sys-abi/src/version.rs
 witness: curl-sys-abi version::tests::names_the_libraries_as_c
 --- old
-            let libraries: [&dyn fmt::Display; 5] = [&ssl, &zlib, &brotli, &zstd, &psl];
+            let libraries: [&dyn fmt::Display; 6] = [&ssl, &zlib, &brotli, &zstd, &psl, &gss];
 --- new
-            let libraries: [&dyn fmt::Display; 5] = [&ssl, &zlib, &zstd, &brotli, &psl];
+            let libraries: [&dyn fmt::Display; 6] = [&ssl, &zlib, &zstd, &brotli, &psl, &gss];
 
 === the multi's running count takes in the transfers waiting for a connection
 file: crates/curl-sys-abi/src/multi.rs

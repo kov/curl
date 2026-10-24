@@ -26,6 +26,9 @@ pub enum Feature {
     /// A debug build, for the test suite: never for production.
     #[cfg(feature = "debug-hooks")]
     Debug,
+    /// GSS-API, by MIT krb5, which the tool and the C ABI give every
+    /// handle.
+    GssApi,
     /// HTTPS proxies: TLS to the proxy, and TLS in TLS to an `https`
     /// origin through one, by the TLS library `Ssl` names.
     HttpsProxy,
@@ -33,12 +36,16 @@ pub enum Feature {
     Httpsig,
     /// Connections over IPv6, and its addresses in URLs.
     Ipv6,
+    /// Kerberos 5 by GSS-API, as SOCKS5's GSS-API method uses it.
+    Kerberos,
     /// The `deflate` and `gzip` content codings are undone by zlib, which
     /// the tool and the C ABI give every handle.
     Libz,
     /// Cookies' domains are checked against libpsl's public suffixes,
     /// which the tool and the C ABI give every handle.
     Psl,
+    /// HTTP Negotiate by GSS-API, with the origin and with a proxy.
+    Spnego,
     /// TLS, by OpenSSL, which the tool and the C ABI give every handle.
     Ssl,
     /// Connections over Unix sockets, by path or abstract name.
@@ -55,11 +62,14 @@ impl Feature {
             Feature::Brotli => "brotli",
             #[cfg(feature = "debug-hooks")]
             Feature::Debug => "Debug",
+            Feature::GssApi => "GSS-API",
             Feature::HttpsProxy => "HTTPS-proxy",
             Feature::Httpsig => "HTTPSIG",
             Feature::Ipv6 => "IPv6",
+            Feature::Kerberos => "Kerberos",
             Feature::Libz => "libz",
             Feature::Psl => "PSL",
+            Feature::Spnego => "SPNEGO",
             Feature::Ssl => "SSL",
             Feature::UnixSockets => "UnixSockets",
             Feature::Zstd => "zstd",
@@ -71,11 +81,14 @@ impl Feature {
 const FEATURES: &[Feature] = &[
     Feature::Brotli,
     Feature::Debug,
+    Feature::GssApi,
     Feature::HttpsProxy,
     Feature::Httpsig,
     Feature::Ipv6,
+    Feature::Kerberos,
     Feature::Libz,
     Feature::Psl,
+    Feature::Spnego,
     Feature::Ssl,
     Feature::UnixSockets,
     Feature::Zstd,
@@ -83,11 +96,14 @@ const FEATURES: &[Feature] = &[
 #[cfg(not(feature = "debug-hooks"))]
 const FEATURES: &[Feature] = &[
     Feature::Brotli,
+    Feature::GssApi,
     Feature::HttpsProxy,
     Feature::Httpsig,
     Feature::Ipv6,
+    Feature::Kerberos,
     Feature::Libz,
     Feature::Psl,
+    Feature::Spnego,
     Feature::Ssl,
     Feature::UnixSockets,
     Feature::Zstd,

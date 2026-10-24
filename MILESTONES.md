@@ -406,10 +406,8 @@ cargo-mutants run on the milestone's diff.
     (`CURLOPT_HTTPAUTH`, `--basic`, `--anyauth`), a 401's challenges read and answered as a
     second request, FAILONERROR's 401 exception, `CURLINFO_HTTPAUTH_AVAIL` and `_USED`; Basic,
     Bearer and Digest (`--digest`; MD5, SHA-256 and SHA-512/256) with its body-less probe. T1
-    tests 1876 and 1877 pass; the 44 Digest tests pass on both legs, though `runtests.pl` skips
-    them on the Rust leg, which claims no NTLM, Kerberos or SPNEGO and so no `crypto`. They
-    are run with the gate forced open by `inventory/measure/gated.py`, a regression net kept
-    out of the score; delete it when the Rust build claims one of the three.
+    tests 1876 and 1877 pass; the 44 Digest tests pass on both legs, behind `runtests.pl`'s
+    `crypto`, which the Rust leg claims since step 44 claims Kerberos and SPNEGO.
     Waiting: NTLM and Negotiate, refused as not built until their own steps, as a C build
     without them refuses; 407, with the proxies
     (step 31);
@@ -683,14 +681,13 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     Skipped at the flip by their prechecks: 678 (`CAINFO_BLOB`, passing since e1), 2095 (`SSLCERT_BLOB`,
     e2), 307 (engines, skipped on the C leg too). Skipped for what is built elsewhere: HSTS
     (446, 780–783, 1586, 3109), alt-svc (358, 359) and DoH (2100, 2117), stage 7; Unix sockets
-    (1470), step 46; GSS-API (1582) and `crypto` (1647, 1933–1938 and 14 more), step 44;
+    (1470), step 46; GSS-API (1582) and `crypto` (1647, 1933–1938 and 14 more), run since step 44;
     `HTTPS-proxy` (1630, 3401) until i, 1631 and 1632 then for FTP; HTTP/2 and HTTP/3, stage 5; the FTP, mail, MQTT
     and Gopher servers and their TLS forms, stage 6; NTLM, Schannel, ECH, `SSLS-EXPORT` (1678)
     and 4656, not in this build. Every one of the 199 that runs on the C leg passes there
     (2095 failed once in that run, 56, and passes alone).
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
-    claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted. Opening
-    `crypto` runs 85 tests that already pass; the GSS-API tests are 2056, 2057, 2077, 2078,
+    claims them and `crypto` turns on. Opening `crypto` runs 85 tests that already pass; the GSS-API tests are 2056, 2057, 2077, 2078,
     2094 and 1582. C's debug build answers from a stub in `lib/curl_gssapi.c` when
     `CURL_STUB_GSS_CREDS` is set; the Rust build's stub is the same, under `debug-hooks`.
     In progress.
@@ -703,12 +700,15 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       `Persistent-Auth`, reuse matching (delegation included), `CURLINFO_HTTPAUTH_*`.
     - **d. Proxy Negotiate,** forwarding and CONNECT. **Done.** The origin's token goes
       through a tunnel, where C spends it on the CONNECT (DIVERGENCE.md).
-    - **e. Channel binding over HTTPS** (1582).
+    - **e. Channel binding over HTTPS** (1582). **Done.** The origin's TLS session alone
+      answers it, for the proxy's Negotiate too; OpenSSL's follows `ossl_get_channel_binding`.
     - **f. SOCKS5 GSS-API,** before the flip, so the greeting changes with the claim. **Done.** C makes
       the socket blocking for the exchange; here it is states of the SOCKS handshake.
-    - **g. The flip.** Claim `GSS-API`, `Kerberos` and `SPNEGO` and the library's version,
-      open `crypto`, delete `gated.py`. The stub cases 2096–2099, 2111 and 2112 then run on the
-      Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method 1 offered.
+    - **g. The flip.** **Done.** `GSS-API`, `Kerberos` and `SPNEGO` claimed, `mit-krb5/` and
+      the library's version in `curl_version`; `crypto` opens. The stub cases 2096–2099, 2111
+      and 2112 run on the Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method
+      1 offered; of the 107 tests needing `crypto`, the 86 that run pass, the other 21 skipping
+      for POP3, SMTP and IMAP.
     - **h. Closing the step.** The sweep, cargo-mutants, torture.
 45. **The tool's options that need no new engine work,** built alongside step 40. **Done.**
     `--variable` and the `--expand-` prefix (`tool_vars.c`), `--styled-output`,

@@ -2,7 +2,11 @@
 //! `Curl_ossl_ctx_init`): the ClientHello a peer reads, before any TLS of
 //! its own, as the bytes on the wire. The name it asks for (SNI), the
 //! protocols it offers (ALPN), the options and lists the context is set
-//! with.
+//! with; and the records it sends after.
+
+use std::net::TcpStream;
+
+use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 
 use super::*;
 
@@ -22,6 +26,14 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
     (
         "a_list_the_library_refuses_fails_as_c_says",
         a_list_the_library_refuses_fails_as_c_says,
+    ),
+    (
+        "a_name_of_64_kib_is_not_asked_for",
+        a_name_of_64_kib_is_not_asked_for,
+    ),
+    (
+        "tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed",
+        tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed,
     ),
 ];
 
@@ -240,5 +252,141 @@ fn a_list_the_library_refuses_fails_as_c_says() {
         tcp.set_nonblocking(false).unwrap();
         let mut buf = [0u8; 1];
         assert_eq!(tcp.read(&mut buf).unwrap(), 0, "{failure}");
+    }
+}
+
+/// A name shorter than 64 KiB is given to the library for SNI, which
+/// refuses one longer than a DNS name can be, failing the transfer as C
+/// says it; one of 65535 bytes or more is not asked for at all
+/// (`Curl_ssl_peer_init`'s `USHRT_MAX`).
+fn a_name_of_64_kib_is_not_asked_for() {
+    let name = |len: usize| {
+        let mut name = "a.".repeat(len / 2);
+        name.truncate(len - 1);
+        name.push('b');
+        name
+    };
+    // Names too long for a `--resolve` entry, resolved by the network.
+    let any_name = super::waits::Plan {
+        any_name: true,
+        ..Default::default()
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = listener.local_addr().unwrap();
+    let got = super::waits::get_over(any_name, &name(usize::from(u16::MAX) - 1), at, |_| {});
+    assert_eq!(
+        got.result,
+        Err(ErrorKind::SslConnectError),
+        "{:#?}",
+        got.seen.lines
+    );
+    assert_eq!(got.failure, b"Failed set SNI");
+    drop(listener);
+    let (at, reader) = hello_reader();
+    super::waits::get_over(any_name, &name(usize::from(u16::MAX)), at, |_| {});
+    assert_eq!(reader.join().unwrap().sni(), None);
+}
+
+/// The client's records between it and the server, each its type and
+/// length, as a relay in between reads them.
+fn relayed(to: SocketAddr) -> (SocketAddr, JoinHandle<Vec<(u8, usize)>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = listener.local_addr().unwrap();
+    let relay = std::thread::spawn(move || {
+        let (mut client, _) = listener.accept().unwrap();
+        let mut server = TcpStream::connect(to).unwrap();
+        let mut back = (client.try_clone().unwrap(), server.try_clone().unwrap());
+        let answers = std::thread::spawn(move || {
+            let _ = std::io::copy(&mut back.1, &mut back.0);
+            let _ = back.0.shutdown(std::net::Shutdown::Write);
+        });
+        let mut records = Vec::new();
+        let mut header = [0u8; 5];
+        while client.read_exact(&mut header).is_ok() {
+            let len = usize::from(u16::from_be_bytes([header[3], header[4]]));
+            let mut body = vec![0u8; len];
+            client.read_exact(&mut body).unwrap();
+            records.push((header[0], len));
+            server.write_all(&header).unwrap();
+            server.write_all(&body).unwrap();
+        }
+        let _ = server.shutdown(std::net::Shutdown::Write);
+        answers.join().unwrap();
+        records
+    });
+    (at, relay)
+}
+
+/// With TLS 1.0 and a CBC cipher, each write is led by a record of no
+/// data, its padding and MAC alone (36 bytes: a block of AES, then
+/// SHA-1's 20, encrypt-then-MAC as the library agrees to it): the
+/// library's countermeasure to BEAST, which C turns on unless
+/// `CURLSSLOPT_ALLOW_BEAST` is set.
+fn tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed() {
+    // An RSA key, exchanged with RSA: no signature of the handshake's, which
+    // in TLS 1.0 is SHA-1's, which the system's policy may refuse.
+    let mut certs = certs("beast", "localhost", &["localhost"]);
+    let rsa = PKey::from_rsa(openssl::rsa::Rsa::generate(2048).unwrap()).unwrap();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_serial_number(&BigNum::from_u32(4).unwrap().to_asn1_integer().unwrap())
+        .unwrap();
+    cert.set_subject_name(&name("localhost")).unwrap();
+    cert.set_issuer_name(certs.ca.subject_name()).unwrap();
+    cert.set_pubkey(&rsa).unwrap();
+    cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    cert.set_not_after(&Asn1Time::days_from_now(2).unwrap())
+        .unwrap();
+    let mut san = SubjectAlternativeName::new();
+    san.dns("localhost");
+    let san = san
+        .build(&cert.x509v3_context(Some(&certs.ca), None))
+        .unwrap();
+    cert.append_extension(san).unwrap();
+    cert.sign(&certs.ca_key, MessageDigest::sha256()).unwrap();
+    certs.cert = cert.build();
+    certs.key = rsa;
+    for allow in [false, true] {
+        let (server_at, server) = serve_configured(&certs, false, |a| {
+            a.clear_options(
+                openssl::ssl::SslOptions::NO_TLSV1 | openssl::ssl::SslOptions::NO_TLSV1_1,
+            );
+            a.set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1))
+                .unwrap();
+            a.set_cipher_list("AES128-SHA:@SECLEVEL=0").unwrap();
+        });
+        let (at, relay) = relayed(server_at);
+        let got = get("localhost", at, |o| {
+            trusting(&certs)(o);
+            let t = o.tls.options.make_mut().unwrap();
+            t.min_version = TlsMinVersion::Tls1_0;
+            t.max_version = TlsMaxVersion::Tls1_0;
+            t.ciphers = Some(b"AES128-SHA:@SECLEVEL=0".to_vec());
+            if allow {
+                t.ssl_options = SslOptions::ALLOW_BEAST;
+            }
+        });
+        server.join().unwrap();
+        let records = relay.join().unwrap();
+        assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+        assert!(
+            starts(&got, "SSL connection using TLSv1 / AES128-SHA / "),
+            "{:#?}",
+            got.seen.lines
+        );
+        // The application's data: the request.
+        let data: Vec<usize> = records
+            .iter()
+            .filter(|(kind, _)| *kind == 23)
+            .map(|&(_, len)| len)
+            .collect();
+        if allow {
+            assert!(!data.contains(&36), "{records:?}");
+            assert_eq!(data.len(), 1, "{records:?}");
+        } else {
+            assert_eq!(data.len(), 2, "{records:?}");
+            assert_eq!(data[0], 36, "{records:?}");
+        }
     }
 }

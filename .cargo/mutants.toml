@@ -81,6 +81,24 @@ exclude_re = [
     # Called for a DER blob alone, as C calls it: a PEM blob is read as a
     # chain (`use_certificate_chain_blob`).
     'curl-openssl/src/cert\.rs:.*: delete match arm FileType::Pem in use_certificate_blob$',
+    # The core reads only that the session failed, and says nothing of
+    # the error, which the session said itself.
+    'curl-openssl/src/ssl\.rs:.*: replace != with == in said$',
+    # Only an asynchronous engine asks to wait for its job, and no engine
+    # this build meets is one.
+    'curl-openssl/src/ssl\.rs:.*: delete match arm SSL_ERROR_WANT_ASYNC in Session::step2$',
+    # A write reads only to finish a TLS 1.2 renegotiation the server
+    # started while the client was still sending, which no test can time;
+    # and fails with the library's own error only on a session already
+    # failed or shut down, which the transfer no longer writes to.
+    'curl-openssl/src/ssl\.rs:.*: delete match arm openssl_sys::SSL_ERROR_(WANT_READ|SSL) in <impl TlsSession for Session>::send$',
+    # Asked only after a read that would block, which leaves it false.
+    'curl-openssl/src/ssl\.rs:.*: replace <impl TlsSession for Session>::pending -> bool with false$',
+    # `SSL_get_error` says `SSL_ERROR_NONE` only for a read that gave
+    # bytes; a BIO that would block sets its retry flag, which makes the
+    # answer a want, never another; and a read of 0 always queues an
+    # error (OpenSSL 3's unexpected EOF), so it is never 0 and silent.
+    'curl-openssl/src/ssl\.rs:.*: (delete match arm openssl_sys::SSL_ERROR_NONE|replace match guard below == Below::Again with false|replace < with <=) in Session::read_result$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

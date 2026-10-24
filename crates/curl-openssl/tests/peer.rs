@@ -48,6 +48,8 @@ mod checks;
 mod client;
 #[path = "peer/engine.rs"]
 mod engine;
+#[path = "peer/failures.rs"]
+mod failures;
 #[path = "peer/goodbye.rs"]
 mod goodbye;
 #[path = "peer/hands.rs"]
@@ -60,6 +62,8 @@ mod names;
 mod session;
 #[path = "peer/status.rs"]
 mod status;
+#[path = "peer/waits.rs"]
+mod waits;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -134,12 +138,14 @@ fn main() {
     .chain(client::TESTS.iter().copied())
     .chain(chain::TESTS.iter().copied())
     .chain(engine::TESTS.iter().copied())
+    .chain(failures::TESTS.iter().copied())
     .chain(goodbye::TESTS.iter().copied())
     .chain(hands::TESTS.iter().copied())
     .chain(hello::TESTS.iter().copied())
     .chain(names::TESTS.iter().copied())
     .chain(session::TESTS.iter().copied())
     .chain(status::TESTS.iter().copied())
+    .chain(waits::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -640,6 +646,16 @@ fn the_library_reads_no_more_than_it_asks() {
         short += usize::from(n > 0 && n < len);
     }
     assert!(reads > 0, "no read traced in {:#?}", got.seen.lines);
+    // After the handshake the library asks for what its read buffer
+    // holds, C's `0x401e * 4` less its overhead: as C's trace says it.
+    assert!(
+        got.seen
+            .lines
+            .iter()
+            .any(|l| l.contains("ossl_bio_cf_in_read(len=65653) -> ")),
+        "{:#?}",
+        got.seen.lines
+    );
     // The bytes came in pieces, so the library was told of short reads.
     assert!(short > 0, "no short read in {:#?}", got.seen.lines);
 }

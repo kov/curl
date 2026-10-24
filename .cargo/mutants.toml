@@ -81,6 +81,9 @@ exclude_re = [
     # Called for a DER blob alone, as C calls it: a PEM blob is read as a
     # chain (`use_certificate_chain_blob`).
     'curl-openssl/src/cert\.rs:.*: delete match arm FileType::Pem in use_certificate_blob$',
+    # `X509_V_FLAG_CRL_CHECK` and `X509_V_FLAG_CRL_CHECK_ALL` are disjoint
+    # bits (`x509_vfy.h`).
+    'curl-openssl/src/x509\.rs:.*: replace \| with \^ in populate_store$',
     # The core reads only that the session failed, and says nothing of
     # the error, which the session said itself.
     'curl-openssl/src/ssl\.rs:.*: replace != with == in said$',

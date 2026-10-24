@@ -62,6 +62,8 @@ mod names;
 mod session;
 #[path = "peer/status.rs"]
 mod status;
+#[path = "peer/store.rs"]
+mod store;
 #[path = "peer/waits.rs"]
 mod waits;
 
@@ -145,6 +147,7 @@ fn main() {
     .chain(names::TESTS.iter().copied())
     .chain(session::TESTS.iter().copied())
     .chain(status::TESTS.iter().copied())
+    .chain(store::TESTS.iter().copied())
     .chain(waits::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.

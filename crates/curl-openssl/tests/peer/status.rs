@@ -176,22 +176,26 @@ fn a_good_status_passes_and_a_revoked_one_fails() {
 
 /// `CURLOPT_ISSUERCERT` and its blob: the CA that issued the peer's
 /// certificate passes, said; another fails with 83, said only when the
-/// peer is verified; a file that cannot be read fails alike.
+/// peer or its name is verified; a file that cannot be read fails alike.
 fn the_issuer_named_must_have_issued_the_peer_s_certificate() {
     let certs = certs("issuer", "localhost", &["localhost"]);
     let other = super::certs("issuer-other", "localhost", &["localhost"]);
     let ca = certs.ca_file.to_str().unwrap().as_bytes().to_vec();
     let not = other.ca_file.to_str().unwrap().as_bytes().to_vec();
+    let with_checks =
+        |set: &dyn Fn(&mut curl_core::options::TlsOptions), peer: bool, host: bool| {
+            let (at, server) = serve(&certs);
+            let got = get("localhost", at, |o| {
+                trusting(&certs)(o);
+                o.tls.verify_peer = peer;
+                o.tls.verify_host = host;
+                set(o.tls.options.make_mut().unwrap());
+            });
+            server.join().unwrap();
+            got
+        };
     let with = |set: &dyn Fn(&mut curl_core::options::TlsOptions), verify: bool| {
-        let (at, server) = serve(&certs);
-        let got = get("localhost", at, |o| {
-            trusting(&certs)(o);
-            o.tls.verify_peer = verify;
-            o.tls.verify_host = verify;
-            set(o.tls.options.make_mut().unwrap());
-        });
-        server.join().unwrap();
-        got
+        with_checks(set, verify, verify)
     };
     let shown = |p: &[u8]| String::from_utf8(p.to_vec()).unwrap();
     let got = with(&|t| t.issuer_cert = Some(ca.clone()), true);
@@ -209,6 +213,13 @@ fn the_issuer_named_must_have_issued_the_peer_s_certificate() {
     let got = with(&|t| t.issuer_cert = Some(not.clone()), false);
     assert_eq!(got.result, Err(ErrorKind::SslIssuerError));
     assert_eq!(got.failure, b"");
+    // The name checked alone is the peer verified enough to say it.
+    let got = with_checks(&|t| t.issuer_cert = Some(not.clone()), false, true);
+    assert_eq!(got.result, Err(ErrorKind::SslIssuerError));
+    assert_eq!(
+        String::from_utf8(got.failure).unwrap(),
+        format!("SSL: Certificate issuer check failed ({})", shown(&not))
+    );
     let got = with(
         &|t| t.issuer_cert = Some(b"/nonexistent/ca.pem".to_vec()),
         true,

@@ -336,3 +336,18 @@ witness: curl-core proto::file::tests::a_download_past_its_time_limit_names_no_s
         !matches!(self, ProtoState::File(_))
 --- new
         true
+
+=== a send limit cuts an upload to a file short, as C's does
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_send_limit_does_not_cut_an_upload_short
+--- old
+        // Not pausable: a pause is a read error.
+        let got = upload.read(cx, &mut self.buf, false);
+--- new
+        // Not pausable: a pause is a read error.
+        if matches!(cx.rate_allowance(crate::progress::rate::Way::Send), Some(..=0)) {
+            self.doing = Doing::Ending { check: false };
+            return Ok(DoStep::More);
+        }
+        cx.rate_drain(crate::progress::rate::Way::Send, self.buf.len());
+        let got = upload.read(cx, &mut self.buf, false);

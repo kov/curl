@@ -760,3 +760,48 @@ perform where the engine lets several; ALPN offering `h2`, and TLS early data, w
 
 After the port, as an addition: a rustls backend behind the same `curl_core::tls` traits, to
 shrink the C the library depends on.
+
+## Milestone 4: HTTP/2, and the rest of what an HTTP client links libcurl for
+
+Status: **to do**. SCOPE stage 5's first half, with the pieces HTTP-only applications expect of
+a distribution's libcurl. It ends when our library, through `LD_LIBRARY_PATH`, stands in for
+the system's under the HTTP-only programs installed here.
+
+47. **The corpus of real command lines,** as the paragraph above describes. **To do.**
+48. **The threaded resolver,** `AsynchDNS` as distributions build it, beside c-ares. **To do.**
+49. **IDN** through libidn2. **To do.**
+50. **HSTS and alt-svc,** their caches, files and options, without the share (milestone 7). **To do.**
+51. **The pool's `Attached` place,** a connection several transfers lease (ENGINE.md). **To do.**
+52. **HTTP/2** through nghttp2: ALPN offering `h2`, prior knowledge and `h2c` upgrade,
+    multiplexing, `PIPEWAIT` and `--parallel-immediate`, a sibling stream's data delivered at
+    once, server push, TLS early data, the request renderer writing through a field sink.
+    **To do.**
+53. **`CURLOPT_CONNECT_ONLY`** with the pool's `Reserved` place (3231, 3232, 3234). **To do.**
+54. **Closing the milestone.** The `tests/http` pytest suite's HTTP/1.1 and HTTP/2 cases on
+    both legs; the installed programs that link libcurl for HTTP run on ours. **To do.**
+
+## Milestone 5: HTTP/3
+
+Status: **to do**. SCOPE stage 5's second half: QUIC through ngtcp2 and nghttp3, the HTTP/3
+proxy, Happy Eyeballs across QUIC and TCP, and alt-svc upgrading to h3.
+
+## Milestone 6: the other protocols
+
+Status: **to do**. SCOPE stage 6, in groups, each through the test servers `runtests.pl`
+starts: FTP and FTPS (the data connection a second chain beside the control connection's);
+IMAP, POP3 and SMTP with STARTTLS; SCP and SFTP through libssh, the SSH library distributions
+build with, with a C oracle built against it; then LDAP, MQTT, WebSocket, DICT, Gopher,
+RTSP, SMB, TELNET and TFTP. NTLM stays out of scope (SCOPE.md).
+
+## Milestone 7: shared state
+
+Status: **to do**. SCOPE stage 7: the share interface (cookies, DNS, connections, SSL
+sessions, HSTS, alt-svc, PSL) with its lock callbacks, DoH (`--doh-url`, 2101), the `--dns-*`
+options, and SSL session import and export (`SSLS-EXPORT`, 1678).
+
+## Milestone 8: a WebKit port on the curl backend
+
+Status: **to do**. The application validation: a WebKit port built with its libcurl network
+backend (`inventory/references/webkit-curl/`) against our library, its own HTTP tests run
+against ours and C's, and its test browser in use. Performance against the C reference
+(SCOPE stage 8) is measured here, on the scorecard and on the browser's loads.

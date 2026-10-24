@@ -241,6 +241,17 @@ pub(crate) fn fail<H: Host>(
     failed(cx, kind, reason(args).0)
 }
 
+/// Let go of the reason kept for the transfer's failure, the next one
+/// given kept in its place, and empty what the application was told
+/// of it (`Curl_reset_fail`).
+pub(crate) fn reset_fail<H: Host>(cx: &mut StepCx<'_, H>) {
+    if cx.report_mut().reset_failure()
+        && let Some(sink) = cx.easy().options().callbacks.failure.clone()
+    {
+        sink.write(b"");
+    }
+}
+
 /// `fail` with a reason made of `parts`, which need not be text.
 pub(crate) fn fail_with<H: Host>(
     cx: &mut StepCx<'_, H>,
@@ -272,7 +283,7 @@ pub(crate) fn fail_for<H: Host>(
 }
 
 fn failed<H: Host>(cx: &mut StepCx<'_, H>, kind: ErrorKind, detail: Text<DETAIL_MAX>) -> ErrorKind {
-    let first = cx.easy().report().reasons() == 0;
+    let first = cx.easy().report().unsaid();
     cx.report_mut().record_failure(detail.bytes());
     if first && let Some(sink) = cx.easy().options().callbacks.failure.clone() {
         sink.write(detail.bytes());

@@ -119,6 +119,9 @@ pub struct TransferReport {
     failure: Option<Vec<u8>>,
     /// How many reasons were given, the first among them.
     reasons: u32,
+    /// How many had been given when the reason kept was last let go
+    /// (`Curl_reset_fail`): the next is the first again.
+    reasons_cleared: u32,
     /// The methods the server's challenges offered
     /// (`info.httpauthavail`).
     auth_offered: AuthMethods,
@@ -479,6 +482,22 @@ impl TransferReport {
     /// gave one leaves its caller nothing to add.
     pub(crate) fn reasons(&self) -> u32 {
         self.reasons
+    }
+
+    /// No reason was given since the start, or since the one kept was let
+    /// go: the next is the one kept.
+    pub(crate) fn unsaid(&self) -> bool {
+        self.reasons == self.reasons_cleared
+    }
+
+    /// Let go of the reason kept, the next to be given kept in its place
+    /// (`Curl_reset_fail`): whether one had been given since the start or
+    /// the last time.
+    pub(crate) fn reset_failure(&mut self) -> bool {
+        let said = !self.unsaid();
+        self.failure = None;
+        self.reasons_cleared = self.reasons;
+        said
     }
 
     /// Keep `detail` as the reason, unless one was given already.
@@ -934,6 +953,22 @@ mod tests {
         assert_eq!(r.failure(), Some(&b"first"[..]));
         r.restart(Instant::EPOCH);
         assert_eq!(r.failure(), None);
+    }
+
+    /// A reason let go is replaced by the next one given, as C's error
+    /// buffer is once its race looks for another attempt.
+    #[test]
+    fn a_reason_let_go_is_replaced_by_the_next() {
+        let mut r = TransferReport::default();
+        assert!(!r.reset_failure(), "nothing was said");
+        r.record_failure(b"first");
+        assert!(r.reset_failure());
+        assert_eq!(r.failure(), None);
+        assert!(r.unsaid());
+        r.record_failure(b"second");
+        r.record_failure(b"third");
+        assert_eq!(r.failure(), Some(&b"second"[..]));
+        assert_eq!(r.reasons(), 3);
     }
 
     fn started(now: Instant) -> Timings {

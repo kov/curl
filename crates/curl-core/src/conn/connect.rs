@@ -181,6 +181,11 @@ pub(crate) trait ConnCx: LayerCx {
 
     /// Why the transfer fails, kept if nothing said so before (`failf`).
     fn fail(&mut self, reason: std::fmt::Arguments<'_>);
+
+    /// Let go of the reason kept, as the race starts an attempt or ends
+    /// (`Curl_reset_fail`): what an attempt said is not why the transfer
+    /// fails.
+    fn reset_fail(&mut self);
 }
 
 /// A socket opened for an attempt, or why none was, and whether the
@@ -264,6 +269,8 @@ impl ConnCx for Plain<'_> {
     }
 
     fn fail(&mut self, _: std::fmt::Arguments<'_>) {}
+
+    fn reset_fail(&mut self) {}
 }
 
 /// What a drive needs beyond its context: the settings of the transfer
@@ -659,6 +666,9 @@ impl ConnectMachine {
             return Ok(Drove::Connecting(self, Progress::Waiting { until }));
         }
         let first = r.attempts.is_empty();
+        // What an attempt before said is let go, as C's race does as it
+        // looks for the next address (`cf_ip_ballers_run`).
+        cx.reset_fail();
         if !first {
             cx.of(
                 Component::HappyEyeballs,
@@ -853,6 +863,8 @@ impl ConnectMachine {
         for a in r.attempts.drain(..) {
             discard(cx, a.socket);
         }
+        // Whatever the attempts said is let go (`cf_ip_happy_connect`).
+        cx.reset_fail();
         if self.route.handshakes() || setup.haproxy || self.route.tls.is_some() {
             // The connection is the first hop's; the handshakes over it
             // are still to be made.

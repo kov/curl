@@ -480,7 +480,9 @@ fn hooked(peer: Peer, hooks: impl FnOnce(&mut Hooks)) -> Hooked {
 
 /// An opener that opens nothing fails the attempt before anything about
 /// it is known: its addresses are traced empty, and the transfer fails
-/// for the open (C's capture `hooks.txt`, mode 0).
+/// for the open (C's capture `hooks.txt`, mode 0). What the attempt said
+/// is let go as the race looks for another address, so the reason kept
+/// is the race's: C's error buffer reads the same.
 #[test]
 fn an_opener_opening_nothing_fails_as_c() {
     // C's errno after a callback that opened nothing: none.
@@ -497,10 +499,12 @@ fn an_opener_opening_nothing_fails_as_c() {
             Failed to connect to 127.0.0.1:{PORT} after 0 ms: Could not connect to server"
         ))
     );
+    let race =
+        format!("Failed to connect to 127.0.0.1:{PORT} after 0 ms: Could not connect to server");
     assert_eq!(
         h.ran.easy.report().failure(),
-        Some(&b"failed to open socket: Success"[..]),
-        "the first reason is kept"
+        Some(race.as_bytes()),
+        "the attempt's reason is let go"
     );
     assert!(h.set.is_empty() && h.closed.is_empty());
 }
@@ -512,9 +516,12 @@ fn an_opener_opening_nothing_fails_as_c() {
 fn an_opener_out_of_memory_fails_its_attempt() {
     let h = hooked(Peer::Accepts, |h| h.fail = Some(12));
     assert_eq!(h.ran.result, Err(ErrorKind::CouldntConnect));
-    assert_eq!(
-        h.ran.easy.report().failure(),
-        Some(&b"failed to open socket: Cannot allocate memory"[..])
+    let lines = socket_lines(&h.ran);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "failed to open socket: Cannot allocate memory"),
+        "{lines:?}"
     );
 }
 
@@ -613,4 +620,95 @@ fn an_opener_may_change_the_address() {
     // The application's socket is made nonblocking once set: here after
     // the `TCP_NODELAY` the library sets.
     assert_eq!(h.talk.made_nonblocking_after(), Some(1));
+}
+
+/// What a GET of a name with an IPv6 and an IPv4 address told the
+/// application of its reasons for failing, its IPv6 peer answering as
+/// `v6` says and the opener opening no socket for the families
+/// `refused`.
+fn told_by_two_attempts(v6: Option<Peer>, refused: &'static [bool]) -> (Ran, Vec<Vec<u8>>) {
+    use crate::handler::{Handler, SocketOpener, TextSink};
+    struct Refusing(Arc<Mutex<FakeNet>>, &'static [bool]);
+    impl SocketOpener for Refusing {
+        fn open(
+            &self,
+            _: &mut TransferCx<'_>,
+            address: &mut SocketAddr,
+        ) -> std::io::Result<Box<dyn crate::conn::io::Socket>> {
+            if self.1[usize::from(address.is_ipv6())] {
+                return Err(std::io::Error::from_raw_os_error(0));
+            }
+            crate::conn::io::Net::open(&mut *self.0.lock().unwrap(), *address)
+        }
+    }
+    #[derive(Clone, Default)]
+    struct Told(Arc<Mutex<Vec<Vec<u8>>>>);
+    impl TextSink for Told {
+        fn write(&self, text: &[u8]) {
+            self.0.lock().unwrap().push(text.to_vec());
+        }
+    }
+    let clock = ManualClock::new().unwrap();
+    let at = SocketAddr::from(([127, 0, 0, 1], PORT));
+    let at6 = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, PORT));
+    let talk = Conversation::replies(&[OK], false);
+    let both: [IpAddr; 2] = [at6.ip(), at.ip()];
+    let mut net = FakeNet::new(clock.clone())
+        .with_name("both.example", &both)
+        .with_peer(at, Peer::Accepts)
+        .with_conversation(at, talk.clone());
+    if let Some(v6) = v6 {
+        net = net.with_peer(at6, v6).with_conversation(at6, talk.clone());
+    }
+    let net = Arc::new(Mutex::new(net));
+    let env = Env {
+        clock: Box::new(clock),
+        net: Box::new(crate::conn::io::SharedNet(net.clone())),
+        arena: ArenaPolicy::new(16, 0).unwrap(),
+        waker: None,
+    };
+    let mut m = Multi::new(env).unwrap();
+    let told = Told::default();
+    let ran = get_with(&mut m, tracing_tcp(), "/", talk, |o| {
+        let url = format!("http://both.example:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        let sockets = o.sockets.make_mut().unwrap();
+        sockets.open = Some(Handler::socket_opener(Refusing(net.clone(), refused)).unwrap());
+        o.callbacks.failure = Some(Handler::text(told.clone()).unwrap());
+    });
+    let told = told.0.lock().unwrap().clone();
+    (ran, told)
+}
+
+/// An attempt that fails as the race starts it gives its reason, let go
+/// as the race starts the next; the race failing lets go of the last
+/// and gives its own, as C's error buffer reads (`Curl_reset_fail`).
+#[test]
+fn each_attempt_s_reason_is_let_go_as_the_race_goes_on() {
+    let (ran, told) = told_by_two_attempts(None, &[true, true]);
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let open = b"failed to open socket: Success".to_vec();
+    let race =
+        format!("Failed to connect to both.example:{PORT} after 0 ms: Could not connect to server");
+    assert_eq!(
+        told,
+        [
+            open.clone(),
+            Vec::new(),
+            open,
+            Vec::new(),
+            race.into_bytes()
+        ]
+    );
+}
+
+/// An attempt that connects lets go of what one started after it said:
+/// no reason is kept, and what the application was told is emptied.
+#[test]
+fn a_reason_is_let_go_as_an_attempt_connects() {
+    let slow = Peer::AcceptsAfter(std::time::Duration::from_millis(300));
+    let (ran, told) = told_by_two_attempts(Some(slow), &[true, false]);
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().failure(), None);
+    assert_eq!(told, [&b"failed to open socket: Success"[..], b""]);
 }

@@ -385,6 +385,10 @@ impl<H: Host> ConnCx for DriveCx<'_, '_, H> {
     fn fail(&mut self, reason: fmt::Arguments<'_>) {
         crate::trace::fail(self.step, crate::error::ErrorKind::CouldntConnect, reason);
     }
+
+    fn reset_fail(&mut self) {
+        crate::trace::reset_fail(self.step);
+    }
 }
 
 impl<H: Host> Net for DriveCx<'_, '_, H> {

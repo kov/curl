@@ -2102,7 +2102,10 @@ fn connect_failed<H: Host>(cx: &mut StepCx<'_, H>, route: &Tcp, e: ConnectError)
         }
         ConnectError::Failed(_, kind) => {
             // The drive traced the failure, and kept its number.
-            // No attempt running, and no address left.
+            // No attempt running, and no address left: what the attempts
+            // said is let go as the race looks for another
+            // (`cf_ip_ballers_run`).
+            trace::reset_fail(cx);
             trace::of(
                 cx,
                 Component::HappyEyeballs,

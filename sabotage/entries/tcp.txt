@@ -134,3 +134,42 @@ witness: curl-core proto::http::tests::tcp_trace::a_configurer_failing_a_socket_
     let why = failure.message();
 --- new
     let why = ErrorKind::CouldntConnect.message();
+
+=== an attempt's reason is kept as the race starts the next
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::each_attempt_s_reason_is_let_go_as_the_race_goes_on
+features: test-util
+--- old
+        // looks for the next address (`cf_ip_ballers_run`).
+        cx.reset_fail();
+--- new
+        // looks for the next address (`cf_ip_ballers_run`).
+
+=== an attempt's reason is kept once another connects
+file: crates/curl-core/src/conn/connect.rs
+witness: curl-core proto::http::tests::tcp_trace::a_reason_is_let_go_as_an_attempt_connects
+features: test-util
+--- old
+        // Whatever the attempts said is let go (`cf_ip_happy_connect`).
+        cx.reset_fail();
+--- new
+        // Whatever the attempts said is let go (`cf_ip_happy_connect`).
+
+=== the last attempt's reason is kept over the race's
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tcp_trace::an_opener_opening_nothing_fails_as_c
+features: test-util
+--- old
+            // (`cf_ip_ballers_run`).
+            trace::reset_fail(cx);
+--- new
+            // (`cf_ip_ballers_run`).
+
+=== a reason let go is not replaced by the next
+file: crates/curl-core/src/report.rs
+witness: curl-core report::tests::a_reason_let_go_is_replaced_by_the_next
+--- old
+        self.failure = None;
+        self.reasons_cleared = self.reasons;
+--- new
+        self.failure = None;

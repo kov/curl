@@ -1233,7 +1233,10 @@ polled at the transfer's next run, so its socket is waited on and announced to t
 callback first. A drive traces its attempts in C's words as it makes them ("  Trying …",
 "connect to … from … failed: …"), and the transfer what the drive reports ("Established
 connection to … ", then `failf`'s "Failed to connect to H:P after N ms: …" or "Could not
-resolve host: …"). The machine
+resolve host: …"). A reason an attempt gives for failing the transfer (`failed to open
+socket`, a bind's) is let go as the race starts the next attempt, connects, or ends with none
+left (`Curl_reset_fail`), as is what the application's error buffer was told: the reason kept
+is the race's, or none. The machine
 is driven in its lease, the pool not borrowed (§3.6), and reaches the transfer only through its
 `ConnCx`; `Setup` carries the transfer's settings for the drive (the eyeballs delay, the
 scope, the socket options, the names' rules). A transfer whose receiving is paused is not driven (`multistate_connecting`), and the

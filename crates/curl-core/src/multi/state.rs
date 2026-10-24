@@ -36,7 +36,7 @@ mod tunnel;
 use crate::components::Component;
 use crate::proto::http1::follow;
 use crate::proto::http1::follow::Inherited;
-use crate::proto::{Before, Ended, ProtoState, ProtoStep};
+use crate::proto::{Before, DoStep, Ended, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
 use crate::trace::{self, Bytes, Ip, OsError};
@@ -969,6 +969,8 @@ fn starts<H: Host>(cx: &StepCx<'_, H>) -> Starts {
 /// Run one step of `run`.
 pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     let state = std::mem::replace(&mut run.state, TransferState::Init);
+    // A piece of DO is within C's one call: no pass of its loop ends.
+    let mut within_do = false;
     let (next, wake) = match state {
         TransferState::Init => {
             let limits = cx.easy().options().limits;
@@ -1019,7 +1021,11 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         // No protocol connects over its connection yet.
         TransferState::ProtoConnect(x) => (TransferState::Do(x), Wake::Again),
         TransferState::Do(mut x) => match x.proto.do_it(cx, &mut x.lease) {
-            Ok(()) => {
+            Ok(DoStep::More) => {
+                within_do = true;
+                (TransferState::Do(x), Wake::Again)
+            }
+            Ok(DoStep::Made) => {
                 // About to send; sent already, with no body
                 // (`mstate_enter_did`).
                 mstate::enter(cx, MState::Did);
@@ -1259,7 +1265,11 @@ pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
         }
         s @ TransferState::Completed(_) => (s, Wake::Idle),
     };
-    let (next, wake) = progress_after_step(next, wake, cx);
+    let (next, wake) = if within_do {
+        (next, wake)
+    } else {
+        progress_after_step(next, wake, cx)
+    };
     if next.is_completed() {
         // Its message is ready at once (`handle_completed`).
         if cx.mstate() != MState::MsgSent {

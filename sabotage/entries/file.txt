@@ -48,30 +48,32 @@ witness: curl-core proto::file::tests::a_pausing_write_fails
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_large_file_is_read_in_pieces
 --- old
-            self.pipeline.body(cx, &buf[..n])?;
-            progress::check(cx, false)?;
+            Doing::Reading(left) => {
+                progress::check(cx, false)?;
 --- new
-            self.pipeline.body(cx, &buf[..n])?;
+            Doing::Reading(left) => {
 
 === DO ends without a progress update
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_empty_file_is_its_headers
 --- old
-            self.read_body(cx, known)?;
+                progress::update(cx, false).map(|()| DoStep::Made)
+            }
         }
-        progress::update(cx, false)
+    }
 --- new
-            self.read_body(cx, known)?;
+                Ok(DoStep::Made)
+            }
         }
-        Ok(())
+    }
 
 === a file is read past its size
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_file_is_read_as_far_as_its_size
 --- old
-            let want = left.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
+        let want = left.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
 --- new
-            let want = None::<u64>.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
+        let want = None::<u64>.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
 
 === a resumed download announces the whole size
 file: crates/curl-core/src/proto/file.rs
@@ -109,10 +111,10 @@ file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_head_request_is_the_headers
 --- old
         if cx.easy().options().method == Method::Head {
-            return Ok(());
+            return Ok(DoStep::Made);
 --- new
         if cx.easy().options().method == Method::Upload {
-            return Ok(());
+            return Ok(DoStep::Made);
 
 === a zero byte in the path is a name
 file: crates/curl-core/src/url/encode.rs
@@ -142,9 +144,9 @@ witness: curl-core proto::file::tests::an_upload_resumes_by_appending
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_upload_resumes_by_appending
 --- old
-            let skipped = usize::try_from(skip).map_or(got.n, |s| s.min(got.n));
+        let skipped = usize::try_from(skip).map_or(got.n, |s| s.min(got.n));
 --- new
-            let skipped = 0;
+        let skipped = 0;
 
 === an upload resumed at the end skips nothing
 file: crates/curl-core/src/proto/file.rs
@@ -168,7 +170,7 @@ witness: curl-core proto::file::tests::an_upload_writes_the_file
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_upload_writes_the_file
 --- old
-            cx.report_mut().sizes_mut().upload += body.len() as u64;
+        cx.report_mut().sizes_mut().upload += body.len() as u64;
 --- new
 
 === an upload's size is not announced
@@ -228,9 +230,9 @@ witness: curl-core proto::file::tests::the_url_rules_apply_to_a_file_url
 file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::a_read_failing_partway_fails
 --- old
-            let n = read.map_err(|_| ErrorKind::ReadError)?;
+        let n = read.map_err(|_| ErrorKind::ReadError)?;
 --- new
-            let n = read.unwrap_or(0);
+        let n = read.unwrap_or(0);
 
 === a failed read of the directory ends the listing as if at its end
 file: crates/curl-core/src/proto/file.rs
@@ -296,3 +298,33 @@ witness: curl-core proto::file::tests::a_directory_listing_is_cut_at_its_range
                 ..Expect::default()
             });
 --- new
+
+=== a piece of DO ends a pass of C's loop, with its progress pass
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::a_large_file_is_read_in_pieces
+--- old
+    let (next, wake) = if within_do {
+--- new
+    let (next, wake) = if false {
+
+=== the look at a piece's progress is taken after the next piece
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::a_download_is_timed_piece_by_piece
+--- old
+                progress::check(cx, false)?;
+                self.read_piece(cx, left)
+--- new
+                let read = self.read_piece(cx, left);
+                progress::check(cx, false)?;
+                read
+
+=== the end of an upload's body is in the step of its last read
+file: crates/curl-core/src/proto/file.rs
+witness: curl-core proto::file::tests::an_upload_is_timed_piece_by_piece
+--- old
+        if got.n == 0 {
+            self.doing = Doing::Ending { check: false };
+            return Ok(DoStep::More);
+--- new
+        if got.n == 0 {
+            return progress::update(cx, false).map(|()| DoStep::Made);

@@ -745,6 +745,103 @@ fn an_upload_past_its_time_limit_is_written_then_times_out() {
     );
 }
 
+/// A write handler that takes `took` of `clock`'s time for each piece.
+struct SlowWriter {
+    clock: ManualClock,
+    took: Duration,
+}
+
+impl WriteHandler for SlowWriter {
+    fn write(&self, _: &mut TransferCx<'_>, _: &[u8]) -> Write {
+        self.clock.advance(self.took);
+        Write::Accepted
+    }
+}
+
+/// The meter's lines in what it drew, titles and all.
+fn meter_lines(drawn: &Stderr) -> Vec<String> {
+    let drawn = String::from_utf8(drawn.0.lock().unwrap().clone()).unwrap();
+    drawn
+        .split(['\r', '\n'])
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A download's times and speed are the time its pieces took, its
+/// request made when the last was read, as C reads the clock after each
+/// piece (`Curl_pgrsCheck`) and again for DID; its meter is drawn again
+/// as each second passes.
+#[test]
+fn a_download_is_timed_piece_by_piece() {
+    let s = Scratch::new("downtime");
+    s.file("big", &[7; 40000], Y2K_NOON);
+    let clock = ManualClock::new().unwrap();
+    let (mut e, _) = easy(&s.url("big"));
+    let took = Duration::from_secs(1);
+    let slow = SlowWriter {
+        clock: clock.clone(),
+        took,
+    };
+    e.options_mut().callbacks.write = Some(Handler::write(slow).unwrap());
+    let stderr = Stderr::default();
+    e.options_mut().progress = Progress::Meter;
+    e.options_mut().callbacks.stderr = Some(Handler::text(stderr.clone()).unwrap());
+    let (r, e) = run_on(e, clock);
+    assert_eq!(r, Ok(()));
+    let t = e.report().timings();
+    let three = Duration::from_secs(3);
+    assert_eq!(
+        (t.pretransfer(), t.posttransfer(), t.total()),
+        (three, three, three)
+    );
+    assert_eq!(e.report().speeds().download(), 13333);
+    assert_eq!(
+        meter_lines(&stderr)[2..],
+        [
+            "  0      0   0      0   0      0      0      0                              0",
+            " 40  40000  40  16383   0      0  16383      0   00:02   00:01   00:01  16383",
+            " 81  40000  81  32766   0      0  16383      0   00:02   00:02          16383",
+            "100  40000 100  40000   0      0  13333      0   00:03   00:03          13333",
+        ]
+    );
+}
+
+/// An upload's times and speed are the time its pieces took, its request
+/// made when the body ended; its meter is drawn again as each second
+/// passes.
+#[test]
+fn an_upload_is_timed_piece_by_piece() {
+    let s = Scratch::new("uptimed");
+    let clock = ManualClock::new().unwrap();
+    let (mut e, _) = upload(
+        &s.url("f"),
+        slowly_fed(70000, &clock, Duration::from_secs(1)),
+    );
+    let stderr = Stderr::default();
+    e.options_mut().progress = Progress::Meter;
+    e.options_mut().callbacks.stderr = Some(Handler::text(stderr.clone()).unwrap());
+    let (r, e) = run_on(e, clock);
+    assert_eq!(r, Ok(()));
+    assert_eq!(s.read("f"), [b'u'; 70000]);
+    let t = e.report().timings();
+    let three = Duration::from_secs(3);
+    assert_eq!(
+        (t.pretransfer(), t.posttransfer(), t.total()),
+        (three, three, three)
+    );
+    assert_eq!(e.report().speeds().upload(), 23333);
+    assert_eq!(
+        meter_lines(&stderr)[2..],
+        [
+            "  0      0   0      0   0      0      0      0                              0",
+            "100  65536   0      0   0  65536      0  65536           00:01          65536",
+            "100  70000   0      0   0  70000      0  35000           00:02          35000",
+            "100  70000   0      0   0  70000      0  23333           00:03          23333",
+        ]
+    );
+}
+
 /// A send limit does not cut an upload to a file short: the file gets the
 /// whole body. C's `file_upload` reads through the limit, takes the read
 /// it refuses once the limit is spent for the end, and succeeds with the

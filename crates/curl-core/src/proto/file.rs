@@ -1,6 +1,9 @@
 //! `file:`, the local file system (`lib/file.c`). The request is the
 //! whole transfer, done in DO: a download reads a file, or lists a
-//! directory, into the pipeline; an upload writes the body to a file.
+//! directory, into the pipeline; an upload writes the body to a file. C
+//! does it in one call; here each piece of a file read or written is a
+//! step of DO, so that the drive reads the clock between pieces as C's
+//! `Curl_pgrsCheck` does after each.
 
 use core::ffi::CStr;
 use std::fmt::Write as _;
@@ -20,6 +23,7 @@ use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::{Method, Ranged, Resume};
 use crate::progress;
+use crate::proto::DoStep;
 use crate::text::Text;
 use crate::trace;
 use crate::upload::{self, Upload};
@@ -42,9 +46,33 @@ pub(crate) struct Faults {
 pub(crate) struct Request {
     /// The path, decoded, with a zero byte after it.
     path: Vec<u8>,
-    /// Open to read, for anything but an upload.
+    /// Open to read, for anything but an upload; for an upload, open to
+    /// write once DO starts.
     file: Option<File>,
+    /// What a piece is read into, once DO starts.
+    buf: Vec<u8>,
     pipeline: Pipeline,
+    doing: Doing,
+}
+
+/// How far DO is. The look at the progress C takes after each piece
+/// (`Curl_pgrsCheck`) starts the next step, so that it is timed after the
+/// piece, as C reads the clock for it.
+#[derive(Debug)]
+enum Doing {
+    /// Not started.
+    Start,
+    /// Reading the file into the pipeline, a piece delivered and not
+    /// looked at yet; this many bytes more of it if known, else to its
+    /// end.
+    Reading(Option<u64>),
+    /// Writing the body to the file, a piece written and not looked at
+    /// yet; the first `skip` bytes of the body stored already, and
+    /// skipped.
+    Writing { upload: Upload, skip: u64 },
+    /// The body is over: the last progress pass is left, after a look at
+    /// the last piece if `check`.
+    Ending { check: bool },
 }
 
 impl Request {
@@ -63,7 +91,9 @@ impl Request {
         let mut request = Request {
             path,
             file: None,
+            buf: Vec::new(),
             pipeline: Pipeline::new(Reach::Local),
+            doing: Doing::Start,
         };
         if cx.easy().options().method != Method::Upload {
             match fs::open_read(request.c_path()) {
@@ -89,15 +119,32 @@ impl Request {
         &mut self.pipeline
     }
 
-    /// The whole transfer (`file_do`).
-    pub(crate) fn do_it<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-        match cx.easy().options().method {
-            Method::Upload => self.upload(cx),
-            Method::Get | Method::Head | Method::Post => self.download(cx),
+    /// A step of the whole transfer (`file_do`): its start and first
+    /// piece, a piece, or its end.
+    pub(crate) fn do_it<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<DoStep, ErrorKind> {
+        match std::mem::replace(&mut self.doing, Doing::Start) {
+            Doing::Start => match cx.easy().options().method {
+                Method::Upload => self.upload(cx),
+                Method::Get | Method::Head | Method::Post => self.download(cx),
+            },
+            Doing::Reading(left) => {
+                progress::check(cx, false)?;
+                self.read_piece(cx, left)
+            }
+            Doing::Writing { upload, skip } => {
+                progress::check(cx, false)?;
+                self.write_piece(cx, upload, skip)
+            }
+            Doing::Ending { check } => {
+                if check {
+                    progress::check(cx, false)?;
+                }
+                progress::update(cx, false).map(|()| DoStep::Made)
+            }
         }
     }
 
-    fn download<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    fn download<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<DoStep, ErrorKind> {
         let meta = self.file.as_ref().expect("opened to read").metadata();
         #[cfg(test)]
         let meta = if cx.easy().options().file_faults.stat_fails {
@@ -121,7 +168,7 @@ impl Request {
         {
             trace::info(cx, format_args!("{unmet}"));
             cx.report_mut().set_condition_unmet();
-            return Ok(());
+            return Ok(DoStep::Made);
         }
         let mut line = Text::<80>::new();
         if !is_dir {
@@ -139,7 +186,7 @@ impl Request {
         self.pipeline
             .announce_size(cx, u64::try_from(expected).ok());
         if cx.easy().options().method == Method::Head {
-            return Ok(());
+            return Ok(DoStep::Made);
         }
         let Span {
             mut resume, max, ..
@@ -191,16 +238,16 @@ impl Request {
         }
         if is_dir {
             self.list(cx)?;
+            progress::update(cx, false).map(|()| DoStep::Made)
         } else {
-            self.read_body(cx, known)?;
+            self.read_body(cx, known)
         }
-        progress::update(cx, false)
     }
 
     /// Read a file that cannot be stat'ed all the same, as C does: without
     /// headers, its size unknown, and with no time condition, as nothing
     /// is known to check it against; a resume needs the size, and fails.
-    fn download_unstated<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    fn download_unstated<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<DoStep, ErrorKind> {
         let Span { resume, max, .. } = span_of(cx)?;
         if resume < 0 {
             let kind = ErrorKind::ReadError;
@@ -231,8 +278,7 @@ impl Request {
             max: max.and_then(|n| u64::try_from(n).ok()),
             ..Expect::default()
         });
-        self.read_body(cx, None)?;
-        progress::update(cx, false)
+        self.read_body(cx, None)
     }
 
     fn header<H: Host>(
@@ -246,38 +292,51 @@ impl Request {
     }
 
     /// Deliver the file from where it is, `left` bytes if known, else to
-    /// its end.
+    /// its end: its first piece.
     fn read_body<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
-        mut left: Option<u64>,
-    ) -> Result<(), ErrorKind> {
+        left: Option<u64>,
+    ) -> Result<DoStep, ErrorKind> {
         // The most of a file read at once: the transfer buffer, less the
         // byte C keeps for a terminating zero.
         let most = cx.easy().options().limits.buffer_size.get() - 1;
-        let file = self.file.as_mut().expect("opened to read");
         let mut buf = Vec::new();
         buf.try_reserve_exact(most)
             .map_err(|_| ErrorKind::OutOfMemory)?;
         #[expect(clippy::disallowed_methods, reason = "reserved above")]
         buf.resize(most, 0);
-        loop {
-            let want = left.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
-            // C ends the transfer, successfully, where a read fails; here
-            // it fails (DIVERGENCE.md).
-            let read = file.read(&mut buf[..want]);
-            #[cfg(test)]
-            let read = injected(cx, &self.pipeline).map_or(read, Err);
-            let n = read.map_err(|_| ErrorKind::ReadError)?;
-            if n == 0 {
-                return Ok(());
-            }
-            if let Some(left) = &mut left {
-                *left -= n as u64;
-            }
-            self.pipeline.body(cx, &buf[..n])?;
-            progress::check(cx, false)?;
+        self.buf = buf;
+        self.read_piece(cx, left)
+    }
+
+    /// Read and deliver a piece of the file; at its end, on to the last
+    /// progress pass.
+    fn read_piece<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        mut left: Option<u64>,
+    ) -> Result<DoStep, ErrorKind> {
+        let buf = &mut self.buf;
+        let most = buf.len();
+        let want = left.map_or(most, |n| usize::try_from(n).map_or(most, |n| n.min(most)));
+        let file = self.file.as_mut().expect("opened to read");
+        // C ends the transfer, successfully, where a read fails; here it
+        // fails (DIVERGENCE.md).
+        let read = file.read(&mut buf[..want]);
+        #[cfg(test)]
+        let read = injected(cx, &self.pipeline).map_or(read, Err);
+        let n = read.map_err(|_| ErrorKind::ReadError)?;
+        if n == 0 {
+            self.doing = Doing::Ending { check: false };
+            return Ok(DoStep::More);
         }
+        if let Some(left) = &mut left {
+            *left -= n as u64;
+        }
+        self.pipeline.body(cx, &self.buf[..n])?;
+        self.doing = Doing::Reading(left);
+        Ok(DoStep::More)
     }
 
     /// Deliver a directory's names, a line each, but those starting with a
@@ -299,8 +358,9 @@ impl Request {
         Ok(())
     }
 
-    /// Write the body to the path (`file_upload`).
-    fn upload<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
+    /// Write the body to the path (`file_upload`): the file opened, and
+    /// the first piece.
+    fn upload<H: Host>(&mut self, cx: &mut StepCx<'_, H>) -> Result<DoStep, ErrorKind> {
         // C looks for something after the path's first slash.
         let path = &self.path[..self.path.len() - 1];
         if !path
@@ -316,17 +376,16 @@ impl Request {
             None => Keep::Nothing,
         };
         let mode = options.new_file_mode.bits().into();
-        let Ok(mut target) = fs::open_write(self.c_path(), keep, mode) else {
+        let Ok(target) = fs::open_write(self.c_path(), keep, mode) else {
             let detail: [&[u8]; 3] = [b"cannot open ", path, b" for writing"];
             return Err(trace::fail_with(cx, ErrorKind::WriteError, &detail));
         };
         let resume = options.resume;
-        let mut upload = Upload::open(cx)?;
+        let upload = Upload::open(cx)?;
         if let Some(size) = upload.size() {
             upload::announce_size(cx, Some(size));
         }
-        // What of the body is stored already, and skipped.
-        let mut skip = match resume {
+        let skip = match resume {
             None => 0,
             Some(Resume::At(n)) => n.get(),
             Some(Resume::AtEnd) => match target.metadata() {
@@ -344,26 +403,40 @@ impl Request {
         super::http::zeros(&mut buf, room).map_err(|_| ErrorKind::OutOfMemory)?;
         // The reader is set as the body is first read (`Curl_client_read`).
         upload.trace_set(cx);
-        loop {
-            // Not pausable: a pause is a read error.
-            let got = upload.read(cx, &mut buf, false);
-            upload::client_read(cx, buf.len(), &got);
-            let got = got?;
-            if got.n == 0 {
-                break;
-            }
-            let skipped = usize::try_from(skip).map_or(got.n, |s| s.min(got.n));
-            skip -= skipped as u64;
-            let body = &buf[skipped..got.n];
-            target.write_all(body).map_err(|_| ErrorKind::SendError)?;
-            cx.report_mut().sizes_mut().upload += body.len() as u64;
-            progress::check(cx, false)?;
-            // Not read again past its end (`file_upload`'s `eos`).
-            if got.eos {
-                break;
-            }
+        self.file = Some(target);
+        self.buf = buf;
+        self.write_piece(cx, upload, skip)
+    }
+
+    /// Read a piece of the body and write it; at its end, on to the last
+    /// progress pass.
+    fn write_piece<H: Host>(
+        &mut self,
+        cx: &mut StepCx<'_, H>,
+        mut upload: Upload,
+        mut skip: u64,
+    ) -> Result<DoStep, ErrorKind> {
+        // Not pausable: a pause is a read error.
+        let got = upload.read(cx, &mut self.buf, false);
+        upload::client_read(cx, self.buf.len(), &got);
+        let got = got?;
+        if got.n == 0 {
+            self.doing = Doing::Ending { check: false };
+            return Ok(DoStep::More);
         }
-        progress::update(cx, false)
+        let skipped = usize::try_from(skip).map_or(got.n, |s| s.min(got.n));
+        skip -= skipped as u64;
+        let body = &self.buf[skipped..got.n];
+        let target = self.file.as_mut().expect("opened to write");
+        target.write_all(body).map_err(|_| ErrorKind::SendError)?;
+        cx.report_mut().sizes_mut().upload += body.len() as u64;
+        // Not read again past its end (`file_upload`'s `eos`).
+        self.doing = if got.eos {
+            Doing::Ending { check: true }
+        } else {
+            Doing::Writing { upload, skip }
+        };
+        Ok(DoStep::More)
     }
 }
 

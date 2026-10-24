@@ -65,10 +65,9 @@ file: crates/curl-core/src/proto/file.rs
 witness: curl-core proto::file::tests::an_upload_is_read_as_c_reads_it
 features: test-util
 --- old
-            if got.eos {
-                break;
-            }
+        self.doing = if got.eos {
 --- new
+        self.doing = if false {
 
 === a last chunk with trailers is said to be empty
 file: crates/curl-core/src/upload/chain.rs

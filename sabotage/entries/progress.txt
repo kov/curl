@@ -84,8 +84,13 @@ witness: curl-core progress::tests::the_end_keeps_the_speed_it_had
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core progress::tests::the_handler_is_called_at_each_pass_and_at_the_end
 --- old
-    let (next, wake) = progress_after_step(next, wake, cx);
+    } else {
+        progress_after_step(next, wake, cx)
+    };
 --- new
+    } else {
+        (next, wake)
+    };
 
 === a handler's abort is ignored
 file: crates/curl-core/src/progress/mod.rs

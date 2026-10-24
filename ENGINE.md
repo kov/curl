@@ -808,8 +808,8 @@ before DID and none from Done on (§3.6).
 | Setup | Connecting / Pending / Completed | the search again, as from setup; past its time, fails with the timeout traced a second time |
 | Connecting | ProtoConnect | the slot became `Open`; not advanced while `recv != Running` |
 | ProtoConnect | Do | the protocol's connect is done (none has one yet) |
-| Do | Did / Done | `ProtoState::do_it` made the request; prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature, before DID |
-| Did | Exchanging / Done | Done at once if the protocol exchanges nothing more (`file:`, C's DID without sockets); an HTTP-family protocol yields once when more than one transfer is alive (C returns CURLM_OK there) |
+| Do | Do / Did / Done | `ProtoState::do_it` made the request (`DoStep::Made`), or a piece of it (`More`, `file:`'s each piece read or written, C's one call: the step stays in Do, with no progress pass of its own, so the drive's clock read times each piece); prereq callback at DO entry; DID entry marks PRETRANSFER (+POSTTRANSFER if nothing to send); a failure is Done, not premature, before DID |
+| Did | Exchanging / Done | past its time, fails (C's loop-top `multi_handle_timeout`; `file:` writes its whole upload first); Done at once if the protocol exchanges nothing more (`file:`, C's DID without sockets); an HTTP-family protocol yields once when more than one transfer is alive (C returns CURLM_OK there) |
 | Exchanging | Done | request complete with output not held, or a retry: `next` is Complete or Retry (Follow with redirects); FOLLOW_FAKE writes `report.redirect_url` |
 | connected | Done(Err) | progress callback abort |
 | any live | fail | an error, a timeout, `remove`, or a dead multi (AbortedByCallback) |
@@ -2293,7 +2293,9 @@ over the last five one-second records. The handler is called, or the meter drawn
 - after every step that went well while holding a connection (the tail of `multi_runsingle`'s
   loop), with held output a handler unpaused replayed at once. Every C state from CONNECT on
   that holds a connection is a step of its own, so the counts are C's: file:// pins them,
-  two before DO and three after it;
+  two before DO and three after it; a piece of DO is not a C state, and has none;
+- in `file:`'s DO, after each piece, with the low-speed check, at the start of the step after
+  it (C's `Curl_pgrsCheck`, which reads the clock after the piece);
 - at each wake of `RateLimiting`, with the low-speed check;
 - a last call from the `Done` step, shown whatever the time but only if the request is done or a
   second has passed, unless the outcome is AbortedByCallback or the request never got past

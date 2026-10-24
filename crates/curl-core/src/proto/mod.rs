@@ -62,8 +62,17 @@ pub(crate) struct Before<'r> {
 
 /// A protocol's state for one transfer.
 #[derive(Debug)]
+#[cfg_attr(
+    any(test, feature = "test-util"),
+    expect(
+        clippy::large_enum_variant,
+        reason = "the large one is the test protocols' player, not in the product"
+    )
+)]
 pub(crate) enum ProtoState {
-    File(file::Request),
+    /// Boxed, as HTTP's: it is moved with the transfer's state at every
+    /// step, and a `file:` transfer's DO is a step a piece.
+    File(Box<file::Request>),
     /// Boxed: it is moved with the transfer's state at every step.
     Http(Box<http::Request>),
     #[cfg(any(test, feature = "test-util"))]
@@ -100,6 +109,17 @@ pub(crate) enum ProtoStep {
     AtReadLimit,
 }
 
+/// Where a step of DO left the request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DoStep {
+    /// Made: on to DID.
+    Made,
+    /// More of it to make, in the next step: what a step took is timed
+    /// as the drive reads the clock before it, as C's
+    /// `Curl_pgrsCheck` reads it within the one call.
+    More,
+}
+
 impl ProtoState {
     /// The protocol for `scheme`, lowercase, if this build has one, set up
     /// for `url`: what C's protocols do in their `setup_connection`, and
@@ -112,7 +132,10 @@ impl ProtoState {
         cx: &mut StepCx<'_, H>,
     ) -> Result<Option<ProtoState>, ErrorKind> {
         Ok(Some(match scheme {
-            b"file" => ProtoState::File(file::Request::open(url, cx)?),
+            b"file" => ProtoState::File(
+                curl_alloc::try_box(file::Request::open(url, cx)?)
+                    .map_err(|_| ErrorKind::OutOfMemory)?,
+            ),
             b"http" => ProtoState::Http(
                 curl_alloc::try_box(http::Request::new(url, false, before, cx)?)
                     .map_err(|_| ErrorKind::OutOfMemory)?,
@@ -181,20 +204,20 @@ impl ProtoState {
         }
     }
 
-    /// Make the request (C's `do_it`) over the connection `lease` holds:
-    /// `file:`'s is the whole transfer; the test protocols have none to
-    /// make.
+    /// Make the request (C's `do_it`) over the connection `lease` holds,
+    /// or a step of it: `file:`'s is the whole transfer, made a piece a
+    /// step; the test protocols have none to make.
     pub(crate) fn do_it<H: Host>(
         &mut self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
-    ) -> Result<(), ErrorKind> {
+    ) -> Result<DoStep, ErrorKind> {
         match *self {
             ProtoState::File(ref mut f) => f.do_it(cx),
-            ProtoState::Http(ref mut r) => r.do_it(cx, lease),
+            ProtoState::Http(ref mut r) => r.do_it(cx, lease).map(|()| DoStep::Made),
             #[cfg(any(test, feature = "test-util"))]
             ProtoState::Null | ProtoState::Stall | ProtoState::Script(_) | ProtoState::Tcp => {
-                Ok(())
+                Ok(DoStep::Made)
             }
         }
     }

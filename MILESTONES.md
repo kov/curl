@@ -676,7 +676,25 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     and 4656, not in this build. Every one of the 199 that runs on the C leg passes there
     (2095 failed once in that run, 56, and passes alone).
 44. **GSS-API** (Kerberos, SPNEGO, `--negotiate`, `--proxy-negotiate`): the Rust build then
-    claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted.
+    claims them, `crypto` turns on, and `inventory/measure/gated.py` is deleted. Opening
+    `crypto` runs 85 tests that already pass; the GSS-API tests are 2056, 2057, 2077, 2078,
+    2094 and 1582. C's debug build answers from a stub in `lib/curl_gssapi.c` when
+    `CURL_STUB_GSS_CREDS` is set; the Rust build's stub is the same, under `debug-hooks`.
+    In progress.
+    - **a. The binding and the seam.** **Done.** `crates/curl-gssapi` over MIT krb5's
+      `gssapi_krb5`, `curl_core::gss` (`Gss`, `GssContext`) on the handle's `Libraries`, and
+      the stub.
+    - **b. Options, tool and shim.** **Done.** Gated on the build's claim, as C's
+      `USE_SPNEGO`/`HAVE_GSSAPI` are: until the flip they answer as a C build without GSS-API.
+    - **c. HTTP Negotiate with the origin.** Per-connection state, the 401 round trip,
+      `Persistent-Auth`, reuse matching (delegation included), `CURLINFO_HTTPAUTH_*`.
+    - **d. Proxy Negotiate,** forwarding and CONNECT.
+    - **e. Channel binding over HTTPS** (1582).
+    - **f. SOCKS5 GSS-API,** before the flip, so the greeting changes with the claim. C makes
+      the socket blocking for the exchange; here it is states of the SOCKS handshake.
+    - **g. The flip.** Claim `GSS-API`, `Kerberos` and `SPNEGO` and the library's version,
+      open `crypto`, delete `gated.py`.
+    - **h. Closing the step.** The sweep, cargo-mutants, torture.
 45. **The tool's options that need no new engine work,** built alongside step 40. **Done.**
     `--variable` and the `--expand-` prefix (`tool_vars.c`), `--styled-output`,
     `--fail-early`, `--rate`; `--disallow-username-in-url`, `--speed-limit`, `--speed-time`

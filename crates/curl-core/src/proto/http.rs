@@ -2078,7 +2078,10 @@ impl Request {
         }
         if let LineKind::End { interim } = kind {
             let code = cx.report_mut().response_code().unwrap_or(0);
-            if !interim {
+            // A 101 that ended the head is final, but C leaves it before it
+            // looks at what the response says of authentication
+            // (`http_on_101_upgrade`).
+            if !interim && code != 101 {
                 // The token that went was taken (`http_check_auth_closure`).
                 negotiate::responded(lease.get(), code);
             }

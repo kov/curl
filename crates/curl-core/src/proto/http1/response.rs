@@ -97,6 +97,8 @@ pub(crate) enum HeadError {
         max: u64,
     },
     BadCode,
+    /// A 101 answering a request not sent as HTTP/1.1.
+    SwitchedNotHttp11,
     /// What a header says of the body is refused.
     Framing(FramingError),
     OutOfMemory,
@@ -108,6 +110,7 @@ impl HeadError {
             HeadError::LineTooLong => ErrorKind::TooLarge,
             HeadError::InvalidStatusLine
             | HeadError::VersionMismatch { .. }
+            | HeadError::SwitchedNotHttp11
             | HeadError::BadLine(_) => ErrorKind::WeirdServerReply,
             HeadError::Http09NotAllowed
             | HeadError::BadSubversion
@@ -160,6 +163,9 @@ impl fmt::Display for HeadError {
                 write!(f, "Too large response headers: {bytes} > {max}")
             }
             HeadError::BadCode => f.write_str("Unsupported response code in HTTP response"),
+            HeadError::SwitchedNotHttp11 => {
+                f.write_str("server sent 101 response while not talking HTTP/1.1")
+            }
         }
     }
 }
@@ -441,12 +447,26 @@ impl HeadParser {
         // An error said before the line is delivered, and raised after.
         let mut first = Ok(());
         let mut bad_code = false;
+        let mut switched_late = false;
         let kind = if is_newline(self.line[0]) {
             let status = self.status.expect("a head ends after its status line");
             // Below 100 is no response C knows (`http_on_response`).
             bad_code = status.code < 100;
-            let interim = (100..200).contains(&status.code);
-            if interim {
+            // A 101 nothing was asked to upgrade to is the final response,
+            // its body all that follows until the connection closes, with
+            // nothing its headers say of it read; to a request not sent as
+            // HTTP/1.1 it is refused once its head is delivered
+            // (`http_on_101_upgrade`).
+            let switched = status.code == 101;
+            let interim = (100..200).contains(&status.code) && !switched;
+            if switched {
+                self.phase = Phase::Done;
+                if self.exchange.sent == HttpVersion::Http11 {
+                    self.framing = Some(Framing::UntilClose);
+                } else {
+                    switched_late = true;
+                }
+            } else if interim {
                 self.lines = 0;
                 self.status = None;
             } else {
@@ -507,7 +527,13 @@ impl HeadParser {
             self.interim_bytes = self.request_bytes;
         }
         // Below 200, C writes the line before it looks at the code.
-        let then = counted.and_then(|()| (!bad_code).then_some(()).ok_or(HeadError::BadCode));
+        let then = counted
+            .and_then(|()| (!bad_code).then_some(()).ok_or(HeadError::BadCode))
+            .and_then(|()| {
+                (!switched_late)
+                    .then_some(())
+                    .ok_or(HeadError::SwitchedNotHttp11)
+            });
         let codings = match kind {
             LineKind::Header => self.meta.coding_tale(&self.line, &self.exchange.asked),
             _ => None,

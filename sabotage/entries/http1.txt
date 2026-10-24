@@ -125,9 +125,17 @@ witness: curl-core proto::http1::response::tests::folded_lines_are_joined
 file: crates/curl-core/src/proto/http1/response.rs
 witness: curl-core proto::http1::response::tests::interim_heads_come_before_the_final_one
 --- old
-            let interim = (100..200).contains(&status.code);
+            let interim = (100..200).contains(&status.code) && !switched;
 --- new
-            let interim = (100..100).contains(&status.code);
+            let interim = (100..100).contains(&status.code) && !switched;
+
+=== a 101 nothing asked for is an interim head
+file: crates/curl-core/src/proto/http1/response.rs
+witness: curl-core proto::http::tests::a_switch_nothing_asked_for_is_the_response
+--- old
+            let switched = status.code == 101;
+--- new
+            let switched = false;
 
 === HTTP/0.9 is taken on a reused connection
 file: crates/curl-core/src/proto/http1/response.rs

@@ -2646,7 +2646,11 @@ fn decide_framing(meta: &ResponseMeta, method: &Method<'_>, opts: &FramingOption
   have no body, chunked is `Chunked`, a size is `Length`, anything else `UntilClose`; an HTTP/1.1
   body with no size, no chunks and no close closes ("no chunk, no close, no size"), and a size
   past `max_filesize` is 63 after the blank line is delivered. These are the inputs pinned by 365,
-  2918, 1722, 1723, 2119, 334, 499, 1484, 178, 394 and 282.
+  2918, 1722, 1723, 2119, 334, 499, 1484, 178, 394 and 282. A 1xx is interim but for a 101
+  nothing asked to upgrade to, which C takes for the final response (`http_on_101_upgrade`): it
+  ends the head without `decide`, its body all that follows until the connection closes, its
+  lines still a 1xx's; to a request not sent as HTTP/1.1 it is 8 once its head is delivered.
+  An upgrade the request asked for (h2c, WebSocket) takes the bytes after it instead.
 - **Every peer limit is an `Error`**: 100 KiB per line, 300 KiB per response and 20× that per
   transfer (one counter per limit in `HeaderBudget`), 5000 stored headers, 17 hex digits per
   chunk size, 4 KiB per trailer line, 5 codings.

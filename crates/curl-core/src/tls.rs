@@ -7,9 +7,11 @@
 //! read and write through (`TlsIo`). The core names no library's types.
 
 use std::any::Any;
+use std::ffi::c_void;
 use std::fmt;
 use std::io;
 use std::net::Ipv4Addr;
+use std::ptr::NonNull;
 use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, try_box};
@@ -150,6 +152,40 @@ pub trait TlsSession: Send {
     /// It holds bytes it read and has not given out, which a poll of the
     /// socket cannot see.
     fn pending(&self) -> bool;
+
+    /// The library's own objects for the session, once it made them.
+    fn native(&self) -> Option<TlsNative> {
+        None
+    }
+}
+
+/// A TLS library's own objects for one connection, which an application
+/// using that library itself may be handed (`CURLINFO_TLS_SSL_PTR`,
+/// `CURLINFO_TLS_SESSION`, `CURLOPT_SSL_CTX_FUNCTION`): the context the
+/// session is made from, and the session's own object once it is made.
+/// The core passes them on and never looks through them: what they are
+/// is the library's to say, and they live while the connection does,
+/// which a transfer reaches only while it holds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TlsNative {
+    context: NonNull<c_void>,
+    session: Option<NonNull<c_void>>,
+}
+
+impl TlsNative {
+    pub fn new(context: NonNull<c_void>, session: Option<NonNull<c_void>>) -> TlsNative {
+        TlsNative { context, session }
+    }
+
+    /// The context the session is made from (OpenSSL's `SSL_CTX`).
+    pub fn context(self) -> NonNull<c_void> {
+        self.context
+    }
+
+    /// The session's own object (OpenSSL's `SSL`), once it is made.
+    pub fn session(self) -> Option<NonNull<c_void>> {
+        self.session
+    }
 }
 
 /// What a TLS session waits for on the socket.
@@ -353,6 +389,30 @@ impl TlsIo<'_> {
         self.cx.now()
     }
 
+    /// The transfer's application sets each context up itself
+    /// (`CURLOPT_SSL_CTX_FUNCTION`): a library makes the context whole,
+    /// its trust store too, before it hands it over.
+    pub fn configures_context(&self) -> bool {
+        self.cx.configures_tls()
+    }
+
+    /// Hand the context in `native` to the application to set up
+    /// (`CURLOPT_SSL_CTX_FUNCTION`). If it says no, the transfer fails
+    /// with the kind it gave, said as C says it.
+    pub fn configure_context(&mut self, native: TlsNative) -> Result<(), ErrorKind> {
+        self.cx.configure_tls(native).map_err(|kind| {
+            self.cx
+                .fails(kind, format_args!("error signaled by SSL ctx callback"))
+        })
+    }
+
+    /// Stop the transfer receiving, until the application unpauses it: a
+    /// handshake waiting for the application's word waits on that, not on
+    /// the socket (`Curl_xfer_pause_recv`).
+    pub fn pause_recv(&mut self) {
+        self.cx.pause_recv();
+    }
+
     /// The connection below seems usable: the peer has not closed it
     /// (`is_alive` of the filter below).
     pub fn peer_alive(&mut self) -> bool {
@@ -403,10 +463,14 @@ impl TlsIdentity {
         tls: &Tls,
         ca_defaults: CaDefaults,
     ) -> Result<TryArc<TlsIdentity>, OutOfMemory> {
+        let mut options = tls.options.try_clone()?;
+        // The handle's, which a connection does not keep: it is called
+        // through the transfer that makes the connection.
+        options.context = None;
         TryArc::try_new(TlsIdentity {
             verify_peer: tls.verify_peer,
             verify_host: tls.verify_host,
-            options: tls.options.try_clone()?,
+            options,
             ca_defaults,
         })
     }
@@ -484,6 +548,9 @@ impl PartialEq for TlsIdentity {
             // as the context is made.
             engine: _,
             engine_default: _,
+            // The handle's, called as the context is made; the identity
+            // holds none.
+            context: _,
         } = options;
         let o = &other.options;
         *verify_peer == other.verify_peer

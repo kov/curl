@@ -205,3 +205,59 @@ witness: curl-core tls::pin::tests::a_hash_among_several_matches
             rest = next;
 --- new
             rest = next.filter(|_| false);
+
+=== a handler asking for another transfer's TLS objects is handed the stepping one's
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls_hands::a_handler_reaches_another_transfer_s_objects_by_its_id
+features: test-util
+--- old
+        if id == self.me {
+            return self.lent;
+        }
+--- new
+        if id == self.me || id != self.me {
+            return self.lent;
+        }
+
+=== the stepping transfer's handlers reach no TLS objects of its connection
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls_hands::the_context_handler_and_the_handlers_reach_the_library_s_objects
+features: test-util
+--- old
+    cx.lent = run.state.tls_native();
+    let wake = step_lent(run, cx);
+--- new
+    cx.lent = None;
+    let wake = step_lent(run, cx);
+
+=== the context handler cannot reach the context it is handed through its transfer
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls_hands::the_context_handler_and_the_handlers_reach_the_library_s_objects
+features: test-util
+--- old
+        let lent = self.lent.replace(native);
+--- new
+        let lent = self.lent;
+
+=== a TLS layer's pause of the transfer's receiving is not kept
+file: crates/curl-core/src/deliver/pause.rs
+witness: curl-core proto::http::tests::tls_hands::a_handshake_paused_for_the_application_waits_for_its_word
+features: test-util
+--- old
+        if self.recv == RecvPause::Running {
+            self.recv = RecvPause::Stopped;
+        }
+--- new
+        if self.recv == RecvPause::Held {
+            self.recv = RecvPause::Stopped;
+        }
+
+=== a context handler's error is taken as its consent
+file: crates/curl-core/src/tls.rs
+witness: curl-core proto::http::tests::tls_hands::the_context_handler_s_error_fails_the_transfer
+features: test-util
+--- old
+        self.cx.configure_tls(native).map_err(|kind| {
+--- new
+        let _ = self.cx.configure_tls(native);
+        Ok(()).map_err(|kind: ErrorKind| {

@@ -22,7 +22,7 @@ use crate::options::Options;
 use crate::report::TransferReport;
 use crate::share::{Kind, Share, ShareLock, watched};
 use crate::time::{Clock, Instant};
-use crate::tls::TlsShared;
+use crate::tls::{TlsNative, TlsShared};
 
 use super::notify::{NotifyKind, NotifyQueue};
 use super::sched::{RowSet, Tally};
@@ -332,6 +332,18 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
 
     fn tls_verified(&mut self, result: i64) {
         LayerCx::tls_verified(&mut *self.step, result);
+    }
+
+    fn configures_tls(&self) -> bool {
+        LayerCx::configures_tls(&*self.step)
+    }
+
+    fn configure_tls(&mut self, native: TlsNative) -> Result<(), crate::error::ErrorKind> {
+        LayerCx::configure_tls(&mut *self.step, native)
+    }
+
+    fn pause_recv(&mut self) {
+        LayerCx::pause_recv(&mut *self.step);
     }
 }
 
@@ -665,6 +677,11 @@ impl<'a> TransferCx<'a> {
         self.calls.easy(id).map(Easy::report)
     }
 
+    /// As `Multi::tls_native`, this transfer's among them.
+    pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        self.calls.tls_native(id)
+    }
+
     /// A transfer's options, its own among them: a handler it installs
     /// takes the next piece of output.
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
@@ -700,6 +717,7 @@ pub(crate) trait TransferCalls {
     fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy>;
     fn pause(&mut self, id: TransferId, req: PauseRequest) -> Result<(), ErrorKind>;
     fn fail(&mut self, why: &[u8]);
+    fn tls_native(&self, id: TransferId) -> Option<TlsNative>;
 }
 
 /// The multi as the timer callback sees it: only the calls api.c lets
@@ -741,6 +759,11 @@ impl<H: Host> EventCx<'_, H> {
 
     pub fn info(&self, id: TransferId) -> Option<&TransferReport> {
         self.slots.get(id).map(|s| s.easy.report())
+    }
+
+    /// As `Multi::tls_native`.
+    pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        super::tls_native_in(self.slots, id)
     }
 
     pub fn options_mut(&mut self, id: TransferId) -> Option<&mut Options> {
@@ -816,6 +839,11 @@ impl<H: Host> NotifyCx<'_, H> {
 
     pub fn info(&self, id: TransferId) -> Option<&TransferReport> {
         self.multi.easy(id).map(Easy::report)
+    }
+
+    /// As `Multi::tls_native`.
+    pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        self.multi.tls_native(id)
     }
 
     /// As `Multi::owner`.

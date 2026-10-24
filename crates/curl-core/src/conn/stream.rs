@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use super::io::{Events, Recv, Sent, Sock, Socket};
 use curl_alloc::OutOfMemory;
 
-use super::layer::{Alive, Handshake, Layer, LayerCx, LayerStack};
+use super::layer::{Alive, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery, LayerStack};
 use super::{RecvBuf, RecvFailed};
 use crate::error::ErrorKind;
 
@@ -84,6 +84,11 @@ impl Stream {
     /// wants, as the layers adjust it.
     pub(crate) fn adjust_pollset(&self, wanted: Events) -> Events {
         self.layers.adjust_pollset(wanted)
+    }
+
+    /// What its layers answer `q`, the topmost that does.
+    pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        self.layers.query(q)
     }
 
     /// Whether the connection seems usable, as its layers and its socket

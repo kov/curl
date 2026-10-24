@@ -13,7 +13,9 @@ use std::ops::Deref;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use crate::conn::io::{Socket, SocketKey, SocketOption};
+use crate::error::ErrorKind;
 use crate::multi::TransferCx;
+use crate::tls::TlsNative;
 
 /// What a write or header handler did with what it was given.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -258,8 +260,25 @@ pub trait SocketCloser: Send + Sync {
     fn close(&self, socket: SocketKey);
 }
 
+/// Told of each TLS context a transfer's connection is made with, before
+/// the library makes the session of it (`CURLOPT_SSL_CTX_FUNCTION`), to
+/// set it up through the library's own API: `native` holds the context
+/// alone. An error fails the transfer with its kind.
+pub trait TlsContextHandler: Send + Sync {
+    fn configure(&self, cx: &mut TransferCx<'_>, native: TlsNative) -> Result<(), ErrorKind>;
+}
+
 /// A handler as a transfer holds it: shared by every copy of the `Easy`.
 pub struct Handler<T: ?Sized>(TryArc<Box<T>>);
+
+/// Two handlers are equal if they are the same one.
+impl<T: ?Sized> PartialEq for Handler<T> {
+    fn eq(&self, other: &Handler<T>) -> bool {
+        Handler::ptr_eq(self, other)
+    }
+}
+
+impl<T: ?Sized> Eq for Handler<T> {}
 
 impl<T: ?Sized> Handler<T> {
     /// A handler already boxed; `Handler::write` and the like box one.
@@ -289,6 +308,12 @@ impl Handler<dyn SocketConfigurer> {
     pub fn socket_configurer(
         handler: impl SocketConfigurer + 'static,
     ) -> Result<Self, OutOfMemory> {
+        Handler::new(try_box(handler)?)
+    }
+}
+
+impl Handler<dyn TlsContextHandler> {
+    pub fn tls_context(handler: impl TlsContextHandler + 'static) -> Result<Self, OutOfMemory> {
         Handler::new(try_box(handler)?)
     }
 }

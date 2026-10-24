@@ -1346,7 +1346,7 @@ pub(crate) trait Layer: Send + Debug {           // conn/layer.rs; C's Curl_cfty
     fn data_pending(&self, below: Below<'_>) -> bool;         // bytes a poll cannot see
     fn is_alive(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Alive;
     fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind>;
-    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // ALPN, certificates, the SSL *
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer>;    // TLS's objects; ALPN (43g)
 }
 pub enum Handshake { Done, Waiting }                         // public: a TLS session returns it
 pub(crate) enum Alive { Dead, Alive { input_pending: bool } }
@@ -1416,14 +1416,16 @@ answer reaches the TLS handshake first, on both legs. A binding crate cannot imp
 `Layer`, which stays crate-private: the core's `TlsLayer` implements it over the public
 `curl_core::tls::TlsSession` a library makes (§4.9).
 
-Planned (step 43), settled for TLS (§4.9). `LayerCx` gains what a TLS layer reaches through
-the transfer: `bytes(kind, data)` for the SSL data a handshake and its records make (C's msg
-callback, `CURLINFO_SSL_DATA_IN`/`OUT`), and `ssl_ctx(native)`, the application's SSL_CTX
-handler, called through the transfer's context; the silent context of a pool section has
-neither, as C's internal handle has no debug function and no SSL_CTX callback. `LayerQuery`
-gains `Alpn` (the protocol the peer agreed to) and `Native` (the backend's own object, the `SSL
-*` that `CURLINFO_TLS_SSL_PTR` returns), answered with `&mut dyn Any` that the shim downcasts.
-The key log is not on `LayerCx`: the shim's root and the tool own it and hand it to the backend.
+`LayerCx` carries what a TLS layer reaches through the transfer: `bytes(kind, data)` for the
+SSL data a handshake and its records make (C's msg callback, `CURLINFO_SSL_DATA_IN`/`OUT`),
+`configure_tls(native)`, the application's context handler (`CURLOPT_SSL_CTX_FUNCTION`),
+called through the transfer's context, and `pause_recv`, a handshake waiting for the
+application (`Curl_xfer_pause_recv`); the silent context of a pool section has none of them, as
+C's internal handle has no debug function and no SSL_CTX callback. A connection's layers are
+asked from the top (`LayerStack::query`, the first that answers): `LayerQuery::TlsNative` is
+answered by the origin's TLS layer with its library's objects (§4.9). Planned (43g):
+`LayerQuery::Alpn`, the protocol the peer agreed to. The key log is not on `LayerCx`: the shim's
+root and the tool own it and hand it to the backend.
 
 ### 4.4 Multiplexing
 
@@ -1788,8 +1790,11 @@ pub trait TlsSession: Send {                       // one connection's TLS, neve
     fn shutdown(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind>;
     fn waits(&self) -> TlsWait;                    // Nothing, Recv or Send: C's io_need
     fn pending(&self) -> bool;                     // decrypted bytes not yet read
-    // planned: fn alpn(&self) (43g); fn tickets(..) (43h); fn native(&mut self) -> &mut dyn
-    // Any, the SSL * for the application (43f)
+    fn native(&self) -> Option<TlsNative>;         // the library's objects, once made
+    // planned: fn alpn(&self) (43g); fn tickets(..) (43h)
+}
+#[derive(Clone, Copy)] pub struct TlsNative {     // opaque to the core, which passes it on
+    context: NonNull<c_void>, session: Option<NonNull<c_void>>,  // SSL_CTX *, SSL *
 }
 pub struct TlsIo<'a> { /* Below<'a>, &'a mut dyn LayerCx, the early bytes; private */ }
 impl TlsIo<'_> {                                   // what a library's BIO and callbacks reach
@@ -1800,7 +1805,10 @@ impl TlsIo<'_> {                                   // what a library's BIO and c
     pub fn record(&mut self, way: TlsWay, bytes: &[u8]); // CURLINFO_SSL_DATA_IN/OUT
     pub fn debugs(&self) -> bool;                  // a debug handler is set (fdebug)
     pub fn now(&self) -> Instant;                  // the pass's time (Curl_pgrs_now)
-    // planned: ssl_ctx(native) (43f)
+    pub fn configures_context(&self) -> bool;      // CURLOPT_SSL_CTX_FUNCTION is set
+    pub fn configure_context(&mut self, native: TlsNative) -> Result<(), ErrorKind>;
+    pub fn pause_recv(&mut self);                  // Curl_xfer_pause_recv
+    pub fn peer_alive(&mut self) -> bool;          // is_alive of the layers below
 }
 pub struct TlsPeer<'a> { pub name: &'a [u8], pub port: u16, pub kind: TlsPeerKind }
 pub struct TlsIdentity { pub verify_peer: bool, pub verify_host: bool, pub options: TlsOptions,
@@ -1970,15 +1978,22 @@ next connection to the peer takes one (`SSL reusing session with ALPN '-'`).
 `CURLOPT_SSL_SESSIONID_CACHE` off makes no lookup. `curl_easy_ssls_import` and `export` answer
 `CURLE_NOT_BUILT_IN`, as a C build without `USE_SSLS_EXPORT`, and `SSLS-EXPORT` is not reported.
 
-**The application's hands on OpenSSL.** `CURLOPT_SSL_CTX_FUNCTION` is a transfer call-out (api.c's
-`easy_fsslctx`), so it is a handler in the TLS options' cold group, called through the
-transfer's context (`TlsIo::ssl_ctx`, `LayerCx::ssl_ctx`) with the backend's context as `&mut
-dyn Any`; the shim downcasts it to curl-openssl's and calls the C function with its `CURL *` and
-`SSL_CTX *`. `CURLINFO_TLS_SSL_PTR` and `TLS_SESSION` reach the leased connection's session
-through `LayerQuery::Native` the same way. `SSL_ERROR_WANT_RETRY_VERIFY` (a verify callback that
-asks to retry, as lib758's does) traces `SSL_connect() -> want retry_verify` and pauses the
-transfer's receiving, its pollset empty (`paused 0/1 (r/w)`) and its socket removed, until
-`curl_easy_pause(CURLPAUSE_CONT)` resumes the handshake. The SSL data (`CURLINFO_SSL_DATA_IN`,
+**The application's hands on the library.** A library's objects reach the application as a
+`TlsNative`: two pointers the core never looks through, the context and, once made, the
+session's own object. `CURLOPT_SSL_CTX_FUNCTION` is a transfer call-out (api.c's
+`easy_fsslctx`), so it is a `TlsContextHandler` in the TLS options' cold group (the handle's:
+the identity a connection keeps holds none), called through the transfer's context
+(`TlsIo::configure_context`, `LayerCx::configure_tls`) with the context alone; its error fails
+the transfer with its kind (`error signaled by SSL ctx callback`). A transfer's handlers reach the
+objects of the origin's connection it holds (`TransferCx::tls_native`, `EventCx`, `NotifyCx` and
+`Multi::tls_native` alike, by id): through the run in its slot, its connection's layers asked
+(`LayerQuery::TlsNative`); for the stepping transfer, whose run is out of its slot, the step
+lends what its connection answers to its `StepCx` for the step, and the context handler's call
+lends the context it is given, as C's getinfo finds them on `data->conn`. None once the request
+is over (`Done`), as `multi_done` lets the connection go, nor without a connection. A session may
+stop the transfer's receiving (`TlsIo::pause_recv`, C's `Curl_xfer_pause_recv`): its handshake
+is not moved on and its pollset is empty (`paused 0/1 (r/w)`), its socket removed, until the
+application unpauses it. The SSL data (`CURLINFO_SSL_DATA_IN`,
 `OUT`) and the msg callback's text lines go through `TlsIo::bytes` and `info`. `SSLKEYLOGFILE`
 is read once by the shim's root and by the tool, each owning its key log (an opened file
 behind a mutex) and handing it to the backend value: never a process global in the core.

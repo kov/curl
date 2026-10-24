@@ -12,7 +12,7 @@ use curl_alloc::{OutOfMemory, TryArc, TryVec};
 
 use crate::conn::chain::{Chain, SetupPoint};
 use crate::conn::io::{Closer, Events, ResolveFailure, SocketKey};
-use crate::conn::layer::LayerCx;
+use crate::conn::layer::{LayerAnswer, LayerCx, LayerQuery};
 use crate::conn::pool;
 use crate::conn::proxy::{self, Refused};
 use crate::conn::shutdown::ConnSettings;
@@ -39,12 +39,13 @@ use crate::proto::http1::follow::Inherited;
 use crate::proto::{Before, DoStep, Ended, ProtoState, ProtoStep};
 use crate::report::{Ends, Marked, Starts, Timer, TransferReport};
 use crate::time::{Instant, TimeLimit};
+use crate::tls::TlsNative;
 use crate::trace::{self, Bytes, Ip, OsError};
 use crate::upload::{self, Readers};
 use crate::url::{self, GetOptions, ParseOptions, Part, SetOptions, Url};
 use crate::version::Protocol;
 
-use super::cx::{DriveCx, EngineRest, TransferCalls};
+use super::cx::{DriveCx, EngineRest, TransferCalls, TransferCx};
 use super::mstate::{self, MState};
 use super::sched::RowSet;
 use super::sockets::{Pollset, Wants};
@@ -285,6 +286,16 @@ impl TransferState {
             TransferState::Connecting(c) => Some(&c.lease),
             TransferState::Done(d) => Some(&d.lease),
             _ => self.attached().map(|a| &a.lease),
+        }
+    }
+
+    /// The TLS library's objects of the origin's connection the transfer
+    /// holds, while it holds one: not once its request is over, as C's
+    /// `multi_done` lets the connection go.
+    pub(crate) fn tls_native(&self) -> Option<TlsNative> {
+        match self {
+            TransferState::Done(_) => None,
+            state => tls_native(state.lease()?),
         }
     }
 
@@ -755,6 +766,27 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
     fn tls_verified(&mut self, result: i64) {
         self.report_mut().set_verify_result(result);
     }
+
+    fn configures_tls(&self) -> bool {
+        self.easy().options().tls.options.context.is_some()
+    }
+
+    /// The handler is given the context, which the transfer's handlers
+    /// reach meanwhile as its connection's (`CURLINFO_TLS_SESSION`).
+    fn configure_tls(&mut self, native: TlsNative) -> Result<(), ErrorKind> {
+        let Some(handler) = self.easy().options().tls.options.context.clone() else {
+            return Ok(());
+        };
+        let lent = self.lent.replace(native);
+        let configured = handler.configure(&mut TransferCx::new(self), native);
+        self.lent = lent;
+        configured
+    }
+
+    fn pause_recv(&mut self) {
+        let slot = self.rest.tell.slots.get_mut(self.me);
+        slot.expect("the stepping transfer").pause.stop_recv();
+    }
 }
 
 /// What a step needs: the transfer it steps, whose `Run` is out of its
@@ -762,6 +794,26 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
 pub(crate) struct StepCx<'a, H: Host> {
     pub(crate) me: TransferId,
     pub(super) rest: EngineRest<'a, H>,
+    /// The TLS library's objects of the connection the transfer holds,
+    /// lent for the step, whose run is out of reach of its handlers
+    /// (`TransferCx::tls_native`).
+    lent: Option<TlsNative>,
+}
+
+impl<'a, H: Host> StepCx<'a, H> {
+    /// The connection's TLS objects as the step changed them, lent for
+    /// the rest of it.
+    pub(super) fn lend(&mut self, native: Option<TlsNative>) {
+        self.lent = native;
+    }
+
+    pub(crate) fn new(me: TransferId, rest: EngineRest<'a, H>) -> StepCx<'a, H> {
+        StepCx {
+            me,
+            rest,
+            lent: None,
+        }
+    }
 }
 
 impl<H: Host> StepCx<'_, H> {
@@ -956,14 +1008,32 @@ impl<H: Host> TransferCalls for StepCx<'_, H> {
         // The kind is the verdict's to decide.
         trace::fail_with(self, ErrorKind::WriteError, &[why]);
     }
+
+    fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        if id == self.me {
+            return self.lent;
+        }
+        let slot = self.rest.tell.slots.get(id)?;
+        slot.run.as_ref()?.state.tls_native()
+    }
+}
+
+/// The TLS library's objects of the origin's connection `lease` holds.
+pub(super) fn tls_native(lease: &ConnLease) -> Option<TlsNative> {
+    match lease.query(LayerQuery::TlsNative)? {
+        LayerAnswer::TlsNative(native) => Some(native),
+    }
 }
 
 /// Replay a transfer's held output, from outside its step.
 pub(crate) fn flush<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Result<(), ErrorKind> {
-    match run.state.pipeline_mut() {
+    cx.lent = run.state.tls_native();
+    let flushed = match run.state.pipeline_mut() {
         Some(p) => p.flush(cx),
         None => Ok(()),
-    }
+    };
+    cx.lent = None;
+    flushed
 }
 
 /// When the running transfer and its request started.
@@ -975,8 +1045,16 @@ fn starts<H: Host>(cx: &StepCx<'_, H>) -> Starts {
         .expect("a running transfer has started")
 }
 
-/// Run one step of `run`.
+/// Run one step of `run`, the TLS objects of the connection it holds
+/// lent to its handlers meanwhile.
 pub(crate) fn step<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
+    cx.lent = run.state.tls_native();
+    let wake = step_lent(run, cx);
+    cx.lent = None;
+    wake
+}
+
+fn step_lent<H: Host>(run: &mut Run, cx: &mut StepCx<'_, H>) -> Wake {
     let state = std::mem::replace(&mut run.state, TransferState::Init);
     // A piece of DO is within C's one call: no pass of its loop ends.
     let mut within_do = false;

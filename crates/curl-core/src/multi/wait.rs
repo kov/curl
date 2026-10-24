@@ -148,10 +148,7 @@ impl<H: Host> Multi<H> {
         // C's milliseconds are an `int`.
         let ms = |d: Duration| i32::try_from(d.as_millis()).unwrap_or(i32::MAX);
         let (timeout, internal) = (ms(timeout), internal.map_or(-1, ms));
-        let mut cx = StepCx {
-            me: id,
-            rest: self.rest(now, ev),
-        };
+        let mut cx = StepCx::new(id, self.rest(now, ev));
         mstate::trace(
             &mut cx,
             format_args!("multi_wait(fds={fds}, timeout={timeout}) tinternal={internal}"),

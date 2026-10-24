@@ -67,7 +67,10 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
 
 /// Move the handshake on, as far as the socket lets it.
 pub(super) fn step<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (TransferState, Wake) {
-    match c.lease.dialed().stream().connect(cx) {
+    let shaken = c.lease.dialed().stream().connect(cx);
+    // The session may have made its objects.
+    cx.lend(super::tls_native(&c.lease));
+    match shaken {
         Ok(Shake::Done) => {
             c.lease.dialed().mark_made(Made::TLS);
             c.handshake = None;

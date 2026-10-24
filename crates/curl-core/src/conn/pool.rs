@@ -14,7 +14,7 @@ use super::chain::SetupPoint;
 use super::connect::{ConnCx, ConnectError, ConnectMachine, Dialed, Drove, Made, Progress, Setup};
 use super::dns::Answer;
 use super::io::{Closer, Events, Socket};
-use super::layer::{Alive, Silent};
+use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::shutdown::{ConnSettings, Exits, discard};
 use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
@@ -254,6 +254,19 @@ impl ConnLease {
                 ..
             }) if !wanted.is_empty() => stream.adjust_pollset(wanted),
             ConnSlot::Open(_) | ConnSlot::Connecting(_) | ConnSlot::Failed(_) => wanted,
+        }
+    }
+
+    /// What the connection's layers answer `q`, the topmost that does,
+    /// while it is set up and once it is up.
+    pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        match self.slot() {
+            ConnSlot::Connecting(m) => m.query(q),
+            ConnSlot::Open(Conn {
+                transport: Transport::Tcp(stream),
+                ..
+            }) => stream.query(q),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
         }
     }
 

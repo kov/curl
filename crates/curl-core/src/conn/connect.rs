@@ -25,7 +25,7 @@ use super::dns::{Answer, Lookup, Names};
 use super::io::{
     Closer, Connect, Events, Family, Net, ResolveFailure, Sock, Socket, SocketOption, SocketPoll,
 };
-use super::layer::LayerCx;
+use super::layer::{LayerAnswer, LayerCx, LayerQuery};
 use super::shutdown::ConnSettings;
 use super::{Conn, ConnNumber, Peer, Route, Stream, Tcp, Transport, Use};
 use crate::components::Component;
@@ -533,6 +533,15 @@ impl ConnectMachine {
 
     /// What the layers on the connection to the first hop wait for, as
     /// they handshake, wanting nothing else.
+    /// What the layers of the connection to the first hop answer `q`,
+    /// once it is dialed.
+    pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        match &self.stage {
+            Stage::Dialed(d) => d.stream.query(q),
+            Stage::Resolving | Stage::Racing(_) => None,
+        }
+    }
+
     pub(crate) fn handshake_pollset(&self) -> Events {
         match &self.stage {
             Stage::Dialed(d) => d.stream.adjust_pollset(Events::NONE),

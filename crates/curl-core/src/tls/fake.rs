@@ -19,13 +19,14 @@
 use std::fmt;
 use std::io;
 use std::num::NonZeroUsize;
+use std::ptr::NonNull;
 use std::sync::Mutex;
 
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession,
-    TlsShared, TlsWait,
+    Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
+    TlsSession, TlsShared, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -56,6 +57,10 @@ const ASKED: usize = 32;
 #[derive(Debug)]
 pub struct FakeTls {
     log: TryArc<Mutex<FakeLog>>,
+    /// Each session stops the transfer receiving once, as the peer's
+    /// flight is read, as a verification the application finishes later
+    /// does (`SSL_ERROR_WANT_RETRY_VERIFY`).
+    pause: bool,
 }
 
 /// What a fake library's sessions were asked.
@@ -146,6 +151,17 @@ impl FakeTls {
         };
         Ok(FakeTls {
             log: TryArc::try_new(Mutex::new(log))?,
+            pause: false,
+        })
+    }
+
+    /// The same, each session pausing the transfer's receiving once, as
+    /// the peer's flight is read: the handshake goes on only once the
+    /// application unpauses it.
+    pub fn pausing() -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            pause: true,
+            ..FakeTls::new()?
         })
     }
 
@@ -187,6 +203,8 @@ impl TlsBackend for FakeTls {
         }
         let session = FakeSession {
             log: self.log.clone(),
+            made: false,
+            pause: self.pause,
             stage: Stage::Hello(0),
             waits: TlsWait::Nothing,
             header: [0; HEADER],
@@ -222,6 +240,12 @@ enum Stage {
 
 struct FakeSession {
     log: TryArc<Mutex<FakeLog>>,
+    /// Its own object is made, at the first step, after the application
+    /// set its context up: its `body`, which `native` points at, as its
+    /// context is its `out`.
+    made: bool,
+    /// It is to pause the transfer's receiving as the welcome is read.
+    pause: bool,
     stage: Stage,
     waits: TlsWait,
     /// The header of the record being read, as far as read.
@@ -353,6 +377,12 @@ fn rot13(bytes: &mut [u8]) {
 impl TlsSession for FakeSession {
     fn handshake(&mut self, io: &mut TlsIo<'_>) -> Result<Handshake, ErrorKind> {
         let failed = |_: io::Error| ErrorKind::SslConnectError;
+        if !self.made {
+            if io.configures_context() {
+                io.configure_context(TlsNative::new(NonNull::from(&self.out).cast(), None))?;
+            }
+            self.made = true;
+        }
         loop {
             match self.stage {
                 Stage::Hello(mut sent) => {
@@ -379,6 +409,11 @@ impl TlsSession for FakeSession {
                             } else {
                                 Stage::Welcome(to)
                             };
+                            if to == WELCOME.len() && std::mem::take(&mut self.pause) {
+                                self.waits = TlsWait::Nothing;
+                                io.pause_recv();
+                                return Ok(Handshake::Waiting);
+                            }
                         }
                         Recv::WouldBlock => {
                             self.waits = TlsWait::Recv;
@@ -511,6 +546,11 @@ impl TlsSession for FakeSession {
 
     fn pending(&self) -> bool {
         !self.plain.is_empty()
+    }
+
+    fn native(&self) -> Option<TlsNative> {
+        let session = self.made.then(|| NonNull::from(&self.body).cast());
+        Some(TlsNative::new(NonNull::from(&self.out).cast(), session))
     }
 }
 

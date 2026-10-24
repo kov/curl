@@ -92,6 +92,15 @@ impl Pause {
         };
     }
 
+    /// Receiving stops, as a layer of the transfer's asks
+    /// (`Curl_xfer_pause_recv`), until the application unpauses it;
+    /// output held stays held.
+    pub(crate) fn stop_recv(&mut self) {
+        if self.recv == RecvPause::Running {
+            self.recv = RecvPause::Stopped;
+        }
+    }
+
     /// A read handler asked for a pause.
     pub(crate) fn ask_send(&mut self) {
         self.send = SendPause::Asked;

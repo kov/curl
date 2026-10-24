@@ -9,7 +9,7 @@ use std::io;
 use curl_alloc::{OutOfMemory, try_box};
 
 use super::io::{Events, Recv, Sent};
-use super::layer::{Below, Handshake, Layer, LayerCx};
+use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery};
 use crate::components::Component;
 use crate::error::ErrorKind;
 use crate::tls::{TlsIo, TlsSession, TlsWait};
@@ -86,6 +86,15 @@ impl Layer for TlsLayer {
     fn shutdown(&mut self, cx: &mut dyn LayerCx, below: Below<'_>) -> Result<Handshake, ErrorKind> {
         let (session, mut io) = self.parts(cx, below);
         session.shutdown(&mut io)
+    }
+
+    /// The session's objects, once its library made them. The origin's
+    /// layer is the only TLS one yet; an HTTPS proxy's (43i) is to pass
+    /// the question down, as C's answers only for the origin.
+    fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        match q {
+            LayerQuery::TlsNative => self.session.native().map(LayerAnswer::TlsNative),
+        }
     }
 }
 

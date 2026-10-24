@@ -34,7 +34,7 @@ use crate::progress::Speedometer;
 use crate::progress::rate::{RateLimits, Way};
 use crate::share::{Kind, watched};
 use crate::time::{Clock, Instant};
-use crate::tls::TlsShared;
+use crate::tls::{TlsNative, TlsShared};
 use crate::upload::Readers;
 
 pub use crate::deliver::PauseRequest;
@@ -414,10 +414,7 @@ impl<H: Host> Multi<H> {
         #[cfg(feature = "debug-hooks")]
         if !std::mem::replace(&mut self.warned, true) {
             let now = self.clock.now();
-            let mut cx = StepCx {
-                me: id,
-                rest: self.rest(now, ev),
-            };
+            let mut cx = StepCx::new(id, self.rest(now, ev));
             crate::trace::info(&mut cx, format_args!("!!! WARNING !!!"));
             crate::trace::info(
                 &mut cx,
@@ -444,10 +441,7 @@ impl<H: Host> Multi<H> {
         } = self.counts.get();
         let total = current + 1;
         let now = self.clock.now();
-        let mut cx = StepCx {
-            me: id,
-            rest: self.rest(now, ev),
-        };
+        let mut cx = StepCx::new(id, self.rest(now, ev));
         let mid = id.index() + 1;
         mstate::trace(
             &mut cx,
@@ -658,10 +652,7 @@ impl<H: Host> Multi<H> {
             && let Some(kind) = self.run_of(id).deadlines.first()
         {
             let ms = wait.as_millis();
-            let mut cx = StepCx {
-                me: id,
-                rest: self.rest(now, ev),
-            };
+            let mut cx = StepCx::new(id, self.rest(now, ev));
             state::trace_timer(&mut cx, kind, format_args!("gives multi timeout in {ms}ms"));
         }
         Some(wait)
@@ -683,10 +674,7 @@ impl<H: Host> Multi<H> {
         said: PollsetTrace<T>,
         ev: &mut dyn MultiEvents<H>,
     ) {
-        let mut cx = StepCx {
-            me: id,
-            rest: self.rest(now, ev),
-        };
+        let mut cx = StepCx::new(id, self.rest(now, ev));
         said.trace(&mut cx);
     }
 
@@ -772,6 +760,12 @@ impl<H: Host> Multi<H> {
 
     pub fn easy_mut(&mut self, id: TransferId) -> Option<&mut Easy> {
         self.slots.get_mut(id).map(|s| &mut *s.easy)
+    }
+
+    /// The TLS library's objects of the origin's connection a transfer
+    /// holds, while it holds one (`CURLINFO_TLS_SSL_PTR`).
+    pub fn tls_native(&self, id: TransferId) -> Option<TlsNative> {
+        tls_native_in(&self.slots, id)
     }
 
     fn run_of(&self, id: TransferId) -> &Run {
@@ -885,10 +879,7 @@ impl<H: Host> Multi<H> {
     /// `multi_done` runs with it still attached.
     fn abandon(&mut self, id: TransferId, run: Run, ev: &mut dyn MultiEvents<H>) {
         let now = self.clock.now();
-        let mut cx = StepCx {
-            me: id,
-            rest: self.rest(now, ev),
-        };
+        let mut cx = StepCx::new(id, self.rest(now, ev));
         run.state.abandon(&mut cx);
     }
 
@@ -904,10 +895,7 @@ impl<H: Host> Multi<H> {
         let run = self.slots.get_mut(id).expect("in the multi").run.take();
         let now = self.clock.now();
         let mut quiet = NoEvents;
-        let mut cx = StepCx {
-            me: id,
-            rest: self.rest(now, &mut quiet),
-        };
+        let mut cx = StepCx::new(id, self.rest(now, &mut quiet));
         let r = f(&mut cx);
         if let Some(run) = run {
             put_back(&mut self.slots, &mut self.dirty, id, run);
@@ -931,10 +919,7 @@ impl<H: Host> Multi<H> {
                 state::complete_unstarted(&mut slot.easy, now);
             }
         }
-        let mut cx = StepCx {
-            me: id,
-            rest: self.rest(now, ev),
-        };
+        let mut cx = StepCx::new(id, self.rest(now, ev));
         // The clock is read before each step, as C reads it at the top of
         // `multi_runsingle`'s loop: a step that took time, a `file:`
         // transfer's or a slow handler's, is timed and checked as it ends.
@@ -1038,10 +1023,7 @@ impl<H: Host> Multi<H> {
                 self.dirty.remove(row);
                 continue;
             };
-            let mut cx = StepCx {
-                me: id,
-                rest: self.rest(now, ev),
-            };
+            let mut cx = StepCx::new(id, self.rest(now, ev));
             mstate::trace(&mut cx, format_args!("multi_run_dirty"));
             if self.run_of(id).state.is_completed() {
                 self.dirty.remove(row);
@@ -1062,10 +1044,7 @@ impl<H: Host> Multi<H> {
         }
         while let Some(id) = self.timers.pop_due(now) {
             if let Some(kind) = self.run_of(id).deadlines.first() {
-                let mut cx = StepCx {
-                    me: id,
-                    rest: self.rest(now, ev),
-                };
+                let mut cx = StepCx::new(id, self.rest(now, ev));
                 state::trace_timer(&mut cx, kind, format_args!("has expired"));
             }
             self.requeue_after_expiry(id, now);
@@ -1281,22 +1260,22 @@ fn pause_transfer<H: Host>(
         None
     };
     if let Some(readers) = unpaused {
-        let mut cx = StepCx {
-            me: id,
-            rest: rest.reborrow(),
-        };
+        let mut cx = StepCx::new(id, rest.reborrow());
         readers.trace_unpause(&mut cx);
     }
     if let Some(mut run) = replay {
-        let mut cx = StepCx {
-            me: id,
-            rest: rest.reborrow(),
-        };
+        let mut cx = StepCx::new(id, rest.reborrow());
         let replayed = state::flush(&mut run, &mut cx);
         put_back(rest.tell.slots, rest.dirty, id, run);
         return replayed;
     }
     Ok(())
+}
+
+/// The TLS library's objects of the connection transfer `id`, whose run
+/// is in its slot, holds.
+fn tls_native_in<H: Host>(slots: &Slots<H>, id: TransferId) -> Option<TlsNative> {
+    slots.get(id)?.run.as_ref()?.state.tls_native()
 }
 
 /// Put transfer `id`'s run back in its slot, and judge a pause its own

@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use crate::handler::{
     DebugHandler, Handler, HeaderHandler, LentBytes, LineSource, ProgressHandler, ReadHandler,
-    Rewind, SocketCloser, SocketConfigurer, SocketOpener, TextSink, TrailerHandler, WriteHandler,
+    Rewind, SocketCloser, SocketConfigurer, SocketOpener, TextSink, TlsContextHandler,
+    TrailerHandler, WriteHandler,
 };
 use crate::mime::MimeSource;
 use crate::mime::read::Escape;
@@ -1761,6 +1762,9 @@ pub struct TlsOptions {
     /// `alpn`.
     pub engine: Option<Vec<u8>>,
     pub engine_default: bool,
+    /// Told of each context a connection's TLS is made with
+    /// (`CURLOPT_SSL_CTX_FUNCTION`). The handle's, as `alpn`.
+    pub context: Option<Handler<dyn TlsContextHandler>>,
 }
 
 /// How long the certificates loaded to trust are kept for the next
@@ -1810,6 +1814,7 @@ impl ColdGroup for TlsOptions {
         ca_cache: CaCache::DEFAULT,
         engine: None,
         engine_default: false,
+        context: None,
     };
 }
 
@@ -1844,6 +1849,7 @@ impl TlsOptions {
             ca_cache,
             engine,
             engine_default,
+            context,
         } = self;
         Ok(TlsOptions {
             min_version: *min_version,
@@ -1872,6 +1878,7 @@ impl TlsOptions {
             ca_cache: *ca_cache,
             engine: text(engine)?,
             engine_default: *engine_default,
+            context: context.clone(),
         })
     }
 }

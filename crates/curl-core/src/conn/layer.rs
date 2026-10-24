@@ -38,16 +38,20 @@ pub(crate) enum Alive {
     },
 }
 
-/// A question one layer asks another (C's `cf->cft->query`); TLS's come
-/// with it.
-#[expect(dead_code, reason = "TLS's ALPN and certificates, step 43")]
+/// A question asked of a connection's layers, from the top (C's
+/// `cf->cft->query`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LayerQuery {}
+pub(crate) enum LayerQuery {
+    /// The origin's TLS library's own objects (`CF_QUERY_SSL_INFO`,
+    /// `CF_QUERY_SSL_CTX_INFO`).
+    TlsNative,
+}
 
 /// What a layer answers a `LayerQuery`.
-#[expect(dead_code, reason = "TLS's ALPN and certificates, step 43")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LayerAnswer {}
+pub(crate) enum LayerAnswer {
+    TlsNative(crate::tls::TlsNative),
+}
 
 /// What a layer reaches while it works: the time, and the trace of the
 /// transfer it works for. An argument, never stored. A pool's section,
@@ -93,6 +97,23 @@ pub(crate) trait LayerCx {
     /// transfer's report (`set.ssl.certverifyresult`). Work done for no
     /// transfer keeps nothing.
     fn tls_verified(&mut self, _result: i64) {}
+
+    /// The transfer has a TLS context handler (`CURLOPT_SSL_CTX_FUNCTION`).
+    fn configures_tls(&self) -> bool {
+        false
+    }
+
+    /// Hand the context in `native` to the transfer's TLS context
+    /// handler; its error, if it gives one. Work done for no transfer has
+    /// none.
+    fn configure_tls(&mut self, _native: crate::tls::TlsNative) -> Result<(), ErrorKind> {
+        Ok(())
+    }
+
+    /// The transfer stops receiving until the application unpauses it
+    /// (`Curl_xfer_pause_recv`). Work done for no transfer has nothing to
+    /// pause.
+    fn pause_recv(&mut self) {}
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's
@@ -158,10 +179,10 @@ pub(crate) trait Layer: Send + fmt::Debug {
         Ok(Handshake::Done)
     }
 
-    /// Answer another layer's question, if it can. None asks one yet.
-    #[expect(dead_code, reason = "TLS's ALPN and certificates, step 43")]
-    fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
-        match q {}
+    /// Answer a question asked of the connection, if it can; the layers
+    /// below are asked if it does not.
+    fn query(&self, _q: LayerQuery) -> Option<LayerAnswer> {
+        None
     }
 }
 
@@ -304,6 +325,15 @@ impl LayerStack {
             .flat_map(|l| l.iter())
             .rev()
             .fold(wanted, |wanted, layer| layer.adjust_pollset(wanted))
+    }
+
+    /// The answer of the topmost layer that answers `q`.
+    pub(crate) fn query(&self, q: LayerQuery) -> Option<LayerAnswer> {
+        self.layers
+            .iter()
+            .flat_map(|l| l.iter())
+            .rev()
+            .find_map(|layer| layer.query(q))
     }
 
     /// Shut its layers down over `socket` from the top, past the `shut`

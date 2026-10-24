@@ -187,6 +187,37 @@ const BODY: &[u8] = b"MooMoo";
 /// was sent read until the request's end. It ends when the client does,
 /// however the handshake went.
 fn serve(certs: &Certs) -> (SocketAddr, JoinHandle<Vec<u8>>) {
+    serve_with(certs, false)
+}
+
+/// A TCP stream that, if told to dribble, writes at most three bytes at
+/// a time, each sent on its own: the client's reads then come back
+/// shorter than asked.
+struct Dribble(std::net::TcpStream, bool);
+
+impl Read for Dribble {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Write for Dribble {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.1 {
+            return self.0.write(buf);
+        }
+        let n = self.0.write(&buf[..buf.len().min(3)])?;
+        std::thread::sleep(std::time::Duration::from_micros(200));
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+/// As `serve`, the server's bytes dribbled out if `dribble`.
+fn serve_with(certs: &Certs, dribble: bool) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let at = listener.local_addr().unwrap();
     let mut acceptor = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
@@ -195,7 +226,8 @@ fn serve(certs: &Certs) -> (SocketAddr, JoinHandle<Vec<u8>>) {
     let acceptor = acceptor.build();
     let server = std::thread::spawn(move || {
         let (tcp, _) = listener.accept().unwrap();
-        let Ok(mut tls) = acceptor.accept(tcp) else {
+        tcp.set_nodelay(dribble).unwrap();
+        let Ok(mut tls) = acceptor.accept(Dribble(tcp, dribble)) else {
             return Vec::new();
         };
         let mut got = Vec::new();
@@ -465,24 +497,30 @@ fn no_ca_named_trusts_the_build_s_default() {
 /// What the library reads below goes into its own buffer whole: the
 /// layers below are asked for no more than it has room for, which the
 /// trace of each read says (`ossl_bio_cf_in_read(len=N) -> 0, n`, n at
-/// most N).
+/// most N), and the library is told what came, which a peer sending in
+/// pieces makes less than it asked.
 fn the_library_reads_no_more_than_it_asks() {
     let certs = certs("lengths", "localhost", &["localhost"]);
-    let (at, server) = serve(&certs);
+    let (at, server) = serve_with(&certs, true);
     let got = get_traced("localhost", at, trusting(&certs), true);
     server.join().unwrap();
     assert_eq!(got.result, Ok(()));
-    let mut reads = 0;
+    assert_eq!(got.seen.body, BODY);
+    let (mut reads, mut short) = (0, 0);
     for line in &got.seen.lines {
         let Some(rest) = line.split("ossl_bio_cf_in_read(len=").nth(1) else {
             continue;
         };
         let (len, rest) = rest.split_once(") -> ").unwrap();
         let n: usize = rest.split(", ").nth(1).unwrap().parse().unwrap();
-        assert!(n <= len.parse().unwrap(), "{line}");
+        let len: usize = len.parse().unwrap();
+        assert!(n <= len, "{line}");
         reads += 1;
+        short += usize::from(n > 0 && n < len);
     }
     assert!(reads > 0, "no read traced in {:#?}", got.seen.lines);
+    // The bytes came in pieces, so the library was told of short reads.
+    assert!(short > 0, "no short read in {:#?}", got.seen.lines);
 }
 
 /// A server for one plain HTTP connection, as `serve` answers.

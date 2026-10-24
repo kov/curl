@@ -822,7 +822,11 @@ since a bare path is no URL.
 
 Timeout errors come from one function on the state, producing C's texts: in `Connecting`,
 "Resolving timed out after N milliseconds" or "Connection timed out after N milliseconds";
-elsewhere "Operation timed out after N milliseconds with X out of Y bytes received".
+elsewhere "Operation timed out after N milliseconds with X out of Y bytes received". A setup
+that fails or times out with its first hop connected keeps what is known of it, as
+`Curl_conn_report_failed` does: the connection's ends (`CURLINFO_PRIMARY_IP` and the rest) and
+`TIMER_CONNECT` at the moment TCP connected, so a TLS handshake cut short still reports them
+(5029); attempts still racing report nothing.
 
 ### 3.4 Deadlines and timers
 

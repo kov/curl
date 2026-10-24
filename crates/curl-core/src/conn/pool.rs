@@ -128,6 +128,21 @@ impl ConnLease {
         }
     }
 
+    /// What a failing setup keeps of its connection to the first hop
+    /// (`ConnectMachine::partly_made`); nothing once it is not setting up.
+    pub(crate) fn partly_made(
+        &self,
+    ) -> Option<(
+        std::net::SocketAddr,
+        Option<std::net::SocketAddr>,
+        crate::time::Instant,
+    )> {
+        match self.slot() {
+            ConnSlot::Connecting(machine) => machine.partly_made(),
+            ConnSlot::Open(_) | ConnSlot::Failed(_) => None,
+        }
+    }
+
     /// The connection to the first hop, while its handshakes are made.
     pub(crate) fn dialed(&mut self) -> &mut Dialed {
         let id = self.id;

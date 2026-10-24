@@ -540,6 +540,16 @@ impl ConnectMachine {
         }
     }
 
+    /// What a setup that fails keeps of its connection to the first hop,
+    /// if it made one (`Curl_conn_report_failed`): its ends, and when it
+    /// connected. Attempts still racing have nothing to keep.
+    pub(crate) fn partly_made(&self) -> Option<(SocketAddr, Option<SocketAddr>, Instant)> {
+        match &self.stage {
+            Stage::Dialed(d) => Some((d.remote, d.stream.local_addr(), d.connected_at)),
+            Stage::Resolving | Stage::Racing(_) => None,
+        }
+    }
+
     /// The connection to the first hop, while its handshakes are made.
     pub(crate) fn dialed(&mut self) -> &mut Dialed {
         match &mut self.stage {

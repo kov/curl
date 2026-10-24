@@ -324,6 +324,30 @@ fn an_unanswered_handshake_times_out_as_the_connect() {
     );
 }
 
+/// A setup that times out in its TLS handshake keeps what it knew of its
+/// connection: the ends, and when TCP connected (`Curl_conn_report_failed`,
+/// test 5029).
+#[test]
+fn a_handshake_cut_short_keeps_the_connection_s_ends_and_time() {
+    let (_, libraries) = tls();
+    let talk = Conversation::new(b"", false);
+    let accepted = std::time::Duration::from_millis(10);
+    let mut m = serving(Peer::AcceptsAfter(accepted), &[&talk]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        let url = format!("https://127.0.0.1:{PORT}/");
+        o.set_url(Some(url.as_bytes())).unwrap();
+        o.limits.connect = crate::time::TimeLimit::from_millis(1000);
+    });
+    assert_eq!(ran.result, Err(ErrorKind::OperationTimedout));
+    let report = ran.easy.report();
+    let ends = report.primary().expect("the ends kept");
+    assert_eq!(ends.remote, SocketAddr::from(([127, 0, 0, 1], PORT)));
+    assert!(ends.local.is_some());
+    assert_eq!(report.timings().connect(), accepted);
+}
+
 /// HTTPS through an HTTP proxy tunnels, whether asked or not
 /// (`Curl_proxy_init_conn`), and its TLS is made with the origin through
 /// the tunnel. The bytes the proxy sent past its answer are the origin's

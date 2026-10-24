@@ -178,3 +178,11 @@ witness: curl-core proto::http::tests::tls::a_socket_failing_under_a_session_is_
                 .fails(ErrorKind::SendError, format_args!("Send failure: {why}"));
 --- new
                 .fails(ErrorKind::SendError, format_args!("{why}"));
+
+=== a setup cut short in its handshake forgets the connection's ends and connect time
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::tls::a_handshake_cut_short_keeps_the_connection_s_ends_and_time
+--- old
+    let Some((remote, local, at)) = partly else {
+--- new
+    let Some((remote, local, at)) = partly.filter(|_| false) else {

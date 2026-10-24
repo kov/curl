@@ -1378,6 +1378,9 @@ fn connecting<H: Host>(
                 )
             }
         };
+        // What is known of a partly made connection is kept: TCP up, the
+        // TLS handshake still under way.
+        report_failed(cx, c.lease.partly_made());
         return (TransferState::Connecting(c).fail(kind), Wake::Again);
     }
     if StepCx::pause(cx).recv != RecvPause::Running {
@@ -1388,11 +1391,13 @@ fn connecting<H: Host>(
     let mut entered = false;
     loop {
         let chain = enter_setup(&c, cx, &mut entered);
+        let partly = c.lease.partly_made();
         let (next, wake) = connect_once(run, c, cx);
         match next {
             TransferState::Connecting(next) if wake == Wake::Again => c = next,
             TransferState::Done(ref d) => {
                 let kind = d.result.expect_err("a setup is done with only as it fails");
+                report_failed(cx, partly);
                 if let Some(chain) = chain {
                     mstate::trace(cx, format_args!("failed to connect {chain}"));
                 }
@@ -1845,6 +1850,20 @@ pub(crate) fn trace_timer<H: Host>(
 ) {
     let name = kind.name();
     trace::of(cx, Component::Timer, format_args!("[{name}] {args}"));
+}
+
+/// A setup failed with its first hop connected: the transfer keeps the
+/// connection's ends and when it connected (`Curl_conn_report_failed`).
+fn report_failed<H: Host>(
+    cx: &mut StepCx<'_, H>,
+    partly: Option<(SocketAddr, Option<SocketAddr>, Instant)>,
+) {
+    let Some((remote, local, at)) = partly else {
+        return;
+    };
+    cx.report_mut().set_primary(Ends { remote, local });
+    let marked = cx.report_mut().timings_mut().mark(Timer::Connect, at);
+    mstate::marked(cx, Timer::Connect, marked);
 }
 
 /// The connection is set up (`conn_connect_trace`): timed and traced;

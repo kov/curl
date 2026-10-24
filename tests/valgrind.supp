@@ -148,3 +148,12 @@
    fun:*insert_tls13_ticket*
    fun:*handle_new_ticket_impl*
 }
+
+{
+   rust-std-stack-overflow-thread-info
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:*stack_overflow*thread_info*
+}

@@ -42,3 +42,12 @@ features: test-util,debug-hooks
     side.no_persist = value.len() >= 5 && value[..5].eq_ignore_ascii_case(b"false");
 --- new
     side.no_persist = true;
+
+=== Negotiate's bit is reported though the build does not claim SPNEGO
+file: crates/curl-sys-abi/src/getinfo.rs
+witness: curl-sys-abi handle_tests::http_options_reach_the_request
+features: debug-hooks
+--- old
+    let negotiate = if spnego {
+--- new
+    let negotiate = if true {

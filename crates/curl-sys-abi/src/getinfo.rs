@@ -97,18 +97,30 @@ fn secs(d: Duration) -> f64 {
     micros(d) as f64 / 1_000_000.0
 }
 
+/// Whether the build claims SPNEGO (`USE_SPNEGO`).
+fn spnego() -> bool {
+    curl_core::version::version().claims("SPNEGO")
+}
+
 /// C's protocol bit (`CURLPROTO_*`).
-/// Methods as a `CURLAUTH_*` mask.
-pub(crate) fn auth_mask(methods: AuthMethods) -> c_long {
+/// Methods as a `CURLAUTH_*` mask; Negotiate's bit only where the build
+/// claims SPNEGO (`spnego`), as C knows the method only then.
+pub(crate) fn auth_mask(methods: AuthMethods, spnego: bool) -> c_long {
+    let negotiate = if spnego {
+        AuthMethods::NEGOTIATE
+    } else {
+        AuthMethods::NONE
+    };
     [
         (AuthMethods::BASIC, ffi::CURLAUTH_BASIC),
         (AuthMethods::DIGEST, ffi::CURLAUTH_DIGEST),
         (AuthMethods::BEARER, ffi::CURLAUTH_BEARER),
         (AuthMethods::AWS_SIGV4, ffi::CURLAUTH_AWS_SIGV4),
         (AuthMethods::HTTPSIG, ffi::CURLAUTH_HTTPSIG),
+        (negotiate, ffi::CURLAUTH_NEGOTIATE),
     ]
     .into_iter()
-    .filter(|&(method, _)| methods.contains(method))
+    .filter(|&(method, _)| !method.is_empty() && methods.contains(method))
     .fold(0, |mask, (_, bit)| mask | bit as c_long)
 }
 
@@ -316,12 +328,12 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
         ffi::CURLINFO_USED_PROXY => Value::Long(c_long::from(r.used_proxy())),
         ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),
-        ffi::CURLINFO_HTTPAUTH_AVAIL => Value::Long(auth_mask(r.auth_offered())),
-        ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used())),
-        ffi::CURLINFO_PROXYAUTH_AVAIL => Value::Long(auth_mask(r.proxy_auth_offered())),
+        ffi::CURLINFO_HTTPAUTH_AVAIL => Value::Long(auth_mask(r.auth_offered(), spnego())),
+        ffi::CURLINFO_HTTPAUTH_USED => Value::Long(auth_mask(r.auth_used(), spnego())),
+        ffi::CURLINFO_PROXYAUTH_AVAIL => Value::Long(auth_mask(r.proxy_auth_offered(), spnego())),
         ffi::CURLINFO_PROXY_ERROR => Value::Long(r.proxy_error().map_or(0, proxy_code)),
         ffi::CURLINFO_OS_ERRNO => Value::Long(r.os_errno().map_or(0, |e| c_long::from(e.get()))),
-        ffi::CURLINFO_PROXYAUTH_USED => Value::Long(auth_mask(r.proxy_auth_used())),
+        ffi::CURLINFO_PROXYAUTH_USED => Value::Long(auth_mask(r.proxy_auth_used(), spnego())),
         ffi::CURLINFO_REQUEST_SIZE => {
             Value::Long(c_long::try_from(sizes.request()).unwrap_or(c_long::MAX))
         }

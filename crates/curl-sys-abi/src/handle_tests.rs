@@ -893,7 +893,19 @@ fn http_options_reach_the_request() {
         M::ANY & !M::NEGOTIATE
     };
     assert_eq!(auth(c), any);
-    assert_eq!(crate::getinfo::auth_mask(auth(c)), 1 | 2 | 64 | 128);
+    let spnego = curl_core::version::version().claims("SPNEGO");
+    let negotiate = if spnego { 4 } else { 0 };
+    assert_eq!(
+        crate::getinfo::auth_mask(auth(c), spnego),
+        1 | 2 | negotiate | 64 | 128
+    );
+    // Negotiate reads as C's bit only where claimed; unclaimed, as no
+    // method at all.
+    assert_eq!(
+        crate::getinfo::auth_mask(M::NEGOTIATE | M::BASIC, true),
+        4 | 1
+    );
+    assert_eq!(crate::getinfo::auth_mask(M::NEGOTIATE | M::BASIC, false), 1);
     let ie = ffi::CURLAUTH_DIGEST_IE | ffi::CURLAUTH_NTLM;
     assert_eq!(long(c, ffi::CURLOPT_HTTPAUTH, mask(ie)), CURLE_OK);
     assert_eq!(

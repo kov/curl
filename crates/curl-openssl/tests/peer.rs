@@ -48,6 +48,8 @@ mod checks;
 mod client;
 #[path = "peer/engine.rs"]
 mod engine;
+#[path = "peer/status.rs"]
+mod status;
 
 #[global_allocator]
 static ALLOCATOR: Tracker = Tracker;
@@ -122,6 +124,7 @@ fn main() {
     .chain(client::TESTS.iter().copied())
     .chain(chain::TESTS.iter().copied())
     .chain(engine::TESTS.iter().copied())
+    .chain(status::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {

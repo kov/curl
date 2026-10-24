@@ -172,6 +172,8 @@ pub(crate) struct Tls<'a> {
     pub(crate) key_password: Option<&'a [u8]>,
     /// `--engine`.
     pub(crate) engine: Option<&'a [u8]>,
+    /// `--cert-status`.
+    pub(crate) cert_status: bool,
 }
 
 /// `--proto-default`: the protocol, as named.
@@ -1083,6 +1085,7 @@ pub(crate) fn apply<'a>(
         Opt::ProxyInsecure => line.current().tls.proxy_insecure = value.toggle(),
         Opt::CaNative => line.current().tls.native_ca = value.toggle(),
         Opt::SslAllowBeast => line.current().tls.allow_beast = value.toggle(),
+        Opt::CertStatus => line.current().tls.cert_status = value.toggle(),
         Opt::SslNoRevoke => line.current().tls.no_revoke = value.toggle(),
         Opt::SslRevokeBestEffort => line.current().tls.revoke_best_effort = value.toggle(),
         Opt::SslAutoClientCert => line.current().tls.auto_client_cert = value.toggle(),
@@ -1555,7 +1558,6 @@ pub(crate) fn apply<'a>(
         Opt::AbstractUnixSocket
         | Opt::AltSvc
         | Opt::Append
-        | Opt::CertStatus
         | Opt::CompressedSsh
         | Opt::Crlf
         | Opt::Delegation

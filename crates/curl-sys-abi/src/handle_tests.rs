@@ -368,7 +368,7 @@ fn the_tls_check_and_identity_strings_are_copied() {
     use curl_core::options::TlsOptions;
     let c = curl_easy_init();
     type Field = fn(&TlsOptions) -> Option<Vec<u8>>;
-    let fields: [(CURLoption, Field); 8] = [
+    let fields: [(CURLoption, Field); 9] = [
         (ffi::CURLOPT_CRLFILE, |t| t.crl_file.clone()),
         (ffi::CURLOPT_PINNEDPUBLICKEY, |t| t.pinned_key.clone()),
         (ffi::CURLOPT_SSLCERT, |t| t.cert.clone()),
@@ -377,6 +377,7 @@ fn the_tls_check_and_identity_strings_are_copied() {
         (ffi::CURLOPT_SSLKEYTYPE, |t| t.key_type.clone()),
         (ffi::CURLOPT_KEYPASSWD, |t| t.key_password.clone()),
         (ffi::CURLOPT_SSLENGINE, |t| t.engine.clone()),
+        (ffi::CURLOPT_ISSUERCERT, |t| t.issuer_cert.clone()),
     ];
     for (o, field) in fields {
         let mut given = *b"given\0";
@@ -394,9 +395,10 @@ fn the_tls_check_and_identity_strings_are_copied() {
     }
     // The certificate and key in memory, copied as `CAINFO_BLOB` is.
     type Blob = fn(&TlsOptions) -> Option<Vec<u8>>;
-    let blobs: [(CURLoption, Blob); 2] = [
+    let blobs: [(CURLoption, Blob); 3] = [
         (ffi::CURLOPT_SSLCERT_BLOB, |t| t.cert_blob.clone()),
         (ffi::CURLOPT_SSLKEY_BLOB, |t| t.key_blob.clone()),
+        (ffi::CURLOPT_ISSUERCERT_BLOB, |t| t.issuer_cert_blob.clone()),
     ];
     for (o, field) in blobs {
         let mut pem = *b"PEM";
@@ -419,12 +421,18 @@ fn the_tls_check_and_identity_strings_are_copied() {
     unsafe { curl_easy_cleanup(c) };
 }
 
-/// `CURLOPT_SSLENGINE_DEFAULT` asks for the engine as the default only
-/// with 1, as C reads it; `CURLINFO_SSL_ENGINES` lists OpenSSL's, its
+/// `CURLOPT_SSL_VERIFYSTATUS` asks for the stapled status with any value
+/// but 0, `CURLOPT_SSLENGINE_DEFAULT` for the engine as the default only
+/// with 1, as C reads them; `CURLINFO_SSL_ENGINES` lists OpenSSL's, its
 /// built-in `dynamic` among them, in a list the application frees.
 #[test]
 fn the_engines_are_listed_and_one_made_the_default_with_1() {
     let c = curl_easy_init();
+    let status = |c| options(c, |o| o.tls.options.verify_status);
+    assert_eq!(long(c, ffi::CURLOPT_SSL_VERIFYSTATUS, 2), CURLE_OK);
+    assert!(status(c));
+    assert_eq!(long(c, ffi::CURLOPT_SSL_VERIFYSTATUS, 0), CURLE_OK);
+    assert!(!status(c));
     let default = |c| options(c, |o| o.tls.options.engine_default);
     assert_eq!(long(c, ffi::CURLOPT_SSLENGINE_DEFAULT, 2), CURLE_OK);
     assert!(!default(c));

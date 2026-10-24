@@ -238,3 +238,44 @@ witness: curl-openssl a_provider_s_store_gives_the_client_certificate_and_key
         (false, Some(uri)) => using.use_from_store(ctx, uri, wanted, io),
 --- new
         (false, Some(_)) => Ok(()),
+
+=== the peer is never asked to staple its status
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl a_good_status_passes_and_a_revoked_one_fails
+--- old
+            crate::ocsp::request(ssl);
+--- new
+
+=== a revoked status passes as a good one
+file: crates/curl-openssl/src/ocsp.rs
+witness: curl-openssl a_good_status_passes_and_a_revoked_one_fails
+--- old
+        openssl_sys::V_OCSP_CERTSTATUS_GOOD => Ok(()),
+--- new
+        openssl_sys::V_OCSP_CERTSTATUS_GOOD | openssl_sys::V_OCSP_CERTSTATUS_REVOKED => Ok(()),
+
+=== a status anyone signed is believed
+file: crates/curl-openssl/src/ocsp.rs
+witness: curl-openssl a_good_status_passes_and_a_revoked_one_fails
+--- old
+    if unsafe { openssl_sys::OCSP_basic_verify(br.as_ptr(), chain, store, 0) } <= 0 {
+--- new
+    if unsafe { openssl_sys::OCSP_basic_verify(br.as_ptr(), chain, store, 0) } < -1 {
+
+=== the issuer named is never checked against the peer's certificate
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl the_issuer_named_must_have_issued_the_peer_s_certificate
+--- old
+    if issued != openssl_sys::X509_V_OK {
+--- new
+    if issued == -12345 {
+
+=== an issuer check that fails is said though the peer is not verified
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl the_issuer_named_must_have_issued_the_peer_s_certificate
+--- old
+        if verify {
+            io.fail(ErrorKind::SslIssuerError, why);
+--- new
+        if true {
+            io.fail(ErrorKind::SslIssuerError, why);

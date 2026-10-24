@@ -1945,6 +1945,12 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         s.long("CURLOPT_PROXY_SSL_VERIFYPEER", 0, nothing)?;
         s.long("CURLOPT_PROXY_SSL_VERIFYHOST", 0, nothing)?;
     }
+    if tls.cert_status {
+        s.long("CURLOPT_SSL_VERIFYSTATUS", 1, |o| {
+            o.tls.options.make_mut().map_err(oom)?.verify_status = true;
+            Ok(())
+        })?;
+    }
     let (min, max) = tls_versions(tls.version, tls.version_max);
     let value = min.1 | max.1;
     s.sslversion("CURLOPT_SSLVERSION", value, |o| {

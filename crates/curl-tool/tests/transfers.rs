@@ -1587,6 +1587,31 @@ fn lists_the_engines() {
     assert!(!s.exists("out"));
 }
 
+/// `--cert-status` asks for the stapled status, and `--engine` names the
+/// engine, each as its own `--libcurl` line.
+#[test]
+fn asks_for_the_status_and_the_engine() {
+    let s = Scratch::new("cert-status");
+    s.write("f", b"x");
+    let program = |args: &[&str]| {
+        let r = curl(
+            &s,
+            &[&["-s", "-o", "out", "--libcurl", "-"], args, &[&s.url("f")]].concat(),
+        );
+        assert_eq!(r.code, 0, "{args:?}");
+        String::from_utf8(r.stdout).unwrap()
+    };
+    let status = "curl_easy_setopt(curl, CURLOPT_SSL_VERIFYSTATUS, 1L);";
+    let engine = "curl_easy_setopt(curl, CURLOPT_SSLENGINE, \"default\");";
+    let both = program(&["--cert-status", "--engine", "default"]);
+    assert!(both.contains(status) && both.contains(engine), "{both}");
+    let neither = program(&["--cert-status", "--no-cert-status"]);
+    assert!(
+        !neither.contains("VERIFYSTATUS") && !neither.contains("SSLENGINE"),
+        "{neither}"
+    );
+}
+
 /// `--ssl-allow-beast`, `--ssl-no-revoke`, `--ssl-revoke-best-effort`
 /// and `--ssl-auto-client-cert` each set their `CURLOPT_SSL_OPTIONS` bit,
 /// and none of them leaves the option unset.

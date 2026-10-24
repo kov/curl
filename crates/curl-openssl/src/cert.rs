@@ -84,7 +84,7 @@ fn password_ptr(password: Option<&Vec<u8>>) -> *mut c_void {
 }
 
 /// A BIO reading `blob`, which outlives it; none if it cannot be made.
-fn blob_bio(blob: &[u8]) -> Option<MemBio> {
+pub(crate) fn blob_bio(blob: &[u8]) -> Option<MemBio> {
     let len = c_int::try_from(blob.len()).ok()?;
     // SAFETY: a BIO reading `blob`, freed before `blob` goes, as the
     // caller keeps it.
@@ -244,7 +244,7 @@ fn chain_rest(c: *mut SSL_CTX, bio: &MemBio, password: *mut c_void) -> c_int {
 }
 
 /// A file BIO reading `name`, or none if it cannot be opened.
-fn file_bio(name: &[u8]) -> Result<Option<MemBio>, ErrorKind> {
+pub(crate) fn file_bio(name: &[u8]) -> Result<Option<MemBio>, ErrorKind> {
     // SAFETY: the library's static file method.
     let method = unsafe { openssl_sys::BIO_s_file() };
     // SAFETY: a BIO of that method, owned below.

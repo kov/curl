@@ -44,6 +44,7 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   prints them.
 - `crates/curl-openssl/src/engine.rs`: OpenSSL's crypto engines and providers, and a provider's
   store.
+- `crates/curl-openssl/src/ocsp.rs`: the peer's stapled certificate status.
 - `crates/curl-openssl/src/ffi.rs`: the OpenSSL functions openssl-sys does not declare.
 - `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, and
   its trace of the records.

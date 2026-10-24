@@ -1932,6 +1932,14 @@ when none is; loading from an engine (`engineload`, `enginecheck`) is not built 
 as C's build without engines does. `CURLINFO_SSL_ENGINES` and the tool's `--engine list` list
 the library's engines, once it is initialised.
 
+**The issuer and the stapled status** follow the verify result, as in `Curl_ossl_check_peer_cert`.
+With `CURLOPT_SSL_VERIFYSTATUS` (`--cert-status`) the session asks for a stapled OCSP response
+and `ocsp.rs` checks it as `verifystatus` does: there, successful, signed by the verified chain
+against the context's store, naming the peer's certificate, current within five minutes' skew,
+and good; each shortfall is 91 in C's words. `CURLOPT_ISSUERCERT` or its blob then names the
+certificate that must have issued the peer's (`ossl_check_issuer`): 83 if it cannot be read or
+did not, said only when the peer is verified. The pinned key comes last.
+
 **Identity and reuse.** `Tcp` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
 copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares
 (versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the

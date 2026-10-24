@@ -468,7 +468,7 @@ fn info_cert(cert: &Cert, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
 ///
 /// # Safety
 /// `p` is null or a C string alive while the result is used.
-unsafe fn c_text<'a>(p: *const c_char) -> Option<&'a [u8]> {
+pub(crate) unsafe fn c_text<'a>(p: *const c_char) -> Option<&'a [u8]> {
     // SAFETY: as the caller says.
     (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_bytes())
 }
@@ -828,6 +828,12 @@ pub(crate) fn check_peer(
             " SSL certificate verification failed, continuing anyway!"
         ));
     }
+    if identity.options.verify_status {
+        // SAFETY: the session's SSL; its context is its own.
+        let ctx = NonNull::new(unsafe { openssl_sys::SSL_get_SSL_CTX(ssl.as_ptr()) });
+        crate::ocsp::check(ssl, ctx.expect("an SSL's context"), io)?;
+    }
+    check_issuer(&cert, identity, io)?;
     if let Some(pinned) = &identity.options.pinned_key {
         // Checked whether the peer is verified or not
         // (`ossl_check_pinned_key`).
@@ -840,6 +846,76 @@ pub(crate) fn check_peer(
         }
     }
     Ok(verified)
+}
+
+/// The peer's certificate was issued by the one the transfer names
+/// (`ossl_check_issuer`): 83 if it cannot be read or did not, said only
+/// when the peer is verified.
+fn check_issuer(cert: &Cert, identity: &TlsIdentity, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+    let o = &identity.options;
+    let verify = identity.verify_peer || identity.verify_host;
+    let shown = Text(o.issuer_cert.as_deref().unwrap_or(b"(null)"));
+    let bio = if let Some(blob) = o.issuer_cert_blob.as_deref() {
+        match crate::cert::blob_bio(blob) {
+            Some(bio) => bio,
+            None => {
+                let e = ErrText::last();
+                return Err(io.fail(
+                    ErrorKind::OutOfMemory,
+                    format_args!("BIO_new_mem_buf NULL, OpenSSL error {e}"),
+                ));
+            }
+        }
+    } else if let Some(file) = o.issuer_cert.as_deref() {
+        match crate::cert::file_bio(file) {
+            Ok(Some(bio)) => bio,
+            Ok(None) => {
+                if verify {
+                    io.fail(
+                        ErrorKind::SslIssuerError,
+                        format_args!("SSL: Unable to open issuer cert ({shown})"),
+                    );
+                }
+                return Err(ErrorKind::SslIssuerError);
+            }
+            Err(_) => {
+                let e = ErrText::last();
+                return Err(io.fail(
+                    ErrorKind::OutOfMemory,
+                    format_args!("BIO_new return NULL, OpenSSL error {e}"),
+                ));
+            }
+        }
+    } else {
+        return Ok(());
+    };
+    let unsaid = |io: &mut TlsIo<'_>, why: fmt::Arguments<'_>| {
+        if verify {
+            io.fail(ErrorKind::SslIssuerError, why);
+        }
+        ErrorKind::SslIssuerError
+    };
+    // SAFETY: the BIO; no callback or password; the certificate is this
+    // function's to free.
+    let issuer = unsafe {
+        openssl_sys::PEM_read_bio_X509(bio.as_ptr(), ptr::null_mut(), None, ptr::null_mut())
+    };
+    let Some(issuer) = NonNull::new(issuer).map(Cert) else {
+        return Err(unsaid(
+            io,
+            format_args!("SSL: Unable to read issuer cert ({shown})"),
+        ));
+    };
+    // SAFETY: two certificates.
+    let issued = unsafe { openssl_sys::X509_check_issued(issuer.as_ptr(), cert.as_ptr()) };
+    if issued != openssl_sys::X509_V_OK {
+        return Err(unsaid(
+            io,
+            format_args!("SSL: Certificate issuer check failed ({shown})"),
+        ));
+    }
+    io.info(format_args!(" SSL certificate issuer check ok ({shown})"));
+    Ok(())
 }
 
 /// The DER of the certificate's SubjectPublicKeyInfo

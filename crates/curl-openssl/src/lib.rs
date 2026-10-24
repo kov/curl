@@ -14,6 +14,7 @@ mod certinfo;
 mod engine;
 mod ffi;
 mod hostcheck;
+mod ocsp;
 mod sign;
 mod ssl;
 mod sys;

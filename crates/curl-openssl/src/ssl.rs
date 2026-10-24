@@ -427,6 +427,9 @@ impl Session {
             ));
         };
         self.ssl = Some(Ssl(ssl));
+        if options.verify_status {
+            crate::ocsp::request(ssl);
+        }
         // SAFETY: the SSL.
         unsafe { openssl_sys::SSL_set_connect_state(ssl.as_ptr()) };
         if self.kind == TlsPeerKind::Name {

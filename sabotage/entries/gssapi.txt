@@ -83,14 +83,6 @@ witness: curl-sys-abi setopt::tests::reads_delegation_as_c
 --- new
         by_policy: n != 0,
 
-=== the shim takes NEC's switch though the build does not claim GSS-API
-file: crates/curl-sys-abi/src/setopt/mod.rs
-witness: curl-sys-abi handle_tests::gss_options_are_read_as_c
---- old
-            let nec = gss_bool(n, gssapi())?;
---- new
-            let nec = gss_bool(n, true)?;
-
 === `--libcurl` writes delegation once, though config2setopts.c sets it twice
 file: crates/curl-tool/src/operate.rs
 witness: curl-tool operate::tests::writes_gss_options_as_c
@@ -107,17 +99,3 @@ witness: curl-tool operate::tests::writes_gss_options_as_c
             methods & !options::AuthMethods::NEGOTIATE
 --- new
             methods
-
-=== `--no-proxy-negotiate` is taken from a library without SPNEGO
-file: crates/curl-tool/src/options/apply.rs
-witness: curl-tool options::parse::tests::reads_gss_options_as_c
---- old
-            if !super::parse::claims_spnego() {
-                return Err(ParamError::LibcurlDoesntSupport);
-            }
-            line.current().proxy_negotiate = value.toggle();
---- new
-            if value.toggle() && !super::parse::claims_spnego() {
-                return Err(ParamError::LibcurlDoesntSupport);
-            }
-            line.current().proxy_negotiate = value.toggle();

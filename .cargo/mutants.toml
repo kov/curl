@@ -61,6 +61,9 @@ exclude_re = [
     # The headers' flags each of `ffi.rs`'s constants joins are disjoint
     # bits, as `bio.h`, `asn1.h` and `x509.h` define them.
     'curl-openssl/src/ffi\.rs:.*: replace \| with \^$',
+    # `SSL_OP_ALL`, `SSL_OP_NO_TICKET` and `SSL_OP_NO_COMPRESSION` are
+    # disjoint bits, as `ssl.h` defines them.
+    'curl-openssl/src/ssl\.rs:.*: replace \| with \^ in Session::step1$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

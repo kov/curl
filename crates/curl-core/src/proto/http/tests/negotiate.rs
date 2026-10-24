@@ -423,7 +423,7 @@ fn the_next_request_authenticates_again_unless_it_persists() {
 fn a_negotiated_connection_serves_only_its_own() {
     let reused = "Reusing existing http: connection with host 127.0.0.1\n";
     type Case = (&'static str, fn(&mut Options), bool);
-    let cases: [Case; 5] = [
+    let cases: [Case; 6] = [
         (
             "same credentials",
             |o| o.login.make_mut().unwrap().user = Some(b"u".to_vec()),
@@ -439,6 +439,14 @@ fn a_negotiated_connection_serves_only_its_own() {
             "not negotiating",
             |o| {
                 o.login.make_mut().unwrap().user = Some(b"u".to_vec());
+                o.http.auth = HttpAuth(AuthMethods::BASIC);
+            },
+            false,
+        ),
+        (
+            "other credentials, not negotiating",
+            |o| {
+                o.login.make_mut().unwrap().user = Some(b"v".to_vec());
                 o.http.auth = HttpAuth(AuthMethods::BASIC);
             },
             false,

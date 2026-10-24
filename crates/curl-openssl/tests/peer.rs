@@ -83,6 +83,9 @@ fn main() {
         .filter(|a| !a.starts_with('-'))
         .collect();
     curl_openssl::init();
+    // Removed however the run ends but by an abort: a failing test's
+    // panic unwinds out of `main` past it.
+    let _certs = CertsDir;
     for (name, test) in [
         (
             "a_verified_get_reads_the_body",
@@ -167,12 +170,28 @@ fn main() {
         test();
         track::untracked(|| println!("ok"));
     }
-    let _ = std::fs::remove_dir_all(certs_dir());
 }
 
 /// Where the CA files the tests make are written.
 fn certs_dir() -> PathBuf {
     std::env::temp_dir().join(format!("curl-openssl-peer-{}", std::process::id()))
+}
+
+/// The run's `certs_dir`, removed with what the tests wrote in it as
+/// this goes.
+struct CertsDir;
+
+impl Drop for CertsDir {
+    fn drop(&mut self) {
+        // A run whose tests wrote nothing has none to remove.
+        track::untracked(|| match std::fs::remove_dir_all(certs_dir()) {
+            // Not a second panic over a failing test's, which would abort.
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound && !std::thread::panicking() => {
+                panic!("removing {}: {e}", certs_dir().display())
+            }
+            _ => {}
+        });
+    }
 }
 
 /// A certificate authority and a server certificate it signed, the CA

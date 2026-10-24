@@ -85,9 +85,78 @@ fn supported(number: c_ulong) -> Result<(), TooOld> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use core::ffi::{c_char, c_int, c_void};
+    use core::sync::atomic::{AtomicIsize, Ordering};
+
     use super::*;
 
     use curl_core::libraries::{Ed25519, Ed25519Error};
+
+    /// The library's allocations not yet freed, once `count_allocations`
+    /// has installed its functions.
+    static LIVE: AtomicIsize = AtomicIsize::new(0);
+
+    type Malloc = extern "C" fn(usize, *const c_char, c_int) -> *mut c_void;
+    type Realloc = extern "C" fn(*mut c_void, usize, *const c_char, c_int) -> *mut c_void;
+    type Free = extern "C" fn(*mut c_void, *const c_char, c_int);
+
+    // SAFETY: the declarations are `crypto.h`'s and the C library's.
+    unsafe extern "C" {
+        fn CRYPTO_set_mem_functions(m: Malloc, r: Realloc, f: Free) -> c_int;
+        fn malloc(size: usize) -> *mut c_void;
+        fn realloc(p: *mut c_void, size: usize) -> *mut c_void;
+        fn free(p: *mut c_void);
+    }
+
+    extern "C" fn counted_malloc(size: usize, _: *const c_char, _: c_int) -> *mut c_void {
+        // SAFETY: the C library's own.
+        let p = unsafe { malloc(size) };
+        if !p.is_null() {
+            LIVE.fetch_add(1, Ordering::Relaxed);
+        }
+        p
+    }
+
+    extern "C" fn counted_realloc(
+        p: *mut c_void,
+        size: usize,
+        file: *const c_char,
+        line: c_int,
+    ) -> *mut c_void {
+        if p.is_null() {
+            return counted_malloc(size, file, line);
+        }
+        if size == 0 {
+            counted_free(p, file, line);
+            return core::ptr::null_mut();
+        }
+        // SAFETY: `p` came from `counted_malloc` or here, and is live.
+        unsafe { realloc(p, size) }
+    }
+
+    extern "C" fn counted_free(p: *mut c_void, _: *const c_char, _: c_int) {
+        if !p.is_null() {
+            LIVE.fetch_sub(1, Ordering::Relaxed);
+        }
+        // SAFETY: `p` is null or came from the functions above, and is
+        // freed once, as the library frees it.
+        unsafe { free(p) };
+    }
+
+    /// Count the library's allocations from now on: in a process of its
+    /// own (`in_a_child`), before the library has allocated anything.
+    pub(crate) fn count_allocations() {
+        // SAFETY: the functions are a matching set over the C library's
+        // allocator, installed before the library allocates.
+        let set =
+            unsafe { CRYPTO_set_mem_functions(counted_malloc, counted_realloc, counted_free) };
+        assert_eq!(set, 1, "installed before the library allocated");
+    }
+
+    /// The library's allocations not yet freed since `count_allocations`.
+    pub(crate) fn live_allocations() -> isize {
+        LIVE.load(Ordering::Relaxed)
+    }
 
     /// The ids of the engines the library has loaded, as text.
     pub(crate) fn engines() -> Vec<String> {

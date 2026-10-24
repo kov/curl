@@ -50,12 +50,14 @@ pub use self::layer::Linger;
 pub use self::socks::ProxyError;
 pub(crate) use self::stream::Stream;
 
-/// What transfers keep for those after them: the connections and the
-/// names resolved. A multi holds its own; a share will hold them in its
-/// place.
+/// What transfers keep for those after them: the connections, the names
+/// resolved and the TLS sessions to resume. A multi holds its own; a
+/// share may hold them in its place.
 pub(crate) struct Caches {
     pub(crate) pool: Pool,
     pub(crate) dns: DnsCache,
+    /// The TLS sessions kept to resume (`multi->ssl_scache`).
+    pub(crate) sessions: crate::tls::SessionCache,
 }
 
 impl Caches {
@@ -63,6 +65,7 @@ impl Caches {
         Ok(Caches {
             pool: Pool::new()?,
             dns: DnsCache::default(),
+            sessions: crate::tls::SessionCache::new(crate::tls::SessionCache::PEERS),
         })
     }
 }

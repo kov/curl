@@ -19,8 +19,8 @@ use core::ptr::{self, NonNull};
 
 use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
-use curl_core::tls::{TlsIo, TlsWay};
-use openssl_sys::{BIO, BIO_METHOD, SSL};
+use curl_core::tls::{KeyLog, TlsIo, TlsWay};
+use openssl_sys::{BIO, BIO_METHOD, SSL, SSL_SESSION};
 
 use crate::ffi;
 use crate::text;
@@ -59,6 +59,8 @@ pub(crate) struct Slot<'s, 'a> {
     pub(crate) below: Below,
     /// Sets the trust store up, unless `flags.store_ready`.
     pub(crate) store: StoreSetup<'s>,
+    /// Where the secrets the library tells of are logged, if anywhere.
+    pub(crate) keylog: Option<&'static KeyLog>,
 }
 
 /// The BIO method (`ossl_bio_cf_method_create`), one per session, as C
@@ -146,6 +148,58 @@ unsafe fn slot_of<'r>(bio: *mut BIO) -> Option<&'r mut Slot<'r, 'r>> {
     // callback alone until it returns; the lifetimes are the callback's,
     // shorter than the slot's, and nothing is stored in it.
     unsafe { data.cast::<Slot<'r, 'r>>().as_mut() }
+}
+
+/// The slot of the call under way on `ssl`, from its read BIO's data.
+///
+/// # Safety
+/// As `slot_of`: only from a callback of the library on `ssl`, whose read
+/// BIO is a `Method`'s.
+unsafe fn slot_of_ssl<'r>(ssl: *const SSL) -> Option<&'r mut Slot<'r, 'r>> {
+    // SAFETY: the SSL the library calls back for.
+    let bio = unsafe { openssl_sys::SSL_get_rbio(ssl) };
+    if bio.is_null() {
+        return None;
+    }
+    // SAFETY: as the caller says; outside a call the data is unset.
+    unsafe { slot_of(bio) }
+}
+
+/// The library tells of a secret, a line of the key log's
+/// (`ossl_keylog_callback`).
+pub(crate) unsafe extern "C" fn keylog_line(ssl: *const SSL, line: *const c_char) {
+    if line.is_null() {
+        return;
+    }
+    // SAFETY: the library calls back during a call on `ssl`.
+    let Some(slot) = (unsafe { slot_of_ssl(ssl) }) else {
+        return;
+    };
+    if let Some(log) = slot.keylog {
+        // SAFETY: the library hands a C string, alive for the callback.
+        log.write_line(unsafe { CStr::from_ptr(line) }.to_bytes());
+    }
+}
+
+/// The peer gave a session to resume (`ossl_new_session_cb`): kept in the
+/// transfer's cache as the library's DER of it. The library keeps its
+/// own (0: not taken).
+pub(crate) unsafe extern "C" fn new_session(ssl: *mut SSL, session: *mut SSL_SESSION) -> c_int {
+    // SAFETY: the library calls back during a call on `ssl`.
+    let Some(slot) = (unsafe { slot_of_ssl(ssl) }) else {
+        return 0;
+    };
+    if !slot.io.caches_sessions() {
+        return 0;
+    }
+    // SAFETY: the SSL and the session the library calls back with, alive
+    // for the callback.
+    let ticket = unsafe { crate::ssl::ticket_of(ssl, session, slot.io) };
+    // Out of memory, the session is not kept, as C goes on without it.
+    if let Ok(ticket) = ticket {
+        slot.io.keep_session(ticket);
+    }
+    0
 }
 
 /// The library writes `blen` bytes from `buf` (`ossl_bio_cf_out_write`).

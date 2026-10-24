@@ -320,6 +320,14 @@ impl<H: Host> Multi<H> {
         })
     }
 
+    /// Keep the TLS sessions of `peers` peers, as many as C's
+    /// `curl_easy_perform` keeps for its own multi, in place of the 25 a
+    /// multi keeps (`Curl_multi_handle`'s `sesssize`). Only while none is
+    /// kept.
+    pub(crate) fn keep_tls_sessions_of(&mut self, peers: usize) {
+        self.caches.sessions = crate::tls::SessionCache::new(peers);
+    }
+
     /// Each connection set up from now on gets a layer whose shutdown
     /// waits as `how` says, for the tests of the connections shutting
     /// down; none with `None`.

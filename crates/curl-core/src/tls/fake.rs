@@ -12,7 +12,9 @@
 //! - Either side says goodbye with `FAKETLS CLOSE` and a blank line.
 //!
 //! A session allocates nothing past its own box, so what a test counts
-//! is the library's. A record a send cannot put on the wire whole is
+//! is the library's. A library made `ticketing` resumes a session the
+//! transfer's cache holds, and gives one to keep as its handshake ends,
+//! each a ticket of TLS 1.3 good for two hours. A record a send cannot put on the wire whole is
 //! kept and sent before anything else: a read that must send first
 //! waits to write.
 
@@ -25,8 +27,8 @@ use std::sync::Mutex;
 use curl_alloc::{OutOfMemory, TryArc, TryVec as _, try_box};
 
 use super::{
-    Alpn, CaDefaults, Chosen, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer,
-    TlsPeerKind, TlsSession, TlsShared, TlsWait,
+    Alpn, CaDefaults, Chosen, Handshake, TLS1_3, TlsBackend, TlsIdentity, TlsIo, TlsNative,
+    TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use crate::conn::io::{Recv, Sent};
 use crate::error::ErrorKind;
@@ -63,7 +65,12 @@ pub struct FakeTls {
     pause: bool,
     /// Each session's peer agrees by ALPN to the first protocol offered.
     agree: bool,
+    /// Each session resumes a ticket kept and gives one to keep.
+    tickets: bool,
 }
+
+/// The ticket a ticketing fake's handshake gives.
+pub const TICKET: &[u8] = b"FAKETLS TICKET";
 
 /// What a fake library's sessions were asked.
 #[derive(Clone, Copy, Debug)]
@@ -92,6 +99,8 @@ pub struct FakeLog {
     /// The number of the state the last session was handed, counting
     /// from 1 in the order they were made.
     pub state: usize,
+    /// Sessions that resumed a ticket the transfer's cache held.
+    pub resumed: usize,
 }
 
 /// What the fake keeps for a multi: its number, and the log it notes
@@ -150,11 +159,22 @@ impl FakeTls {
             states_made: 0,
             states_dropped: 0,
             state: 0,
+            resumed: 0,
         };
         Ok(FakeTls {
             log: TryArc::try_new(Mutex::new(log))?,
             pause: false,
             agree: false,
+            tickets: false,
+        })
+    }
+
+    /// The same, each session resuming a ticket the transfer's cache
+    /// holds for its peer and giving one to keep as its handshake ends.
+    pub fn ticketing() -> Result<FakeTls, OutOfMemory> {
+        Ok(FakeTls {
+            tickets: true,
+            ..FakeTls::new()?
         })
     }
 
@@ -184,6 +204,10 @@ impl FakeTls {
 }
 
 impl TlsBackend for FakeTls {
+    fn id(&self) -> &dyn fmt::Display {
+        &"FakeTLS/1.0"
+    }
+
     fn ca_defaults(&self) -> CaDefaults {
         CaDefaults {
             file: Some(CA_FILE),
@@ -217,6 +241,7 @@ impl TlsBackend for FakeTls {
             log: self.log.clone(),
             made: false,
             pause: self.pause,
+            tickets: self.tickets,
             agreed: match alpn {
                 Alpn::None => None,
                 Alpn::Http11 => Some(Chosen::Http11),
@@ -264,6 +289,8 @@ struct FakeSession {
     made: bool,
     /// It is to pause the transfer's receiving as the welcome is read.
     pause: bool,
+    /// It resumes a ticket kept and gives one to keep.
+    tickets: bool,
     /// What its peer agrees to by ALPN, once the handshake is over.
     agreed: Option<Chosen>,
     stage: Stage,
@@ -401,6 +428,13 @@ impl TlsSession for FakeSession {
             if io.configures_context() {
                 io.configure_context(TlsNative::new(NonNull::from(&self.out).cast(), None))?;
             }
+            if self.tickets && io.caches_sessions() {
+                let taken = io.take_session();
+                if taken.as_ref().is_some_and(|t| t.data == TICKET) {
+                    self.log().resumed += 1;
+                }
+                io.return_session(taken);
+            }
             self.made = true;
         }
         loop {
@@ -452,6 +486,14 @@ impl TlsSession for FakeSession {
                     self.stage = Stage::Open;
                     self.waits = TlsWait::Nothing;
                     self.log().handshakes += 1;
+                    if self.tickets && io.caches_sessions() {
+                        let mut ticket = Vec::new();
+                        ticket
+                            .try_extend_from_slice(TICKET)
+                            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+                        let until = io.unix_time() + 7200;
+                        io.keep_session(TlsTicket::new(ticket, TLS1_3, self.agreed, 0, until));
+                    }
                     return Ok(Handshake::Done);
                 }
                 Stage::Open | Stage::Closing(_) | Stage::Closed => return Ok(Handshake::Done),

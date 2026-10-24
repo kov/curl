@@ -58,6 +58,8 @@ mod hands;
 mod hello;
 #[path = "peer/names.rs"]
 mod names;
+#[path = "peer/resume.rs"]
+mod resume;
 #[path = "peer/session.rs"]
 mod session;
 #[path = "peer/status.rs"]
@@ -145,6 +147,7 @@ fn main() {
     .chain(hands::TESTS.iter().copied())
     .chain(hello::TESTS.iter().copied())
     .chain(names::TESTS.iter().copied())
+    .chain(resume::TESTS.iter().copied())
     .chain(session::TESTS.iter().copied())
     .chain(status::TESTS.iter().copied())
     .chain(store::TESTS.iter().copied())
@@ -935,9 +938,13 @@ fn plain_get_allocations() -> u64 {
 /// by a zero byte for SNI, and the CA file's for OpenSSL, both freed as
 /// the call returns; the multi's `TlsShared` (its `TryArc`), made with
 /// its first session, and the box of the CA store cache OpenSSL keeps in
-/// it, made as the first store is set up. OpenSSL's own allocations are
-/// libc's, not counted, as C's memory tracker does not count them.
-const HTTPS_GET_EXTRA: u64 = 12;
+/// it, made as the first store is set up; the key the connection's
+/// sessions are kept by; and, as the server's two TLS 1.3 tickets arrive
+/// with the response, the multi's cache of them: its slots, made at the
+/// first, the slot's copy of the key and its list of sessions, and each
+/// ticket's DER. OpenSSL's own allocations are libc's, not counted, as
+/// C's memory tracker does not count them.
+const HTTPS_GET_EXTRA: u64 = 18;
 
 fn an_https_get_stays_within_its_allocation_budget() {
     let base = plain_get_allocations();

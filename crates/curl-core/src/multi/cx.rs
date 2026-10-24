@@ -345,6 +345,18 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
     fn pause_recv(&mut self) {
         LayerCx::pause_recv(&mut *self.step);
     }
+
+    fn unix_time(&self) -> i64 {
+        LayerCx::unix_time(&*self.step)
+    }
+
+    fn has_tls_sessions(&self) -> bool {
+        LayerCx::has_tls_sessions(&*self.step)
+    }
+
+    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
+        LayerCx::tls_sessions(&mut *self.step, f);
+    }
 }
 
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {

@@ -149,11 +149,19 @@ witness: curl-core conn::tls::tests::the_layer_says_what_its_session_holds_and_w
 file: crates/curl-core/src/conn/tls.rs
 witness: curl-core an_https_get_stays_within_its_allocation_budget
 --- old
-        Ok(try_box(TlsLayer { session, early })?)
+        Ok(try_box(TlsLayer {
+            session,
+            early,
+            peer,
+        })?)
 --- new
         let spare = try_box(0u8)?;
         drop(spare);
-        Ok(try_box(TlsLayer { session, early })?)
+        Ok(try_box(TlsLayer {
+            session,
+            early,
+            peer,
+        })?)
 
 === a TLS identity compares the CA file as set, so naming the default differs from keeping it
 file: crates/curl-core/src/tls.rs

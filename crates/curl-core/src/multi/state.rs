@@ -832,6 +832,92 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         let slot = self.rest.tell.slots.get_mut(self.me);
         slot.expect("the stepping transfer").pause.stop_recv();
     }
+
+    fn unix_time(&self) -> i64 {
+        self.rest.clock.unix_time()
+    }
+
+    /// A multi always has one.
+    fn has_tls_sessions(&self) -> bool {
+        true
+    }
+
+    /// The share's if it keeps them (`cf_ssl_scache_get`), what it says
+    /// held until its lock is let go, as nothing is called out from inside
+    /// a share's lock; else the multi's, lent out of the multi for the
+    /// call, so the context traces through while `f` holds it.
+    fn tls_sessions(&mut self, f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx)) {
+        use crate::share::watched;
+        if let Some(kept) = self.rest.kept(self.me, Kind::SslSessions) {
+            let mut held = HeldSays {
+                now: self.rest.now,
+                unix: self.rest.clock.unix_time(),
+                traces: trace::traces(self, Component::Ssls),
+                lines: Vec::new(),
+                failure: None,
+            };
+            watched(kept.watch(), &kept.share, Kind::SslSessions, || {
+                let mut sessions = kept.share.sessions();
+                let cache = sessions.as_mut().expect("kept while the share keeps them");
+                f(cache, &mut held);
+            });
+            for line in &held.lines {
+                trace::of(self, Component::Ssls, format_args!("{line}"));
+            }
+            if let Some((kind, why)) = held.failure {
+                trace::fail(self, kind, format_args!("{why}"));
+            }
+            return;
+        }
+        let none = crate::tls::SessionCache::new(0);
+        let mut own = std::mem::replace(&mut self.rest.caches.sessions, none);
+        f(&mut own, self);
+        self.rest.caches.sessions = own;
+    }
+}
+
+/// The context of a use of a share's TLS sessions under its lock: what
+/// the use traces and fails with is held, to be said once the lock is let
+/// go. A line it has no memory to hold is not said.
+struct HeldSays {
+    now: Instant,
+    unix: i64,
+    /// The transfer traces the cache's lines (`ssls`).
+    traces: bool,
+    lines: Vec<String>,
+    failure: Option<(ErrorKind, String)>,
+}
+
+impl LayerCx for HeldSays {
+    fn now(&self) -> Instant {
+        self.now
+    }
+
+    fn of(&mut self, component: Component, line: std::fmt::Arguments<'_>) {
+        if self.traces
+            && component == Component::Ssls
+            && let Ok(line) = curl_alloc::try_format(line)
+        {
+            // Without memory to hold it, the line is not said, as a line
+            // too long for the trace is cut.
+            let _ = self.lines.try_push(line);
+        }
+    }
+
+    fn info(&mut self, _: std::fmt::Arguments<'_>) {}
+
+    fn fails(&mut self, kind: ErrorKind, why: std::fmt::Arguments<'_>) -> ErrorKind {
+        if self.failure.is_none()
+            && let Ok(why) = curl_alloc::try_format(why)
+        {
+            self.failure = Some((kind, why));
+        }
+        kind
+    }
+
+    fn unix_time(&self) -> i64 {
+        self.unix
+    }
 }
 
 /// What a step needs: the transfer it steps, whose `Run` is out of its

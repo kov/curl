@@ -124,6 +124,28 @@ pub(crate) trait LayerCx {
     /// (`Curl_xfer_pause_recv`). Work done for no transfer has nothing to
     /// pause.
     fn pause_recv(&mut self) {}
+
+    /// The time of day, in seconds since 1970 (`time(NULL)`). Work done
+    /// for no transfer reads none.
+    fn unix_time(&self) -> i64 {
+        0
+    }
+
+    /// The transfer has a cache of TLS sessions: its share's, or its
+    /// multi's (`cf_ssl_scache_get`). Work done for no transfer has none.
+    fn has_tls_sessions(&self) -> bool {
+        false
+    }
+
+    /// Run `f` on the transfer's cache of TLS sessions, with this context
+    /// to trace through: the share's under its lock, the application told
+    /// around it (`Curl_ssl_scache_lock`), or the multi's. Work done for
+    /// no transfer has none, and `f` is not run.
+    fn tls_sessions(
+        &mut self,
+        _f: &mut dyn FnMut(&mut crate::tls::SessionCache, &mut dyn LayerCx),
+    ) {
+    }
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's

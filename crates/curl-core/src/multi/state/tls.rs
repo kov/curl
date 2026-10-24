@@ -14,7 +14,7 @@ use crate::error::ErrorKind;
 use crate::multi::Host;
 use crate::options::HttpVersion;
 use crate::options::{TlsMaxVersion, TlsMinVersion};
-use crate::tls::{Alpn, Handshake as Shake, TlsPeer, TlsShared};
+use crate::tls::{Alpn, Handshake as Shake, SessionPeer, TlsPeer, TlsShared};
 use crate::trace;
 
 /// The handshakes before it are made: the session is made and its layer
@@ -52,9 +52,21 @@ pub(super) fn start<H: Host>(mut c: Connecting, cx: &mut StepCx<'_, H>) -> (Tran
         Ok(session) => session,
         Err(kind) => return (TransferState::Connecting(c).fail(kind), Wake::Again),
     };
+    // Who its sessions are kept for: the origin, through a connect-to's
+    // peer if any (`cf_ssl_peer_init`).
+    let via = c.route.via.as_deref();
+    let kept_for = match SessionPeer::new(identity, &c.route.origin, via, backend.id()) {
+        Ok(p) => p,
+        Err(OutOfMemory) => {
+            return (
+                TransferState::Connecting(c).fail(ErrorKind::OutOfMemory),
+                Wake::Again,
+            );
+        }
+    };
     let stream = c.lease.dialed().stream();
     let pushed = stream
-        .push_over_received(|early| TlsLayer::boxed(session, early))
+        .push_over_received(|early| TlsLayer::boxed(session, early, kept_for))
         .and_then(|()| try_box(Handshake::Tls));
     match pushed {
         Ok(h) => {

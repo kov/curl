@@ -12,7 +12,7 @@ use super::io::{Events, Recv, Sent};
 use super::layer::{Below, Handshake, Layer, LayerAnswer, LayerCx, LayerQuery};
 use crate::components::Component;
 use crate::error::ErrorKind;
-use crate::tls::{TlsIo, TlsSession, TlsWait};
+use crate::tls::{SessionPeer, TlsIo, TlsSession, TlsWait};
 
 pub(crate) struct TlsLayer {
     session: Box<dyn TlsSession>,
@@ -20,16 +20,23 @@ pub(crate) struct TlsLayer {
     /// after a proxy's answer: the peer's first bytes, read before any
     /// from below.
     early: Vec<u8>,
+    /// Who the session's tickets are kept for.
+    peer: SessionPeer,
 }
 
 impl TlsLayer {
     /// The layer over a connection that received `early` and has not
-    /// used it.
+    /// used it, its sessions kept for `peer`.
     pub(crate) fn boxed(
         session: Box<dyn TlsSession>,
         early: Vec<u8>,
+        peer: SessionPeer,
     ) -> Result<Box<dyn Layer>, OutOfMemory> {
-        Ok(try_box(TlsLayer { session, early })?)
+        Ok(try_box(TlsLayer {
+            session,
+            early,
+            peer,
+        })?)
     }
 
     /// The session, and what it reaches for one call.
@@ -38,8 +45,13 @@ impl TlsLayer {
         cx: &'a mut dyn LayerCx,
         below: Below<'a>,
     ) -> (&'a mut dyn TlsSession, TlsIo<'a>) {
-        let TlsLayer { session, early } = self;
-        (&mut **session, TlsIo::new(below, cx, early, Component::Ssl))
+        let TlsLayer {
+            session,
+            early,
+            peer,
+        } = self;
+        let io = TlsIo::new(below, cx, early, Component::Ssl, peer);
+        (&mut **session, io)
     }
 }
 
@@ -47,6 +59,7 @@ impl fmt::Debug for TlsLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TlsLayer")
             .field("early", &self.early.len())
+            .field("peer", &self.peer)
             .finish_non_exhaustive()
     }
 }
@@ -143,7 +156,8 @@ mod tests {
             .with_conversation(at, Conversation::new(b"", false));
         let socket = crate::conn::io::dial(&mut net, at);
         let pending = |session: Holding, early: &[u8]| {
-            let layer = TlsLayer::boxed(try_box(session).unwrap(), early.to_vec()).unwrap();
+            let peer = crate::tls::SessionPeer::testing();
+            let layer = TlsLayer::boxed(try_box(session).unwrap(), early.to_vec(), peer).unwrap();
             let mut layers = [layer];
             let (top, rest) = layers.split_last_mut().unwrap();
             top.data_pending(Below::new(rest, &*socket))
@@ -152,7 +166,9 @@ mod tests {
         assert!(pending(Holding(true, TlsWait::Nothing), b""));
         assert!(pending(Holding(false, TlsWait::Nothing), b"early"));
         let waits = |w| {
-            let layer = TlsLayer::boxed(try_box(Holding(false, w)).unwrap(), Vec::new()).unwrap();
+            let peer = crate::tls::SessionPeer::testing();
+            let layer =
+                TlsLayer::boxed(try_box(Holding(false, w)).unwrap(), Vec::new(), peer).unwrap();
             layer.adjust_pollset(Events::IN)
         };
         assert_eq!(waits(TlsWait::Nothing), Events::IN);

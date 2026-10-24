@@ -207,7 +207,10 @@ const _: ffi::proto::curl_share_setopt = curl_share_setopt;
 /// Start or stop sharing `data`, as this build can.
 fn kind(sh: &ShimShare, data: curl_lock_data, on: bool) -> CURLSHcode {
     match data {
-        ffi::CURL_LOCK_DATA_DNS | ffi::CURL_LOCK_DATA_CONNECT | ffi::CURL_LOCK_DATA_COOKIE => {
+        ffi::CURL_LOCK_DATA_DNS
+        | ffi::CURL_LOCK_DATA_CONNECT
+        | ffi::CURL_LOCK_DATA_COOKIE
+        | ffi::CURL_LOCK_DATA_SSL_SESSION => {
             let kind = core_kind(data).expect("one the core keeps");
             let kept = match on {
                 true => sh.core.keep(kind),
@@ -219,8 +222,8 @@ fn kind(sh: &ShimShare, data: curl_lock_data, on: bool) -> CURLSHcode {
         // Each handle loads its own list; sharing it changes nothing a
         // transfer can see.
         ffi::CURL_LOCK_DATA_PSL if on => CURLSHE_OK,
-        // HSTS and TLS sessions are not built in yet.
-        ffi::CURL_LOCK_DATA_HSTS | ffi::CURL_LOCK_DATA_SSL_SESSION => ffi::CURLSHE_NOT_BUILT_IN,
+        // HSTS is not built in yet.
+        ffi::CURL_LOCK_DATA_HSTS => ffi::CURLSHE_NOT_BUILT_IN,
         _ => CURLSHE_BAD_OPTION,
     }
 }
@@ -231,6 +234,7 @@ fn core_kind(data: curl_lock_data) -> Option<Kind> {
         ffi::CURL_LOCK_DATA_CONNECT => Some(Kind::Connections),
         ffi::CURL_LOCK_DATA_DNS => Some(Kind::Names),
         ffi::CURL_LOCK_DATA_COOKIE => Some(Kind::Cookies),
+        ffi::CURL_LOCK_DATA_SSL_SESSION => Some(Kind::SslSessions),
         _ => None,
     }
 }
@@ -250,6 +254,7 @@ fn lock_data(kind: Kind) -> curl_lock_data {
         Kind::Connections => ffi::CURL_LOCK_DATA_CONNECT,
         Kind::Names => ffi::CURL_LOCK_DATA_DNS,
         Kind::Cookies => ffi::CURL_LOCK_DATA_COOKIE,
+        Kind::SslSessions => ffi::CURL_LOCK_DATA_SSL_SESSION,
     }
 }
 

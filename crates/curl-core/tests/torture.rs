@@ -825,9 +825,10 @@ fn an_https_get_takes_no_refusal_for_success() {
 /// the connection), the handshake under way, the library's session, its
 /// layer, the stream's layer stack and its list, and the multi's
 /// `TlsShared` with the fake's state boxed in it, made with the multi's
-/// first session. The fake's session is one box; a real library's own
-/// memory is its own.
-const HTTPS_FAKE_GET_BUDGET: u64 = GET_BUDGET + 8;
+/// first session; and the key the connection's TLS sessions are kept
+/// by, which the fake keeps none under. The fake's session is one box; a
+/// real library's own memory is its own.
+const HTTPS_FAKE_GET_BUDGET: u64 = GET_BUDGET + 9;
 
 fn an_https_get_stays_within_its_allocation_budget() {
     fake_tls();

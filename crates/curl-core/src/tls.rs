@@ -27,8 +27,13 @@ use crate::report::CertInfo;
 use crate::time::Instant;
 
 pub use crate::conn::layer::Handshake;
+pub(crate) use cache::SessionCache;
+pub use cache::{SessionPeer, TLS1_3, TlsTicket};
+pub use keylog::KeyLog;
 pub use pin::pin_peer_pubkey;
 
+mod cache;
+mod keylog;
 mod pin;
 
 /// A test double: a TLS library of text lines and scrambled records.
@@ -56,6 +61,10 @@ pub trait TlsBackend: Send + Sync {
     /// Where it finds the certificates to trust when a transfer names
     /// none, as its build found them.
     fn ca_defaults(&self) -> CaDefaults;
+
+    /// Its name and version, as a session's key in the cache names the
+    /// library (`ssl_impl->version`): `OpenSSL/3.5.9`.
+    fn id(&self) -> &dyn fmt::Display;
 
     /// The ids of the crypto engines it has (`Curl_ssl_engines_list`):
     /// none for a library without engines.
@@ -319,6 +328,8 @@ pub struct TlsIo<'a> {
     cx: &'a mut dyn LayerCx,
     early: &'a mut Vec<u8>,
     component: Component,
+    /// Who the connection's sessions are kept for.
+    peer: &'a SessionPeer,
 }
 
 impl TlsIo<'_> {
@@ -439,6 +450,71 @@ impl TlsIo<'_> {
         self.cx.pause_recv();
     }
 
+    /// The time of day, in seconds since 1970 (`time(NULL)`), which a
+    /// session's lifetime counts from.
+    pub fn unix_time(&self) -> i64 {
+        self.cx.unix_time()
+    }
+
+    /// The transfer has a cache of sessions and the connection keeps its
+    /// own there (`Curl_ssl_scache_use`).
+    pub fn caches_sessions(&self) -> bool {
+        self.cx.has_tls_sessions() && self.peer.caches()
+    }
+
+    /// A session to resume, taken from the transfer's cache
+    /// (`Curl_ssl_scache_take`).
+    pub fn take_session(&mut self) -> Option<TlsTicket> {
+        let now = self.cx.unix_time();
+        let peer = self.peer;
+        let mut taken = None;
+        self.cx.tls_sessions(&mut |cache, cx| {
+            taken = cache.take(peer, now, &mut |line| cx.of(Component::Ssls, line));
+        });
+        taken
+    }
+
+    /// Keep `ticket` in the transfer's cache, if the connection keeps its
+    /// sessions (`Curl_ssl_scache_put`). Out of memory, it is said, and
+    /// the transfer goes on without it.
+    pub fn keep_session(&mut self, ticket: TlsTicket) {
+        if !self.peer.caches() {
+            return;
+        }
+        let now = self.cx.unix_time();
+        let peer = self.peer;
+        let mut ticket = Some(ticket);
+        self.cx.tls_sessions(&mut |cache, cx| {
+            let ticket = ticket.take().expect("called once");
+            let kept = cache.put(peer, ticket, now, &mut |line| cx.of(Component::Ssls, line));
+            if kept.is_err() {
+                let key = cache::Shown(peer.key());
+                cx.fails(
+                    ErrorKind::OutOfMemory,
+                    format_args!("[SCACHE] failed to add session for {key}, error=27"),
+                );
+            }
+        });
+    }
+
+    /// Give back a session taken that was not resumed, or was: one before
+    /// TLS 1.3 is kept again, one of TLS 1.3 dropped, as a ticket is not to
+    /// serve two connections (RFC 8446 C.4, `Curl_ssl_scache_return`).
+    pub fn return_session(&mut self, ticket: Option<TlsTicket>) {
+        if let Some(t) = ticket.filter(|t| t.version < TLS1_3) {
+            self.keep_session(t);
+        }
+    }
+
+    /// Forget the sessions kept for the connection's peer, as its check
+    /// failed (`Curl_ssl_scache_remove_all`).
+    pub fn forget_sessions(&mut self) {
+        let peer = self.peer;
+        self.cx.tls_sessions(&mut |cache, cx| {
+            cache.remove_all(peer, &mut |line| cx.of(Component::Ssls, line));
+        });
+    }
+
     /// The connection below seems usable: the peer has not closed it
     /// (`is_alive` of the filter below).
     pub fn peer_alive(&mut self) -> bool {
@@ -455,12 +531,14 @@ impl<'a> TlsIo<'a> {
         cx: &'a mut dyn LayerCx,
         early: &'a mut Vec<u8>,
         component: Component,
+        peer: &'a SessionPeer,
     ) -> TlsIo<'a> {
         TlsIo {
             below,
             cx,
             early,
             component,
+            peer,
         }
     }
 }
@@ -574,6 +652,9 @@ impl PartialEq for TlsIdentity {
             // as the context is made.
             engine: _,
             engine_default: _,
+            // The connection's, but C matches no connection by it: a
+            // transfer that keeps no session may reuse one that does.
+            session_cache: _,
             // The handle's, called as the context is made; the identity
             // holds none.
             context: _,

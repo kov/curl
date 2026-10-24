@@ -46,8 +46,8 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
   store.
 - `crates/curl-openssl/src/ocsp.rs`: the peer's stapled certificate status.
 - `crates/curl-openssl/src/ffi.rs`: the OpenSSL functions openssl-sys does not declare.
-- `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, and
-  its trace of the records.
+- `crates/curl-openssl/src/bio.rs`: the BIO OpenSSL reads and writes a connection through, its
+  trace of the records, and the callbacks that keep its sessions and log its keys.
 - `crates/curl-openssl/src/ssl.rs`: OpenSSL's TLS session: the context, the handshake, the
   records both ways.
 - `crates/curl-openssl/src/x509.rs`: the certificates a session trusts, and the peer's checked.
@@ -57,8 +57,9 @@ Allowed to use unsafe, each opting in with `#![allow(unsafe_code)]`:
 - `crates/curl-os/src/error.rs`: the text of an operating-system error, `strerror_r` into a
   buffer on the stack.
 - `crates/curl-os/src/fs.rs`: opening and closing files, a file's status, removing, renaming
-  and setting the times of files by name, making and listing directories, reading standard
-  input unbuffered, making a file's reads nonblocking, and pointing standard error at a file.
+  and setting the times of files by name, resolving a name to its absolute path, making and
+  listing directories, reading standard input unbuffered, making a file's reads nonblocking,
+  and pointing standard error at a file.
 - `crates/curl-os/src/net.rs`: opening, setting and connecting sockets, and adopting one the
   application opened.
 - `crates/curl-os/src/poll.rs`: `poll(2)`.

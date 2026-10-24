@@ -488,7 +488,10 @@ impl Easy {
                     arena: ArenaPolicy::new(16, 0).expect("a valid policy"),
                     waker,
                 };
-                try_box(Multi::new(env).map_err(oom)?).map_err(oom)?
+                let mut multi = try_box(Multi::new(env).map_err(oom)?).map_err(oom)?;
+                // As few TLS peers as C's `multi_easy` keeps.
+                multi.keep_tls_sessions_of(crate::tls::SessionCache::PERFORM_PEERS);
+                multi
             }
         };
         let result = self.perform_in(&mut multi, drive);

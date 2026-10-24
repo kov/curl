@@ -3926,7 +3926,7 @@ fn a_share_is_held_and_locked_as_in_c() {
         (ffi::CURL_LOCK_DATA_CONNECT, ffi::CURLSHE_OK),
         (ffi::CURL_LOCK_DATA_PSL, ffi::CURLSHE_OK),
         (ffi::CURL_LOCK_DATA_HSTS, ffi::CURLSHE_NOT_BUILT_IN),
-        (ffi::CURL_LOCK_DATA_SSL_SESSION, ffi::CURLSHE_NOT_BUILT_IN),
+        (ffi::CURL_LOCK_DATA_SSL_SESSION, ffi::CURLSHE_OK),
         (ffi::CURL_LOCK_DATA_SHARE, ffi::CURLSHE_BAD_OPTION),
         (ffi::CURL_LOCK_DATA_LAST, ffi::CURLSHE_BAD_OPTION),
     ] {

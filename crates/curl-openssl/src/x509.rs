@@ -782,11 +782,13 @@ pub(crate) fn check_peer(
     identity: &TlsIdentity,
     host: &[u8],
     kind: TlsPeerKind,
+    reused: bool,
     io: &mut TlsIo<'_>,
 ) -> Result<c_long, ErrorKind> {
-    // Session resumption (43h) is to skip this for a resumed session,
-    // whose chain is not sent.
-    crate::certinfo::report(ssl, io)?;
+    // A resumed session's chain is not sent again.
+    if !reused {
+        crate::certinfo::report(ssl, io)?;
+    }
     // SAFETY: the session's SSL; a reference to the certificate, freed
     // as `cert` goes.
     let cert = NonNull::new(unsafe { openssl_sys::SSL_get1_peer_certificate(ssl.as_ptr()) });
@@ -830,8 +832,8 @@ pub(crate) fn check_peer(
         ));
     }
     // C checks the status of a new session only: a resumed one carries
-    // none. Sessions are not resumed until the cache (43h) skips it.
-    if identity.options.verify_status {
+    // none.
+    if identity.options.verify_status && !reused {
         // SAFETY: the session's SSL; its context is its own.
         let ctx = NonNull::new(unsafe { openssl_sys::SSL_get_SSL_CTX(ssl.as_ptr()) });
         crate::ocsp::check(ssl, ctx.expect("an SSL's context"), io)?;

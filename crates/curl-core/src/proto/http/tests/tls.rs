@@ -551,6 +551,10 @@ impl crate::tls::TlsBackend for Saying {
     fn ca_defaults(&self) -> crate::tls::CaDefaults {
         crate::tls::CaDefaults::default()
     }
+
+    fn id(&self) -> &dyn std::fmt::Display {
+        &"Saying/1"
+    }
 }
 
 struct SayingSession;
@@ -784,4 +788,168 @@ fn a_body_longer_than_a_record_goes_as_many() {
         String::from_utf8_lossy(&sent)
     );
     assert!(!talk.received().ends_with(&body[..1000]), "in the clear");
+}
+
+/// A fake TLS library that resumes tickets and gives them, and the
+/// libraries naming it.
+fn ticketing() -> (&'static FakeTls, &'static Libraries) {
+    let backend: &'static FakeTls = Box::leak(Box::new(FakeTls::ticketing().unwrap()));
+    let libraries = Box::leak(Box::new(Libraries {
+        tls: Some(backend),
+        ..Libraries::NONE
+    }));
+    (backend, libraries)
+}
+
+/// `n` connections a server answers with its handshake and one OK each.
+fn answering(n: usize) -> Vec<Conversation> {
+    let [welcome, response] = served(OK);
+    (0..n)
+        .map(|_| Conversation::replies(&[&welcome, &response], false))
+        .collect()
+}
+
+/// A multi keeps the sessions its connections are given: the next
+/// connection to the peer with the same settings resumes one; one made
+/// with other settings, or one keeping no sessions
+/// (`CURLOPT_SSL_SESSIONID_CACHE` off), does not.
+#[test]
+fn the_next_connection_to_a_peer_resumes_a_session_its_multi_kept() {
+    let (backend, libraries) = ticketing();
+    let talks = answering(5);
+    let refs: Vec<&Conversation> = talks.iter().collect();
+    let mut m = serving(Peer::Accepts, &refs);
+    let fresh = |o: &mut Options| o.limits.reuse.fresh = true;
+    let run = |m: &mut Multi, i: usize, set: &dyn Fn(&mut Options)| {
+        let got = get_tls(m, libraries, "/", talks[i].clone(), |o| {
+            fresh(o);
+            set(o);
+        });
+        assert_eq!(got.result, Ok(()));
+        backend.log().resumed
+    };
+    let no_cache = |o: &mut Options| o.tls.options.make_mut().unwrap().session_cache = false;
+    assert_eq!(run(&mut m, 0, &no_cache), 0, "keeping none: none kept");
+    assert_eq!(run(&mut m, 1, &|_| {}), 0, "none kept by the first");
+    assert_eq!(run(&mut m, 2, &|_| {}), 1, "the second's resumed");
+    let ciphers = |o: &mut Options| o.tls.options.make_mut().unwrap().ciphers = Some(b"X".to_vec());
+    assert_eq!(run(&mut m, 3, &ciphers), 1, "other settings: none");
+    assert_eq!(run(&mut m, 4, &no_cache), 1, "keeping none: none taken");
+}
+
+/// The cache traces what it does under `ssls`, as C traces it.
+#[test]
+fn the_session_cache_traces_its_uses() {
+    let (_, libraries) = ticketing();
+    let talks = answering(2);
+    let mut m = serving(Peer::Accepts, &[&talks[0], &talks[1]]);
+    let traced = |o: &mut Options| o.limits.reuse.fresh = true;
+    let mut lines = Vec::new();
+    for talk in &talks {
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"ssls");
+        e.set_components(Some(c));
+        let got = get_with(&mut m, e, "/", talk.clone(), |o| {
+            let url = format!("https://127.0.0.1:{PORT}/");
+            o.set_url(Some(url.as_bytes())).unwrap();
+            traced(o);
+        });
+        assert_eq!(got.result, Ok(()));
+        lines.extend(
+            got.seen
+                .text()
+                .into_iter()
+                .filter(|l| l.starts_with("[SSLS] "))
+                .map(|l| l.trim_end().to_owned()),
+        );
+    }
+    let key = format!(
+        "https:127.0.0.1:{PORT}:KEY-V3:TLSVER-6-0:CA-19:/fake/ca-bundle.crt:IMPL-11:FakeTLS/1.0:G"
+    );
+    let want = [
+        format!("[SSLS] find peer slot for {key} among 25 slots"),
+        format!("[SSLS] peer not found for {key}"),
+        format!("[SSLS] no cached session for {key}"),
+        format!("[SSLS] find peer slot for {key} among 25 slots"),
+        format!("[SSLS] peer not found for {key}"),
+        format!(
+            "[SSLS] added session for {key} [proto=0x304, valid_secs=7200, alpn=(nil), \
+             earlydata=0, quic_tp=no], peer has 1 sessions now"
+        ),
+        format!("[SSLS] find peer slot for {key} among 25 slots"),
+        format!(
+            "[SSLS] took session for {key} [proto=0x304, alpn=(nil), earlydata=0, \
+             quic_tp=no], 0 sessions remain"
+        ),
+        format!("[SSLS] find peer slot for {key} among 25 slots"),
+        format!(
+            "[SSLS] added session for {key} [proto=0x304, valid_secs=7200, alpn=(nil), \
+             earlydata=0, quic_tp=no], peer has 1 sessions now"
+        ),
+    ];
+    assert_eq!(lines, want);
+}
+
+/// A share keeping TLS sessions serves them to the transfers of every
+/// multi it is given to, in place of each multi's own, the application
+/// told around each use; one keeping none leaves each multi its own.
+#[test]
+fn a_share_keeping_sessions_serves_them_across_multis() {
+    use crate::share::{Kind, Share, Told};
+    let (backend, libraries) = ticketing();
+    let share = Share::new().unwrap();
+    share.keep(Kind::SslSessions).unwrap();
+    let told = Told::new(&share);
+    let talks = answering(4);
+    for (i, talk) in talks[..2].iter().enumerate() {
+        let mut m = serving(Peer::Accepts, &[talk]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        e.set_share_watched(share.clone(), told.handler());
+        let c = crate::components::Components::new().unwrap();
+        c.configure(b"ssls");
+        e.set_components(Some(c));
+        let got = get_with(&mut m, e, "/", talk.clone(), |o| {
+            let url = format!("https://127.0.0.1:{PORT}/");
+            o.set_url(Some(url.as_bytes())).unwrap();
+        });
+        assert_eq!(got.result, Ok(()));
+        // What the cache says under the share's lock is said after it.
+        let said = got.seen.text();
+        let added = said
+            .iter()
+            .filter(|l| l.starts_with("[SSLS] added session for "));
+        assert_eq!(added.count(), 1, "{said:#?}");
+        let took = said
+            .iter()
+            .filter(|l| l.starts_with("[SSLS] took session for "));
+        assert_eq!(took.count(), i, "{said:#?}");
+        assert_eq!(
+            backend.log().resumed,
+            i,
+            "the share's kept for the next multi"
+        );
+    }
+    // Each transfer took one, then gave one.
+    let s = Kind::SslSessions;
+    assert_eq!(told.uses(), [s, s, s, s]);
+    let other = Share::new().unwrap();
+    for talk in &talks[2..] {
+        let mut m = serving(Peer::Accepts, &[talk]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        e.set_share(Some(other.clone()));
+        let got = get_with(&mut m, e, "/", talk.clone(), |o| {
+            let url = format!("https://127.0.0.1:{PORT}/");
+            o.set_url(Some(url.as_bytes())).unwrap();
+        });
+        assert_eq!(got.result, Ok(()));
+    }
+    assert_eq!(
+        backend.log().resumed,
+        1,
+        "each multi its own, none kept between"
+    );
 }

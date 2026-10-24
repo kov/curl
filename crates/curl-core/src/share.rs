@@ -1,7 +1,7 @@
-//! The share: connections, resolved names and cookies kept for every
-//! transfer given it, whichever handle and thread runs them (`CURLSH`,
-//! with `CURL_LOCK_DATA_CONNECT`, `CURL_LOCK_DATA_DNS` and
-//! `CURL_LOCK_DATA_COOKIE`).
+//! The share: connections, resolved names, cookies and TLS sessions kept
+//! for every transfer given it, whichever handle and thread runs them
+//! (`CURLSH`, with `CURL_LOCK_DATA_CONNECT`, `CURL_LOCK_DATA_DNS`,
+//! `CURL_LOCK_DATA_COOKIE` and `CURL_LOCK_DATA_SSL_SESSION`).
 //!
 //! Each kind of data it keeps has a lock of its own, held for one use of
 //! it at a time (a search for a connection, a lookup, a cookie stored) and
@@ -21,6 +21,7 @@ use crate::conn::io::{Net, SystemNet};
 use crate::conn::shutdown::NoSet;
 use crate::conn::{DnsCache, Pool};
 use crate::cookie::Jar;
+use crate::tls::SessionCache;
 
 /// A kind of data a share may keep (`curl_lock_data`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +32,8 @@ pub enum Kind {
     Names,
     /// Cookies (`CURL_LOCK_DATA_COOKIE`).
     Cookies,
+    /// TLS sessions to resume (`CURL_LOCK_DATA_SSL_SESSION`).
+    SslSessions,
 }
 
 impl Kind {
@@ -39,6 +42,7 @@ impl Kind {
             Kind::Connections => 1,
             Kind::Names => 2,
             Kind::Cookies => 4,
+            Kind::SslSessions => 8,
         }
     }
 }
@@ -63,6 +67,8 @@ struct Inner {
     dns: Mutex<DnsCache>,
     /// The jar, made when cookies are first kept.
     cookies: Mutex<Option<Jar>>,
+    /// The TLS sessions, a cache made when they are first kept.
+    sessions: Mutex<Option<SessionCache>>,
     /// What the connections left idle at the end are closed through, as
     /// C's share closes them through its own internal handle.
     net: Mutex<Box<dyn Net + Send>>,
@@ -85,6 +91,7 @@ impl Share {
             pool: Mutex::new(Pool::new()?),
             dns: Mutex::new(DnsCache::default()),
             cookies: Mutex::new(None),
+            sessions: Mutex::new(None),
             net: Mutex::new(net),
         })?))
     }
@@ -92,7 +99,8 @@ impl Share {
     /// Keep `kind` for the transfers given the share from now on
     /// (`CURLSHOPT_SHARE`): cookies in one jar for them all, each
     /// transfer whose own options turn its jar on using the share's in
-    /// its place.
+    /// its place; TLS sessions in a cache of 25 peers, in place of each
+    /// transfer's multi's.
     pub fn keep(&self, kind: Kind) -> Result<(), InUse> {
         self.idle()?;
         if kind == Kind::Cookies {
@@ -101,16 +109,26 @@ impl Share {
                 *jar = Some(Jar::default());
             }
         }
+        if kind == Kind::SslSessions {
+            let mut sessions = lock(&self.0.sessions);
+            if sessions.is_none() {
+                *sessions = Some(SessionCache::new(SessionCache::PEERS));
+            }
+        }
         self.0.keeps.fetch_or(kind.bit(), Ordering::Relaxed);
         Ok(())
     }
 
     /// Keep `kind` no more (`CURLSHOPT_UNSHARE`), forgetting the cookies
-    /// kept; connections and names stay until the share goes, as C's do.
+    /// or TLS sessions kept; connections and names stay until the share
+    /// goes, as C's do.
     pub fn stop_keeping(&self, kind: Kind) -> Result<(), InUse> {
         self.idle()?;
         if kind == Kind::Cookies {
             *lock(&self.0.cookies) = None;
+        }
+        if kind == Kind::SslSessions {
+            *lock(&self.0.sessions) = None;
         }
         self.0.keeps.fetch_and(!kind.bit(), Ordering::Relaxed);
         Ok(())
@@ -158,6 +176,11 @@ impl Share {
     /// The jar, locked; none if the share keeps no cookies.
     pub(crate) fn cookies(&self) -> MutexGuard<'_, Option<Jar>> {
         lock(&self.0.cookies)
+    }
+
+    /// The TLS sessions, locked; none if the share keeps none.
+    pub(crate) fn sessions(&self) -> MutexGuard<'_, Option<SessionCache>> {
+        lock(&self.0.sessions)
     }
 }
 
@@ -243,7 +266,8 @@ impl Told {
         let inner = &self.share.0;
         let free = inner.pool.try_lock().is_ok()
             && inner.dns.try_lock().is_ok()
-            && inner.cookies.try_lock().is_ok();
+            && inner.cookies.try_lock().is_ok()
+            && inner.sessions.try_lock().is_ok();
         assert!(free, "told of {kind:?} under the share's own lock");
         lock(&self.told).push((locked, kind));
     }
@@ -296,6 +320,10 @@ mod tests {
         share.stop_keeping(Kind::Cookies).unwrap();
         assert!(!share.keeps(Kind::Cookies));
         assert!(share.cookies().is_none(), "the jar forgotten");
+        share.keep(Kind::SslSessions).unwrap();
+        assert!(share.sessions().is_some(), "a cache made for them");
+        share.stop_keeping(Kind::SslSessions).unwrap();
+        assert!(share.sessions().is_none(), "the sessions forgotten");
         assert_eq!(format!("{share:?}"), "Share");
     }
 }

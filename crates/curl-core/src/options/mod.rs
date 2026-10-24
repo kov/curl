@@ -1964,6 +1964,10 @@ pub struct TlsOptions {
     /// `alpn`.
     pub engine: Option<Vec<u8>>,
     pub engine_default: bool,
+    /// The sessions of its connections are kept to resume, and one kept
+    /// is resumed (`CURLOPT_SSL_SESSIONID_CACHE`). The connection's, as C
+    /// keeps it in the TLS settings, but not compared for reuse.
+    pub session_cache: bool,
     /// Told of each context a connection's TLS is made with
     /// (`CURLOPT_SSL_CTX_FUNCTION`). The handle's, as `alpn`.
     pub context: Option<Handler<dyn TlsContextHandler>>,
@@ -2016,6 +2020,7 @@ impl ColdGroup for TlsOptions {
         ca_cache: CaCache::DEFAULT,
         engine: None,
         engine_default: false,
+        session_cache: true,
         context: None,
     };
 }
@@ -2051,6 +2056,7 @@ impl TlsOptions {
             ca_cache,
             engine,
             engine_default,
+            session_cache,
             context,
         } = self;
         Ok(TlsOptions {
@@ -2080,6 +2086,7 @@ impl TlsOptions {
             ca_cache: *ca_cache,
             engine: text(engine)?,
             engine_default: *engine_default,
+            session_cache: *session_cache,
             context: context.clone(),
         })
     }
@@ -2162,6 +2169,11 @@ impl SslOptions {
     /// build acts on it.
     pub const fn from_bits(bits: u8) -> SslOptions {
         SslOptions(bits)
+    }
+
+    /// The bits, as C numbers them (`CURLSSLOPT_*`).
+    pub const fn bits(self) -> u8 {
+        self.0
     }
 
     /// Every bit of `other` is set.

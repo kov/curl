@@ -17,11 +17,11 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Chosen, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer,
-    TlsPeerKind, TlsSession, TlsShared, TlsWait,
+    Alpn, CaDefaults, Chosen, Handshake, KeyLog, TlsBackend, TlsIdentity, TlsIo, TlsNative,
+    TlsPeer, TlsPeerKind, TlsSession, TlsShared, TlsTicket, TlsWait,
 };
 use curl_os::error::ErrorText;
-use openssl_sys::{SSL, SSL_CTX};
+use openssl_sys::{SSL, SSL_CTX, SSL_SESSION};
 
 use crate::bio::{self, Below, Flags, Method, Slot};
 use crate::engine::Crypto;
@@ -34,14 +34,40 @@ mod ca {
     include!(concat!(env!("OUT_DIR"), "/ca.rs"));
 }
 
-/// OpenSSL, as the core's TLS library.
+/// OpenSSL, as the core's TLS library, logging the secrets of its
+/// connections to a key log if it is given one.
 #[derive(Debug)]
-pub struct OpenSsl(());
+pub struct OpenSsl {
+    keylog: Option<&'static KeyLog>,
+}
 
-/// The one OpenSSL.
-pub static OPENSSL: OpenSsl = OpenSsl(());
+/// OpenSSL, logging no secrets.
+pub static OPENSSL: OpenSsl = OpenSsl { keylog: None };
+
+impl OpenSsl {
+    /// OpenSSL logging the secrets of its connections to `keylog`
+    /// (`SSLKEYLOGFILE`) while it is open.
+    pub const fn logging_keys_to(keylog: &'static KeyLog) -> OpenSsl {
+        OpenSsl {
+            keylog: Some(keylog),
+        }
+    }
+}
+
+/// The library's name and version, as `version` says it.
+struct Id;
+
+impl core::fmt::Display for Id {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", crate::sys::version())
+    }
+}
 
 impl TlsBackend for OpenSsl {
+    fn id(&self) -> &dyn core::fmt::Display {
+        &Id
+    }
+
     fn session(
         &self,
         identity: &TryArc<TlsIdentity>,
@@ -72,6 +98,8 @@ impl TlsBackend for OpenSsl {
             waits: TlsWait::Nothing,
             blocked_write: None,
             shut: false,
+            keylog: self.keylog,
+            reused: false,
         };
         Ok(try_box(session).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?)
     }
@@ -164,6 +192,11 @@ struct Session {
     blocked_write: Option<c_int>,
     /// The goodbye is over, or failed (the filter's `shutdown`).
     shut: bool,
+    /// Where the secrets are logged, if anywhere.
+    keylog: Option<&'static KeyLog>,
+    /// The handshake resumes a session the cache kept
+    /// (`reused_session`).
+    reused: bool,
 }
 
 /// The library's major error codes C tells apart.
@@ -245,6 +278,7 @@ impl Session {
             flags: &mut self.flags,
             below: Below::Ok,
             store: &mut setup,
+            keylog: self.keylog,
         };
         let r = bio::call(ssl, &mut slot, op);
         (r, slot.below)
@@ -422,6 +456,20 @@ impl Session {
         unsafe {
             openssl_sys::SSL_CTX_set_verify(ctx.as_ptr(), openssl_sys::SSL_VERIFY_NONE, None)
         };
+        if self.keylog.is_some_and(KeyLog::enabled) {
+            // SAFETY: the context, and a callback of the library's
+            // signature, which reaches only the BIO's slot.
+            unsafe { openssl_sys::SSL_CTX_set_keylog_callback(c, Some(bio::keylog_line)) };
+        }
+        // The sessions the peer gives are told of, and kept by the
+        // transfer's cache alone, none in the context's
+        // (`SSL_SESS_CACHE_NO_INTERNAL`).
+        let mode = openssl_sys::SSL_SESS_CACHE_CLIENT | openssl_sys::SSL_SESS_CACHE_NO_INTERNAL;
+        // SAFETY: the context, and a plain value.
+        unsafe { openssl_sys::SSL_CTX_set_session_cache_mode(c, mode) };
+        // SAFETY: the context, and a callback of the library's signature,
+        // which reaches only the BIO's slot.
+        unsafe { openssl_sys::SSL_CTX_sess_set_new_cb(c, Some(bio::new_session)) };
         // The application's turn at the context (`ssl_fsslctx`), made
         // whole first, its trust store too (C's #11800).
         if io.configures_context() {
@@ -467,6 +515,17 @@ impl Session {
                     return Err(io.fail(ErrorKind::SslConnectError, format_args!("Failed set SNI")));
                 }
             }
+        }
+        // A session the cache kept for the peer is resumed, unless the
+        // peer's status is to be checked, which a resumed one would not
+        // send (`ossl_init_session_and_alpns`).
+        self.reused = false;
+        if io.caches_sessions() && !options.verify_status {
+            let taken = io.take_session();
+            if let Some(t) = taken.as_ref().filter(|t| !t.data.is_empty()) {
+                self.resume(ssl, t, io);
+            }
+            io.return_session(taken);
         }
         let wire = self.alpn.wire();
         if !wire.is_empty() {
@@ -690,6 +749,109 @@ impl Session {
     }
 }
 
+impl Session {
+    /// Resume `ticket` on `ssl`, if the library takes it and, for a peer
+    /// to verify, its connection was verified (`ossl_apply_session`).
+    fn resume(&mut self, ssl: NonNull<SSL>, ticket: &TlsTicket, io: &mut TlsIo<'_>) {
+        let mut der = ticket.data.as_ptr();
+        let len = c_long::try_from(ticket.data.len()).unwrap_or(c_long::MAX);
+        // SAFETY: `len` bytes at `der`, the ticket's; the session made is
+        // this function's, freed below.
+        let session = unsafe { openssl_sys::d2i_SSL_SESSION(ptr::null_mut(), &mut der, len) };
+        if session.is_null() {
+            io.info(format_args!(
+                "SSL session not accepted by OpenSSL, continuing without"
+            ));
+            return;
+        }
+        let s = ssl.as_ptr();
+        // SAFETY: the SSL and the session, which it takes a reference to.
+        if unsafe { openssl_sys::SSL_set_session(s, session) } == 0 {
+            // SAFETY: the thread's error queue, its earliest taken.
+            let e = ErrText::of(unsafe { openssl_sys::ERR_get_error() });
+            io.info(format_args!(
+                "SSL: SSL_set_session not accepted, continuing without: {e}"
+            ));
+        } else {
+            // SAFETY: the SSL, its session just set.
+            let verified = unsafe { openssl_sys::SSL_get_verify_result(s) };
+            if self.identity.verify_peer && verified != c_long::from(openssl_sys::X509_V_OK) {
+                // Made unverified: it cannot serve a peer to verify.
+                // SAFETY: the SSL; no session, its reference let go.
+                unsafe { openssl_sys::SSL_set_session(s, ptr::null_mut()) };
+                io.info(format_args!("SSL session not peer verified, not reusing"));
+            } else {
+                let alpn = ticket.alpn.map_or("-", Chosen::name);
+                io.info(format_args!("SSL reusing session with ALPN '{alpn}'"));
+                self.reused = true;
+                io.info(format_args!("SSL verify result: {verified:x}"));
+            }
+        }
+        // SAFETY: the session made above, the SSL holding its own
+        // reference if it took it.
+        unsafe { openssl_sys::SSL_SESSION_free(session) };
+    }
+}
+
+/// The session the library made, as the cache keeps it
+/// (`Curl_ossl_add_session`): its DER, the version of its connection, the
+/// protocol ALPN chose there, the early data it allows, and until when it
+/// is good, by the library's timeout from now.
+///
+/// # Safety
+/// `ssl` and `session` are the library's, alive for the call: a callback's.
+pub(crate) unsafe fn ticket_of(
+    ssl: *mut SSL,
+    session: *mut SSL_SESSION,
+    io: &TlsIo<'_>,
+) -> Result<TlsTicket, OutOfMemory> {
+    // SAFETY: as the caller says; no pointer, so only the length.
+    let len = unsafe { openssl_sys::i2d_SSL_SESSION(session, ptr::null_mut()) };
+    let len = usize::try_from(len)
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or(OutOfMemory)?;
+    let mut der: Vec<u8> = Vec::new();
+    der.try_reserve_exact(len)?;
+    let mut at = der.as_mut_ptr();
+    // SAFETY: room for the `len` bytes the call said it writes, at `at`.
+    let wrote = unsafe { openssl_sys::i2d_SSL_SESSION(session, &mut at) };
+    let wrote = usize::try_from(wrote).ok().filter(|&n| n > 0 && n <= len);
+    let wrote = wrote.ok_or(OutOfMemory)?;
+    // SAFETY: the call wrote `wrote` bytes from the start, within the room.
+    unsafe { der.set_len(wrote) };
+    // SAFETY: as the caller says.
+    let version = unsafe { openssl_sys::SSL_version(ssl) };
+    // SAFETY: as the caller says.
+    let early = unsafe { openssl_sys::SSL_SESSION_get_max_early_data(session) };
+    // SAFETY: as the caller says.
+    let timeout = unsafe { openssl_sys::SSL_SESSION_get_timeout(session) };
+    let mut proto: *const u8 = ptr::null();
+    let mut proto_len: u32 = 0;
+    // SAFETY: as the caller says; the protocol is the SSL's.
+    unsafe { openssl_sys::SSL_get0_alpn_selected(ssl, &mut proto, &mut proto_len) };
+    let alpn = match usize::try_from(proto_len) {
+        Ok(n) if n > 0 && !proto.is_null() => {
+            // SAFETY: `n` bytes at `proto`, the SSL's for the callback.
+            let name = unsafe { core::slice::from_raw_parts(proto, n) };
+            Chosen::named(name)
+        }
+        _ => None,
+    };
+    #[allow(
+        clippy::useless_conversion,
+        reason = "a `long` is 32 bits on some targets"
+    )]
+    let timeout = i64::from(timeout);
+    Ok(TlsTicket::new(
+        der,
+        u16::try_from(version).unwrap_or(0),
+        alpn,
+        usize::try_from(early).unwrap_or(usize::MAX),
+        io.unix_time().saturating_add(timeout),
+    ))
+}
+
 /// `SSL_ERROR_WANT_ASYNC`.
 const SSL_ERROR_WANT_ASYNC: c_int = 9;
 /// `SSL_ERROR_WANT_RETRY_VERIFY`, OpenSSL 3.0's.
@@ -750,9 +912,29 @@ impl TlsSession for Session {
             }
         }
         io.trace(format_args!("ossl_connect, step3"));
-        x509::check_peer(self.ssl(), &self.identity, &self.host, self.kind, io)?;
+        let checked = x509::check_peer(
+            self.ssl(),
+            &self.identity,
+            &self.host,
+            self.kind,
+            self.reused,
+            io,
+        );
+        if let Err(kind) = checked {
+            // The sessions kept for the peer go with it.
+            io.forget_sessions();
+            return Err(kind);
+        }
         self.step = Step::Done;
         io.trace(format_args!("ossl_connect, done"));
+        if let Some(log) = self.keylog {
+            log.with_name(|name| {
+                io.info(format_args!(
+                    "SSLKEYLOGFILE set, all TLS secrets are logged to '{}'",
+                    Text(name)
+                ));
+            });
+        }
         Ok(Handshake::Done)
     }
 

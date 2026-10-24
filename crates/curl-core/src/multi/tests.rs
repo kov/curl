@@ -3018,6 +3018,33 @@ fn a_transfer_can_refuse_to_share_its_connection() {
 /// A transfer that would pass the host limit waits, running not at all,
 /// until a connection is given back; then it looks again, and reuses it
 /// (`multistate_connect`, `multi_schedule_pending`).
+/// A transfer is numbered in the multi's trace as C numbers it: the first
+/// is mid 1, after C's internal handle, whether the table keeps its first
+/// row for that handle, as the C ABI's does, or not, as the Rust API's.
+#[test]
+fn transfers_are_numbered_as_c_numbers_them() {
+    for reserved in [0, 1] {
+        let clock = ManualClock::new().unwrap();
+        let env = Env {
+            clock: Box::new(clock.clone()),
+            net: Box::new(FakeNet::new(clock.clone())),
+            arena: ArenaPolicy::new(16, reserved).unwrap(),
+            waker: None,
+        };
+        let mut m: Multi = Multi::new(env).unwrap();
+        let (mut e, lines) = traced("null://x/");
+        let components = crate::components::Components::new().unwrap();
+        components.configure(b"multi");
+        e.set_components(Some(components));
+        m.add(Box::new(e), (), &mut NoEvents).unwrap();
+        assert_eq!(
+            trace_of(&lines),
+            ["[MULTI] [INIT] added to multi, mid=1, running=1, total=2\n"],
+            "{reserved} reserved"
+        );
+    }
+}
+
 /// A transfer let out of PENDING is in CONNECT at once, so the wait that
 /// follows collects its pollset, as C's `move_pending_to_connect` puts it
 /// in the process set. Removing the transfer holding a host's one

@@ -642,3 +642,11 @@ witness: curl-core proto::http::tests::the_plain_build_says_no_debug_lines
 --- new
     if true {
         info(cx, args);
+
+=== bytes traced with the ids are cut at a zero byte, as C's "%.*s" cuts them
+file: crates/curl-core/src/trace.rs
+witness: curl-core proto::http::tests::traced_bytes_with_the_ids_keep_a_zero_byte
+--- old
+        prefixed.push_clipped(bytes);
+--- new
+        prefixed.push_clipped(bytes.split(|&b| b == 0).next().unwrap_or_default());

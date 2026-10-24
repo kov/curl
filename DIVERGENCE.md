@@ -279,6 +279,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   gss_inquire_context failed: ...", then "Failed to determine username.", 97. Pinned by
   `the_stub_s_context_names_no_user` (`crates/curl-gssapi/tests/socks.rs`).
 
+## Traces C cuts short
+
+- **With the ids on, traced bytes reach the debug handler whole.** `Curl_debug`
+  (`lib/curl_trc.c`) writes the ids and then the bytes into one line with `"%.*s"` when the
+  two fit a trace line, so the handler sees them cut at their first zero byte: a TLS record of
+  271 bytes arrives as 7 or 9, and so does any body or header holding a zero. Here the bytes
+  after the ids are the bytes traced, zeros and all. Pinned by
+  `traced_bytes_with_the_ids_keep_a_zero_byte` (`crates/curl-core/src/proto/http/tests.rs`).
+
 ## Codes C passes through
 
 - **An `SSL_CTX` function's code that no transfer ends with is an abort.** A

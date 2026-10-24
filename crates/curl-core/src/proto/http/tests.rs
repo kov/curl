@@ -6848,3 +6848,18 @@ fn traced_bytes_take_the_ids_as_c_does() {
     assert_eq!(header_traced(false, LINE_MAX - 1), line(LINE_MAX - 1));
     assert_eq!(header_traced(false, 10), line(10));
 }
+
+/// With the ids on, bytes holding a zero byte reach the debug handler
+/// whole after the ids, where C's `"%.*s"` cuts them at the zero.
+#[test]
+fn traced_bytes_with_the_ids_keep_a_zero_byte() {
+    let reply = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nab\0cd";
+    let (mut m, talk, _) = server(&[reply], false);
+    let mut e = Easy::new();
+    let c = crate::components::Components::new().unwrap();
+    c.configure(b"lib-ids");
+    e.set_components(Some(c));
+    let ran = get_with(&mut m, e, "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.seen.of("data").concat(), b"[0-0] ab\0cd");
+}

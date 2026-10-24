@@ -3007,6 +3007,12 @@ enum Told<'w> {
     As(&'w [u8]),
 }
 
+/// What follows a failed verification's error line (`CURL_CA_CERT_ERRORMSG`).
+const CA_CERT_ERROR: &[u8] = b"More details here: https://curl.se/docs/sslcerts.html\n\n\
+curl failed to verify the legitimacy of the server and therefore could not\n\
+establish a secure connection to it. To learn more about this situation and\n\
+how to fix it, please visit the webpage mentioned above.\n";
+
 /// What one attempt's `result` comes to (`post_check_result`,
 /// `post_output_handling`): its failure said, a failing response with
 /// `--fail-with-body` made one, where the file of `url` came from stored
@@ -3038,6 +3044,9 @@ fn settle(
                     msgs.error_line(&[code.as_bytes(), why.as_bytes()]);
                 }
             }
+        }
+        if e == ErrorKind::PeerFailedVerification {
+            msgs.error_line(&[CA_CERT_ERROR]);
         }
     }
     // `--fail-with-body` fails an error response once its body is

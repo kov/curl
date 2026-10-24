@@ -1672,6 +1672,9 @@ pub struct Tls {
     pub verify_peer: bool,
     /// The certificate must name the host (`CURLOPT_SSL_VERIFYHOST`).
     pub verify_host: bool,
+    /// The peer's chain is reported (`CURLOPT_CERTINFO`): the
+    /// transfer's, not the connection's, so not compared for reuse.
+    pub certinfo: bool,
     pub options: Cold<TlsOptions>,
 }
 
@@ -1680,6 +1683,7 @@ impl Default for Tls {
         Tls {
             verify_peer: true,
             verify_host: true,
+            certinfo: false,
             options: Cold::new(),
         }
     }
@@ -1690,6 +1694,7 @@ impl Tls {
         Ok(Tls {
             verify_peer: self.verify_peer,
             verify_host: self.verify_host,
+            certinfo: self.certinfo,
             options: self.options.try_clone(TlsOptions::try_clone)?,
         })
     }

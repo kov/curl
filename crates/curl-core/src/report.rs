@@ -2,11 +2,13 @@
 //! the engine as the transfer runs, readable from inside its callbacks,
 //! and kept in the `Easy` after it ends, until the next transfer starts.
 
+mod certinfo;
 mod headers;
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
+pub use certinfo::{CertInfo, MAX_CERTS};
 pub use headers::{HeaderCursor, HeaderError, HeaderStore, HeaderView, Origins, Request};
 
 use curl_alloc::TryVec;
@@ -135,6 +137,9 @@ pub struct TransferReport {
     /// The error number of the last socket call that failed: a connect,
     /// a send or a receive (`state.os_errno`).
     os_errno: Option<OsErrno>,
+    /// The peer's chain, for a transfer that asked for it
+    /// (`info.certs`).
+    certinfo: Option<Box<CertInfo>>,
 }
 
 impl TransferReport {
@@ -258,6 +263,14 @@ impl TransferReport {
     /// The number of the connection the transfer last used, the `N` of
     /// its "Connection #N", unless the pool closed it as it came back
     /// (`CURLINFO_CONN_ID`).
+    pub fn certinfo(&self) -> Option<&CertInfo> {
+        self.certinfo.as_deref()
+    }
+
+    pub(crate) fn set_certinfo(&mut self, info: Option<Box<CertInfo>>) {
+        self.certinfo = info;
+    }
+
     pub fn conn_number(&self) -> Option<u64> {
         self.conn.map(ConnNumber::get)
     }

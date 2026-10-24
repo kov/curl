@@ -1916,6 +1916,13 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     string_setopt(s, "CURLOPT_SSL_SIGNATURE_ALGORITHMS", tls.sigalgs, |t| {
         &mut t.signature_algorithms
     })?;
+    if op.write_out.is_some() {
+        // For `%{certs}` and `%{num_certs}`, whatever the format says.
+        s.long("CURLOPT_CERTINFO", 1, |o| {
+            o.tls.certinfo = true;
+            Ok(())
+        })?;
+    }
     string_setopt(s, "CURLOPT_SSLCERT", tls.cert.as_deref(), |t| &mut t.cert)?;
     string_setopt(s, "CURLOPT_SSLCERTTYPE", tls.cert_type, |t| {
         &mut t.cert_type

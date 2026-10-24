@@ -40,6 +40,8 @@ use openssl::ssl::{SslAcceptor, SslAcceptorBuilder, SslMethod};
 use openssl::x509::extension::{BasicConstraints, SubjectAlternativeName};
 use openssl::x509::{X509, X509Name};
 
+#[path = "peer/chain.rs"]
+mod chain;
 #[path = "peer/checks.rs"]
 mod checks;
 #[path = "peer/client.rs"]
@@ -116,6 +118,7 @@ fn main() {
     .into_iter()
     .chain(checks::TESTS.iter().copied())
     .chain(client::TESTS.iter().copied())
+    .chain(chain::TESTS.iter().copied())
     {
         // The tests whose names hold a filter given, if any is, as libtest.
         if !wanted.is_empty() && !wanted.iter().any(|w| name.contains(w.as_str())) {
@@ -335,6 +338,8 @@ struct Got {
     result: Result<(), ErrorKind>,
     failure: Vec<u8>,
     seen: Seen,
+    /// The chain the transfer reported, each certificate's lines.
+    chain: Option<Vec<Vec<Vec<u8>>>>,
 }
 
 /// A GET of `/` at `host` on `at`'s port, through the system's network,
@@ -385,7 +390,7 @@ fn get_in(
     ssl: bool,
 ) -> Got {
     let seen = track::untracked(|| Arc::new(Mutex::new(Seen::default())));
-    let (result, failure) = {
+    let (result, failure, chain) = {
         let mut easy = Easy::new();
         easy.set_libraries(&LIBRARIES);
         if ssl {
@@ -405,13 +410,15 @@ fn get_in(
         let result = curl_core::multi::drive_to_completion(m, id, &mut NoEvents).unwrap();
         let easy = m.remove(id, &mut NoEvents).unwrap().easy;
         let failure = track::untracked(|| easy.report().failure().unwrap_or_default().to_vec());
-        (result, failure)
+        let chain = track::untracked(|| easy.report().certinfo().map(|c| c.certs().to_vec()));
+        (result, failure, chain)
     };
     let seen = track::untracked(|| std::mem::take(&mut *seen.lock().unwrap()));
     Got {
         result,
         failure,
         seen,
+        chain,
     }
 }
 
@@ -693,6 +700,7 @@ fn a_handle_s_own_multi_keeps_its_store_between_performs() {
             result,
             failure: Vec::new(),
             seen,
+            chain: None,
         })
     };
     assert_eq!(perform(), 1);

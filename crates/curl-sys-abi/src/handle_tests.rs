@@ -418,6 +418,26 @@ fn the_tls_check_and_identity_strings_are_copied() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// `CURLOPT_CERTINFO` asks for the chain; `CURLINFO_CERTINFO` answers
+/// the handle's `struct curl_certinfo`, empty before any is reported.
+#[test]
+fn the_chain_is_asked_for_and_answered_empty_before_any() {
+    let c = curl_easy_init();
+    assert!(!options(c, |o| o.tls.certinfo));
+    assert_eq!(long(c, ffi::CURLOPT_CERTINFO, 1), CURLE_OK);
+    assert!(options(c, |o| o.tls.certinfo));
+    let view = info::<*mut ffi::curl_certinfo>(c, ffi::CURLINFO_CERTINFO);
+    assert!(!view.is_null());
+    // SAFETY: the handle's, alive while it is.
+    let view = unsafe { &*view };
+    assert_eq!(view.num_of_certs, 0);
+    assert!(view.certinfo.is_null());
+    assert_eq!(long(c, ffi::CURLOPT_CERTINFO, 0), CURLE_OK);
+    assert!(!options(c, |o| o.tls.certinfo));
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `curl_global_sslset` knows OpenSSL alone, by id or by name in any
 /// case, and lists it.
 #[test]

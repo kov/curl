@@ -196,3 +196,20 @@ witness: curl-openssl no_client_certificate_fails_as_the_server_alerts
                             format_args!("OpenSSL SSL_read: {}, errno {errno}", e.versioned()),
 --- new
                             format_args!("OpenSSL SSL_read: {e}, errno {errno}"),
+
+=== a field's line holds the fields printed before it
+file: crates/curl-openssl/src/certinfo.rs
+witness: curl-openssl the_chain_is_reported_as_c_words_it_when_asked
+--- old
+    let pushed = info.push(i, label, mem.bytes());
+    mem.reset();
+--- new
+    let pushed = info.push(i, label, mem.bytes());
+
+=== a transfer that did not ask for the chain is given it
+file: crates/curl-core/src/multi/state.rs
+witness: curl-openssl the_chain_is_reported_as_c_words_it_when_asked
+--- old
+        asked.then(|| self.report_mut())
+--- new
+        Some(self.report_mut())

@@ -1427,3 +1427,11 @@ witness: curl-tool options::cert::tests::splits_as_unit_1394
                     Some(&c @ (b'\\' | b':')) => {
 --- new
                     Some(&c @ b':') => {
+
+=== `%{certs}` drops the PEM's label only as C capitalises it
+file: crates/curl-tool/src/write_out.rs
+witness: curl-tool write_out::tests::certs_are_written_as_c_writes_them
+--- old
+            Some(label) if label.eq_ignore_ascii_case(b"cert:") => &line[5..],
+--- new
+            Some(label) if label == b"Cert:" => &line[5..],

@@ -21,6 +21,7 @@ use crate::conn::layer::{Below, LayerCx};
 use crate::error::ErrorKind;
 use crate::handler::DebugKind;
 use crate::options::{CaSetting, Tls, TlsOptions};
+use crate::report::CertInfo;
 use crate::time::Instant;
 use crate::trace::OsError;
 
@@ -316,6 +317,23 @@ impl TlsIo<'_> {
 
     /// The time of the multi's pass the call is made in (C's
     /// `Curl_pgrs_now`), on the multi's clock.
+    /// The transfer asked for its peer's chain (`CURLOPT_CERTINFO`).
+    pub fn wants_certinfo(&mut self) -> bool {
+        self.cx.certinfo_report().is_some()
+    }
+
+    /// Report `info` as the peer's chain, in place of any before it, or
+    /// none (`Curl_ssl_init_certinfo`, `Curl_ssl_free_certinfo`), if the
+    /// transfer asked for it.
+    pub fn set_certinfo(&mut self, info: Option<CertInfo>) -> Result<(), ErrorKind> {
+        if let Some(report) = self.cx.certinfo_report() {
+            report.set_certinfo(None);
+            let boxed = info.map(try_box).transpose();
+            report.set_certinfo(boxed.map_err(|_| ErrorKind::OutOfMemory)?);
+        }
+        Ok(())
+    }
+
     pub fn now(&self) -> Instant {
         self.cx.now()
     }

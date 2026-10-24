@@ -22,6 +22,7 @@ mod debug;
 #[global_allocator]
 static ALLOCATOR: curl_alloc::track::Tracker = curl_alloc::track::Tracker;
 mod callbacks;
+mod certinfo;
 mod date;
 mod easy;
 mod formdata;

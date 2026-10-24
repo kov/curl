@@ -82,6 +82,12 @@ pub(crate) trait LayerCx {
     fn debugs(&self) -> bool {
         false
     }
+
+    /// The report of the transfer, if it asked for its peer's chain
+    /// (`CURLOPT_CERTINFO`). Work done for no transfer reports none.
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
+        None
+    }
 }
 
 /// The context of work done for no transfer: it traces nothing, as C's

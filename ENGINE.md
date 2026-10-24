@@ -1910,6 +1910,15 @@ engine's or a provider's certificate or key fails as C's does with none set (`cr
 set, cannot load certificate`, 58); an unknown type is 43, as C. The tool's `--cert` splits
 `name:password` as `parse_cert_parameter` does, `\` escaping a colon or itself.
 
+**The peer's chain** (`CURLOPT_CERTINFO`, a per-handle bit in `Tls` that the identity does not
+compare) is read first in the peer check (`certinfo.rs`, `ossl_certchain`): each certificate's
+fields as `label:value` lines worded as C's, into a `CertInfo` the transfer's report holds
+(`info.certs`, through `LayerCx::certinfo_report`), so a peer that then fails its check has
+been reported all the same, and a chain longer than 100 fails the handshake (35). The report's
+restart clears it. The shim answers `CURLINFO_CERTINFO` with the handle's `struct curl_certinfo`,
+made again only when the chain differs; the tool asks for it whenever `-w` is given, for
+`%{certs}` and `%{num_certs}`. A resumed session (43h) is to skip it, as its chain is not sent.
+
 **Identity and reuse.** `Tcp` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
 copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares
 (versions, the options bits, the status check, CA file, path and blob, the CRL, the issuer, the

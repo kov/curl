@@ -325,6 +325,10 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
     fn debugs(&self) -> bool {
         LayerCx::debugs(&*self.step)
     }
+
+    fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
+        LayerCx::certinfo_report(&mut *self.step)
+    }
 }
 
 impl<H: Host> ConnCx for DriveCx<'_, '_, H> {

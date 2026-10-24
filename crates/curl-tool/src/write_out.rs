@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use curl_alloc::{OutOfMemory, TryVec, try_format};
 use curl_core::error::ErrorKind;
-use curl_core::report::{HeaderStore, Origins, Request, ResponseVersion, TransferReport};
+use curl_core::report::{CertInfo, HeaderStore, Origins, Request, ResponseVersion, TransferReport};
 use curl_core::url::{GetOptions, ParseOptions, Part, Url};
 use curl_os::fs::{self, Keep};
 
@@ -806,16 +806,37 @@ fn value<'a>(var: Var, facts: &Facts<'a>) -> Value<'a> {
                 Time::Total => t.total(),
             })
         }
-        // The library answers for the certificates even without TLS:
-        // none (`CURLINFO_CERTINFO`).
-        Var::Certs => Value::Bytes(b""),
-        Var::NumCerts => Value::Number(0),
+        // None without TLS (`CURLINFO_CERTINFO`).
+        Var::Certs => certs(r.certinfo()),
+        Var::NumCerts => Value::Number(r.certinfo().map_or(0, |c| c.certs().len() as i64)),
         Var::ConnId => r.conn_number().map_or(Value::Number(-1), number),
         Var::XferId => r.transfer_number().map_or(Value::Number(-1), number),
         Var::FtpEntryPath => Value::Missing,
         Var::ProxySslVerifyResult | Var::SslVerifyResult | Var::TlsEarlydata => Value::Number(0),
         Var::ProxyUsed => Value::Number(r.used_proxy().into()),
     }
+}
+
+/// `%{certs}`: every certificate's lines, each ended by a newline, the
+/// PEM's without its `Cert:` label; nothing written where they cannot be
+/// held, or do not fit C's 256 KiB (`writeString`'s `VAR_CERT`).
+fn certs(info: Option<&CertInfo>) -> Value<'static> {
+    const ROOM: usize = 256 * 1024;
+    let mut out = Vec::new();
+    let lines = info.map_or(&[][..], CertInfo::certs).iter().flatten();
+    for line in lines {
+        let text = match line.get(..5) {
+            Some(label) if label.eq_ignore_ascii_case(b"cert:") => &line[5..],
+            _ => line.as_slice(),
+        };
+        if out.try_extend_from_slice(text).is_err()
+            || (!out.is_empty() && out.last() != Some(&b'\n') && out.try_push(b'\n').is_err())
+            || out.len() >= ROOM
+        {
+            return Value::Missing;
+        }
+    }
+    Value::Owned(out)
 }
 
 /// `%{json}`: every variable C has a write function for, in its order,
@@ -878,6 +899,24 @@ impl Write for Buffered<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `%{certs}`: each line, the PEM's label dropped in any case, each
+    /// ended by one newline; nothing for no chain.
+    #[test]
+    fn certs_are_written_as_c_writes_them() {
+        let mut info = CertInfo::new(2).unwrap();
+        info.push(0, b"Subject", b"CN = a").unwrap();
+        info.push(0, b"Cert", b"-----BEGIN\nX\n-----END\n").unwrap();
+        info.push(1, b"CERT", b"pem").unwrap();
+        let Value::Owned(text) = certs(Some(&info)) else {
+            panic!("not written");
+        };
+        assert_eq!(text, b"Subject:CN = a\n-----BEGIN\nX\n-----END\npem\n");
+        let Value::Owned(none) = certs(None) else {
+            panic!("not written");
+        };
+        assert!(none.is_empty());
+    }
 
     /// The pieces of `format`, as text, the way C writes them for a
     /// transfer that succeeded.

@@ -29,6 +29,8 @@ enum Value {
     Ptr(*mut c_void),
     /// A list the application frees.
     List(*mut ffi::curl_slist),
+    /// A structure of the handle's (`CURLINFO_PTR`).
+    Struct(*mut c_void),
     /// No answer, for this reason.
     Failed(CURLcode),
 }
@@ -40,6 +42,7 @@ enum Typed {
     Off(curl_off_t),
     Str(*mut c_char),
     List(*mut ffi::curl_slist),
+    Ptr(*mut c_void),
 }
 
 impl Typed {
@@ -65,6 +68,8 @@ impl Typed {
             Typed::Str(p) => unsafe { put(out, p) },
             // SAFETY: as the caller guarantees.
             Typed::List(p) => unsafe { put(out, p) },
+            // SAFETY: as the caller guarantees.
+            Typed::Ptr(p) => unsafe { put(out, p) },
         }
     }
 }
@@ -260,6 +265,21 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_LOCAL_PORT => Value::Long(r.primary().map_or(-1, |ends| {
             ends.local.map_or(0, |local| c_long::from(local.port()))
         })),
+        // The handle's, empty before any chain is reported.
+        ffi::CURLINFO_CERTINFO => {
+            let mut infos = easy.string_infos.borrow_mut();
+            if infos.is_none() {
+                match try_box(StringInfos::default()) {
+                    Ok(made) => *infos = Some(made),
+                    Err(OutOfMemory) => return Some(Value::Failed(ffi::CURLE_OUT_OF_MEMORY)),
+                }
+            }
+            let kept = &mut infos.as_deref_mut().expect("made above").certinfo;
+            match kept.view(r.certinfo()) {
+                Ok(view) => Value::Struct(view.cast()),
+                Err(OutOfMemory) => Value::Failed(ffi::CURLE_OUT_OF_MEMORY),
+            }
+        }
         ffi::CURLINFO_NUM_CONNECTS => Value::Long(c_long::from(r.connects())),
         ffi::CURLINFO_USED_PROXY => Value::Long(c_long::from(r.used_proxy())),
         ffi::CURLINFO_REDIRECT_COUNT => Value::Long(c_long::from(r.redirects())),
@@ -412,6 +432,7 @@ pub unsafe extern "C" fn curl_easy_getinfo(
         Value::Off(n) if kind == ffi::CURLINFO_OFF_T => Typed::Off(n),
         Value::Ptr(p) if kind == ffi::CURLINFO_STRING => Typed::Str(p.cast()),
         Value::List(p) if kind == ffi::CURLINFO_SLIST => Typed::List(p),
+        Value::Struct(p) if kind == ffi::CURLINFO_PTR => Typed::Ptr(p),
         Value::Failed(_) => unreachable!("returned above"),
         _ => unreachable!("info {} answered in the wrong type", info.0 as c_int),
     };

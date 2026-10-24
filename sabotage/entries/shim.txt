@@ -207,3 +207,11 @@ witness: curl-sys-abi handle_tests::the_one_tls_library_is_openssl
             .eq_ignore_ascii_case(b"openssl");
 --- new
             == b"openssl";
+
+=== a certificate's lines run on into the next certificate's
+file: crates/curl-sys-abi/src/certinfo.rs
+witness: curl-sys-abi certinfo::tests::the_chain_reads_as_c_s_lists_and_lives_while_unchanged
+--- old
+            for j in at..(at + n).saturating_sub(1) {
+--- new
+            for j in at..(at + n).min(total.saturating_sub(1)) {

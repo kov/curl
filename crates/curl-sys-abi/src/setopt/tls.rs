@@ -1,7 +1,8 @@
-//! The TLS options of `curl_easy_setopt` that say who the client is and
-//! how far the peer is checked past its chain (`lib/setopt.c`): the
-//! revocation list and the pinned key, the client's certificate and key
-//! with their types and password, each taken as C takes it.
+//! The TLS options of `curl_easy_setopt` that say who the client is,
+//! how far the peer is checked past its chain and whether its chain is
+//! reported (`lib/setopt.c`): the revocation list and the pinned key, the
+//! client's certificate and key with their types and password, and
+//! `CURLOPT_CERTINFO`, each taken as C takes it.
 
 use curl_core::options::{Options, TlsOptions};
 
@@ -11,6 +12,7 @@ use crate::ffi::{self, CURLoption};
 /// `option` is one this module sets.
 pub(super) fn takes(option: CURLoption) -> bool {
     [
+        ffi::CURLOPT_CERTINFO,
         ffi::CURLOPT_CRLFILE,
         ffi::CURLOPT_PINNEDPUBLICKEY,
         ffi::CURLOPT_SSLCERT,
@@ -26,6 +28,10 @@ pub(super) fn takes(option: CURLoption) -> bool {
 
 /// Set `option`, one `takes` names, to `arg`.
 pub(super) fn apply(options: &mut Options, option: CURLoption, arg: Arg) -> Result<(), Refused> {
+    if let (ffi::CURLOPT_CERTINFO, Arg::Long(n)) = (option, &arg) {
+        options.tls.certinfo = *n != 0;
+        return Ok(());
+    }
     let tls = &mut options.tls.options;
     match (option, arg) {
         (ffi::CURLOPT_CRLFILE, Arg::Ptr(p)) => {

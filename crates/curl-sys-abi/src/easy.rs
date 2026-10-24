@@ -95,6 +95,7 @@ pub(crate) struct StringInfos {
     pub(crate) referer: Vec<u8>,
     pub(crate) primary_ip: Vec<u8>,
     pub(crate) local_ip: Vec<u8>,
+    pub(crate) certinfo: crate::certinfo::Kept,
 }
 
 /// Where the handle's transfer is.

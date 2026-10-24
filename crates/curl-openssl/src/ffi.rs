@@ -7,8 +7,8 @@
 use core::ffi::{c_char, c_int, c_long, c_ulong, c_void};
 
 use openssl_sys::{
-    ASN1_TIME, BIO, EVP_PKEY, PKCS12, RSA, SSL, SSL_CTX, X509, X509_CRL, X509_NAME, X509_STORE,
-    pem_password_cb,
+    ASN1_OBJECT, ASN1_STRING, ASN1_TIME, BIGNUM, BIO, EVP_PKEY, PKCS12, RSA, SSL, SSL_CTX, X509,
+    X509_ALGOR, X509_CRL, X509_NAME, X509_STORE, pem_password_cb,
 };
 
 /// A certificate's public key with its algorithm (`X509_PUBKEY`), only
@@ -92,6 +92,17 @@ unsafe extern "C" {
     pub(crate) fn d2i_PKCS12_bio(bio: *mut BIO, out: *mut *mut PKCS12) -> *mut PKCS12;
     pub(crate) fn RSA_flags(rsa: *const RSA) -> c_int;
     pub(crate) fn BIO_set_shutdown(bio: *mut BIO, shut: c_int);
+    pub(crate) fn i2a_ASN1_OBJECT(bio: *mut BIO, a: *const ASN1_OBJECT) -> c_int;
+    pub(crate) fn i2t_ASN1_OBJECT(buf: *mut c_char, len: c_int, a: *const ASN1_OBJECT) -> c_int;
+    pub(crate) fn X509_PUBKEY_get0_param(
+        ppkalg: *mut *mut ASN1_OBJECT,
+        pk: *mut *const u8,
+        ppklen: *mut c_int,
+        pa: *mut *mut X509_ALGOR,
+        public: *const X509Pubkey,
+    ) -> c_int;
+    pub(crate) fn ASN1_STRING_print(bio: *mut BIO, v: *const ASN1_STRING) -> c_int;
+    pub(crate) fn BN_print(bio: *mut BIO, a: *const BIGNUM) -> c_int;
 }
 
 /// `BIO_C_SET_FILENAME` and the flags `BIO_read_filename` passes
@@ -108,6 +119,14 @@ pub(crate) const SSL_CTRL_CHAIN_CERT: c_int = 89;
 /// certificate (`pemerr.h`).
 pub(crate) const ERR_LIB_PEM: c_int = 9;
 pub(crate) const PEM_R_NO_START_LINE: c_int = 108;
+
+/// `V_ASN1_NEG_INTEGER` (`asn1.h`): a negative serial's type.
+pub(crate) const V_ASN1_NEG_INTEGER: c_int = 2 | 0x100;
+
+/// `XN_FLAG_ONELINE` (`x509.h`): `ASN1_STRFLGS_RFC2253 |
+/// ASN1_STRFLGS_ESC_QUOTE | XN_FLAG_SEP_CPLUS_SPC | XN_FLAG_SPC_EQ |
+/// XN_FLAG_FN_SN`.
+pub(crate) const XN_FLAG_ONELINE: c_ulong = 0x317 | 8 | (2 << 16) | (1 << 23);
 
 /// `RSA_METHOD_FLAG_NO_CHECK` (`rsa.h`): the key's method cannot check
 /// it against its certificate.

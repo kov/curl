@@ -746,6 +746,11 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         let options = self.easy().options();
         options.callbacks.debug.is_some() && options.output.verbose
     }
+
+    fn certinfo_report(&mut self) -> Option<&mut TransferReport> {
+        let asked = self.easy().options().tls.certinfo;
+        asked.then(|| self.report_mut())
+    }
 }
 
 /// What a step needs: the transfer it steps, whose `Run` is out of its

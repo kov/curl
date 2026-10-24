@@ -238,3 +238,11 @@ witness: curl-core version::tests::version_matches_its_parts
             write!(f, " {library}")?;
 --- new
             write!(f, "{library}")?;
+
+=== a chain's line as long as C's buffer is kept
+file: crates/curl-core/src/report/certinfo.rs
+witness: curl-core report::certinfo::tests::fields_are_kept_as_label_colon_value_per_certificate
+--- old
+        if len >= MAX_LINE {
+--- new
+        if len > MAX_LINE {

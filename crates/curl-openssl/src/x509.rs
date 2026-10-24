@@ -784,6 +784,9 @@ pub(crate) fn check_peer(
     kind: TlsPeerKind,
     io: &mut TlsIo<'_>,
 ) -> Result<c_long, ErrorKind> {
+    // Session resumption (43h) is to skip this for a resumed session,
+    // whose chain is not sent.
+    crate::certinfo::report(ssl, io)?;
     // SAFETY: the session's SSL; a reference to the certificate, freed
     // as `cert` goes.
     let cert = NonNull::new(unsafe { openssl_sys::SSL_get1_peer_certificate(ssl.as_ptr()) });

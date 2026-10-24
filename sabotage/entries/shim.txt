@@ -215,3 +215,19 @@ witness: curl-sys-abi certinfo::tests::the_chain_reads_as_c_s_lists_and_lives_wh
             for j in at..(at + n).saturating_sub(1) {
 --- new
             for j in at..(at + n).min(total.saturating_sub(1)) {
+
+=== CURLOPT_SSL_VERIFYSTATUS cannot be turned off again
+file: crates/curl-sys-abi/src/setopt/tls.rs
+witness: curl-sys-abi handle_tests::the_engines_are_listed_and_one_made_the_default_with_1
+--- old
+            Some(t) => t.verify_status = n != 0,
+--- new
+            Some(t) => t.verify_status |= n != 0,
+
+=== CURLOPT_ISSUERCERT_BLOB is kept as the issuer's file
+file: crates/curl-sys-abi/src/setopt/tls.rs
+witness: curl-sys-abi handle_tests::the_tls_check_and_identity_strings_are_copied
+--- old
+        ffi::CURLOPT_ISSUERCERT_BLOB => |t| &mut t.issuer_cert_blob,
+--- new
+        ffi::CURLOPT_ISSUERCERT_BLOB => |t| &mut t.issuer_cert,

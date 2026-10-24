@@ -829,6 +829,8 @@ pub(crate) fn check_peer(
             " SSL certificate verification failed, continuing anyway!"
         ));
     }
+    // C checks the status of a new session only: a resumed one carries
+    // none. Sessions are not resumed until the cache (43h) skips it.
     if identity.options.verify_status {
         // SAFETY: the session's SSL; its context is its own.
         let ctx = NonNull::new(unsafe { openssl_sys::SSL_get_SSL_CTX(ssl.as_ptr()) });

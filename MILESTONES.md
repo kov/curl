@@ -626,6 +626,14 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       keeps for its next connections (`TlsShared`, `CURLOPT_CA_CACHE_TIMEOUT`). Its list below
       passes on both legs.
     - **e2. Client certificates, pinning, CRL, issuer, OCSP stapling, certinfo, engines.**
+      **Done**, but for what this machine cannot reach: a certificate or key loaded from an
+      engine (no engine starts here; C's path is ported as far as `SSL_FILETYPE_ENGINE not
+      supported`), and a `PROV` key with no file, which says it is not supported where C
+      opens the provider's store by no name. PEM, DER, PKCS#12 and blob identities, the
+      key's password, `--pinnedpubkey`, `--crlfile`, the issuer, the stapled status, certinfo
+      (`%{certs}`, `CURLINFO_CERTINFO`), `CURLINFO_SSL_VERIFYRESULT` for the origin (the
+      proxy's is i's), `--engine` and `--engine list`, and providers with their stores. Its
+      list below passes on both legs, with 2095.
     - **f. The application's hands on OpenSSL.** `SSL_CTX_FUNCTION`, `TLS_SSL_PTR` and
       `TLS_SESSION`, the retry-verify pause; close_notify as `Closing`'s first producer.
     - **g. ALPN's trace.** HTTPS-CONNECT in the chain, ALPN_EYEBALLS armed where C's

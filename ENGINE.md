@@ -1939,7 +1939,8 @@ the library's engines, once it is initialised.
 With `CURLOPT_SSL_VERIFYSTATUS` (`--cert-status`) the session asks for a stapled OCSP response
 and `ocsp.rs` checks it as `verifystatus` does: there, successful, signed by the verified chain
 against the context's store, naming the peer's certificate, current within five minutes' skew,
-and good; each shortfall is 91 in C's words. `CURLOPT_ISSUERCERT` or its blob then names the
+and good; each shortfall is 91 in C's words. A resumed session is not checked, as in C, once
+the session cache resumes any. `CURLOPT_ISSUERCERT` or its blob then names the
 certificate that must have issued the peer's (`ossl_check_issuer`): 83 if it cannot be read or
 did not, said only when the peer is verified. The pinned key comes last.
 

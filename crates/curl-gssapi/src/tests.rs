@@ -1,10 +1,14 @@
+mod ccache;
+mod peek;
+
 use curl_alloc::OutOfMemory;
 use curl_core::gss::{
     Flags, Gss, GssCall, GssContext, GssFailure, GssFailureKind, GssNote, GssStatus, Mech,
-    StepSink, Style, Target,
+    Progress, Step, StepSink, Style, Target,
 };
 
-use crate::{GSSAPI, KRB5_OID, SPNEGO_OID, sys};
+use crate::{GSSAPI, KRB5_OID, NTLMSSP_OID, SPNEGO_OID, sys};
+use ccache::{Kdcless, Key};
 
 /// `GSS_S_FAILURE` and `GSS_S_NO_CONTEXT`, as `<gssapi/gssapi.h>` has
 /// them: the tests do not take the crate's own.
@@ -73,6 +77,11 @@ fn child_output(name: &str, env: &[(&str, &str)]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     stdout
+}
+
+/// `env` as `in_child` takes it.
+fn pairs(env: &[(String, String)]) -> Vec<(&str, &str)> {
+    env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -221,6 +230,140 @@ fn a_set_of_mechanisms_leaves_one_out() {
     let without = all.without(KRB5_OID).unwrap();
     assert!(!has(&without, KRB5_OID) && has(&without, SPNEGO_OID));
     assert_eq!(without.oids().count(), all.oids().count() - 1);
+}
+
+/// With a cached ticket and a KDC that answers nothing, the library's
+/// own contexts: what each step gives back, and what is done with a
+/// context the step made.
+#[test]
+fn the_library_s_contexts_from_a_cached_ticket() {
+    let kdcless = Kdcless::new("contexts", Key::Aes256);
+    let mut env = kdcless.env();
+    env.push((
+        "CURL_GSSAPI_CACHE".into(),
+        kdcless.cache().display().to_string(),
+    ));
+    in_child("tests::cached_ticket_in_a_child", &pairs(&env));
+}
+
+#[test]
+fn cached_ticket_in_a_child() {
+    if !is_child("tests::cached_ticket_in_a_child") {
+        return;
+    }
+    let both = |progress| Step {
+        progress,
+        confidentiality: true,
+        integrity: true,
+    };
+    // Kerberos without mutual authentication is done with its first
+    // token: the ticket, in the mechanism's framing.
+    let mut context = GSSAPI
+        .context(HTTP_AT_LOCALHOST, Mech::Kerberos, Flags::default())
+        .unwrap();
+    let mut sink = Collected::default();
+    let step = context.step(None, None, &mut sink).unwrap();
+    assert_eq!(step, both(Progress::Complete));
+    let token = sink.token.unwrap();
+    assert!(token[0] == 0x60 && contains(&token, KRB5_OID), "{token:x?}");
+    assert!(sink.notes.is_empty());
+    // Integrity only: the message goes in the clear.
+    let wrapped = handed(|out| context.wrap(b"a message", out)).unwrap();
+    assert!(contains(&wrapped, b"a message"), "{wrapped:x?}");
+    let initiator = handed(|out| context.initiator(out)).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&initiator),
+        String::from_utf8_lossy(ccache::CLIENT)
+    );
+    let failure = handed(|out| context.unwrap(b"not a token", out)).unwrap_err();
+    assert_eq!(failure.call, GssCall::Unwrap);
+    let GssFailureKind::Status(status) = failure.kind else {
+        panic!("{failure:?}");
+    };
+    assert_ne!(status.codes().0, NO_CONTEXT);
+    // Mutual authentication waits for the peer's answer, whatever is
+    // asked of delegation.
+    for flags in [
+        MUTUAL,
+        Flags {
+            delegate_by_policy: true,
+            ..MUTUAL
+        },
+        Flags {
+            delegate: true,
+            ..MUTUAL
+        },
+    ] {
+        let mut context = GSSAPI
+            .context(HTTP_AT_LOCALHOST, Mech::Kerberos, flags)
+            .unwrap();
+        let mut sink = Collected::default();
+        let step = context.step(None, None, &mut sink).unwrap();
+        assert_eq!(step.progress, Progress::Continue, "{flags:?}");
+        assert!(!sink.token.unwrap().is_empty());
+    }
+    // The context's mechanism, as the library says it.
+    let name = sys::Name::import(b"HTTP@127.0.0.1", sys::NameKind::HostBased).unwrap();
+    let mut ctx = sys::Ctx::new();
+    let init = ctx.init(None, &name, KRB5_OID, sys::GSS_C_REPLAY_FLAG, None, None);
+    assert_eq!(init.major, sys::GSS_S_COMPLETE);
+    assert_eq!(ctx.mech_is(KRB5_OID), Ok(true));
+    assert_eq!(ctx.mech_is(NTLMSSP_OID), Ok(false));
+    // SPNEGO sends Kerberos's token in its own, and not NTLM's.
+    let mut context = GSSAPI
+        .context(HTTP_AT_LOCALHOST, Mech::Spnego, MUTUAL)
+        .unwrap();
+    let mut sink = Collected::default();
+    let step = context.step(None, None, &mut sink).unwrap();
+    assert_eq!(step.progress, Progress::Continue);
+    let token = sink.token.unwrap();
+    assert!(
+        token[0] == 0x60 && contains(&token, SPNEGO_OID) && contains(&token, KRB5_OID),
+        "{token:x?}"
+    );
+    assert!(sink.notes.is_empty());
+    // Its credentials are acquired once: with the cache gone, the next
+    // step still gets as far as the library's reading of the answer.
+    std::fs::remove_file(std::env::var("CURL_GSSAPI_CACHE").unwrap()).unwrap();
+    let mut sink = Collected::default();
+    let failure = context
+        .step(Some(b"not a token"), None, &mut sink)
+        .unwrap_err();
+    assert_eq!(failure.call, GssCall::InitSecContext, "{failure:?}");
+}
+
+/// The TLS channel's binding goes in the authenticator, where C puts
+/// it, unless it is empty, which C passes as no binding at all.
+#[test]
+fn the_binding_goes_in_the_authenticator() {
+    let kdcless = Kdcless::new("binding", Key::Rc4);
+    in_child("tests::binding_in_a_child", &pairs(&kdcless.env()));
+}
+
+#[test]
+fn binding_in_a_child() {
+    if !is_child("tests::binding_in_a_child") {
+        return;
+    }
+    let binding: &[u8] = b"tls-server-end-point:\x01\x02\x03";
+    for (given, sent) in [
+        (None, None),
+        (Some(&b""[..]), None),
+        (Some(binding), Some(binding)),
+    ] {
+        let mut context = GSSAPI
+            .context(HTTP_AT_LOCALHOST, Mech::Kerberos, MUTUAL)
+            .unwrap();
+        let mut sink = Collected::default();
+        context.step(None, given, &mut sink).unwrap();
+        let checksum = peek::authenticator_checksum(&sink.token.unwrap(), Key::Rc4.bytes());
+        // Its length, then the bindings' hash, then the flags.
+        assert_eq!(checksum[..4], 16u32.to_le_bytes());
+        assert_eq!(checksum[4..20], peek::bindings_hash(sent), "{given:?}");
+        let flags = u32::from_le_bytes(checksum[20..24].try_into().unwrap());
+        let asked = sys::GSS_C_MUTUAL_FLAG | sys::GSS_C_REPLAY_FLAG;
+        assert_eq!(flags & asked, asked, "{flags:#x}");
+    }
 }
 
 /// The longest text each of C's layouts holds: the minor code's message

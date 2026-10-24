@@ -305,6 +305,74 @@ unsafe fn owned(p: *mut c_void) -> Result<Option<Vec<u8>>, Refused> {
     Ok(Some(copy))
 }
 
+/// A CA file or directory as the application set it: NULL sets none,
+/// and the build's default is not used either (`custom_cafile`).
+fn ca_setting(value: Option<Vec<u8>>) -> curl_core::options::CaSetting {
+    match value {
+        Some(text) => curl_core::options::CaSetting::Given(text),
+        None => curl_core::options::CaSetting::Unset,
+    }
+}
+
+/// A copy of the blob at `p`, or none for NULL (`Curl_setblobopt`): one
+/// without data, empty or longer than C takes is refused. It is copied
+/// whatever its flags say, `CURL_BLOB_NOCOPY` too.
+///
+/// # Safety
+///
+/// `p` is NULL or a `curl_blob` whose `data` holds `len` bytes.
+unsafe fn blob(p: *mut c_void) -> Result<Option<Vec<u8>>, Refused> {
+    if p.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: as the caller guarantees.
+    let blob = unsafe { p.cast::<ffi::curl_blob>().read() };
+    if blob.data.is_null() || blob.len == 0 || blob.len > MAX_INPUT_LENGTH {
+        return Err(Refused::Bad);
+    }
+    // SAFETY: as the caller guarantees, `data` holds `len` bytes.
+    let data = unsafe { core::slice::from_raw_parts(blob.data.cast::<u8>(), blob.len) };
+    let mut copy = Vec::new();
+    copy.try_extend_from_slice(data)?;
+    Ok(Some(copy))
+}
+
+/// The TLS versions of a `CURLOPT_SSLVERSION` value
+/// (`Curl_setopt_SSLVERSION`): the oldest in the low 16 bits, the
+/// newest in the next. SSL 2 and 3 are refused, and the default is TLS
+/// 1.2. A newest of SSL 2 or 3, which C takes and its TLS library reads
+/// as none, is refused too.
+fn ssl_version(
+    n: c_long,
+) -> Result<
+    (
+        curl_core::options::TlsMinVersion,
+        curl_core::options::TlsMaxVersion,
+    ),
+    Refused,
+> {
+    use curl_core::options::{TlsMaxVersion as Max, TlsMinVersion as Min};
+    let min = match n & 0xffff {
+        ffi::CURL_SSLVERSION_DEFAULT | ffi::CURL_SSLVERSION_TLSv1_2 => Min::Tls1_2,
+        ffi::CURL_SSLVERSION_TLSv1 => Min::Tls1,
+        ffi::CURL_SSLVERSION_TLSv1_0 => Min::Tls1_0,
+        ffi::CURL_SSLVERSION_TLSv1_1 => Min::Tls1_1,
+        ffi::CURL_SSLVERSION_TLSv1_3 => Min::Tls1_3,
+        _ => return Err(Refused::Bad),
+    };
+    // As C reads it, an `unsigned long`.
+    let max = match (n as core::ffi::c_ulong & 0xffff_0000) as c_long {
+        ffi::CURL_SSLVERSION_MAX_NONE => Max::None,
+        ffi::CURL_SSLVERSION_MAX_DEFAULT => Max::Default,
+        ffi::CURL_SSLVERSION_MAX_TLSv1_0 => Max::Tls1_0,
+        ffi::CURL_SSLVERSION_MAX_TLSv1_1 => Max::Tls1_1,
+        ffi::CURL_SSLVERSION_MAX_TLSv1_2 => Max::Tls1_2,
+        ffi::CURL_SSLVERSION_MAX_TLSv1_3 => Max::Tls1_3,
+        _ => return Err(Refused::Bad),
+    };
+    Ok((min, max))
+}
+
 /// A time limit of `n` units of `ms` milliseconds (`setopt_set_timeout_*`).
 fn time_limit(n: c_long, ms: u64) -> Result<Option<TimeLimit>, Refused> {
     let n = u64::try_from(n).map_err(|_| Refused::Bad)?;
@@ -602,6 +670,56 @@ fn apply(
         (ffi::CURLOPT_SSL_VERIFYPEER, Long(n)) => options.tls.verify_peer = n != 0,
         // 1 is taken as 2, as C takes it.
         (ffi::CURLOPT_SSL_VERIFYHOST, Long(n)) => options.tls.verify_host = n != 0,
+        (ffi::CURLOPT_SSLVERSION, Long(n)) => {
+            let (min, max) = ssl_version(n)?;
+            let t = options.tls.options.make_mut()?;
+            t.min_version = min;
+            t.max_version = max;
+        }
+        // The low eight bits, as C keeps them.
+        (ffi::CURLOPT_SSL_OPTIONS, Long(n)) => {
+            options.tls.options.make_mut()?.ssl_options =
+                curl_core::options::SslOptions::from_bits(n as u8);
+        }
+        (ffi::CURLOPT_SSL_ENABLE_ALPN, Long(n)) => options.tls.options.make_mut()?.alpn = n != 0,
+        (ffi::CURLOPT_CAINFO, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let file = ca_setting(unsafe { owned(p) }?);
+            options.tls.options.make_mut()?.ca_file = file;
+        }
+        (ffi::CURLOPT_CAPATH, Ptr(p)) => {
+            // SAFETY: as above.
+            let path = ca_setting(unsafe { owned(p) }?);
+            options.tls.options.make_mut()?.ca_path = path;
+        }
+        (ffi::CURLOPT_CAINFO_BLOB, Ptr(p)) => {
+            // SAFETY: the application passes a blob or NULL.
+            let blob = unsafe { blob(p) }?;
+            options.tls.options.set(|t| &mut t.ca_blob, blob)?;
+        }
+        (ffi::CURLOPT_SSL_CIPHER_LIST, Ptr(p)) => {
+            // SAFETY: the application passes a C string or NULL.
+            let value = unsafe { owned(p) }?;
+            options.tls.options.set(|t| &mut t.ciphers, value)?;
+        }
+        (ffi::CURLOPT_TLS13_CIPHERS, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.tls.options.set(|t| &mut t.tls13_ciphers, value)?;
+        }
+        (ffi::CURLOPT_SSL_EC_CURVES, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.tls.options.set(|t| &mut t.curves, value)?;
+        }
+        (ffi::CURLOPT_SSL_SIGNATURE_ALGORITHMS, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options
+                .tls
+                .options
+                .set(|t| &mut t.signature_algorithms, value)?;
+        }
         // Nothing here raises or catches a signal: it is kept to.
         (ffi::CURLOPT_NOSIGNAL, Long(_)) => {}
         (ffi::CURLOPT_HTTP09_ALLOWED, Long(n)) => options.http.allow_09 = n != 0,

@@ -193,7 +193,24 @@ not a difference: it is tracked in `MILESTONES.md`.
   fails with 43. Pinned by `signs_the_components_named`
   (`crates/curl-core/src/proto/http/httpsig/tests.rs`).
 
+- **`CURLOPT_SSLVERSION` refuses a newest version of SSL 2 or 3.** `Curl_setopt_SSLVERSION`
+  (`lib/setopt.c`) refuses SSL 2 and 3 as the oldest version but takes them as the newest
+  (`CURL_SSLVERSION_MAX_*` has no such value; `2 << 16` and `3 << 16` pass its range check), and
+  the transfer then fails its handshake, `CURL_SSLVERSION_MAX incompatible with
+  CURL_SSLVERSION`, unless the oldest is `CURL_SSLVERSION_TLSv1`, when OpenSSL is given no
+  newest at all. Measured against the C build: the option returns 0 and the transfer fails with
+  35. Here the option is refused with `CURLE_BAD_FUNCTION_ARGUMENT`, as the same values are as
+  the oldest. Pinned by `tls_options_are_kept_as_c_keeps_them`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
+
 ## Undefined behaviour in C, defined here
+
+- **A blob option's bytes are copied, `CURL_BLOB_NOCOPY` or not.** C keeps the application's
+  pointer for a `CURL_BLOB_NOCOPY` blob (`Curl_setblobopt`, `lib/setopt.c`) and reads it when it
+  uses the option: memory freed before then is read after its free, and bytes changed before
+  then are the ones used. Here the bytes are copied as the option is set, so the bytes given
+  are the ones used. Pinned by `tls_options_are_kept_as_c_keeps_them`
+  (`crates/curl-sys-abi/src/handle_tests.rs`).
 
 - **A header pointer libcurl did not hand out leads nowhere.** `curl_easy_nextheader` given a
   `prev` that is not a header it returned, such as a copy of one, returns NULL; C reads its

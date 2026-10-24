@@ -208,6 +208,173 @@ fn a_request_target_is_kept() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The TLS options as setopt.c takes them: a CA file of NULL is none
+/// (not the build's default), a blob without bytes refused; the version
+/// range as `Curl_setopt_SSLVERSION` checks it. Two differ from C
+/// (DIVERGENCE.md): a `CURL_BLOB_NOCOPY` blob is copied, where C keeps
+/// the application's pointer, and a newest version of SSL 2 or 3 is
+/// refused, where C takes it and fails the handshake.
+#[test]
+fn tls_options_are_kept_as_c_keeps_them() {
+    use curl_core::options::{CaSetting, SslOptions, TlsMaxVersion, TlsMinVersion};
+    let c = curl_easy_init();
+    let ca = |c, want: CaSetting| options(c, |o| o.tls.options.ca_file == want);
+    assert!(ca(c, CaSetting::Default));
+    let mut file = *b"ca.pem\0";
+    assert_eq!(pointer(c, ffi::CURLOPT_CAINFO, file.as_mut_ptr()), CURLE_OK);
+    assert!(ca(c, CaSetting::Given(b"ca.pem".to_vec())));
+    let null = ptr::null_mut::<c_char>();
+    assert_eq!(pointer(c, ffi::CURLOPT_CAINFO, null), CURLE_OK);
+    assert!(ca(c, CaSetting::Unset));
+    assert_eq!(pointer(c, ffi::CURLOPT_CAPATH, null), CURLE_OK);
+    assert!(options(c, |o| o.tls.options.ca_path == CaSetting::Unset));
+
+    let mut pem = *b"PEM";
+    let mut blob = ffi::curl_blob {
+        data: pem.as_mut_ptr().cast(),
+        len: pem.len(),
+        flags: ffi::CURL_BLOB_NOCOPY as c_uint,
+    };
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_CAINFO_BLOB, &raw mut blob),
+        CURLE_OK
+    );
+    pem[0] = b'X';
+    std::hint::black_box(&pem);
+    let kept = |c| options(c, |o| o.tls.options.ca_blob.clone());
+    assert_eq!(kept(c), Some(b"PEM".to_vec()));
+    blob.len = 0;
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_CAINFO_BLOB, &raw mut blob),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    blob.len = 3;
+    blob.data = ptr::null_mut();
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_CAINFO_BLOB, &raw mut blob),
+        CURLE_BAD_FUNCTION_ARGUMENT
+    );
+    let none = ptr::null_mut::<ffi::curl_blob>();
+    assert_eq!(pointer(c, ffi::CURLOPT_CAINFO_BLOB, none), CURLE_OK);
+    assert_eq!(kept(c), None);
+
+    let versions = |c| {
+        options(c, |o| {
+            (o.tls.options.min_version, o.tls.options.max_version)
+        })
+    };
+    for (value, want) in [
+        (
+            ffi::CURL_SSLVERSION_TLSv1_1 | ffi::CURL_SSLVERSION_MAX_TLSv1_2,
+            Some((TlsMinVersion::Tls1_1, TlsMaxVersion::Tls1_2)),
+        ),
+        (
+            ffi::CURL_SSLVERSION_DEFAULT | ffi::CURL_SSLVERSION_MAX_DEFAULT,
+            Some((TlsMinVersion::Tls1_2, TlsMaxVersion::Default)),
+        ),
+        (
+            ffi::CURL_SSLVERSION_TLSv1,
+            Some((TlsMinVersion::Tls1, TlsMaxVersion::None)),
+        ),
+        (
+            ffi::CURL_SSLVERSION_TLSv1_3,
+            Some((TlsMinVersion::Tls1_3, TlsMaxVersion::None)),
+        ),
+        (ffi::CURL_SSLVERSION_SSLv3, None),
+        (ffi::CURL_SSLVERSION_SSLv2, None),
+        (ffi::CURL_SSLVERSION_LAST, None),
+        (ffi::CURL_SSLVERSION_MAX_LAST, None),
+        // C takes these, and fails the handshake.
+        (2 << 16, None),
+        (3 << 16, None),
+        (-1, None),
+    ] {
+        let before = versions(c);
+        let code = long(c, ffi::CURLOPT_SSLVERSION, value);
+        match want {
+            Some(v) => {
+                assert_eq!(code, CURLE_OK, "{value:#x}");
+                assert_eq!(versions(c), v, "{value:#x}");
+            }
+            None => {
+                assert_eq!(code, CURLE_BAD_FUNCTION_ARGUMENT, "{value:#x}");
+                assert_eq!(versions(c), before, "{value:#x}");
+            }
+        }
+    }
+    assert_eq!(long(c, ffi::CURLOPT_SSL_OPTIONS, 0x111), CURLE_OK);
+    assert_eq!(
+        options(c, |o| o.tls.options.ssl_options),
+        SslOptions::NATIVE_CA | SslOptions::ALLOW_BEAST
+    );
+    assert_eq!(long(c, ffi::CURLOPT_SSL_ENABLE_ALPN, 0), CURLE_OK);
+    assert!(!options(c, |o| o.tls.options.alpn));
+    let mut list = *b"X25519\0";
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_SSL_EC_CURVES, list.as_mut_ptr()),
+        CURLE_OK
+    );
+    assert_eq!(
+        options(c, |o| o.tls.options.curves.clone()),
+        Some(b"X25519".to_vec())
+    );
+    // The build's CA defaults, whatever was set.
+    let given = |i| {
+        let mut p: *const c_char = ptr::null();
+        // SAFETY: a live handle, and a value of the info's type.
+        assert_eq!(unsafe { curl_easy_getinfo(c, i, &raw mut p) }, CURLE_OK);
+        p
+    };
+    let (file, path) = crate::version::ca_defaults();
+    assert!(
+        !file.is_null() || !path.is_null(),
+        "the build has a default"
+    );
+    assert_eq!(given(ffi::CURLINFO_CAINFO), file);
+    assert_eq!(given(ffi::CURLINFO_CAPATH), path);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
+/// `curl_global_sslset` knows OpenSSL alone, by id or by name in any
+/// case, and lists it.
+#[test]
+fn the_one_tls_library_is_openssl() {
+    let mut avail: *mut *const ffi::curl_ssl_backend = ptr::null_mut();
+    // SAFETY: a valid name and list pointer.
+    let set = unsafe {
+        crate::root::curl_global_sslset(ffi::CURLSSLBACKEND_OPENSSL, ptr::null(), &raw mut avail)
+    };
+    assert_eq!(set, ffi::CURLSSLSET_OK);
+    // SAFETY: the list ends with NULL, each entry a static backend.
+    let names: Vec<_> = unsafe {
+        let mut names = Vec::new();
+        let mut p = avail;
+        while !(*p).is_null() {
+            names.push(((**p).id.0, CStr::from_ptr((**p).name).to_bytes().to_vec()));
+            p = p.add(1);
+        }
+        names
+    };
+    assert_eq!(names, [(1, b"openssl".to_vec())]);
+    // SAFETY: valid names; no list asked.
+    unsafe {
+        let by_name =
+            |id, name: &CStr| crate::root::curl_global_sslset(id, name.as_ptr(), ptr::null_mut());
+        assert_eq!(
+            by_name(ffi::curl_sslbackend(99), c"OpenSSL"),
+            ffi::CURLSSLSET_OK
+        );
+        assert_eq!(
+            by_name(ffi::curl_sslbackend(99), c"gnutls"),
+            ffi::CURLSSLSET_UNKNOWN_BACKEND
+        );
+        let none =
+            crate::root::curl_global_sslset(ffi::curl_sslbackend(99), ptr::null(), ptr::null_mut());
+        assert_eq!(none, ffi::CURLSSLSET_UNKNOWN_BACKEND);
+    }
+}
+
 /// `CURLOPT_RANGE` is copied; NULL takes it away; duphandle copies it.
 #[test]
 fn a_range_is_kept() {

@@ -145,6 +145,58 @@ pub unsafe extern "C" fn curl_global_trace(config: *const c_char) -> CURLcode {
 }
 const _: ffi::proto::curl_global_trace = curl_global_trace;
 
+/// The TLS libraries this build has, as `curl_global_sslset` lists
+/// them: OpenSSL alone.
+struct Backends([*const ffi::curl_ssl_backend; 2]);
+
+// SAFETY: the pointers name the static below and a static C string,
+// neither ever written.
+unsafe impl Sync for Backends {}
+
+static OPENSSL_BACKEND: Backend = Backend(ffi::curl_ssl_backend {
+    id: ffi::CURLSSLBACKEND_OPENSSL,
+    name: c"openssl".as_ptr(),
+});
+
+struct Backend(ffi::curl_ssl_backend);
+
+// SAFETY: as for `Backends`.
+unsafe impl Sync for Backend {}
+
+static BACKENDS: Backends = Backends([&raw const OPENSSL_BACKEND.0, core::ptr::null()]);
+
+/// Choose the TLS library by `id` or by `name` (`curl_global_sslset`).
+/// This build has one, OpenSSL, always in use: choosing it succeeds, at
+/// any time, and any other is not known, as in C built with one. The
+/// list of those available is given in `avail` unless NULL.
+///
+/// # Safety
+///
+/// `name` is NULL or a C string; `avail` is NULL or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn curl_global_sslset(
+    id: ffi::curl_sslbackend,
+    name: *const c_char,
+    avail: *mut *mut *const ffi::curl_ssl_backend,
+) -> ffi::CURLsslset {
+    if !avail.is_null() {
+        // SAFETY: as the caller guarantees. C hands out the list as
+        // writable too; nothing writes it.
+        unsafe { avail.write(BACKENDS.0.as_ptr().cast_mut()) };
+    }
+    let named = !name.is_null()
+        // SAFETY: as the caller guarantees.
+        && unsafe { core::ffi::CStr::from_ptr(name) }
+            .to_bytes()
+            .eq_ignore_ascii_case(b"openssl");
+    if id == ffi::CURLSSLBACKEND_OPENSSL || named {
+        ffi::CURLSSLSET_OK
+    } else {
+        ffi::CURLSSLSET_UNKNOWN_BACKEND
+    }
+}
+const _: ffi::proto::curl_global_sslset = curl_global_sslset;
+
 fn root() -> std::sync::MutexGuard<'static, Root> {
     // Panics abort, so the lock is never poisoned.
     ROOT.lock().expect("the global root lock is never poisoned")

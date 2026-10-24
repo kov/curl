@@ -175,3 +175,35 @@ features: debug-hooks
             options.http.custom.set(|g| &mut g.method, value)?;
 --- new
             options.http.custom.make_mut()?.method = value;
+
+=== a CA file set to NULL falls back to the build's default
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::tls_options_are_kept_as_c_keeps_them
+--- old
+        None => curl_core::options::CaSetting::Unset,
+--- new
+        None => curl_core::options::CaSetting::Default,
+
+=== an empty CA blob is taken
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::tls_options_are_kept_as_c_keeps_them
+--- old
+    if blob.data.is_null() || blob.len == 0 || blob.len > MAX_INPUT_LENGTH {
+--- new
+    if blob.data.is_null() || blob.len > MAX_INPUT_LENGTH {
+
+=== CURLOPT_SSLVERSION takes SSL 3
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::tls_options_are_kept_as_c_keeps_them
+--- old
+        ffi::CURL_SSLVERSION_TLSv1_3 => Min::Tls1_3,
+--- new
+        ffi::CURL_SSLVERSION_TLSv1_3 | ffi::CURL_SSLVERSION_SSLv3 => Min::Tls1_3,
+
+=== curl_global_sslset knows OpenSSL's name only in lower case
+file: crates/curl-sys-abi/src/root.rs
+witness: curl-sys-abi handle_tests::the_one_tls_library_is_openssl
+--- old
+            .eq_ignore_ascii_case(b"openssl");
+--- new
+            == b"openssl";

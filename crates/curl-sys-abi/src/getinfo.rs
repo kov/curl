@@ -288,6 +288,9 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
         ffi::CURLINFO_CONDITION_UNMET => Value::Long(r.condition_unmet().into()),
         ffi::CURLINFO_FILETIME_T => Value::Off(r.filetime().unwrap_or(-1)),
         ffi::CURLINFO_PROTOCOL => Value::Long(r.protocol().map_or(0, proto_bit)),
+        // The build's, whatever the transfer set.
+        ffi::CURLINFO_CAINFO => Value::Ptr(crate::version::ca_defaults().0.cast_mut().cast()),
+        ffi::CURLINFO_CAPATH => Value::Ptr(crate::version::ca_defaults().1.cast_mut().cast()),
         ffi::CURLINFO_TOTAL_TIME => Value::Double(secs(t.total())),
         ffi::CURLINFO_NAMELOOKUP_TIME => Value::Double(secs(t.namelookup())),
         ffi::CURLINFO_CONNECT_TIME => Value::Double(secs(t.connect())),

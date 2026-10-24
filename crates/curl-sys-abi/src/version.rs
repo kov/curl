@@ -115,6 +115,13 @@ static BROTLI: OnceLock<CBuf<32>> = OnceLock::new();
 static ZSTD: OnceLock<CBuf<32>> = OnceLock::new();
 static INFO: OnceLock<Data> = OnceLock::new();
 
+/// The build's CA bundle and directory, as `curl_version_info` gives
+/// them (C's `CURL_CA_BUNDLE` and `CURL_CA_PATH`), each NULL if none.
+pub(crate) fn ca_defaults() -> (*const c_char, *const c_char) {
+    let i = info();
+    (i.cainfo, i.capath)
+}
+
 fn info() -> &'static curl_version_info_data {
     let v = version();
     let protocol_names = PROTOCOL_NAMES.get_or_init(|| {

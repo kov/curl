@@ -1907,6 +1907,12 @@ impl SslOptions {
     pub const AUTO_CLIENT_CERT: SslOptions = SslOptions(1 << 5);
     pub const EARLYDATA: SslOptions = SslOptions(1 << 6);
 
+    /// The options of the bits `bits`, each kept whether or not this
+    /// build acts on it.
+    pub const fn from_bits(bits: u8) -> SslOptions {
+        SslOptions(bits)
+    }
+
     /// Every bit of `other` is set.
     pub fn contains(self, other: SslOptions) -> bool {
         self.0 & other.0 == other.0

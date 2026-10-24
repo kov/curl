@@ -360,3 +360,15 @@ witness: curl-openssl tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allo
         if !options.ssl_options.contains(SslOptions::ALLOW_BEAST) {
 --- new
         if false && !options.ssl_options.contains(SslOptions::ALLOW_BEAST) {
+
+=== the certificate's names are printed for a transfer that is not verbose, an issuer too long failing it
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_name_too_long_for_c_s_buffer_is_not_shown
+--- old
+    if !io.verbose() {
+        return Ok(());
+    }
+--- new
+    if false && !io.verbose() {
+        return Ok(());
+    }

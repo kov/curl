@@ -326,6 +326,10 @@ impl<H: Host> LayerCx for DriveCx<'_, '_, H> {
         LayerCx::debugs(&*self.step)
     }
 
+    fn verbose(&self) -> bool {
+        LayerCx::verbose(&*self.step)
+    }
+
     fn certinfo_report(&mut self) -> Option<&mut crate::report::TransferReport> {
         LayerCx::certinfo_report(&mut *self.step)
     }

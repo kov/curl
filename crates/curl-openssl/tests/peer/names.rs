@@ -177,8 +177,8 @@ fn a_common_name_with_a_zero_byte_is_refused() {
 
 /// The subject and issuer lines (`x509_name_oneline`) hold a name that,
 /// with its zero byte, fits C's 2048 bytes: a subject that does not is
-/// shown as `[NONE]`, an issuer that does not fails the transfer (100);
-/// an empty one is shown empty.
+/// shown as `[NONE]`, an issuer that does not fails a verbose transfer
+/// (100) and no other; an empty one is shown empty.
 fn a_name_too_long_for_c_s_buffer_is_not_shown() {
     let ca = certs("longname", "unused", &[]);
     let localhost = |s: &mut SubjectAlternativeName| {
@@ -246,4 +246,13 @@ fn a_name_too_long_for_c_s_buffer_is_not_shown() {
         "{:#?}",
         got.seen.lines
     );
+    // A transfer that is not verbose prints no names, and so the issuer
+    // does not fail it, as C prints them only when verbose.
+    let (at, server) = serve(&by_long);
+    let got = get("localhost", at, |o| {
+        trusting(&by_long)(o);
+        o.output.verbose = false;
+    });
+    server.join().unwrap();
+    assert_eq!(got.result, Ok(()));
 }

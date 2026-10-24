@@ -847,6 +847,10 @@ impl<H: Host> LayerCx for StepCx<'_, H> {
         options.callbacks.debug.is_some() && options.output.verbose
     }
 
+    fn verbose(&self) -> bool {
+        self.easy().options().output.verbose
+    }
+
     fn certinfo_report(&mut self) -> Option<&mut TransferReport> {
         let asked = self.easy().options().tls.certinfo;
         asked.then(|| self.report_mut())

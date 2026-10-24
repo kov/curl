@@ -381,6 +381,12 @@ impl TlsIo<'_> {
         self.cx.of(self.component, line);
     }
 
+    /// The transfer is verbose (`Curl_trc_is_verbose`): a library with
+    /// work to do for its `info` lines, work that can fail, asks first.
+    pub fn verbose(&self) -> bool {
+        self.cx.verbose()
+    }
+
     /// A line of the transfer's verbose output (`infof`).
     pub fn info(&mut self, line: fmt::Arguments<'_>) {
         self.cx.info(line);

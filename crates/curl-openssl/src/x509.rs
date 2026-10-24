@@ -430,8 +430,13 @@ fn name_line(name: *const openssl_sys::X509_NAME, bio: &mut MemBio) -> Result<()
     Ok(())
 }
 
-/// The lines about the peer's certificate (`ossl_infof_cert`).
+/// The lines about the peer's certificate (`ossl_infof_cert`), for a
+/// verbose transfer only: a name too long to print fails only one that
+/// prints it, as in C.
 fn info_cert(cert: &Cert, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
+    if !io.verbose() {
+        return Ok(());
+    }
     let Some(mut bio) = MemBio::new() else {
         let e = ErrText::last();
         return Err(io.fail(
@@ -478,6 +483,9 @@ pub(crate) unsafe fn c_text<'a>(p: *const c_char) -> Option<&'a [u8]> {
 /// A line for each certificate of the chain (`infof_certstack`): the
 /// verified one if it verified, else the one the peer sent.
 fn info_chain(ssl: NonNull<SSL>, io: &mut TlsIo<'_>) {
+    if !io.verbose() {
+        return;
+    }
     // SAFETY: the session's SSL, its handshake done.
     let verified = unsafe { openssl_sys::SSL_get_verify_result(ssl.as_ptr()) };
     let chain = if verified == c_long::from(openssl_sys::X509_V_OK) {

@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="US-ASCII"?>
+<testcase>
+<info>
+<keywords>
+HTTPS
+HTTP GET
+</keywords>
+</info>
+
+# Server-side
+<reply>
+</reply>
+
+# Client-side
+<client>
+<features>
+SSL
+local-http
+</features>
+<server>
+https
+</server>
+<name>
+HTTPS with a peer that fails verification says where to learn more
+</name>
+<command>
+-sS --cacert %CERTDIR/certs/test-client-cert.crt https://localhost:%HTTPSPORT/%TESTNUMBER
+</command>
+</client>
+
+# Verify data after the test has been "shot"
+<verify>
+<errorcode>
+60
+</errorcode>
+<stderr mode="text">
+curl: (60) SSL certificate OpenSSL verify result: unable to get local issuer certificate (20)
+More details here: https://curl.se/docs/sslcerts.html
+
+curl failed to verify the legitimacy of the server and therefore could not
+establish a secure connection to it. To learn more about this situation and
+how to fix it, please visit the webpage mentioned above.
+</stderr>
+</verify>
+</testcase>

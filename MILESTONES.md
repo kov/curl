@@ -636,8 +636,9 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       list below passes on both legs, with 2095.
     - **f. The application's hands on OpenSSL.** **Done.** `SSL_CTX_FUNCTION` and its data,
       `TLS_SSL_PTR` and `TLS_SESSION` (the core's `TlsNative`), the retry-verify pause;
-      close_notify as `Closing`'s first producer, in the reference's order (758, 1587). 758's
-      timer calls still differ where C's ALPN_EYEBALLS and name timers are armed, which g brings.
+      close_notify as `Closing`'s first producer, in the reference's order (758, 1587). 758
+      checks its result only; C's run also arms ALPN_EYEBALLS, which g brings, and its socket
+      calls include a first, IPv6 attempt the rewrite's run does not make.
     - **g. ALPN's trace.** HTTPS-CONNECT in the chain, ALPN_EYEBALLS armed where C's
       outstanding HTTPS-RR query arms it (sabotage: arm it for an IP literal or a cached
       name), `query ALPN` on every new connection (step 40's goldens updated), SSL's lines.

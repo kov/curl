@@ -40,7 +40,8 @@ TLS is the pair `curl_core::tls::TlsBackend` (a client session from a configurat
 peer) and `TlsSession` (one connection's handshake, records and shutdown, over the layer
 below), which the core's own layer drives; the core names no TLS library's types, and the
 application's hands on the library (`CURLOPT_SSL_CTX_FUNCTION`, `CURLINFO_TLS_SSL_PTR`) reach it
-as `&mut dyn Any` that the shim downcasts. This build has one backend, the reference build's:
+as an opaque `TlsNative`, the untyped context and session objects the backend hands out, which
+the shim passes on as C's `SSL_CTX *` and `SSL *`. This build has one backend, the reference build's:
 OpenSSL 3.0 or later, the system's library, linked as the reference links it (never
 openssl-sys's `vendored` copy), checked at build and at init. The CA default is the one CMake
 detects at build time, kept as static strings. `curl_global_sslset` knows only OpenSSL.

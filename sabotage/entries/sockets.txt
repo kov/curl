@@ -162,3 +162,13 @@ witness: curl-sys-abi tls_tests::a_retried_verify_waits_for_the_application_to_u
                 io.pause_recv();
 --- new
                 io.trace(format_args!("SSL_connect() -> want retry_verify"));
+
+=== an SSL_CTX function's code that a transfer can end with is taken as an abort
+file: crates/curl-sys-abi/src/tls.rs
+witness: curl-sys-abi tls_tests::the_ssl_ctx_function_s_code_fails_the_transfer
+--- old
+    let kind = ErrorKind::ALL.iter().find(|&&k| easy_code(k) == code);
+    Err(kind.copied().unwrap_or(ErrorKind::AbortedByCallback))
+--- new
+    let kind = ErrorKind::ALL.iter().find(|&&k| easy_code(k) == code);
+    Err(kind.map_or(ErrorKind::AbortedByCallback, |_| ErrorKind::AbortedByCallback))

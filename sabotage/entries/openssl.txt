@@ -95,7 +95,7 @@ witness: curl-openssl another_ca_file_path_or_partial_chain_loads_its_own
     partial(kept) == partial(wanted)
         && kept.ca_file()
 --- new
-    (partial(kept) || !partial(wanted))
+    (!partial(kept) || partial(wanted))
         && kept.ca_file()
 
 === a store kept for one CA path serves a transfer naming another

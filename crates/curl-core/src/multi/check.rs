@@ -43,6 +43,15 @@ impl<H: Host> Multi<H> {
                 !matches!(run.state, TransferState::Done(_)),
                 "{id:?} rests in Done"
             );
+            // The trace's state says PENDING exactly while the transfer
+            // waits for a connection: one let out is in CONNECT at once.
+            let mstate = self.slots.get(id).expect("just found").mstate;
+            assert_eq!(
+                mstate == super::mstate::MState::Pending,
+                matches!(run.state, TransferState::Pending(_)),
+                "{id:?} is traced in {mstate:?} in {:?}",
+                run.state
+            );
             let pause = self.slots.get(id).expect("just found").pause;
             assert!(
                 pause.recv != RecvPause::Held || run.state.holds_output(),

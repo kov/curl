@@ -24,9 +24,10 @@ numbers are those of `SCOPE.md`.
    helper.
 2. **`Completed` is reachable through one exit function.** `remove` uses it too, so the bypass
    at multi.c:815 cannot be written.
-3. **Set membership is derived from the state.** process, pending and msgsent are functions of
-   the variant. The only stored set is `dirty`, which is a genuine separate fact (a work queue).
-   Counters are an index with one writer (the transition function) and a full recount in the
+3. **Set membership is derived from the state.** process and pending are functions of the
+   variant; the trace's `MState` agrees with it, PENDING exactly while the variant is `Pending`,
+   which the debug build's check holds. The only stored set is `dirty`, which is a genuine
+   separate fact (a work queue). Counters are an index with one writer (the transition function) and a full recount in the
    debug build after every pass.
 4. **`Deadlines` is the only owner of time limits.** The wake-up and the "is it late" check are
    both derived from the same stored instants, the report's `Starts`, which the getinfo times
@@ -380,8 +381,9 @@ action traces `multi_run_dirty` as it comes to each dirty transfer. Not traced: 
 line (`Curl_creds_trace`), `xfer_setup` and `[TIMEOUT]`; event mode's socket-hash
 lines (`ev new entry`, `ev entry … added transfer`, `ev update`, `ev update call`, `ev last user
 gone`), which count the readers, writers and owners of C's socket hash entries, a bookkeeping the
-engine's `SocketTable` does not keep in that form; a transfer let out of PENDING by another is
-traced entering CONNECT at its next step rather than as it is let.
+engine's `SocketTable` does not keep in that form. A transfer let out of PENDING enters CONNECT
+as it is let, traced on it then (`move_pending_to_connect`), so a wait before it runs collects its
+empty pollset.
 
 `TCP` traces each send and receive on a transfer's connection, and the PROXY protocol's line,
 with what it asked for and what it came to. Through the drive's context (§3.6), it traces an

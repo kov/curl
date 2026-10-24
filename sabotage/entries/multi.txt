@@ -138,11 +138,11 @@ witness: curl-core multi::tests::a_timer_abort_inside_remove_still_removes
 file: crates/curl-core/src/multi/mod.rs
 witness: curl-core multi::tests::timers_wake_transfers_through_socket_action
 --- old
-        let now = self.clock.now();
+        let mut now = self.clock.now();
         self.mark_expired_dirty(now, ev);
         // A socket callback's abort
 --- new
-        let now = self.clock.now();
+        let mut now = self.clock.now();
         // A socket callback's abort
 
 === a transfer's message is announced before the transfer is done
@@ -714,3 +714,21 @@ features: test-util
         TransferState::Did(x) if expired(run, cx) => {
 --- new
         TransferState::Did(x) if false && expired(run, cx) => {
+
+=== a transfer let out of PENDING by a removal stays traced as pending
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core multi::tests::a_transfer_let_out_of_pending_is_in_connect_at_once
+--- old
+            let mut cx = StepCx::new(id, self.rest(now, ev));
+            mstate::enter(&mut cx, mstate::MState::Connect);
+--- new
+            let _ = (id, now, &ev);
+
+=== a transfer let out of PENDING by a connection given back stays traced as pending
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core multi::tests::a_transfer_let_out_of_pending_is_in_connect_at_once
+--- old
+        let mut cx = StepCx::new(id, rest.reborrow());
+        mstate::enter(&mut cx, MState::Connect);
+--- new
+        let _ = id;

@@ -78,6 +78,9 @@ exclude_re = [
     # A reservation size: a wrong one only makes the pushes grow the
     # vector.
     'curl-openssl/src/certinfo\.rs:.*: replace (\* with (\+|/)|\+ with (-|\*)) in hex$',
+    # Called for a DER blob alone, as C calls it: a PEM blob is read as a
+    # chain (`use_certificate_chain_blob`).
+    'curl-openssl/src/cert\.rs:.*: delete match arm FileType::Pem in use_certificate_blob$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

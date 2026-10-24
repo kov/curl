@@ -5,7 +5,9 @@
 use std::path::PathBuf;
 
 use openssl::pkcs12::Pkcs12;
+use openssl::rsa::Rsa;
 use openssl::ssl::SslVerifyMode;
+use openssl::stack::Stack;
 use openssl::symm::Cipher;
 
 use super::*;
@@ -30,6 +32,22 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
     (
         "no_client_certificate_fails_as_the_server_alerts",
         no_client_certificate_fails_as_the_server_alerts,
+    ),
+    (
+        "a_client_certificate_and_key_in_der_blobs_are_shown",
+        a_client_certificate_and_key_in_der_blobs_are_shown,
+    ),
+    (
+        "a_client_chain_in_a_blob_or_a_pkcs12_file_is_sent_whole",
+        a_client_chain_in_a_blob_or_a_pkcs12_file_is_sent_whole,
+    ),
+    (
+        "a_chain_blob_with_a_broken_certificate_fails",
+        a_chain_blob_with_a_broken_certificate_fails,
+    ),
+    (
+        "a_key_of_another_kind_than_the_certificate_fails_the_check",
+        a_key_of_another_kind_than_the_certificate_fails_the_check,
     ),
     (
         "a_certificate_or_key_that_cannot_be_used_fails_as_c_says",
@@ -320,5 +338,181 @@ fn no_client_certificate_fails_as_the_server_alerts() {
             "OpenSSL SSL_read: OpenSSL/{version}: error:0A00045C:SSL routines::tlsv13 alert \
              certificate required, errno 0"
         )
+    );
+}
+
+/// `CURLOPT_SSLCERT_BLOB` and `CURLOPT_SSLKEY_BLOB` in DER
+/// (`use_certificate_blob`, `use_privatekey_blob`).
+fn a_client_certificate_and_key_in_der_blobs_are_shown() {
+    let certs = certs("mtls-derblob", "localhost", &["localhost"]);
+    let client = client("mtls-derblob");
+    let got = get_as(&certs, &client, |t| {
+        t.cert_blob = Some(std::fs::read(&client.cert_der).unwrap());
+        t.cert_type = Some(b"DER".to_vec());
+        t.key_blob = Some(std::fs::read(&client.key_der).unwrap());
+        t.key_type = Some(b"DER".to_vec());
+    });
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert_eq!(got.seen.body, BODY);
+}
+
+/// A client certificate an intermediate CA issued, the server trusting
+/// the root alone: what the client sends must hold the intermediate.
+struct Chained {
+    leaf: X509,
+    intermediate: X509,
+    key: PKey<Private>,
+    /// The root, as `Client::ca`, which the server trusts.
+    client: Client,
+}
+
+fn chained(tag: &str) -> Chained {
+    let client = client(tag);
+    let root = self::certs(&format!("{tag}-root"), "root", &[]);
+    let inter_key = key();
+    let mut inter = X509::builder().unwrap();
+    inter.set_version(2).unwrap();
+    inter
+        .set_serial_number(&BigNum::from_u32(5).unwrap().to_asn1_integer().unwrap())
+        .unwrap();
+    inter
+        .set_subject_name(&name(&format!("{tag} intermediate")))
+        .unwrap();
+    inter.set_issuer_name(root.ca.subject_name()).unwrap();
+    inter.set_pubkey(&inter_key).unwrap();
+    inter
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    inter
+        .set_not_after(&Asn1Time::days_from_now(2).unwrap())
+        .unwrap();
+    inter
+        .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+        .unwrap();
+    inter.sign(&root.ca_key, MessageDigest::sha256()).unwrap();
+    let inter = inter.build();
+    let key = key();
+    let mut leaf = X509::builder().unwrap();
+    leaf.set_version(2).unwrap();
+    leaf.set_serial_number(&BigNum::from_u32(6).unwrap().to_asn1_integer().unwrap())
+        .unwrap();
+    leaf.set_subject_name(&name("client")).unwrap();
+    leaf.set_issuer_name(inter.subject_name()).unwrap();
+    leaf.set_pubkey(&key).unwrap();
+    leaf.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    leaf.set_not_after(&Asn1Time::days_from_now(2).unwrap())
+        .unwrap();
+    leaf.sign(&inter_key, MessageDigest::sha256()).unwrap();
+    Chained {
+        leaf: leaf.build(),
+        intermediate: inter,
+        key,
+        client: Client {
+            ca: root.ca,
+            ..client
+        },
+    }
+}
+
+/// A PEM blob's certificates after the first are sent as its chain
+/// (`use_certificate_chain_blob`), and a PKCS#12 file's CAs likewise,
+/// each made a client CA too (`pkcs12load`): the server, trusting only
+/// the root, verifies the client by the intermediate sent.
+fn a_client_chain_in_a_blob_or_a_pkcs12_file_is_sent_whole() {
+    let certs = certs("mtls-chain", "localhost", &["localhost"]);
+    let c = chained("mtls-chain");
+    let pem = [c.leaf.to_pem().unwrap(), c.intermediate.to_pem().unwrap()].concat();
+    let key = c.key.private_key_to_pem_pkcs8().unwrap();
+    let got = get_as(&certs, &c.client, |t| {
+        t.cert_blob = Some(pem.clone());
+        t.key_blob = Some(key.clone());
+    });
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert_eq!(got.seen.body, BODY);
+    // The leaf alone does not verify.
+    let got = get_as(&certs, &c.client, |t| {
+        t.cert_blob = Some(c.leaf.to_pem().unwrap());
+        t.key_blob = Some(key.clone());
+    });
+    assert_eq!(
+        got.result,
+        Err(ErrorKind::RecvError),
+        "{:#?}",
+        got.seen.lines
+    );
+    let mut cas = Stack::new().unwrap();
+    cas.push(c.intermediate.clone()).unwrap();
+    let p12 = Pkcs12::builder()
+        .name("client")
+        .pkey(&c.key)
+        .cert(&c.leaf)
+        .ca(cas)
+        .build2("secret")
+        .unwrap();
+    let got = get_as(&certs, &c.client, |t| {
+        t.cert_blob = Some(p12.to_der().unwrap());
+        t.cert_type = Some(b"P12".to_vec());
+        t.key_password = Some(b"secret".to_vec());
+    });
+    assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
+    assert_eq!(got.seen.body, BODY);
+}
+
+/// A chain blob whose second certificate cannot be read fails the
+/// certificate, said with the library's error (`chain_rest`, as
+/// `SSL_CTX_use_certificate_chain_file`): only the end of the text ends
+/// the chain.
+fn a_chain_blob_with_a_broken_certificate_fails() {
+    let certs = certs("mtls-broken", "localhost", &["localhost"]);
+    let client = client("mtls-broken");
+    let broken = [
+        std::fs::read(&client.cert_pem).unwrap(),
+        b"-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n".to_vec(),
+    ]
+    .concat();
+    let (at, server) = serve_asking(&certs, &client);
+    let got = get("localhost", at, |o| {
+        trusting(&certs)(o);
+        let t = o.tls.options.make_mut().unwrap();
+        t.cert_blob = Some(broken);
+        t.key = Some(bytes(&client.key_pem));
+    });
+    server.join().unwrap();
+    assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
+    let failure = String::from_utf8(got.failure).unwrap();
+    assert!(
+        failure.starts_with(
+            "could not load PEM client certificate from CURLOPT_SSLCERT_BLOB, OpenSSL error \
+             error:"
+        ) && failure.ends_with(
+            ":PEM routines::bad base64 decode, (no key found, wrong passphrase, or wrong \
+             file format?)"
+        ),
+        "{failure}"
+    );
+}
+
+/// An RSA key for an EC certificate is set beside it, not refused: the
+/// check after finds the key without its certificate, as C's
+/// `SSL_CTX_check_private_key` does.
+fn a_key_of_another_kind_than_the_certificate_fails_the_check() {
+    let certs = certs("mtls-kind", "localhost", &["localhost"]);
+    let client = client("mtls-kind");
+    let rsa = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let rsa_file = certs_dir().join("mtls-kind-rsa.pem");
+    std::fs::write(&rsa_file, rsa.private_key_to_pem_pkcs8().unwrap()).unwrap();
+    let (at, server) = serve_asking(&certs, &client);
+    let got = get("localhost", at, |o| {
+        trusting(&certs)(o);
+        let t = o.tls.options.make_mut().unwrap();
+        t.cert = Some(bytes(&client.cert_pem));
+        t.key = Some(bytes(&rsa_file));
+    });
+    server.join().unwrap();
+    assert_eq!(got.result, Err(ErrorKind::SslCertproblem));
+    assert_eq!(
+        got.failure,
+        b"Private key does not match the certificate public key"
     );
 }

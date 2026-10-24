@@ -153,3 +153,74 @@ fn an_identity_copies_the_options() {
     assert_eq!(id.options.ca_blob, text("pem"));
     assert!(id.verify_peer);
 }
+
+/// A copy of a handle's options (`curl_easy_duphandle`) keeps its TLS
+/// settings: the verify bits, the options few transfers set, and each CA
+/// setting as it was, named, none or the default.
+#[test]
+fn a_copy_of_the_options_keeps_the_tls_settings() {
+    let mut o = crate::options::Options::default();
+    o.tls.verify_peer = false;
+    o.tls.verify_host = false;
+    let tls = o.tls.options.make_mut().unwrap();
+    tls.ca_file = CaSetting::Given(b"/certs/ca.pem".to_vec());
+    tls.ca_path = CaSetting::Unset;
+    tls.ssl_options = SslOptions::NO_REVOKE;
+    tls.key_password = text("secret");
+    let copy = o.try_clone().unwrap();
+    assert!(!copy.tls.verify_peer);
+    assert!(!copy.tls.verify_host);
+    assert_eq!(*copy.tls.options, *o.tls.options);
+    assert_eq!(
+        copy.tls.options.ca_file,
+        CaSetting::Given(b"/certs/ca.pem".to_vec())
+    );
+    assert_eq!(copy.tls.options.ca_path, CaSetting::Unset);
+    // One left at the default stays the default.
+    let kept = crate::options::Options::default().try_clone().unwrap();
+    assert_eq!(kept.tls.options.ca_file, CaSetting::Default);
+    assert!(kept.tls.verify_peer && kept.tls.verify_host);
+}
+
+/// The bits of `CURLOPT_SSL_OPTIONS` are a set: each one apart from the
+/// others and from none, and a set holds what was put in it.
+#[test]
+fn ssl_options_are_sets() {
+    use SslOptions as S;
+    let bits = [
+        S::ALLOW_BEAST,
+        S::NO_REVOKE,
+        S::NO_PARTIALCHAIN,
+        S::REVOKE_BEST_EFFORT,
+        S::NATIVE_CA,
+        S::AUTO_CLIENT_CERT,
+        S::EARLYDATA,
+    ];
+    assert!(S::NONE.contains(S::NONE));
+    for (i, &a) in bits.iter().enumerate() {
+        assert!(a.contains(a), "{i}");
+        assert!(a.contains(S::NONE), "{i}");
+        assert!(!S::NONE.contains(a), "{i}");
+        assert_eq!(a | a, a, "{i}");
+        assert_eq!(a | S::NONE, a, "{i}");
+        for (j, &b) in bits.iter().enumerate().filter(|&(j, _)| j != i) {
+            assert!(!a.contains(b), "{i} {j}");
+            let both = a | b;
+            assert!(both.contains(a) && both.contains(b), "{i} {j}");
+            assert!(!a.contains(both), "{i} {j}");
+        }
+    }
+}
+
+/// The ALPN offer as the handshake puts it on the wire, each name after
+/// its length (`Curl_alpn_to_proto_buf`), and as C traces it, the names
+/// between commas (`Curl_alpn_to_proto_str`); with ALPN off, none.
+#[test]
+fn an_alpn_offer_is_put_as_c_puts_it() {
+    assert_eq!(Alpn::None.wire(), b"");
+    assert_eq!(Alpn::None.offer(), None);
+    assert_eq!(Alpn::Http11.wire(), b"\x08http/1.1");
+    assert_eq!(Alpn::Http11.offer(), Some("http/1.1"));
+    assert_eq!(Alpn::Http10.wire(), b"\x08http/1.0\x08http/1.1");
+    assert_eq!(Alpn::Http10.offer(), Some("http/1.0,http/1.1"));
+}

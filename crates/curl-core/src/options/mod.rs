@@ -1899,7 +1899,7 @@ pub struct SslOptions(u8);
 impl SslOptions {
     pub const NONE: SslOptions = SslOptions(0);
     /// Allow the BEAST flaw's workaround off (`CURLSSLOPT_ALLOW_BEAST`).
-    pub const ALLOW_BEAST: SslOptions = SslOptions(1 << 0);
+    pub const ALLOW_BEAST: SslOptions = SslOptions(1);
     pub const NO_REVOKE: SslOptions = SslOptions(1 << 1);
     pub const NO_PARTIALCHAIN: SslOptions = SslOptions(1 << 2);
     pub const REVOKE_BEST_EFFORT: SslOptions = SslOptions(1 << 3);

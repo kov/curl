@@ -167,7 +167,7 @@ pub trait Socket: fmt::Debug + Send {
 
 /// A socket open, and how it is to be closed: the closer the connection
 /// it belongs to was made with. Only `Net::close` takes one; one dropped
-/// unclosed is a bug, caught in debug builds.
+/// unclosed is a bug, and aborts.
 pub struct Sock {
     /// None only as it closes.
     socket: Option<Box<dyn Socket>>,
@@ -224,7 +224,7 @@ impl fmt::Debug for Sock {
 
 impl Drop for Sock {
     fn drop(&mut self) {
-        debug_assert!(
+        assert!(
             self.socket.is_none() || std::thread::panicking(),
             "{:?} was dropped, not closed",
             self.socket.as_ref().map(|s| s.key())
@@ -1572,9 +1572,8 @@ mod tests {
     }
 
     /// A socket goes only through its closer: one dropped unclosed is a
-    /// bug, caught in debug builds.
+    /// bug, caught in every build.
     #[test]
-    #[cfg(debug_assertions)]
     #[should_panic = "was dropped, not closed"]
     fn a_dropped_socket_is_caught() {
         let clock = crate::time::ManualClock::new().unwrap();

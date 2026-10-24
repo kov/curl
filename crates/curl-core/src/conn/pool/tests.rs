@@ -1114,7 +1114,6 @@ fn a_search_prunes_once_a_second() {
 }
 
 #[test]
-#[cfg(debug_assertions)]
 #[should_panic = "dropped, not released"]
 fn a_dropped_lease_is_caught() {
     let (mut net, clock) = net();

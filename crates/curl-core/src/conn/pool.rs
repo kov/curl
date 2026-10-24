@@ -24,8 +24,7 @@ use crate::time::Instant;
 
 /// A transfer's hold on a connection, and the connection, being set up or
 /// up. Only the pool makes one, and only `Pool::release` takes one back,
-/// that pool being the one `home` names; dropping one is a bug, caught in
-/// debug builds.
+/// that pool being the one `home` names; dropping one is a bug, and aborts.
 #[must_use]
 #[derive(Debug)]
 pub(crate) struct ConnLease {
@@ -307,7 +306,7 @@ impl ConnLease {
 
 impl Drop for ConnLease {
     fn drop(&mut self) {
-        debug_assert!(
+        assert!(
             std::thread::panicking(),
             "the lease on {:?} was dropped, not released",
             self.id

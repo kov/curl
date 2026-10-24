@@ -17,8 +17,8 @@ use curl_core::conn::io::{Recv, Sent};
 use curl_core::error::ErrorKind;
 use curl_core::options::{SslOptions, TlsMaxVersion, TlsMinVersion};
 use curl_core::tls::{
-    Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsPeer, TlsPeerKind, TlsSession,
-    TlsShared, TlsWait,
+    Alpn, CaDefaults, Handshake, TlsBackend, TlsIdentity, TlsIo, TlsNative, TlsPeer, TlsPeerKind,
+    TlsSession, TlsShared, TlsWait,
 };
 use curl_os::error::ErrorText;
 use openssl_sys::{SSL, SSL_CTX};
@@ -422,6 +422,15 @@ impl Session {
         unsafe {
             openssl_sys::SSL_CTX_set_verify(ctx.as_ptr(), openssl_sys::SSL_VERIFY_NONE, None)
         };
+        // The application's turn at the context (`ssl_fsslctx`), made
+        // whole first, its trust store too (C's #11800).
+        if io.configures_context() {
+            if !self.flags.store_ready {
+                x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
+                self.flags.store_ready = true;
+            }
+            io.configure_context(TlsNative::new(ctx.cast(), None))?;
+        }
         // The SSL (`ossl_init_ssl`).
         // SAFETY: the context.
         let ssl = unsafe { openssl_sys::SSL_new(ctx.as_ptr()) };
@@ -534,9 +543,14 @@ impl Session {
                 self.waits = TlsWait::Recv;
                 return Ok(Handshake::Waiting);
             }
-            // A verify callback that asks to retry, which only the
-            // application's SSL_CTX function can install (43f), is none
-            // of these: it falls to the failure below until then.
+            SSL_ERROR_WANT_RETRY_VERIFY => {
+                // A verify callback the application installed waits for
+                // its verdict: the transfer's receiving pauses, and the
+                // handshake goes on once the application unpauses it.
+                io.trace(format_args!("SSL_connect() -> want retry_verify"));
+                io.pause_recv();
+                return Ok(Handshake::Waiting);
+            }
             _ => {}
         }
         // SAFETY: the thread's error queue: its earliest entry, taken.
@@ -671,6 +685,8 @@ impl Session {
 
 /// `SSL_ERROR_WANT_ASYNC`.
 const SSL_ERROR_WANT_ASYNC: c_int = 9;
+/// `SSL_ERROR_WANT_RETRY_VERIFY`, OpenSSL 3.0's.
+const SSL_ERROR_WANT_RETRY_VERIFY: c_int = 12;
 
 /// The text of a C string the library returns, or none.
 ///
@@ -870,6 +886,13 @@ impl TlsSession for Session {
 
     fn pending(&self) -> bool {
         self.flags.input_pending
+    }
+
+    /// The `SSL_CTX`, and the `SSL` once made, as C hands them out.
+    fn native(&self) -> Option<TlsNative> {
+        let ctx = self.ctx.as_ref()?.0;
+        let ssl = self.ssl.as_ref().map(|s| s.0.cast());
+        Some(TlsNative::new(ctx.cast(), ssl))
     }
 }
 

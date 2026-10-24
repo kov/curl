@@ -316,3 +316,31 @@ witness: curl-openssl an_aborted_transfer_s_connection_says_no_goodbye
         close_now(conn, net);
         return;
     }
+
+=== the application's context handler is called before the context's trust store is set up
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_set_up
+--- old
+            if !self.flags.store_ready {
+                x509::setup_store(ctx, &self.identity, self.shared.as_ref(), io)?;
+                self.flags.store_ready = true;
+            }
+            io.configure_context(TlsNative::new(ctx.cast(), None))?;
+--- new
+            io.configure_context(TlsNative::new(ctx.cast(), None))?;
+
+=== the application's context handler's error lets the handshake go on
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl the_context_handler_s_error_fails_the_handshake_before_it_starts
+--- old
+            io.configure_context(TlsNative::new(ctx.cast(), None))?;
+--- new
+            let _ = io.configure_context(TlsNative::new(ctx.cast(), None));
+
+=== a transfer's handlers reach no SSL of its OpenSSL connection
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_set_up
+--- old
+        let ssl = self.ssl.as_ref().map(|s| s.0.cast());
+--- new
+        let ssl = self.ssl.as_ref().map(|_| self.ctx.as_ref().expect("made").0.cast());

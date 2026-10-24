@@ -259,6 +259,7 @@ fn serve(certs: &Certs) -> (SocketAddr, JoinHandle<Vec<u8>>) {
 /// A TCP stream that, if told to dribble, writes at most three bytes at
 /// a time, each sent on its own: the client's reads then come back
 /// shorter than asked.
+#[derive(Debug)]
 struct Dribble(std::net::TcpStream, bool);
 
 impl Read for Dribble {
@@ -316,7 +317,8 @@ fn serve_configured(
                 while matches!(tcp.read(&mut buf), Ok(n) if n > 0) {}
                 return Vec::new();
             }
-            Err(_) => return Vec::new(),
+            // The server's own setup failing, not a refusal of the client.
+            Err(e) => panic!("the server's handshake: {e}"),
         };
         let mut got = Vec::new();
         let mut buf = [0u8; 4096];

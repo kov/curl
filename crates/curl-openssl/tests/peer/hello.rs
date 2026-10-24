@@ -307,8 +307,12 @@ fn relayed(to: SocketAddr) -> (SocketAddr, JoinHandle<Vec<(u8, usize)>>) {
             let mut body = vec![0u8; len];
             client.read_exact(&mut body).unwrap();
             records.push((header[0], len));
-            server.write_all(&header).unwrap();
-            server.write_all(&body).unwrap();
+            if let Err(e) = server.write_all(&[&header[..], &body].concat()) {
+                // The server closes once it has answered; the client's
+                // close_notify, sent after, may find the socket gone.
+                assert_eq!(header[0], 21, "{records:?}: {e}");
+                break;
+            }
         }
         let _ = server.shutdown(std::net::Shutdown::Write);
         answers.join().unwrap();

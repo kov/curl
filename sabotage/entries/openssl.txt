@@ -344,3 +344,19 @@ witness: curl-openssl the_context_handler_gets_the_context_with_its_trust_store_
         let ssl = self.ssl.as_ref().map(|s| s.0.cast());
 --- new
         let ssl = self.ssl.as_ref().map(|_| self.ctx.as_ref().expect("made").0.cast());
+
+=== CURLSSLOPT_ALLOW_BEAST is ignored, the empty fragment sent regardless
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed
+--- old
+        if !options.ssl_options.contains(SslOptions::ALLOW_BEAST) {
+--- new
+        if true || !options.ssl_options.contains(SslOptions::ALLOW_BEAST) {
+
+=== TLS 1.0 sends no empty fragment, BEAST allowed or not
+file: crates/curl-openssl/src/ssl.rs
+witness: curl-openssl tls_1_0_sends_an_empty_fragment_first_unless_beast_is_allowed
+--- old
+        if !options.ssl_options.contains(SslOptions::ALLOW_BEAST) {
+--- new
+        if false && !options.ssl_options.contains(SslOptions::ALLOW_BEAST) {

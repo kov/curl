@@ -53,9 +53,10 @@ pub(crate) struct EngineRest<'a, H: Host> {
     /// What the multi was driven with: the socket callback hears of a
     /// socket closing.
     pub(super) events: &'a mut dyn MultiEvents<H>,
-    /// The pass's time, read once.
+    /// The step's time, read by the drive before each step.
     pub(super) now: Instant,
-    /// For the calendar time, which only a date needs.
+    /// For the drive's reads, and the calendar time, which only a date
+    /// needs.
     pub(super) clock: &'a dyn Clock,
     /// The tests' layer each connection set up is given.
     #[cfg(any(test, feature = "test-util"))]

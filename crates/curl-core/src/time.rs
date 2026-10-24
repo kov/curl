@@ -1,8 +1,9 @@
 //! Time, as the engine sees it: instants read from a clock it is given.
 //!
-//! Nothing below the multi reads the time itself. A pass reads its clock
-//! once and passes that `Instant` down, so under a `ManualClock` every
-//! timeout is deterministic and a test takes no time to wait for one.
+//! Nothing below the multi reads the time itself. The drive reads its
+//! clock before each step and passes that `Instant` down, so under a
+//! `ManualClock` every timeout is deterministic and a test takes no time
+//! to wait for one.
 
 use std::num::NonZeroU64;
 use std::time::Duration;

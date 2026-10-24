@@ -695,3 +695,22 @@ features: test-util
 --- new
             {
                 mstate::trace(cx, format_args!("[RLIMIT] wait over, continue"));
+
+=== the drive reads the clock once a pass, not before each step
+file: crates/curl-core/src/multi/mod.rs
+witness: curl-core proto::file::tests::an_upload_past_its_time_limit_is_written_then_times_out
+features: test-util
+--- old
+            cx.rest.now = cx.rest.clock.now();
+            state::step(&mut run, &mut cx) == Wake::Again
+--- new
+            state::step(&mut run, &mut cx) == Wake::Again
+
+=== a request made past its time limit is not checked against it before its end
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::file::tests::an_upload_past_its_time_limit_is_written_then_times_out
+features: test-util
+--- old
+        TransferState::Did(x) if expired(run, cx) => {
+--- new
+        TransferState::Did(x) if false && expired(run, cx) => {

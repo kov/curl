@@ -147,7 +147,11 @@ fn easy(url: &[u8]) -> (Easy, Seen) {
 
 /// Run `e` to its end in a multi of its own; its result and the handle.
 fn run(e: Easy) -> (Result<(), ErrorKind>, Easy) {
-    let clock = ManualClock::new().unwrap();
+    run_on(e, ManualClock::new().unwrap())
+}
+
+/// `run`, on `clock`, which the test's handlers may move.
+fn run_on(e: Easy, clock: ManualClock) -> (Result<(), ErrorKind>, Easy) {
     let env = Env {
         clock: Box::new(clock.clone()),
         net: Box::new(FakeNet::new(clock)),
@@ -682,6 +686,63 @@ fn an_upload_writes_the_file() {
     assert_eq!(r, Ok(()));
     assert_eq!(s.read("new"), b"short");
     assert_eq!(e.report().sizes().upload_expected(), Some(5));
+}
+
+/// Reads `left` bytes of `u` as `Feeder` does, each read taking `took` of
+/// `clock`'s time.
+struct SlowFeeder {
+    left: crate::test_cell::Cell<usize>,
+    clock: ManualClock,
+    took: Duration,
+}
+
+impl ReadHandler for SlowFeeder {
+    fn read(&self, _: &mut TransferCx<'_>, buf: &mut [u8]) -> Read {
+        self.clock.advance(self.took);
+        let n = self.left.get().min(buf.len());
+        buf[..n].fill(b'u');
+        self.left.set(self.left.get() - n);
+        NonZeroUsize::new(n).map_or(Read::Eof, Read::Data)
+    }
+}
+
+fn slowly_fed(n: usize, clock: &ManualClock, took: Duration) -> UploadSource {
+    UploadSource::Read {
+        handler: Handler::read(SlowFeeder {
+            left: crate::test_cell::Cell::new(n),
+            clock: clock.clone(),
+            took,
+        })
+        .unwrap(),
+        rewind: None,
+        size: None,
+    }
+}
+
+/// An upload whose reads take it past its time limit is written whole,
+/// then fails as out of time, with what it received: C's DO writes all
+/// its reader gives, and the next look at the time limit, at the top of
+/// `multi_runsingle`'s loop, finds it spent.
+#[test]
+fn an_upload_past_its_time_limit_is_written_then_times_out() {
+    let s = Scratch::new("uptime");
+    let clock = ManualClock::new().unwrap();
+    let (mut e, _) = upload(
+        &s.url("f"),
+        slowly_fed(70000, &clock, Duration::from_millis(1000)),
+    );
+    e.options_mut().limits.total = crate::time::TimeLimit::from_millis(2000);
+    let lines = traced(&mut e, b"");
+    let (r, _) = run_on(e, clock);
+    assert_eq!(r, Err(ErrorKind::OperationTimedout));
+    assert_eq!(s.read("f"), [b'u'; 70000]);
+    let lines = lines.0.lock().unwrap();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "Operation timed out after 3000 milliseconds with 0 bytes received"),
+        "{lines:?}"
+    );
 }
 
 /// A send limit does not cut an upload to a file short: the file gets the

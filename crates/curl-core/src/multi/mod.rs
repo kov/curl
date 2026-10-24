@@ -935,7 +935,14 @@ impl<H: Host> Multi<H> {
             me: id,
             rest: self.rest(now, ev),
         };
-        while state::step(&mut run, &mut cx) == Wake::Again {}
+        // The clock is read before each step, as C reads it at the top of
+        // `multi_runsingle`'s loop: a step that took time, a `file:`
+        // transfer's or a slow handler's, is timed and checked as it ends.
+        while {
+            cx.rest.now = cx.rest.clock.now();
+            state::step(&mut run, &mut cx) == Wake::Again
+        } {}
+        let now = cx.rest.now;
         // The protocol's own wait is derived from its state, never stored
         // apart from it.
         match run.state.wake_at() {

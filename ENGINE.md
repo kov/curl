@@ -89,7 +89,8 @@ numbers are those of `SCOPE.md`.
     "None during perform" field.
 17. **No admin easy.** Connection-level work, a connect drive included, takes a connection
     context (`ConnCx`, §4.7) with settings captured per connection.
-18. **The clock is owned** (`Box<dyn Clock>`), read once per pass and passed down as `now`.
+18. **The clock is owned** (`Box<dyn Clock>`), read by the drive before each step and passed
+    down as `now`.
 19. **Sockets and polling live in `curl-os`** (`net.rs`, `poll.rs`, behind a `net` feature);
     `curl-core` depends on it and adapts it in safe code. Only `conn::*` and `multi::wait`
     touch sockets.
@@ -285,9 +286,12 @@ pub struct SystemClock { base: std::time::Instant }
 pub struct ManualClock(TryArc<ManualTime>);       // tests hold a second handle and advance it
 ```
 
-`Multi` owns `Box<dyn Clock>`. A pass reads `now` once at entry; steps, decoders, limiters and
-filters receive it as an argument and never read the clock. `socket_action` keeps C's second
-read after it ran something (§3.5). Timing records (`Timings::mark`) take the pass's `now`; under
+`Multi` owns `Box<dyn Clock>`. A pass reads `now` at entry, and the drive reads it again before
+each step of a transfer, as C's `multi_runsingle` does at the top of its loop: a step that took
+time (a `file:` transfer's, a slow handler's) is timed, and checked against its time limit, as
+the next step starts. Steps, decoders, limiters and filters receive `now` as an argument and
+never read the clock. `socket_action` keeps C's second read after it ran something (§3.5).
+Timing records (`Timings::mark`) take the step's `now`; under
 `ManualClock` everything is deterministic. The calendar time (`unix_time`, C's `time(NULL)`)
 comes from the same clock, read where a date is compared with the present (a Retry-After
 date) and never for a limit; `ManualClock::set_unix_time` sets it for a test.

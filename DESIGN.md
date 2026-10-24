@@ -68,8 +68,8 @@ detects at build time, kept as static strings. `curl_global_sslset` knows only O
 - **A TLS backend is driven as C drives it.** The OpenSSL layer gets a custom BIO method over the
   layer below, as `lib/vtls/openssl.c` does, so the `SSL *` and `SSL_CTX *` an application is
   handed look the same as C's. A more efficient arrangement can come later as an opt-in.
-- **Time is an injected clock**, owned by the multi and read once per pass; everything below
-  receives that `now` as an argument, so timeouts are deterministic under test.
+- **Time is an injected clock**, owned by the multi and read by the drive before each step;
+  everything below receives that `now` as an argument, so timeouts are deterministic under test.
 - **Callbacks fire when C fires them.** The timer callback runs inside `add`, `remove` and
   `pause`; the socket callback inside `remove` and `pause`, including a pause made from a write
   callback; each transfer's pollset is assessed right after it runs. Ordering the application

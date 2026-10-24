@@ -645,9 +645,9 @@ fn uploads_a_file() {
 
 /// An upload of `name` to `file://` under `--max-time 1`, its input
 /// `abc` at once and `def` 1.5 s later from a writer that then holds it
-/// open for 6 s: how long the tool took and what it wrote. `name` is `-`
-/// for standard input, or a FIFO the writer opens.
-fn upload_held_open(s: &Scratch, name: &str) -> (Duration, Vec<u8>) {
+/// open for 6 s: how long the tool took, its exit code and what it
+/// wrote. `name` is `-` for standard input, or a FIFO the writer opens.
+fn upload_held_open(s: &Scratch, name: &str) -> (Duration, Option<i32>, Vec<u8>) {
     use std::io::Write as _;
     let tool = std::env::var_os("CURL_TOOL_UNDER_TEST")
         .map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_curl")), PathBuf::from);
@@ -678,25 +678,28 @@ fn upload_held_open(s: &Scratch, name: &str) -> (Duration, Vec<u8>) {
         input.write_all(b"def").unwrap();
         std::thread::sleep(Duration::from_secs(6));
     });
-    child.wait().unwrap();
+    let status = child.wait().unwrap();
     let took = start.elapsed();
     writer.join().unwrap();
-    (took, s.read("dst"))
+    (took, status.code(), s.read("dst"))
 }
 
 /// Under `--max-time`, a read of the upload waits for input no longer
 /// than the time left, and past it ends the upload without reading: a
 /// read that came back late with more is the last (`tool_read_cb`).
 /// Standard input and a named file alike; the tool is done when the
-/// late part came, not when its writer let go.
+/// late part came, not when its writer let go, and fails as out of time
+/// (exit 28): the library looks at its time limit as the upload ends.
 #[test]
 fn an_upload_ends_once_its_time_is_up() {
     let s = Scratch::new("upload-max-time");
     let made = Command::new("mkfifo").arg(s.path("fifo")).status().unwrap();
     assert!(made.success());
     for name in ["-", "fifo"] {
-        let (took, wrote) = upload_held_open(&s, name);
+        let (took, code, wrote) = upload_held_open(&s, name);
         assert_eq!(wrote, b"abcdef", "{name}");
+        // The upload over, the time limit is found spent.
+        assert_eq!(code, Some(28), "{name}");
         assert!(took < Duration::from_secs(5), "{name}: {took:?}");
     }
 }

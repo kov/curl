@@ -3958,6 +3958,41 @@ fn a_socks5_proxy_logs_the_user_in_and_connects() {
     );
 }
 
+/// A service named for the proxy makes its credentials alone, as
+/// `CURLOPT_PROXY_SERVICE_NAME` does in C's `proxy_parse`: a SOCKS5 proxy
+/// is offered the user and password method too, though both are empty.
+/// A pre-proxy gets the service only with a user its URL gives.
+#[test]
+fn a_proxy_service_alone_makes_the_proxy_s_credentials() {
+    let talk = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        through_socks(o, "socks5h", b"http://origin.example/a");
+        o.proxy.make_mut().unwrap().service = Some(b"rcmd2".to_vec());
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert!(
+        ran.request
+            .starts_with(b"\x05\x02\x00\x02\x05\x01\x00\x03\x0eorigin.example"),
+        "{:?}",
+        String::from_utf8_lossy(&ran.request)
+    );
+    let talk = Conversation::replies(&[b"\x05\x00", SOCKS5_GRANTED, OK], false).per_send();
+    let mut m = serving(Peer::Accepts, &[&talk]);
+    let ran = get(&mut m, "/", talk.clone(), |o| {
+        o.set_url(Some(b"http://origin.example/a")).unwrap();
+        let proxy = o.proxy.make_mut().unwrap();
+        proxy.pre_proxy = Some(format!("socks5h://127.0.0.1:{PORT}").into_bytes());
+        proxy.service = Some(b"rcmd2".to_vec());
+        proxy.url = Some(b"http://proxy.example:3128".to_vec());
+    });
+    assert!(
+        ran.request.starts_with(b"\x05\x01\x00\x05\x01\x00"),
+        "{:?}",
+        String::from_utf8_lossy(&ran.request)
+    );
+}
+
 /// A SOCKS4 proxy is asked for the IPv4 address the name resolves to
 /// here, with an empty user.
 #[test]

@@ -102,10 +102,7 @@ fn proxy(c: &Connecting) -> (&Peer, Option<Secret<'_>>, bool) {
         .proxy
         .as_ref()
         .expect("a tunnel goes through a proxy");
-    let secret = proxy
-        .creds
-        .as_deref()
-        .map(|c| Secret::new(&c.user, &c.password));
+    let secret = proxy.creds.as_deref().map(crate::conn::ProxyCreds::secret);
     (&proxy.peer, secret, proxy.kind == ProxyType::Http10)
 }
 

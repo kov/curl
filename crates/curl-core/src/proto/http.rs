@@ -876,7 +876,7 @@ impl Request {
         let (proxy_peer, proxy_secret) = match &forwarding {
             Some((peer, creds)) => (
                 &**peer,
-                creds.as_deref().map(|c| Secret::new(&c.user, &c.password)),
+                creds.as_deref().map(crate::conn::ProxyCreds::secret),
             ),
             None => (&self.peer, None),
         };

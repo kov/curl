@@ -3349,21 +3349,30 @@ fn parse_proxy<H: Host>(
             &[b"Unsupported pre-proxy type for '", text, b"'"],
         ));
     }
-    // The URL's user and password, else the options' (`proxy_parse`).
+    // The URL's user and password, else the options' (`proxy_parse`);
+    // either goes with the service the options name, which makes
+    // credentials alone for a proxy that is not a pre-proxy.
     let options = &cx.easy().options().proxy;
-    let (user, password) = match (parsed.user, parsed.password) {
-        (None, None) if !pre => (
+    let from_url = parsed.user.is_some() || parsed.password.is_some();
+    let (user, password) = if from_url || pre {
+        (parsed.user, parsed.password)
+    } else {
+        (
             options.user.as_deref().map(copied).transpose()?,
             options.password.as_deref().map(copied).transpose()?,
-        ),
-        given => given,
+        )
+    };
+    let service = match options.service.as_deref() {
+        Some(service) if from_url || !pre => copied(service)?,
+        _ => Vec::new(),
     };
     let creds = match (user, password) {
-        (None, None) => None,
+        (None, None) if service.is_empty() => None,
         (user, password) => Some(
             TryArc::try_new(ProxyCreds {
                 user: user.unwrap_or_default(),
                 password: password.unwrap_or_default(),
+                service,
             })
             .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?,
         ),

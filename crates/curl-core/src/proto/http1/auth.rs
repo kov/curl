@@ -1026,13 +1026,14 @@ pub(crate) struct Secret<'a> {
 }
 
 impl<'a> Secret<'a> {
-    /// A user and a password, without a token: a proxy takes none.
-    pub(crate) fn new(user: &'a [u8], password: &'a [u8]) -> Secret<'a> {
+    /// A user, a password and a service, without a token: a proxy takes
+    /// none.
+    pub(crate) fn new(user: &'a [u8], password: &'a [u8], service: &'a [u8]) -> Secret<'a> {
         Secret {
             user,
             password,
             bearer: &[],
-            service: &[],
+            service,
         }
     }
 
@@ -1979,10 +1980,10 @@ mod tests {
             };
             AuthAct::of(401, &offered, &asked).picked
         };
-        assert_eq!(pick(Secret::new(b"", b""), b), Some(none));
-        assert_eq!(pick(Secret::new(b"u", b""), b), Some(b));
-        assert_eq!(pick(Secret::new(b"", b"p"), b), Some(b));
-        assert_eq!(pick(Secret::new(b"u", b"p"), b | br), Some(b));
+        assert_eq!(pick(Secret::new(b"", b"", b""), b), Some(none));
+        assert_eq!(pick(Secret::new(b"u", b"", b""), b), Some(b));
+        assert_eq!(pick(Secret::new(b"", b"p", b""), b), Some(b));
+        assert_eq!(pick(Secret::new(b"u", b"p", b""), b | br), Some(b));
         let token = |bearer: &[u8]| Credentials {
             user: b"u".to_vec(),
             password: Vec::new(),
@@ -2026,7 +2027,7 @@ mod tests {
         let sigv4 = AuthMethods::AWS_SIGV4;
         let mut auth = Auth::default();
         auth.start(sigv4, sigv4);
-        let secret = || Some(Secret::new(b"u", b"p"));
+        let secret = || Some(Secret::new(b"u", b"p", b""));
         let mut output = |side| {
             let out = auth
                 .side(side)
@@ -2048,7 +2049,7 @@ mod tests {
         let sig = AuthMethods::HTTPSIG;
         for (secret, trusted, used) in [
             (None, true, sig),
-            (Some(Secret::new(b"u", b"p")), true, sig),
+            (Some(Secret::new(b"u", b"p", b"")), true, sig),
             (None, false, AuthMethods::NONE),
         ] {
             let request = AuthRequest {
@@ -2077,7 +2078,7 @@ mod tests {
     #[test]
     fn encodes_basic_as_c() {
         let basic = |u: &[u8], p: &[u8]| {
-            let secret = Secret::new(u, p);
+            let secret = Secret::new(u, p, b"");
             secret
                 .basic()
                 .unwrap()

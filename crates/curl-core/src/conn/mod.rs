@@ -338,11 +338,21 @@ struct ProxyCold {
     tls: Option<TryArc<TlsIdentity>>,
 }
 
-/// The user and password a proxy is given, each empty for none.
+/// The user and password a proxy is given, and the service it is
+/// authenticated as, each empty for none (C's `http_proxy.creds`, its
+/// `sasl_service` from `CURLOPT_PROXY_SERVICE_NAME`).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ProxyCreds {
     pub(crate) user: Vec<u8>,
     pub(crate) password: Vec<u8>,
+    pub(crate) service: Vec<u8>,
+}
+
+impl ProxyCreds {
+    /// What the proxy is authenticated with.
+    pub(crate) fn secret(&self) -> crate::proto::http1::auth::Secret<'_> {
+        crate::proto::http1::auth::Secret::new(&self.user, &self.password, &self.service)
+    }
 }
 
 /// What of a route's proxy a connection must share to serve another
@@ -1214,6 +1224,7 @@ mod tests {
             TryArc::try_new(ProxyCreds {
                 user: u.to_vec(),
                 password: Vec::new(),
+                service: Vec::new(),
             })
             .unwrap()
         });
@@ -1303,6 +1314,26 @@ mod tests {
         let user = via_proxy(b"proxy.example", Some(b"u"), true);
         assert!(user.serves(&via_proxy(b"proxy.example", Some(b"u"), true)));
         assert!(!user.serves(&via_proxy(b"proxy.example", Some(b"v"), true)));
+        // The service the proxy is authenticated as is the credentials'
+        // too (`Curl_creds_same`).
+        let serving_as = |service: &[u8]| match via_proxy(b"proxy.example", Some(b"u"), true) {
+            Route::Tcp(mut tcp) => {
+                let p = tcp.proxy.as_mut().unwrap();
+                p.creds = Some(
+                    TryArc::try_new(ProxyCreds {
+                        user: b"u".to_vec(),
+                        password: Vec::new(),
+                        service: service.to_vec(),
+                    })
+                    .unwrap(),
+                );
+                Route::Tcp(tcp)
+            }
+            Route::Local => unreachable!(),
+        };
+        assert!(serving_as(b"").serves(&user) && user.serves(&serving_as(b"")));
+        assert!(!serving_as(b"pxy").serves(&user) && !user.serves(&serving_as(b"pxy")));
+        assert!(serving_as(b"pxy").serves(&serving_as(b"pxy")));
         // Behind the same SOCKS proxy, or none, as C compares
         // `socks_proxy` beside `http_proxy`.
         let behind = |kind, host: &[u8]| match via_proxy(b"proxy.example", None, true) {

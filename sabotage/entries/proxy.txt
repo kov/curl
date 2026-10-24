@@ -98,10 +98,8 @@ witness: curl-core proto::http::tests::an_origin_s_digest_is_answered_through_a_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_proxy_is_answered_with_its_own_credentials
 --- old
-        (None, None) if !pre => (
             options.user.as_deref().map(copied).transpose()?,
 --- new
-        (None, None) if !pre => (
             None,
 
 === a proxy's 407 challenge is not read
@@ -404,9 +402,9 @@ witness: curl-core proto::http::tests::a_pre_proxy_alone_is_the_socks_proxy_and_
 file: crates/curl-core/src/multi/state.rs
 witness: curl-core proto::http::tests::a_pre_proxy_reaches_the_http_proxy_that_forwards
 --- old
-        (None, None) if !pre => (
+    let (user, password) = if from_url || pre {
 --- new
-        (None, None) => (
+    let (user, password) = if from_url {
 
 === a tunnel after a redirect elsewhere sends the proxy's Cookie
 file: crates/curl-core/src/multi/state/tunnel.rs
@@ -676,3 +674,12 @@ witness: curl-core proto::http::tests::tls::https_through_an_https_proxy_is_tls_
 --- new
         if filter != Component::SslProxy {
             self.report_mut().set_proxy_verify_result(result);
+
+=== a proxy service named alone makes no credentials for the proxy
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::a_proxy_service_alone_makes_the_proxy_s_credentials
+features: test-util
+--- old
+        (None, None) if service.is_empty() => None,
+--- new
+        (None, None) => None,

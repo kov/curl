@@ -16,7 +16,7 @@ use super::dns::Answer;
 use super::io::{Closer, Events, Socket};
 use super::layer::{Alive, LayerAnswer, LayerQuery, Silent};
 use super::shutdown::{ConnSettings, Exits, discard};
-use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, Transport, Use};
+use super::{Conn, ConnId, ConnNumber, ConnSlot, Peer, Route, TransferNumber, Transport, Use};
 use crate::id::{Arena, ArenaPolicy};
 use crate::proto::http::negotiate::Wants;
 use crate::share::Share;
@@ -512,8 +512,8 @@ impl Pool {
     /// A number for a transfer joining the pool: one more than the last
     /// one's, from 0, back to 0 short of the largest `curl_off_t`
     /// (`Curl_cpool_xfer_init`).
-    pub(crate) fn join(&mut self) -> u64 {
-        let number = self.next_transfer;
+    pub(crate) fn join(&mut self) -> TransferNumber {
+        let number = TransferNumber(self.next_transfer);
         self.next_transfer += 1;
         if self.next_transfer == i64::MAX as u64 {
             self.next_transfer = 0;

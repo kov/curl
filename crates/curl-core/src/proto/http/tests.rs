@@ -1308,7 +1308,7 @@ fn a_redirect_goes_over_the_transfer_s_own_connection() {
         );
     }
     let b_easy = m.remove(ids[1], &mut NoEvents).unwrap().easy;
-    assert_eq!(b_easy.report().conn_number(), Some(1));
+    assert_eq!(b_easy.report().conn_number().map(|n| n.get()), Some(1));
     let asked = b.received();
     assert!(
         fixture::find(&asked, b"GET /b HTTP/1.1").is_some(),

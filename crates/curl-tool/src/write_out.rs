@@ -817,8 +817,12 @@ fn value<'a>(var: Var, facts: &Facts<'a>) -> Value<'a> {
         // None without TLS (`CURLINFO_CERTINFO`).
         Var::Certs => certs(r.certinfo()),
         Var::NumCerts => Value::Number(r.certinfo().map_or(0, |c| c.certs().len() as i64)),
-        Var::ConnId => r.conn_number().map_or(Value::Number(-1), number),
-        Var::XferId => r.transfer_number().map_or(Value::Number(-1), number),
+        Var::ConnId => r
+            .conn_number()
+            .map_or(Value::Number(-1), |n| number(n.get())),
+        Var::XferId => r
+            .transfer_number()
+            .map_or(Value::Number(-1), |n| number(n.get())),
         Var::FtpEntryPath => Value::Missing,
         Var::SslVerifyResult => Value::Number(r.verify_result()),
         // The proxy's TLS is 43i's; early data the session cache's.

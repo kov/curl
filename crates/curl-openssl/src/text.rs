@@ -114,4 +114,77 @@ mod tests {
         assert_eq!(ssl_error(5), "SSL_ERROR_SYSCALL");
         assert_eq!(ssl_error(12), "SSL_ERROR unknown");
     }
+
+    /// `tls_rt_type`, each `SSL3_RT_*` C names (`ssl3.h`).
+    #[test]
+    fn every_record_type_is_named_as_c_names_it() {
+        for (content_type, name) in [
+            (0x100, "TLS header"),
+            (20, "TLS change cipher"),
+            (21, "TLS alert"),
+            (22, "TLS handshake"),
+            (23, "TLS app data"),
+            (24, "TLS Unknown"),
+            (0x101, "TLS Unknown"),
+        ] {
+            assert_eq!(record_type(content_type), name, "{content_type}");
+        }
+    }
+
+    /// `ssl_msg_type`, each `SSL3_MT_*` C names (`ssl3.h`), for SSLv3 and
+    /// TLS alone.
+    #[test]
+    fn every_message_type_is_named_as_c_names_it() {
+        for (msg, name) in [
+            (0, "Hello request"),
+            (1, "Client hello"),
+            (2, "Server hello"),
+            (4, "Newsession Ticket"),
+            (11, "Certificate"),
+            (12, "Server key exchange"),
+            (16, "Client key exchange"),
+            (13, "Request CERT"),
+            (14, "Server finished"),
+            (15, "CERT verify"),
+            (20, "Finished"),
+            (22, "Certificate Status"),
+            (8, "Encrypted Extensions"),
+            (23, "Supplemental data"),
+            (5, "End of early data"),
+            (24, "Key update"),
+            (67, "Next protocol"),
+            (254, "Message hash"),
+            // `SSL3_MT_CERTIFICATE_URL` and `SSL3_MT_COMPRESSED_CERTIFICATE`,
+            // which C does not name.
+            (21, "Unknown"),
+            (25, "Unknown"),
+        ] {
+            assert_eq!(message_type(3, msg), name, "{msg}");
+            assert_eq!(message_type(0xfe, msg), "Unknown", "{msg}");
+        }
+    }
+
+    /// `SSL_ERROR_to_str`, each `SSL_ERROR_*` C names (`ssl.h`).
+    #[test]
+    fn every_ssl_error_is_named_as_c_names_it() {
+        for (err, name) in [
+            (0, "SSL_ERROR_NONE"),
+            (1, "SSL_ERROR_SSL"),
+            (2, "SSL_ERROR_WANT_READ"),
+            (3, "SSL_ERROR_WANT_WRITE"),
+            (4, "SSL_ERROR_WANT_X509_LOOKUP"),
+            (5, "SSL_ERROR_SYSCALL"),
+            (6, "SSL_ERROR_ZERO_RETURN"),
+            (7, "SSL_ERROR_WANT_CONNECT"),
+            (8, "SSL_ERROR_WANT_ACCEPT"),
+            (9, "SSL_ERROR_WANT_ASYNC"),
+            (10, "SSL_ERROR_WANT_ASYNC_JOB"),
+            (11, "SSL_ERROR_WANT_CLIENT_HELLO_CB"),
+            // `SSL_ERROR_WANT_RETRY_VERIFY`, which C does not name.
+            (12, "SSL_ERROR unknown"),
+            (-1, "SSL_ERROR unknown"),
+        ] {
+            assert_eq!(ssl_error(err), name, "{err}");
+        }
+    }
 }

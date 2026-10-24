@@ -58,6 +58,9 @@ exclude_re = [
     # OpenSSL's init flags are disjoint bits, as `crypto.h` defines them:
     # xor of them is their or, the same value.
     'curl-openssl/src/sys\.rs:.*: replace \| with \^( in init_ssl)?$',
+    # The headers' flags each of `ffi.rs`'s constants joins are disjoint
+    # bits, as `bio.h`, `asn1.h` and `x509.h` define them.
+    'curl-openssl/src/ffi\.rs:.*: replace \| with \^$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

@@ -160,29 +160,73 @@ pub(crate) const OPENSSL_VERSION_STRING: c_int = 6;
 
 /// The flags C prints a certificate's names with (`x509_name_oneline`):
 /// `XN_FLAG_SEP_SPLUS_SPC | (XN_FLAG_ONELINE & ~ASN1_STRFLGS_ESC_MSB &
-/// ~XN_FLAG_SPC_EQ)`.
+/// ~XN_FLAG_SPC_EQ)`, which leaves `XN_FLAG_ONELINE`'s string flags but
+/// the escaping of bytes above 127, its short field names, and the
+/// `;+` separator in place of its own (whose bits are a subset of it).
 pub(crate) const NAME_FLAGS: c_ulong = {
     const ASN1_STRFLGS_ESC_2253: c_ulong = 1;
     const ASN1_STRFLGS_ESC_CTRL: c_ulong = 2;
-    const ASN1_STRFLGS_ESC_MSB: c_ulong = 4;
     const ASN1_STRFLGS_ESC_QUOTE: c_ulong = 8;
     const ASN1_STRFLGS_UTF8_CONVERT: c_ulong = 0x10;
     const ASN1_STRFLGS_DUMP_UNKNOWN: c_ulong = 0x100;
     const ASN1_STRFLGS_DUMP_DER: c_ulong = 0x200;
-    const ASN1_STRFLGS_RFC2253: c_ulong = ASN1_STRFLGS_ESC_2253
+    const XN_FLAG_SEP_SPLUS_SPC: c_ulong = 3 << 16;
+    const XN_FLAG_FN_SN: c_ulong = 0;
+    XN_FLAG_SEP_SPLUS_SPC
+        | ASN1_STRFLGS_ESC_2253
         | ASN1_STRFLGS_ESC_CTRL
-        | ASN1_STRFLGS_ESC_MSB
+        | ASN1_STRFLGS_ESC_QUOTE
         | ASN1_STRFLGS_UTF8_CONVERT
         | ASN1_STRFLGS_DUMP_UNKNOWN
-        | ASN1_STRFLGS_DUMP_DER;
-    const XN_FLAG_SEP_CPLUS_SPC: c_ulong = 2 << 16;
-    const XN_FLAG_SEP_SPLUS_SPC: c_ulong = 3 << 16;
-    const XN_FLAG_SPC_EQ: c_ulong = 1 << 23;
-    const XN_FLAG_FN_SN: c_ulong = 0;
-    const XN_FLAG_ONELINE: c_ulong = ASN1_STRFLGS_RFC2253
-        | ASN1_STRFLGS_ESC_QUOTE
-        | XN_FLAG_SEP_CPLUS_SPC
-        | XN_FLAG_SPC_EQ
-        | XN_FLAG_FN_SN;
-    XN_FLAG_SEP_SPLUS_SPC | (XN_FLAG_ONELINE & !ASN1_STRFLGS_ESC_MSB & !XN_FLAG_SPC_EQ)
+        | ASN1_STRFLGS_DUMP_DER
+        | XN_FLAG_FN_SN
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The macros' values, as OpenSSL 3's headers expand them.
+    #[test]
+    fn the_values_are_the_headers_expansions() {
+        assert_eq!(BIO_C_SET_FILENAME, 108);
+        // `BIO_CLOSE | BIO_FP_READ`.
+        assert_eq!(BIO_CLOSE_FP_READ, 0x03);
+        assert_eq!((SSL_CTRL_CHAIN, SSL_CTRL_CHAIN_CERT), (88, 89));
+        assert_eq!((ERR_LIB_PEM, PEM_R_NO_START_LINE), (9, 108));
+        // `V_ASN1_INTEGER | V_ASN1_NEG`.
+        assert_eq!(V_ASN1_NEG_INTEGER, 0x102);
+        assert_eq!(XN_FLAG_ONELINE, 0x0082_031f);
+        assert_eq!(RSA_METHOD_FLAG_NO_CHECK, 1);
+        // `1 | BIO_TYPE_SOURCE_SINK`.
+        assert_eq!(BIO_TYPE_MEM, 0x0401);
+        assert_eq!(
+            (
+                SSL_CTRL_MODE,
+                SSL_CTRL_SET_READ_AHEAD,
+                SSL_CTRL_SET_TLSEXT_HOSTNAME,
+                SSL_CTRL_SET_MIN_PROTO_VERSION,
+                SSL_CTRL_SET_MAX_PROTO_VERSION,
+                SSL_CTRL_SET_GROUPS_LIST,
+                SSL_CTRL_SET_SIGALGS_LIST,
+            ),
+            (33, 41, 55, 123, 124, 92, 98)
+        );
+        assert_eq!(TLSEXT_NAMETYPE_HOST_NAME, 0);
+        assert_eq!(
+            (
+                ERR_LIB_SSL,
+                SSL_R_CERTIFICATE_VERIFY_FAILED,
+                SSL_R_SSLV3_ALERT_CERTIFICATE_EXPIRED,
+                SSL_R_TLSV13_ALERT_CERTIFICATE_REQUIRED,
+            ),
+            (20, 134, 1045, 1116)
+        );
+        assert_eq!(OPENSSL_VERSION_STRING, 6);
+        // C's expression over the headers' values: `XN_FLAG_SEP_SPLUS_SPC`
+        // (0x30000) with `XN_FLAG_ONELINE` (0x82031f) less
+        // `ASN1_STRFLGS_ESC_MSB` (4) and `XN_FLAG_SPC_EQ` (0x800000).
+        assert_eq!(NAME_FLAGS, 0x3_0000 | (0x0082_031f & !4 & !0x0080_0000));
+        assert_eq!(NAME_FLAGS, 0x0003_031b);
+    }
+}

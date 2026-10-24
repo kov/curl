@@ -212,6 +212,19 @@ pub(crate) mod tests {
         assert_eq!(ENGINE_ALL_BUILTIN, 0x7600);
     }
 
+    /// The version line names the library as C's `Curl_ossl_version`
+    /// does, `OpenSSL/` and the version it says it is; `version_len` is
+    /// that text's length.
+    #[test]
+    fn the_version_is_named_as_c_names_it() {
+        // "OpenSSL 3.5.9 29 Sep 2026".
+        let said = openssl::version::version();
+        let number = said.split(' ').nth(1).unwrap();
+        let text = version().to_string();
+        assert_eq!(text, format!("OpenSSL/{number}"));
+        assert_eq!(version_len(), text.len());
+    }
+
     #[test]
     fn three_or_later_is_supported() {
         assert_eq!(supported(0x1010_1170), Err(TooOld));

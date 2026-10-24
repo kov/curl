@@ -24,11 +24,12 @@ numbers are those of `SCOPE.md`.
    helper.
 2. **`Completed` is reachable through one exit function.** `remove` uses it too, so the bypass
    at multi.c:815 cannot be written.
-3. **Set membership is derived from the state.** process and pending are functions of the
-   variant; the trace's `MState` agrees with it, PENDING exactly while the variant is `Pending`,
-   which the debug build's check holds. The only stored set is `dirty`, which is a genuine
-   separate fact (a work queue). Counters are an index with one writer (the transition function) and a full recount in the
-   debug build after every pass.
+3. **Set membership is derived from the state.** process, pending and msgsent are functions of
+   the variant (msgsent is `Completed`'s `Message`); the trace's `MState` agrees with it,
+   PENDING exactly while the variant is `Pending`, which the debug build's check holds. The
+   only stored set is `dirty`, which is a genuine separate fact (a work queue). Counters are an
+   index with one writer (the transition function) and a full recount in the debug build after
+   every pass.
 4. **`Deadlines` is the only owner of time limits.** The wake-up and the "is it late" check are
    both derived from the same stored instants, the report's `Starts`, which the getinfo times
    are taken from too. The timer queue is an index over it.
@@ -566,11 +567,14 @@ pub struct Multi<H: Host = NoHost> {
     announce: TimerAnnounce,         // what the timer callback was last told (unit 3230)
     notify: NotifyQueue, delivering: bool,
     caches: Caches,                  // the connection pool and the DNS cache
+    tls: Option<TlsShared>,          // what the TLS library keeps across its connections
+    shutdowns: ShutdownSet,          // the connections saying goodbye, whichever pool they left
     limits: ConnLimits,              // MAXCONNECTS, MAX_HOST_CONNECTIONS, MAX_TOTAL_CONNECTIONS
     pending_after: Option<TransferId>, // the transfer last let look for a connection again
     sockets: SocketTable<H::Socket>, // fd → users and what each waits for, told, assigned value
     clock: Box<dyn Clock>,
     net: Box<dyn Net + Send>,
+    ipv6_works: bool,                // as the network said once (`Curl_probeipv6`)
     waker: Option<TryArc<Waker>>,
     counts: Tally,
     life: Life,                      // Alive | Dead (a callback returned Abort)
@@ -584,7 +588,9 @@ struct Slot<H: Host> {
     pause: Pause,                    // reachable while the run is out (§3.6)
     judge_pause: bool,               // its own handler paused while it was out
     speedometer: Speedometer,        // beside the pause, which starts it over
+    rate: RateLimits,                // the speed limits' buckets, which the pause starts over
     run: Option<Run>,                // see below
+    mstate: MState,                  // where it is in C's states, for the trace
     readers: Option<Readers>,        // C's readers of the body, for the unpause trace
 }
 pub(crate) struct Run {              // created at add, dropped at removal
@@ -597,13 +603,12 @@ pub(crate) struct Run {              // created at add, dropped at removal
     allow_port: bool,                // CURLOPT_PORT still applies (state.allow_port)
     http: follow::Inherited,         // what HTTP's next request takes, HTTP's alone: HTTP/1.0
                                      // seen, Expect refused, the custom method dropped
-    #[cfg(feature = "debug-hooks")]
-    warn: bool,                      // this transfer says the library is a debug build
+    last_conn: Option<ConnId>,       // the connection it had last, tried first (§4.6)
 }
 ```
 
-Planned with the steps that need them: an internal owner for transfers the engine makes itself
-(`Owner::Internal`, with server push), the shutdown set, and, in `Run`, the rate-limit state.
+Planned with the step that needs it: an internal owner for transfers the engine makes itself
+(`Owner::Internal`, with server push).
 
 A row holds its slot boxed: a slot is most of a kilobyte, and a table starts with C's sixteen
 rows, which C's limits on a transfer's memory count as pointers (libtest 500).
@@ -616,7 +621,7 @@ and a handle's memory is one `Easy`, not one in the shim's handle and a second i
 per-transfer state lives in its `Curl_easy`: one allocation at `add`, not two.
 
 `Slot.run` is `None` in exactly one situation: while the engine has moved the `Run` out to
-step it, and for that duration the slot is reachable only through `EngineRest`, whose methods
+run it (a step, or `pause_transfer`'s replay of held output), and for that duration the slot is reachable only through `EngineRest`, whose methods
 treat the missing run as "this is the transfer being stepped". It is not a lifecycle flag: the
 `Run` exists from `add` to `remove`, and `TransferState::Init` and `Completed` are its first and
 last variants.
@@ -683,10 +688,12 @@ pub(crate) enum TransferState {
     Done(Done),                        // multi_done pending; always holds the lease
     Completed(Completed),              // terminal until remove
 }
-type Origin = TryRc<Peer>;           // the request's peer, shared with its connection's route
+type Origin = TryArc<Peer>;          // the request's peer, shared with its connection's route
 pub(crate) struct Plan { proto: ProtoState, route: Tcp }  // the leg's route, built in start_leg
 pub(crate) struct Connecting { lease: ConnLease, proto: ProtoState, route: Tcp,
-                               handshake: Option<Box<Handshake>> }
+                               handshake: Option<Box<Handshake>>,
+                               https: Option<HttpsConnect>,       // the HTTPS connect filter
+                               negotiate: Option<Box<Negotiate>> } // the tunnel's, across a redial
 pub(crate) struct Attached { lease: ConnLease, proto: ProtoState, origin: Option<Origin> }
 pub(crate) struct Done { lease: ConnLease, proto: Option<ProtoState>, result: Result<(), ErrorKind>,
                          premature: bool, reached: Reached, origin: Option<Origin>,

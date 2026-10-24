@@ -17,5 +17,9 @@ curl-alloc = { path = "../curl-alloc" }
 curl-core = { path = "../curl-core" }
 curl-os = { path = "../curl-os" }
 
+[dev-dependencies]
+# The fake network, to run HTTP Negotiate through the core with the stub.
+curl-core = { path = "../curl-core", features = ["test-util"] }
+
 [lints]
 workspace = true

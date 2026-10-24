@@ -1504,7 +1504,7 @@ fn a_body_waits_for_a_100() {
 fn a_body_goes_when_the_wait_for_a_100_runs_out() {
     let (ran, waited) = expecting(OK_EMPTY, b"a=b", |o| {
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-        o.http.continue_wait = crate::options::ContinueWait(Duration::from_millis(300));
+        o.http.continue_wait = crate::options::ContinueWait::clamped(300);
     });
     assert_eq!((ran.result, waited), (Ok(()), Duration::from_millis(300)));
     assert!(ran.request.ends_with(b"\r\n\r\na=b"));
@@ -1548,7 +1548,7 @@ fn an_interim_response_does_not_end_the_wait_for_a_100() {
             curl_alloc::TryArc::try_new(b"a=b".to_vec()).unwrap(),
         );
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-        o.http.continue_wait = crate::options::ContinueWait(Duration::from_millis(300));
+        o.http.continue_wait = crate::options::ContinueWait::clamped(300);
     });
     assert_eq!(ran.result, Ok(()));
     assert_eq!(clock.now().since(start), Duration::from_millis(300));
@@ -2002,7 +2002,7 @@ fn redirects_stop_at_the_limit() {
     let (mut m, talk, _) = server(&[&first, OK], false);
     let ran = get(&mut m, "/a", talk, |o| {
         o.http.follow = Follow::All;
-        o.http.max_redirects = MaxRedirects(Some(0));
+        o.http.max_redirects = MaxRedirects::clamped(0);
     });
     assert_eq!(ran.result, Err(ErrorKind::TooManyRedirects));
     assert_eq!(ran.request, request_of("/a"));
@@ -5453,7 +5453,7 @@ fn only_a_100_releases_a_held_body() {
     let processing = [&b"HTTP/1.1 102 Processing\r\n\r\n"[..], OK_EMPTY].concat();
     let (ran, waited) = expecting(&processing, b"a=b", |o| {
         o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-        o.http.continue_wait = crate::options::ContinueWait(Duration::from_millis(300));
+        o.http.continue_wait = crate::options::ContinueWait::clamped(300);
     });
     assert_eq!((ran.result, waited), (Ok(()), Duration::from_millis(300)));
     assert!(ran.request.ends_with(b"\r\n\r\na=b"));
@@ -6485,7 +6485,7 @@ fn a_body_held_for_a_100_earns_from_the_head() {
     o.method = Method::Post;
     o.upload = UploadSource::Bytes(curl_alloc::TryArc::try_new(vec![b'x'; 200_000]).unwrap());
     o.http.headers = UserHeaders::new([&b"Expect: 100-continue"[..]]).unwrap();
-    o.http.continue_wait = crate::options::ContinueWait(Duration::from_secs(3));
+    o.http.continue_wait = crate::options::ContinueWait::clamped(3000);
     o.flow.make_mut().unwrap().max_send_speed = NonZeroU64::new(RATE);
     o.output.verbose = true;
     o.callbacks.debug = Some(Handler::debug(seen.clone()).unwrap());

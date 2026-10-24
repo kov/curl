@@ -1373,9 +1373,22 @@ impl Default for BufferSize {
 
 /// How long a body announced with `Expect: 100-continue` waits for the
 /// 100 before it is sent anyway (`CURLOPT_EXPECT_100_TIMEOUT_MS`): a
-/// second unless set.
+/// second unless set, never over 65535 milliseconds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ContinueWait(pub Duration);
+pub struct ContinueWait(Duration);
+
+impl ContinueWait {
+    const MAX_MS: u64 = 0xffff;
+
+    /// `ms` milliseconds, held to the most, as C's setopt holds it.
+    pub fn clamped(ms: u64) -> ContinueWait {
+        ContinueWait(Duration::from_millis(ms.min(Self::MAX_MS)))
+    }
+
+    pub fn get(self) -> Duration {
+        self.0
+    }
+}
 
 impl Default for ContinueWait {
     fn default() -> Self {
@@ -1764,9 +1777,27 @@ pub struct PostRedir {
 }
 
 /// How many redirects a transfer follows (`CURLOPT_MAXREDIRS`): 30 unless
-/// set; `None` for no limit.
+/// set, never over 32767, or no limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MaxRedirects(pub Option<u16>);
+pub struct MaxRedirects(Option<u16>);
+
+impl MaxRedirects {
+    const MAX: u16 = 0x7fff;
+
+    /// Redirects followed however many there are.
+    pub const UNLIMITED: MaxRedirects = MaxRedirects(None);
+
+    /// At most `n` redirects, held to the most, as C's setopt holds it.
+    pub fn clamped(n: u64) -> MaxRedirects {
+        let n = u16::try_from(n).unwrap_or(u16::MAX);
+        MaxRedirects(Some(n.min(Self::MAX)))
+    }
+
+    /// The limit, `None` where there is none.
+    pub fn get(self) -> Option<u16> {
+        self.0
+    }
+}
 
 impl Default for MaxRedirects {
     fn default() -> Self {
@@ -2482,5 +2513,20 @@ mod tests {
         assert_eq!(BufferSize::clamped(0).get(), 1024);
         assert_eq!(UploadBufferSize::clamped(u64::MAX).get(), 2 * 1024 * 1024);
         assert_eq!(UploadBufferSize::clamped(0).get(), 16384);
+    }
+
+    /// The redirect limit and the wait for a 100 are held as C's setopt
+    /// holds them, past what the field could hold too.
+    #[test]
+    fn redirects_and_the_continue_wait_are_held_to_their_bounds() {
+        assert_eq!(MaxRedirects::clamped(u64::MAX).get(), Some(0x7fff));
+        assert_eq!(MaxRedirects::clamped(0x7fff).get(), Some(0x7fff));
+        assert_eq!(MaxRedirects::clamped(5).get(), Some(5));
+        assert_eq!(MaxRedirects::UNLIMITED.get(), None);
+        assert_eq!(
+            ContinueWait::clamped(u64::MAX).get(),
+            Duration::from_millis(0xffff)
+        );
+        assert_eq!(ContinueWait::clamped(500).get(), Duration::from_millis(500));
     }
 }

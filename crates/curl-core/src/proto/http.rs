@@ -1415,7 +1415,7 @@ impl Request {
                 format_args!("cr_exp100_read, request not full sent yet"),
             ),
             Held::Starts => {
-                let ms = cx.easy().options().http.continue_wait.0.as_millis();
+                let ms = cx.easy().options().http.continue_wait.get().as_millis();
                 trace::debug_info(
                     cx,
                     format_args!("cr_exp100_read, start AWAITING_CONTINUE, timeout {ms}ms"),
@@ -1465,7 +1465,7 @@ impl Request {
                         if !read || cx.pause().send_paused() {
                             return Ok(false);
                         }
-                        let wait = cx.easy().options().http.continue_wait.0;
+                        let wait = cx.easy().options().http.continue_wait.get();
                         let until = cx.now().after(wait);
                         self.outgoing = Sending::AwaitingContinue(until);
                         state::trace_set(cx, TimerKind::Proto, until);

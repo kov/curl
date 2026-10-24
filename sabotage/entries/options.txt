@@ -26,3 +26,19 @@ features: debug-hooks
         if value.is_none() && self.0.is_none() {
 --- new
         if false {
+
+=== a redirect limit past C's range is kept
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::redirects_and_the_continue_wait_are_held_to_their_bounds
+--- old
+        MaxRedirects(Some(n.min(Self::MAX)))
+--- new
+        MaxRedirects(Some(n))
+
+=== a wait for a 100 past C's range is kept
+file: crates/curl-core/src/options/mod.rs
+witness: curl-core options::tests::redirects_and_the_continue_wait_are_held_to_their_bounds
+--- old
+        ContinueWait(Duration::from_millis(ms.min(Self::MAX_MS)))
+--- new
+        ContinueWait(Duration::from_millis(ms))

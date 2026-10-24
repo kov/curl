@@ -31,8 +31,8 @@ import json
 import pathlib
 import re
 
-from errors import SHIM_ONLY
 import genlib
+from errors import SHIM_ONLY
 from genlib import ABI, ROOT, check
 
 HERE = pathlib.Path(__file__).resolve()

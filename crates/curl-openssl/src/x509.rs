@@ -1048,3 +1048,131 @@ impl fmt::Display for ErrText {
         fmt::Display::fmt(&Text(&self.buf[..self.len]), f)
     }
 }
+
+/// The prefix of a channel binding (RFC 5929's `tls-server-end-point`).
+const BINDING_PREFIX: &[u8] = b"tls-server-end-point:";
+
+/// The channel binding of the session `ssl` (`ossl_get_channel_binding`):
+/// the prefix and the hash of the peer's certificate by the digest its
+/// signature names, SHA-256 for one by MD5 or SHA-1 (RFC 5929 4.1); none
+/// for a peer that showed no certificate, or one whose signature names no
+/// digest, as an Ed25519 or post-quantum one's does.
+pub(crate) fn channel_binding(
+    ssl: NonNull<SSL>,
+    notes: &mut dyn curl_core::tls::BindingNotes,
+) -> Result<Option<Vec<u8>>, ErrorKind> {
+    // SAFETY: the session's SSL; a reference to the certificate, freed
+    // as `cert` goes.
+    let cert = NonNull::new(unsafe { openssl_sys::SSL_get1_peer_certificate(ssl.as_ptr()) });
+    let Some(cert) = cert.map(Cert) else {
+        return Ok(None);
+    };
+    let (mut mdnid, mut pknid, mut secbits, mut flags) = (0, 0, 0, 0u32);
+    // SAFETY: the certificate, and four places to write to.
+    let known = unsafe {
+        ffi::X509_get_signature_info(
+            cert.as_ptr(),
+            &raw mut mdnid,
+            &raw mut pknid,
+            &raw mut secbits,
+            &raw mut flags,
+        )
+    };
+    if known == 0 {
+        return Err(notes.fail(
+            ErrorKind::SslInvalidcertstatus,
+            format_args!("certificate signature algorithm not recognized"),
+        ));
+    }
+    // SAFETY: the certificate; its key, owned by it, or null.
+    let key = unsafe { ffi::X509_get0_pubkey(cert.as_ptr()) };
+    let mut no_digest_acceptable = false;
+    let mut digest: *const openssl_sys::EVP_MD = ptr::null();
+    if mdnid != openssl_sys::NID_undef {
+        digest = if mdnid == openssl_sys::NID_md5 || mdnid == openssl_sys::NID_sha1 {
+            // SAFETY: a function of no state; the library's static method.
+            unsafe { openssl_sys::EVP_sha256() }
+        } else {
+            // SAFETY: a lookup of any number; the library's method, or null.
+            unsafe { openssl_sys::EVP_get_digestbynid(mdnid) }
+        };
+    } else if !key.is_null() {
+        // SAFETY: a function of no state, for any number; the library's
+        // static text, or null.
+        let signer = unsafe { openssl_sys::OBJ_nid2sn(pknid) };
+        // SAFETY: the certificate's key and the signer's name; a name the
+        // library does not know is no match.
+        if signer.is_null() || unsafe { openssl_sys::EVP_PKEY_is_a(key, signer) } == 0 {
+            // The key is not of the signer's kind, and the signature names
+            // no digest: accepted, nothing bound (post-quantum).
+            no_digest_acceptable = true;
+        } else {
+            let mut name = [0 as c_char; 128];
+            // SAFETY: the key, and room for the name with its zero.
+            let rc = unsafe {
+                ffi::EVP_PKEY_get_default_digest_name(key, name.as_mut_ptr(), name.len())
+            };
+            // SAFETY: the library wrote a terminated name, or left the
+            // zeros.
+            let name = unsafe { CStr::from_ptr(name.as_ptr()) }.to_bytes();
+            let undef = name == b"UNDEF";
+            if rc == 2 && undef {
+                // The key's mandatory digest is none, as Ed25519's is.
+                no_digest_acceptable = true;
+            } else if rc > 0 && !name.is_empty() && !undef {
+                let how = if rc == 2 {
+                    " [mandatory]"
+                } else {
+                    " [advisory]"
+                };
+                notes.info(format_args!(
+                    "Digest algorithm : {}{how} (derived from public key), but unavailable",
+                    name.escape_ascii()
+                ));
+            }
+        }
+    }
+    if digest.is_null() {
+        if no_digest_acceptable {
+            notes.info(format_args!(
+                "certificate exposes no signing digest algorithm, nothing to add to channel binding"
+            ));
+            return Ok(None);
+        }
+        // SAFETY: a function of no state, for any number.
+        let name = unsafe { openssl_sys::OBJ_nid2sn(mdnid) };
+        let name = if name.is_null() {
+            &b"(null)"[..]
+        } else {
+            // SAFETY: the library's static text.
+            unsafe { CStr::from_ptr(name) }.to_bytes()
+        };
+        return Err(notes.fail(
+            ErrorKind::SslInvalidcertstatus,
+            format_args!(
+                "Unable to find digest algorithm {} (NID {mdnid}) for channel binding",
+                name.escape_ascii()
+            ),
+        ));
+    }
+    let mut hash = [0u8; openssl_sys::EVP_MAX_MD_SIZE as usize];
+    let mut len = 0;
+    // SAFETY: the certificate, the digest method, and room for any
+    // digest's length.
+    if unsafe { openssl_sys::X509_digest(cert.as_ptr(), digest, hash.as_mut_ptr(), &raw mut len) }
+        == 0
+    {
+        return Err(notes.fail(
+            ErrorKind::SslInvalidcertstatus,
+            format_args!("X509_digest() failed for channel binding"),
+        ));
+    }
+    let hash = &hash[..len as usize];
+    let mut binding = Vec::new();
+    for part in [BINDING_PREFIX, hash] {
+        binding
+            .try_extend_from_slice(part)
+            .map_err(|OutOfMemory| ErrorKind::OutOfMemory)?;
+    }
+    Ok(Some(binding))
+}

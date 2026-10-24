@@ -1593,6 +1593,14 @@ multi.c keeps it. Negotiate runs only with a GSS-API library on the handle; with
 challenges are still read, so `CURLINFO_HTTPAUTH_AVAIL` has the bit, which the shim reports only
 where the build claims SPNEGO.
 
+Over HTTPS each step is bound to the origin's TLS channel. Before a step, after the checks of
+an empty challenge, the request asks the connection's `Stream` for its `channel_binding`, which
+only the origin's TLS layer answers (`TlsSession::channel_binding`: RFC 5929's
+`tls-server-end-point:` and the certificate's hash, nothing, or a failure). The proxy's
+Negotiate gets the origin's binding too, never the HTTPS proxy's, as C's
+`Curl_ssl_get_channel_binding` finds only the `SSL` filter. A failure resets that side and fails
+the request; while a tunnel is set up there is no binding, the origin's TLS having no peer yet.
+
 ### 4.6 Pool and lease
 
 ```rust

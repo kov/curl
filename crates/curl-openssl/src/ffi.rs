@@ -60,6 +60,18 @@ unsafe extern "C" {
     pub(crate) fn SSL_alert_desc_string_long(value: c_int) -> *const c_char;
     pub(crate) fn SSL_CTX_set_default_read_buffer_len(ctx: *mut SSL_CTX, len: usize);
     pub(crate) fn X509_get0_pubkey(x: *const X509) -> *mut EVP_PKEY;
+    pub(crate) fn X509_get_signature_info(
+        x: *mut X509,
+        mdnid: *mut c_int,
+        pknid: *mut c_int,
+        secbits: *mut c_int,
+        flags: *mut u32,
+    ) -> c_int;
+    pub(crate) fn EVP_PKEY_get_default_digest_name(
+        key: *mut EVP_PKEY,
+        mdname: *mut c_char,
+        mdname_sz: usize,
+    ) -> c_int;
     pub(crate) fn X509_get_X509_PUBKEY(x: *const X509) -> *mut X509Pubkey;
     pub(crate) fn i2d_X509_PUBKEY(a: *const X509Pubkey, out: *mut *mut u8) -> c_int;
     pub(crate) fn X509_get0_notBefore(x: *const X509) -> *const ASN1_TIME;

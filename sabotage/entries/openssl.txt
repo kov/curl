@@ -388,3 +388,21 @@ witness: curl-openssl an_engine_s_certificate_and_key_serve_the_client
         let used = unsafe { openssl_sys::SSL_CTX_use_certificate(ctx.as_ptr(), cert.as_ptr()) };
 --- new
         let used = 1;
+
+=== a certificate signed with SHA-1 is bound by SHA-1
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl a_certificate_signed_with_sha_1_is_bound_by_sha_256
+--- old
+        digest = if mdnid == openssl_sys::NID_md5 || mdnid == openssl_sys::NID_sha1 {
+--- new
+        digest = if mdnid == openssl_sys::NID_md5 {
+
+=== a key whose mandatory digest is none fails the binding
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl an_ed25519_certificate_binds_nothing
+--- old
+                // The key's mandatory digest is none, as Ed25519's is.
+                no_digest_acceptable = true;
+--- new
+                // The key's mandatory digest is none, as Ed25519's is.
+                no_digest_acceptable = false;

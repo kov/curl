@@ -1089,6 +1089,18 @@ impl TlsSession for Session {
         let ssl = self.ssl.as_ref().map(|s| s.0.cast());
         Some(TlsNative::new(ctx.cast(), ssl))
     }
+
+    /// The binding of the peer's certificate, none before the session is
+    /// made.
+    fn channel_binding(
+        &self,
+        notes: &mut dyn curl_core::tls::BindingNotes,
+    ) -> Result<Option<Vec<u8>>, ErrorKind> {
+        match self.ssl.as_ref() {
+            Some(ssl) => crate::x509::channel_binding(ssl.0, notes),
+            None => Ok(None),
+        }
+    }
 }
 
 impl Session {

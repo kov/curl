@@ -158,8 +158,8 @@ pub(crate) type Bits = &'static [(&'static str, u64)];
 /// `CURLAUTH_*` bits.
 const AUTH_BASIC: u64 = 1;
 const AUTH_DIGEST: u64 = 1 << 1;
-/// `CURLAUTH_GSSAPI`, which C names `CURLAUTH_GSSNEGOTIATE` in a
-/// program.
+/// `CURLAUTH_GSSAPI` and `CURLAUTH_NEGOTIATE`, which C names
+/// `CURLAUTH_GSSNEGOTIATE` in a program.
 const AUTH_GSSAPI: u64 = 1 << 2;
 const AUTH_DIGEST_IE: u64 = 1 << 4;
 const AUTH_BEARER: u64 = 1 << 6;
@@ -189,6 +189,7 @@ pub(crate) fn auth_mask(methods: AuthMethods) -> u64 {
     let named = [
         (AuthMethods::BASIC, AUTH_BASIC),
         (AuthMethods::DIGEST, AUTH_DIGEST),
+        (AuthMethods::NEGOTIATE, AUTH_GSSAPI),
         (AuthMethods::BEARER, AUTH_BEARER),
         (AuthMethods::AWS_SIGV4, AUTH_AWS_SIGV4),
         (AuthMethods::HTTPSIG, AUTH_HTTPSIG),
@@ -1057,6 +1058,7 @@ mod tests {
         for (methods, mask) in [
             (AuthMethods::BASIC, 1),
             (AuthMethods::DIGEST, 2),
+            (AuthMethods::NEGOTIATE, 4),
             (AuthMethods::BEARER, 64),
             (AuthMethods::AWS_SIGV4, 128),
             (AuthMethods::HTTPSIG, 256),

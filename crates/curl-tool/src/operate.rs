@@ -110,6 +110,7 @@ pub(crate) fn run(line: &mut CommandLine<'_>, msgs: Messages) -> Ending {
         msgs,
         share: &share,
         suffixes: &suffixes,
+        claims: Claims::of_build(),
         started: Cell::new(None),
     };
     let ending = if line.global.parallel {
@@ -638,9 +639,43 @@ struct Shared<'a, 'l> {
     msgs: Messages,
     share: &'a Share,
     suffixes: &'a Suffixes,
+    claims: Claims,
     /// When the last transfer, or its last attempt, started, for
     /// `--rate`.
     started: Cell<Option<Instant>>,
+}
+
+/// What the library claims to have of what the options need, which C's
+/// tool learns from `curl_version_info`: an option the library lacks is
+/// set all the same, refused, and its refusal passed over, so it does
+/// nothing and `--libcurl` leaves it out.
+#[derive(Clone, Copy, Debug)]
+struct Claims {
+    /// `SPNEGO`: Negotiate's bit is kept in a mask of methods.
+    spnego: bool,
+    /// `GSS-API`: `CURLOPT_GSSAPI_DELEGATION` and
+    /// `CURLOPT_SOCKS5_GSSAPI_NEC` are known.
+    gssapi: bool,
+}
+
+impl Claims {
+    fn of_build() -> Claims {
+        let v = curl_core::version::version();
+        Claims {
+            spnego: v.claims("SPNEGO"),
+            gssapi: v.claims("GSS-API"),
+        }
+    }
+
+    /// The methods the library keeps of `methods`, as `httpauth` strips
+    /// Negotiate's bit from a build without SPNEGO.
+    fn auth(self, methods: options::AuthMethods) -> options::AuthMethods {
+        if self.spnego {
+            methods
+        } else {
+            methods & !options::AuthMethods::NEGOTIATE
+        }
+    }
 }
 
 /// Set up, run and finish one URL's transfer (`create_single`,
@@ -1687,8 +1722,8 @@ fn setopts(
         Ok(())
     })?;
     s.ptr("CURLOPT_HEADERDATA", Object, nothing)?;
-    proxy_setopts(s, op)?;
-    credentials_and_headers(s, op, config.etag)?;
+    proxy_setopts(s, op, run.claims)?;
+    credentials_and_headers(s, op, config.etag, run.claims)?;
     transfer_setopts(s, op, run, config)?;
     if let UrlProto::Http { tls } = config.proto {
         http_setopts(s, op, tls, &run.msgs)?;
@@ -1736,6 +1771,12 @@ fn setopts(
         o.ip_version = ip_version;
         Ok(())
     })?;
+    if op.socks5_gssapi_nec && run.claims.gssapi {
+        s.long("CURLOPT_SOCKS5_GSSAPI_NEC", 1, |o| {
+            o.proxy.make_mut().map_err(oom)?.socks5_gssapi_nec = true;
+            Ok(())
+        })?;
+    }
     // Set only if one is asked for, as C's mask is set only if not 0.
     if op.socks5_basic || op.socks5_gssapi {
         let auth = options::Socks5Auth {
@@ -1749,6 +1790,12 @@ fn setopts(
             Ok(())
         })?;
     }
+    s.str("CURLOPT_SERVICE_NAME", op.service_name, |o| {
+        if let Some(name) = op.service_name {
+            o.login.make_mut().map_err(oom)?.service = Some(copy(name).map_err(oom)?);
+        }
+        Ok(())
+    })?;
     s.long(
         "CURLOPT_IGNORE_CONTENT_LENGTH",
         i64::from(op.ignore_content_length),
@@ -1853,6 +1900,7 @@ fn setopts(
             o.connect_to.set(op.connect_to.iter().copied()).map_err(oom)
         })?;
     }
+    gss_delegation(s, op, run.claims)?;
     if let Some(set) = op.protocols {
         let list = set.list().map_err(oom)?;
         s.str("CURLOPT_PROTOCOLS_STR", Some(&list), |o| {
@@ -1867,6 +1915,8 @@ fn setopts(
             Ok(())
         })?;
     }
+    // Set twice, as config2setopts.c sets it.
+    gss_delegation(s, op, run.claims)?;
     if let Some(path) = op.unix_socket {
         let name = if op.abstract_unix_socket {
             "CURLOPT_ABSTRACT_UNIX_SOCKET"
@@ -2118,8 +2168,21 @@ fn tls_versions(
     (min, max)
 }
 
+/// `--delegation`, if not none, where the library has the option.
+fn gss_delegation(s: &mut Setopt<'_>, op: &Operation<'_>, claims: Claims) -> Result<(), ErrorKind> {
+    let d = op.delegation;
+    if d == options::Delegation::default() || !claims.gssapi {
+        return Ok(());
+    }
+    let value = i64::from(d.by_policy) | i64::from(d.always) << 1;
+    s.long("CURLOPT_GSSAPI_DELEGATION", value, |o| {
+        o.login.make_mut().map_err(oom)?.delegation = d;
+        Ok(())
+    })
+}
+
 /// The proxy options (`proxy_setopts`), made only where one is given.
-fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, claims: Claims) -> Result<(), ErrorKind> {
     if let Some(proxy) = op.proxy {
         s.str("CURLOPT_PROXY", Some(proxy), |o| {
             o.proxy.make_mut().map_err(oom)?.url = Some(copy(proxy).map_err(oom)?);
@@ -2164,6 +2227,8 @@ fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind
     // One method, in C's order.
     let proxy_auth = if op.proxy_anyauth {
         Some(options::AuthMethods::ANY)
+    } else if op.proxy_negotiate {
+        Some(options::AuthMethods::NEGOTIATE)
     } else if op.proxy_digest {
         Some(options::AuthMethods::DIGEST)
     } else if op.proxy_basic {
@@ -2177,7 +2242,7 @@ fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind
             easysrc::AUTH,
             easysrc::auth_mask(methods),
             |o| {
-                o.proxy.make_mut().map_err(oom)?.auth = options::HttpAuth(methods);
+                o.proxy.make_mut().map_err(oom)?.auth = options::HttpAuth(claims.auth(methods));
                 Ok(())
             },
         )?;
@@ -2203,6 +2268,12 @@ fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind
             Ok(())
         },
     )?;
+    s.str("CURLOPT_PROXY_SERVICE_NAME", op.proxy_service_name, |o| {
+        if let Some(name) = op.proxy_service_name {
+            o.proxy.make_mut().map_err(oom)?.service = Some(copy(name).map_err(oom)?);
+        }
+        Ok(())
+    })?;
     if op.haproxy_protocol {
         s.long("CURLOPT_HAPROXYPROTOCOL", 1, |o| {
             o.proxy.make_mut().map_err(oom)?.haproxy = true;
@@ -2226,6 +2297,7 @@ fn credentials_and_headers(
     s: &mut Setopt<'_>,
     op: &Operation<'_>,
     etag: Option<&[u8]>,
+    claims: Claims,
 ) -> Result<(), ErrorKind> {
     s.str("CURLOPT_XOAUTH2_BEARER", op.bearer, |o| {
         if let Some(token) = op.bearer {
@@ -2269,7 +2341,7 @@ fn credentials_and_headers(
             easysrc::AUTH,
             easysrc::auth_mask(op.auth),
             |o| {
-                o.http.auth = options::HttpAuth(op.auth);
+                o.http.auth = options::HttpAuth(claims.auth(op.auth));
                 Ok(())
             },
         )?;
@@ -3532,6 +3604,18 @@ mod tests {
 
     /// What `--libcurl` writes for `args` and `url`, as `set_up`.
     fn set_up_url(args: &[&str], url: &str) -> Option<(String, String)> {
+        set_up_with(args, url, Claims::of_build(), |_| {})
+    }
+
+    /// What `--libcurl` writes for `args` and `url`, as `set_up`, with
+    /// the library claiming `claims` and the parsed options changed by
+    /// `change`.
+    fn set_up_with(
+        args: &[&str],
+        url: &str,
+        claims: Claims,
+        change: impl FnOnce(&mut Operation<'_>),
+    ) -> Option<(String, String)> {
         let argv: Vec<std::ffi::OsString> = std::iter::once("curl")
             .chain(args.iter().copied())
             .chain(std::iter::once(url))
@@ -3539,10 +3623,12 @@ mod tests {
             .collect();
         let mut msgs = Messages::new();
         msgs.silent = true;
-        let line = match tool::parse_args(&argv, &mut msgs, &mut |_, _| {}) {
+        let mut line = match tool::parse_args(&argv, &mut msgs, &mut |_, _| {}) {
             Ok(tool::Parsed::Run(line)) if line.unimplemented.is_none() => line,
             _ => return None,
         };
+        change(line.operations.last_mut()?);
+        let line = line;
         let op = line.operations.last()?;
         let stdout = Stdout::new().unwrap();
         let tracer = Tracer::new(&line.global, &stdout).unwrap();
@@ -3557,6 +3643,7 @@ mod tests {
             msgs,
             share: &share,
             suffixes: &suffixes,
+            claims,
             started: Cell::new(None),
         };
         let out = output::Output::null(msgs).unwrap();
@@ -3605,6 +3692,95 @@ mod tests {
             String::from_utf8(text).unwrap(),
             format!("{:?}", easy.options()),
         ))
+    }
+
+    /// The GSS-API options go where config2setopts.c sets them, as C's
+    /// program from the same command line has them (delegation twice);
+    /// those the library lacks are refused there and left out, and a
+    /// mask loses Negotiate in the library alone.
+    #[test]
+    fn writes_gss_options_as_c() {
+        let args = [
+            "--delegation",
+            "always",
+            "--socks5-gssapi-nec",
+            "--socks5-gssapi",
+            "--service-name",
+            "foo",
+            "--proxy-service-name",
+            "bar",
+            "-x",
+            "socks5://127.0.0.1:1",
+        ];
+        let url = "http://127.0.0.1:1/";
+        let gss = |(text, _): &(String, String)| -> Vec<String> {
+            text.lines()
+                .filter(|l| l.contains("AUTH") || l.contains("GSS") || l.contains("SERVICE"))
+                .map(str::to_owned)
+                .collect()
+        };
+        let line = |l: &str| format!("  curl_easy_setopt(curl, {l});");
+        // As C's tool with `--negotiate` and `--proxy-negotiate`, which
+        // only a library claiming SPNEGO lets it take.
+        let negotiate = |op: &mut Operation<'_>| {
+            op.auth = op.auth | options::AuthMethods::NEGOTIATE;
+            op.proxy_negotiate = true;
+        };
+        let claimed = Claims {
+            spnego: true,
+            gssapi: true,
+        };
+        let set = set_up_with(&args, url, claimed, negotiate).unwrap();
+        assert_eq!(
+            gss(&set),
+            [
+                line("CURLOPT_PROXYAUTH, (long)CURLAUTH_GSSNEGOTIATE"),
+                line("CURLOPT_PROXY_SERVICE_NAME, \"bar\""),
+                line("CURLOPT_HTTPAUTH, (long)CURLAUTH_GSSNEGOTIATE"),
+                line("CURLOPT_SOCKS5_GSSAPI_NEC, 1L"),
+                line("CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_GSSNEGOTIATE"),
+                line("CURLOPT_SERVICE_NAME, \"foo\""),
+                line("CURLOPT_GSSAPI_DELEGATION, 2L"),
+                line("CURLOPT_GSSAPI_DELEGATION, 2L"),
+            ]
+        );
+        for field in [
+            format!("service: Some({:?})", b"foo".to_vec()),
+            format!("service: Some({:?})", b"bar".to_vec()),
+            "socks5_gssapi_nec: true".to_owned(),
+            "always: true".to_owned(),
+            "NEGOTIATE".to_owned(),
+        ] {
+            assert!(set.1.contains(&field), "{field}: {}", set.1);
+        }
+        let lacking = Claims {
+            spnego: false,
+            gssapi: false,
+        };
+        let set = set_up_with(&args, url, lacking, |_| {}).unwrap();
+        assert_eq!(
+            gss(&set),
+            [
+                line("CURLOPT_PROXY_SERVICE_NAME, \"bar\""),
+                line("CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_GSSNEGOTIATE"),
+                line("CURLOPT_SERVICE_NAME, \"foo\""),
+            ]
+        );
+        for field in ["socks5_gssapi_nec: true", "always: true"] {
+            assert!(!set.1.contains(field), "{field}: {}", set.1);
+        }
+        // `--anyauth`'s mask is C's whole, though the library keeps
+        // Negotiate only where it claims SPNEGO.
+        for (claims, kept) in [(claimed, true), (lacking, false)] {
+            let set = set_up_with(&["--anyauth"], url, claims, |_| {}).unwrap();
+            assert_eq!(gss(&set), [line("CURLOPT_HTTPAUTH, (long)CURLAUTH_ANY")]);
+            assert_eq!(set.1.contains("NEGOTIATE"), kept, "{}", set.1);
+        }
+        // `--delegation policy` is 1; none sets nothing.
+        let set = set_up_with(&["--delegation", "POLICY"], url, claimed, |_| {}).unwrap();
+        assert_eq!(gss(&set), vec![line("CURLOPT_GSSAPI_DELEGATION, 1L"); 2]);
+        let set = set_up_with(&["--delegation", "none"], url, claimed, |_| {}).unwrap();
+        assert_eq!(gss(&set), Vec::<String>::new());
     }
 
     /// What `--libcurl` writes for options set only in some cases, as

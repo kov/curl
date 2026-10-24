@@ -13,7 +13,9 @@ use std::num::NonZeroU16;
 
 use curl_alloc::TryVec;
 use curl_core::components::Components;
-use curl_core::options::{AuthMethods, Condition, Follow, PostRedir, ProxyType, TimeCondition};
+use curl_core::options::{
+    AuthMethods, Condition, Delegation, Follow, PostRedir, ProxyType, TimeCondition,
+};
 use curl_core::version::Protocol;
 
 use super::protocols::{self, Protocols};
@@ -301,6 +303,16 @@ pub(crate) struct Operation<'a> {
     pub(crate) proxy_basic: bool,
     /// `--proxy-digest`.
     pub(crate) proxy_digest: bool,
+    /// `--proxy-negotiate`.
+    pub(crate) proxy_negotiate: bool,
+    /// `--service-name`.
+    pub(crate) service_name: Option<&'a [u8]>,
+    /// `--proxy-service-name` and `--socks5-gssapi-service`, one option.
+    pub(crate) proxy_service_name: Option<&'a [u8]>,
+    /// `--delegation`.
+    pub(crate) delegation: Delegation,
+    /// `--socks5-gssapi-nec`.
+    pub(crate) socks5_gssapi_nec: bool,
     /// `--socks5-basic` and `--socks5-gssapi`: the SOCKS5 methods asked
     /// for, the library's default if neither.
     pub(crate) socks5_basic: bool,
@@ -1128,6 +1140,38 @@ pub(crate) fn apply<'a>(
         Opt::ProxyDigest => line.current().proxy_digest = value.toggle(),
         Opt::Socks5Basic => line.current().socks5_basic = value.toggle(),
         Opt::Socks5Gssapi => line.current().socks5_gssapi = value.toggle(),
+        Opt::Socks5GssapiNec => line.current().socks5_gssapi_nec = value.toggle(),
+        Opt::ProxyNegotiate => {
+            // Refused even to turn off, as C's check has no toggle.
+            if !super::parse::claims_spnego() {
+                return Err(ParamError::LibcurlDoesntSupport);
+            }
+            line.current().proxy_negotiate = value.toggle();
+        }
+        Opt::Negotiate => {
+            let on = value.toggle();
+            if on && !super::parse::claims_spnego() {
+                return Err(ParamError::LibcurlDoesntSupport);
+            }
+            let op = line.current();
+            op.auth = if on {
+                op.auth | AuthMethods::NEGOTIATE
+            } else {
+                op.auth & !AuthMethods::NEGOTIATE
+            };
+        }
+        Opt::Delegation => line.current().delegation = delegation(value.text(), msgs),
+        Opt::ServiceName | Opt::ProxyServiceName | Opt::Socks5GssapiService => {
+            let name = value.text();
+            if name.is_empty() {
+                return Err(ParamError::BlankString);
+            }
+            let op = line.current();
+            match spec.opt {
+                Opt::ServiceName => op.service_name = Some(name),
+                _ => op.proxy_service_name = Some(name),
+            }
+        }
         Opt::Resolve => line.current().resolve.try_push(value.text())?,
         Opt::ConnectTo => line.current().connect_to.try_push(value.text())?,
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
@@ -1634,7 +1678,6 @@ pub(crate) fn apply<'a>(
         Opt::AltSvc
         | Opt::Append
         | Opt::CompressedSsh
-        | Opt::Delegation
         | Opt::DisableEprt
         | Opt::DisableEpsv
         | Opt::DnsInterface
@@ -1675,7 +1718,6 @@ pub(crate) fn apply<'a>(
         | Opt::MailFrom
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
-        | Opt::Negotiate
         | Opt::Ntlm
         | Opt::ProxyCaNative
         | Opt::ProxyCacert
@@ -1688,11 +1730,9 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyHttp3
         | Opt::ProxyKey
         | Opt::ProxyKeyType
-        | Opt::ProxyNegotiate
         | Opt::ProxyNtlm
         | Opt::ProxyPass
         | Opt::ProxyPinnedpubkey
-        | Opt::ProxyServiceName
         | Opt::ProxySslAllowBeast
         | Opt::ProxySslAutoClientCert
         | Opt::ProxyTls13Ciphers
@@ -1701,9 +1741,6 @@ pub(crate) fn apply<'a>(
         | Opt::Quote
         | Opt::SaslAuthzid
         | Opt::SaslIr
-        | Opt::ServiceName
-        | Opt::Socks5GssapiNec
-        | Opt::Socks5GssapiService
         | Opt::Ssl
         | Opt::SslReqd
         | Opt::SslSessions
@@ -1715,6 +1752,27 @@ pub(crate) fn apply<'a>(
         | Opt::UseAscii => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
+}
+
+/// `--delegation`'s argument, in any case; anything else is warned of
+/// and none (`delegation`).
+fn delegation(text: &[u8], msgs: &Messages) -> Delegation {
+    if text.eq_ignore_ascii_case(b"none") {
+        Delegation::default()
+    } else if text.eq_ignore_ascii_case(b"policy") {
+        Delegation {
+            by_policy: true,
+            always: false,
+        }
+    } else if text.eq_ignore_ascii_case(b"always") {
+        Delegation {
+            by_policy: false,
+            always: true,
+        }
+    } else {
+        msgs.warn(&[b"unrecognized delegation method '", text, b"', using none"]);
+        Delegation::default()
+    }
 }
 
 /// `file` exists, as the option `name` needs (`existingfile`).

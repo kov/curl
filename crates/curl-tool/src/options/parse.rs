@@ -567,6 +567,12 @@ pub(crate) fn has_tls() -> bool {
     version().features.iter().any(|f| f.name() == "SSL")
 }
 
+/// Whether the library claims SPNEGO, which `--negotiate` and
+/// `--proxy-negotiate` need (`feature_spnego`).
+pub(crate) fn claims_spnego() -> bool {
+    version().claims("SPNEGO")
+}
+
 /// A U+2000 to U+203F punctuation mark, such as a typographic dash or
 /// quote, starting `arg`: usually a copy-and-paste accident.
 fn has_leading_unicode(arg: &[u8]) -> bool {
@@ -774,6 +780,92 @@ mod tests {
             Ok(Parsed::Run(line)) => line,
             Ok(Parsed::Request(r)) => panic!("{args:?} asked for {r:?}"),
             Err(e) => panic!("{args:?} failed with {e:?}"),
+        }
+    }
+
+    /// `--negotiate` needs a library claiming SPNEGO to be turned on,
+    /// `--proxy-negotiate` even to be turned off, as C checks
+    /// `feature_spnego`; the GSS-API options are read as C reads them,
+    /// whatever the library has: `--delegation` by name in any case,
+    /// anything else warned of and none, and `--socks5-gssapi-service`
+    /// the proxy's service name.
+    #[test]
+    fn reads_gss_options_as_c() {
+        use curl_core::options::{AuthMethods, Delegation};
+        let refused = Err(ParamError::LibcurlDoesntSupport);
+        if !claims_spnego() {
+            assert_eq!(run(&["--negotiate", "x"]), refused);
+            assert_eq!(run(&["--proxy-negotiate", "x"]), refused);
+            assert_eq!(run(&["--no-proxy-negotiate", "x"]), refused);
+            assert_eq!(run(&["--no-negotiate", "x"]), Ok((1, None, None)));
+        } else {
+            let l = line(&["--negotiate", "--proxy-negotiate", "x"]);
+            assert_eq!(l.operations[0].auth, AuthMethods::NEGOTIATE);
+            assert!(l.operations[0].proxy_negotiate);
+        }
+        let l = line(&["--basic", "--no-negotiate", "x"]);
+        assert_eq!(l.operations[0].auth, AuthMethods::BASIC);
+        let delegation = |word: &str| {
+            let mut got = None;
+            let said = crate::msgs::captured(|mut msgs| {
+                let argv: &'static [OsString] = Vec::leak(argv(&["--delegation", word, "x"]));
+                got = match parse_args(argv, &mut msgs, &mut |_, _| {}) {
+                    Ok(Parsed::Run(line)) => Some(line.operations[0].delegation),
+                    _ => None,
+                };
+            });
+            (got.unwrap(), said)
+        };
+        let (policy, always) = (
+            Delegation {
+                by_policy: true,
+                always: false,
+            },
+            Delegation {
+                by_policy: false,
+                always: true,
+            },
+        );
+        for (word, want) in [
+            ("none", Delegation::default()),
+            ("policy", policy),
+            ("ALWAYS", always),
+            ("Policy", policy),
+        ] {
+            assert_eq!(delegation(word), (want, String::new()), "{word}");
+        }
+        assert_eq!(
+            delegation("sometimes"),
+            (
+                Delegation::default(),
+                "Warning: unrecognized delegation method 'sometimes', using none\n".to_owned()
+            )
+        );
+        let l = line(&[
+            "--service-name",
+            "s",
+            "--proxy-service-name",
+            "p",
+            "--socks5-gssapi-service",
+            "q",
+            "--socks5-gssapi-nec",
+            "x",
+        ]);
+        let op = &l.operations[0];
+        assert_eq!(op.service_name, Some(&b"s"[..]));
+        assert_eq!(op.proxy_service_name, Some(&b"q"[..]), "the last of either");
+        assert!(op.socks5_gssapi_nec);
+        assert!(l.unimplemented.is_none());
+        for name in [
+            "--service-name",
+            "--proxy-service-name",
+            "--socks5-gssapi-service",
+        ] {
+            assert_eq!(
+                run(&[name, "", "x"]),
+                Err(ParamError::BlankString),
+                "{name}"
+            );
         }
     }
 

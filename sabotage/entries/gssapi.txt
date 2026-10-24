@@ -90,3 +90,34 @@ witness: curl-sys-abi handle_tests::gss_options_are_read_as_c
             let nec = gss_bool(n, gssapi())?;
 --- new
             let nec = gss_bool(n, true)?;
+
+=== `--libcurl` writes delegation once, though config2setopts.c sets it twice
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::writes_gss_options_as_c
+--- old
+    // Set twice, as config2setopts.c sets it.
+    gss_delegation(s, op, run.claims)?;
+--- new
+    // Set twice, as config2setopts.c sets it.
+
+=== the tool gives the library Negotiate though it does not claim SPNEGO
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::writes_gss_options_as_c
+--- old
+            methods & !options::AuthMethods::NEGOTIATE
+--- new
+            methods
+
+=== `--no-proxy-negotiate` is taken from a library without SPNEGO
+file: crates/curl-tool/src/options/apply.rs
+witness: curl-tool options::parse::tests::reads_gss_options_as_c
+--- old
+            if !super::parse::claims_spnego() {
+                return Err(ParamError::LibcurlDoesntSupport);
+            }
+            line.current().proxy_negotiate = value.toggle();
+--- new
+            if value.toggle() && !super::parse::claims_spnego() {
+                return Err(ParamError::LibcurlDoesntSupport);
+            }
+            line.current().proxy_negotiate = value.toggle();

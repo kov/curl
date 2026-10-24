@@ -157,3 +157,13 @@
    ...
    fun:*stack_overflow*thread_info*
 }
+
+{
+   mit-krb5-gss_display_status-internal-leak-rust
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:realloc
+   ...
+   fun:gss_display_status
+   fun:*curl_gssapi*display_status*
+}

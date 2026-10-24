@@ -72,6 +72,9 @@ exclude_re = [
     'curl-openssl/src/x509\.rs:.*: delete - in name_line$',
     # `ASN1_STRING_to_UTF8` allocates whenever it gives a length.
     'curl-openssl/src/x509\.rs:.*: replace match guard !owned\.is_null\(\) with true in common_name$',
+    # With no protocol chosen OpenSSL gives a null pointer and a length
+    # of 0, with one neither: either half of the guard decides it.
+    'curl-openssl/src/ssl\.rs:.*: replace (> with >=|&& with \|\|) in Session::negotiated$',
     # `LayerQuery` has no variant, so `Layer::query`'s default body can
     # never run.
     'conn/layer\.rs:.*: replace Layer::query -> Option<LayerAnswer> with None$',

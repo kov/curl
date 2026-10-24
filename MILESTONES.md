@@ -699,14 +699,16 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       the stub.
     - **b. Options, tool and shim.** **Done.** Gated on the build's claim, as C's
       `USE_SPNEGO`/`HAVE_GSSAPI` are: until the flip they answer as a C build without GSS-API.
-    - **c. HTTP Negotiate with the origin.** Per-connection state, the 401 round trip,
+    - **c. HTTP Negotiate with the origin.** **Done.** Per-connection state, the 401 round trip,
       `Persistent-Auth`, reuse matching (delegation included), `CURLINFO_HTTPAUTH_*`.
-    - **d. Proxy Negotiate,** forwarding and CONNECT.
+    - **d. Proxy Negotiate,** forwarding and CONNECT. **Done.** The origin's token goes
+      through a tunnel, where C spends it on the CONNECT (DIVERGENCE.md).
     - **e. Channel binding over HTTPS** (1582).
-    - **f. SOCKS5 GSS-API,** before the flip, so the greeting changes with the claim. C makes
+    - **f. SOCKS5 GSS-API,** before the flip, so the greeting changes with the claim. **Done.** C makes
       the socket blocking for the exchange; here it is states of the SOCKS handshake.
     - **g. The flip.** Claim `GSS-API`, `Kerberos` and `SPNEGO` and the library's version,
-      open `crypto`, delete `gated.py`.
+      open `crypto`, delete `gated.py`. The stub cases 2096–2099, 2111 and 2112 then run on the
+      Rust leg, and the SOCKS5 greeting tests (3310, 3311, 1742) see method 1 offered.
     - **h. Closing the step.** The sweep, cargo-mutants, torture.
 45. **The tool's options that need no new engine work,** built alongside step 40. **Done.**
     `--variable` and the `--expand-` prefix (`tool_vars.c`), `--styled-output`,

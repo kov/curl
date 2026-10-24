@@ -402,3 +402,23 @@ fn the_engines_are_the_library_s() {
     assert!(engines.iter().any(|e| e == b"dynamic"), "{engines:?}");
     assert_eq!(engines, crate::engine::ids().unwrap());
 }
+
+/// `ossl_strerror`'s buffer of 256 bytes: the version and `: ` first if
+/// they fit, with at least the text's zero byte after them; the text in
+/// what is left.
+#[test]
+fn an_error_s_text_has_what_c_s_buffer_leaves_it() {
+    use crate::x509::{after_version, no_text};
+    for (version, room) in [
+        (0, Some(254)),
+        (13, Some(241)),
+        (200, Some(54)),
+        (253, Some(1)),
+        (254, None),
+        (300, None),
+    ] {
+        assert_eq!(after_version(version), room, "{version}");
+    }
+    assert_eq!(no_text(0), b"No error");
+    assert_eq!(no_text(0x0A00_045C), b"Unknown error");
+}

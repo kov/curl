@@ -940,7 +940,11 @@ fn public_key_der(cert: &Cert) -> Vec<u8> {
     // SAFETY: room for the `n` bytes the library said it writes, at `at`,
     // which it moves past what it wrote.
     let wrote = unsafe { ffi::i2d_X509_PUBKEY(key, &mut at) };
-    if wrote != len || at != der.as_mut_ptr().wrapping_add(n) {
+    if wrote != len {
+        return Vec::new();
+    }
+    // Past what it wrote, as C checks too.
+    if at != der.as_mut_ptr().wrapping_add(n) {
         return Vec::new();
     }
     // SAFETY: the library wrote the `n` bytes.
@@ -954,32 +958,23 @@ fn public_key_der(cert: &Cert) -> Vec<u8> {
 /// past them), or `Unknown error` (`No error` for none) where the
 /// library has none.
 pub(crate) struct ErrText {
-    buf: [u8; 256],
+    buf: [u8; C_BUFFER],
     len: usize,
 }
 
 impl ErrText {
     pub(crate) fn of(error: c_ulong) -> ErrText {
         let mut t = ErrText {
-            buf: [0; 256],
+            buf: [0; C_BUFFER],
             len: 0,
         };
-        let version = crate::sys::version_len();
-        let room = if version < t.buf.len() - 2 {
-            t.buf.len() - version - 2
-        } else {
-            t.buf.len()
-        };
+        let room = after_version(crate::sys::version_len()).unwrap_or(t.buf.len());
         // SAFETY: `room` bytes of the buffer, which the library ends with
         // a zero byte.
         unsafe { ffi::ERR_error_string_n(error, t.buf.as_mut_ptr().cast(), room) };
         t.len = until_zero(&t.buf[..room]).len();
         if t.len == 0 {
-            let msg: &[u8] = if error == 0 {
-                b"No error"
-            } else {
-                b"Unknown error"
-            };
+            let msg = no_text(error);
             t.buf[..msg.len()].copy_from_slice(msg);
             t.len = msg.len();
         }
@@ -1000,13 +995,36 @@ impl ErrText {
     }
 }
 
+/// The size of C's buffer for an error's text (`ossl_strerror`'s callers').
+const C_BUFFER: usize = 256;
+
+/// What is left of C's buffer for the library's text once the version,
+/// `version` bytes, and `: ` are put before it; none if they do not fit,
+/// when C puts nothing before it (`ossl_strerror`).
+pub(crate) fn after_version(version: usize) -> Option<usize> {
+    if version < C_BUFFER - 2 {
+        Some(C_BUFFER - version - 2)
+    } else {
+        None
+    }
+}
+
+/// What C says of an error the library gave no text for.
+pub(crate) fn no_text(error: c_ulong) -> &'static [u8] {
+    if error == 0 {
+        b"No error"
+    } else {
+        b"Unknown error"
+    }
+}
+
 /// An `ErrText` after the library's version, as `ossl_strerror` leaves
 /// its buffer.
 pub(crate) struct Versioned<'a>(&'a ErrText);
 
 impl fmt::Display for Versioned<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if crate::sys::version_len() < self.0.buf.len() - 2 {
+        if after_version(crate::sys::version_len()).is_some() {
             write!(f, "OpenSSL/{}: ", crate::sys::version_text())?;
         }
         fmt::Display::fmt(self.0, f)

@@ -875,13 +875,16 @@ impl Conn {
         self.negotiate.as_ref().is_none_or(|n| n.serves(wants))
     }
 
-    /// Whether it is in the middle of Negotiate's handshake, a challenge
-    /// taken and the request to go again on it, which the application's
-    /// forbidding its reuse does not close (`multi_conn_should_close`).
+    /// Whether it is in the middle of Negotiate's handshake with the
+    /// origin or the proxy, a challenge taken and the request to go again
+    /// on it, which the application's forbidding its reuse does not close
+    /// (`multi_conn_should_close`).
     pub(crate) fn negotiating(&self) -> bool {
-        self.negotiate
-            .as_ref()
-            .is_some_and(|n| n.state() == crate::proto::http::negotiate::State::Recv)
+        use crate::proto::http::negotiate::State;
+        use crate::proto::http1::auth::Side;
+        self.negotiate.as_ref().is_some_and(|n| {
+            n.state(Side::Host) == State::Recv || n.state(Side::Proxy) == State::Recv
+        })
     }
 
     /// Whether it carried a request before this one.

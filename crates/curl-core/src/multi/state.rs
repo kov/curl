@@ -171,6 +171,11 @@ pub(crate) struct Connecting {
     handshake: Option<Box<Handshake>>,
     /// The HTTPS connect filter heading the setup, if it has one.
     https: Option<https::HttpsConnect>,
+    /// HTTP Negotiate with the proxy a tunnel goes through, before the
+    /// connection it belongs to is up: kept across a redial, as C keeps it
+    /// on the connection whose filters it makes again, and handed to the
+    /// connection as it comes up.
+    negotiate: Option<Box<crate::proto::http::negotiate::Negotiate>>,
 }
 
 /// A handshake over the connection to the first hop: a proxy's, or the
@@ -785,7 +790,12 @@ impl Connecting {
             route,
             handshake: _,
             https: _,
+            negotiate,
         } = self;
+        assert!(
+            negotiate.is_none(),
+            "a tunnel's Negotiate is the connection's once it is up"
+        );
         TransferState::ProtoConnect(Attached {
             lease,
             proto,
@@ -2292,13 +2302,15 @@ fn report_failed<H: Host>(
 /// The connection is set up (`conn_connect_trace`): timed and traced;
 /// `preface` if the PROXY protocol's line was sent over it.
 fn up<H: Host>(
-    c: Connecting,
+    mut c: Connecting,
     cx: &mut StepCx<'_, H>,
     remote: Remote,
     local: Option<SocketAddr>,
     at: Instant,
     preface: bool,
 ) -> (TransferState, Wake) {
+    // What its tunnel negotiated is the connection's from now on.
+    *c.lease.get().negotiate_mut() = c.negotiate.take();
     if c.https.is_some() {
         // The winner's chain is asked whether HTTP/2 was agreed
         // (`baller_connected`), from its SETUP filter.
@@ -3473,6 +3485,7 @@ fn setup<H: Host>(cx: &mut StepCx<'_, H>, plan: Plan) -> TransferState {
         route,
         handshake: None,
         https,
+        negotiate: None,
     })
 }
 
@@ -3562,8 +3575,11 @@ fn acquire<H: Host>(
     proto: &ProtoState,
     route: Route,
 ) -> Result<Acquired, OutOfMemory> {
-    let wants = match proto {
-        ProtoState::Http(request) => request.reuse_wants(cx.easy().auth.host_want()),
+    let auth = &cx.easy().auth;
+    let wants = match (proto, &route) {
+        (ProtoState::Http(request), Route::Tcp(tcp)) => {
+            request.reuse_wants(auth.host_want(), auth.proxy_want(), tcp)
+        }
         _ => AuthWants::NONE,
     };
     let limits = cx.easy().options().limits.reuse;

@@ -1554,16 +1554,22 @@ health-checked before reuse; input pending on an idle HTTP/1 connection makes it
 
 The one exception is HTTP Negotiate, whose authentication C binds to the connection
 (`proto/http/negotiate.rs`, lib/http_negotiate.c). Its state lives on the `Conn`, as
-`negotiate: Option<Box<Negotiate>>`, made the first time a transfer negotiates on it: C's
-`http_negotiate_state` and `negotiatedata` (the context, the step's progress, the
-`Persistent-Auth` flags), and the binding — the origin and the credentials (C's `creds` and
-`creds_origin`) the connection authenticated as. The pool asks `Conn::serves_auth` with the
-transfer's `Wants` (whether it wants Negotiate, its credentials and its origin) after
-`Route::serves`, as C's `url_match_auth` and `url_match_auth_nego`: a connection bound to
-credentials serves only those, and one mid-handshake serves only a transfer negotiating as the
-same credentials with the same origin. The delegation asked (`CURLOPT_GSSAPI_DELEGATION`) is
-part of the `Tcp` route, compared in `Route::serves` (url.c:882). A connection whose
-handshake is in progress (state `Recv`) is kept even when the transfer forbade reuse, as
+`negotiate: Option<Box<Negotiate>>`, made the first time a transfer negotiates on it: for the
+origin and for the HTTP proxy each, C's `http_negotiate_state` and `proxy_negotiate_state` and
+a `negotiatedata` (the context, the step's progress, the `Persistent-Auth` flags), and for the
+origin the binding — the origin and the credentials (C's `creds` and `creds_origin`) the
+connection authenticated as. A tunnel's `CONNECT` negotiates with the proxy before there is a
+`Conn`: the transfer setting it up holds the box in `Connecting` (kept across a redial, as C
+keeps it on the connection whose filters it makes again) and hands it to the `Conn` as the
+connection comes up. The pool asks `Conn::serves_auth` with the transfer's `Wants` (whether it
+wants Negotiate, its credentials and its origin; whether it wants Negotiate of the proxy with
+credentials for it) after `Route::serves`, as C's `url_match_auth` and `url_match_auth_nego`:
+a connection bound to credentials serves only those, one mid-handshake with the origin serves
+only a transfer negotiating as the same credentials with the same origin, and one negotiating
+with its proxy only a transfer negotiating with it — the proxy's credentials, its service
+among them, are the route's. The delegation asked (`CURLOPT_GSSAPI_DELEGATION`) is part of
+the `Tcp` route, compared in `Route::serves` (url.c:882). A connection whose handshake with
+either peer is in progress (state `Recv`) is kept even when the transfer forbade reuse, as
 multi.c keeps it. Negotiate runs only with a GSS-API library on the handle; without one the
 challenges are still read, so `CURLINFO_HTTPAUTH_AVAIL` has the bit, which the shim reports only
 where the build claims SPNEGO.

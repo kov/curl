@@ -8,7 +8,7 @@ use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 use crate::coding::{AcceptEncoding, Coding, Decoder, Decoders, Identity, Named, Unrecognized};
 use crate::components::Component;
 use crate::conn::io::{Events, Recv, Sent};
-use crate::conn::{ConnLease, Peer, RecvFailed, Scheme};
+use crate::conn::{ConnLease, Peer, ProxyCreds, RecvFailed, Scheme, Tcp};
 use crate::date::{HttpDate, OutOfRange};
 use crate::deliver::{self, Expect, Pause, Pipeline, Reach, WriteType};
 use crate::error::{ErrorKind, UrlErrorKind, url_error};
@@ -785,17 +785,19 @@ impl Request {
         })
     }
 
-    /// Negotiate's header, made by the connection's context
-    /// (`Curl_output_negotiate`); without a GSS-API library, none, as
-    /// in a build without one.
+    /// Negotiate's header for the origin, or for the proxy that forwards
+    /// the request, made by the connection's context with it
+    /// (`Curl_output_negotiate`); without a GSS-API library, none, as in
+    /// a build without one.
     fn negotiate<H: Host>(
         &self,
         cx: &mut StepCx<'_, H>,
         lease: &mut ConnLease,
+        side: Side,
         get_or_head: bool,
     ) -> Result<Output, ErrorKind> {
         let Some(gss) = cx.easy().libraries().gss else {
-            cx.easy_mut().auth.side(Side::Host).finish();
+            cx.easy_mut().auth.side(side).finish();
             return Ok(Output {
                 header: None,
                 used: AuthMethods::NONE,
@@ -803,27 +805,56 @@ impl Request {
                 negotiate: false,
             });
         };
+        let forwarding = lease
+            .conn()
+            .forwarding()
+            .map(|p| (p.peer.clone(), p.creds.clone()));
+        let (credentials, peer) = match (side, &forwarding) {
+            (Side::Host, _) => (
+                self.credentials.as_ref().map(Credentials::secret),
+                &self.peer,
+            ),
+            (Side::Proxy, Some((peer, creds))) => {
+                (creds.as_deref().map(ProxyCreds::secret), &**peer)
+            }
+            (Side::Proxy, None) => {
+                unreachable!("only a proxy that forwards is negotiated with here")
+            }
+        };
         let request = negotiate::Request {
             gss,
-            credentials: self.credentials.as_ref().map(Credentials::secret),
-            origin: &self.peer,
+            side,
+            credentials,
+            peer,
             delegation: cx.easy().options().login.delegation,
         };
-        let (header, done) = negotiate::output(cx, lease.get(), &request)?;
+        let (header, done) = negotiate::output(cx, lease.get().negotiate_mut(), &request)?;
         Ok(cx
             .easy_mut()
             .auth
-            .side(Side::Host)
+            .side(side)
             .negotiated(header, done, get_or_head))
     }
 
     /// What the request brings to the search for a connection to reuse,
-    /// wanting `want` of the origin (`want_nego_http`).
-    pub(crate) fn reuse_wants(&self, want: AuthMethods) -> negotiate::Wants<'_> {
+    /// wanting `want` of the origin (`want_nego_http`) and `proxy_want`
+    /// of the HTTP proxy on `route`, which negotiates only with
+    /// credentials for it (`want_proxy_nego_http`).
+    pub(crate) fn reuse_wants(
+        &self,
+        want: AuthMethods,
+        proxy_want: AuthMethods,
+        route: &Tcp,
+    ) -> negotiate::Wants<'_> {
+        let proxy_creds = route
+            .proxy
+            .as_ref()
+            .is_some_and(|p| p.http() && p.creds.is_some());
         negotiate::Wants {
             negotiate: want.contains(AuthMethods::NEGOTIATE) && self.gate.trusted().is_some(),
             credentials: self.credentials.as_ref().map(Credentials::secret),
             origin: Some(&self.peer),
+            proxy: proxy_creds && proxy_want.contains(AuthMethods::NEGOTIATE),
         }
     }
 
@@ -874,41 +905,64 @@ impl Request {
         // Without one, nothing goes to a proxy: its side is done at once,
         // as for its own peer.
         let (proxy_peer, proxy_secret) = match &forwarding {
-            Some((peer, creds)) => (
-                &**peer,
-                creds.as_deref().map(crate::conn::ProxyCreds::secret),
-            ),
+            Some((peer, creds)) => (&**peer, creds.as_deref().map(ProxyCreds::secret)),
             None => (&self.peer, None),
         };
         let now = cx.unix_time();
         let ed25519 = cx.easy().libraries().ed25519;
+        // The proxy's first, as C's `Curl_http_output_auth` makes them;
+        // with no proxy to send the request on, nothing goes to one
+        // (`authproxy->done`).
+        let proxy_auth = {
+            let (auth_state, options) = cx.easy_mut().auth_with_options();
+            let http = &options.http;
+            let request = AuthRequest {
+                side: Side::Proxy,
+                origin: proxy_peer,
+                method: self.method_line(http),
+                uri: &self.target,
+                get_or_head,
+                // Nothing the application set for an origin goes to a proxy.
+                trusted: None,
+            };
+            // The proxy's own headers may replace it
+            // (`Curl_checkProxyheaders`).
+            let proxy_custom = options
+                .proxy
+                .own_headers(http)
+                .replaces(b"Proxy-Authorization");
+            let side = auth_state.side(Side::Proxy);
+            if forwarded {
+                made(side.output(proxy_secret, proxy_custom, &request, random))?
+            } else {
+                side.finish();
+                Output {
+                    header: None,
+                    used: AuthMethods::NONE,
+                    probe: false,
+                    negotiate: false,
+                }
+            }
+        };
+        // Negotiate's token for the proxy is the connection's context's to
+        // make, and is said at once, before the origin's is made.
+        let proxy_traced = proxy_auth.negotiate;
+        let proxy_auth = if proxy_auth.negotiate {
+            let output = self.negotiate(cx, lease, Side::Proxy, get_or_head)?;
+            auth_trace(cx, "Proxy", output.used, proxy_secret);
+            output
+        } else {
+            proxy_auth
+        };
         let (auth_state, options) = cx.easy_mut().auth_with_options();
         let http = &options.http;
-        let method = self.method_line(http);
-        // The proxy's first, as C's `Curl_http_output_auth` makes them.
         let request = AuthRequest {
-            origin: proxy_peer,
-            method,
+            side: Side::Host,
+            origin: &self.peer,
+            method: self.method_line(http),
             uri: &self.target,
             get_or_head,
-            // Nothing the application set for an origin goes to a proxy.
-            trusted: None,
-        };
-        // The proxy's own headers may replace it (`Curl_checkProxyheaders`).
-        let proxy_custom = options
-            .proxy
-            .own_headers(http)
-            .replaces(b"Proxy-Authorization");
-        let proxy_auth = made(auth_state.side(Side::Proxy).output(
-            proxy_secret,
-            forwarded && proxy_custom,
-            &request,
-            random,
-        ))?;
-        let request = AuthRequest {
-            origin: &self.peer,
             trusted: self.gate.trusted(),
-            ..request
         };
         let custom = http.headers.replaces(b"Authorization");
         let auth = made(
@@ -916,12 +970,16 @@ impl Request {
                 .side(Side::Host)
                 .output(credentials, custom, &request, random),
         )?;
-        // Negotiate's token is the connection's context's to make, after
-        // the proxy's line is made and said, as C makes the proxy's first.
-        let proxy_traced = auth.negotiate;
-        let auth = if auth.negotiate {
+        // The origin's likewise, after the proxy's line is made and said,
+        // as C makes the proxy's first.
+        let proxy_traced = if auth.negotiate && !proxy_traced {
             auth_trace(cx, "Proxy", proxy_auth.used, proxy_secret);
-            self.negotiate(cx, lease, get_or_head)?
+            true
+        } else {
+            proxy_traced
+        };
+        let auth = if auth.negotiate {
+            self.negotiate(cx, lease, Side::Host, get_or_head)?
         } else {
             auth
         };
@@ -1812,10 +1870,14 @@ impl Request {
             target,
             ..
         } = self;
-        let state = lease.conn().negotiate().map(negotiate::Negotiate::state);
+        let state = |side| lease.conn().negotiate().map(|n| n.state(side));
+        let (host, proxy) = (state(Side::Host), state(Side::Proxy));
+        let started =
+            |state: Option<negotiate::State>| state.is_some_and(|s| s != negotiate::State::None);
         let conn_negotiate = framing::ConnNegotiate {
-            started: state.is_some_and(|s| s != negotiate::State::None),
-            taken: state == Some(negotiate::State::Recv),
+            started: started(host) || started(proxy),
+            taken: host == Some(negotiate::State::Recv),
+            proxy_taken: proxy == Some(negotiate::State::Recv),
         };
         let head = head.as_mut().expect("made at DO");
         // Only a status line changes it, so for a header line it is what
@@ -1883,31 +1945,61 @@ impl Request {
         {
             content_codings(cx, pipeline, value)?;
         }
-        // Negotiate's challenges are taken into the connection's context,
-        // and its persistence read, as the line is handled
-        // (`auth_spnego`, `http_header_p`).
+        // Negotiate's challenges are taken into the connection's context
+        // with the origin, or with the proxy that forwards the request, and
+        // the origin's persistence read, as the line is handled
+        // (`auth_spnego`, `http_header_p`, `http_header_w`).
         let mut negotiated = None;
+        let code = cx.report_mut().response_code();
         if line.kind == LineKind::Header
-            && cx.easy().auth.host_picks_negotiate()
             && let Some(gss) = cx.easy().libraries().gss
         {
-            let request = negotiate::Request {
-                gss,
-                credentials: credentials.as_ref().map(Credentials::secret),
-                origin: peer,
-                delegation: cx.easy().options().login.delegation,
-            };
-            if cx.report_mut().response_code() == Some(401)
+            let delegation = cx.easy().options().login.delegation;
+            let forwarding = lease
+                .conn()
+                .forwarding()
+                .map(|p| (p.peer.clone(), p.creds.clone()));
+            let challenged = if code == Some(401)
+                && cx.easy().auth.host_picks_negotiate()
                 && strip_name(line.bytes, b"WWW-Authenticate:").is_some()
             {
+                Some((
+                    Side::Host,
+                    credentials.as_ref().map(Credentials::secret),
+                    &*peer,
+                ))
+            } else if code == Some(407)
+                && cx.easy().auth.proxy_picks_negotiate()
+                && strip_name(line.bytes, b"Proxy-Authenticate:").is_some()
+                && let Some((proxy, creds)) = &forwarding
+            {
+                Some((
+                    Side::Proxy,
+                    creds.as_deref().map(ProxyCreds::secret),
+                    &**proxy,
+                ))
+            } else {
+                None
+            };
+            if let Some((side, credentials, peer)) = challenged {
+                let request = negotiate::Request {
+                    gss,
+                    side,
+                    credentials,
+                    peer,
+                    delegation,
+                };
                 let value = fields::header_value(line.bytes).unwrap_or(&[]);
                 for challenge in super::http1::auth::negotiate_challenges(value) {
-                    let taken = negotiate::challenged(cx, lease.get(), &request, challenge);
-                    let (any, _) = negotiated.unwrap_or((false, true));
-                    negotiated = Some((any || taken, taken));
+                    let kept = lease.get().negotiate_mut();
+                    let taken = negotiate::challenged(cx, kept, &request, challenge);
+                    let (any, _) = negotiated.map_or((false, true), |(_, any, last)| (any, last));
+                    negotiated = Some((side, any || taken, taken));
                 }
             }
-            if strip_name(line.bytes, b"Persistent-Auth:").is_some() {
+            if cx.easy().auth.host_picks_negotiate()
+                && strip_name(line.bytes, b"Persistent-Auth:").is_some()
+            {
                 let value = fields::header_value(line.bytes).unwrap_or(&[]);
                 negotiate::persistence(cx, lease.get(), value)?;
             }
@@ -1976,9 +2068,9 @@ impl Request {
         }
         early?;
         then.map_err(|e| head_failed(cx, &e))?;
-        if let Some((any, last)) = negotiated {
+        if let Some((side, any, last)) = negotiated {
             let head = self.head.as_mut().expect("made at DO");
-            head.meta_mut().negotiate_answered(any, last);
+            head.meta_mut().negotiate_answered(side, any, last);
         }
         if let LineKind::End { interim } = kind {
             let code = cx.report_mut().response_code().unwrap_or(0);

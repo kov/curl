@@ -122,12 +122,12 @@ witness: curl-sys-abi handle_tests::proxy_credentials_are_decoded_as_in_c
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_custom_proxy_authorization_goes_beside_the_proxy_s
 --- old
-        let proxy_custom = options
-            .proxy
-            .own_headers(http)
-            .replaces(b"Proxy-Authorization");
+            let proxy_custom = options
+                .proxy
+                .own_headers(http)
+                .replaces(b"Proxy-Authorization");
 --- new
-        let proxy_custom = http.headers.replaces(b"Proxy-Authorization");
+            let proxy_custom = http.headers.replaces(b"Proxy-Authorization");
 
 === a route through a proxy tunnels where it forwards
 file: crates/curl-core/src/conn/mod.rs
@@ -300,9 +300,9 @@ witness: curl-core proto::http1::request::tests::a_forwarded_request_sends_the_p
 file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::the_proxy_s_own_proxy_authorization_replaces_the_library_s
 --- old
-            forwarded && proxy_custom,
+                made(side.output(proxy_secret, proxy_custom, &request, random))?
 --- new
-            false,
+                made(side.output(proxy_secret, false, &request, random))?
 
 === unified headers are not the proxy's own
 file: crates/curl-core/src/options/mod.rs

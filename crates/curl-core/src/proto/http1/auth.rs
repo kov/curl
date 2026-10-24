@@ -61,6 +61,18 @@ impl Auth {
         self.host.want
     }
 
+    /// Negotiate is the method in use with the proxy
+    /// (`authproxy.picked == CURLAUTH_NEGOTIATE`).
+    pub(crate) fn proxy_picks_negotiate(&self) -> bool {
+        self.proxy.picked_negotiate()
+    }
+
+    /// The methods the transfer may use with the proxy
+    /// (`authproxy.want`).
+    pub(crate) fn proxy_want(&self) -> AuthMethods {
+        self.proxy.want
+    }
+
     /// Authenticating went wrong, and stops (`state.authproblem`).
     pub(crate) fn problem(&self) -> bool {
         self.problem
@@ -181,6 +193,8 @@ pub(crate) struct Answered {
 /// What a request is, for its credentials to answer.
 #[derive(Debug)]
 pub(crate) struct AuthRequest<'r> {
+    /// Whether the peer is the origin or the proxy.
+    pub(crate) side: Side,
     /// The peer authenticated with.
     pub(crate) origin: &'r Peer,
     /// The method as the request line names it.
@@ -310,10 +324,11 @@ impl PeerAuth {
                 (true, value)
             }
             // Neither beside the application's own Authorization nor to an
-            // origin the application's settings may not go to; else the
+            // origin the application's settings may not go to, and to a
+            // proxy, not beside its own Proxy-Authorization; else the
             // connection's context says.
             (Some(AuthMethods::NEGOTIATE), _) => {
-                if custom || request.trusted.is_none() {
+                if custom || (request.side == Side::Host && request.trusted.is_none()) {
                     self.done = true;
                     (false, None)
                 } else {
@@ -521,6 +536,16 @@ pub(crate) struct Offered {
     pub(crate) proxy: Challenges,
 }
 
+impl Offered {
+    /// One peer's challenges.
+    pub(crate) fn of(&mut self, side: Side) -> &mut Challenges {
+        match side {
+            Side::Host => &mut self.host,
+            Side::Proxy => &mut self.proxy,
+        }
+    }
+}
+
 /// What the challenges of a response offered (`Curl_http_input_auth`).
 #[derive(Debug, Default)]
 pub(crate) struct Challenges {
@@ -643,6 +668,17 @@ impl Challenges {
             self.refused = false;
         } else {
             self.refused = true;
+        }
+    }
+
+    /// The Negotiate challenges of one line answered in order: whether
+    /// any was taken into the context, and whether the last was.
+    pub(crate) fn negotiate_line_answered(&mut self, any: bool, last: bool) {
+        if any {
+            self.negotiate_answered(true);
+        }
+        if !last {
+            self.negotiate_answered(false);
         }
     }
 
@@ -1863,6 +1899,7 @@ mod tests {
         };
         let answers = |auth: &mut PeerAuth, at: &Peer, c: &Credentials| {
             let request = AuthRequest {
+                side: Side::Host,
                 origin: at,
                 method: b"GET",
                 uri: b"/",
@@ -1994,6 +2031,7 @@ mod tests {
         };
         assert_eq!(pick(token(b"t").secret(), b | br), Some(br));
         let request = AuthRequest {
+            side: Side::Host,
             origin: &peer,
             method: b"GET",
             uri: b"/",
@@ -2018,6 +2056,7 @@ mod tests {
     fn aws_sigv4_is_used_at_once_and_never_by_a_proxy() {
         let peer = Peer::new(HTTP, b"h".to_vec(), 80, None);
         let request = AuthRequest {
+            side: Side::Host,
             origin: &peer,
             method: b"GET",
             uri: b"/",
@@ -2053,6 +2092,7 @@ mod tests {
             (None, false, AuthMethods::NONE),
         ] {
             let request = AuthRequest {
+                side: Side::Host,
                 origin: &peer,
                 method: b"GET",
                 uri: b"/",

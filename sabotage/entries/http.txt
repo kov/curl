@@ -1324,8 +1324,10 @@ file: crates/curl-core/src/proto/http.rs
 witness: curl-core proto::http::tests::a_request_target_replaces_only_the_request_line_s
 features: test-util
 --- old
+            method: self.method_line(http),
             uri: &self.target,
 --- new
+            method: self.method_line(http),
             uri: http.custom.target.as_deref().unwrap_or(&self.target),
 
 === a NETRC or HOME set empty names the file

@@ -15,7 +15,7 @@ use super::fields;
 use super::response::{HttpVersion, Status};
 use crate::date::{self, BadDate};
 use crate::options::{AuthMethods, Resume, TimeCondition, Unmet};
-use crate::proto::http1::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered};
+use crate::proto::http1::auth::{AuthAct, AuthAsked, Heard, HeardNote, Offered, Side};
 
 /// The most transfer codings a response may stack (`MAX_ENCODE_STACK`).
 const MAX_CODINGS: u8 = 5;
@@ -96,8 +96,8 @@ pub(crate) enum Note {
     /// this much or an unknown amount, for a request answered already;
     /// Negotiate in use with neither peer started, said so.
     CloseInstead(Left, Ongoing),
-    /// The connection closes as the origin's Negotiate challenge was
-    /// taken: authenticating goes wrong.
+    /// The connection closes as the origin's or the forwarding proxy's
+    /// Negotiate challenge was taken: authenticating goes wrong.
     ClosedNegotiating,
     /// The document fails the time condition.
     Unmet(Unmet),
@@ -356,6 +356,8 @@ pub(crate) struct ConnNegotiate {
     /// The origin's challenge was taken, the request to go again on the
     /// connection (`CURL_NEGO_AUTH_RECV`).
     pub(crate) taken: bool,
+    /// The proxy's challenge was, likewise.
+    pub(crate) proxy_taken: bool,
 }
 
 impl Meta {
@@ -634,9 +636,16 @@ impl Meta {
         }
         // A connection closing while the request is to go again on it
         // for Negotiate cuts the handshake short (`http_check_auth_closure`).
-        if self.close && status.code == 401 && conn.taken {
-            note.push(Note::ClosedNegotiating);
-            self.challenges.host.refuse();
+        if self.close {
+            let refused = match status.code {
+                401 if conn.taken => Some(&mut self.challenges.host),
+                407 if conn.proxy_taken => Some(&mut self.challenges.proxy),
+                _ => None,
+            };
+            if let Some(challenges) = refused {
+                note.push(Note::ClosedNegotiating);
+                challenges.refuse();
+            }
         }
         self.auth = AuthAct::of(status.code, &self.challenges, &asked.auth);
         if should_fail(status.code, asked, &self.auth) {
@@ -755,15 +764,11 @@ impl Meta {
         self.location.as_deref().filter(|_| self.follow)
     }
 
-    /// The origin's Negotiate challenges on a line, answered in order:
-    /// whether any was taken into the context, and whether the last was.
-    pub(crate) fn negotiate_answered(&mut self, any: bool, last: bool) {
-        if any {
-            self.challenges.host.negotiate_answered(true);
-        }
-        if !last {
-            self.challenges.host.negotiate_answered(false);
-        }
+    /// The Negotiate challenges on a line from the origin, or from the
+    /// forwarding proxy, answered in order: whether any was taken into
+    /// the context, and whether the last was.
+    pub(crate) fn negotiate_answered(&mut self, side: Side, any: bool, last: bool) {
+        self.challenges.of(side).negotiate_line_answered(any, last);
     }
 
     /// The 401's and 407's challenges, taken for the handle to keep.

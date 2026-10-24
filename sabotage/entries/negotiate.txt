@@ -21,9 +21,9 @@ file: crates/curl-core/src/proto/http/negotiate.rs
 witness: curl-core proto::http::tests::negotiate::the_next_request_authenticates_again_unless_it_persists
 features: test-util,debug-hooks
 --- old
-        nego.host.state = State::Succ;
+                peering.state = State::Succ;
 --- new
-        nego.host.state = State::Done;
+                peering.state = State::Done;
 
 === a connection mid-handshake is closed when the transfer forbade reuse
 file: crates/curl-core/src/conn/pool.rs
@@ -51,3 +51,114 @@ features: debug-hooks
     let negotiate = if spnego {
 --- new
     let negotiate = if true {
+
+=== the proxy's token is the origin's context's
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::negotiate::a_forwarding_proxy_gets_the_first_token_at_once
+features: test-util
+--- old
+            let output = self.negotiate(cx, lease, Side::Proxy, get_or_head)?;
+--- new
+            let output = self.negotiate(cx, lease, Side::Host, get_or_head)?;
+
+=== a proxy is negotiated with only where the origin would be trusted
+file: crates/curl-core/src/proto/http1/auth.rs
+witness: curl-core proto::http::tests::negotiate::a_forwarding_proxy_gets_the_first_token_at_once
+features: test-util
+--- old
+                if custom || (request.side == Side::Host && request.trusted.is_none()) {
+--- new
+                if custom || request.trusted.is_none() {
+
+=== a tunnel's Negotiate is lost when the proxy is connected to again
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::negotiate::a_tunnel_redialed_keeps_negotiating
+features: test-util
+--- old
+        trace::info(cx, format_args!("Connect me again please"));
+        c.handshake = None;
+--- new
+        trace::info(cx, format_args!("Connect me again please"));
+        c.handshake = None;
+        c.negotiate = None;
+
+=== a tunnel's Negotiate is not handed to the connection it set up
+file: crates/curl-core/src/multi/state.rs
+witness: curl-core proto::http::tests::negotiate::a_connection_negotiating_with_its_proxy_serves_only_its_own
+features: test-util
+--- old
+    *c.lease.get().negotiate_mut() = c.negotiate.take();
+--- new
+    c.negotiate.take();
+
+=== a tunnel's taken challenge does not have the CONNECT made again
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::negotiate::a_tunnel_s_challenge_is_taken
+features: test-util
+--- old
+    if !act.again() {
+--- new
+    if !act.reload {
+
+=== a token answered by a success never authenticates the connection with the proxy
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::a_connection_negotiating_with_its_proxy_serves_only_its_own
+features: test-util
+--- old
+        for (peering, refused) in [(&mut nego.host, 401), (&mut nego.proxy, 407)] {
+--- new
+        for (peering, refused) in [(&mut nego.host, 401)] {
+
+=== a connection negotiating with its proxy serves a transfer not negotiating with it
+file: crates/curl-core/src/proto/http/negotiate.rs
+witness: curl-core proto::http::tests::negotiate::a_connection_negotiating_with_its_proxy_serves_only_its_own
+features: test-util
+--- old
+        if self.proxy.state != State::None && !wants.proxy {
+--- new
+        if self.proxy.state != State::None && !wants.proxy && false {
+
+=== a forwarding proxy's connection closing mid-handshake goes unsaid
+file: crates/curl-core/src/proto/http1/framing.rs
+witness: curl-core proto::http::tests::negotiate::a_forwarding_proxy_closing_mid_handshake_is_said
+features: test-util
+--- old
+                407 if conn.proxy_taken => Some(&mut self.challenges.proxy),
+--- new
+                407 if false => Some(&mut self.challenges.proxy),
+
+=== a body still going is cut short once Negotiate with the proxy started
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::negotiate::a_forwarding_proxy_s_challenge_taken_holds_the_connection
+features: test-util
+--- old
+            started: started(host) || started(proxy),
+--- new
+            started: started(host),
+
+=== a connection mid-handshake with its proxy is closed when the transfer forbade reuse
+file: crates/curl-core/src/conn/mod.rs
+witness: curl-core proto::http::tests::negotiate::a_forwarding_proxy_s_challenge_taken_holds_the_connection
+features: test-util
+--- old
+            n.state(Side::Host) == State::Recv || n.state(Side::Proxy) == State::Recv
+--- new
+            n.state(Side::Host) == State::Recv
+
+=== a forwarding proxy's Negotiate challenge is not taken
+file: crates/curl-core/src/proto/http.rs
+witness: curl-core proto::http::tests::negotiate::a_forwarding_proxy_s_challenge_is_taken
+features: test-util
+--- old
+                && strip_name(line.bytes, b"Proxy-Authenticate:").is_some()
+--- new
+                && strip_name(line.bytes, b"Proxy-Authenticate:").is_none()
+
+=== a tunnel's Negotiate challenge is not taken
+file: crates/curl-core/src/multi/state/tunnel.rs
+witness: curl-core proto::http::tests::negotiate::a_tunnel_s_challenge_is_taken
+features: test-util
+--- old
+    if !cx.easy().auth.proxy_picks_negotiate() {
+--- new
+    if cx.easy().auth.proxy_picks_negotiate() {

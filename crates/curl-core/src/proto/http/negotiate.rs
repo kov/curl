@@ -1,9 +1,11 @@
-//! HTTP Negotiate (SPNEGO) with the origin (`lib/http_negotiate.c` and
-//! `lib/vauth/spnego_gssapi.c`): a security context the connection
-//! keeps, stepped by the library a handle names, its tokens in base64 in
-//! `Authorization: Negotiate`. Once a context starts, the connection is
-//! bound to the credentials and the origin it started with, and serves
-//! no transfer with others.
+//! HTTP Negotiate (SPNEGO) with the origin and with an HTTP proxy
+//! (`lib/http_negotiate.c` and `lib/vauth/spnego_gssapi.c`): a security
+//! context with each the connection keeps, stepped by the library a
+//! handle names, its tokens in base64 in `Authorization: Negotiate` and
+//! `Proxy-Authorization: Negotiate`. Once a context with the origin
+//! starts, the connection is bound to the credentials and the origin it
+//! started with, and serves no transfer with others; once one with the
+//! proxy starts, it serves only a transfer negotiating with the proxy.
 
 use curl_alloc::{OutOfMemory, TryVec as _, try_box};
 
@@ -16,16 +18,20 @@ use crate::gss::{
 use crate::multi::Host;
 use crate::multi::state::StepCx;
 use crate::options::Delegation;
-use crate::proto::http1::auth::{Answered, Secret, base64};
+use crate::proto::http1::auth::{Answered, Secret, Side, base64};
 use crate::trace;
 
 /// What a connection keeps of Negotiate (C's `conn->http_negotiate_state`,
-/// its `negotiatedata` and `conn->creds`, `conn->creds_origin`): made the
-/// first time a request to its origin negotiates, dropped with it, its
-/// context deleted then (`nego_conn_dtor`).
+/// `conn->proxy_negotiate_state`, a `negotiatedata` for each, and
+/// `conn->creds`, `conn->creds_origin`): made the first time a request
+/// negotiates with either peer, dropped with the connection, its contexts
+/// deleted then (`nego_conn_dtor`). While a tunnel is set up, before the
+/// connection is, the transfer setting it up holds it, and hands it to the
+/// connection once that is up.
 #[derive(Debug, Default)]
 pub(crate) struct Negotiate {
-    host: Side,
+    host: Peering,
+    proxy: Peering,
     /// The credentials and the origin the context with the origin started
     /// with: the connection's from then on.
     bound: Option<Bound>,
@@ -44,14 +50,14 @@ pub(crate) enum State {
     Sent,
     /// A token went: nothing more is sent unless the peer asks.
     Done,
-    /// A response other than a 401 followed: the connection is
-    /// authenticated.
+    /// A response other than the peer's refusal (a 401, or a 407)
+    /// followed: the connection is authenticated.
     Succ,
 }
 
 /// The context with one peer, and what is known of how it goes.
 #[derive(Debug, Default)]
-struct Side {
+struct Peering {
     state: State,
     /// The context, once a step made a token.
     context: Option<Box<dyn GssContext>>,
@@ -80,7 +86,7 @@ struct Bound {
     credentials: Option<Answered>,
 }
 
-impl Side {
+impl Peering {
     /// The context deleted, and everything said of it forgotten
     /// (`Curl_auth_cleanup_spnego`).
     fn clean(&mut self) {
@@ -95,17 +101,31 @@ impl Side {
 }
 
 impl Negotiate {
-    /// Started over: not negotiating, bound to nothing
-    /// (`http_auth_nego_reset`).
-    fn reset(&mut self) {
-        self.host.state = State::None;
-        self.bound = None;
-        self.host.clean();
+    /// The context with one peer.
+    fn with(&mut self, side: Side) -> &mut Peering {
+        match side {
+            Side::Host => &mut self.host,
+            Side::Proxy => &mut self.proxy,
+        }
     }
 
-    /// Where Negotiate with the origin is.
-    pub(crate) fn state(&self) -> State {
-        self.host.state
+    /// Started over with one peer: not negotiating, and with the origin
+    /// bound to nothing (`http_auth_nego_reset`).
+    fn reset(&mut self, side: Side) {
+        if side == Side::Host {
+            self.bound = None;
+        }
+        let peering = self.with(side);
+        peering.state = State::None;
+        peering.clean();
+    }
+
+    /// Where Negotiate with one peer is.
+    pub(crate) fn state(&self, side: Side) -> State {
+        match side {
+            Side::Host => self.host.state,
+            Side::Proxy => self.proxy.state,
+        }
     }
 
     /// Whether a transfer looking for a connection may have this one, as
@@ -118,6 +138,12 @@ impl Negotiate {
         // Bound to credentials, it serves only a transfer with the same,
         // negotiating or not (`url_match_auth`).
         if credentials.is_some() && !same {
+            return false;
+        }
+        // Negotiating with the proxy, it serves only a transfer
+        // negotiating with it, as the same credentials: the route's are
+        // the proxy's, compared already.
+        if self.proxy.state != State::None && !wants.proxy {
             return false;
         }
         let same_origin = bound.is_some_and(|b| wants.origin == Some(&b.origin));
@@ -144,13 +170,15 @@ fn same_credentials(bound: Option<&Answered>, credentials: Option<Secret<'_>>) -
 /// What a transfer looking for a connection brings to the matching of
 /// what Negotiate bound it to: whether it negotiates with the origin,
 /// with which credentials, and the origin (`want_nego_http`,
-/// `state.creds`, `state.origin`).
+/// `state.creds`, `state.origin`), and whether it negotiates with the
+/// HTTP proxy, with credentials for it (`want_proxy_nego_http`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Wants<'w> {
     pub(crate) negotiate: bool,
     pub(crate) credentials: Option<Secret<'w>>,
     /// None for a transfer with no origin to authenticate with.
     pub(crate) origin: Option<&'w Peer>,
+    pub(crate) proxy: bool,
 }
 
 impl Wants<'static> {
@@ -159,39 +187,45 @@ impl Wants<'static> {
         negotiate: false,
         credentials: None,
         origin: None,
+        proxy: false,
     };
 }
 
-/// What a request negotiates with: the library, the credentials it has,
-/// its origin and how far the credentials are delegated.
+/// What a request negotiates with: the library, the peer, the
+/// credentials it has for that peer, and how far the credentials are
+/// delegated.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Request<'r> {
     pub(crate) gss: &'static dyn Gss,
+    /// The origin, or the HTTP proxy.
+    pub(crate) side: Side,
     pub(crate) credentials: Option<Secret<'r>>,
-    pub(crate) origin: &'r Peer,
+    /// The peer the context is with: the origin, or the proxy.
+    pub(crate) peer: &'r Peer,
     pub(crate) delegation: Delegation,
 }
 
-/// The connection's Negotiate, made the first time it is needed
-/// (`Curl_auth_nego_get`).
-fn of(conn: &mut Conn) -> Result<&mut Negotiate, ErrorKind> {
-    let kept = conn.negotiate_mut();
+/// The connection's Negotiate, kept in `kept` and made the first time it
+/// is needed (`Curl_auth_nego_get`).
+fn of(kept: &mut Option<Box<Negotiate>>) -> Result<&mut Negotiate, ErrorKind> {
     if kept.is_none() {
         *kept = Some(try_box(Negotiate::default()).map_err(|OutOfMemory| ErrorKind::OutOfMemory)?);
     }
     Ok(kept.as_deref_mut().expect("made above"))
 }
 
-/// What a request sends to negotiate (`Curl_output_negotiate`): the value
-/// of its `Authorization: Negotiate`, if one goes, and whether
+/// What a request sends to negotiate with the peer `request` names
+/// (`Curl_output_negotiate`), over the connection whose Negotiate is
+/// `kept`: the value of its `Authorization: Negotiate`, or of its
+/// `Proxy-Authorization: Negotiate`, if one goes, and whether
 /// authenticating is done.
 pub(crate) fn output<H: Host>(
     cx: &mut StepCx<'_, H>,
-    conn: &mut Conn,
+    kept: &mut Option<Box<Negotiate>>,
     request: &Request<'_>,
 ) -> Result<(Option<Vec<u8>>, bool), ErrorKind> {
-    let nego = of(conn)?;
-    let side = &mut nego.host;
+    let nego = of(kept)?;
+    let side = nego.with(request.side);
     match side.state {
         State::Recv if side.challenged => side.rounds = true,
         State::Succ if !side.persist_said => side.no_persist = !side.rounds,
@@ -206,9 +240,9 @@ pub(crate) fn output<H: Host>(
                     "Curl_output_negotiate, no persistent authentication: cleanup existing context"
                 ),
             );
-            nego.reset();
+            nego.reset(request.side);
         }
-        if nego.host.context.is_none() {
+        if nego.with(request.side).context.is_none() {
             match input(cx, nego, request, b"") {
                 // Without a context, the request goes unauthenticated, as
                 // before curl 7.64.1.
@@ -217,7 +251,7 @@ pub(crate) fn output<H: Host>(
                 Ok(()) => {}
             }
         }
-        let side = &mut nego.host;
+        let side = nego.with(request.side);
         // `Curl_auth_create_spnego_message`.
         if side.token.is_empty() {
             return Err(ErrorKind::RemoteAccessDenied);
@@ -237,27 +271,28 @@ pub(crate) fn output<H: Host>(
             _ => State::Sent,
         };
     }
-    let side = &mut nego.host;
+    let side = nego.with(request.side);
     let done = matches!(side.state, State::Done | State::Succ);
     side.challenged = false;
     Ok((header, done))
 }
 
-/// A 401's `Negotiate` challenge, `challenge` what follows its name, taken
-/// into the context (`auth_spnego`): whether it was, the connection then
-/// waiting for the request to go again.
+/// A 401's or a 407's `Negotiate` challenge, `challenge` what follows its
+/// name, taken into the context with the peer `request` names
+/// (`auth_spnego`): whether it was, the connection then waiting for the
+/// request to go again.
 pub(crate) fn challenged<H: Host>(
     cx: &mut StepCx<'_, H>,
-    conn: &mut Conn,
+    kept: &mut Option<Box<Negotiate>>,
     request: &Request<'_>,
     challenge: &[u8],
 ) -> bool {
-    let Ok(nego) = of(conn) else {
+    let Ok(nego) = of(kept) else {
         return false;
     };
     let taken = input(cx, nego, request, challenge).is_ok();
     if taken {
-        nego.host.state = State::Recv;
+        nego.with(request.side).state = State::Recv;
     }
     taken
 }
@@ -269,7 +304,7 @@ pub(crate) fn persistence<H: Host>(
     conn: &mut Conn,
     value: &[u8],
 ) -> Result<(), ErrorKind> {
-    let side = &mut of(conn)?.host;
+    let side = &mut of(conn.negotiate_mut())?.host;
     side.no_persist = value.len() >= 5 && value[..5].eq_ignore_ascii_case(b"false");
     side.persist_said = true;
     let said: &[u8] = if side.no_persist { b"1" } else { b"0" };
@@ -285,55 +320,64 @@ pub(crate) fn persistence<H: Host>(
     Ok(())
 }
 
-/// A final response other than a 401 came after a token went: the
-/// connection is authenticated (`http_check_auth_closure`).
+/// A final response came after a token went: other than a 401, the
+/// connection is authenticated with the origin, and other than a 407,
+/// with the proxy (`http_check_auth_closure`).
 pub(crate) fn responded(conn: &mut Conn, code: u16) {
-    if let Some(nego) = conn.negotiate_mut().as_deref_mut()
-        && nego.host.state == State::Done
-        && code != 401
-    {
-        nego.host.state = State::Succ;
+    if let Some(nego) = conn.negotiate_mut().as_deref_mut() {
+        for (peering, refused) in [(&mut nego.host, 401), (&mut nego.proxy, 407)] {
+            if peering.state == State::Done && code != refused {
+                peering.state = State::Succ;
+            }
+        }
     }
 }
 
 /// `Curl_input_negotiate`: a challenge, or none (`b""`) for the first
-/// token, taken into the context, which is made if there is none; the
-/// connection bound to the request's credentials and origin. Any failure
-/// starts Negotiate over.
+/// token, taken into the context with the peer `request` names, which is
+/// made if there is none; a connection negotiating with the origin bound
+/// to the request's credentials and origin. Any failure starts Negotiate
+/// with that peer over.
 fn input<H: Host>(
     cx: &mut StepCx<'_, H>,
     nego: &mut Negotiate,
     request: &Request<'_>,
     challenge: &[u8],
 ) -> Result<(), ErrorKind> {
-    let state = nego.host.state;
-    nego.host.challenged = !challenge.is_empty();
+    let side = request.side;
+    let peering = nego.with(side);
+    let state = peering.state;
+    peering.challenged = !challenge.is_empty();
     if challenge.is_empty() {
         if state == State::Succ {
             trace::info(cx, format_args!("Negotiate auth restarted"));
-            nego.reset();
+            nego.reset(side);
         } else if state != State::None {
             // The server refused the token and offers nothing more.
-            nego.reset();
+            nego.reset(side);
             return Err(ErrorKind::LoginDenied);
         }
     }
-    if let Err(e) = step(cx, &mut nego.host, request, challenge) {
-        nego.reset();
+    if let Err(e) = step(cx, nego.with(side), request, challenge) {
+        nego.reset(side);
         return Err(e);
+    }
+    // Only the origin's binds the connection.
+    if side == Side::Proxy {
+        return Ok(());
     }
     match &nego.bound {
         Some(bound) => {
             let same = same_credentials(bound.credentials.as_ref(), request.credentials);
             assert!(
-                bound.origin == *request.origin && same,
+                bound.origin == *request.peer && same,
                 "a connection negotiating for one origin and credentials serves only them"
             );
         }
         None => {
             let oom = |OutOfMemory| ErrorKind::OutOfMemory;
             nego.bound = Some(Bound {
-                origin: request.origin.try_clone().map_err(oom)?,
+                origin: request.peer.try_clone().map_err(oom)?,
                 credentials: request
                     .credentials
                     .map(|c| c.answered())
@@ -349,7 +393,7 @@ fn input<H: Host>(
 /// decoded (`Curl_auth_decode_spnego_message`).
 fn step<H: Host>(
     cx: &mut StepCx<'_, H>,
-    side: &mut Side,
+    side: &mut Peering,
     request: &Request<'_>,
     challenge: &[u8],
 ) -> Result<(), ErrorKind> {
@@ -367,7 +411,7 @@ fn step<H: Host>(
             .unwrap_or(b"HTTP");
         let target = Target::Service {
             service,
-            host: request.origin.name(),
+            host: request.peer.name(),
         };
         let flags = Flags {
             mutual: true,

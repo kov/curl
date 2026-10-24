@@ -14,6 +14,16 @@ not a difference: it is tracked in `MILESTONES.md`.
   GitHub using `-T` (measured 2026-10-21) had no argument that could name a directory. Pinned by
   `an_upload_that_cannot_be_read_fails` (`crates/curl-tool/tests/transfers.rs`).
 
+- **The origin's Negotiate token goes through a tunnel.** `curl -p -x proxy --negotiate URL`
+  sends the origin `Authorization: Negotiate` with the request the tunnel carries. C's
+  `CONNECT` makes the origin's authentication too (`Curl_http_output_auth` with `is_connect`
+  runs both sides): the origin's first token is made then, sent nowhere, and its state is left
+  done, so the request through the tunnel goes without it and the 401 that follows ends the
+  transfer, its empty challenge read as a refusal; C then traces "Server auth using Negotiate"
+  twice and exits 0 with the 401's body. Measured against the C build with its GSS-API stub.
+  Pinned by `the_origin_s_token_goes_through_the_tunnel`
+  (`crates/curl-core/src/proto/http/tests/negotiate.rs`).
+
 - **A file of lines that cannot be read fails the command line.** A file read a line at a
   time, `-K file`, `--url @file`, `-H @file`, `--proxy-header @file` or `-F
   'name=value;headers=@file'`, that opens but fails a read, such as a directory, fails the way

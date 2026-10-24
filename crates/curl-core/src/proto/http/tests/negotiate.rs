@@ -701,3 +701,670 @@ fn without_a_library_nothing_negotiates() {
     );
     assert!(!ran.seen.text().iter().any(|l| l.contains("Negotiate")));
 }
+
+// Negotiate with an HTTP proxy (`Curl_output_negotiate` and
+// `Curl_input_negotiate` with `proxy`): the context is the connection's
+// with the proxy, its tokens in `Proxy-Authorization`, for requests a
+// proxy forwards and for the `CONNECT` of a tunnel.
+
+/// The context a request through the test's proxy makes with it.
+fn proxy_context(service: &[u8]) -> Asked {
+    Asked::Context {
+        service: service.to_vec(),
+        host: b"127.0.0.1".to_vec(),
+        mech: Mech::Spnego,
+        flags: Flags {
+            mutual: true,
+            ..Flags::default()
+        },
+    }
+}
+
+/// Through the test's proxy, which forwards requests unless `tunnel`, to
+/// `http://origin.example/x`, the proxy negotiated with.
+fn via_proxy(o: &mut Options, tunnel: bool) {
+    o.set_url(Some(b"http://origin.example/x")).unwrap();
+    let proxy = o.proxy.make_mut().unwrap();
+    proxy.url = Some(format!("127.0.0.1:{PORT}").into_bytes());
+    proxy.tunnel = tunnel;
+    proxy.auth = HttpAuth(AuthMethods::NEGOTIATE);
+}
+
+/// The empty proxy credentials of `-U :`, which the proxy's 407 picks a
+/// method with.
+fn empty_proxy_user(o: &mut Options) {
+    let proxy = o.proxy.make_mut().unwrap();
+    proxy.user = Some(Vec::new());
+    proxy.password = Some(Vec::new());
+}
+
+/// A GET of `http://origin.example/x` a proxy forwards, with
+/// `Proxy-Authorization: Negotiate <token>` if a token.
+fn forwarded_get(token: Option<&[u8]>) -> String {
+    let proxy = token.map_or(String::new(), |t| {
+        format!("Proxy-Authorization: Negotiate {}\r\n", b64(t))
+    });
+    format!(
+        "GET http://origin.example/x HTTP/1.1\r\nHost: origin.example\r\n{proxy}\
+         User-Agent: curl/test\r\nAccept: */*\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+    )
+}
+
+/// A `CONNECT` to `origin.example:80`, with the token if one.
+fn negotiated_connect(token: Option<&[u8]>) -> String {
+    let proxy = token.map_or(String::new(), |t| {
+        format!("Proxy-Authorization: Negotiate {}\r\n", b64(t))
+    });
+    format!(
+        "CONNECT origin.example:80 HTTP/1.1\r\nHost: origin.example:80\r\n{proxy}\
+         User-Agent: curl/test\r\nProxy-Connection: Keep-Alive\r\n\r\n"
+    )
+}
+
+/// The GET of `/x` through a tunnel.
+const TUNNELED_GET: &str =
+    "GET /x HTTP/1.1\r\nHost: origin.example\r\nUser-Agent: curl/test\r\nAccept: */*\r\n\r\n";
+
+const TUNNEL_200: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\n";
+
+/// Asked only for Negotiate with a proxy that forwards, the request
+/// carries its first token for the proxy at once, the context with
+/// `HTTP@proxy`, or the service the options name, said as C says it
+/// (C's capture: `-x ... --proxy-negotiate`, `--proxy-service-name pxy`).
+#[test]
+fn a_forwarding_proxy_gets_the_first_token_at_once() {
+    for service in [&b"HTTP"[..], b"pxy"] {
+        let (gss, libraries) = scripted();
+        gss.then_token(b"first");
+        let (mut m, talk, _) = server(&[OK_200], false);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", talk, |o| {
+            via_proxy(o, false);
+            if service != b"HTTP" {
+                o.proxy.make_mut().unwrap().service = Some(service.to_vec());
+            }
+        });
+        assert_eq!(ran.result, Ok(()));
+        assert_eq!(
+            String::from_utf8(ran.request.clone()).unwrap(),
+            forwarded_get(Some(b"first"))
+        );
+        assert!(text_has(&ran, "Proxy auth using Negotiate with user ''\n"));
+        assert!(!ran.seen.text().iter().any(|l| l.starts_with("Server auth")));
+        assert_eq!(gss.asked(), [proxy_context(service), Asked::Step(None)]);
+        let report = ran.easy.report();
+        assert_eq!(report.proxy_auth_used(), AuthMethods::NEGOTIATE);
+        assert_eq!(report.auth_used(), AuthMethods::NONE);
+    }
+}
+
+/// Negotiating with both, the proxy's token is made and said first, then
+/// the origin's, each with its own context (C's capture with
+/// `--proxy-negotiate --negotiate`).
+#[test]
+fn the_proxy_s_token_is_made_before_the_origin_s() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"proxy").then_token(b"origin");
+    let (mut m, talk, _) = server(&[OK_200], false);
+    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+        via_proxy(o, false);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let sent = String::from_utf8(ran.request.clone()).unwrap();
+    let want = forwarded_get(Some(b"proxy")).replace(
+        "User-Agent",
+        &format!("Authorization: Negotiate {}\r\nUser-Agent", b64(b"origin")),
+    );
+    assert_eq!(sent, want);
+    let text = ran.seen.text();
+    let proxy = text
+        .iter()
+        .position(|l| l == "Proxy auth using Negotiate with user ''\n");
+    let origin = text
+        .iter()
+        .position(|l| l == "Server auth using Negotiate with user ''\n");
+    assert!(proxy.zip(origin).is_some_and(|(p, o)| p < o), "{text:?}");
+    let Asked::Context { host, .. } = &gss.asked()[2] else {
+        panic!("the origin's context second: {:?}", gss.asked());
+    };
+    assert_eq!(host, b"origin.example");
+}
+
+/// A forwarding proxy's 407 offering Negotiate has it picked with any
+/// method wanted and credentials for the proxy, empty ones too, and the
+/// request made again with its token over the same connection; without
+/// credentials for the proxy, nothing is picked (C's capture with
+/// `--proxy-anyauth -U :`).
+#[test]
+fn a_forwarding_proxy_s_407_has_negotiate_picked() {
+    let required = b"HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate\r\n\
+        Content-Length: 4\r\n\r\nno!\n";
+    for credentials in [true, false] {
+        let (gss, libraries) = scripted();
+        gss.then_token(b"tok");
+        let (mut m, talk, _) = server(&[required, OK_200], false);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", talk, |o| {
+            via_proxy(o, false);
+            o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::ANY);
+            if credentials {
+                empty_proxy_user(o);
+            }
+        });
+        assert_eq!(ran.result, Ok(()), "{credentials}");
+        let sent = String::from_utf8(ran.request.clone()).unwrap();
+        if credentials {
+            assert_eq!(sent, forwarded_get(None) + &forwarded_get(Some(b"tok")));
+            assert!(text_has(
+                &ran,
+                "Reusing existing http: connection with proxy 127.0.0.1\n"
+            ));
+            let report = ran.easy.report();
+            assert_eq!(report.proxy_auth_offered(), AuthMethods::NEGOTIATE);
+            assert_eq!(report.proxy_auth_used(), AuthMethods::NEGOTIATE);
+        } else {
+            assert_eq!(sent, forwarded_get(None), "nothing picked");
+            assert_eq!(gss.unused(), 1);
+        }
+    }
+}
+
+/// A forwarding proxy's challenge is taken into the context with it as
+/// its line is read, and the request made again with what the context
+/// made of it; one the context fails on is said before the line, and
+/// leaves the 407 the response (C's capture: `Negotiate Qw==`).
+#[test]
+fn a_forwarding_proxy_s_challenge_is_taken() {
+    let required = format!(
+        "HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate {}\r\nX-After: 1\r\n\
+         Content-Length: 4\r\n\r\nno!\n",
+        b64(b"challenge")
+    );
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first").then_token(b"second");
+    let (mut m, talk, _) = server(&[required.as_bytes(), OK_200], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        via_proxy(o, false);
+        // Without credentials for the proxy, a connection negotiating
+        // with it serves no transfer, this one's next request neither.
+        empty_proxy_user(o);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        forwarded_get(Some(b"first")) + &forwarded_get(Some(b"second"))
+    );
+    assert_eq!(
+        gss.asked(),
+        [
+            proxy_context(b"HTTP"),
+            Asked::Step(None),
+            Asked::Step(Some(b"challenge".to_vec()))
+        ]
+    );
+    // Refused.
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first")
+        .then(Answer::Fails(GssFailure::status(
+            GssCall::InitSecContext,
+            GssStatus::new(13 << 16, 0),
+        )));
+    let (mut m, talk, _) = server(&[required.as_bytes()], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, false));
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(ran.easy.report().response_code(), Some(407));
+    let lines = in_and_text(&ran);
+    let said = lines
+        .iter()
+        .position(|l| l == b"gss_init_sec_context() failed: status 851968.0. \n")
+        .expect("said");
+    assert!(
+        lines[said + 1].starts_with(b"Proxy-Authenticate"),
+        "before its line"
+    );
+    assert_eq!(gss.asked().last(), Some(&Asked::Dropped), "started over");
+}
+
+/// The lines received and said, in order.
+fn in_and_text(ran: &Ran) -> Vec<Vec<u8>> {
+    ran.seen
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(w, _)| *w == "text" || *w == "in")
+        .map(|(_, b)| b.clone())
+        .collect()
+}
+
+/// A forwarding proxy's connection closing while its challenge is taken
+/// cuts the handshake short, said as C says it (`http_check_auth_closure`).
+#[test]
+fn a_forwarding_proxy_closing_mid_handshake_is_said() {
+    let closing = b"HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate\r\nConnection: close\r\n\
+        Content-Length: 0\r\n\r\n";
+    let (gss, libraries) = scripted();
+    gss.then_token(b"one").then_token(b"two");
+    let first = Conversation::replies(&[closing], true);
+    let second = Conversation::replies(&[OK_200], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", first.clone(), |o| {
+        via_proxy(o, false);
+        // The proxy's own header keeps the first token out, the challenge
+        // still taken.
+        o.proxy.make_mut().unwrap().headers =
+            crate::options::UserHeaders::new([&b"Proxy-Authorization: x"[..]]).unwrap();
+    });
+    assert_eq!(ran.result, Ok(()));
+    let text = ran.seen.text();
+    let said = text
+        .iter()
+        .position(|l| l == "Connection closure while negotiating auth (HTTP 1.0?)\n")
+        .expect("said");
+    assert!(
+        text[said..]
+            .iter()
+            .any(|l| l.starts_with("Issue another request"))
+    );
+    assert!(!second.received().is_empty());
+    assert_eq!(
+        gss.asked(),
+        [proxy_context(b"HTTP"), Asked::Step(None), Asked::Dropped]
+    );
+}
+
+/// A forwarding proxy's challenge taken holds the connection for the
+/// request that goes again, though the transfer forbade its reuse
+/// (`multi_conn_should_close`); a body still going is not cut short once
+/// Negotiate with the proxy started on it (`http_perhapsrewind`).
+#[test]
+fn a_forwarding_proxy_s_challenge_taken_holds_the_connection() {
+    const SIZE: usize = 300_000;
+    let required = format!(
+        "HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate {}\r\nContent-Length: 0\r\n\r\n",
+        b64(b"challenge")
+    );
+    for upload in [false, true] {
+        let (gss, libraries) = scripted();
+        // A third, for a new connection the request should not need.
+        gss.then_token(b"first")
+            .then_token(b"second")
+            .then_token(b"third");
+        let first = Conversation::replies(&[required.as_bytes(), OK], false);
+        let second = Conversation::replies(&[OK], false);
+        let mut m = serving(Peer::Accepts, &[&first, &second]);
+        let stream = Stream::new(big_body(SIZE));
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", first.clone(), |o| {
+            via_proxy(o, false);
+            empty_proxy_user(o);
+            if upload {
+                o.method = Method::Upload;
+                o.upload = stream.source(true);
+            } else {
+                o.limits.reuse.forbid = true;
+            }
+        });
+        assert_eq!(ran.result, Ok(()), "{upload}");
+        let text = ran.seen.text();
+        assert!(
+            text.iter()
+                .any(|l| l == "Reusing existing http: connection with proxy 127.0.0.1\n"),
+            "{upload}: {text:?}"
+        );
+        assert!(second.received().is_empty(), "{upload}");
+        assert!(
+            !text.iter().any(|l| l.contains("close instead of sending")),
+            "{upload}: {text:?}"
+        );
+    }
+}
+
+/// The proxy's own `Proxy-Authorization` keeps Negotiate's out, through a
+/// forwarding proxy and in a `CONNECT`; nothing is made or said (C's
+/// capture with `--proxy-header "Proxy-Authorization: mine"`).
+#[test]
+fn the_proxy_s_own_proxy_authorization_keeps_negotiate_out() {
+    for tunnel in [false, true] {
+        let (gss, libraries) = scripted();
+        gss.then_token(b"first");
+        let replies: &[&[u8]] = if tunnel {
+            &[TUNNEL_200, OK_200]
+        } else {
+            &[OK_200]
+        };
+        let (mut m, talk, _) = server(replies, false);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", talk, |o| {
+            via_proxy(o, tunnel);
+            o.proxy.make_mut().unwrap().headers =
+                crate::options::UserHeaders::new([&b"Proxy-Authorization: mine"[..]]).unwrap();
+        });
+        assert_eq!(ran.result, Ok(()), "{tunnel}");
+        let sent = String::from_utf8(ran.request.clone()).unwrap();
+        assert!(sent.contains("Proxy-Authorization: mine\r\n"), "{sent}");
+        assert!(!sent.contains("Negotiate"), "{sent}");
+        assert!(gss.asked().is_empty(), "{tunnel}");
+        assert!(!ran.seen.text().iter().any(|l| l.contains("Negotiate")));
+    }
+}
+
+/// A tunnel's `CONNECT` carries the first token for the proxy, made and
+/// said before the tunnel is established; the request through the tunnel
+/// carries none, and a library that cannot make the token leaves the
+/// `CONNECT` unauthenticated, said first (C's captures with `-p
+/// --proxy-negotiate`, and with the stub's NTLM credentials).
+#[test]
+fn a_tunnel_s_connect_negotiates_with_the_proxy() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first");
+    let (mut m, talk, _) = server(&[TUNNEL_200, OK_200], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        negotiated_connect(Some(b"first")) + TUNNELED_GET
+    );
+    let text = ran.seen.text();
+    let said = text
+        .iter()
+        .position(|l| l == "Proxy auth using Negotiate with user ''\n")
+        .expect("said");
+    assert_eq!(
+        text[said + 1],
+        "Establishing HTTP proxy tunnel to origin.example:80\n"
+    );
+    assert_eq!(ran.easy.report().proxy_auth_used(), AuthMethods::NEGOTIATE);
+    // No token made.
+    let (gss, libraries) = scripted();
+    gss.then(Answer::Fails(GssFailure::status(
+        GssCall::InitSecContext,
+        GssStatus::new(13 << 16, 0),
+    )));
+    let (mut m, talk, _) = server(&[TUNNEL_200, OK_200], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        negotiated_connect(None) + TUNNELED_GET
+    );
+    let text = ran.seen.text();
+    let failed = text
+        .iter()
+        .position(|l| l == "gss_init_sec_context() failed: status 851968.0. \n")
+        .expect("said");
+    assert_eq!(
+        text[failed + 1],
+        "Proxy auth using Negotiate with user ''\n"
+    );
+}
+
+/// A tunnel's 407 offering Negotiate has it picked with credentials for
+/// the proxy, and the `CONNECT` made again over the same connection with
+/// the token (C's capture with `-p --proxy-anyauth -U :`).
+#[test]
+fn a_tunnel_s_407_has_negotiate_picked() {
+    let required = b"HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate\r\n\
+        Content-Length: 4\r\n\r\nno!\n";
+    let (gss, libraries) = scripted();
+    gss.then_token(b"tok");
+    let (mut m, talk, _) = server(&[required, TUNNEL_200, OK_200], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        via_proxy(o, true);
+        o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::ANY);
+        empty_proxy_user(o);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        negotiated_connect(None) + &negotiated_connect(Some(b"tok")) + TUNNELED_GET
+    );
+    assert_eq!(ran.easy.report().proxy_auth_used(), AuthMethods::NEGOTIATE);
+    assert_eq!(ran.easy.report().connects(), 1);
+}
+
+/// A tunnel's challenge is taken into the context with the proxy after
+/// its line is traced, as C reads the answer to `CONNECT`, and the
+/// `CONNECT` made again with what the context made of it; a refusal ends
+/// the tunnel with C's error.
+#[test]
+fn a_tunnel_s_challenge_is_taken() {
+    let required = format!(
+        "HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate {}\r\nX-After: 1\r\n\
+         Content-Length: 4\r\n\r\nno!\n",
+        b64(b"challenge")
+    );
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first").then_token(b"second");
+    let (mut m, talk, _) = server(&[required.as_bytes(), TUNNEL_200, OK_200], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        negotiated_connect(Some(b"first")) + &negotiated_connect(Some(b"second")) + TUNNELED_GET
+    );
+    assert_eq!(
+        gss.asked(),
+        [
+            proxy_context(b"HTTP"),
+            Asked::Step(None),
+            Asked::Step(Some(b"challenge".to_vec()))
+        ]
+    );
+    // Refused.
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first")
+        .then(Answer::Fails(GssFailure::status(
+            GssCall::InitSecContext,
+            GssStatus::new(13 << 16, 0),
+        )));
+    let (mut m, talk, _) = server(&[required.as_bytes()], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| via_proxy(o, true));
+    assert_eq!(ran.result, Err(ErrorKind::CouldntConnect));
+    let lines = in_and_text(&ran);
+    let said = lines
+        .iter()
+        .position(|l| l == b"gss_init_sec_context() failed: status 851968.0. \n")
+        .expect("said");
+    assert!(
+        lines[said - 1].starts_with(b"Proxy-Authenticate"),
+        "after its line"
+    );
+    assert!(text_has(&ran, "CONNECT tunnel failed, response 407\n"));
+}
+
+/// A proxy that closes the connection on the challenge it sends has the
+/// tunnel set up again over a new one, Negotiate going on where it was:
+/// the token the challenge made goes with the next `CONNECT`, from the
+/// same context (C keeps it on the connection whose filters are made
+/// again).
+#[test]
+fn a_tunnel_redialed_keeps_negotiating() {
+    let required = format!(
+        "HTTP/1.1 407 Who\r\nProxy-Authenticate: Negotiate {}\r\nProxy-Connection: close\r\n\
+         Content-Length: 0\r\n\r\n",
+        b64(b"challenge")
+    );
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first")
+        .then_token(b"second")
+        .then_token(b"third");
+    let first = Conversation::replies(&[required.as_bytes()], true);
+    let second = Conversation::replies(&[TUNNEL_200, OK_200], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", second.clone(), |o| via_proxy(o, true));
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(first.received()).unwrap(),
+        negotiated_connect(Some(b"first"))
+    );
+    assert_eq!(
+        String::from_utf8(second.received()).unwrap(),
+        negotiated_connect(Some(b"second")) + TUNNELED_GET
+    );
+    assert!(text_has(&ran, "Connect me again please\n"));
+    assert_eq!(
+        gss.asked(),
+        [
+            proxy_context(b"HTTP"),
+            Asked::Step(None),
+            Asked::Step(Some(b"challenge".to_vec()))
+        ]
+    );
+}
+
+/// The origin's Negotiate through a tunnel goes with the request the
+/// tunnel carries. C's `CONNECT` makes the origin's token too and sends
+/// it nowhere, leaving the origin unauthenticated: a difference recorded
+/// in DIVERGENCE.md.
+#[test]
+fn the_origin_s_token_goes_through_the_tunnel() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"origin");
+    let (mut m, talk, _) = server(&[TUNNEL_200, OK_200], false);
+    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |o| {
+        via_proxy(o, true);
+        o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::BASIC);
+    });
+    assert_eq!(ran.result, Ok(()));
+    let get = TUNNELED_GET.replace(
+        "User-Agent",
+        &format!("Authorization: Negotiate {}\r\nUser-Agent", b64(b"origin")),
+    );
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        negotiated_connect(None) + &get
+    );
+}
+
+/// A connection negotiating with its proxy serves only a transfer
+/// negotiating with it with credentials for it, empty ones too; the
+/// next request through it authenticates again, the context cleaned up
+/// as C says it, as the proxy never says it persists (C's captures with
+/// two URLs, `--proxy-negotiate` with and without `-U :`).
+#[test]
+fn a_connection_negotiating_with_its_proxy_serves_only_its_own() {
+    let reused = "Reusing existing http: connection with proxy 127.0.0.1\n";
+    let cleaned = "Curl_output_negotiate, no persistent authentication: cleanup existing context\n";
+    type Case = (&'static str, fn(&mut Options), fn(&mut Options), bool);
+    let cases: [Case; 4] = [
+        ("with credentials", empty_proxy_user, empty_proxy_user, true),
+        ("without credentials", |_| {}, |_| {}, false),
+        (
+            "then not negotiating",
+            empty_proxy_user,
+            |o| {
+                empty_proxy_user(o);
+                o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::BASIC);
+            },
+            false,
+        ),
+        (
+            "then any",
+            empty_proxy_user,
+            |o| {
+                empty_proxy_user(o);
+                o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::ANY);
+            },
+            true,
+        ),
+    ];
+    // Through a tunnel likewise: the connection is the tunnel's, and
+    // negotiated with its proxy as it was set up.
+    let (gss, libraries) = scripted();
+    gss.then_token(b"one").then_token(b"two");
+    let first = Conversation::replies(&[TUNNEL_200, OK_200, OK_200], false);
+    let second = Conversation::replies(&[TUNNEL_200, OK_200], false);
+    let mut m = serving(Peer::Accepts, &[&first, &second]);
+    for _ in 0..2 {
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", first.clone(), |o| via_proxy(o, true));
+        assert_eq!(ran.result, Ok(()));
+        assert!(!text_has(
+            &ran,
+            "Reusing existing http: connection with proxy 127.0.0.1\n"
+        ));
+    }
+    assert_eq!(
+        String::from_utf8(second.received()).unwrap(),
+        negotiated_connect(Some(b"two")) + TUNNELED_GET
+    );
+    for (what, first_set, then, serves) in cases {
+        let (gss, libraries) = scripted();
+        gss.then_token(b"one").then_token(b"two");
+        let first = Conversation::replies(&[OK_200, OK_200], false);
+        let second = Conversation::replies(&[OK_200], false);
+        let mut m = serving(Peer::Accepts, &[&first, &second]);
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", first.clone(), |o| {
+            via_proxy(o, false);
+            first_set(o);
+        });
+        assert_eq!(ran.result, Ok(()), "{what}");
+        let mut e = Easy::new();
+        e.set_libraries(libraries);
+        let ran = get_with(&mut m, e, "/", first.clone(), |o| {
+            via_proxy(o, false);
+            then(o);
+        });
+        assert_eq!(ran.result, Ok(()), "{what}");
+        assert_eq!(
+            text_has(&ran, reused),
+            serves,
+            "{what}: {:?}",
+            ran.seen.text()
+        );
+        assert_eq!(second.received().is_empty(), serves, "{what}");
+        if what == "with credentials" {
+            assert!(text_has(&ran, cleaned), "{what}");
+            assert_eq!(
+                String::from_utf8(first.received()).unwrap(),
+                forwarded_get(Some(b"one")) + &forwarded_get(Some(b"two"))
+            );
+        }
+    }
+}
+
+/// Wanting Negotiate of a proxy with no proxy on the way, or with one
+/// whose tunnel is up, sends nothing to negotiate.
+#[test]
+fn no_proxy_is_negotiated_with_where_none_is_asked() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first");
+    let (mut m, talk, _) = server(&[OK_200], false);
+    let mut e = Easy::new();
+    e.set_libraries(libraries);
+    let ran = get_with(&mut m, e, "/", talk, |o| {
+        o.proxy.make_mut().unwrap().auth = HttpAuth(AuthMethods::NEGOTIATE);
+    });
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        plain_get("/")
+    );
+    assert!(gss.asked().is_empty());
+}

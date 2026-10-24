@@ -392,9 +392,20 @@ pub(crate) unsafe fn handle<'a>(curl: *mut CURL) -> Option<&'a ShimEasy> {
 }
 
 /// What the libraries libcurl is linked with do for a handle: the content
-/// codings they undo, the signatures they make, the TLS they speak and the
-/// GSS-API they authenticate with.
-static LIBRARIES: curl_core::libraries::Libraries = {
+/// codings they undo, the signatures they make, the TLS they speak and,
+/// where the build claims it (`HAVE_GSSAPI`), the GSS-API they
+/// authenticate with; before then, as in a C build without it, SOCKS5
+/// offers no GSS-API.
+pub(crate) fn libraries(gssapi: bool) -> &'static curl_core::libraries::Libraries {
+    if gssapi { &LIBRARIES } else { &WITHOUT_GSS }
+}
+
+static LIBRARIES: curl_core::libraries::Libraries = libraries_with(Some(&curl_gssapi::GSSAPI));
+static WITHOUT_GSS: curl_core::libraries::Libraries = libraries_with(None);
+
+const fn libraries_with(
+    gss: Option<&'static dyn curl_core::gss::Gss>,
+) -> curl_core::libraries::Libraries {
     use curl_core::coding::{Coding, Decoders};
     curl_core::libraries::Libraries {
         decoders: Decoders::none()
@@ -404,9 +415,9 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: Some(&curl_openssl::ED25519),
         tls: Some(&OPENSSL),
-        gss: Some(&curl_gssapi::GSSAPI),
+        gss,
     }
-};
+}
 
 /// OpenSSL, logging secrets to the root's key log.
 static OPENSSL: curl_openssl::OpenSsl =
@@ -420,7 +431,7 @@ pub extern "C" fn curl_easy_init() -> *mut CURL {
     // the first time a cookie asks, as C loads it in the handle's multi.
     let mut handle = Easy::new();
     handle.set_public_suffixes_from(curl_psl::suffixes);
-    handle.set_libraries(&LIBRARIES);
+    handle.set_libraries(libraries(crate::setopt::gssapi()));
     handle.set_components(Some(crate::root::components()));
     match ShimEasy::boxed(
         handle,
@@ -878,6 +889,18 @@ mod tests {
         curl_multi_add_handle, curl_multi_cleanup, curl_multi_info_read, curl_multi_init,
         curl_multi_perform, curl_multi_remove_handle,
     };
+
+    /// A handle has GSS-API only where the build claims it, as C has it
+    /// only where built with it: before the claim, SOCKS5 offers no
+    /// GSS-API.
+    #[test]
+    fn a_handle_has_gss_api_where_claimed() {
+        assert!(libraries(true).gss.is_some());
+        assert!(libraries(false).gss.is_none());
+        let (with, without) = (libraries(true), libraries(false));
+        assert!(with.tls.is_some() && without.tls.is_some());
+        assert!(with.ed25519.is_some() && without.ed25519.is_some());
+    }
 
     /// What the write callback saw and got back from the calls it made.
     #[derive(Default)]

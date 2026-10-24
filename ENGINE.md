@@ -136,7 +136,10 @@ the tool. The decoders, the signer, the TLS library and the GSS-API library come
 `&'static Libraries` (`curl_core::libraries`), a static of each; a handle given none has
 `Libraries::NONE`. The TLS library is OpenSSL's (`curl_openssl::OPENSSL`); the GSS-API library
 is MIT krb5's (`curl_gssapi::GSSAPI`, behind `curl_core::gss::Gss`), with C's debug stub under
-`debug-hooks`, chosen per context by `CURL_STUB_GSS_CREDS` as C's wrappers choose per call. Each initialises OpenSSL as C's
+`debug-hooks`, chosen per context by `CURL_STUB_GSS_CREDS` as C's wrappers choose per call. The
+shim and the tool each have a second static without it and hand a handle the one the build's
+GSS-API claim picks (`HAVE_GSSAPI` is C's library being linked): unclaimed, SOCKS5 offers no
+GSS-API, as a C build without it. Each initialises OpenSSL as C's
 global init does (`OPENSSL_init_ssl` with the configuration and the built-in engines): the shim
 at `curl_global_init`, the tool as it starts; the signer does it again before it signs, so a
 program that never called `curl_global_init` signs the same.

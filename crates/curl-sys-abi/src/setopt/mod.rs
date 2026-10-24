@@ -175,7 +175,7 @@ fn gss_bool(n: c_long, gssapi: bool) -> Result<bool, Refused> {
 
 /// Whether the build claims GSS-API, which C decides when it is built
 /// (`HAVE_GSSAPI`).
-fn gssapi() -> bool {
+pub(crate) fn gssapi() -> bool {
     curl_core::version::version().claims("GSS-API")
 }
 

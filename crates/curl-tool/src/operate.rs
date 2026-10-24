@@ -1015,7 +1015,7 @@ fn create<'a, 'l>(run: &Shared<'_, '_>, item: Item<'a, '_, 'l>) -> Made<'a, 'l> 
     let mut easy = Handle(Easy::new());
     easy.set_share(Some(run.share.clone()));
     easy.set_public_suffixes(Some(run.suffixes.clone()));
-    easy.set_libraries(&LIBRARIES);
+    easy.set_libraries(libraries(run.claims));
     easy.set_components(run.global.components.clone());
     // From here the transfer exists: a failure to set it up is its
     // result, and is finished as one (`run_all_transfers`'s cleanup).
@@ -3445,8 +3445,23 @@ fn in_list(headers: &[&[u8]], name: &[u8]) -> bool {
 
 /// What the libraries this build is linked with do for a handle, as C's:
 /// the content codings they undo, the signatures they make, the TLS they
-/// speak and the GSS-API they authenticate with.
-static LIBRARIES: curl_core::libraries::Libraries = {
+/// speak and, where the build claims it (`HAVE_GSSAPI`), the GSS-API they
+/// authenticate with; before then, as in a C build without it, SOCKS5
+/// offers no GSS-API.
+fn libraries(claims: Claims) -> &'static curl_core::libraries::Libraries {
+    if claims.gssapi {
+        &LIBRARIES
+    } else {
+        &WITHOUT_GSS
+    }
+}
+
+static LIBRARIES: curl_core::libraries::Libraries = libraries_with(Some(&curl_gssapi::GSSAPI));
+static WITHOUT_GSS: curl_core::libraries::Libraries = libraries_with(None);
+
+const fn libraries_with(
+    gss: Option<&'static dyn curl_core::gss::Gss>,
+) -> curl_core::libraries::Libraries {
     use curl_core::coding::{Coding, Decoders};
     curl_core::libraries::Libraries {
         decoders: Decoders::none()
@@ -3456,9 +3471,9 @@ static LIBRARIES: curl_core::libraries::Libraries = {
             .with(Coding::Zstd, curl_zstd::decoder),
         ed25519: Some(&curl_openssl::ED25519),
         tls: Some(&OPENSSL),
-        gss: Some(&curl_gssapi::GSSAPI),
+        gss,
     }
-};
+}
 
 /// The file TLS secrets are logged to (`SSLKEYLOGFILE`), opened as the
 /// tool starts, as C's global init opens it.
@@ -3469,6 +3484,20 @@ static OPENSSL: curl_openssl::OpenSsl = curl_openssl::OpenSsl::logging_keys_to(&
 
 #[cfg(test)]
 mod tests {
+    /// A transfer has GSS-API only where the build claims it, as C has it
+    /// only where built with it: before the claim, SOCKS5 offers no
+    /// GSS-API.
+    #[test]
+    fn a_transfer_has_gss_api_where_claimed() {
+        let claims = |gssapi| super::Claims {
+            spnego: false,
+            gssapi,
+        };
+        assert!(super::libraries(claims(true)).gss.is_some());
+        assert!(super::libraries(claims(false)).gss.is_none());
+        assert!(super::libraries(claims(false)).tls.is_some());
+    }
+
     use super::*;
 
     /// A fatal error ends the run, and with `--fail-early` any failure.

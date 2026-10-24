@@ -1,0 +1,17 @@
+=== the shim gives GSS-API to a build that does not claim it
+file: crates/curl-sys-abi/src/easy.rs
+witness: curl-sys-abi easy::tests::a_handle_has_gss_api_where_claimed
+--- old
+    if gssapi { &LIBRARIES } else { &WITHOUT_GSS }
+--- new
+    if gssapi || true { &LIBRARIES } else { &WITHOUT_GSS }
+
+=== the tool gives GSS-API to a build that does not claim it
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::a_transfer_has_gss_api_where_claimed
+--- old
+    if claims.gssapi {
+        &LIBRARIES
+--- new
+    if claims.gssapi || true {
+        &LIBRARIES

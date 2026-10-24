@@ -42,6 +42,8 @@ Lint generators with `scripts/pythonlint.sh inventory/gen/*.py`.
 | `quirks` | Claims from KNOWN_BUGS, TODO, EXPERIMENTAL, DEPRECATE and KNOWN_RISKS. All are hypotheses until a test reproduces them. |
 | `tests` | Every `tests/data` case with keywords, features, servers and runner; DISABLED; libtest, unit and tunit programs; the pytest suite; test servers. |
 | `baseline` | Measured, not derived: what the C reference build in `build/c` does on the test suite, per test (ok, failed, or skipped with its reason) for both `runtests.pl` and pytest, with the build flags, `curl -V` and the built library's exported symbols. |
+| `corpus` | Measured, not derived: real curl command lines (`corpus_lines.json`, from `inventory/measure/corpus_run.py --collect`: every invocation in the shell scripts, Dockerfiles, CI configurations, makefiles and documentation of the distribution's source packages that use the tool or build with it, and of every small golang-, node-, python- and ruby- one, with its package, version, file and line), ranked by `gen/corpus.py` against C's option table: which options, spellings and pairs are used. |
+| `corpus_diff` | Measured, not derived: each distinct line of the corpus run by the C tool and the Rust tool with no transfer (`corpus_run.py --diff`), and the differences in exit, output and errors, grouped. |
 | `perf` | Measured, not derived: a release build of the reference configuration in `build/c-release`, timed with the `tests/perf` benchmarks and the local parts of `tests/http/scorecard.py`. Medians and interquartile ranges, with the machine it ran on. |
 
 ## References

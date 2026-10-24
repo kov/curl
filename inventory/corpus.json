@@ -1,0 +1,1763 @@
+{
+ "c-commit": "19e7b749b96689fe013a2a53bf41e416d8bb552b",
+ "data": {
+  "by_kind": {
+   "ci": 381,
+   "doc": 708,
+   "dockerfile": 106,
+   "makefile": 73,
+   "shell": 995
+  },
+  "collected": "2026-10-24",
+  "distribution": "Ubuntu 24.04.5 LTS",
+  "lines": 2263,
+  "opaque_lines": 111,
+  "options": [
+   {
+    "lines": 1008,
+    "option": "silent",
+    "packages": 301,
+    "spellings": {
+     "long": 88,
+     "short": 923
+    },
+    "uses": 1011
+   },
+   {
+    "lines": 658,
+    "option": "location",
+    "packages": 277,
+    "spellings": {
+     "long": 24,
+     "short": 634
+    },
+    "uses": 658
+   },
+   {
+    "lines": 441,
+    "option": "fail",
+    "packages": 152,
+    "spellings": {
+     "long": 63,
+     "short": 378
+    },
+    "uses": 441
+   },
+   {
+    "lines": 421,
+    "option": "show-error",
+    "packages": 134,
+    "spellings": {
+     "long": 19,
+     "short": 402
+    },
+    "uses": 421
+   },
+   {
+    "lines": 373,
+    "option": "output",
+    "packages": 154,
+    "spellings": {
+     "long": 44,
+     "short": 331
+    },
+    "uses": 375
+   },
+   {
+    "lines": 213,
+    "option": "remote-name",
+    "packages": 92,
+    "spellings": {
+     "long": 10,
+     "short": 203
+    },
+    "uses": 213
+   },
+   {
+    "lines": 199,
+    "option": "header",
+    "packages": 70,
+    "spellings": {
+     "long": 35,
+     "short": 234
+    },
+    "uses": 269
+   },
+   {
+    "lines": 158,
+    "option": "request",
+    "packages": 65,
+    "spellings": {
+     "long": 15,
+     "short": 143
+    },
+    "uses": 158
+   },
+   {
+    "lines": 149,
+    "option": "data",
+    "packages": 56,
+    "spellings": {
+     "long": 16,
+     "short": 142
+    },
+    "uses": 158
+   },
+   {
+    "lines": 129,
+    "option": "verbose",
+    "packages": 25,
+    "spellings": {
+     "long": 2,
+     "short": 127
+    },
+    "uses": 129
+   },
+   {
+    "lines": 71,
+    "option": "show-headers",
+    "packages": 10,
+    "spellings": {
+     "short": 71
+    },
+    "uses": 71
+   },
+   {
+    "lines": 58,
+    "option": "data-binary",
+    "packages": 8,
+    "spellings": {
+     "long": 58
+    },
+    "uses": 58
+   },
+   {
+    "lines": 56,
+    "option": "insecure",
+    "packages": 21,
+    "spellings": {
+     "long": 4,
+     "short": 52
+    },
+    "uses": 56
+   },
+   {
+    "lines": 55,
+    "option": "connect-timeout",
+    "packages": 19,
+    "spellings": {
+     "long": 55
+    },
+    "uses": 55
+   },
+   {
+    "lines": 52,
+    "option": "max-time",
+    "packages": 14,
+    "spellings": {
+     "long": 11,
+     "short": 41
+    },
+    "uses": 52
+   },
+   {
+    "lines": 44,
+    "option": "user-agent",
+    "packages": 8,
+    "spellings": {
+     "long": 4,
+     "short": 40
+    },
+    "uses": 44
+   },
+   {
+    "lines": 33,
+    "option": "write-out",
+    "packages": 17,
+    "spellings": {
+     "long": 13,
+     "short": 20
+    },
+    "uses": 33
+   },
+   {
+    "lines": 29,
+    "option": "create-dirs",
+    "packages": 2,
+    "spellings": {
+     "long": 29
+    },
+    "uses": 29
+   },
+   {
+    "lines": 27,
+    "option": "cacert",
+    "packages": 8,
+    "spellings": {
+     "long": 27
+    },
+    "uses": 27
+   },
+   {
+    "lines": 27,
+    "option": "form",
+    "packages": 16,
+    "spellings": {
+     "long": 28,
+     "short": 26
+    },
+    "uses": 54
+   },
+   {
+    "lines": 26,
+    "option": "head",
+    "packages": 18,
+    "spellings": {
+     "long": 13,
+     "short": 13
+    },
+    "uses": 26
+   },
+   {
+    "lines": 26,
+    "option": "proto",
+    "packages": 9,
+    "spellings": {
+     "long": 26
+    },
+    "uses": 26
+   },
+   {
+    "lines": 25,
+    "option": "tlsv1.2",
+    "packages": 9,
+    "spellings": {
+     "long": 25
+    },
+    "uses": 25
+   },
+   {
+    "lines": 21,
+    "option": "upload-file",
+    "packages": 8,
+    "spellings": {
+     "long": 2,
+     "short": 19
+    },
+    "uses": 21
+   },
+   {
+    "lines": 19,
+    "option": "retry",
+    "packages": 8,
+    "spellings": {
+     "long": 19
+    },
+    "uses": 19
+   },
+   {
+    "lines": 19,
+    "option": "user",
+    "packages": 14,
+    "spellings": {
+     "long": 4,
+     "short": 15
+    },
+    "uses": 19
+   },
+   {
+    "lines": 16,
+    "option": "noproxy",
+    "packages": 1,
+    "spellings": {
+     "long": 16
+    },
+    "uses": 16
+   },
+   {
+    "lines": 14,
+    "option": "dump-header",
+    "packages": 12,
+    "spellings": {
+     "short": 14
+    },
+    "uses": 14
+   },
+   {
+    "lines": 12,
+    "option": "remote-header-name",
+    "packages": 5,
+    "spellings": {
+     "short": 12
+    },
+    "uses": 12
+   },
+   {
+    "lines": 11,
+    "option": "config",
+    "packages": 2,
+    "spellings": {
+     "short": 11
+    },
+    "uses": 11
+   },
+   {
+    "lines": 11,
+    "option": "disable",
+    "packages": 6,
+    "spellings": {
+     "short": 11
+    },
+    "uses": 11
+   },
+   {
+    "lines": 9,
+    "option": "range",
+    "packages": 3,
+    "spellings": {
+     "long": 3,
+     "short": 6
+    },
+    "uses": 9
+   },
+   {
+    "lines": 9,
+    "option": "unix-socket",
+    "packages": 2,
+    "spellings": {
+     "long": 9
+    },
+    "uses": 9
+   },
+   {
+    "lines": 9,
+    "option": "url",
+    "packages": 3,
+    "spellings": {
+     "long": 9
+    },
+    "uses": 9
+   },
+   {
+    "lines": 8,
+    "option": "progress-bar",
+    "packages": 4,
+    "spellings": {
+     "long": 6,
+     "short": 2
+    },
+    "uses": 8
+   },
+   {
+    "lines": 8,
+    "option": "version",
+    "packages": 6,
+    "spellings": {
+     "long": 7,
+     "short": 1
+    },
+    "uses": 8
+   },
+   {
+    "lines": 7,
+    "option": "compressed",
+    "packages": 4,
+    "spellings": {
+     "long": 7
+    },
+    "uses": 7
+   },
+   {
+    "lines": 6,
+    "option": "data-urlencode",
+    "packages": 3,
+    "spellings": {
+     "long": 13
+    },
+    "uses": 13
+   },
+   {
+    "lines": 6,
+    "option": "globoff",
+    "packages": 3,
+    "spellings": {
+     "short": 6
+    },
+    "uses": 6
+   },
+   {
+    "lines": 6,
+    "option": "time-cond",
+    "packages": 4,
+    "spellings": {
+     "short": 6
+    },
+    "uses": 6
+   },
+   {
+    "lines": 5,
+    "option": "cookie",
+    "packages": 3,
+    "spellings": {
+     "short": 5
+    },
+    "uses": 5
+   },
+   {
+    "lines": 5,
+    "option": "http1.0",
+    "packages": 4,
+    "spellings": {
+     "long": 3,
+     "short": 2
+    },
+    "uses": 5
+   },
+   {
+    "lines": 5,
+    "option": "referer",
+    "packages": 1,
+    "spellings": {
+     "short": 5
+    },
+    "uses": 5
+   },
+   {
+    "lines": 5,
+    "option": "tls-max",
+    "packages": 1,
+    "spellings": {
+     "long": 5
+    },
+    "uses": 5
+   },
+   {
+    "lines": 4,
+    "option": "cookie-jar",
+    "packages": 2,
+    "spellings": {
+     "short": 4
+    },
+    "uses": 4
+   },
+   {
+    "lines": 4,
+    "option": "http2",
+    "packages": 1,
+    "spellings": {
+     "long": 4
+    },
+    "uses": 4
+   },
+   {
+    "lines": 4,
+    "option": "negotiate",
+    "packages": 2,
+    "spellings": {
+     "long": 4
+    },
+    "uses": 4
+   },
+   {
+    "lines": 3,
+    "option": "cert",
+    "packages": 3,
+    "spellings": {
+     "long": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 3,
+    "option": "get",
+    "packages": 1,
+    "spellings": {
+     "short": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 3,
+    "option": "key",
+    "packages": 3,
+    "spellings": {
+     "long": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 3,
+    "option": "list-only",
+    "packages": 2,
+    "spellings": {
+     "short": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 3,
+    "option": "max-redirs",
+    "packages": 1,
+    "spellings": {
+     "long": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 3,
+    "option": "parallel",
+    "packages": 1,
+    "spellings": {
+     "short": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 3,
+    "option": "raw",
+    "packages": 1,
+    "spellings": {
+     "long": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 3,
+    "option": "retry-delay",
+    "packages": 3,
+    "spellings": {
+     "long": 3
+    },
+    "uses": 3
+   },
+   {
+    "lines": 2,
+    "option": "continue-at",
+    "packages": 2,
+    "spellings": {
+     "short": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "etag-compare",
+    "packages": 2,
+    "spellings": {
+     "long": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "etag-save",
+    "packages": 2,
+    "spellings": {
+     "long": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "include",
+    "packages": 1,
+    "spellings": {
+     "long": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "netrc",
+    "packages": 1,
+    "spellings": {
+     "short": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "remote-name-all",
+    "packages": 1,
+    "spellings": {
+     "long": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "remote-time",
+    "packages": 1,
+    "spellings": {
+     "short": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "socks5",
+    "packages": 1,
+    "spellings": {
+     "long": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "speed-limit",
+    "packages": 2,
+    "spellings": {
+     "short": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "speed-time",
+    "packages": 2,
+    "spellings": {
+     "short": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "tlsv1",
+    "packages": 1,
+    "spellings": {
+     "short": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 2,
+    "option": "tlsv1.3",
+    "packages": 2,
+    "spellings": {
+     "long": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 1,
+    "option": "ciphers",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "data-ascii",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "delegation",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "ftp-create-dirs",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "keepalive",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "keepalive-time",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "limit-rate",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "location-trusted",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "manual",
+    "packages": 1,
+    "spellings": {
+     "short": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "parallel-max",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "post301",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "post302",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "post303",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "progress-meter",
+    "packages": 1,
+    "spellings": {
+     "no": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "proxy",
+    "packages": 1,
+    "spellings": {
+     "short": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "quote",
+    "packages": 1,
+    "spellings": {
+     "short": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "resolve",
+    "packages": 1,
+    "spellings": {
+     "long": 2
+    },
+    "uses": 2
+   },
+   {
+    "lines": 1,
+    "option": "retry-connrefused",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "socks4a",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "stderr",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "tcp-nodelay",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   },
+   {
+    "lines": 1,
+    "option": "trace-time",
+    "packages": 1,
+    "spellings": {
+     "long": 1
+    },
+    "uses": 1
+   }
+  ],
+  "packages": 6786,
+  "pairs": [
+   {
+    "lines": 414,
+    "pair": [
+     "show-error",
+     "silent"
+    ]
+   },
+   {
+    "lines": 376,
+    "pair": [
+     "location",
+     "silent"
+    ]
+   },
+   {
+    "lines": 373,
+    "pair": [
+     "fail",
+     "silent"
+    ]
+   },
+   {
+    "lines": 257,
+    "pair": [
+     "fail",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 190,
+    "pair": [
+     "location",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 184,
+    "pair": [
+     "location",
+     "output"
+    ]
+   },
+   {
+    "lines": 180,
+    "pair": [
+     "fail",
+     "location"
+    ]
+   },
+   {
+    "lines": 160,
+    "pair": [
+     "output",
+     "silent"
+    ]
+   },
+   {
+    "lines": 87,
+    "pair": [
+     "header",
+     "silent"
+    ]
+   },
+   {
+    "lines": 86,
+    "pair": [
+     "location",
+     "remote-name"
+    ]
+   },
+   {
+    "lines": 82,
+    "pair": [
+     "remote-name",
+     "silent"
+    ]
+   },
+   {
+    "lines": 80,
+    "pair": [
+     "header",
+     "request"
+    ]
+   },
+   {
+    "lines": 78,
+    "pair": [
+     "data",
+     "request"
+    ]
+   },
+   {
+    "lines": 78,
+    "pair": [
+     "fail",
+     "output"
+    ]
+   },
+   {
+    "lines": 77,
+    "pair": [
+     "output",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 67,
+    "pair": [
+     "silent",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 58,
+    "pair": [
+     "data",
+     "header"
+    ]
+   },
+   {
+    "lines": 49,
+    "pair": [
+     "fail",
+     "header"
+    ]
+   },
+   {
+    "lines": 48,
+    "pair": [
+     "connect-timeout",
+     "silent"
+    ]
+   },
+   {
+    "lines": 47,
+    "pair": [
+     "fail",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 46,
+    "pair": [
+     "show-error",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 42,
+    "pair": [
+     "max-time",
+     "silent"
+    ]
+   },
+   {
+    "lines": 41,
+    "pair": [
+     "fail",
+     "max-time"
+    ]
+   },
+   {
+    "lines": 37,
+    "pair": [
+     "header",
+     "max-time"
+    ]
+   },
+   {
+    "lines": 36,
+    "pair": [
+     "request",
+     "silent"
+    ]
+   },
+   {
+    "lines": 34,
+    "pair": [
+     "silent",
+     "user-agent"
+    ]
+   },
+   {
+    "lines": 32,
+    "pair": [
+     "silent",
+     "write-out"
+    ]
+   },
+   {
+    "lines": 31,
+    "pair": [
+     "connect-timeout",
+     "location"
+    ]
+   },
+   {
+    "lines": 31,
+    "pair": [
+     "output",
+     "write-out"
+    ]
+   },
+   {
+    "lines": 30,
+    "pair": [
+     "data",
+     "silent"
+    ]
+   },
+   {
+    "lines": 29,
+    "pair": [
+     "create-dirs",
+     "output"
+    ]
+   },
+   {
+    "lines": 27,
+    "pair": [
+     "location",
+     "user-agent"
+    ]
+   },
+   {
+    "lines": 26,
+    "pair": [
+     "insecure",
+     "output"
+    ]
+   },
+   {
+    "lines": 25,
+    "pair": [
+     "fail",
+     "proto"
+    ]
+   },
+   {
+    "lines": 25,
+    "pair": [
+     "proto",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 25,
+    "pair": [
+     "proto",
+     "silent"
+    ]
+   },
+   {
+    "lines": 24,
+    "pair": [
+     "connect-timeout",
+     "user-agent"
+    ]
+   },
+   {
+    "lines": 24,
+    "pair": [
+     "fail",
+     "tlsv1.2"
+    ]
+   },
+   {
+    "lines": 24,
+    "pair": [
+     "proto",
+     "tlsv1.2"
+    ]
+   },
+   {
+    "lines": 24,
+    "pair": [
+     "show-error",
+     "tlsv1.2"
+    ]
+   },
+   {
+    "lines": 24,
+    "pair": [
+     "silent",
+     "tlsv1.2"
+    ]
+   },
+   {
+    "lines": 22,
+    "pair": [
+     "head",
+     "silent"
+    ]
+   },
+   {
+    "lines": 22,
+    "pair": [
+     "header",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 22,
+    "pair": [
+     "insecure",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 21,
+    "pair": [
+     "output",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 21,
+    "pair": [
+     "request",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 20,
+    "pair": [
+     "create-dirs",
+     "insecure"
+    ]
+   },
+   {
+    "lines": 20,
+    "pair": [
+     "create-dirs",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 19,
+    "pair": [
+     "connect-timeout",
+     "fail"
+    ]
+   },
+   {
+    "lines": 19,
+    "pair": [
+     "location",
+     "write-out"
+    ]
+   },
+   {
+    "lines": 18,
+    "pair": [
+     "output",
+     "user-agent"
+    ]
+   },
+   {
+    "lines": 17,
+    "pair": [
+     "show-error",
+     "upload-file"
+    ]
+   },
+   {
+    "lines": 17,
+    "pair": [
+     "silent",
+     "upload-file"
+    ]
+   },
+   {
+    "lines": 16,
+    "pair": [
+     "cacert",
+     "data"
+    ]
+   },
+   {
+    "lines": 16,
+    "pair": [
+     "fail",
+     "head"
+    ]
+   },
+   {
+    "lines": 16,
+    "pair": [
+     "fail",
+     "noproxy"
+    ]
+   },
+   {
+    "lines": 16,
+    "pair": [
+     "max-time",
+     "noproxy"
+    ]
+   },
+   {
+    "lines": 16,
+    "pair": [
+     "noproxy",
+     "silent"
+    ]
+   },
+   {
+    "lines": 15,
+    "pair": [
+     "fail",
+     "upload-file"
+    ]
+   },
+   {
+    "lines": 15,
+    "pair": [
+     "header",
+     "noproxy"
+    ]
+   },
+   {
+    "lines": 15,
+    "pair": [
+     "insecure",
+     "silent"
+    ]
+   },
+   {
+    "lines": 15,
+    "pair": [
+     "show-headers",
+     "silent"
+    ]
+   },
+   {
+    "lines": 14,
+    "pair": [
+     "header",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 14,
+    "pair": [
+     "header",
+     "show-headers"
+    ]
+   },
+   {
+    "lines": 13,
+    "pair": [
+     "connect-timeout",
+     "max-time"
+    ]
+   },
+   {
+    "lines": 12,
+    "pair": [
+     "connect-timeout",
+     "header"
+    ]
+   },
+   {
+    "lines": 12,
+    "pair": [
+     "connect-timeout",
+     "output"
+    ]
+   },
+   {
+    "lines": 12,
+    "pair": [
+     "data",
+     "verbose"
+    ]
+   },
+   {
+    "lines": 12,
+    "pair": [
+     "fail",
+     "remote-name"
+    ]
+   },
+   {
+    "lines": 12,
+    "pair": [
+     "fail",
+     "request"
+    ]
+   },
+   {
+    "lines": 12,
+    "pair": [
+     "location",
+     "remote-header-name"
+    ]
+   },
+   {
+    "lines": 11,
+    "pair": [
+     "connect-timeout",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 11,
+    "pair": [
+     "dump-header",
+     "silent"
+    ]
+   },
+   {
+    "lines": 11,
+    "pair": [
+     "header",
+     "output"
+    ]
+   },
+   {
+    "lines": 11,
+    "pair": [
+     "remote-header-name",
+     "remote-name"
+    ]
+   },
+   {
+    "lines": 11,
+    "pair": [
+     "request",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 11,
+    "pair": [
+     "retry",
+     "silent"
+    ]
+   },
+   {
+    "lines": 10,
+    "pair": [
+     "data",
+     "show-headers"
+    ]
+   },
+   {
+    "lines": 10,
+    "pair": [
+     "form",
+     "request"
+    ]
+   },
+   {
+    "lines": 10,
+    "pair": [
+     "header",
+     "location"
+    ]
+   },
+   {
+    "lines": 10,
+    "pair": [
+     "location",
+     "retry"
+    ]
+   },
+   {
+    "lines": 10,
+    "pair": [
+     "max-time",
+     "output"
+    ]
+   },
+   {
+    "lines": 10,
+    "pair": [
+     "retry",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 10,
+    "pair": [
+     "user-agent",
+     "write-out"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "connect-timeout",
+     "noproxy"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "disable",
+     "location"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "dump-header",
+     "fail"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "dump-header",
+     "output"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "dump-header",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "fail",
+     "user-agent"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "form",
+     "header"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "header",
+     "write-out"
+    ]
+   },
+   {
+    "lines": 9,
+    "pair": [
+     "remote-name",
+     "show-error"
+    ]
+   },
+   {
+    "lines": 8,
+    "pair": [
+     "connect-timeout",
+     "write-out"
+    ]
+   },
+   {
+    "lines": 8,
+    "pair": [
+     "disable",
+     "silent"
+    ]
+   },
+   {
+    "lines": 8,
+    "pair": [
+     "header",
+     "url"
+    ]
+   },
+   {
+    "lines": 8,
+    "pair": [
+     "max-time",
+     "request"
+    ]
+   },
+   {
+    "lines": 8,
+    "pair": [
+     "range",
+     "silent"
+    ]
+   },
+   {
+    "lines": 8,
+    "pair": [
+     "request",
+     "url"
+    ]
+   },
+   {
+    "lines": 7,
+    "pair": [
+     "connect-timeout",
+     "retry"
+    ]
+   }
+  ],
+  "unknown": [
+   {
+    "uses": 2,
+    "word": "-$"
+   },
+   {
+    "uses": 2,
+    "word": "-{"
+   },
+   {
+    "uses": 1,
+    "word": "--progress"
+   }
+  ],
+  "unparsed": 0,
+  "unused": [
+   "abstract-unix-socket",
+   "alpn",
+   "alt-svc",
+   "anyauth",
+   "append",
+   "aws-sigv4",
+   "basic",
+   "buffer",
+   "ca-native",
+   "capath",
+   "cert-status",
+   "cert-type",
+   "clobber",
+   "compressed-ssh",
+   "connect-to",
+   "create-file-mode",
+   "crlf",
+   "crlfile",
+   "curves",
+   "data-raw",
+   "digest",
+   "disable-eprt",
+   "disable-epsv",
+   "disallow-username-in-url",
+   "dns-interface",
+   "dns-ipv4-addr",
+   "dns-ipv6-addr",
+   "dns-servers",
+   "doh-cert-status",
+   "doh-insecure",
+   "doh-url",
+   "dump-ca-embed",
+   "ech",
+   "egd-file",
+   "engine",
+   "eprt",
+   "epsv",
+   "expect100-timeout",
+   "fail-early",
+   "fail-with-body",
+   "false-start",
+   "follow",
+   "form-escape",
+   "form-string",
+   "ftp-account",
+   "ftp-alternative-to-user",
+   "ftp-method",
+   "ftp-pasv",
+   "ftp-port",
+   "ftp-pret",
+   "ftp-skip-pasv-ip",
+   "ftp-ssl",
+   "ftp-ssl-ccc",
+   "ftp-ssl-ccc-mode",
+   "ftp-ssl-control",
+   "ftp-ssl-reqd",
+   "happy-eyeballs-timeout-ms",
+   "haproxy-clientip",
+   "haproxy-protocol",
+   "help",
+   "hostpubmd5",
+   "hostpubsha256",
+   "hsts",
+   "http0.9",
+   "http1.1",
+   "http2-prior-knowledge",
+   "http3",
+   "http3-only",
+   "httpsig-algo",
+   "httpsig-headers",
+   "httpsig-key",
+   "httpsig-keyid",
+   "ignore-content-length",
+   "interface",
+   "ip-tos",
+   "ipfs-gateway",
+   "ipv4",
+   "ipv6",
+   "json",
+   "junk-session-cookies",
+   "keepalive-cnt",
+   "key-type",
+   "knownhosts",
+   "krb",
+   "krb4",
+   "libcurl",
+   "local-port",
+   "login-options",
+   "mail-auth",
+   "mail-from",
+   "mail-rcpt",
+   "mail-rcpt-allowfails",
+   "max-filesize",
+   "metalink",
+   "mptcp",
+   "netrc-file",
+   "netrc-optional",
+   "next",
+   "npn",
+   "ntlm",
+   "ntlm-wb",
+   "oauth2-bearer",
+   "out-null",
+   "output-dir",
+   "parallel-immediate",
+   "parallel-max-host",
+   "pass",
+   "path-as-is",
+   "pinnedpubkey",
+   "preproxy",
+   "proto-default",
+   "proto-redir",
+   "proxy-anyauth",
+   "proxy-basic",
+   "proxy-ca-native",
+   "proxy-cacert",
+   "proxy-capath",
+   "proxy-cert",
+   "proxy-cert-type",
+   "proxy-ciphers",
+   "proxy-crlfile",
+   "proxy-digest",
+   "proxy-header",
+   "proxy-http2",
+   "proxy-http3",
+   "proxy-insecure",
+   "proxy-key",
+   "proxy-key-type",
+   "proxy-negotiate",
+   "proxy-ntlm",
+   "proxy-pass",
+   "proxy-pinnedpubkey",
+   "proxy-service-name",
+   "proxy-ssl-allow-beast",
+   "proxy-ssl-auto-client-cert",
+   "proxy-tls13-ciphers",
+   "proxy-tlsauthtype",
+   "proxy-tlspassword",
+   "proxy-tlsuser",
+   "proxy-tlsv1",
+   "proxy-user",
+   "proxy1.0",
+   "proxytunnel",
+   "pubkey",
+   "random-file",
+   "rate",
+   "remove-on-error",
+   "request-target",
+   "retry-all-errors",
+   "retry-max-time",
+   "sasl-authzid",
+   "sasl-ir",
+   "service-name",
+   "sessionid",
+   "sigalgs",
+   "skip-existing",
+   "socks4",
+   "socks5-basic",
+   "socks5-gssapi",
+   "socks5-gssapi-nec",
+   "socks5-gssapi-service",
+   "socks5-hostname",
+   "ssl",
+   "ssl-allow-beast",
+   "ssl-auto-client-cert",
+   "ssl-no-revoke",
+   "ssl-reqd",
+   "ssl-revoke-best-effort",
+   "ssl-sessions",
+   "sslv2",
+   "sslv3",
+   "styled-output",
+   "suppress-connect-headers",
+   "tcp-fastopen",
+   "telnet-option",
+   "test-duphandle",
+   "test-event",
+   "tftp-blksize",
+   "tftp-no-options",
+   "tls-earlydata",
+   "tls13-ciphers",
+   "tlsauthtype",
+   "tlspassword",
+   "tlsuser",
+   "tlsv1.0",
+   "tlsv1.1",
+   "tr-encoding",
+   "trace",
+   "trace-ascii",
+   "trace-config",
+   "trace-ids",
+   "upload-flags",
+   "url-query",
+   "use-ascii",
+   "variable",
+   "vlan-priority",
+   "wdebug",
+   "xattr"
+  ]
+ },
+ "generated-by": "inventory/gen/corpus.py",
+ "sources": [
+  "src/tool_getparam.c"
+ ]
+}

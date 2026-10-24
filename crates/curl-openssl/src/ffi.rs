@@ -8,6 +8,10 @@ use core::ffi::{c_char, c_int, c_long, c_ulong, c_void};
 
 use openssl_sys::{ASN1_TIME, BIO, EVP_PKEY, SSL, SSL_CTX, X509, X509_CRL, X509_NAME, X509_STORE};
 
+/// A certificate's public key with its algorithm (`X509_PUBKEY`), only
+/// ever pointed to.
+pub(crate) enum X509Pubkey {}
+
 /// `SSL_CTX_set_msg_callback`'s callback.
 pub(crate) type MsgCallback = unsafe extern "C" fn(
     write_p: c_int,
@@ -53,6 +57,8 @@ unsafe extern "C" {
     pub(crate) fn SSL_alert_desc_string_long(value: c_int) -> *const c_char;
     pub(crate) fn SSL_CTX_set_default_read_buffer_len(ctx: *mut SSL_CTX, len: usize);
     pub(crate) fn X509_get0_pubkey(x: *const X509) -> *mut EVP_PKEY;
+    pub(crate) fn X509_get_X509_PUBKEY(x: *const X509) -> *mut X509Pubkey;
+    pub(crate) fn i2d_X509_PUBKEY(a: *const X509Pubkey, out: *mut *mut u8) -> c_int;
     pub(crate) fn X509_get0_notBefore(x: *const X509) -> *const ASN1_TIME;
     pub(crate) fn X509_get0_notAfter(x: *const X509) -> *const ASN1_TIME;
     pub(crate) fn GENERAL_NAMES_free(names: *mut c_void);

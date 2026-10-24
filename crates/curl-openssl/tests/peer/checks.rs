@@ -1,5 +1,5 @@
 //! What a session checks of its peer past the chain, and who it says it
-//! is: the revocation list.
+//! is: the revocation list, the pinned key.
 
 use std::path::PathBuf;
 
@@ -22,6 +22,14 @@ pub(crate) const TESTS: &[(&str, fn())] = &[
     (
         "a_crl_file_that_cannot_be_read_fails_as_a_bad_crl",
         a_crl_file_that_cannot_be_read_fails_as_a_bad_crl,
+    ),
+    (
+        "the_peer_s_key_matches_a_pinned_hash_or_file",
+        the_peer_s_key_matches_a_pinned_hash_or_file,
+    ),
+    (
+        "another_pinned_key_fails_even_unverified",
+        another_pinned_key_fails_even_unverified,
     ),
 ];
 
@@ -117,4 +125,98 @@ fn a_crl_file_that_cannot_be_read_fails_as_a_bad_crl() {
         got.failure,
         format!("error loading CRL file: {}", certs.ca_file.display()).as_bytes()
     );
+}
+
+/// The base64 of the SHA-256 of `der`.
+fn sha256_b64(der: &[u8]) -> String {
+    let digest = openssl::sha::sha256(der);
+    openssl::base64::encode_block(&digest)
+}
+
+/// `--pinnedpubkey` (`ossl_check_pinned_key`): the peer's key as one of
+/// the hashes given, or as the file given holds it, in DER or PEM.
+fn the_peer_s_key_matches_a_pinned_hash_or_file() {
+    let certs = certs("pinned", "localhost", &["localhost"]);
+    let der = certs
+        .cert
+        .public_key()
+        .unwrap()
+        .public_key_to_der()
+        .unwrap();
+    let pem = certs
+        .cert
+        .public_key()
+        .unwrap()
+        .public_key_to_pem()
+        .unwrap();
+    let hash = sha256_b64(&der);
+    let der_file = certs_dir().join("pinned.pub.der");
+    std::fs::write(&der_file, &der).unwrap();
+    let pem_file = certs_dir().join("pinned.pub.pem");
+    std::fs::write(&pem_file, &pem).unwrap();
+    for pinned in [
+        format!("sha256//{hash}"),
+        format!("sha256//AAAA;sha256//{hash}"),
+        der_file.to_str().unwrap().to_owned(),
+        pem_file.to_str().unwrap().to_owned(),
+    ] {
+        let (at, server) = serve(&certs);
+        let got = get("localhost", at, |o| {
+            trusting(&certs)(o);
+            o.tls.options.make_mut().unwrap().pinned_key = Some(pinned.clone().into_bytes());
+        });
+        server.join().unwrap();
+        assert_eq!(got.result, Ok(()), "{pinned}: {:#?}", got.seen.lines);
+        assert_eq!(got.seen.body, BODY);
+        let line = format!(" public key hash: sha256//{hash}");
+        assert_eq!(
+            said(&got, &line),
+            pinned.starts_with("sha256//"),
+            "{pinned}: {:#?}",
+            got.seen.lines
+        );
+    }
+}
+
+/// A key not pinned fails the transfer with 90, `-k` or not (test 2048):
+/// after OpenSSL's verdict is said and ignored.
+fn another_pinned_key_fails_even_unverified() {
+    let certs = certs("unpinned", "localhost", &["localhost"]);
+    let other = self::certs("unpinned-other", "localhost", &["localhost"]);
+    let der = other
+        .cert
+        .public_key()
+        .unwrap()
+        .public_key_to_der()
+        .unwrap();
+    let file = certs_dir().join("unpinned.pub.der");
+    std::fs::write(&file, &der).unwrap();
+    for (verify, pinned) in [
+        (true, format!("sha256//{}", sha256_b64(&der))),
+        (false, file.to_str().unwrap().to_owned()),
+    ] {
+        let (at, server) = serve(&certs);
+        let got = get("localhost", at, |o| {
+            trusting(&certs)(o);
+            o.tls.verify_peer = verify;
+            o.tls.verify_host = verify;
+            o.tls.options.make_mut().unwrap().pinned_key = Some(pinned.clone().into_bytes());
+        });
+        server.join().unwrap();
+        assert_eq!(
+            got.result,
+            Err(ErrorKind::SslPinnedpubkeynotmatch),
+            "{pinned}"
+        );
+        assert_eq!(
+            got.failure,
+            b"SSL: public key does not match pinned public key"
+        );
+        if !verify {
+            assert!(said(
+                &got,
+                " SSL certificate verification failed, continuing anyway!"
+            ));
+        }
+    }
 }

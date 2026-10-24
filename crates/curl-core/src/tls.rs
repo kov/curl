@@ -25,6 +25,9 @@ use crate::time::Instant;
 use crate::trace::OsError;
 
 pub use crate::conn::layer::Handshake;
+pub use pin::pin_peer_pubkey;
+
+mod pin;
 
 /// A test double: a TLS library of text lines and scrambled records.
 #[cfg(any(test, feature = "test-util"))]
@@ -301,6 +304,14 @@ impl TlsIo<'_> {
     /// A line of the transfer's verbose output (`infof`).
     pub fn info(&mut self, line: fmt::Arguments<'_>) {
         self.cx.info(line);
+    }
+
+    /// A line only C's debug build says (`DEBUGF(infof(...))`): `info`
+    /// in the debug-hooks build, nothing in any other.
+    pub(crate) fn debug_info(&mut self, line: fmt::Arguments<'_>) {
+        if cfg!(feature = "debug-hooks") {
+            self.cx.info(line);
+        }
     }
 
     /// The time of the multi's pass the call is made in (C's

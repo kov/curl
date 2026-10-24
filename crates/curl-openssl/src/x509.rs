@@ -820,7 +820,45 @@ pub(crate) fn check_peer(
             " SSL certificate verification failed, continuing anyway!"
         ));
     }
+    if let Some(pinned) = &identity.options.pinned_key {
+        // Checked whether the peer is verified or not
+        // (`ossl_check_pinned_key`).
+        let spki = public_key_der(&cert);
+        if let Err(kind) = curl_core::tls::pin_peer_pubkey(io, pinned, &spki) {
+            return Err(io.fail(
+                kind,
+                format_args!("SSL: public key does not match pinned public key"),
+            ));
+        }
+    }
     Ok(verified)
+}
+
+/// The DER of the certificate's SubjectPublicKeyInfo
+/// (`ossl_pkp_pin_peer_pubkey`): empty if it cannot be had, which
+/// matches no pinned key, as C finds no match where it fails to make it.
+fn public_key_der(cert: &Cert) -> Vec<u8> {
+    // SAFETY: the certificate's key, its own, alive while `cert` is.
+    let key = unsafe { ffi::X509_get_X509_PUBKEY(cert.as_ptr()) };
+    // SAFETY: the key; no buffer: the length is asked.
+    let len = unsafe { ffi::i2d_X509_PUBKEY(key, ptr::null_mut()) };
+    let mut der = Vec::new();
+    let Ok(n) = usize::try_from(len) else {
+        return der;
+    };
+    if n == 0 || der.try_reserve_exact(n).is_err() {
+        return der;
+    }
+    let mut at = der.as_mut_ptr();
+    // SAFETY: room for the `n` bytes the library said it writes, at `at`,
+    // which it moves past what it wrote.
+    let wrote = unsafe { ffi::i2d_X509_PUBKEY(key, &mut at) };
+    if wrote != len || at != der.as_mut_ptr().wrapping_add(n) {
+        return Vec::new();
+    }
+    // SAFETY: the library wrote the `n` bytes.
+    unsafe { der.set_len(n) };
+    der
 }
 
 /// The text of one of the library's errors as C gives it in a failure

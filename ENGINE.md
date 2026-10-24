@@ -1894,7 +1894,11 @@ The host check is hostcheck.c's, ported (unit 1397), after `ossl_verifyhost`
 (`SSL certificate problem: …`, `CURLINFO_SSL_VERIFYRESULT`). With the peer unverified
 (`-k`) no CA is loaded, even one given (`SSL Trust: peer verification disabled`), and OpenSSL's
 result is traced and ignored (`OpenSSL verify result: 14`, `SSL certificate verification
-failed, continuing anyway!`); a pinned key (`--pinnedpubkey`) is checked after, `-k` or not (90).
+failed, continuing anyway!`); a pinned key (`--pinnedpubkey`) is checked after, `-k` or not (90,
+`SSL: public key does not match pinned public key`): the library gives the DER of the peer's
+SubjectPublicKeyInfo and the core compares it (`tls::pin_peer_pubkey`, vtls.c's
+`Curl_pin_peer_pubkey`), by the base64 of its SHA-256 (`sha256//`, several `;` apart, ` public key
+hash:` said) or as a file of it in DER or PEM.
 
 **Identity and reuse.** `Tcp` holds `tls: Option<TryArc<TlsIdentity>>`: the verify bits and a
 copy of the transfer's cold `TlsOptions`, every field `match_ssl_primary_config` compares

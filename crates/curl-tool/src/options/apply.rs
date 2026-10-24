@@ -153,6 +153,8 @@ pub(crate) struct Tls<'a> {
     pub(crate) no_alpn: bool,
     /// `--crlfile`.
     pub(crate) crlfile: Option<&'a [u8]>,
+    /// `--pinnedpubkey`.
+    pub(crate) pinned_key: Option<&'a [u8]>,
 }
 
 /// `--proto-default`: the protocol, as named.
@@ -1075,6 +1077,7 @@ pub(crate) fn apply<'a>(
             existing_file(file, b"crlfile", msgs)?;
             line.current().tls.crlfile = Some(non_blank(file)?);
         }
+        Opt::Pinnedpubkey => line.current().tls.pinned_key = Some(non_blank(value.text())?),
         Opt::Capath => line.current().tls.capath = Some(Cow::Borrowed(non_blank(value.text())?)),
         Opt::Ciphers => line.current().tls.ciphers = Some(non_blank(value.text())?),
         Opt::Tls13Ciphers => line.current().tls.tls13_ciphers = Some(non_blank(value.text())?),
@@ -1567,7 +1570,6 @@ pub(crate) fn apply<'a>(
         | Opt::Negotiate
         | Opt::Ntlm
         | Opt::Pass
-        | Opt::Pinnedpubkey
         | Opt::ProxyCaNative
         | Opt::ProxyCacert
         | Opt::ProxyCapath

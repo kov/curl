@@ -197,3 +197,11 @@ witness: curl-core proto::http::tests::tls::a_multi_keeps_one_state_of_the_libra
             *shared = TlsShared::new().unwrap();
             shared
         }
+
+=== a pinned hash list is read only up to its first hash
+file: crates/curl-core/src/tls/pin.rs
+witness: curl-core tls::pin::tests::a_hash_among_several_matches
+--- old
+            rest = next;
+--- new
+            rest = next.filter(|_| false);

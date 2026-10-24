@@ -368,7 +368,10 @@ fn the_tls_check_and_identity_strings_are_copied() {
     use curl_core::options::TlsOptions;
     let c = curl_easy_init();
     type Field = fn(&TlsOptions) -> Option<Vec<u8>>;
-    let fields: [(CURLoption, Field); 1] = [(ffi::CURLOPT_CRLFILE, |t| t.crl_file.clone())];
+    let fields: [(CURLoption, Field); 2] = [
+        (ffi::CURLOPT_CRLFILE, |t| t.crl_file.clone()),
+        (ffi::CURLOPT_PINNEDPUBLICKEY, |t| t.pinned_key.clone()),
+    ];
     for (o, field) in fields {
         let mut given = *b"given\0";
         assert_eq!(pointer(c, o, given.as_mut_ptr()), CURLE_OK, "{}", o.0);

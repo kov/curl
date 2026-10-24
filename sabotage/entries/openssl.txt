@@ -156,3 +156,11 @@ witness: curl-openssl a_revoked_certificate_fails_the_verification
         flags = openssl_sys::X509_V_FLAG_CRL_CHECK | openssl_sys::X509_V_FLAG_CRL_CHECK_ALL;
 --- new
         flags = 0;
+
+=== a pinned key is checked only when the peer is verified
+file: crates/curl-openssl/src/x509.rs
+witness: curl-openssl another_pinned_key_fails_even_unverified
+--- old
+    if let Some(pinned) = &identity.options.pinned_key {
+--- new
+    if let Some(pinned) = identity.options.pinned_key.as_ref().filter(|_| identity.verify_peer) {

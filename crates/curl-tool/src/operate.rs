@@ -1909,6 +1909,9 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         // no use for (43i).
         s.str("CURLOPT_PROXY_CRLFILE", Some(crl), nothing)?;
     }
+    string_setopt(s, "CURLOPT_PINNEDPUBLICKEY", tls.pinned_key, |t| {
+        &mut t.pinned_key
+    })?;
     string_setopt(s, "CURLOPT_SSL_EC_CURVES", tls.curves, |t| &mut t.curves)?;
     string_setopt(s, "CURLOPT_SSL_SIGNATURE_ALGORITHMS", tls.sigalgs, |t| {
         &mut t.signature_algorithms

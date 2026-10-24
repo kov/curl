@@ -136,7 +136,7 @@ pub(crate) const SSL_VERSIONS_MAX: Names = &[
 
 /// `setopt_nv_CURLSSLOPT`.
 pub(crate) const SSL_OPTIONS: Bits = &[
-    ("CURLSSLOPT_ALLOW_BEAST", 1 << 0),
+    ("CURLSSLOPT_ALLOW_BEAST", 1),
     ("CURLSSLOPT_NO_REVOKE", 1 << 1),
     ("CURLSSLOPT_NO_PARTIALCHAIN", 1 << 2),
     ("CURLSSLOPT_REVOKE_BEST_EFFORT", 1 << 3),
@@ -993,6 +993,47 @@ mod tests {
                 "",
                 "curl_easy_reset(curl);",
                 "curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);",
+            ]
+        );
+    }
+
+    /// Each newest TLS version and each `CURLSSLOPT_*` bit is written by
+    /// its name, at its value in curl.h.
+    #[test]
+    fn names_the_tls_values_of_curl_h() {
+        let written = lines(|s| {
+            for max in [1, 4, 5, 6, 7] {
+                s.sslversion("CURLOPT_SSLVERSION", 6 | max << 16, nothing)
+                    .unwrap();
+            }
+            for bit in 0..6 {
+                s.bitmask("CURLOPT_SSL_OPTIONS", SSL_OPTIONS, 1 << bit, nothing)
+                    .unwrap();
+            }
+        });
+        let version = |max: &str| {
+            format!(
+                "curl_easy_setopt(curl, CURLOPT_SSLVERSION, \
+                 (long)(CURL_SSLVERSION_TLSv1_2 | CURL_SSLVERSION_MAX_{max}));"
+            )
+        };
+        let option = |name: &str| {
+            format!("curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_{name});")
+        };
+        assert_eq!(
+            written,
+            [
+                version("DEFAULT"),
+                version("TLSv1_0"),
+                version("TLSv1_1"),
+                version("TLSv1_2"),
+                version("TLSv1_3"),
+                option("ALLOW_BEAST"),
+                option("NO_REVOKE"),
+                option("NO_PARTIALCHAIN"),
+                option("REVOKE_BEST_EFFORT"),
+                option("NATIVE_CA"),
+                option("AUTO_CLIENT_CERT"),
             ]
         );
     }

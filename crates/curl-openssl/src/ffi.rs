@@ -7,7 +7,7 @@
 use core::ffi::{c_char, c_int, c_long, c_ulong, c_void};
 
 use openssl_sys::{
-    ASN1_OBJECT, ASN1_STRING, ASN1_TIME, BIGNUM, BIO, EVP_PKEY, PKCS12, RSA, SSL, SSL_CTX, X509,
+    ASN1_OBJECT, ASN1_STRING, ASN1_TIME, BIGNUM, BIO, EVP_PKEY, PKCS12, SSL, SSL_CTX, X509,
     X509_ALGOR, X509_CRL, X509_NAME, X509_STORE, pem_password_cb,
 };
 
@@ -90,7 +90,6 @@ unsafe extern "C" {
     ) -> *mut X509;
     pub(crate) fn d2i_PrivateKey_bio(bio: *mut BIO, out: *mut *mut EVP_PKEY) -> *mut EVP_PKEY;
     pub(crate) fn d2i_PKCS12_bio(bio: *mut BIO, out: *mut *mut PKCS12) -> *mut PKCS12;
-    pub(crate) fn RSA_flags(rsa: *const RSA) -> c_int;
     pub(crate) fn BIO_set_shutdown(bio: *mut BIO, shut: c_int);
     pub(crate) fn i2a_ASN1_OBJECT(bio: *mut BIO, a: *const ASN1_OBJECT) -> c_int;
     pub(crate) fn i2t_ASN1_OBJECT(buf: *mut c_char, len: c_int, a: *const ASN1_OBJECT) -> c_int;
@@ -127,10 +126,6 @@ pub(crate) const V_ASN1_NEG_INTEGER: c_int = 2 | 0x100;
 /// ASN1_STRFLGS_ESC_QUOTE | XN_FLAG_SEP_CPLUS_SPC | XN_FLAG_SPC_EQ |
 /// XN_FLAG_FN_SN`.
 pub(crate) const XN_FLAG_ONELINE: c_ulong = 0x317 | 8 | (2 << 16) | (1 << 23);
-
-/// `RSA_METHOD_FLAG_NO_CHECK` (`rsa.h`): the key's method cannot check
-/// it against its certificate.
-pub(crate) const RSA_METHOD_FLAG_NO_CHECK: c_int = 0x0001;
 
 /// `BIO_TYPE_MEM` (`bio.h`): `1 | BIO_TYPE_SOURCE_SINK`.
 pub(crate) const BIO_TYPE_MEM: c_int = 1 | 0x0400;
@@ -197,7 +192,6 @@ mod tests {
         // `V_ASN1_INTEGER | V_ASN1_NEG`.
         assert_eq!(V_ASN1_NEG_INTEGER, 0x102);
         assert_eq!(XN_FLAG_ONELINE, 0x0082_031f);
-        assert_eq!(RSA_METHOD_FLAG_NO_CHECK, 1);
         // `1 | BIO_TYPE_SOURCE_SINK`.
         assert_eq!(BIO_TYPE_MEM, 0x0401);
         assert_eq!(

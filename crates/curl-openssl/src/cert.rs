@@ -647,8 +647,8 @@ pub(crate) fn client_cert(
     check_private_key(ctx, io)
 }
 
-/// The key set matches the certificate set, unless its method says it
-/// cannot be checked (an RSA key's `RSA_METHOD_FLAG_NO_CHECK`).
+/// The key set matches the certificate set, whatever the key's method, as
+/// C's build for OpenSSL 3 checks it.
 fn check_private_key(ctx: NonNull<SSL_CTX>, io: &mut TlsIo<'_>) -> Result<(), ErrorKind> {
     let c = ctx.as_ptr();
     // SAFETY: the context; an SSL made of it to read what it holds,
@@ -673,24 +673,10 @@ fn check_private_key(ctx: NonNull<SSL_CTX>, io: &mut TlsIo<'_>) -> Result<(), Er
         // SAFETY: the reference taken above, given back once.
         unsafe { openssl_sys::EVP_PKEY_free(public) };
     }
-    let mut check = true;
-    // SAFETY: the SSL's key, looked at only if there is one.
-    let rsa_key = !private.is_null()
-        && unsafe { openssl_sys::EVP_PKEY_id(private) } == openssl_sys::EVP_PKEY_RSA;
-    if rsa_key {
-        // SAFETY: an RSA key; a reference to its RSA, freed below.
-        let rsa = unsafe { openssl_sys::EVP_PKEY_get1_RSA(private) };
-        // SAFETY: the RSA, or null, which has no flags.
-        if !rsa.is_null() && unsafe { ffi::RSA_flags(rsa) } & ffi::RSA_METHOD_FLAG_NO_CHECK != 0 {
-            check = false;
-        }
-        // SAFETY: the reference taken above, given back once.
-        unsafe { openssl_sys::RSA_free(rsa) };
-    }
     // SAFETY: made above, freed once.
     unsafe { openssl_sys::SSL_free(ssl) };
     // SAFETY: the context, its certificate and key set.
-    if check && unsafe { openssl_sys::SSL_CTX_check_private_key(c) } == 0 {
+    if unsafe { openssl_sys::SSL_CTX_check_private_key(c) } == 0 {
         return Err(io.fail(
             ErrorKind::SslCertproblem,
             format_args!("Private key does not match the certificate public key"),

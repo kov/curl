@@ -27,7 +27,7 @@ fn the_protocol_the_server_accepts_is_said() {
             openssl::ssl::select_next_proto(b"\x08http/1.1", offer).ok_or(AlpnError::NOACK)
         });
     });
-    let got = get("localhost", at, trusting(&certs));
+    let got = get_traced("localhost", at, trusting(&certs), true);
     server.join().unwrap();
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     assert!(
@@ -36,14 +36,21 @@ fn the_protocol_the_server_accepts_is_said() {
         got.seen.lines
     );
     assert!(!starts(&got, "ALPN: server did not agree"));
+    // The protocol the session answers the transfer's question with.
+    assert!(
+        said(&got, "[SSL] query ALPN: returning 'http/1.1'"),
+        "{:#?}",
+        got.seen.lines
+    );
     let (at, server) = serve(&certs);
-    let got = get("localhost", at, trusting(&certs));
+    let got = get_traced("localhost", at, trusting(&certs), true);
     server.join().unwrap();
     assert_eq!(got.result, Ok(()), "{:#?}", got.seen.lines);
     assert!(said(
         &got,
         "ALPN: server did not agree on a protocol. Uses default."
     ));
+    assert!(said(&got, "[SSL] query ALPN: returning '(nil)'"));
 }
 
 fn level_lines(got: &Got) -> Vec<&str> {

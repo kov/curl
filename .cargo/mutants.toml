@@ -13,6 +13,13 @@
 # tracker is built only with it, for curl-sys-abi, and for curl-tool, whose
 # terminal tests need the debug build's `CURL_ISATTY`; `test-util,debug-hooks`
 # for curl-core. Without them those mutants survive or are never built.)
+# (Some code is reached only from another crate's tests: run curl-core's
+# mutants with `--test-package curl-core --test-package curl-openssl
+# --features curl-core/test-util,curl-core/debug-hooks`, as the TLS layer's
+# context is the OpenSSL backend's to use, and curl-openssl's with
+# `--test-package curl-openssl --test-package curl-sys-abi --features
+# curl-sys-abi/debug-hooks`, as an application's verify callback waits
+# only through the C ABI.)
 # (The copy is made in `TMPDIR`: where `/tmp` is a small tmpfs it fills, and
 # its memory is the machine's. The worktree must hold no build output of its
 # own, such as a sabotage sweep's `build/target`: it is copied too, without
@@ -44,6 +51,20 @@ timeout_multiplier = 3.0
 # against "file:line:col: description"; anchor on the function, not the
 # line, so an edit cannot move an exclusion onto other code.
 exclude_re = [
+    # The backend's id is part of the session cache's key: with one
+    # backend, any id keys every session alike.
+    'curl-openssl/src/ssl\.rs:.*: replace <impl core::fmt::Display for Id>::fmt -> core::fmt::Result with Ok\(Default::default\(\)\)$',
+    # The engine shuts a session down once, and only after its handshake;
+    # what is pending after the goodbye is never read.
+    'curl-openssl/src/ssl\.rs:.*: replace (\|\| with &&|!= with ==) in <impl TlsSession for Session>::shutdown$',
+    # The goodbye runs on the multi's own handle, as C's runs on its admin
+    # handle (`Curl_cshutdn_terminate`), so its trace reaches no
+    # application; and the connection is closed however it ends. These
+    # change only which lines that trace says, whether a close_notify goes
+    # to a peer already gone, or how often the socket is waited for. The
+    # peer tests in goodbye.rs check the close_notify arrives, and that an
+    # aborted transfer sends none.
+    'curl-openssl/src/ssl\.rs:.*: (replace (==|!=) with (!=|==)|replace <= with >|delete -) in Session::goodbye$',
     # A key of its certificate's signer's kind, the signature naming no
     # digest, that names a default digest of its own: the keys OpenSSL
     # signs with without a digest name none (Ed25519's and Ed448's are

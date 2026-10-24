@@ -652,8 +652,11 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
       **Done.** Left: a TLS 1.3 ticket that arrives while a connection says goodbye is
       dropped, where C keeps it through the multi's internal handle; `curl_easy_ssls_import`
       and `export` answer `CURLE_NOT_BUILT_IN`.
-    - **i. HTTPS proxy.** `SSL-PROXY`, TLS in TLS, the proxy's TLS options; `HTTPS-proxy`
-      reported (1630–1632, 3401).
+    - **i. HTTPS proxy.** **Done.** `SSL-PROXY`, TLS to the proxy and TLS in TLS, the proxy's
+      own identity in reuse matching, the proxy's TLS options in the tool and the C ABI,
+      `%{proxy_ssl_verify_result}` and `CURLINFO_PROXY_SSL_VERIFYRESULT`; `HTTPS-proxy`
+      reported. 2009–2011, 1630, 3401 and 1481 pass on both legs; 1631 and 1632 wait for the
+      FTP server (stage 6).
     - **j. Closing the step.** Torture against the C build on a subset, the budgets, the sweep
       and cargo-mutants.
 
@@ -664,14 +667,14 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     - e1: 94, 300–306, 309–312, 325, 364, 410, 414, 474, 560, 1561, 1562, 1849, 2118, 2885,
       3000, 3001, 3106, 3208, 3305, 3611, 5029;
     - e2: 3102 (certinfo), 308, 313, 417, 2034, 2035, 2037, 2038, 2041, 2042, 2048, 2088, 2089;
-    - f: 758, 1587. h: 2090, 3207. i: 2009–2011 (`--proxy-insecure` with an HTTPS proxy).
-      Step 46 (`--libcurl`): 1481, 1679.
+    - f: 758, 1587. h: 2090, 3207. i: 2009–2011 (`--proxy-insecure` with an HTTPS proxy),
+      1481 (`--proxy-tlsv1`). Step 46 (`--libcurl`): 1679.
 
     Skipped at the flip by their prechecks: 678 (`CAINFO_BLOB`, passing since e1), 2095 (`SSLCERT_BLOB`,
     e2), 307 (engines, skipped on the C leg too). Skipped for what is built elsewhere: HSTS
     (446, 780–783, 1586, 3109), alt-svc (358, 359) and DoH (2100, 2117), stage 7; Unix sockets
     (1470), step 46; GSS-API (1582) and `crypto` (1647, 1933–1938 and 14 more), step 44;
-    `HTTPS-proxy` (1630–1632, 3401) until i; HTTP/2 and HTTP/3, stage 5; the FTP, mail, MQTT
+    `HTTPS-proxy` (1630, 3401) until i, 1631 and 1632 then for FTP; HTTP/2 and HTTP/3, stage 5; the FTP, mail, MQTT
     and Gopher servers and their TLS forms, stage 6; NTLM, Schannel, ECH, `SSLS-EXPORT` (1678)
     and 4656, not in this build. Every one of the 199 that runs on the C leg passes there
     (2095 failed once in that run, 56, and passes alone).
@@ -701,7 +704,7 @@ Status: **in progress**. Opens with what TLS stands on, decided at milestone 2's
     and `--create-file-mode` wired to what the core has; `--retry-connrefused`; the deprecated
     `--random-file` and `--egd-file` as C's no-ops. The socket options are step 40k's.
 46. **The tool's larger pieces.** **Done**, but for `--doh-url` (2101), the `--dns-*` options
-    (c-ares), and the `--libcurl` output 1481 and 1679 expect of a TLS build. Built:
+    (c-ares), and the `--libcurl` output 1679 expects of a TLS build. Built:
     `--libcurl` (`tool_easysrc.c`: 1400–1404, 1465, 1687), `--manual` (`tool_hugehelp.c`: 1708,
     and the hint C's error messages end with), `--xattr` (644, 687, 688), `--parallel` (496);
     `--interface` and `--local-port`, bound before the connect (1045, 1046, 1082–1085);

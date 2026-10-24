@@ -351,6 +351,27 @@ fn an_empty_challenge_after_a_token_is_a_refusal() {
     assert_eq!(gss.asked(), [context(), Asked::Step(None), Asked::Dropped]);
 }
 
+/// A 1xx before the refusal takes nothing as accepted: C reads an interim
+/// response (`http_on_1xx_response`) and leaves before it judges the token
+/// (`http_check_auth_closure`, lib/http.c), so the empty challenge that
+/// follows still refuses it.
+#[test]
+fn an_interim_response_does_not_accept_the_token() {
+    let (gss, libraries) = scripted();
+    gss.then_token(b"first");
+    let unauthorized = b"HTTP/1.1 100 Continue\r\n\r\n\
+        HTTP/1.1 401 Who\r\nWWW-Authenticate: Negotiate\r\nContent-Length: 0\r\n\r\n";
+    let (mut m, talk, _) = server(&[unauthorized], false);
+    let ran = get_with(&mut m, negotiating(libraries), "/", talk, |_| {});
+    assert_eq!(ran.result, Ok(()));
+    assert_eq!(
+        String::from_utf8(ran.request.clone()).unwrap(),
+        negotiated_get("/", b"first")
+    );
+    assert_eq!(gss.asked(), [context(), Asked::Step(None), Asked::Dropped]);
+    assert!(!text_has(&ran, "Negotiate auth restarted\n"));
+}
+
 /// A context complete on our side, asked again, is refused without a
 /// step (`Curl_auth_decode_spnego_message`).
 #[test]

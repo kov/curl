@@ -2258,17 +2258,17 @@ fn tls_versions(
         min
     };
     let min = match min {
-        1 => (Min::Tls1_0, 4),
-        2 => (Min::Tls1_1, 5),
-        0 | 3 => (Min::Tls1_2, 6),
-        _ => (Min::Tls1_3, 7),
+        1 => (Min::Tls1_0, easysrc::CURL_SSLVERSION_TLSv1_0),
+        2 => (Min::Tls1_1, easysrc::CURL_SSLVERSION_TLSv1_1),
+        0 | 3 => (Min::Tls1_2, easysrc::CURL_SSLVERSION_TLSv1_2),
+        _ => (Min::Tls1_3, easysrc::CURL_SSLVERSION_TLSv1_3),
     };
     let max = match max {
-        0 => (Max::None, 0),
-        1 => (Max::Tls1_0, 4 << 16),
-        2 => (Max::Tls1_1, 5 << 16),
-        3 => (Max::Tls1_2, 6 << 16),
-        _ => (Max::Tls1_3, 7 << 16),
+        0 => (Max::None, easysrc::CURL_SSLVERSION_MAX_NONE),
+        1 => (Max::Tls1_0, easysrc::CURL_SSLVERSION_MAX_TLSv1_0),
+        2 => (Max::Tls1_1, easysrc::CURL_SSLVERSION_MAX_TLSv1_1),
+        3 => (Max::Tls1_2, easysrc::CURL_SSLVERSION_MAX_TLSv1_2),
+        _ => (Max::Tls1_3, easysrc::CURL_SSLVERSION_MAX_TLSv1_3),
     };
     (min, max)
 }
@@ -2744,8 +2744,8 @@ fn http_setopts(
     })?;
     if let Some(version) = op.http_version {
         let (version, value) = match version {
-            HttpVersion::Http10 => (options::HttpVersion::Http10, 1),
-            HttpVersion::Http11 => (options::HttpVersion::Http11, 2),
+            HttpVersion::Http10 => (options::HttpVersion::Http10, easysrc::CURL_HTTP_VERSION_1_0),
+            HttpVersion::Http11 => (options::HttpVersion::Http11, easysrc::CURL_HTTP_VERSION_1_1),
         };
         s.enumerated("CURLOPT_HTTP_VERSION", easysrc::HTTP_VERSIONS, value, |o| {
             o.http.version = version;

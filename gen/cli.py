@@ -17,11 +17,19 @@ values in inventory/abi.json:
   crates/curl-tool/src/options/errors.rs: `ParamError`, a kind per
   `PARAM_*` error with its text, the library error each exits with, and
   `exit_code`, the exit status of each library error (the CURLcode value,
-  as docs/cmdline-opts/_EXITCODES.md documents).
+  as docs/cmdline-opts/_EXITCODES.md documents);
+
+and from the `setopt_nv_*` tables of src/tool_setopt.c, with their
+values from inventory/abi.json:
+
+  crates/curl-tool/src/easysrc/names.rs: the names `--libcurl` writes
+  for an option's values, and the curl.h constants the tool's encoders
+  pass.
 """
 
 import json
 import pathlib
+import re
 
 from errors import SHIM_ONLY
 import genlib
@@ -32,6 +40,43 @@ CLI = ROOT / "inventory" / "cli.json"
 TABLE_OUT = ROOT / "crates" / "curl-tool" / "src" / "options" / "table.rs"
 ERRORS_OUT = ROOT / "crates" / "curl-tool" / "src" / "options" / "errors.rs"
 HELP_OUT = ROOT / "crates" / "curl-tool" / "src" / "options" / "help.rs"
+TOOL_SETOPT = ROOT / "src" / "tool_setopt.c"
+NAMES_OUT = ROOT / "crates" / "curl-tool" / "src" / "easysrc" / "names.rs"
+
+# Each `setopt_nv_*` table of src/tool_setopt.c: the Rust name the tool
+# reads it by, or None where the tool sets no option it names yet. A
+# table missing here fails the generator.
+NV_TABLES = {
+    "CURLPROXY": "PROXY_TYPES",
+    "CURL_SOCKS_PROXY": None,
+    "CURLHSTS": None,
+    "CURLAUTH": "AUTH",
+    "CURL_HTTP_VERSION": "HTTP_VERSIONS",
+    "CURL_SSLVERSION": "SSL_VERSIONS",
+    "CURL_SSLVERSION_MAX": "SSL_VERSIONS_MAX",
+    "CURL_TIMECOND": "TIME_CONDITIONS",
+    "CURLFTPSSL_CCC": None,
+    "CURLUSESSL": None,
+    "CURLSSLOPT": "SSL_OPTIONS",
+    "CURL_NETRC": "NETRC",
+    "CURLOPT_FOLLOWLOCATION": None,
+    "CURLNONZERODEFAULTS": "NONZERO_DEFAULTS",
+}
+
+# The curl.h constants the tool's encoders pass by name.
+NV_CONSTANTS = [
+    "CURLPROXY_HTTP", "CURLPROXY_HTTP_1_0", "CURLPROXY_HTTPS", "CURLPROXY_HTTPS2",
+    "CURLPROXY_SOCKS4", "CURLPROXY_SOCKS5", "CURLPROXY_SOCKS4A",
+    "CURLPROXY_SOCKS5_HOSTNAME", "CURLPROXY_HTTPS3",
+    "CURL_HTTP_VERSION_1_0", "CURL_HTTP_VERSION_1_1",
+    "CURL_SSLVERSION_TLSv1_0", "CURL_SSLVERSION_TLSv1_1", "CURL_SSLVERSION_TLSv1_2",
+    "CURL_SSLVERSION_TLSv1_3",
+    "CURL_SSLVERSION_MAX_NONE", "CURL_SSLVERSION_MAX_TLSv1_0",
+    "CURL_SSLVERSION_MAX_TLSv1_1", "CURL_SSLVERSION_MAX_TLSv1_2",
+    "CURL_SSLVERSION_MAX_TLSv1_3",
+    "CURLAUTH_BASIC", "CURLAUTH_DIGEST", "CURLAUTH_GSSAPI", "CURLAUTH_BEARER",
+    "CURLAUTH_AWS_SIGV4", "CURLAUTH_HTTPSIG", "CURLAUTH_ONLY", "CURLAUTH_ANY",
+]
 
 # What each guard in the C table means for the Rust tool.
 GUARDS = {
@@ -227,6 +272,65 @@ pub(crate) static CATEGORIES: &[(&str, &str)] = &[
 """
 
 
+def nv_value(name, consts):
+    """The value of `name` in a `setopt_nv_*` entry: a curl.h constant or
+    a literal."""
+    if re.fullmatch(r"\d+L?", name):
+        return int(name.rstrip("L"))
+    check(name in consts, f"{name} of tool_setopt.c is not in abi.json")
+    check(consts[name]["value"] is not None, f"{name} has no value in abi.json")
+    return int(consts[name]["value"])
+
+
+def rust_int(c):
+    """The Rust type of a curl.h constant's C type."""
+    return {"long": "i64", "unsigned long": "u64"}[c["c-type"]]
+
+
+def names(abi):
+    consts = {c["name"]: c for c in abi["constants"]}
+    src = re.sub(r"/\*.*?\*/", "", TOOL_SETOPT.read_text(), flags=re.DOTALL)
+    tables = re.findall(
+        r"const struct (NameValue|NameValueUnsigned) setopt_nv_(\w+)\[\] = \{(.*?)\};",
+        src, flags=re.DOTALL)
+    found = [name for _, name, _ in tables]
+    check(sorted(found) == sorted(NV_TABLES),
+          f"tool_setopt.c's tables {sorted(found)} are not NV_TABLES")
+    out = []
+    for kind, name, body in tables:
+        rust = NV_TABLES[name]
+        if rust is None:
+            continue
+        rows = []
+        for entry in re.findall(r"(NV1?\([^)]*\)|\{ \"\", \w+ \}|NVEND)", body):
+            if entry == "NVEND":
+                break
+            if m := re.fullmatch(r"NV\((\w+)\)", entry):
+                label, value = m[1], nv_value(m[1], consts)
+            elif m := re.fullmatch(r"NV1\((\w+), (\w+)\)", entry):
+                label, value = m[1], nv_value(m[2], consts)
+            else:
+                label, value = "", nv_value(re.search(r"(\w+) \}", entry)[1], consts)
+            rows.append(f'    ("{label}", {value}),\n')
+        check(rows, f"setopt_nv_{name} is empty")
+        ty = "Bits" if kind == "NameValueUnsigned" else "Names"
+        out.append(f"/// `setopt_nv_{name}`.\npub(crate) const {rust}: {ty} = &[\n"
+                   + "".join(rows) + "];\n")
+    constants = ["/// The curl.h constants the tool's encoders pass.\n"]
+    for name in NV_CONSTANTS:
+        check(name in consts, f"{name} is not in abi.json")
+        c = consts[name]
+        constants.append(f"pub(crate) const {name}: {rust_int(c)} = {c['value']};\n")
+    out.append("".join(constants))
+    inputs = [TOOL_SETOPT, ABI, ROOT / "gen" / "genlib.py", HERE]
+    return (genlib.header(HERE, inputs)
+            + "//! The names `--libcurl` writes for option values, and the curl.h\n"
+            + "//! constants the tool passes, as src/tool_setopt.c and curl.h have them.\n\n"
+            + "#![allow(non_upper_case_globals)]\n\n"
+            + "use super::{Bits, Names};\n\n"
+            + "\n".join(out))
+
+
 def main():
     cli = json.loads(CLI.read_text())["data"]
     abi = json.loads(ABI.read_text())["data"]
@@ -234,6 +338,8 @@ def main():
     genlib.write(TABLE_OUT, table(cli))
     genlib.write(ERRORS_OUT, errors(cli, abi))
     genlib.write(HELP_OUT, help_table(cli))
+    NAMES_OUT.parent.mkdir(exist_ok=True)
+    genlib.write(NAMES_OUT, names(abi))
 
 
 if __name__ == "__main__":

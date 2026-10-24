@@ -1074,7 +1074,7 @@ mod tests {
         let login = |u: Option<&[u8]>, p: Option<&[u8]>| Login {
             user: u.map(<[u8]>::to_vec),
             password: p.map(<[u8]>::to_vec),
-            bearer: None,
+            ..Login::default()
         };
         let got = |u: &[u8], p: &[u8], s| Ok(Some((u.to_vec(), p.to_vec(), s)));
         let both = login(Some(b"smith"), Some(b"doggie"));

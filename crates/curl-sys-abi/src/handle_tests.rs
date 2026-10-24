@@ -1837,10 +1837,7 @@ fn callback_options_install_their_adapters() {
 #[test]
 fn ids_are_told_apart_as_c_tells_them() {
     let c = curl_easy_init();
-    assert_eq!(
-        long(c, ffi::CURLOPT_SOCKS5_GSSAPI_NEC, 1),
-        CURLE_NOT_BUILT_IN
-    );
+    assert_eq!(long(c, ffi::CURLOPT_TFTP_BLKSIZE, 512), CURLE_NOT_BUILT_IN);
     for unknown in [9999, 10999, 50000] {
         assert_eq!(
             long(c, CURLoption(unknown), 0),
@@ -4246,6 +4243,71 @@ fn proxy_options_are_checked_as_in_c() {
     unsafe { curl_easy_cleanup(c) };
 }
 
+/// The service names are kept as given, a SOCKS5 GSS-API service being
+/// the proxy's; delegation and NEC's switch are a GSS-API build's, and
+/// unknown elsewhere, as a C build without GSS-API has them.
+#[test]
+fn gss_options_are_read_as_c() {
+    let c = curl_easy_init();
+    let services = |c| options(c, |o| (o.login.service.clone(), o.proxy.service.clone()));
+    assert_eq!(services(c), (None, None));
+    assert_eq!(
+        pointer(c, ffi::CURLOPT_SERVICE_NAME, c"imap".as_ptr().cast_mut()),
+        CURLE_OK
+    );
+    assert_eq!(
+        pointer(
+            c,
+            ffi::CURLOPT_PROXY_SERVICE_NAME,
+            c"HTTP".as_ptr().cast_mut()
+        ),
+        CURLE_OK
+    );
+    assert_eq!(
+        services(c),
+        (Some(b"imap".to_vec()), Some(b"HTTP".to_vec()))
+    );
+    assert_eq!(
+        pointer(
+            c,
+            ffi::CURLOPT_SOCKS5_GSSAPI_SERVICE,
+            c"rcmd/host".as_ptr().cast_mut()
+        ),
+        CURLE_OK
+    );
+    assert_eq!(
+        services(c),
+        (Some(b"imap".to_vec()), Some(b"rcmd/host".to_vec())),
+        "the proxy's, as its alias"
+    );
+    pointer(c, ffi::CURLOPT_SERVICE_NAME, ptr::null_mut::<c_char>());
+    pointer(
+        c,
+        ffi::CURLOPT_PROXY_SERVICE_NAME,
+        ptr::null_mut::<c_char>(),
+    );
+    assert_eq!(services(c), (None, None));
+    let gssapi = curl_core::version::version().claims("GSS-API");
+    let code = if gssapi {
+        CURLE_OK
+    } else {
+        CURLE_UNKNOWN_OPTION
+    };
+    assert_eq!(
+        long(
+            c,
+            ffi::CURLOPT_GSSAPI_DELEGATION,
+            ffi::CURLGSSAPI_DELEGATION_FLAG
+        ),
+        code
+    );
+    assert_eq!(options(c, |o| o.login.delegation.always), gssapi);
+    assert_eq!(long(c, ffi::CURLOPT_SOCKS5_GSSAPI_NEC, 1), code);
+    assert_eq!(options(c, |o| o.proxy.socks5_gssapi_nec), gssapi);
+    // SAFETY: a live handle, not used again.
+    unsafe { curl_easy_cleanup(c) };
+}
+
 /// `CURLOPT_PROXYUSERPWD` splits at the first colon and decodes each
 /// part, refusing a zero byte, as setopt.c does; the proxy's methods are
 /// read as `CURLOPT_HTTPAUTH`'s.
@@ -5424,6 +5486,9 @@ fn clearing_an_option_makes_no_group() {
             ffi::CURLOPT_PRE_PROXY,
             ffi::CURLOPT_NOPROXY,
             ffi::CURLOPT_HAPROXY_CLIENT_IP,
+            ffi::CURLOPT_SERVICE_NAME,
+            ffi::CURLOPT_PROXY_SERVICE_NAME,
+            ffi::CURLOPT_SOCKS5_GSSAPI_SERVICE,
             ffi::CURLOPT_PROXYHEADER,
             ffi::CURLOPT_NETRC_FILE,
             ffi::CURLOPT_COOKIE,

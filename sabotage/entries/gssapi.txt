@@ -74,3 +74,19 @@ witness: curl-sys-abi setopt::tests::reads_negotiate_only_where_claimed
 --- new
         ffi::CURLAUTH_NTLM
     };
+
+=== the shim reads any delegation value but 0 as delegation by policy
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi setopt::tests::reads_delegation_as_c
+--- old
+        by_policy: n & ffi::CURLGSSAPI_DELEGATION_POLICY_FLAG != 0,
+--- new
+        by_policy: n != 0,
+
+=== the shim takes NEC's switch though the build does not claim GSS-API
+file: crates/curl-sys-abi/src/setopt/mod.rs
+witness: curl-sys-abi handle_tests::gss_options_are_read_as_c
+--- old
+            let nec = gss_bool(n, gssapi())?;
+--- new
+            let nec = gss_bool(n, true)?;

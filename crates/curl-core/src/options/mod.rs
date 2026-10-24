@@ -114,6 +114,24 @@ pub struct Login {
     pub password: Option<Vec<u8>>,
     /// An OAuth 2.0 token, for Bearer (`CURLOPT_XOAUTH2_BEARER`).
     pub bearer: Option<Vec<u8>>,
+    /// The service the origin is authenticated as, in place of the
+    /// protocol's (`CURLOPT_SERVICE_NAME`): Negotiate's `HTTP` in
+    /// `HTTP@host`.
+    pub service: Option<Vec<u8>>,
+    /// Whether a GSS-API context hands the user's credentials on to the
+    /// peer (`CURLOPT_GSSAPI_DELEGATION`).
+    pub delegation: Delegation,
+}
+
+/// Whether a GSS-API context delegates the user's credentials to the
+/// peer: neither unless set, and both may be asked.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Delegation {
+    /// Where the Kerberos policy allows it
+    /// (`CURLGSSAPI_DELEGATION_POLICY_FLAG`).
+    pub by_policy: bool,
+    /// Always (`CURLGSSAPI_DELEGATION_FLAG`).
+    pub always: bool,
 }
 
 /// The proxy transfers go through, and which go direct.
@@ -152,6 +170,14 @@ pub struct Proxy {
     /// How a SOCKS5 proxy may authenticate the user
     /// (`CURLOPT_SOCKS5_AUTH`).
     pub socks5_auth: Socks5Auth,
+    /// The service the proxy is authenticated as, in place of the
+    /// protocol's (`CURLOPT_PROXY_SERVICE_NAME`,
+    /// `CURLOPT_SOCKS5_GSSAPI_SERVICE`): Negotiate's `HTTP`, SOCKS5
+    /// GSS-API's `rcmd`.
+    pub service: Option<Vec<u8>>,
+    /// SOCKS5 GSS-API's protection level is sent unwrapped, as NEC's
+    /// reference implementation has it (`CURLOPT_SOCKS5_GSSAPI_NEC`).
+    pub socks5_gssapi_nec: bool,
     /// The header lines an HTTP proxy is sent of its own
     /// (`CURLOPT_PROXYHEADER`).
     pub headers: UserHeaders,
@@ -213,6 +239,8 @@ impl Proxy {
             auth: self.auth,
             suppress_connect_headers: self.suppress_connect_headers,
             socks5_auth: self.socks5_auth,
+            service: self.service.as_deref().map(copy).transpose()?,
+            socks5_gssapi_nec: self.socks5_gssapi_nec,
             headers: self.headers.try_clone()?,
             unified_headers: self.unified_headers,
             haproxy: self.haproxy,
@@ -312,7 +340,7 @@ impl Login {
         Ok(Login {
             user: Some(copy(user)?),
             password: password.map(copy).transpose()?,
-            bearer: None,
+            ..Login::NONE
         })
     }
 
@@ -321,6 +349,8 @@ impl Login {
             user: self.user.as_deref().map(copy).transpose()?,
             password: self.password.as_deref().map(copy).transpose()?,
             bearer: self.bearer.as_deref().map(copy).transpose()?,
+            service: self.service.as_deref().map(copy).transpose()?,
+            delegation: self.delegation,
         })
     }
 }
@@ -532,6 +562,11 @@ impl ColdGroup for Login {
         user: None,
         password: None,
         bearer: None,
+        service: None,
+        delegation: Delegation {
+            by_policy: false,
+            always: false,
+        },
     };
 }
 
@@ -555,6 +590,8 @@ impl ColdGroup for Proxy {
         auth: HttpAuth::DEFAULT,
         suppress_connect_headers: false,
         socks5_auth: Socks5Auth::DEFAULT,
+        service: None,
+        socks5_gssapi_nec: false,
         headers: UserHeaders::NONE,
         unified_headers: false,
         haproxy: false,

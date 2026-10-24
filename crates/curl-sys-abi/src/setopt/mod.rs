@@ -150,6 +150,34 @@ fn auth_methods(
     Ok(methods)
 }
 
+/// `CURLOPT_GSSAPI_DELEGATION`'s flags, the other bits ignored, as C
+/// masks them; an option unknown where the build does not claim
+/// `gssapi`, as C leaves it out (`HAVE_GSSAPI`).
+fn delegation(n: c_long, gssapi: bool) -> Result<curl_core::options::Delegation, Refused> {
+    if !gssapi {
+        return Err(Refused::Unknown);
+    }
+    Ok(curl_core::options::Delegation {
+        by_policy: n & ffi::CURLGSSAPI_DELEGATION_POLICY_FLAG != 0,
+        always: n & ffi::CURLGSSAPI_DELEGATION_FLAG != 0,
+    })
+}
+
+/// A switch only a GSS-API build has (`CURLOPT_SOCKS5_GSSAPI_NEC`):
+/// unknown where the build does not claim `gssapi`.
+fn gss_bool(n: c_long, gssapi: bool) -> Result<bool, Refused> {
+    if !gssapi {
+        return Err(Refused::Unknown);
+    }
+    Ok(n != 0)
+}
+
+/// Whether the build claims GSS-API, which C decides when it is built
+/// (`HAVE_GSSAPI`).
+fn gssapi() -> bool {
+    curl_core::version::version().claims("GSS-API")
+}
+
 /// Whether the build claims SPNEGO, which C decides when it is built
 /// (`USE_SPNEGO`).
 fn spnego() -> bool {
@@ -1001,6 +1029,26 @@ fn apply(
         }
         (ffi::CURLOPT_HTTPPROXYTUNNEL, Long(n)) => options.proxy.make_mut()?.tunnel = n != 0,
         (ffi::CURLOPT_HAPROXYPROTOCOL, Long(n)) => options.proxy.make_mut()?.haproxy = n != 0,
+        // The service names are kept whether or not GSS-API is built, as
+        // C keeps them: SASL reads the origin's too.
+        (ffi::CURLOPT_SERVICE_NAME, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.login.set(|g| &mut g.service, value)?;
+        }
+        (ffi::CURLOPT_PROXY_SERVICE_NAME | ffi::CURLOPT_SOCKS5_GSSAPI_SERVICE, Ptr(p)) => {
+            // SAFETY: as above.
+            let value = unsafe { owned(p) }?;
+            options.proxy.set(|g| &mut g.service, value)?;
+        }
+        (ffi::CURLOPT_GSSAPI_DELEGATION, Long(n)) => {
+            let delegation = delegation(n, gssapi())?;
+            options.login.make_mut()?.delegation = delegation;
+        }
+        (ffi::CURLOPT_SOCKS5_GSSAPI_NEC, Long(n)) => {
+            let nec = gss_bool(n, gssapi())?;
+            options.proxy.make_mut()?.socks5_gssapi_nec = nec;
+        }
         (ffi::CURLOPT_HAPROXY_CLIENT_IP, Ptr(p)) => {
             // SAFETY: as above.
             let ip = unsafe { owned(p) }?;
@@ -1573,6 +1621,54 @@ mod tests {
             Err(()),
             "NTLM still lacking"
         );
+    }
+
+    /// Delegation is two flags, the other bits dropped as C's mask drops
+    /// them; with GSS-API unclaimed the option is unknown, as C lacks it.
+    #[test]
+    fn reads_delegation_as_c() {
+        use curl_core::options::Delegation as D;
+        let read = |n, gssapi| match delegation(n, gssapi) {
+            Ok(d) => Some(d),
+            Err(Refused::Unknown) => None,
+            Err(_) => panic!("{n}: refused otherwise"),
+        };
+        let (none, policy) = (
+            D::default(),
+            D {
+                by_policy: true,
+                always: false,
+            },
+        );
+        let always = D {
+            by_policy: false,
+            always: true,
+        };
+        let both = D {
+            by_policy: true,
+            always: true,
+        };
+        for (n, want) in [
+            (0, none),
+            (1, policy),
+            (2, always),
+            (3, both),
+            (4, none),
+            (7, both),
+            (-1, both),
+        ] {
+            assert_eq!(read(n, true), Some(want), "{n}");
+            assert_eq!(read(n, false), None, "{n}");
+        }
+    }
+
+    /// NEC's switch is a GSS-API build's: unknown elsewhere.
+    #[test]
+    fn reads_gss_switches_only_where_claimed() {
+        for (n, want) in [(0, false), (1, true), (2, true), (-1, true)] {
+            assert!(matches!(gss_bool(n, true), Ok(on) if on == want), "{n}");
+            assert!(matches!(gss_bool(n, false), Err(Refused::Unknown)), "{n}");
+        }
     }
 
     /// The generated list is sorted, for the search, and holds the ids C

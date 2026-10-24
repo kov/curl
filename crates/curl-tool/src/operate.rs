@@ -2001,28 +2001,53 @@ fn ssl_ca_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKin
             Ok(())
         })?;
     }
+    if let Some(file) = tls.proxy.cacert {
+        s.str("CURLOPT_PROXY_CAINFO", Some(file), |o| {
+            proxy_tls(o)?.ca_file =
+                options::CaSetting::Given(copy(easysrc::c_string(file)).map_err(oom)?);
+            Ok(())
+        })?;
+    }
     if let Some(path) = capath.as_deref() {
         s.str("CURLOPT_CAPATH", Some(path), |o| {
             o.tls.options.make_mut().map_err(oom)?.ca_path =
                 options::CaSetting::Given(copy(easysrc::c_string(path)).map_err(oom)?);
             Ok(())
         })?;
-        // The proxy's, which an HTTP proxy has no use for (43i).
-        s.str("CURLOPT_PROXY_CAPATH", Some(path), nothing)?;
+    }
+    // The proxy's is `--capath`'s unless it has its own (C's #1257).
+    if let Some(path) = tls.proxy.capath.or(capath.as_deref()) {
+        s.str("CURLOPT_PROXY_CAPATH", Some(path), |o| {
+            proxy_tls(o)?.ca_path =
+                options::CaSetting::Given(copy(easysrc::c_string(path)).map_err(oom)?);
+            Ok(())
+        })?;
     }
     Ok(())
+}
+
+/// An HTTPS proxy's TLS options, to change.
+fn proxy_tls(o: &mut options::Options) -> Result<&mut options::TlsOptions, ErrorKind> {
+    let proxy = o.proxy.make_mut().map_err(oom)?;
+    proxy.tls.options.make_mut().map_err(oom)
 }
 
 /// The TLS options (`ssl_setopts`).
 fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
     let tls = &op.tls;
+    let proxy = &tls.proxy;
     string_setopt(s, "CURLOPT_CRLFILE", tls.crlfile, |t| &mut t.crl_file)?;
-    if let Some(crl) = tls.crlfile {
-        // The proxy's too, unless it has its own, which an HTTP proxy has
-        // no use for (43i).
-        s.str("CURLOPT_PROXY_CRLFILE", Some(crl), nothing)?;
-    }
+    // The proxy's is `--crlfile`'s unless it has its own.
+    proxy_string_setopt(
+        s,
+        "CURLOPT_PROXY_CRLFILE",
+        proxy.crlfile.or(tls.crlfile),
+        |t| &mut t.crl_file,
+    )?;
     string_setopt(s, "CURLOPT_PINNEDPUBLICKEY", tls.pinned_key, |t| {
+        &mut t.pinned_key
+    })?;
+    proxy_string_setopt(s, "CURLOPT_PROXY_PINNEDPUBLICKEY", proxy.pinned_key, |t| {
         &mut t.pinned_key
     })?;
     string_setopt(s, "CURLOPT_SSL_EC_CURVES", tls.curves, |t| &mut t.curves)?;
@@ -2037,11 +2062,21 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         })?;
     }
     string_setopt(s, "CURLOPT_SSLCERT", tls.cert.as_deref(), |t| &mut t.cert)?;
+    proxy_string_setopt(s, "CURLOPT_PROXY_SSLCERT", proxy.cert.as_deref(), |t| {
+        &mut t.cert
+    })?;
     string_setopt(s, "CURLOPT_SSLCERTTYPE", tls.cert_type, |t| {
         &mut t.cert_type
     })?;
+    proxy_string_setopt(s, "CURLOPT_PROXY_SSLCERTTYPE", proxy.cert_type, |t| {
+        &mut t.cert_type
+    })?;
     string_setopt(s, "CURLOPT_SSLKEY", tls.key, |t| &mut t.key)?;
+    proxy_string_setopt(s, "CURLOPT_PROXY_SSLKEY", proxy.key, |t| &mut t.key)?;
     string_setopt(s, "CURLOPT_SSLKEYTYPE", tls.key_type, |t| &mut t.key_type)?;
+    proxy_string_setopt(s, "CURLOPT_PROXY_SSLKEYTYPE", proxy.key_type, |t| {
+        &mut t.key_type
+    })?;
     // Set for every transfer, so a program does not keep `--insecure`
     // from an earlier one.
     let verify = i64::from(!tls.insecure);
@@ -2054,9 +2089,14 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         Ok(())
     })?;
     if tls.proxy_insecure {
-        // The proxy's TLS, which an HTTP proxy has none of (43i).
-        s.long("CURLOPT_PROXY_SSL_VERIFYPEER", 0, nothing)?;
-        s.long("CURLOPT_PROXY_SSL_VERIFYHOST", 0, nothing)?;
+        s.long("CURLOPT_PROXY_SSL_VERIFYPEER", 0, |o| {
+            o.proxy.make_mut().map_err(oom)?.tls.verify_peer = false;
+            Ok(())
+        })?;
+        s.long("CURLOPT_PROXY_SSL_VERIFYHOST", 0, |o| {
+            o.proxy.make_mut().map_err(oom)?.tls.verify_host = false;
+            Ok(())
+        })?;
     }
     if tls.cert_status {
         s.long("CURLOPT_SSL_VERIFYSTATUS", 1, |o| {
@@ -2072,6 +2112,22 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
         t.max_version = max.0;
         Ok(())
     })?;
+    if op.proxy.is_some() {
+        // Any TLS 1.x with `--proxy-tlsv1`, else the default, TLS 1.2.
+        let (min, value) = if proxy.tlsv1 {
+            (options::TlsMinVersion::Tls1, 1)
+        } else {
+            (options::TlsMinVersion::Tls1_2, 0)
+        };
+        s.sslversion("CURLOPT_PROXY_SSLVERSION", value, |o| {
+            if value != 0 || o.proxy.made_mut().is_some() {
+                let t = proxy_tls(o)?;
+                t.min_version = min;
+                t.max_version = options::TlsMaxVersion::None;
+            }
+            Ok(())
+        })?;
+    }
     let mut mask = options::SslOptions::NONE;
     let mut bits = 0;
     for (on, bit, name) in [
@@ -2100,10 +2156,43 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
             Ok(())
         })?;
     }
+    let mut mask = options::SslOptions::NONE;
+    let mut bits = 0;
+    for (on, bit, name) in [
+        (proxy.allow_beast, options::SslOptions::ALLOW_BEAST, 1),
+        (
+            proxy.auto_client_cert,
+            options::SslOptions::AUTO_CLIENT_CERT,
+            1 << 5,
+        ),
+        (proxy.native_ca, options::SslOptions::NATIVE_CA, 1 << 4),
+    ] {
+        if on {
+            mask = mask | bit;
+            bits |= name;
+        }
+    }
+    if bits != 0 {
+        s.bitmask(
+            "CURLOPT_PROXY_SSL_OPTIONS",
+            easysrc::SSL_OPTIONS,
+            bits,
+            |o| {
+                proxy_tls(o)?.ssl_options = mask;
+                Ok(())
+            },
+        )?;
+    }
     string_setopt(s, "CURLOPT_SSL_CIPHER_LIST", tls.ciphers, |t| {
         &mut t.ciphers
     })?;
+    proxy_string_setopt(s, "CURLOPT_PROXY_SSL_CIPHER_LIST", proxy.ciphers, |t| {
+        &mut t.ciphers
+    })?;
     string_setopt(s, "CURLOPT_TLS13_CIPHERS", tls.tls13_ciphers, |t| {
+        &mut t.tls13_ciphers
+    })?;
+    proxy_string_setopt(s, "CURLOPT_PROXY_TLS13_CIPHERS", proxy.tls13_ciphers, |t| {
         &mut t.tls13_ciphers
     })?;
     if tls.no_sessionid {
@@ -2135,6 +2224,22 @@ fn string_setopt(
     s.str(name, Some(value), |o| {
         *field(o.tls.options.make_mut().map_err(oom)?) =
             Some(copy(easysrc::c_string(value)).map_err(oom)?);
+        Ok(())
+    })
+}
+
+/// An HTTPS proxy's TLS string option, set if given.
+fn proxy_string_setopt(
+    s: &mut Setopt<'_>,
+    name: &'static str,
+    value: Option<&[u8]>,
+    field: fn(&mut options::TlsOptions) -> &mut Option<Vec<u8>>,
+) -> Result<(), ErrorKind> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    s.str(name, Some(value), |o| {
+        *field(proxy_tls(o)?) = Some(copy(easysrc::c_string(value)).map_err(oom)?);
         Ok(())
     })
 }
@@ -2289,6 +2394,12 @@ fn proxy_setopts(s: &mut Setopt<'_>, op: &Operation<'_>, claims: Claims) -> Resu
             Ok(())
         })?;
     }
+    proxy_string_setopt(
+        s,
+        "CURLOPT_PROXY_KEYPASSWD",
+        op.tls.proxy.key_password,
+        |t| &mut t.key_password,
+    )?;
     Ok(())
 }
 

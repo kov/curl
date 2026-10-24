@@ -129,9 +129,10 @@ pub(crate) struct Httpsig<'a> {
 pub(crate) struct Tls<'a> {
     /// `--insecure`.
     pub(crate) insecure: bool,
-    /// `--proxy-insecure`: the proxy's TLS, which an HTTP proxy has none
-    /// of.
+    /// `--proxy-insecure`: an HTTPS proxy goes unverified.
     pub(crate) proxy_insecure: bool,
+    /// An HTTPS proxy's other TLS options.
+    pub(crate) proxy: ProxyTls<'a>,
     /// `--cacert`, or the environment's (`cacertpaths`).
     pub(crate) cacert: Option<Cow<'a, [u8]>>,
     /// `--capath`, or the environment's.
@@ -178,6 +179,37 @@ pub(crate) struct Tls<'a> {
     pub(crate) cert_status: bool,
     /// `--no-sessionid`.
     pub(crate) no_sessionid: bool,
+}
+
+/// The TLS options of an HTTPS proxy, as given (C's `proxy_cacert`,
+/// `proxy_ssl_version` and the rest).
+#[derive(Debug, Default)]
+pub(crate) struct ProxyTls<'a> {
+    /// `--proxy-cacert`, `--proxy-capath`.
+    pub(crate) cacert: Option<&'a [u8]>,
+    pub(crate) capath: Option<&'a [u8]>,
+    /// `--proxy-ca-native`, `--proxy-ssl-allow-beast`,
+    /// `--proxy-ssl-auto-client-cert`.
+    pub(crate) native_ca: bool,
+    pub(crate) allow_beast: bool,
+    pub(crate) auto_client_cert: bool,
+    /// `--proxy-tlsv1`: any TLS 1.x.
+    pub(crate) tlsv1: bool,
+    /// `--proxy-ciphers`, `--proxy-tls13-ciphers`.
+    pub(crate) ciphers: Option<&'a [u8]>,
+    pub(crate) tls13_ciphers: Option<&'a [u8]>,
+    /// `--proxy-crlfile`.
+    pub(crate) crlfile: Option<&'a [u8]>,
+    /// `--proxy-pinnedpubkey`.
+    pub(crate) pinned_key: Option<&'a [u8]>,
+    /// `--proxy-cert`, without the passphrase it may end in.
+    pub(crate) cert: Option<Cow<'a, [u8]>>,
+    /// `--proxy-cert-type`, `--proxy-key`, `--proxy-key-type`.
+    pub(crate) cert_type: Option<&'a [u8]>,
+    pub(crate) key: Option<&'a [u8]>,
+    pub(crate) key_type: Option<&'a [u8]>,
+    /// `--proxy-pass`, or the passphrase `--proxy-cert` ends in.
+    pub(crate) key_password: Option<&'a [u8]>,
 }
 
 /// `--proto-default`: the protocol, as named.
@@ -1179,6 +1211,43 @@ pub(crate) fn apply<'a>(
         Opt::Anyauth => line.current().auth = AuthMethods::ANY,
         Opt::Insecure => line.current().tls.insecure = value.toggle(),
         Opt::ProxyInsecure => line.current().tls.proxy_insecure = value.toggle(),
+        Opt::ProxyCaNative => line.current().tls.proxy.native_ca = value.toggle(),
+        Opt::ProxySslAllowBeast => line.current().tls.proxy.allow_beast = value.toggle(),
+        Opt::ProxySslAutoClientCert => {
+            line.current().tls.proxy.auto_client_cert = value.toggle();
+        }
+        Opt::ProxyTlsv1 => line.current().tls.proxy.tlsv1 = true,
+        Opt::ProxyCacert => {
+            let file = value.text();
+            existing_file(file, b"proxy-cacert", msgs)?;
+            line.current().tls.proxy.cacert = Some(non_blank(file)?);
+        }
+        Opt::ProxyCapath => line.current().tls.proxy.capath = Some(non_blank(value.text())?),
+        Opt::ProxyCrlfile => {
+            let file = value.text();
+            existing_file(file, b"proxy-crlfile", msgs)?;
+            line.current().tls.proxy.crlfile = Some(non_blank(file)?);
+        }
+        Opt::ProxyCert => {
+            let (cert, pass) = super::cert::split(value.text())?;
+            let proxy = &mut line.current().tls.proxy;
+            proxy.cert = Some(cert);
+            if pass.is_some() {
+                proxy.key_password = pass;
+            }
+        }
+        Opt::ProxyCertType => line.current().tls.proxy.cert_type = Some(non_blank(value.text())?),
+        // A blank key and password are taken (`ALLOW_BLANK`).
+        Opt::ProxyKey => line.current().tls.proxy.key = Some(value.text()),
+        Opt::ProxyKeyType => line.current().tls.proxy.key_type = Some(non_blank(value.text())?),
+        Opt::ProxyPass => line.current().tls.proxy.key_password = Some(value.text()),
+        Opt::ProxyPinnedpubkey => {
+            line.current().tls.proxy.pinned_key = Some(non_blank(value.text())?);
+        }
+        Opt::ProxyCiphers => line.current().tls.proxy.ciphers = Some(non_blank(value.text())?),
+        Opt::ProxyTls13Ciphers => {
+            line.current().tls.proxy.tls13_ciphers = Some(non_blank(value.text())?);
+        }
         Opt::CaNative => line.current().tls.native_ca = value.toggle(),
         Opt::SslAllowBeast => line.current().tls.allow_beast = value.toggle(),
         Opt::CertStatus => line.current().tls.cert_status = value.toggle(),
@@ -1719,24 +1788,9 @@ pub(crate) fn apply<'a>(
         | Opt::MailRcpt
         | Opt::MailRcptAllowfails
         | Opt::Ntlm
-        | Opt::ProxyCaNative
-        | Opt::ProxyCacert
-        | Opt::ProxyCapath
-        | Opt::ProxyCert
-        | Opt::ProxyCertType
-        | Opt::ProxyCiphers
-        | Opt::ProxyCrlfile
         | Opt::ProxyHttp2
         | Opt::ProxyHttp3
-        | Opt::ProxyKey
-        | Opt::ProxyKeyType
         | Opt::ProxyNtlm
-        | Opt::ProxyPass
-        | Opt::ProxyPinnedpubkey
-        | Opt::ProxySslAllowBeast
-        | Opt::ProxySslAutoClientCert
-        | Opt::ProxyTls13Ciphers
-        | Opt::ProxyTlsv1
         | Opt::Pubkey
         | Opt::Quote
         | Opt::SaslAuthzid

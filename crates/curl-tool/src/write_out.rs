@@ -822,7 +822,8 @@ fn value<'a>(var: Var, facts: &Facts<'a>) -> Value<'a> {
         Var::FtpEntryPath => Value::Missing,
         Var::SslVerifyResult => Value::Number(r.verify_result()),
         // The proxy's TLS is 43i's; early data the session cache's.
-        Var::ProxySslVerifyResult | Var::TlsEarlydata => Value::Number(0),
+        Var::ProxySslVerifyResult => Value::Number(r.proxy_verify_result()),
+        Var::TlsEarlydata => Value::Number(0),
         Var::ProxyUsed => Value::Number(r.used_proxy().into()),
     }
 }

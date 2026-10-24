@@ -23,6 +23,13 @@ witness: curl-core proto::http1::request::tests::the_gate_holds_back_what_was_sa
         .iter()
         .rposition(|_| true)
 
+=== a header line with an empty name is sent
+file: crates/curl-core/src/proto/http1/request.rs
+witness: curl-core proto::http1::request::tests::lines_with_an_empty_name_go_as_in_c
+--- old
+            Some(0) => (0, Asks::Nothing),
+--- new
+
 === credentials go to any origin
 file: crates/curl-core/src/proto/http1/request.rs
 witness: curl-core proto::http1::request::tests::the_gate_holds_back_what_was_said_for_the_first_origin

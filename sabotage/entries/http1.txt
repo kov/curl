@@ -363,3 +363,11 @@ witness: curl-core a_digest_get_takes_no_refusal_for_success
         if content.try_push(b).is_err() {
             return Ok(None);
         }
+
+=== a chunk's count is framed past the room it was read into
+file: crates/curl-core/src/proto/http1/chunked.rs
+witness: curl-core proto::http1::chunked::tests::a_count_past_the_room_is_caught
+--- old
+        assert!(n <= offered, "{n} bytes read into a room of {offered}");
+--- new
+        assert!(offered > 0, "{n} bytes read into a room of {offered}");

@@ -11,7 +11,7 @@ use std::fmt;
 
 use curl_alloc::TryVec as _;
 
-use super::{Awaiting, Handshake, SocksError};
+use super::{Awaiting, Handshake, SocksError, Took, head};
 use crate::gss::{
     Flags, Gss, GssCall, GssFailure, GssFailureKind, GssNote, GssStatus, Mech, Progress, StepSink,
     Target,
@@ -216,7 +216,7 @@ impl fmt::Display for Failed {
 }
 
 /// The length a message's 4 bytes say it has, with them.
-pub(super) fn framed_len(r: &[u8]) -> usize {
+fn framed_len(r: &[u8; 4]) -> usize {
     4 + usize::from(u16::from_be_bytes([r[2], r[3]]))
 }
 
@@ -337,9 +337,13 @@ impl Handshake {
     /// next step, if all of it is there.
     pub(super) fn gss_token(
         &mut self,
-        r: &[u8],
+        input: &[u8],
         say: &mut dyn FnMut(GssLine<'_>),
-    ) -> Result<Option<usize>, SocksError> {
+    ) -> Result<Took, SocksError> {
+        let r = match head::<4>(input) {
+            Ok(r) => r,
+            Err(need) => return Ok(need),
+        };
         // The version is not looked at.
         match r[1] {
             REFUSED => return Err(GssError::at(Failed::Rejected(r[0], r[1])).into()),
@@ -350,11 +354,11 @@ impl Handshake {
         if len == 4 {
             return Err(GssError::at(Failed::ZeroAuthToken).into());
         }
-        if r.len() < len {
-            return Ok(None);
-        }
-        self.gss_step(Some(&r[4..len]), say)?;
-        Ok(Some(len))
+        let Some(token) = input.get(4..len) else {
+            return Ok(Took::Need(len));
+        };
+        self.gss_step(Some(token), say)?;
+        Ok(Took::Read(len))
     }
 
     /// Who the context says it authenticated (`socks5_gss_auth_verify`).
@@ -399,9 +403,13 @@ impl Handshake {
     /// level granted, then the request for the destination.
     pub(super) fn gss_level(
         &mut self,
-        r: &[u8],
+        input: &[u8],
         say: &mut dyn FnMut(GssLine<'_>),
-    ) -> Result<Option<usize>, SocksError> {
+    ) -> Result<Took, SocksError> {
+        let r = match head::<4>(input) {
+            Ok(r) => r,
+            Err(need) => return Ok(need),
+        };
         match r[1] {
             REFUSED => return Err(GssError::at(Failed::Rejected(r[0], r[1])).into()),
             PROTECTION => {}
@@ -411,10 +419,9 @@ impl Handshake {
         if len == 4 {
             return Err(GssError::at(Failed::ZeroLevelToken).into());
         }
-        if r.len() < len {
-            return Ok(None);
-        }
-        let token = &r[4..len];
+        let Some(token) = input.get(4..len) else {
+            return Ok(Took::Need(len));
+        };
         let method = self.gss.expect("GSS-API is built in when picked");
         let granted = if method.nec {
             match token {
@@ -441,7 +448,7 @@ impl Handshake {
             self.context = None;
         }
         self.request5()?;
-        Ok(Some(len))
+        Ok(Took::Read(len))
     }
 
     /// What C says of a send of the GSS-API messages that failed, if they

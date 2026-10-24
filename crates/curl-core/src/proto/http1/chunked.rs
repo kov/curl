@@ -367,6 +367,9 @@ pub(crate) struct ChunkEncoder {
     buf: Vec<u8>,
     start: usize,
     end: usize,
+    /// The room `wants` last handed out, which `got` reads the count of:
+    /// None until it hands one out, and after `got`.
+    offered: Option<usize>,
     /// The body has ended (`read_eos`), and its last chunk has been taken
     /// as well (`eos`).
     read_eos: bool,
@@ -382,6 +385,7 @@ impl ChunkEncoder {
             buf,
             start: 0,
             end: 0,
+            offered: None,
             read_eos: false,
             eos: false,
         })
@@ -401,6 +405,7 @@ impl ChunkEncoder {
         } else {
             room - (SIZE_LINE + 2)
         };
+        self.offered = Some(n);
         Some(&mut self.buf[SIZE_LINE..SIZE_LINE + n])
     }
 
@@ -408,10 +413,8 @@ impl ChunkEncoder {
     /// gives its trailer lines, each with its CRLF: frame them, and the
     /// last chunk after them (`add_chunk`, `add_last_chunk`).
     pub(crate) fn got(&mut self, n: usize, end: Option<&[u8]>) -> Result<(), OutOfMemory> {
-        assert!(
-            self.start == self.end && !self.read_eos,
-            "read only when wanted"
-        );
+        let offered = self.offered.take().expect("read only when wanted");
+        assert!(n <= offered, "{n} bytes read into a room of {offered}");
         self.start = SIZE_LINE;
         self.end = SIZE_LINE;
         if n > 0 {
@@ -793,6 +796,16 @@ mod tests {
             (0, true),
             "not given out raw"
         );
+    }
+
+    /// The count `got` frames is of the room `wants` handed out: one past
+    /// it is a bug, caught before it is framed.
+    #[test]
+    #[should_panic = "bytes read into a room of"]
+    fn a_count_past_the_room_is_caught() {
+        let mut e = ChunkEncoder::new().unwrap();
+        let n = e.wants(10).unwrap().len();
+        e.got(n + 1, None).unwrap();
     }
 
     /// Each piece of body is a chunk and its end the last; a small room

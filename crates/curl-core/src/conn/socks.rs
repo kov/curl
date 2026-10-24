@@ -514,17 +514,6 @@ impl Handshake {
         self.authenticated
     }
 
-    /// How many bytes the reply awaited needs, at least, to be read: the
-    /// count to give up on when the proxy closes before it.
-    pub(crate) fn wants(&self) -> usize {
-        match self.awaiting {
-            Awaiting::Granted4 | Awaiting::Connected => 8,
-            Awaiting::Method | Awaiting::Authenticated => 2,
-            Awaiting::GssToken | Awaiting::GssLevel => 4,
-            Awaiting::Done | Awaiting::GssStart => 0,
-        }
-    }
-
     /// Read the reply awaited from what was received, all sent first.
     #[cfg(test)]
     pub(crate) fn take(&mut self, input: &[u8]) -> Result<Took, SocksError> {
@@ -546,30 +535,16 @@ impl Handshake {
             // granted (`SOCKS5_ST_REQ1_SEND`).
             return Err(SocksError::GssProtection);
         }
-        let wants = self.wants();
-        if input.len() < wants {
-            return Ok(Took::Need(wants));
-        }
-        let used = match self.awaiting {
-            Awaiting::Granted4 => self.granted4(input)?,
-            Awaiting::Method => self.method(input)?,
-            Awaiting::Authenticated => self.authenticated_reply(input)?,
-            Awaiting::Connected => match self.connected(input)? {
-                Some(used) => used,
-                None => return Ok(Took::Need(connected_len(input)?)),
-            },
-            Awaiting::GssToken => match self.gss_token(input, say)? {
-                Some(used) => used,
-                None => return Ok(Took::Need(gss::framed_len(input))),
-            },
-            Awaiting::GssLevel => match self.gss_level(input, say)? {
-                Some(used) => used,
-                None => return Ok(Took::Need(gss::framed_len(input))),
-            },
+        match self.awaiting {
+            Awaiting::Granted4 => fixed(input, |r| self.granted4(r)),
+            Awaiting::Method => fixed(input, |r| self.method(r)),
+            Awaiting::Authenticated => fixed(input, |r| self.authenticated_reply(r)),
+            Awaiting::Connected => self.connected(input),
+            Awaiting::GssToken => self.gss_token(input, say),
+            Awaiting::GssLevel => self.gss_level(input, say),
             Awaiting::GssStart => unreachable!("the context is made first"),
             Awaiting::Done => unreachable!("nothing is awaited"),
-        };
-        Ok(Took::Read(used))
+        }
     }
 
     fn queue(&mut self, parts: &[&[u8]]) -> Result<(), OutOfMemory> {
@@ -621,7 +596,7 @@ impl Handshake {
     }
 
     /// SOCKS4's 8 bytes: granted, or why not (`socks4_check_resp`).
-    fn granted4(&mut self, r: &[u8]) -> Result<usize, SocksError> {
+    fn granted4(&mut self, r: &[u8; 8]) -> Result<(), SocksError> {
         if r[0] != 0 {
             return Err(SocksError::BadVersion4);
         }
@@ -633,7 +608,7 @@ impl Handshake {
             });
         }
         self.awaiting = Awaiting::Done;
-        Ok(8)
+        Ok(())
     }
 
     /// SOCKS5's offer of methods: none unless only authenticating is
@@ -666,7 +641,7 @@ impl Handshake {
     }
 
     /// SOCKS5's pick of method (`socks5_check_resp0`).
-    fn method(&mut self, r: &[u8]) -> Result<usize, SocksError> {
+    fn method(&mut self, r: &[u8; 2]) -> Result<(), SocksError> {
         if r[0] != 5 {
             return Err(SocksError::BadVersion5Method);
         }
@@ -690,7 +665,7 @@ impl Handshake {
             255 => return Err(SocksError::NoneAcceptable),
             _ => return Err(SocksError::UnknownMode),
         }
-        Ok(2)
+        Ok(())
     }
 
     /// SOCKS5's user and password, each empty for none
@@ -723,12 +698,12 @@ impl Handshake {
 
     /// SOCKS5's answer to the user and password
     /// (`socks5_check_auth_resp`).
-    fn authenticated_reply(&mut self, r: &[u8]) -> Result<usize, SocksError> {
+    fn authenticated_reply(&mut self, r: &[u8; 2]) -> Result<(), SocksError> {
         if r[1] != 0 {
             return Err(SocksError::UserRejected(r[0], r[1]));
         }
         self.request5()?;
-        Ok(2)
+        Ok(())
     }
 
     /// SOCKS5's request: the address resolved here, or the name as the
@@ -781,10 +756,14 @@ impl Handshake {
         Ok(())
     }
 
-    /// SOCKS5's answer to the request, if all of it is there
+    /// SOCKS5's answer to the request, once all of it is there
     /// (`socks5_recv_resp1`): its first 8 bytes checked, then its length
     /// read from its address type.
-    fn connected(&mut self, r: &[u8]) -> Result<Option<usize>, SocksError> {
+    fn connected(&mut self, input: &[u8]) -> Result<Took, SocksError> {
+        let r = match head::<8>(input) {
+            Ok(r) => r,
+            Err(need) => return Ok(need),
+        };
         if r[0] != 5 {
             return Err(SocksError::BadVersion5);
         }
@@ -792,16 +771,32 @@ impl Handshake {
             return Err(SocksError::Refused5(take(&mut self.name), r[1]));
         }
         let len = connected_len(r)?;
-        if r.len() < len {
-            return Ok(None);
+        if input.len() < len {
+            return Ok(Took::Need(len));
         }
         self.awaiting = Awaiting::Done;
-        Ok(Some(len))
+        Ok(Took::Read(len))
+    }
+}
+
+/// The first `N` bytes of a reply, or the wait for them.
+fn head<const N: usize>(input: &[u8]) -> Result<&[u8; N], Took> {
+    input.first_chunk().ok_or(Took::Need(N))
+}
+
+/// A reply of exactly `N` bytes, read by `parse` once they are in.
+fn fixed<const N: usize>(
+    input: &[u8],
+    parse: impl FnOnce(&[u8; N]) -> Result<(), SocksError>,
+) -> Result<Took, SocksError> {
+    match head(input) {
+        Ok(r) => parse(r).map(|()| Took::Read(N)),
+        Err(need) => Ok(need),
     }
 }
 
 /// The length of a SOCKS5 answer to a request, from its first 8 bytes.
-fn connected_len(r: &[u8]) -> Result<usize, SocksError> {
+fn connected_len(r: &[u8; 8]) -> Result<usize, SocksError> {
     Ok(match r[3] {
         1 => 4 + 4 + 2,
         3 => 4 + 1 + usize::from(r[4]) + 2,

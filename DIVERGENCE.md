@@ -75,6 +75,15 @@ not a difference: it is tracked in `MILESTONES.md`.
   cap, or with the failing URL last, it exits 22. Pinned by
   `parallel_transfers_keep_the_first_failure` (`crates/curl-tool/tests/transfers.rs`).
 
+- **`-f` keeps a failure it gives up retrying for its wait.** With `--fail` or
+  `--fail-with-body`, `--retry` and `--retry-max-time`, a response that would be tried again
+  but whose `Retry-After:` would go past the limit fails the command, 22, as the same response
+  does with no retries left. C's `retry_sleep` (`src/tool_operate.c`) gives up the retry there
+  and `retrycheck` returns `CURLE_OK`, so after `curl: (22) The requested URL returned error:
+  503` C exits 0, and `%{exitcode}` says 0. Measured against the C build with `curl -sS -f
+  --retry 3 --retry-max-time 10` and a 503 with `Retry-After: 60`. Pinned by
+  `a_failure_not_retried_for_its_wait_still_fails` (`crates/curl-tool/tests/http.rs`).
+
 ## Loops C never leaves
 
 - **A form part's read function answering -2 fails the transfer.** -2 is

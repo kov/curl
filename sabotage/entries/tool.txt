@@ -1443,3 +1443,18 @@ witness: curl-tool sets_the_ssl_options_bits_asked_for
         (tls.no_revoke, options::SslOptions::NO_REVOKE, 1 << 1),
 --- new
         (tls.no_revoke, options::SslOptions::NO_REVOKE, 0),
+
+=== a failure given up retrying for its Retry-After succeeds, as C makes it
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool a_failure_not_retried_for_its_wait_still_fails
+features: debug-hooks
+--- old
+                    b"The Retry-After: time would make this command line exceed \
+                              the maximum allowed time for retries.",
+                ]);
+                return Again::No(result);
+--- new
+                    b"The Retry-After: time would make this command line exceed \
+                              the maximum allowed time for retries.",
+                ]);
+                return Again::No(Ok(()));

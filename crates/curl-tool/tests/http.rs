@@ -1060,6 +1060,40 @@ fn waits_as_the_server_says() {
     );
 }
 
+/// With `-f`, a 503 whose `Retry-After:` would go past `--retry-max-time`
+/// is not tried again and fails the command, 22. C's `retry_sleep` gives up
+/// the retry, and `retrycheck` then turns the failure into success
+/// (`src/tool_operate.c`): it says `curl: (22)` and exits 0, `%{exitcode}`
+/// 0. A deliberate difference from C (DIVERGENCE.md), so this test fails
+/// on its tool.
+#[test]
+fn a_failure_not_retried_for_its_wait_still_fails() {
+    let busy = b"HTTP/1.1 503 Busy\r\nRetry-After: 2\r\nContent-Length: 0\r\n\r\n".to_vec();
+    for fail in ["-f", "--fail-with-body"] {
+        let s = Server::script(vec![vec![busy.clone()]]);
+        let run = curl(&[
+            "-sS",
+            fail,
+            "--retry",
+            "1",
+            "--retry-max-time",
+            "1",
+            "-w",
+            "%{exitcode}",
+            &s.url(),
+        ]);
+        assert_eq!(
+            (run.code, &run.stdout[..], &run.stderr[..]),
+            (
+                22,
+                &b"22"[..],
+                "curl: (22) The requested URL returned error: 503\n"
+            ),
+            "{fail}"
+        );
+    }
+}
+
 /// `--fail-with-body` adds its failure only to a transfer that did not
 /// fail already, or failed unsaid (`-s`).
 #[test]

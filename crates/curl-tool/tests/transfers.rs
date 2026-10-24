@@ -1573,6 +1573,54 @@ fn sets_the_socks5_methods_asked_for() {
     assert_eq!(set(&[]), None);
 }
 
+/// `--ssl-allow-beast`, `--ssl-no-revoke`, `--ssl-revoke-best-effort`
+/// and `--ssl-auto-client-cert` each set their `CURLOPT_SSL_OPTIONS` bit,
+/// and none of them leaves the option unset.
+#[test]
+fn sets_the_ssl_options_bits_asked_for() {
+    let s = Scratch::new("ssl-options");
+    s.write("f", b"x");
+    let set = |args: &[&str]| {
+        let r = curl(
+            &s,
+            &[&["-s", "-o", "out", "--libcurl", "-"], args, &[&s.url("f")]].concat(),
+        );
+        assert_eq!(r.code, 0, "{args:?}");
+        let program = String::from_utf8(r.stdout).unwrap();
+        let at = program.find("CURLOPT_SSL_OPTIONS, ");
+        at.map(|at| {
+            let line = &program[at..];
+            line[..line.find(";\n").unwrap()]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+    };
+    for (flag, bit) in [
+        ("--ssl-allow-beast", "CURLSSLOPT_ALLOW_BEAST"),
+        ("--ssl-no-revoke", "CURLSSLOPT_NO_REVOKE"),
+        ("--ssl-revoke-best-effort", "CURLSSLOPT_REVOKE_BEST_EFFORT"),
+        ("--ssl-auto-client-cert", "CURLSSLOPT_AUTO_CLIENT_CERT"),
+    ] {
+        let want = format!("CURLOPT_SSL_OPTIONS, (long){bit})");
+        assert_eq!(set(&[flag]).as_deref(), Some(want.as_str()));
+    }
+    assert_eq!(
+        set(&[
+            "--ssl-auto-client-cert",
+            "--ssl-revoke-best-effort",
+            "--ssl-no-revoke",
+            "--ssl-allow-beast"
+        ])
+        .as_deref(),
+        Some(
+            "CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_ALLOW_BEAST | (long)CURLSSLOPT_NO_REVOKE | \
+             (long)CURLSSLOPT_REVOKE_BEST_EFFORT | (long)CURLSSLOPT_AUTO_CLIENT_CERT)"
+        )
+    );
+    assert_eq!(set(&["--ssl-no-revoke", "--no-ssl-no-revoke"]), None);
+}
+
 /// An upload of standard input, `-T -` or `-T .`, is warned of when more
 /// than one way to authenticate may need it sent again; a file's is not.
 #[test]

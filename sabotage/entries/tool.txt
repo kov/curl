@@ -1435,3 +1435,11 @@ witness: curl-tool write_out::tests::certs_are_written_as_c_writes_them
             Some(label) if label.eq_ignore_ascii_case(b"cert:") => &line[5..],
 --- new
             Some(label) if label == b"Cert:" => &line[5..],
+
+=== `--ssl-no-revoke` sets no bit of `CURLOPT_SSL_OPTIONS`
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool sets_the_ssl_options_bits_asked_for
+--- old
+        (tls.no_revoke, options::SslOptions::NO_REVOKE, 1 << 1),
+--- new
+        (tls.no_revoke, options::SslOptions::NO_REVOKE, 0),

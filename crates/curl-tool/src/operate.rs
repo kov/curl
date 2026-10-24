@@ -1957,7 +1957,18 @@ fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> 
     let mut bits = 0;
     for (on, bit, name) in [
         (tls.allow_beast, options::SslOptions::ALLOW_BEAST, 1),
+        (tls.no_revoke, options::SslOptions::NO_REVOKE, 1 << 1),
+        (
+            tls.revoke_best_effort,
+            options::SslOptions::REVOKE_BEST_EFFORT,
+            1 << 3,
+        ),
         (tls.native_ca, options::SslOptions::NATIVE_CA, 1 << 4),
+        (
+            tls.auto_client_cert,
+            options::SslOptions::AUTO_CLIENT_CERT,
+            1 << 5,
+        ),
     ] {
         if on {
             mask = mask | bit;

@@ -136,6 +136,11 @@ pub(crate) struct Tls<'a> {
     pub(crate) native_ca: bool,
     /// `--ssl-allow-beast`.
     pub(crate) allow_beast: bool,
+    /// `--ssl-no-revoke`, `--ssl-revoke-best-effort`,
+    /// `--ssl-auto-client-cert`: bits only Schannel acts on.
+    pub(crate) no_revoke: bool,
+    pub(crate) revoke_best_effort: bool,
+    pub(crate) auto_client_cert: bool,
     /// The oldest version, C's numbering: 0 the default, 1 TLS 1.0 to 4
     /// TLS 1.3.
     pub(crate) version: u8,
@@ -1074,6 +1079,9 @@ pub(crate) fn apply<'a>(
         Opt::ProxyInsecure => line.current().tls.proxy_insecure = value.toggle(),
         Opt::CaNative => line.current().tls.native_ca = value.toggle(),
         Opt::SslAllowBeast => line.current().tls.allow_beast = value.toggle(),
+        Opt::SslNoRevoke => line.current().tls.no_revoke = value.toggle(),
+        Opt::SslRevokeBestEffort => line.current().tls.revoke_best_effort = value.toggle(),
+        Opt::SslAutoClientCert => line.current().tls.auto_client_cert = value.toggle(),
         Opt::Alpn => line.current().tls.no_alpn = !value.toggle(),
         Opt::Cacert => {
             let file = value.text();
@@ -1614,10 +1622,7 @@ pub(crate) fn apply<'a>(
         | Opt::Socks5GssapiNec
         | Opt::Socks5GssapiService
         | Opt::Ssl
-        | Opt::SslAutoClientCert
-        | Opt::SslNoRevoke
         | Opt::SslReqd
-        | Opt::SslRevokeBestEffort
         | Opt::SslSessions
         | Opt::TelnetOption
         | Opt::TftpBlksize

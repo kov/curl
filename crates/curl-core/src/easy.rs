@@ -924,6 +924,24 @@ mod tests {
         assert!(e.options().http.cookies.files.iter().next().is_none());
     }
 
+    /// The jar is listed bucket by bucket (`CURLINFO_COOKIELIST`), a domain
+    /// past ASCII in C's bucket: the C library on x86_64 lists these three
+    /// domains in this order, `bücher.de` last.
+    #[test]
+    fn cookies_are_listed_in_c_s_order() {
+        let line = |domain: &str| format!("{domain}\tFALSE\t/\tFALSE\t0\tn\tv").into_bytes();
+        let mut e = Easy::new();
+        for domain in ["example.com", "bücher.de", "b.example.org"] {
+            e.add_cookie(&line(domain), |_| {}).unwrap();
+        }
+        let order = if core::ffi::c_char::MIN != 0 {
+            ["b.example.org", "example.com", "bücher.de"]
+        } else {
+            ["b.example.org", "bücher.de", "example.com"]
+        };
+        assert_eq!(e.cookie_list().unwrap(), order.map(line));
+    }
+
     /// A reload notes each file it cannot open as it reaches it, between
     /// what the files before and after it say; a cookie added notes why
     /// it was dropped, and, once the reload has started the jar, that it

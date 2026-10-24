@@ -253,3 +253,11 @@ features: debug-hooks
     temp.try_reserve_exact(dir.len() + TEMP_NAME + b".tmp".len())
 --- new
     temp.try_reserve_exact(dir.len())
+
+=== a domain's bytes past ASCII are hashed unsigned whatever C's char is
+file: crates/curl-core/src/cookie.rs
+witness: curl-core cookie::tests::hashes_as_c
+--- old
+        h ^= i64::from(b.to_ascii_uppercase() as core::ffi::c_char) as u64;
+--- new
+        h ^= u64::from(b.to_ascii_uppercase());

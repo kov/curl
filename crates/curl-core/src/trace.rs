@@ -7,6 +7,7 @@ use std::fmt;
 
 use crate::components::Component;
 use crate::conn::io::Sent;
+use crate::conn::{ConnNumber, TransferNumber};
 use crate::error::{AGAIN_NUMBER, ErrorKind};
 use crate::handler::DebugKind;
 use crate::multi::state::StepCx;
@@ -154,8 +155,8 @@ fn push_ids<H: Host, const N: usize>(cx: &StepCx<'_, H>, line: &mut Text<N>) {
     let report = easy.report();
     line.push_fmt(format_args!(
         "[{}-{}] ",
-        Ids(report.transfer_number()),
-        Ids(report.conn_number())
+        Ids(report.transfer_number().map(TransferNumber::get)),
+        Ids(report.conn_number().map(ConnNumber::get))
     ));
 }
 

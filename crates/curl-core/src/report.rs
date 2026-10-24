@@ -16,7 +16,7 @@ use curl_alloc::TryVec;
 use crate::time::Instant;
 use curl_alloc::OutOfMemory;
 
-use crate::conn::{ConnNumber, ProxyError};
+use crate::conn::{ConnNumber, ProxyError, TransferNumber};
 use crate::error::UrlErrorKind;
 use crate::options::{AuthMethods, Method};
 use crate::url::Url;
@@ -103,7 +103,7 @@ pub struct TransferReport {
     conn: Option<ConnNumber>,
     /// The number the pool of the multi the handle was last added to
     /// gave it (`data->id`): kept as transfers start over.
-    transfer: Option<u64>,
+    transfer: Option<TransferNumber>,
     /// How many connections the transfer made (`info.numconnects`).
     connects: u32,
     /// How many redirects the transfer followed (`state.followlocation`).
@@ -273,9 +273,6 @@ impl TransferReport {
         self.primary = Some(ends);
     }
 
-    /// The number of the connection the transfer last used, the `N` of
-    /// its "Connection #N", unless the pool closed it as it came back
-    /// (`CURLINFO_CONN_ID`).
     /// What the TLS library made of the origin's certificate when last
     /// asked, 0 for verified or never asked (`CURLINFO_SSL_VERIFYRESULT`).
     pub fn verify_result(&self) -> i64 {
@@ -304,8 +301,11 @@ impl TransferReport {
         self.certinfo = info;
     }
 
-    pub fn conn_number(&self) -> Option<u64> {
-        self.conn.map(ConnNumber::get)
+    /// The number of the connection the transfer last used, the `N` of
+    /// its "Connection #N", unless the pool closed it as it came back
+    /// (`CURLINFO_CONN_ID`).
+    pub fn conn_number(&self) -> Option<ConnNumber> {
+        self.conn
     }
 
     pub(crate) fn set_conn(&mut self, conn: Option<ConnNumber>) {
@@ -314,11 +314,11 @@ impl TransferReport {
 
     /// The number the pool of the multi the handle was last added to
     /// gave it, counting from 0 (`CURLINFO_XFER_ID`).
-    pub fn transfer_number(&self) -> Option<u64> {
+    pub fn transfer_number(&self) -> Option<TransferNumber> {
         self.transfer
     }
 
-    pub(crate) fn set_transfer(&mut self, number: u64) {
+    pub(crate) fn set_transfer(&mut self, number: TransferNumber) {
         self.transfer = Some(number);
     }
 

@@ -251,8 +251,8 @@ fn value(easy: &ShimEasy, r: &TransferReport, info: CURLINFO) -> Option<Value> {
     let length = |n: Option<u64>| n.map_or(-1, off);
     Some(match info {
         // -1 before any.
-        ffi::CURLINFO_CONN_ID => Value::Off(r.conn_number().map_or(-1, off)),
-        ffi::CURLINFO_XFER_ID => Value::Off(r.transfer_number().map_or(-1, off)),
+        ffi::CURLINFO_CONN_ID => Value::Off(r.conn_number().map_or(-1, |n| off(n.get()))),
+        ffi::CURLINFO_XFER_ID => Value::Off(r.transfer_number().map_or(-1, |n| off(n.get()))),
         ffi::CURLINFO_PRIVATE => Value::Ptr(easy.set.get().private),
         // Empty before any transfer.
         ffi::CURLINFO_EFFECTIVE_URL => string(kept(

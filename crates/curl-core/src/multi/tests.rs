@@ -2014,7 +2014,10 @@ fn the_next_transfer_reuses_the_connection_left() {
     // it used by the pool's number for it.
     let numbers = |id| {
         let r = m.easy(id).unwrap().report();
-        (r.transfer_number(), r.conn_number())
+        (
+            r.transfer_number().map(|n| n.get()),
+            r.conn_number().map(|n| n.get()),
+        )
     };
     assert_eq!(
         [first, second, third].map(numbers),
@@ -2156,7 +2159,10 @@ fn a_share_keeps_connections_across_handles() {
         e.perform_in(&mut m, crate::easy::Drive::Waits).unwrap();
         connects.push(e.report().connects());
         uses.push(told.uses());
-        numbers.push((e.report().transfer_number(), e.report().conn_number()));
+        numbers.push((
+            e.report().transfer_number().map(|n| n.get()),
+            e.report().conn_number().map(|n| n.get()),
+        ));
         drop(m);
     }
     assert_eq!(connects, [1, 0], "the second reused the first's");
@@ -2173,7 +2179,10 @@ fn a_share_keeps_connections_across_handles() {
     e.perform_in(&mut Multi::new(env()).unwrap(), crate::easy::Drive::Waits)
         .unwrap();
     assert_eq!(e.report().connects(), 1);
-    let numbers = (e.report().transfer_number(), e.report().conn_number());
+    let numbers = (
+        e.report().transfer_number().map(|n| n.get()),
+        e.report().conn_number().map(|n| n.get()),
+    );
     assert_eq!(numbers, (Some(0), Some(0)), "numbered by its multi's");
     assert_eq!(told.uses(), [], "none told of");
     assert_eq!(closed.load(Ordering::Relaxed), 1, "closed with its multi");
@@ -2977,8 +2986,14 @@ fn a_connection_closed_as_it_comes_back_is_no_one_s() {
         trace_of(&lines).last().unwrap(),
         "Connection pool is full, closing the oldest of 2/1\n"
     );
-    assert_eq!(m.easy(b).unwrap().report().conn_number(), None);
-    assert_eq!(m.easy(a).unwrap().report().conn_number(), Some(0));
+    assert_eq!(
+        m.easy(b).unwrap().report().conn_number().map(|n| n.get()),
+        None
+    );
+    assert_eq!(
+        m.easy(a).unwrap().report().conn_number().map(|n| n.get()),
+        Some(0)
+    );
     m.remove(a, &mut NoEvents).unwrap();
 }
 

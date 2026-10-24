@@ -82,7 +82,18 @@ use crate::time::Instant;
 pub struct ConnNumber(u64);
 
 impl ConnNumber {
-    pub(crate) fn get(self) -> u64 {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// A transfer's number in the pool it joined, counting from 0 in the
+/// order they joined (C's `data->id`, `CURLINFO_XFER_ID`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TransferNumber(u64);
+
+impl TransferNumber {
+    pub fn get(self) -> u64 {
         self.0
     }
 }

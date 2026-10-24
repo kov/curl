@@ -127,8 +127,8 @@ impl DebugHandler for Entry {
     fn debug(&self, cx: &mut TransferCx<'_>, kind: DebugKind, data: &[u8]) {
         let report = cx.info(cx.me());
         let ids = TransferIds {
-            transfer: report.and_then(|r| r.transfer_number()),
-            conn: report.and_then(|r| r.conn_number()),
+            transfer: report.and_then(|r| r.transfer_number()).map(|n| n.get()),
+            conn: report.and_then(|r| r.conn_number()).map(|n| n.get()),
         };
         self.tracer.entry(kind, data, self.terminal, ids);
     }

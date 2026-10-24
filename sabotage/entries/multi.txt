@@ -204,12 +204,12 @@ witness: curl-core multi::tests::socket_action_delivers_notifications
 --- old
             self.run_dirty(now, ev)?;
         }
-        self.schedule_if_changed();
+        self.schedule_if_changed(now, ev);
         self.dispatch(ev);
 --- new
             self.run_dirty(now, ev)?;
         }
-        self.schedule_if_changed();
+        self.schedule_if_changed(now, ev);
 
 === perform never delivers notifications
 file: crates/curl-core/src/multi/mod.rs
@@ -217,12 +217,12 @@ witness: curl-core multi::tests::notifications_come_in_the_order_things_happened
 --- old
             self.run_single(id, now, ev);
         }
-        self.schedule_if_changed();
+        self.schedule_if_changed(now, ev);
         self.dispatch(ev);
 --- new
             self.run_single(id, now, ev);
         }
-        self.schedule_if_changed();
+        self.schedule_if_changed(now, ev);
 
 === the timer callback's context reads no messages
 file: crates/curl-core/src/multi/cx.rs

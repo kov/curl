@@ -1012,9 +1012,9 @@ file: crates/curl-tool/src/options/apply.rs
 witness: curl-tool downloads_with_long_names_under_torture
 features: debug-hooks
 --- old
-            if curl_os::fs::with_c_name(file, curl_os::fs::stat).is_err() {
+    if curl_os::fs::with_c_name(file, curl_os::fs::stat).is_err() {
 --- new
-            if std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(file)).is_err() {
+    if std::fs::metadata(<std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(file)).is_err() {
 
 === --create-dirs makes a directory by a name std copies
 file: crates/curl-tool/src/operate.rs
@@ -1385,3 +1385,19 @@ witness: curl-tool warns_of_more_than_one_auth_with_standard_input
     if upload.is_some_and(|file| file == b"-" || file == b".")
 --- new
     if upload.is_some_and(|file| file == b"-")
+
+=== --libcurl leaves a later transfer's verify options at the reset's default
+file: crates/curl-tool/src/easysrc.rs
+witness: curl-tool easysrc::tests::writes_tls_options_as_c_does
+--- old
+        if source.performed || value == 0 {
+--- new
+        if value == 0 {
+
+=== --tls-max older than 1.2 leaves the oldest allowed at 1.2
+file: crates/curl-tool/src/operate.rs
+witness: curl-tool operate::tests::allows_the_tls_versions_c_allows
+--- old
+    let min = if min == 0 && max != 0 && max < 3 {
+--- new
+    let min = if false {

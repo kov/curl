@@ -1666,6 +1666,10 @@ fn setopts(
     if let UrlProto::Http { tls } = config.proto {
         http_setopts(s, op, tls, &run.msgs)?;
     }
+    if crate::options::has_tls() {
+        ssl_ca_setopts(s, op)?;
+        ssl_setopts(s, op)?;
+    }
     // `dns_and_network_setopts`.
     s.long(
         "CURLOPT_CONNECTTIMEOUT_MS",
@@ -1847,6 +1851,155 @@ fn setopts(
         s.ptr("CURLOPT_SOCKOPTDATA", Object, nothing)?;
     }
     Ok(())
+}
+
+/// Where the certificates to trust are (`ssl_ca_setopts`): as given, or
+/// as the environment says (`cacertpaths`) unless the peer goes
+/// unverified.
+fn ssl_ca_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+    let tls = &op.tls;
+    let (mut cacert, mut capath) = (
+        tls.cacert.as_deref().map(Cow::Borrowed),
+        tls.capath.as_deref().map(Cow::Borrowed),
+    );
+    if cacert.is_none() && capath.is_none() && !tls.insecure {
+        let var = |name: &[u8]| {
+            curl_os::env::var(name)
+                .map(|v| v.filter(|v| !v.is_empty()).map(Cow::Owned))
+                .map_err(oom)
+        };
+        cacert = var(b"CURL_CA_BUNDLE")?;
+        if cacert.is_none() {
+            capath = var(b"SSL_CERT_DIR")?;
+            cacert = var(b"SSL_CERT_FILE")?;
+        }
+    }
+    if let Some(file) = cacert.as_deref() {
+        s.str("CURLOPT_CAINFO", Some(file), |o| {
+            o.tls.options.make_mut().map_err(oom)?.ca_file =
+                options::CaSetting::Given(copy(easysrc::c_string(file)).map_err(oom)?);
+            Ok(())
+        })?;
+    }
+    if let Some(path) = capath.as_deref() {
+        s.str("CURLOPT_CAPATH", Some(path), |o| {
+            o.tls.options.make_mut().map_err(oom)?.ca_path =
+                options::CaSetting::Given(copy(easysrc::c_string(path)).map_err(oom)?);
+            Ok(())
+        })?;
+        // The proxy's, which an HTTP proxy has no use for (43i).
+        s.str("CURLOPT_PROXY_CAPATH", Some(path), nothing)?;
+    }
+    Ok(())
+}
+
+/// The TLS options (`ssl_setopts`).
+fn ssl_setopts(s: &mut Setopt<'_>, op: &Operation<'_>) -> Result<(), ErrorKind> {
+    let tls = &op.tls;
+    string_setopt(s, "CURLOPT_SSL_EC_CURVES", tls.curves, |t| &mut t.curves)?;
+    string_setopt(s, "CURLOPT_SSL_SIGNATURE_ALGORITHMS", tls.sigalgs, |t| {
+        &mut t.signature_algorithms
+    })?;
+    // Set for every transfer, so a program does not keep `--insecure`
+    // from an earlier one.
+    let verify = i64::from(!tls.insecure);
+    s.long_force("CURLOPT_SSL_VERIFYPEER", verify, |o| {
+        o.tls.verify_peer = !tls.insecure;
+        Ok(())
+    })?;
+    s.long_force("CURLOPT_SSL_VERIFYHOST", verify, |o| {
+        o.tls.verify_host = !tls.insecure;
+        Ok(())
+    })?;
+    if tls.proxy_insecure {
+        // The proxy's TLS, which an HTTP proxy has none of (43i).
+        s.long("CURLOPT_PROXY_SSL_VERIFYPEER", 0, nothing)?;
+        s.long("CURLOPT_PROXY_SSL_VERIFYHOST", 0, nothing)?;
+    }
+    let (min, max) = tls_versions(tls.version, tls.version_max);
+    let value = min.1 | max.1;
+    s.sslversion("CURLOPT_SSLVERSION", value, |o| {
+        let t = o.tls.options.make_mut().map_err(oom)?;
+        t.min_version = min.0;
+        t.max_version = max.0;
+        Ok(())
+    })?;
+    let mut mask = options::SslOptions::NONE;
+    let mut bits = 0;
+    for (on, bit, name) in [
+        (tls.allow_beast, options::SslOptions::ALLOW_BEAST, 1),
+        (tls.native_ca, options::SslOptions::NATIVE_CA, 1 << 4),
+    ] {
+        if on {
+            mask = mask | bit;
+            bits |= name;
+        }
+    }
+    if bits != 0 {
+        s.bitmask("CURLOPT_SSL_OPTIONS", easysrc::SSL_OPTIONS, bits, |o| {
+            o.tls.options.make_mut().map_err(oom)?.ssl_options = mask;
+            Ok(())
+        })?;
+    }
+    string_setopt(s, "CURLOPT_SSL_CIPHER_LIST", tls.ciphers, |t| {
+        &mut t.ciphers
+    })?;
+    string_setopt(s, "CURLOPT_TLS13_CIPHERS", tls.tls13_ciphers, |t| {
+        &mut t.tls13_ciphers
+    })?;
+    if tls.no_alpn {
+        s.long("CURLOPT_SSL_ENABLE_ALPN", 0, |o| {
+            o.tls.options.make_mut().map_err(oom)?.alpn = false;
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+/// A TLS string option, set if given.
+fn string_setopt(
+    s: &mut Setopt<'_>,
+    name: &'static str,
+    value: Option<&[u8]>,
+    field: fn(&mut options::TlsOptions) -> &mut Option<Vec<u8>>,
+) -> Result<(), ErrorKind> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    s.str(name, Some(value), |o| {
+        *field(o.tls.options.make_mut().map_err(oom)?) =
+            Some(copy(easysrc::c_string(value)).map_err(oom)?);
+        Ok(())
+    })
+}
+
+/// The versions the command line allows (`tlsversion`), with the
+/// `CURLOPT_SSLVERSION` bits of each: the oldest 1.2 unless given, or
+/// the newest if that is older.
+fn tls_versions(
+    min: u8,
+    max: u8,
+) -> ((options::TlsMinVersion, i64), (options::TlsMaxVersion, i64)) {
+    use options::{TlsMaxVersion as Max, TlsMinVersion as Min};
+    let min = if min == 0 && max != 0 && max < 3 {
+        max
+    } else {
+        min
+    };
+    let min = match min {
+        1 => (Min::Tls1_0, 4),
+        2 => (Min::Tls1_1, 5),
+        0 | 3 => (Min::Tls1_2, 6),
+        _ => (Min::Tls1_3, 7),
+    };
+    let max = match max {
+        0 => (Max::None, 0),
+        1 => (Max::Tls1_0, 4 << 16),
+        2 => (Max::Tls1_1, 5 << 16),
+        3 => (Max::Tls1_2, 6 << 16),
+        _ => (Max::Tls1_3, 7 << 16),
+    };
+    (min, max)
 }
 
 /// The proxy options (`proxy_setopts`), made only where one is given.
@@ -3040,6 +3193,24 @@ mod tests {
 
     /// `retrycheck`'s reasons: failures that may pass, the HTTP codes that
     /// say so (with `--fail`, as its failure too), and with
+    /// The versions the command line allows (`tlsversion`): the oldest
+    /// 1.2 unless given, or the newest if that is older.
+    #[test]
+    fn allows_the_tls_versions_c_allows() {
+        use options::{TlsMaxVersion as Max, TlsMinVersion as Min};
+        for (min, max, want) in [
+            (0, 0, ((Min::Tls1_2, 6), (Max::None, 0))),
+            (0, 2, ((Min::Tls1_1, 5), (Max::Tls1_1, 5 << 16))),
+            (0, 3, ((Min::Tls1_2, 6), (Max::Tls1_2, 6 << 16))),
+            (0, 4, ((Min::Tls1_2, 6), (Max::Tls1_3, 7 << 16))),
+            (1, 0, ((Min::Tls1_0, 4), (Max::None, 0))),
+            (2, 3, ((Min::Tls1_1, 5), (Max::Tls1_2, 6 << 16))),
+            (4, 0, ((Min::Tls1_3, 7), (Max::None, 0))),
+        ] {
+            assert_eq!(tls_versions(min, max), want, "{min} {max}");
+        }
+    }
+
     /// `--retry-all-errors` any failure.
     #[test]
     fn retries_for_c_reasons() {

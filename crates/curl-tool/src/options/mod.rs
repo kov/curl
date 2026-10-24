@@ -29,7 +29,7 @@ pub(crate) use help::{CATEGORIES, HELP, HelpLine};
 pub(crate) use number::leading_number;
 #[cfg(test)]
 pub(crate) use parse::parse_args;
-pub(crate) use parse::{Parsed, parse};
+pub(crate) use parse::{Parsed, has_tls, parse};
 use table::{MAX_OPTION_LEN, OPTIONS, Opt};
 
 /// What an option takes, as `ARG_*` in C.

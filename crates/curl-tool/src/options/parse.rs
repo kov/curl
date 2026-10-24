@@ -562,8 +562,8 @@ fn report(msgs: &Messages, arg: &[u8], err: ParamError) -> ParamError {
     err
 }
 
-/// Whether the library speaks TLS.
-fn has_tls() -> bool {
+/// Whether the library speaks TLS (`feature_ssl`).
+pub(crate) fn has_tls() -> bool {
     version().features.iter().any(|f| f.name() == "SSL")
 }
 

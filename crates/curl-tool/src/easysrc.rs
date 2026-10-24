@@ -112,6 +112,38 @@ pub(crate) const TIME_CONDITIONS: Names = &[
     ("CURL_TIMECOND_NONE", 0),
 ];
 
+/// `setopt_nv_CURL_SSLVERSION`.
+pub(crate) const SSL_VERSIONS: Names = &[
+    ("CURL_SSLVERSION_DEFAULT", 0),
+    ("CURL_SSLVERSION_TLSv1", 1),
+    ("CURL_SSLVERSION_SSLv2", 2),
+    ("CURL_SSLVERSION_SSLv3", 3),
+    ("CURL_SSLVERSION_TLSv1_0", 4),
+    ("CURL_SSLVERSION_TLSv1_1", 5),
+    ("CURL_SSLVERSION_TLSv1_2", 6),
+    ("CURL_SSLVERSION_TLSv1_3", 7),
+];
+
+/// `setopt_nv_CURL_SSLVERSION_MAX`: none set is named by nothing.
+pub(crate) const SSL_VERSIONS_MAX: Names = &[
+    ("", 0),
+    ("CURL_SSLVERSION_MAX_DEFAULT", 1 << 16),
+    ("CURL_SSLVERSION_MAX_TLSv1_0", 4 << 16),
+    ("CURL_SSLVERSION_MAX_TLSv1_1", 5 << 16),
+    ("CURL_SSLVERSION_MAX_TLSv1_2", 6 << 16),
+    ("CURL_SSLVERSION_MAX_TLSv1_3", 7 << 16),
+];
+
+/// `setopt_nv_CURLSSLOPT`.
+pub(crate) const SSL_OPTIONS: Bits = &[
+    ("CURLSSLOPT_ALLOW_BEAST", 1 << 0),
+    ("CURLSSLOPT_NO_REVOKE", 1 << 1),
+    ("CURLSSLOPT_NO_PARTIALCHAIN", 1 << 2),
+    ("CURLSSLOPT_REVOKE_BEST_EFFORT", 1 << 3),
+    ("CURLSSLOPT_NATIVE_CA", 1 << 4),
+    ("CURLSSLOPT_AUTO_CLIENT_CERT", 1 << 5),
+];
+
 /// `setopt_nv_CURL_NETRC`.
 pub(crate) const NETRC: Names = &[
     ("CURL_NETRC_IGNORED", 0),
@@ -218,6 +250,8 @@ pub(crate) struct Source {
     /// resets the handle first, as the tool uses a new handle for each
     /// transfer where the program uses one.
     pending_reset: bool,
+    /// A transfer was performed (`easysrc_is_first` is not).
+    performed: bool,
 }
 
 /// Which list a line goes to.
@@ -347,6 +381,7 @@ impl Source {
         self.add(Section::Code, b"result = curl_easy_perform(curl);")?;
         self.add(Section::Code, b"")?;
         self.pending_reset = true;
+        self.performed = true;
         Ok(())
     }
 
@@ -536,6 +571,64 @@ impl<'a> Setopt<'a> {
             long_line(source, name, value).map_err(oom)?;
         }
         Ok(())
+    }
+
+    /// A `long` option set for every transfer (`tool_setopt_long_force`):
+    /// written for the first only if 0, so a program keeps the default
+    /// a later one's reset puts back.
+    pub(crate) fn long_force(
+        &mut self,
+        name: &'static str,
+        value: i64,
+        apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
+    ) -> Result<(), ErrorKind> {
+        let Some(source) = self.apply(apply)? else {
+            return Ok(());
+        };
+        if source.performed || value == 0 {
+            long_line(source, name, value).map_err(oom)?;
+        }
+        Ok(())
+    }
+
+    /// `CURLOPT_SSLVERSION` (`tool_setopt_SSLVERSION`): written unless 0,
+    /// by the names of its oldest and newest versions.
+    pub(crate) fn sslversion(
+        &mut self,
+        name: &'static str,
+        value: i64,
+        apply: impl FnOnce(&mut Options) -> Result<(), ErrorKind>,
+    ) -> Result<(), ErrorKind> {
+        let Some(source) = self.apply(apply)? else {
+            return Ok(());
+        };
+        if value == 0 {
+            return Ok(());
+        }
+        let min = SSL_VERSIONS.iter().find(|&&(_, v)| v == value & 0xffff);
+        let max = SSL_VERSIONS_MAX
+            .iter()
+            .find(|&&(_, v)| v == value & !0xffff);
+        match (min, max) {
+            (None, _) => long_line(source, name, value),
+            (Some((min, _)), Some((max, _))) if !max.is_empty() => source.code(&[
+                b"curl_easy_setopt(curl, ",
+                name.as_bytes(),
+                b", (long)(",
+                min.as_bytes(),
+                b" | ",
+                max.as_bytes(),
+                b"));",
+            ]),
+            (Some((min, _)), _) => source.code(&[
+                b"curl_easy_setopt(curl, ",
+                name.as_bytes(),
+                b", (long)",
+                min.as_bytes(),
+                b");",
+            ]),
+        }
+        .map_err(oom)
     }
 
     /// A `curl_off_t` option (`tool_setopt_offt`): written unless 0.
@@ -859,6 +952,47 @@ mod tests {
                 "curl_easy_setopt(curl, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)24);",
                 "curl_easy_setopt(curl, CURLOPT_PROXYTYPE, (long)CURLPROXY_HTTP_1_0);",
                 "curl_easy_setopt(curl, CURLOPT_PROXYTYPE, 3L);",
+            ]
+        );
+    }
+
+    /// The verify options are written for every transfer but the first,
+    /// and for it only if off (`tool_setopt_long_force`); the TLS
+    /// versions by their names, the newest's only if set
+    /// (`tool_setopt_SSLVERSION`).
+    #[test]
+    fn writes_tls_options_as_c_does() {
+        let mut easy = Easy::new();
+        let mut source = Source::default();
+        let mut s = Setopt::new(&mut easy, Some(&mut source));
+        s.long_force("CURLOPT_SSL_VERIFYPEER", 1, nothing).unwrap();
+        s.long_force("CURLOPT_SSL_VERIFYHOST", 0, nothing).unwrap();
+        s.sslversion("CURLOPT_SSLVERSION", 0, nothing).unwrap();
+        s.sslversion("CURLOPT_SSLVERSION", 6, nothing).unwrap();
+        s.sslversion("CURLOPT_SSLVERSION", 5 | 6 << 16, nothing)
+            .unwrap();
+        s.sslversion("CURLOPT_SSLVERSION", 99, nothing).unwrap();
+        source.perform().unwrap();
+        let mut s = Setopt::new(&mut easy, Some(&mut source));
+        s.long_force("CURLOPT_SSL_VERIFYPEER", 1, nothing).unwrap();
+        let code: Vec<_> = source
+            .code
+            .iter()
+            .map(|l| String::from_utf8(l.clone()).unwrap())
+            .collect();
+        assert_eq!(
+            code,
+            [
+                "curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);",
+                "curl_easy_setopt(curl, CURLOPT_SSLVERSION, (long)CURL_SSLVERSION_TLSv1_2);",
+                "curl_easy_setopt(curl, CURLOPT_SSLVERSION, \
+                 (long)(CURL_SSLVERSION_TLSv1_1 | CURL_SSLVERSION_MAX_TLSv1_2));",
+                "curl_easy_setopt(curl, CURLOPT_SSLVERSION, 99L);",
+                "",
+                "result = curl_easy_perform(curl);",
+                "",
+                "curl_easy_reset(curl);",
+                "curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);",
             ]
         );
     }

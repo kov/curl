@@ -119,6 +119,40 @@ pub(crate) struct Httpsig<'a> {
     pub(crate) components: Option<&'a [u8]>,
 }
 
+/// The TLS options of an operation, as given (C's `insecure_ok`,
+/// `cacert`, `ssl_version` and the rest).
+#[derive(Debug, Default)]
+pub(crate) struct Tls<'a> {
+    /// `--insecure`.
+    pub(crate) insecure: bool,
+    /// `--proxy-insecure`: the proxy's TLS, which an HTTP proxy has none
+    /// of.
+    pub(crate) proxy_insecure: bool,
+    /// `--cacert`, or the environment's (`cacertpaths`).
+    pub(crate) cacert: Option<Cow<'a, [u8]>>,
+    /// `--capath`, or the environment's.
+    pub(crate) capath: Option<Cow<'a, [u8]>>,
+    /// `--ca-native`.
+    pub(crate) native_ca: bool,
+    /// `--ssl-allow-beast`.
+    pub(crate) allow_beast: bool,
+    /// The oldest version, C's numbering: 0 the default, 1 TLS 1.0 to 4
+    /// TLS 1.3.
+    pub(crate) version: u8,
+    /// `--tls-max`, numbered as `version`; 0 for none.
+    pub(crate) version_max: u8,
+    /// `--ciphers`.
+    pub(crate) ciphers: Option<&'a [u8]>,
+    /// `--tls13-ciphers`.
+    pub(crate) tls13_ciphers: Option<&'a [u8]>,
+    /// `--curves`.
+    pub(crate) curves: Option<&'a [u8]>,
+    /// `--sigalgs`.
+    pub(crate) sigalgs: Option<&'a [u8]>,
+    /// `--no-alpn`.
+    pub(crate) no_alpn: bool,
+}
+
 /// `--proto-default`: the protocol, as named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DefaultProtocol<'a> {
@@ -184,6 +218,8 @@ pub(crate) struct Operation<'a> {
     pub(crate) user: Option<Cow<'a, [u8]>>,
     /// `--oauth2-bearer`.
     pub(crate) bearer: Option<&'a [u8]>,
+    /// The TLS options.
+    pub(crate) tls: Tls<'a>,
     /// `--netrc`: the file is required.
     pub(crate) netrc: bool,
     /// `--netrc-optional`.
@@ -1022,19 +1058,47 @@ pub(crate) fn apply<'a>(
         Opt::UserAgent => line.current().user_agent = Some(value.text()),
         Opt::User => line.current().user = Some(Cow::Borrowed(value.text())),
         Opt::Anyauth => line.current().auth = AuthMethods::ANY,
+        Opt::Insecure => line.current().tls.insecure = value.toggle(),
+        Opt::ProxyInsecure => line.current().tls.proxy_insecure = value.toggle(),
+        Opt::CaNative => line.current().tls.native_ca = value.toggle(),
+        Opt::SslAllowBeast => line.current().tls.allow_beast = value.toggle(),
+        Opt::Alpn => line.current().tls.no_alpn = !value.toggle(),
+        Opt::Cacert => {
+            let file = value.text();
+            existing_file(file, b"cacert", msgs)?;
+            line.current().tls.cacert = Some(Cow::Borrowed(non_blank(file)?));
+        }
+        Opt::Capath => line.current().tls.capath = Some(Cow::Borrowed(non_blank(value.text())?)),
+        Opt::Ciphers => line.current().tls.ciphers = Some(non_blank(value.text())?),
+        Opt::Tls13Ciphers => line.current().tls.tls13_ciphers = Some(non_blank(value.text())?),
+        Opt::Curves => line.current().tls.curves = Some(non_blank(value.text())?),
+        Opt::SignatureAlgorithms => line.current().tls.sigalgs = Some(non_blank(value.text())?),
+        Opt::Tlsv1 | Opt::Tlsv10 => tls_min(line.current(), msgs, 1)?,
+        Opt::Tlsv11 => tls_min(line.current(), msgs, 2)?,
+        Opt::Tlsv12 => tls_min(line.current(), msgs, 3)?,
+        Opt::Tlsv13 => tls_min(line.current(), msgs, 4)?,
+        Opt::TlsMax => {
+            // `str2tls_max`.
+            let max = match value.text() {
+                b"default" => 0,
+                b"1.0" => 1,
+                b"1.1" => 2,
+                b"1.2" => 3,
+                b"1.3" => 4,
+                _ => return Err(ParamError::BadUse),
+            };
+            let tls = &mut line.current().tls;
+            tls.version_max = max;
+            if max < tls.version {
+                msgs.error(&[b"--tls-max set lower than minimum accepted version"]);
+                return Err(ParamError::BadUse);
+            }
+        }
         Opt::Netrc => line.current().netrc = value.toggle(),
         Opt::NetrcOptional => line.current().netrc_optional = value.toggle(),
         Opt::NetrcFile => {
             let file = value.text();
-            // `existingfile`.
-            if curl_os::fs::with_c_name(file, curl_os::fs::stat).is_err() {
-                msgs.error(&[
-                    b"The file '",
-                    file,
-                    b"' provided to --netrc-file does not exist",
-                ]);
-                return Err(ParamError::BadUse);
-            }
+            existing_file(file, b"netrc-file", msgs)?;
             line.current().netrc_file = Some(file);
         }
         Opt::Oauth2Bearer => {
@@ -1440,20 +1504,14 @@ pub(crate) fn apply<'a>(
             line.global.libcurl = Some(file);
         }
         Opt::AbstractUnixSocket
-        | Opt::Alpn
         | Opt::AltSvc
         | Opt::Append
-        | Opt::CaNative
-        | Opt::Cacert
-        | Opt::Capath
         | Opt::Cert
         | Opt::CertStatus
         | Opt::CertType
-        | Opt::Ciphers
         | Opt::CompressedSsh
         | Opt::Crlf
         | Opt::Crlfile
-        | Opt::Curves
         | Opt::Delegation
         | Opt::DisableEprt
         | Opt::DisableEpsv
@@ -1489,7 +1547,6 @@ pub(crate) fn apply<'a>(
         | Opt::Http2PriorKnowledge
         | Opt::Http3
         | Opt::Http3Only
-        | Opt::Insecure
         | Opt::Interface
         | Opt::Key
         | Opt::KeyType
@@ -1514,7 +1571,6 @@ pub(crate) fn apply<'a>(
         | Opt::ProxyCrlfile
         | Opt::ProxyHttp2
         | Opt::ProxyHttp3
-        | Opt::ProxyInsecure
         | Opt::ProxyKey
         | Opt::ProxyKeyType
         | Opt::ProxyNegotiate
@@ -1532,11 +1588,9 @@ pub(crate) fn apply<'a>(
         | Opt::SaslIr
         | Opt::ServiceName
         | Opt::Sessionid
-        | Opt::SignatureAlgorithms
         | Opt::Socks5GssapiNec
         | Opt::Socks5GssapiService
         | Opt::Ssl
-        | Opt::SslAllowBeast
         | Opt::SslAutoClientCert
         | Opt::SslNoRevoke
         | Opt::SslReqd
@@ -1546,18 +1600,45 @@ pub(crate) fn apply<'a>(
         | Opt::TftpBlksize
         | Opt::TftpNoOptions
         | Opt::TlsEarlydata
-        | Opt::TlsMax
-        | Opt::Tls13Ciphers
-        | Opt::Tlsv1
-        | Opt::Tlsv10
-        | Opt::Tlsv11
-        | Opt::Tlsv12
-        | Opt::Tlsv13
         | Opt::UnixSocket
         | Opt::UploadFlags
         | Opt::UseAscii => line.not_implemented(spec, "--"),
     }
     Ok(Flow::Continue)
+}
+
+/// `file` exists, as the option `name` needs (`existingfile`).
+fn existing_file(file: &[u8], name: &[u8], msgs: &Messages) -> Result<(), ParamError> {
+    if curl_os::fs::with_c_name(file, curl_os::fs::stat).is_err() {
+        msgs.error(&[
+            b"The file '",
+            file,
+            b"' provided to --",
+            name,
+            b" does not exist",
+        ]);
+        return Err(ParamError::BadUse);
+    }
+    Ok(())
+}
+
+/// `text`, which a blank does not give (`getstr`'s `DENY_BLANK`).
+fn non_blank(text: &[u8]) -> Result<&[u8], ParamError> {
+    if text.is_empty() {
+        Err(ParamError::BlankString)
+    } else {
+        Ok(text)
+    }
+}
+
+/// `--tlsv1.x` (`opt_sslver`): no newer than `--tls-max`.
+fn tls_min(op: &mut Operation<'_>, msgs: &Messages, version: u8) -> Result<(), ParamError> {
+    if op.tls.version_max != 0 && op.tls.version_max < version {
+        msgs.error(&[b"Minimum TLS version set higher than max"]);
+        return Err(ParamError::BadUse);
+    }
+    op.tls.version = version;
+    Ok(())
 }
 
 /// The names `--ip-tos` takes for its values (`tos_entries`), in
